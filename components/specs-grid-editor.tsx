@@ -1,5 +1,6 @@
 "use client";
 
+import { activeDateTime, activeMoney } from "@/lib/company-formats";
 import {
   Fragment,
   useCallback,
@@ -4106,7 +4107,7 @@ export default function SpecsGridEditor({
                           <div
                             className="pointer-events-none absolute inset-0 flex items-center justify-center text-[12px] font-bold"
                             style={cell.confirmedYes ? { backgroundColor: "var(--success-strong)", color: "#ffffff" } : { backgroundColor: "var(--danger-strong)", color: "#ffffff" }}
-                            title={cell.confirmedAt ? `Answered ${new Date(cell.confirmedAt).toLocaleString()}` : undefined}
+                            title={cell.confirmedAt ? `Answered ${activeDateTime(cell.confirmedAt, " ")}` : undefined}
                           >
                             {cell.confirmedYes ? "Yes" : "No"}
                           </div>
@@ -5121,7 +5122,7 @@ export default function SpecsGridEditor({
                       <input
                         value={groupDraft.price}
                         onChange={(e) => setGroupDraft((d) => ({ ...d, price: e.target.value }))}
-                        placeholder="e.g. $150.00"
+                        placeholder={`e.g. ${activeMoney(150)}`}
                         inputMode="decimal"
                         className="h-9 w-full rounded-[9px] border px-3 text-[13px] outline-none"
                         style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}

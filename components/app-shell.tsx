@@ -1,5 +1,6 @@
 "use client";
 
+import { setActiveCompanyFormats } from "@/lib/company-formats";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type TouchEvent as ReactTouchEvent } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
@@ -1358,16 +1359,27 @@ export function AppShell({
     );
   }, [normalizedEffectivePermissions, roleForUi]);
 
+  // Calendar: role permission calendar.view (or calendar.edit, which implies seeing it).
+  const canAccessCalendar = useMemo(() => {
+    const role = roleForUi;
+    if (role === "owner" || role === "admin") return true;
+    return (
+      hasPermissionKey(normalizedEffectivePermissions, "calendar.view") ||
+      hasPermissionKey(normalizedEffectivePermissions, "calendar.edit")
+    );
+  }, [normalizedEffectivePermissions, roleForUi]);
+
   const visibleTopNav = useMemo(
     () =>
       topNav.filter((item) => {
         if (item.href === "/dashboard") return canAccessDashboard;
         if (item.href === "/clients") return canAccessClients;
         if (item.href === "/leads") return canAccessLeads;
+        if (item.href === "/calendar") return canAccessCalendar;
         if (item.href === "/company-settings") return canAccessCompanySettings;
         return true;
       }),
-    [canAccessClients, canAccessCompanySettings, canAccessDashboard, canAccessLeads],
+    [canAccessCalendar, canAccessClients, canAccessCompanySettings, canAccessDashboard, canAccessLeads],
   );
   useLayoutEffect(() => {
     const nextMode = readThemeMode();
@@ -1656,6 +1668,12 @@ export function AppShell({
       }
       const logoPath = String((doc as Record<string, unknown> | null)?.logoPath ?? "").trim();
       setCompanyLogoPath(logoPath);
+      // The company's currency / measurement unit / date format, used by every price, length and
+      // date in the app (lib/company-formats.ts).
+      if (doc) {
+        const docRecord = doc as Record<string, unknown>;
+        setActiveCompanyFormats({ currency: docRecord.defaultCurrency, unit: docRecord.measurementUnit, dateFormat: docRecord.dateFormat });
+      }
       const name = String((doc as Record<string, unknown> | null)?.name ?? "").trim();
       setCompanyDisplayName(name || "Company");
       writeBrandingCache(companyId, {

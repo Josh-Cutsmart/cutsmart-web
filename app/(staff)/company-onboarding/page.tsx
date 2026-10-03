@@ -98,6 +98,7 @@ const DEFAULT_COMPANY_ROLE_DEFS = [
     color: "#7D99B3",
     permissions: {
       "company.dashboard.view": true,
+      "calendar.view": true,
     },
   },
 ] as const;

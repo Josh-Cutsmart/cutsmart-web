@@ -176,6 +176,13 @@ service cloud.firestore {
         allow read, write: if isCompanyMember(companyId);
       }
 
+      // Calendar tab events (lib/calendar-data.ts). Who may add/edit them is enforced in the app by
+      // the role's calendar.view / calendar.edit permissions; at the rules level it's the same
+      // company-member access as the company's other shared data.
+      match /calendarEvents/{eventId} {
+        allow read, write: if isCompanyMember(companyId);
+      }
+
       // Company Wrapped's per-year delta-tallied stats (doors/drawers/panels/materials/hinges).
       // Same access level as the parent company doc itself.
       match /companyStats/{year} {

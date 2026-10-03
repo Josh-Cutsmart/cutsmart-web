@@ -1,5 +1,6 @@
 "use client";
 
+import { activeDate, useCompanyFormats } from "@/lib/company-formats";
 import {
   Fragment,
   Suspense,
@@ -115,15 +116,9 @@ function normalizeContactCategoriesForDisplay(raw: unknown): ContactCategoryOpti
     .filter((row) => row.name);
 }
 
+// The company's date format (lib/company-formats.ts).
 function formatClientDate(value: string) {
-  const d = new Date(String(value || ""));
-  if (Number.isNaN(d.getTime())) return "-";
-  return new Intl.DateTimeFormat("en-NZ", {
-    day: "2-digit",
-    month: "long",
-    year: "numeric",
-  })
-    .format(d);
+  return activeDate(value) || "-";
 }
 
 function timeSinceLabel(value: string) {
@@ -222,6 +217,8 @@ export default function ClientsPage() {
 }
 
 function ClientsPageInner() {
+  // Re-render when the company's date format changes.
+  useCompanyFormats();
   const { user } = useAuth();
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("");
@@ -666,6 +663,25 @@ function ClientsPageInner() {
       if (exitTimerRef.current) window.clearTimeout(exitTimerRef.current);
     };
   }, []);
+
+  // --- Desktop drawer: click off to close -------------------------------------------------------
+  // Any press outside the drawer closes it — except on a contact row (whose own click either switches to
+  // that contact or, for the open contact's row, closes it), inside an open glass menu (that press just
+  // closes the menu), the row long-press menu, or while the Add Contact modal is up.
+  useEffect(() => {
+    if (!isDesktopViewport || !isDetailOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (!target || isAddContactOpen) return;
+      if (detailPaneRef.current?.contains(target)) return;
+      if (rowMenuRef.current?.contains(target)) return;
+      if (target.closest("[data-contact-row-id]")) return;
+      if (target.closest('[data-glass-dropdown-menu="true"]') || document.querySelector('[data-glass-dropdown-menu="true"]')) return;
+      closeContact();
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [closeContact, isAddContactOpen, isDesktopViewport, isDetailOpen]);
 
   // --- Swipe right to go back (touch) ---------------------------------------------------------
   // A left-to-right swipe anywhere on the contact page drags it (and the list, sitting just off-screen
@@ -1329,7 +1345,13 @@ function ClientsPageInner() {
                             key={client.id}
                             type="button"
                             {...longPressHandlers}
-                            onClick={(e) => openContact(client.id, e.currentTarget)}
+                            data-contact-row-id={client.id}
+                            onClick={(e) => {
+                              // Desktop drawer: clicking the open contact's own row closes it; any other row
+                              // switches the drawer to that contact.
+                              if (isDesktopViewport && isDetailOpen && activeClientId === client.id) closeContact();
+                              else openContact(client.id, e.currentTarget);
+                            }}
                             onContextMenu={(e) => {
                               // The hold already opened our own menu; don't also show the browser's.
                               if (e.nativeEvent instanceof PointerEvent && e.nativeEvent.pointerType === "mouse") return;

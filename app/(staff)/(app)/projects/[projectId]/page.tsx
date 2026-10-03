@@ -20,6 +20,8 @@ import { InitialMeasureCloseSummaryModal } from "@/components/initial-measure-cl
 import { ProductionCutlistCloseSummaryModal } from "@/components/production-cutlist-close-summary-modal";
 import { ProtectedRoute } from "@/components/protected-route";
 import { QuoteDocumentEditor } from "@/components/quote-document-editor";
+import { LengthField } from "@/components/settings-ui";
+import { activeDate, activeDateTime, activeLength, activeMoney, activeUnit, activeUnitLabel, useCompanyFormats } from "@/lib/company-formats";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAppTabs } from "@/lib/app-tabs-context";
 import { useAuth } from "@/lib/auth-context";
@@ -186,72 +188,31 @@ function normalizeProjectStatuses(raw: unknown): ProjectStatusRow[] {
       ];
 }
 
+// Dates below follow the company's date format (Company Settings > Regional formats) via
+// lib/company-formats.ts; times are always the viewer's own local time.
 function shortDate(value: string) {
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) {
-    return "-";
-  }
-  return d.toLocaleString();
+  return activeDateTime(value, " ") || "-";
 }
 
 function dashboardStyleDate(value: string) {
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) {
-    return "-";
-  }
-  const date = new Intl.DateTimeFormat("en-NZ", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  }).format(d);
-  const time = new Intl.DateTimeFormat("en-NZ", {
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-  })
-    .format(d)
-    .toLowerCase()
-    .replace(" ", "");
-  return `${date} | ${time}`;
+  return activeDateTime(value) || "-";
 }
 
-// Same shape as dashboardStyleDate, just with the short month style (en-NZ's own convention —
-// e.g. "Sept" for September, plain 3-letter for the rest) instead of the full name — used for the
-// Specifications "Version History" bubble cards specifically, which are narrow enough that the
-// full month name crowds the rest of the line.
+// Same as dashboardStyleDate — kept as its own name for the Specifications "Version History" cards.
 function shortMonthStyleDate(value: string) {
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) {
-    return "-";
-  }
-  const date = new Intl.DateTimeFormat("en-NZ", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  }).format(d);
-  const time = new Intl.DateTimeFormat("en-NZ", {
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-  })
-    .format(d)
-    .toLowerCase()
-    .replace(" ", "");
-  return `${date} | ${time}`;
+  return activeDateTime(value) || "-";
 }
 
-// DD/MM/YYYY (never MM/DD, regardless of the viewer's own browser locale) plus a separate 12-hour
-// time string — used by the Quote "Pending"/"Accepted" banners above the sheet, where the exact
-// date the client acted matters and shouldn't silently flip ordering for a US-locale browser.
+// The date (company format) plus a separate 12-hour time string — used by the Quote "Pending"/
+// "Accepted" banners above the sheet.
 function numericDDMMYYYYAndTime(value: string): { date: string; time: string } {
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return { date: "-", time: "-" };
-  const date = new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "2-digit", year: "numeric" }).format(d);
-  const time = new Intl.DateTimeFormat("en-NZ", { hour: "numeric", minute: "2-digit", hour12: true })
+  const time = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit", hour12: true })
     .format(d)
     .toLowerCase()
-    .replace(" ", "");
-  return { date, time };
+    .replace(/\s+/g, "");
+  return { date: activeDate(d), time };
 }
 
 // "1st"/"2nd"/"3rd"/"4th"..."11th"/"12th"/"13th" (the 11-13 teens are always "th", not "st"/"nd"/
@@ -271,16 +232,7 @@ function ordinalSuffix(day: number): string {
 }
 
 function dashboardStyleDateOnly(value: string) {
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) {
-    return "-";
-  }
-  const day = d.getDate();
-  const monthYear = new Intl.DateTimeFormat("en-NZ", {
-    month: "long",
-    year: "numeric",
-  }).format(d);
-  return `${day}${ordinalSuffix(day)} ${monthYear}`;
+  return activeDate(value) || "-";
 }
 
 function initials(text: string) {
@@ -989,13 +941,9 @@ function parseCurrencyNumber(value: unknown): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+// In the company's currency (Company Settings > Regional formats).
 function formatCurrencyValue(value: number): string {
-  return new Intl.NumberFormat("en-NZ", {
-    style: "currency",
-    currency: "NZD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(Math.max(0, value));
+  return activeMoney(Math.max(0, value));
 }
 
 // Signed variant of formatCurrencyValue (which clamps to 0) — used wherever a value can
@@ -7063,6 +7011,8 @@ export default function ProjectDetailsPage() {
   // app shell. Shares use-company-access's module-level cache, so navigating between projects (or
   // back to this same one) within the same company no longer re-pays this round trip every time.
   const companyAccess = useCompanyAccess(project ? project.companyId : null);
+  // Re-render when the company's currency / unit / date format changes (lib/company-formats.ts).
+  useCompanyFormats();
   const [companyDoc, setCompanyDoc] = useState<Record<string, unknown> | null>(null);
   const [companyDocLoaded, setCompanyDocLoaded] = useState(false);
   useEffect(() => {
@@ -10932,7 +10882,7 @@ export default function ProjectDetailsPage() {
           id: createSalesItemsRoomId(),
           name: nextName,
           included: true,
-          totalPrice: "$0.00",
+          totalPrice: activeMoney(0),
           items: [],
         },
       ]);
@@ -12745,10 +12695,10 @@ export default function ProjectDetailsPage() {
         ...row,
         totalPrice: formatCurrencyValue(
           parseCurrencyNumber(
-            salesRoomPricingByName[String(row.name || "").trim().toLowerCase()] ?? "$0.00",
+            salesRoomPricingByName[String(row.name || "").trim().toLowerCase()] ?? activeMoney(0),
           ) +
             parseCurrencyNumber(
-              salesItemsRoomPricingByName[String(row.name || "").trim().toLowerCase()] ?? "$0.00",
+              salesItemsRoomPricingByName[String(row.name || "").trim().toLowerCase()] ?? activeMoney(0),
             ),
         ),
       })),
@@ -31471,7 +31421,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       const sheetsRequired = Math.max(0, requiredSheetCountByBoardRowId[row.id] ?? 0);
       const boardLabel = boardDisplayLabel(row.colour) || "Unassigned";
       const boardSize = row.sheetSize || boardSizeFor(row.colour) || "-";
-      const thickness = row.thickness ? `${row.thickness} mm` : "-";
+      const thickness = row.thickness ? activeLength(row.thickness) : "-";
       const finish = row.finish || "-";
       const hasAnyValue =
         String(row.colour || "").trim().length > 0 ||
@@ -32975,17 +32925,20 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       { label: "Project Client First Name", value: projectClientFirstName },
       { label: "Project Address", value: toStr(project?.clientAddress, "-") },
     ];
+    // Stored in mm; shown in the company's unit.
+    const unitText = activeUnitLabel();
+    const lengthValue = (value: string) => (value === "-" ? "-" : activeLength(value, { withUnit: false }));
     const existingRows = [
-      { label: "Carcass Thickness", value: toStr(productionForm.existing.carcassThickness, "-"), suffix: "mm" },
-      { label: "Panel Thickness", value: toStr(productionForm.existing.panelThickness, "-"), suffix: "mm" },
-      { label: "Fronts Thickness", value: toStr(productionForm.existing.frontsThickness, "-"), suffix: "mm" },
+      { label: "Carcass Thickness", value: lengthValue(toStr(productionForm.existing.carcassThickness, "-")), suffix: unitText },
+      { label: "Panel Thickness", value: lengthValue(toStr(productionForm.existing.panelThickness, "-")), suffix: unitText },
+      { label: "Fronts Thickness", value: lengthValue(toStr(productionForm.existing.frontsThickness, "-")), suffix: unitText },
     ];
     const cabinetryRows = [
-      { label: "Base Cab Height", value: toStr(productionForm.cabinetry.baseCabHeight, "-"), suffix: "mm" },
-      { label: "Foot Distance Back", value: toStr(productionForm.cabinetry.footDistanceBack, "-"), suffix: "mm" },
-      { label: "Tall Cab Height", value: toStr(productionForm.cabinetry.tallCabHeight, "-"), suffix: "mm" },
-      { label: "Foot Height", value: toStr(productionForm.cabinetry.footHeight, "-"), suffix: "mm" },
-      { label: "Hob Centre", value: hobCentreValue, suffix: hobCentreValue !== "-" ? "mm" : "" },
+      { label: "Base Cab Height", value: lengthValue(toStr(productionForm.cabinetry.baseCabHeight, "-")), suffix: unitText },
+      { label: "Foot Distance Back", value: lengthValue(toStr(productionForm.cabinetry.footDistanceBack, "-")), suffix: unitText },
+      { label: "Tall Cab Height", value: lengthValue(toStr(productionForm.cabinetry.tallCabHeight, "-")), suffix: unitText },
+      { label: "Foot Height", value: lengthValue(toStr(productionForm.cabinetry.footHeight, "-")), suffix: unitText },
+      { label: "Hob Centre", value: hobCentreValue === "-" ? "-" : hobCentreValue.replace(/[\d.]+/, (n) => activeLength(n, { withUnit: false })), suffix: hobCentreValue !== "-" ? unitText : "" },
       { label: "Top Scribers", value: topScribersLabel },
     ];
 
@@ -45168,7 +45121,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               <input
                                 value={row.price}
                                 onChange={(e) => setQuoteCustomPriceDraftRows((rows) => rows.map((r, i) => (i === idx ? { ...r, price: e.target.value } : r)))}
-                                placeholder="$0.00"
+                                placeholder={activeMoney(0)}
                                 className="h-8 w-24 shrink-0 rounded-[7px] border px-2 text-[12px]"
                                 style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                               />
@@ -53103,10 +53056,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 )}
                               </div>
                             ) : null}
-                            <span>Sheet H: {formatMm(nestingSettings.sheetHeight)} mm</span>
-                            <span>Sheet W: {formatMm(nestingSettings.sheetWidth)} mm</span>
-                            <span>Kerf: {formatMm(nestingSettings.kerf)} mm</span>
-                            <span>Margin: {formatMm(nestingSettings.margin)} mm</span>
+                            <span>Sheet H: {activeLength(formatMm(nestingSettings.sheetHeight))}</span>
+                            <span>Sheet W: {activeLength(formatMm(nestingSettings.sheetWidth))}</span>
+                            <span>Kerf: {activeLength(formatMm(nestingSettings.kerf))}</span>
+                            <span>Margin: {activeLength(formatMm(nestingSettings.margin))}</span>
                           </div>
                           <button
                             type="button"
@@ -53420,6 +53373,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               disabled={productionReadOnly}
                               value={productionForm.existing[item.key]}
                               options={["", ...boardThicknessOptions]}
+                              getLabel={(opt) => (opt ? activeLength(opt, { withUnit: false }) : "")}
                               onChange={(next) => {
                                 const nextForm = { ...productionForm, existing: { ...productionForm.existing, [item.key]: next } };
                                 setProductionForm(nextForm);
@@ -53428,7 +53382,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               className="h-7 rounded-[8px] border px-2 text-[12px]"
                               style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
                             />
-                            <p className="font-semibold" style={{ color: "var(--text-main)" }}>mm</p>
+                            <p className="font-semibold" style={{ color: "var(--text-main)" }}>{activeUnitLabel()}</p>
                         </div>
                       ))}
                     </div>
@@ -53456,15 +53410,18 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       ].map((item) => (
                         <div key={item.key} className="grid grid-cols-[1fr_58px_26px] items-center gap-2">
                           <p className="font-semibold text-[#334155]">{item.label}</p>
-                            <input
+                            <LengthField
                               disabled={productionReadOnly}
-                              value={productionForm.cabinetry[item.key]}
-                              onChange={(e) => onCabinetryDraftChange(item.key, e.target.value)}
+                              valueMm={productionForm.cabinetry[item.key]}
+                              onChangeMm={(mm) => onCabinetryDraftChange(item.key, mm)}
                               onBlur={() => void onCabinetryBlurSave()}
-                              className="h-7 rounded-[8px] border px-2 text-[12px]"
+                              unit={activeUnit()}
+                              showUnit={false}
+                              width={58}
+                              className="h-7 w-full rounded-[8px] border px-2 text-[12px]"
                               style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "#000000" }}
                             />
-                            <p className="font-semibold" style={{ color: "var(--text-main)" }}>mm</p>
+                            <p className="font-semibold" style={{ color: "var(--text-main)" }}>{activeUnitLabel()}</p>
                         </div>
                       ))}
                         <div className="grid grid-cols-[1fr_58px_58px_26px] items-center gap-2">
@@ -53482,15 +53439,18 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               className="h-7 rounded-[8px] border px-1 text-[11px]"
                               style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
                             />
-                          <input
+                          <LengthField
                             disabled={productionReadOnly}
-                            value={productionForm.cabinetry.hobCentre}
-                            onChange={(e) => onCabinetryDraftChange("hobCentre", e.target.value)}
+                            valueMm={productionForm.cabinetry.hobCentre}
+                            onChangeMm={(mm) => onCabinetryDraftChange("hobCentre", mm)}
                             onBlur={() => void onCabinetryBlurSave()}
-                            className="h-7 rounded-[8px] border px-2 text-[12px]"
+                            unit={activeUnit()}
+                            showUnit={false}
+                            width={58}
+                            className="h-7 w-full rounded-[8px] border px-2 text-[12px]"
                             style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "#000000" }}
                             />
-                            <p className="font-semibold" style={{ color: "var(--text-main)" }}>mm</p>
+                            <p className="font-semibold" style={{ color: "var(--text-main)" }}>{activeUnitLabel()}</p>
                         </div>
                         <div className="grid grid-cols-[1fr_auto] items-center gap-2">
                           <p className="font-semibold text-[#334155]">Top Scribers</p>
@@ -53662,7 +53622,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               >
                                 <p className="min-w-0 truncate text-[12px] font-medium tracking-[0.7px]" style={{ color: "var(--text-main)" }}>
                                   {row.colour
-                                    ? [row.colour, row.thickness ? `${row.thickness} mm` : "", row.finish].filter(Boolean).join(" ")
+                                    ? [row.colour, row.thickness ? activeLength(row.thickness) : "", row.finish].filter(Boolean).join(" ")
                                     : `Board ${rowIndex + 1}`}
                                 </p>
                                 <p className="text-right text-[12px] font-semibold" style={{ color: "#000000" }}>
@@ -53791,7 +53751,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 disabled={productionReadOnly}
                                 value={row.thickness}
                                 options={["", ...boardThicknessOptions]}
-                                getLabel={(opt) => (opt ? `${opt} mm` : "")}
+                                getLabel={(opt) => (opt ? activeLength(opt) : "")}
                                 onChange={(next) => void onBoardFieldCommit(row.id, { thickness: next })}
                                 className="h-7 rounded-[8px] border px-2 text-[12px]"
                                 style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
@@ -54122,7 +54082,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 disabled={productionReadOnly}
                                 value={row.thickness}
                                 options={["", ...boardThicknessOptions]}
-                                getLabel={(opt) => (opt ? `${opt} mm` : "")}
+                                getLabel={(opt) => (opt ? activeLength(opt) : "")}
                                 onChange={(next) => void onBoardFieldCommit(row.id, { thickness: next })}
                                 className="h-9 rounded-[8px] border px-3 text-[13px]"
                                 style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}

@@ -1,5 +1,6 @@
 "use client";
 
+import { activeDate, activeDateTime, useCompanyFormats } from "@/lib/company-formats";
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronRight, RotateCcw, Search, Trash2, X } from "lucide-react";
@@ -36,26 +37,13 @@ type LeadFieldLayoutRow = {
 
 type StatusRow = { name: string; color: string };
 
+// The company's date format (lib/company-formats.ts); the time is the viewer's own.
 function formatDeletedDate(value: string) {
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "-";
-  const day = d.toLocaleDateString(undefined, { day: "2-digit" });
-  const month = d.toLocaleDateString(undefined, { month: "long" });
-  const year = d.toLocaleDateString(undefined, { year: "numeric" });
-  const time = d
-    .toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", hour12: true })
-    .replace(" ", "")
-    .toLowerCase();
-  return `${day} ${month} ${year}  |  ${time}`;
+  return activeDateTime(value, "  |  ") || "-";
 }
 
 function formatDateOnly(value: string) {
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "-";
-  const day = d.toLocaleDateString(undefined, { day: "2-digit" });
-  const month = d.toLocaleDateString(undefined, { month: "long" });
-  const year = d.toLocaleDateString(undefined, { year: "numeric" });
-  return `${day} ${month} ${year}`;
+  return activeDate(value) || "-";
 }
 
 function toSafeInt(value: unknown) {
@@ -336,6 +324,8 @@ function measureStatusPillWidth(options: string[]) {
 }
 
 export default function RecentlyDeletedPage() {
+  // Re-render when the company's date format changes.
+  useCompanyFormats();
   const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
   const { user } = useAuth();
   const { restoreScope, setReduceMainTopPadding } = useAppTabs();

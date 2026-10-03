@@ -1,5 +1,6 @@
 "use client";
 
+import { activeDateTime, useCompanyFormats } from "@/lib/company-formats";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type TouchEvent as ReactTouchEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { createPortal } from "react-dom";
 import { ChevronsLeftRight, ChevronsRightLeft, ChevronUp, ImagePlus, Inbox, Kanban, LayoutGrid, Plus, Rows3, Search, X } from "lucide-react";
@@ -190,19 +191,9 @@ function persistSampleLeads(companyId: string, rows: CompanyLeadRow[]) {
   }
 }
 
+// The company's date format (lib/company-formats.ts); the time is the viewer's own.
 function formatLeadDate(value: string) {
-  const d = new Date(String(value || ""));
-  if (Number.isNaN(d.getTime())) return "-";
-  return new Intl.DateTimeFormat("en-NZ", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-  })
-    .format(d)
-    .replace(",", " |");
+  return activeDateTime(value) || "-";
 }
 
 function formatLeadFieldLabel(key: string) {
@@ -620,6 +611,8 @@ function buildLeadProjectPrefill(lead: CompanyLeadRow, fieldLayout: LeadFieldLay
 }
 
 export default function LeadsPage() {
+  // Re-render when the company's date format changes.
+  useCompanyFormats();
   const { user } = useAuth();
   const currentUserUid = String(user?.uid || "").trim();
   // An unverified account can view leads but not edit/move/delete/assign them — see the same gate

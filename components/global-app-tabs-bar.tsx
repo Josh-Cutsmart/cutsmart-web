@@ -1,5 +1,6 @@
 "use client";
 
+import { activeDateTime } from "@/lib/company-formats";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type TouchEvent as ReactTouchEvent } from "react";
 import { createPortal } from "react-dom";
 import { usePathname, useRouter } from "next/navigation";
@@ -17,18 +18,9 @@ import {
 
 const NOTIF_POLL_INTERVAL_MS = 50000;
 
-// Same "16 Sept 2026 | 8:57pm" shape as dashboardStyleDate elsewhere in the app (e.g. project
-// details' Created/Modified rows) — en-NZ's own short-month convention gives "Sept" rather than
-// the more common "Sep".
+// "<date> | 8:57pm" — the date in the company's date format, the time in the viewer's own local time.
 function formatNotificationTime(iso: string) {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  const date = new Intl.DateTimeFormat("en-NZ", { day: "2-digit", month: "short", year: "numeric" }).format(d);
-  const time = new Intl.DateTimeFormat("en-NZ", { hour: "numeric", minute: "2-digit", hour12: true })
-    .format(d)
-    .toLowerCase()
-    .replace(" ", "");
-  return `${date} | ${time}`;
+  return activeDateTime(iso);
 }
 
 let pendingActiveAppTabKeyMemory = "";

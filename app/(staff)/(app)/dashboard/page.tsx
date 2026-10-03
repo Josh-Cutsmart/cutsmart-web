@@ -1,5 +1,6 @@
 "use client";
 
+import { activeDate, activeDateTime, useCompanyFormats } from "@/lib/company-formats";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { useRouter } from "next/navigation";
 import { createPortal } from "react-dom";
@@ -272,37 +273,13 @@ function roleLabelFromKey(roleKey: string): string {
     .join(" ");
 }
 
+// Dates follow the company's date format (lib/company-formats.ts); times are the viewer's own.
 function dashboardDate(value: string) {
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) {
-    return "-";
-  }
-  const date = new Intl.DateTimeFormat("en-NZ", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  }).format(d);
-  const time = new Intl.DateTimeFormat("en-NZ", {
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-  })
-    .format(d)
-    .toLowerCase()
-    .replace(" ", "");
-  return `${date} | ${time}`;
+  return activeDateTime(value) || "-";
 }
 
 function dashboardDateOnly(value: string) {
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) {
-    return "-";
-  }
-  return new Intl.DateTimeFormat("en-NZ", {
-    day: "2-digit",
-    month: "long",
-    year: "numeric",
-  }).format(d);
+  return activeDate(value) || "-";
 }
 
 function isoToDateInputValue(value: string) {
@@ -343,6 +320,8 @@ function assignedDisplayName(project: Project) {
 }
 
 export default function DashboardPage() {
+  // Re-render when the company's date format changes.
+  useCompanyFormats();
   const router = useRouter();
   const { user, membershipStatus, retryMembershipLoad } = useAuth();
   const { tabs: globalAppTabs, registerScopeTabs } = useAppTabs();

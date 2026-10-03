@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, Building2, ChevronDown, CircleDollarSign, CircleHelp, ClipboardList, DatabaseBackup, Download, Gauge, GripVertical, HardHat, Layers3, Link2, Package2, Plus, RotateCcw, Settings, Upload, Users, Wrench, X } from "lucide-react";
+import { ArrowLeft, Building2, CheckCircle2, ChevronDown, CircleDollarSign, CircleHelp, ClipboardList, Clock3, DatabaseBackup, Download, GripVertical, HardHat, Layers3, LayoutDashboard, Link2, Loader2, Package2, Plus, RotateCcw, Search, Settings, Upload, Users, Wrench, X } from "lucide-react";
 import { deleteObject, getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { useAuth } from "@/lib/auth-context";
 import { useAppTabs } from "@/lib/app-tabs-context";
@@ -31,9 +31,50 @@ import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/use
 import SpecsGridEditor from "@/components/specs-grid-editor";
 import { type SpecsGrid, createEmptyGrid, normalizeSpecsGrid } from "@/lib/specs-grid-types";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
+import { GlassDropdown, type GlassDropdownOption } from "@/components/glass-dropdown";
+import { DragGhostLayer, useDragGhost } from "@/lib/use-drag-ghost";
+import { newCalendarId, normalizeCalendarCategories, type CalendarCategory } from "@/lib/calendar-data";
+import {
+  CURRENCY_OPTIONS,
+  DATE_FORMAT_OPTIONS,
+  formatDate,
+  formatLength,
+  formatMoney,
+  normalizeCurrencyCode,
+  normalizeDateFormat,
+  normalizeMeasurementUnit,
+  setActiveCompanyFormats,
+  activeLength,
+} from "@/lib/company-formats";
+import { FileText, Lightbulb } from "lucide-react";
+import { Box, FileInput, FolderTree, LayoutTemplate, Lock, Percent, Receipt, Shield, ShieldCheck, UserMinus, UserPlus } from "lucide-react";
+import { Archive, Award, CalendarDays, CircleDashed, Cog, Columns3, Contact, Copy, Cpu, DoorClosed, Eye, Factory, Globe2, HardHat as TradeIcon, ImageUp, Inbox, KanbanSquare, KeyRound, Palette, PanelLeft, RefreshCw, Ruler, Shapes, SlidersHorizontal, Star, Tags, Trash2 } from "lucide-react";
+import {
+  ColorCircle,
+  GlassSwitch,
+  Segmented,
+  SettingRow,
+  SettingsCard,
+  LengthField,
+  ThemeColorPicker,
+  chipAddClass,
+  chipClass,
+  columnHeadClass,
+  countPillClass,
+  glassFieldClass,
+  glassFieldSmClass,
+  gripClass,
+  iconRemoveButtonClass,
+  listRowClass,
+  primaryButtonClass,
+  primaryButtonStyle,
+  rowFieldClass,
+  smallButtonClass,
+  useGlassPrompt,
+} from "@/components/settings-ui";
 
 type SettingsSection =
-  | "company" | "dashboard" | "sales" | "production" | "nesting" | "materials"
+  | "company" | "dashboard" | "calendar" | "sales" | "production" | "nesting" | "materials"
   | "hardware" | "staff" | "integrations" | "backup";
 
 type SubStageRow = { name: string; color: string; isDefault?: boolean };
@@ -212,9 +253,35 @@ const desktopPermissionKeys = [
   "company.settings",
   "company.updates",
   "dashboard.complete.bonus",
+  "calendar.view",
+  "calendar.edit",
 ];
 
+// The role pop-up lists permissions in these groups (any key not matched lands in "Other").
+const PERMISSION_GROUPS: Array<{ label: string; match: (key: string) => boolean }> = [
+  { label: "Company", match: (k) => k === "company.*" || k === "company.settings" || k === "company.updates" },
+  { label: "Dashboard & Contacts", match: (k) => k.startsWith("company.dashboard") || k.startsWith("dashboard.") || k.startsWith("clients.") },
+  { label: "Leads", match: (k) => k.startsWith("leads.") },
+  { label: "Projects", match: (k) => k.startsWith("projects.") },
+  { label: "Sales & Production", match: (k) => k.startsWith("sales.") || k.startsWith("production.") },
+  { label: "Staff", match: (k) => k.startsWith("staff.") },
+  { label: "Calendar", match: (k) => k.startsWith("calendar.") },
+];
+function groupPermissionKeys(keys: string[]): Array<{ label: string; keys: string[] }> {
+  const groups = PERMISSION_GROUPS.map((g) => ({ label: g.label, keys: [] as string[] }));
+  const other: string[] = [];
+  for (const key of keys) {
+    const idx = PERMISSION_GROUPS.findIndex((g) => g.match(key));
+    if (idx >= 0) groups[idx].keys.push(key);
+    else other.push(key);
+  }
+  if (other.length) groups.push({ label: "Other", keys: other });
+  return groups.filter((g) => g.keys.length);
+}
+
 const permissionLabels: Record<string, string> = {
+  "calendar.view": "calendar.view - View Calendar",
+  "calendar.edit": "calendar.edit - Add / Edit / Delete Calendar Events",
   "company.*": "company.* - Full Company Access",
   "company.dashboard.view": "company.dashboard.view - View Dashboard",
   "clients.view": "clients.view - Access Contacts Tab (Own Created / Assigned Contacts)",
@@ -330,17 +397,64 @@ function mergeLeadFieldLayout(
 }
 const autoClashRightOptions = ["1S", "2S"];
 
-const sections: Array<{ key: SettingsSection; label: string; icon: React.ComponentType<{ size?: number }> }> = [
-  { key: "company", label: "Company", icon: Building2 },
-  { key: "dashboard", label: "Dashboard", icon: Gauge },
-  { key: "sales", label: "Sales", icon: CircleDollarSign },
-  { key: "production", label: "Production", icon: Wrench },
-  { key: "nesting", label: "Machining", icon: Layers3 },
-  { key: "materials", label: "Materials & Board Types", icon: Package2 },
-  { key: "hardware", label: "Hardware", icon: HardHat },
-  { key: "staff", label: "Staff & Permissions", icon: Users },
-  { key: "integrations", label: "Integrations", icon: Link2 },
-  { key: "backup", label: "Backup Data", icon: DatabaseBackup },
+const sections: Array<{
+  key: SettingsSection;
+  label: string;
+  group: string;
+  description: string;
+  icon: React.ComponentType<{ size?: number; strokeWidth?: number }>;
+}> = [
+  { key: "company", label: "Company", group: "General", icon: Building2, description: "Your brand and the formats used everywhere in CutSmart." },
+  // Same icon as the sidebar's Dashboard item (components/app-shell.tsx topNav).
+  { key: "dashboard", label: "Dashboard", group: "General", icon: LayoutDashboard, description: "Statuses, tags, contact categories and how long deleted items are kept." },
+  { key: "calendar", label: "Calendar", group: "General", icon: CalendarDays, description: "The categories events can belong to on the Calendar tab." },
+  { key: "sales", label: "Sales", group: "Sales", icon: CircleDollarSign, description: "Lead form, quote & specs layouts, products, helpers and discounts." },
+  { key: "production", label: "Production", group: "Workshop", icon: Wrench, description: "Cutlists, part types, gap allowances and production access." },
+  { key: "nesting", label: "Machining", group: "Workshop", icon: Layers3, description: "Your machines, their settings, servicing and nesting rules." },
+  { key: "materials", label: "Materials & Boards", group: "Workshop", icon: Package2, description: "Sheet thicknesses, finishes, sizes and remembered board colours." },
+  { key: "hardware", label: "Hardware", group: "Workshop", icon: HardHat, description: "Hardware brands with their drawers, hinges and other parts." },
+  { key: "staff", label: "Staff & Permissions", group: "Team & Data", icon: Users, description: "Who's in your company, their roles and what each role can do." },
+  { key: "integrations", label: "Integrations", group: "Team & Data", icon: Link2, description: "Connect outside tools to CutSmart." },
+  { key: "backup", label: "Backup & Output", group: "Team & Data", icon: DatabaseBackup, description: "Quote output templates and a snapshot of your settings." },
+];
+// What the sidebar search can find: every card (plus key individual settings) and the tab it's on.
+const SETTINGS_SEARCH_INDEX: Array<{ section: SettingsSection; label: string; card: string; keywords?: string }> = [
+  { section: "company", card: "Brand", label: "Company name" },
+  { section: "company", card: "Brand", label: "Company logo" },
+  { section: "company", card: "Brand", label: "Theme colour", keywords: "color brand" },
+  { section: "company", card: "Regional formats", label: "Currency", keywords: "money price dollar" },
+  { section: "company", card: "Regional formats", label: "Measurement unit", keywords: "mm inches millimetres" },
+  { section: "company", card: "Regional formats", label: "Date format" },
+  { section: "dashboard", card: "Project statuses", label: "Project statuses", keywords: "sub-stages board columns" },
+  { section: "dashboard", card: "Lead statuses", label: "Lead statuses" },
+  { section: "dashboard", card: "Contact categories", label: "Contact categories" },
+  { section: "dashboard", card: "Completed project legend", label: "Completed project legend" },
+  { section: "dashboard", card: "Tags", label: "Tags" },
+  { section: "dashboard", card: "Recently deleted", label: "Recently deleted", keywords: "retention trash" },
+  { section: "calendar", card: "Calendar categories", label: "Calendar categories", keywords: "events sub-calendars colours teamup" },
+  { section: "sales", card: "Lead form", label: "Lead form URL" },
+  { section: "sales", card: "Layout builders", label: "Specs & quote layouts", keywords: "template builder" },
+  { section: "sales", card: "Client confirmation", label: "Reopen for editing" },
+  { section: "sales", card: "Layout builders", label: "Item categories", keywords: "items picker" },
+  { section: "sales", card: "Products", label: "Products", keywords: "job types sheet prices" },
+  { section: "sales", card: "Quote helpers", label: "Quote helpers", keywords: "snippets" },
+  { section: "sales", card: "Quote discount", label: "Quote discount", keywords: "tiers" },
+  { section: "production", card: "Cutlist columns", label: "Cutlist columns" },
+  { section: "production", card: "Production access", label: "Production access", keywords: "unlock code" },
+  { section: "production", card: "Contractors", label: "Contractors", keywords: "trades" },
+  { section: "production", card: "Gap allowances", label: "Gap allowances" },
+  { section: "production", card: "Part types", label: "Part types", keywords: "autoclash" },
+  { section: "nesting", card: "Machines", label: "Machines", keywords: "cnc table saw edge bander kerf" },
+  { section: "materials", card: "Sheet thicknesses", label: "Sheet thicknesses" },
+  { section: "materials", card: "Board finishes", label: "Board finishes" },
+  { section: "materials", card: "Sheet sizes", label: "Sheet sizes" },
+  { section: "materials", card: "Board colour memory", label: "Board colour memory", keywords: "edging" },
+  { section: "hardware", card: "Hardware brands", label: "Hardware brands", keywords: "drawers hinges" },
+  { section: "staff", card: "Staff", label: "Staff", keywords: "invite members" },
+  { section: "staff", card: "Roles", label: "Roles & permissions" },
+  { section: "integrations", card: "Zapier Forms", label: "Zapier", keywords: "webhook leads" },
+  { section: "backup", card: "Quote output template", label: "Quote output template", keywords: "header footer page size margin" },
+  { section: "backup", card: "Backup snapshot", label: "Backup snapshot", keywords: "export json" },
 ];
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const ACTIVE_COMPANY_THEME_COLOR_STORAGE_KEY = "cutsmart_active_company_theme_color";
@@ -410,37 +524,31 @@ function genMachineServiceLogId() {
   return `msl_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
 }
 
+// Every settings card: the redesign's glass card (components/settings-ui.tsx) — title, optional one-line
+// description and icon tile, optional header control.
 function Panel({
   title,
+  description,
+  icon,
+  badge,
   headerRight,
   children,
   allowOverflow = false,
+  className,
 }: {
   title: string;
+  description?: React.ReactNode;
+  icon?: React.ComponentType<{ size?: number; strokeWidth?: number }>;
+  badge?: string;
   headerRight?: React.ReactNode;
   children: React.ReactNode;
   allowOverflow?: boolean;
+  className?: string;
 }) {
   return (
-    <section
-      className={`glass-panel-settle-in ${allowOverflow ? "overflow-visible" : "overflow-hidden"} rounded-[16px] border transition`}
-      style={{
-        borderColor: "var(--glass-border)",
-        backgroundColor: "var(--glass-bg-strong)",
-        backdropFilter: "blur(20px) saturate(180%)",
-        WebkitBackdropFilter: "blur(20px) saturate(180%)",
-        boxShadow: "var(--shadow-glass)",
-      }}
-    >
-      <div
-        className="flex items-center justify-between gap-2 border-b px-3.5 py-2.5"
-        style={{ borderColor: "var(--glass-border)" }}
-      >
-        <p className="text-[13px] font-extrabold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>{title}</p>
-        {headerRight ? <div className="shrink-0">{headerRight}</div> : null}
-      </div>
-      <div className={`${allowOverflow ? "overflow-visible" : ""} p-3.5`}>{children}</div>
-    </section>
+    <SettingsCard title={title} description={description} icon={icon} badge={badge} headerRight={headerRight} allowOverflow={allowOverflow} className={className}>
+      {children}
+    </SettingsCard>
   );
 }
 
@@ -449,57 +557,57 @@ function Panel({
 // stay correct without repeating a style object at every call site. Using Tailwind's arbitrary-
 // value syntax (bg-[var(--panel-bg)] etc.) instead of inline `style` keeps these compact enough
 // to read at a glance across the hundreds of fields in this file.
-const fieldInputClass =
-  "h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2.5 text-[12px] font-medium text-[var(--text-main)] outline-none transition focus:border-[var(--brand)] disabled:opacity-60";
+const fieldInputClass = glassFieldClass;
 // Same purpose as fieldInputClass but chromeless — no border/background of its own — for a
 // spreadsheet-style grid where the row/column lines already do the separating and a bordered
 // textbox per cell would just be visual noise. Only becomes visible on focus, so it's still
 // discoverable as editable.
-const gridCellInputClass =
-  "h-8 w-full appearance-none rounded-[6px] border border-transparent bg-transparent px-2 text-[12px] font-medium text-[var(--text-main)] outline-none transition focus:border-[var(--brand)] focus:bg-[var(--panel-bg)] disabled:opacity-60";
-// A global `.cs-app select` base rule (app/globals.css) gives every <select> a white
-// background/border by default — higher specificity than gridCellInputClass's own plain
-// utility classes, so a <select> using gridCellInputClass needs these `!`-important variants
-// layered on top to actually win the chromeless look (and keep working on focus).
-const gridCellSelectOverrideClass = "!border-transparent !bg-transparent !text-[var(--text-main)] focus:!border-[var(--brand)] focus:!bg-[var(--panel-bg)]";
-const fieldLabelClass = "text-[12px] font-bold text-[var(--text-muted)]";
-const secondaryButtonClass =
-  "inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-3 text-[11px] font-bold text-[var(--text-main)] transition hover:brightness-95 disabled:opacity-60";
-const dangerIconButtonClass =
-  "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] border transition hover:brightness-95";
-const dangerIconButtonStyle: React.CSSProperties = {
-  borderColor: "var(--danger-border)",
-  backgroundColor: "var(--danger-soft)",
-  color: "var(--danger-strong)",
-};
+const gridCellInputClass = rowFieldClass;
+const secondaryButtonClass = smallButtonClass;
+// Row delete buttons: a quiet X that only turns red on hover (was a always-red tile).
+const dangerIconButtonClass = iconRemoveButtonClass;
 
 function FieldRow({
   label,
+  hint,
   children,
   align = "center",
 }: {
   label: string;
+  hint?: React.ReactNode;
   children: React.ReactNode;
   align?: "center" | "start";
 }) {
   return (
-    <div
-      className={`grid grid-cols-1 gap-x-3 gap-y-1 sm:grid-cols-[170px_1fr] ${
-        align === "start" ? "sm:items-start" : "sm:items-center"
-      }`}
-    >
-      <p className={`${fieldLabelClass} ${align === "start" ? "sm:pt-1.5" : ""}`}>{label}</p>
-      <div className="min-w-0">{children}</div>
-    </div>
+    <SettingRow label={label} hint={hint} align={align}>
+      {children}
+    </SettingRow>
   );
 }
+
+// A label-above field, for inside pop-ups.
+function StackField({ label, children, className = "" }: { label: string; children: React.ReactNode; className?: string }) {
+  return (
+    <label className={`grid min-w-0 gap-1.5 text-[12px] font-semibold text-[var(--text-main)] ${className}`}>
+      {label}
+      {children}
+    </label>
+  );
+}
+
+const MACHINE_TILE_STYLE: Record<MachineType, { icon: React.ComponentType<{ size?: number; strokeWidth?: number }>; gradient: string }> = {
+  cnc: { icon: Cpu, gradient: "linear-gradient(135deg,#2B9CFF,#0064D6)" },
+  "table-saw": { icon: CircleDashed, gradient: "linear-gradient(135deg,#F59E0B,#B45309)" },
+  "edge-bander": { icon: PanelLeft, gradient: "linear-gradient(135deg,#14B8A6,#0F766E)" },
+  other: { icon: Cog, gradient: "linear-gradient(135deg,#94A3B8,#475569)" },
+};
 
 // A small uppercase divider label for grouping related fields within one panel — purely visual,
 // no new state. Optional `first` drops the top border/margin for a group at the very top.
 function FieldGroupHeading({ children, first = false }: { children: React.ReactNode; first?: boolean }) {
   return (
     <p
-      className={`text-[10px] font-extrabold uppercase tracking-[0.7px] text-[var(--text-muted)] ${first ? "" : "border-t border-[var(--glass-border)] pt-3"}`}
+      className={`text-[10.5px] font-bold uppercase tracking-[0.8px] text-[var(--text-muted)] ${first ? "" : "mt-1 border-t border-[var(--glass-border)] pt-3"}`}
     >
       {children}
     </p>
@@ -1406,9 +1514,15 @@ export default function CompanySettingsPage() {
   const [expandedBoardColourMemoryRows, setExpandedBoardColourMemoryRows] = useState<Set<string>>(new Set());
   const [boardThicknesses, setBoardThicknesses] = useState<string[]>(["16", "18"]);
   const [boardFinishes, setBoardFinishes] = useState<string[]>(["Satin"]);
+  // Drag-to-reorder for the Sheet thicknesses / Board finishes chips.
+  const [thicknessDragIndex, setThicknessDragIndex] = useState<number | null>(null);
+  const [finishDragIndex, setFinishDragIndex] = useState<number | null>(null);
   const [sheetSizes, setSheetSizes] = useState<SheetSizeRow[]>([{ h: "2440", w: "1220", isDefault: true }]);
   const [partTypes, setPartTypes] = useState<PartTypeRow[]>([]);
   const [contactCategories, setContactCategories] = useState<ContactCategoryRow[]>([]);
+  const [contactCategoryDragIndex, setContactCategoryDragIndex] = useState<number | null>(null);
+  const [calendarCategories, setCalendarCategories] = useState<CalendarCategory[]>([]);
+  const [calendarCategoryDragIndex, setCalendarCategoryDragIndex] = useState<number | null>(null);
   const [contractors, setContractors] = useState<string[]>([]);
   const [roles, setRoles] = useState<RoleRow[]>([]);
   // Fed to both the Specs and Quote grid builders' group-editor modal ("Allow Editable By") — the
@@ -1512,6 +1626,9 @@ export default function CompanySettingsPage() {
   const machineModalPanelRef = useRef<HTMLDivElement | null>(null);
   const machineModalOriginElRef = useRef<HTMLElement | null>(null);
   const [newMachineTypePickerOpen, setNewMachineTypePickerOpen] = useState(false);
+  const [addMachineOrigin, setAddMachineOrigin] = useState<GlassModalOrigin>(null);
+  const addMachinePanelRef = useRef<HTMLDivElement | null>(null);
+  const shouldRenderAddMachineModal = useGlassModalPopOrigin(newMachineTypePickerOpen, addMachineOrigin, addMachinePanelRef);
   const [gapAllowances, setGapAllowances] = useState<GapAllowancesSettings>({
     baseBelowBenchToTopOfDoorDrawer: "",
     baseHorizontalGapNormalHandles: "",
@@ -1528,6 +1645,10 @@ export default function CompanySettingsPage() {
   const [confirmZapierRegenerate, setConfirmZapierRegenerate] = useState(false);
   const [showZapierHelp, setShowZapierHelp] = useState(false);
   const [showLeadFieldsCustomize, setShowLeadFieldsCustomize] = useState(false);
+  const zapierHelpPanelRef = useRef<HTMLDivElement | null>(null);
+  const leadFieldsPanelRef = useRef<HTMLDivElement | null>(null);
+  const shouldRenderZapierHelp = useGlassModalPopOrigin(showZapierHelp, null, zapierHelpPanelRef);
+  const shouldRenderLeadFieldsCustomize = useGlassModalPopOrigin(showLeadFieldsCustomize, null, leadFieldsPanelRef);
   const [appOrigin, setAppOrigin] = useState("");
   const zapierCopyResetTimerRef = useRef<number | null>(null);
   const zapierRegenerateConfirmTimerRef = useRef<number | null>(null);
@@ -1692,6 +1813,7 @@ export default function CompanySettingsPage() {
         setSheetSizes(normalizeSheetSizes(doc.sheetSizes));
         setPartTypes(normalizePartTypes(doc.partTypes));
         setContactCategories(normalizeContactCategories((doc as Record<string, unknown>).contactCategories));
+        setCalendarCategories(normalizeCalendarCategories((doc as Record<string, unknown>).calendarCategories));
         setContractors(normalizeStringList(doc.contractors, []));
         setRoles(normalizeRoles(doc.roles));
         setItemCategories(normalizeItemCategories(doc.itemCategories));
@@ -1870,11 +1992,30 @@ export default function CompanySettingsPage() {
     };
   }, [openStaffRoleUid]);
 
-  const filteredSections = useMemo(() => {
+  const searchResults = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return sections;
-    return sections.filter((s) => s.label.toLowerCase().includes(q));
+    if (!q) return [];
+    return SETTINGS_SEARCH_INDEX.filter((item) => {
+      const tab = sections.find((sec) => sec.key === item.section)?.label ?? "";
+      return [item.label, item.card, item.keywords ?? "", tab].join(" ").toLowerCase().includes(q);
+    }).slice(0, 12);
   }, [search]);
+  // Jump to a search hit: switch tab, then scroll its card into view and flash it.
+  const goToSearchResult = (item: (typeof SETTINGS_SEARCH_INDEX)[number]) => {
+    setActive(item.section);
+    setSearch("");
+    window.setTimeout(() => {
+      const card = Array.from(document.querySelectorAll<HTMLElement>("[data-settings-card]")).find(
+        (el) => el.dataset.settingsCard?.toLowerCase() === item.card.toLowerCase(),
+      );
+      if (!card) return;
+      card.scrollIntoView({ behavior: "smooth", block: "center" });
+      card.animate(
+        [{ boxShadow: "0 0 0 3px var(--brand), var(--shadow-glass)" }, { boxShadow: "0 0 0 0 transparent, var(--shadow-glass)" }],
+        { duration: 1600, easing: "ease-out" },
+      );
+    }, 60);
+  };
 
   const access = useCompanyAccess();
 
@@ -1991,7 +2132,7 @@ export default function CompanySettingsPage() {
     if (!activeCompanyId || !canAddStaff || !canEditCompanySettings || isInvitingStaff) {
       return;
     }
-    const email = window.prompt("Invite staff by email");
+    const email = await ask.prompt({ title: "Add staff", label: "Email address", placeholder: "name@company.co.nz", confirmLabel: "Send invite", inputMode: "email" });
     const cleanEmail = String(email || "").trim();
     if (!cleanEmail) return;
     if (!cleanEmail.includes("@")) {
@@ -2285,8 +2426,8 @@ export default function CompanySettingsPage() {
       .map((v) => v.trim())
       .filter(Boolean);
 
-  const addItemCategorySubcategory = (index: number) => {
-    const input = window.prompt("Sub-category name");
+  const addItemCategorySubcategory = async (index: number) => {
+    const input = await ask.prompt({ title: "Add sub-category", label: "Sub-category name", placeholder: "e.g. Stone" });
     const nextName = String(input || "").trim();
     if (!nextName) return;
     setItemCategories((prev) =>
@@ -2360,11 +2501,12 @@ export default function CompanySettingsPage() {
     );
   };
 
+  // Prices are kept as text in the company's currency (e.g. "$1,234.50", "£1,234.50"); everything that
+  // reads them strips the symbol back off, so switching currency never breaks saved prices.
   const ensureDollarFormat = (value: string) => {
     const cleaned = String(value || "").replace(/[^0-9.-]/g, "");
     const n = Number(cleaned);
-    if (!Number.isFinite(n)) return "$0.00";
-    return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    return formatMoney(Number.isFinite(n) ? n : 0, companyCurrency);
   };
 
   const parseNumberLoose = (value: string) => {
@@ -2377,7 +2519,7 @@ export default function CompanySettingsPage() {
     const base = parseNumberLoose(price);
     const markup = parseNumberLoose(markupPercent);
     const out = base * (1 + markup / 100);
-    return `$${out.toFixed(2)}`;
+    return formatMoney(out, companyCurrency);
   };
 
   const formatDiscountCurrency = (value: string) => ensureDollarFormat(value);
@@ -2387,7 +2529,7 @@ export default function CompanySettingsPage() {
       prev.map((row, i) => {
         if (i !== index) return row;
         const firstSub = parseSubcategoryNames(row.subcategories)[0] ?? "";
-        const nextItems = [...(row.items ?? []), { name: "", description: "", subcategory: firstSub, price: "$0.00", markupPercent: "0" }];
+        const nextItems = [...(row.items ?? []), { name: "", description: "", subcategory: firstSub, price: formatMoney(0, companyCurrency), markupPercent: "0" }];
         return { ...row, items: nextItems };
       }),
     );
@@ -2425,7 +2567,7 @@ export default function CompanySettingsPage() {
     setJobTypes((prev) =>
       prev.map((row, i) => {
         if (i !== index) return row;
-        return { ...row, sheetPrices: [...(row.sheetPrices ?? []), { sheetSize: defaultValue, pricePerSheet: "$0.00" }] };
+        return { ...row, sheetPrices: [...(row.sheetPrices ?? []), { sheetSize: defaultValue, pricePerSheet: formatMoney(0, companyCurrency) }] };
       }),
     );
     setJobTypeExpanded((prev) => ({ ...prev, [index]: true }));
@@ -2927,6 +3069,9 @@ export default function CompanySettingsPage() {
           };
         })
         .filter(Boolean),
+      calendarCategories: calendarCategories
+        .map((row) => ({ id: toStr(row.id) || newCalendarId("cat"), name: toStr(row.name), color: toStr(row.color, "#7D99B3") }))
+        .filter((row) => row.name),
       contactCategories: contactCategories
         .map((row) => {
           const name = toStr(row.name);
@@ -3207,9 +3352,52 @@ export default function CompanySettingsPage() {
     setSaveLabel("Autosaving...");
     blurAutoSaveTimerRef.current = window.setTimeout(() => {
       hasPendingBlurSaveRef.current = false;
-      void save("auto");
+      // saveRef, not the `save` captured by this render: by the time this fires the change that
+      // scheduled it has re-rendered, and that newer save carries it.
+      void saveRef.current("auto");
     }, 120);
   };
+
+  const triggerBlurAutoSaveRef = useRef(triggerBlurAutoSave);
+  triggerBlurAutoSaveRef.current = triggerBlurAutoSave;
+  // Text fields anywhere on the page (including inside its pop-ups, which portal outside <main>) save
+  // when they lose focus. The Specs/Quote layout builders keep their own isolated saves.
+  useEffect(() => {
+    const onFocusOut = (e: FocusEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (!el || el.closest('[data-specs-layout-modal="true"], [data-quote-layout-modal="true"]')) return;
+      const tag = el.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || el.isContentEditable) {
+        if (hasPendingBlurSaveRef.current) triggerBlurAutoSaveRef.current();
+      }
+    };
+    document.addEventListener("focusout", onFocusOut);
+    return () => document.removeEventListener("focusout", onFocusOut);
+  }, []);
+
+  // Row dragging everywhere on this page uses the same "grab and swing" ghost as dragging a project on
+  // the Leads / Dashboard boards (lib/use-drag-ghost.tsx): the native drag image is swapped for the
+  // floating glass pill, which grows out of the row being dragged. The rows' own live reorder-on-
+  // dragEnter logic is unchanged.
+  const rowDragGhost = useDragGhost();
+  const startRowDrag = (e: React.DragEvent<HTMLElement>, originId: string, label: string, color?: string) => {
+    e.dataTransfer.effectAllowed = "move";
+    const img = rowDragGhost.transparentImageRef.current;
+    if (img) e.dataTransfer.setDragImage(img, 0, 0);
+    rowDragGhost.spawn(e, originId, { label: label.trim() || "Untitled", color: color || "var(--brand)" });
+  };
+  const endRowDrag = () => rowDragGhost.end();
+  const ask = useGlassPrompt();
+
+  // The company's chosen unit/currency, for every length and price shown on this page.
+  const companyUnit = normalizeMeasurementUnit(form.measurementUnit);
+  const companyCurrency = normalizeCurrencyCode(form.defaultCurrency);
+  const companyDateFormat = normalizeDateFormat(form.dateFormat);
+  // Apply format changes to the whole app straight away (prices, lengths and dates everywhere).
+  useEffect(() => {
+    if (!isHydrated || isLoading) return;
+    setActiveCompanyFormats({ currency: companyCurrency, unit: companyUnit, dateFormat: companyDateFormat });
+  }, [companyCurrency, companyDateFormat, companyUnit, isHydrated, isLoading]);
 
   const triggerAutosaveAfterRowDrop = () => {
     hasPendingBlurSaveRef.current = true;
@@ -3453,6 +3641,12 @@ export default function CompanySettingsPage() {
     }
     hasPendingBlurSaveRef.current = true;
     setSaveLabel("Unsaved changes");
+    // Glass dropdowns, switches, colour circles, drag-reorders and add/remove buttons aren't text
+    // fields, so there's no blur to save on — save them now. Typing in a text field still waits for
+    // that field's blur (see the focusout listener below) so it isn't one write per keystroke.
+    const focused = typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null;
+    const typing = Boolean(focused && (focused.tagName === "INPUT" || focused.tagName === "TEXTAREA" || focused.isContentEditable));
+    if (!typing) triggerBlurAutoSaveRef.current();
   }, [
     isHydrated,
     isLoading,
@@ -3461,6 +3655,7 @@ export default function CompanySettingsPage() {
     statuses,
     leadStatuses,
     dashboardLegend,
+    calendarCategories,
     projectTagUsage,
     boardThicknesses,
     boardFinishes,
@@ -3530,90 +3725,130 @@ export default function CompanySettingsPage() {
             marginRight: "calc(-1 * max(12px, env(safe-area-inset-right)))",
           }}
         >
-          <div className="glass-page-header sticky top-0 z-[95] flex h-[56px] shrink-0 items-center justify-between gap-3 px-4 md:px-5 lg:top-[48px]">
-            <div className="flex items-center gap-2">
-              <Settings size={16} style={{ color: "var(--text-main)" }} strokeWidth={2.1} />
-              <h1 className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Settings</h1>
-            </div>
-            <div className="flex items-center gap-2.5">
-              <span
-                className="rounded-full border px-2.5 py-1 text-[11px] font-bold"
-                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
-              >
-                {isLoading ? "Loading..." : saveLabel}
-              </span>
-              <button
-                onClick={() => void save()}
-                disabled={isSaving || isLoading}
-                className="h-8 rounded-[10px] px-4 text-[12px] font-bold text-white transition hover:brightness-105 disabled:opacity-60"
-                style={{ backgroundImage: "var(--brand-gradient)", boxShadow: "var(--shadow-sm)" }}
-              >
-                {isSaving ? "Saving..." : "Save Changes"}
-              </button>
-            </div>
-          </div>
-
-          <div className="grid gap-3 p-3 md:p-4 lg:grid-cols-[210px_1fr] lg:p-5">
+          {/* Not centred: on a wide screen a centred max-width left a big empty band between the app's
+              sidebar and this page. The outer padding equals the gap between cards (18px) so every
+              gap on the page — sidebar edge, rail to content, card to card — is the same. */}
+          <div className="grid w-full gap-[18px] p-3 md:p-[18px] lg:grid-cols-[264px_minmax(0,1fr)]">
+            {/* Settings rail: title, search (jumps to any setting), the tabs grouped, and the company info card. */}
             <aside
-              className="h-fit rounded-[16px] border p-2.5 lg:sticky lg:top-[116px]"
+              className="flex h-fit flex-col gap-3 rounded-[20px] border p-3.5 lg:sticky lg:top-[68px] lg:max-h-[calc(100svh-88px)]"
               style={{
                 borderColor: "var(--glass-border)",
                 backgroundColor: "var(--glass-bg-strong)",
                 backdropFilter: "blur(20px) saturate(180%)",
                 WebkitBackdropFilter: "blur(20px) saturate(180%)",
-                boxShadow: "var(--shadow-glass)",
+                boxShadow: "inset 0 1px 0 var(--glass-highlight), var(--shadow-glass)",
               }}
             >
-              <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search settings..."
-                className="mb-2 h-8 w-full rounded-[8px] border px-2 text-[12px] outline-none"
-                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
-              />
-              <div className="space-y-1 border-b pb-3" style={{ borderColor: "var(--glass-border)" }}>
-                {filteredSections.map((item) => {
+              <div className="flex items-center gap-2 px-1.5 pt-0.5 text-[18px] font-bold" style={{ color: "var(--text-main)" }}>
+                <Settings size={18} strokeWidth={2.1} />
+                Settings
+              </div>
+              <div className="relative">
+                <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }} />
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") setSearch("");
+                    if (e.key === "Enter" && searchResults[0]) goToSearchResult(searchResults[0]);
+                  }}
+                  placeholder="Search settings..."
+                  className={`${glassFieldClass} pl-9`}
+                />
+                {search.trim() ? (
+                  <div
+                    className="glass-bubble-pop absolute inset-x-0 top-[calc(100%+6px)] z-[60] max-h-[320px] overflow-auto rounded-[14px] border p-1.5"
+                    style={{
+                      borderColor: "var(--glass-border)",
+                      backgroundColor: "var(--glass-bg-strong)",
+                      backdropFilter: "blur(24px) saturate(180%)",
+                      WebkitBackdropFilter: "blur(24px) saturate(180%)",
+                      boxShadow: "var(--shadow-glass), 0 18px 40px rgba(15,23,42,0.16)",
+                    }}
+                  >
+                    {searchResults.length === 0 ? (
+                      <p className="px-2.5 py-2 text-[12px]" style={{ color: "var(--text-muted)" }}>No settings match &ldquo;{search.trim()}&rdquo;</p>
+                    ) : (
+                      searchResults.map((item) => (
+                        <button
+                          key={`${item.section}_${item.label}`}
+                          type="button"
+                          onClick={() => goToSearchResult(item)}
+                          className="flex w-full flex-col items-start rounded-[9px] px-2.5 py-2 text-left transition hover:bg-[color-mix(in_srgb,var(--text-main)_5%,transparent)]"
+                        >
+                          <span className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>{item.label}</span>
+                          <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                            {sections.find((sec) => sec.key === item.section)?.label}
+                            {item.card !== item.label ? ` › ${item.card}` : ""}
+                          </span>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                ) : null}
+              </div>
+              <nav className="-mx-1 flex gap-1 overflow-x-auto px-1 lg:mx-0 lg:min-h-0 lg:flex-col lg:gap-0.5 lg:overflow-y-auto lg:px-0">
+                {sections.map((item, idx) => {
                   const Icon = item.icon;
                   const selected = active === item.key;
+                  const showGroup = idx === 0 || sections[idx - 1].group !== item.group;
                   return (
-                    <button
-                      key={item.key}
-                      type="button"
-                      onClick={() => setActive(item.key)}
-                      className="inline-flex w-full items-center gap-2 rounded-[9px] px-2.5 py-[7px] text-left text-[12px] font-bold transition"
-                      style={
-                        selected
-                          ? { backgroundImage: "var(--brand-gradient)", color: "#fff", boxShadow: "var(--shadow-sm)" }
-                          : { color: "var(--text-main)" }
-                      }
-                    >
-                      <Icon size={14} />
-                      {item.label}
-                    </button>
+                    <div key={item.key} className="contents">
+                      {showGroup ? (
+                        <p className="hidden px-2.5 pb-1 pt-3 text-[10.5px] font-bold uppercase tracking-[0.8px] first:pt-1 lg:block" style={{ color: "var(--text-muted)" }}>
+                          {item.group}
+                        </p>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={() => setActive(item.key)}
+                        className="inline-flex shrink-0 items-center gap-2.5 whitespace-nowrap rounded-[11px] px-2.5 py-[9px] text-left text-[13px] font-medium transition hover:bg-[color-mix(in_srgb,var(--text-main)_5%,transparent)] lg:w-full"
+                        style={
+                          selected
+                            ? { backgroundImage: "var(--brand-gradient)", color: "#fff", boxShadow: "0 6px 18px rgba(0,100,214,0.28)" }
+                            : { color: "var(--text-main)" }
+                        }
+                      >
+                        <span style={{ color: selected ? "#fff" : "var(--text-muted)" }} className="inline-flex">
+                          <Icon size={16} strokeWidth={2} />
+                        </span>
+                        {item.label}
+                      </button>
+                    </div>
                   );
                 })}
-              </div>
+              </nav>
               <div
-                className="mt-3 rounded-[10px] border p-2 text-[11px]"
-                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
+                className="mt-1 hidden gap-1.5 rounded-[14px] border p-3 text-[12px] lg:grid"
+                style={{ borderColor: "var(--glass-border)", backgroundColor: "color-mix(in srgb, var(--panel-bg) 55%, transparent)" }}
               >
-                <p><span className="font-bold" style={{ color: "var(--text-main)" }}>Company Name</span> {toStr(company?.name, "Unknown")}</p>
-                <p><span className="font-bold" style={{ color: "var(--text-main)" }}>Company ID</span> {toStr(company?.id, activeCompanyId)}</p>
-                <p><span className="font-bold" style={{ color: "var(--text-main)" }}>Plan</span> {toStr(company?.planName, "Free")}</p>
-                <p><span className="font-bold" style={{ color: "var(--text-main)" }}>Join Key</span> {showJoinKey ? toStr(company?.joinKey ?? company?.joinCode, "------") : "------"}</p>
-                <button
-                  type="button"
-                  onClick={() => setShowJoinKey((v) => !v)}
-                  className="mt-2 h-7 w-full rounded-[8px] border text-[11px] font-bold transition hover:brightness-95"
-                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                >
-                  {showJoinKey ? "Hide key" : "Show key"}
-                </button>
+                <div className="flex justify-between gap-2">
+                  <span style={{ color: "var(--text-muted)" }}>Company</span>
+                  <span className="truncate font-semibold" style={{ color: "var(--text-main)" }}>{toStr(company?.name, "Unknown")}</span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span style={{ color: "var(--text-muted)" }}>Company ID</span>
+                  <span className="truncate font-mono text-[11.5px]" style={{ color: "var(--text-main)" }}>{toStr(company?.id, activeCompanyId)}</span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span style={{ color: "var(--text-muted)" }}>Plan</span>
+                  <span className="rounded-full px-2 text-[11px] font-bold" style={{ backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}>{toStr(company?.planName, "Free")}</span>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span style={{ color: "var(--text-muted)" }}>Join key</span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="font-mono text-[11.5px]" style={{ color: "var(--text-main)" }}>{showJoinKey ? toStr(company?.joinKey ?? company?.joinCode, "------") : "••••••"}</span>
+                    <button type="button" onClick={() => setShowJoinKey((v) => !v)} className="text-[11.5px] font-semibold" style={{ color: "var(--brand-strong)" }}>
+                      {showJoinKey ? "Hide" : "Show"}
+                    </button>
+                  </span>
+                </div>
               </div>
             </aside>
 
             <main
-              className="min-w-0 space-y-3 pb-4"
+              className="min-w-0 space-y-[18px] pb-6"
               onInputCapture={(e) => {
                 const el = e.target as HTMLElement | null;
                 const tag = String(el?.tagName || "").toLowerCase();
@@ -3628,256 +3863,354 @@ export default function CompanySettingsPage() {
                   hasPendingBlurSaveRef.current = true;
                 }
               }}
-              onChangeCapture={(e) => {
-                const el = e.target as HTMLElement | null;
-                const tag = String(el?.tagName || "").toLowerCase();
-                if (el?.closest('[data-specs-layout-modal="true"], [data-quote-layout-modal="true"]')) return;
-                if (tag === "input" || tag === "textarea" || tag === "select") {
-                  hasPendingBlurSaveRef.current = true;
-                }
-              }}
-              onBlurCapture={(e) => {
-                const el = e.target as HTMLElement | null;
-                const tag = String(el?.tagName || "").toLowerCase();
-                if (el?.closest('[data-specs-layout-modal="true"], [data-quote-layout-modal="true"]')) return;
-                if (tag === "input" || tag === "textarea" || tag === "select") {
-                  triggerBlurAutoSave();
-                }
-              }}
             >
+              {/* Page header: the tab's icon, name and what it's for, plus the save status. Everything
+                  saves on its own (fields when you leave them, everything else as you change it). */}
+              {(() => {
+                const current = sections.find((sec) => sec.key === active) ?? sections[0];
+                const Icon = current.icon;
+                const failed = saveLabel.toLowerCase().includes("fail");
+                const busy = isLoading || isSaving || saveLabel.toLowerCase().includes("autosaving");
+                const pending = saveLabel === "Unsaved changes";
+                return (
+                  <div className="flex flex-wrap items-center gap-3.5 px-1 pt-1">
+                    <span
+                      className="inline-flex h-[46px] w-[46px] shrink-0 items-center justify-center rounded-[14px] text-white"
+                      style={{ backgroundImage: "var(--brand-gradient)", boxShadow: "0 8px 22px rgba(0,100,214,0.3)" }}
+                    >
+                      <Icon size={22} strokeWidth={2} />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <h1 className="text-[24px] font-bold leading-tight tracking-[-0.2px]" style={{ color: "var(--text-main)" }}>{current.label}</h1>
+                      <p className="mt-0.5 text-[13px]" style={{ color: "var(--text-muted)" }}>{current.description}</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span
+                        className="inline-flex items-center gap-1.5 rounded-full px-3 py-[7px] text-[12px] font-semibold"
+                        style={
+                          failed
+                            ? { backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }
+                            : busy || pending
+                              ? { backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }
+                              : { backgroundColor: "var(--success-soft)", color: "var(--success)" }
+                        }
+                      >
+                        {failed ? <X size={14} /> : busy ? <Loader2 size={14} className="animate-spin" /> : pending ? <Clock3 size={14} /> : <CheckCircle2 size={14} />}
+                        {isLoading ? "Loading..." : failed ? saveLabel : busy ? "Saving..." : pending ? "Unsaved changes" : "All changes saved"}
+                      </span>
+                      {failed || pending ? (
+                        <button type="button" onClick={() => void save()} disabled={isSaving || isLoading} className={primaryButtonClass} style={primaryButtonStyle}>
+                          {failed ? "Retry" : "Save now"}
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })()}
               {active === "company" && (
-                <div className="space-y-3">
+                <div className="grid gap-[18px]">
                   {!canEditCompanySettings && (
                     <div
-                      className="rounded-[10px] border px-3 py-2 text-[12px] font-semibold"
+                      className="rounded-[14px] border px-3.5 py-2.5 text-[12.5px] font-semibold"
                       style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
                     >
                       Verify your account (in User Settings) to edit Company Settings.
                     </div>
                   )}
-
-                <div className="grid gap-3 xl:grid-cols-2">
-                  <Panel title="Application Preferences">
-                    <div className="space-y-3">
-                      <FieldRow label="Company Name">
-                        <input value={form.name} onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))} className={fieldInputClass} />
-                      </FieldRow>
-                      <FieldRow label="Default Currency">
-                        <input value={form.defaultCurrency} onChange={(e) => setForm((prev) => ({ ...prev, defaultCurrency: e.target.value }))} className={fieldInputClass} />
-                      </FieldRow>
-                      <FieldRow label="Measurement Unit">
-                        <div className="inline-flex h-8 items-center gap-4">
-                          <label className="inline-flex items-center gap-1.5 text-[12px] font-semibold" style={{ color: "var(--text-main)" }}><input type="checkbox" checked={form.measurementUnit === "mm"} onChange={() => setForm((prev) => ({ ...prev, measurementUnit: "mm" }))} />mm</label>
-                          <label className="inline-flex items-center gap-1.5 text-[12px] font-semibold" style={{ color: "var(--text-main)" }}><input type="checkbox" checked={form.measurementUnit === "inches"} onChange={() => setForm((prev) => ({ ...prev, measurementUnit: "inches" }))} />inches</label>
-                        </div>
-                      </FieldRow>
-                      <FieldRow label="Date Format">
-                        <input value={form.dateFormat} onChange={(e) => setForm((prev) => ({ ...prev, dateFormat: e.target.value }))} className={fieldInputClass} />
-                      </FieldRow>
-                      <FieldRow label="Time Zone">
-                        <input value={form.timeZone} onChange={(e) => setForm((prev) => ({ ...prev, timeZone: e.target.value }))} className={fieldInputClass} />
-                      </FieldRow>
-                      <FieldRow label="Recently Deleted Time">
-                        <select
-                          value={form.deletedRetentionDays}
-                          onChange={(e) => setForm((prev) => ({ ...prev, deletedRetentionDays: e.target.value }))}
-                          className={fieldInputClass}
-                        >
-                          {deletedRetentionOptions.map((opt) => (
-                            <option key={opt.days} value={opt.days}>{opt.label}</option>
-                          ))}
-                        </select>
-                      </FieldRow>
-                    </div>
-                  </Panel>
-                  <Panel title="Theme">
-                    <div className="space-y-3">
-                      <FieldRow label="Theme Color">
-                        <div className="flex h-8 items-center gap-2">
-                          <input
-                            type="color"
-                            value={/^#[0-9A-Fa-f]{6}$/.test(form.themeColor) ? form.themeColor : "#2F6BFF"}
-                            onChange={(e) => setForm((prev) => ({ ...prev, themeColor: e.target.value }))}
-                            className="h-8 w-10 shrink-0 cursor-pointer rounded-[8px] border p-1"
-                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}
-                          />
-                          <input
-                            value={form.themeColor}
-                            onChange={(e) => setForm((prev) => ({ ...prev, themeColor: e.target.value }))}
-                            className={fieldInputClass}
-                          />
-                        </div>
-                      </FieldRow>
-                      <FieldRow label="Company Logo" align="start">
-                        <div className="flex flex-wrap items-center gap-3">
-                          <div
-                            className="inline-flex items-center justify-center overflow-hidden rounded-[16px] border p-3"
-                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}
-                          >
-                            {form.logoPath ? (
-                              <img src={form.logoPath} alt="Company logo" className="block max-h-24 max-w-24 object-contain" />
-                            ) : (
-                              <span className="flex h-16 w-16 items-center justify-center text-[11px] font-bold uppercase tracking-[0.4px]" style={{ color: "var(--text-muted)" }}>None</span>
-                            )}
-                          </div>
-                          <input
-                            ref={logoFileInputRef}
-                            type="file"
-                            accept="image/*"
-                            className="hidden"
-                            onChange={(e) => {
-                              const file = e.target.files?.[0] ?? null;
-                              void onUploadCompanyLogo(file);
-                            }}
-                          />
+                  <Panel title="Brand" icon={Palette} description="How your company appears on quotes, documents and across the app.">
+                    <FieldRow label="Company name" hint="Shown on quotes, specs sheets and in the sidebar.">
+                      <input value={form.name} onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))} className={`${fieldInputClass} max-w-[380px]`} />
+                    </FieldRow>
+                    <FieldRow label="Company logo" hint="A PNG or SVG with a transparent background looks best. Shown in the sidebar and on documents." align="start">
+                      <input
+                        ref={logoFileInputRef}
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0] ?? null;
+                          void onUploadCompanyLogo(file);
+                        }}
+                      />
+                      <div
+                        className="relative flex h-[180px] w-full max-w-[440px] items-center justify-center overflow-hidden rounded-[16px] border-2 border-dashed p-5"
+                        style={{ borderColor: "color-mix(in srgb, var(--text-main) 16%, transparent)", backgroundColor: "color-mix(in srgb, var(--panel-bg) 55%, transparent)" }}
+                      >
+                        {form.logoPath ? (
+                          <img src={form.logoPath} alt="Company logo" className="block max-h-full max-w-full object-contain" />
+                        ) : (
                           <button
                             type="button"
                             onClick={() => logoFileInputRef.current?.click()}
                             disabled={isUploadingLogo || isLoading || !activeCompanyId}
-                            className={secondaryButtonClass}
+                            className="flex flex-col items-center gap-2 text-[13px] font-semibold"
+                            style={{ color: "var(--text-muted)" }}
                           >
-                            {isUploadingLogo ? "Uploading..." : "Upload"}
+                            <ImageUp size={28} strokeWidth={1.8} />
+                            {isUploadingLogo ? "Uploading..." : "Upload your logo"}
                           </button>
-                        </div>
-                      </FieldRow>
-                    </div>
-                  </Panel>
-                </div>
-                <Panel title="Contact Categories">
-                  <div className="space-y-1.5">
-                    <div className="grid grid-cols-[30px_1fr_90px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
-                      <p></p>
-                      <p>Name</p>
-                      <p>Color</p>
-                    </div>
-                    {contactCategories.map((row, idx) => (
-                      <div key={`contact_category_${idx}`} className="grid grid-cols-[30px_1fr_90px] items-center gap-2">
-                        <button onClick={() => setContactCategories((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} style={dangerIconButtonStyle}><X size={15} strokeWidth={2.8} /></button>
-                        <input value={row.name} onChange={(e) => setContactCategories((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))} className={fieldInputClass} />
-                        <label className="relative block h-8 w-10 cursor-pointer justify-self-center overflow-hidden rounded-[8px] border" style={{ borderColor: "var(--glass-border)" }} title={row.color || "#7D99B3"}>
-                          <span className="block h-full w-full" style={{ backgroundColor: row.color || "#7D99B3" }} />
-                          <input
-                            type="color"
-                            value={row.color || "#7D99B3"}
-                            onChange={(e) => setContactCategories((prev) => prev.map((v, i) => (i === idx ? { ...v, color: e.target.value } : v)))}
-                            className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                          />
-                        </label>
+                        )}
+                        {form.logoPath ? (
+                          <div className="absolute bottom-2.5 right-2.5 flex gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => logoFileInputRef.current?.click()}
+                              disabled={isUploadingLogo || isLoading || !activeCompanyId}
+                              className={smallButtonClass}
+                            >
+                              <Upload size={14} /> {isUploadingLogo ? "Uploading..." : "Replace"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setForm((prev) => ({ ...prev, logoPath: "" }))}
+                              disabled={isUploadingLogo || !canEditCompanySettings}
+                              className={smallButtonClass}
+                            >
+                              <Trash2 size={14} /> Remove
+                            </button>
+                          </div>
+                        ) : null}
                       </div>
-                    ))}
-                    <button onClick={() => setContactCategories((prev) => [...prev, { name: "", color: "#7D99B3" }])} className={`${secondaryButtonClass} mt-1`}>+ Add Category</button>
-                  </div>
-                </Panel>
+                    </FieldRow>
+                    <FieldRow label="Theme colour" hint="Used for buttons, highlights and the default colour of new items.">
+                      <ThemeColorPicker
+                        value={/^#[0-9A-Fa-f]{6}$/.test(form.themeColor) ? form.themeColor : "#2F6BFF"}
+                        onChange={(hex) => setForm((prev) => ({ ...prev, themeColor: hex }))}
+                        disabled={!canEditCompanySettings}
+                      />
+                    </FieldRow>
+                  </Panel>
+                  <Panel
+                    title="Regional formats"
+                    icon={Globe2}
+                    description="Every price, measurement and date across CutSmart — quotes, rooms, cutlists, specs and exports — follows these."
+                    allowOverflow
+                  >
+                    <FieldRow label="Currency" hint="Every price in the app: quotes, rooms, item prices and discounts.">
+                      <GlassDropdown
+                        value={normalizeCurrencyCode(form.defaultCurrency)}
+                        options={CURRENCY_OPTIONS.map((c) => ({ value: c.code, label: c.label }))}
+                        onChange={(code) => setForm((prev) => ({ ...prev, defaultCurrency: code }))}
+                        ariaLabel="Currency"
+                        disabled={!canEditCompanySettings}
+                        menuMinWidth={260}
+                        triggerClassName={`${fieldInputClass} max-w-[300px] justify-between`}
+                      />
+                      <span className="inline-flex items-center gap-1.5 rounded-[10px] px-2.5 py-1.5 text-[12px] font-semibold" style={{ backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}>
+                        <Eye size={14} /> {formatMoney(12450.5, normalizeCurrencyCode(form.defaultCurrency))}
+                      </span>
+                    </FieldRow>
+                    <FieldRow label="Measurement unit" hint="Replaces the fixed “mm” everywhere — cutlists, gap allowances, sheet sizes and machine settings.">
+                      <Segmented
+                        value={normalizeMeasurementUnit(form.measurementUnit)}
+                        options={[
+                          { value: "mm", label: "Millimetres (mm)" },
+                          { value: "in", label: "Inches (in)" },
+                        ]}
+                        onChange={(unit) => setForm((prev) => ({ ...prev, measurementUnit: unit }))}
+                        disabled={!canEditCompanySettings}
+                      />
+                      <span className="inline-flex items-center gap-1.5 rounded-[10px] px-2.5 py-1.5 text-[12px] font-semibold" style={{ backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}>
+                        <Ruler size={14} /> {formatLength(600, normalizeMeasurementUnit(form.measurementUnit))}
+                      </span>
+                    </FieldRow>
+                    <FieldRow label="Date format" hint="How dates appear across projects, quotes, the dashboard and exports.">
+                      <GlassDropdown
+                        value={normalizeDateFormat(form.dateFormat)}
+                        options={DATE_FORMAT_OPTIONS.map((f) => ({ value: f, label: `${f}  ·  ${formatDate(new Date(), f)}` }))}
+                        onChange={(next) => setForm((prev) => ({ ...prev, dateFormat: next }))}
+                        ariaLabel="Date format"
+                        disabled={!canEditCompanySettings}
+                        menuMinWidth={260}
+                        triggerClassName={`${fieldInputClass} max-w-[300px] justify-between`}
+                      />
+                      <span className="inline-flex items-center gap-1.5 rounded-[10px] px-2.5 py-1.5 text-[12px] font-semibold" style={{ backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}>
+                        <CalendarDays size={14} /> {formatDate(new Date(), normalizeDateFormat(form.dateFormat))}
+                      </span>
+                    </FieldRow>
+                  </Panel>
                 </div>
               )}
 
               {active === "materials" && (
-                <div className="grid gap-3 xl:grid-cols-2">
-                  <Panel title="Sheet Thicknesses">
-                    <div className="space-y-1.5">
-                      <div className="grid grid-cols-[30px_1fr_30px] gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
-                        <p></p>
-                        <p>Thickness</p>
-                        <p>Unit</p>
-                      </div>
+                <div className="grid gap-[18px] xl:grid-cols-2">
+                  <Panel title="Sheet thicknesses" icon={Layers3} description="Board thicknesses you can pick when building cutlists. Drag to set their order.">
+                    <div className="flex flex-wrap items-center gap-1.5">
                       {boardThicknesses.map((value, idx) => (
-                        <div key={idx} className="grid grid-cols-[30px_1fr_30px] items-center gap-2">
+                        <span
+                          key={idx}
+                          className={chipClass}
+                          id={`settings_thickness_${idx}`}
+                          style={{ opacity: thicknessDragIndex === idx ? 0.45 : 1 }}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = "move";
+                          }}
+                          onDragEnter={(e) => {
+                            e.preventDefault();
+                            if (thicknessDragIndex == null || thicknessDragIndex === idx) return;
+                            setBoardThicknesses((prev) => moveRowTo(prev, thicknessDragIndex, idx));
+                            setThicknessDragIndex(idx);
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            setThicknessDragIndex(null);
+                            endRowDrag();
+                          }}
+                        >
                           <button
+                            type="button"
+                            draggable
+                            onDragStart={(e) => {
+                              setThicknessDragIndex(idx);
+                              e.dataTransfer.setData("text/plain", `${idx}`);
+                              startRowDrag(e, `settings_thickness_${idx}`, activeLength(value));
+                            }}
+                            onDragEnd={() => {
+                              setThicknessDragIndex(null);
+                              endRowDrag();
+                            }}
+                            className="-ml-1.5 inline-flex h-6 w-5 shrink-0 cursor-grab items-center justify-center rounded-full active:cursor-grabbing"
+                            style={{ color: "var(--text-muted)" }}
+                            title="Drag to reorder"
+                          >
+                            <GripVertical size={13} />
+                          </button>
+                          <LengthField
+                            valueMm={value}
+                            onChangeMm={(mm) => setBoardThicknesses((prev) => prev.map((v, i) => (i === idx ? mm : v)))}
+                            unit={companyUnit}
+                            width={72}
+                            className="h-7 w-full rounded-full bg-transparent text-[12.5px] font-semibold text-[var(--text-main)] outline-none"
+                          />
+                          <button
+                            type="button"
                             onClick={() => setBoardThicknesses((prev) => prev.filter((_, i) => i !== idx))}
-                            className={dangerIconButtonClass}
-                            style={dangerIconButtonStyle}
+                            className="inline-flex h-6 w-6 items-center justify-center rounded-full transition hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
+                            style={{ color: "var(--text-muted)" }}
+                            title="Remove"
                           >
-                            <X size={15} strokeWidth={2.8} />
+                            <X size={13} />
                           </button>
-                          <input value={value} onChange={(e) => setBoardThicknesses((prev) => prev.map((v, i) => (i === idx ? e.target.value : v)))} className={fieldInputClass} />
-                          <p className="text-[12px] font-bold" style={{ color: "var(--text-muted)" }}>mm</p>
-                        </div>
+                        </span>
                       ))}
-                      <button onClick={() => setBoardThicknesses((prev) => [...prev, ""])} className={`${secondaryButtonClass} mt-1`}>+ Add</button>
+                      <button type="button" onClick={() => setBoardThicknesses((prev) => [...prev, ""])} className={chipAddClass}>
+                        <Plus size={14} /> Add
+                      </button>
                     </div>
                   </Panel>
-                  <Panel title="Board Finishes">
-                    <div className="space-y-1.5">
-                      <div className="grid grid-cols-[30px_1fr] gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
-                        <p></p>
-                        <p>Finish</p>
-                      </div>
+                  <Panel title="Board finishes" icon={Palette} description="Finishes you can pick for a board. Drag to set their order.">
+                    <div className="flex flex-wrap items-center gap-1.5">
                       {boardFinishes.map((value, idx) => (
-                        <div key={idx} className="grid grid-cols-[30px_1fr] items-center gap-2">
+                        <span
+                          key={idx}
+                          className={chipClass}
+                          id={`settings_finish_${idx}`}
+                          style={{ opacity: finishDragIndex === idx ? 0.45 : 1 }}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = "move";
+                          }}
+                          onDragEnter={(e) => {
+                            e.preventDefault();
+                            if (finishDragIndex == null || finishDragIndex === idx) return;
+                            setBoardFinishes((prev) => moveRowTo(prev, finishDragIndex, idx));
+                            setFinishDragIndex(idx);
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            setFinishDragIndex(null);
+                            endRowDrag();
+                          }}
+                        >
                           <button
+                            type="button"
+                            draggable
+                            onDragStart={(e) => {
+                              setFinishDragIndex(idx);
+                              e.dataTransfer.setData("text/plain", `${idx}`);
+                              startRowDrag(e, `settings_finish_${idx}`, value);
+                            }}
+                            onDragEnd={() => {
+                              setFinishDragIndex(null);
+                              endRowDrag();
+                            }}
+                            className="-ml-1.5 inline-flex h-6 w-5 shrink-0 cursor-grab items-center justify-center rounded-full active:cursor-grabbing"
+                            style={{ color: "var(--text-muted)" }}
+                            title="Drag to reorder"
+                          >
+                            <GripVertical size={13} />
+                          </button>
+                          <input
+                            value={value}
+                            placeholder="Finish"
+                            size={Math.max(5, value.length + 1)}
+                            onChange={(e) => setBoardFinishes((prev) => prev.map((v, i) => (i === idx ? e.target.value : v)))}
+                            className="min-w-0 bg-transparent text-[12.5px] font-semibold outline-none"
+                            style={{ color: "var(--text-main)" }}
+                          />
+                          <button
+                            type="button"
                             onClick={() => setBoardFinishes((prev) => prev.filter((_, i) => i !== idx))}
-                            className={dangerIconButtonClass}
-                            style={dangerIconButtonStyle}
+                            className="inline-flex h-6 w-6 items-center justify-center rounded-full transition hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
+                            style={{ color: "var(--text-muted)" }}
+                            title="Remove"
                           >
-                            <X size={15} strokeWidth={2.8} />
+                            <X size={13} />
                           </button>
-                          <input value={value} onChange={(e) => setBoardFinishes((prev) => prev.map((v, i) => (i === idx ? e.target.value : v)))} className={fieldInputClass} />
-                        </div>
+                        </span>
                       ))}
-                      <button onClick={() => setBoardFinishes((prev) => [...prev, ""])} className={`${secondaryButtonClass} mt-1`}>+ Add</button>
+                      <button type="button" onClick={() => setBoardFinishes((prev) => [...prev, ""])} className={chipAddClass}>
+                        <Plus size={14} /> Add
+                      </button>
                     </div>
                   </Panel>
-                  <Panel title="Sheet Sizes">
+                  <Panel title="Sheet sizes" icon={Package2} description="Stock sheet sizes. The default is used for nesting and new products.">
                     <div className="space-y-1.5">
-                      <div className="grid grid-cols-[30px_1fr_1fr_70px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
-                        <p></p>
-                        <p>Height</p>
-                        <p>Width</p>
-                        <p>Default</p>
-                      </div>
                       {sheetSizes.map((row, idx) => (
-                        <div key={idx} className="grid grid-cols-[30px_1fr_1fr_70px] items-center gap-2">
+                        <div key={idx} className={listRowClass}>
+                          <LengthField valueMm={row.h} onChangeMm={(mm) => setSheetSizes((prev) => prev.map((r, i) => (i === idx ? { ...r, h: mm } : r)))} unit={companyUnit} placeholder="Height" width={110} />
+                          <span style={{ color: "var(--text-muted)" }}>×</span>
+                          <LengthField valueMm={row.w} onChangeMm={(mm) => setSheetSizes((prev) => prev.map((r, i) => (i === idx ? { ...r, w: mm } : r)))} unit={companyUnit} placeholder="Width" width={110} />
+                          <span className="flex-1" />
                           <button
-                            onClick={() => setSheetSizes((prev) => prev.filter((_, i) => i !== idx))}
-                            className={dangerIconButtonClass}
-                            style={dangerIconButtonStyle}
-                          >
-                            <X size={15} strokeWidth={2.8} />
-                          </button>
-                          <input value={row.h} onChange={(e) => setSheetSizes((prev) => prev.map((r, i) => (i === idx ? { ...r, h: e.target.value } : r)))} className={fieldInputClass} />
-                          <input value={row.w} onChange={(e) => setSheetSizes((prev) => prev.map((r, i) => (i === idx ? { ...r, w: e.target.value } : r)))} className={fieldInputClass} />
-                          {(() => {
-                            const hasDefault = sheetSizes.some((r) => r.isDefault);
-                            if (hasDefault && !row.isDefault) {
-                              return <div className="h-8" />;
+                            type="button"
+                            onClick={() =>
+                              setSheetSizes((prev) => prev.map((r, i) => ({ ...r, isDefault: i === idx ? !r.isDefault : false })))
                             }
-                            return (
-                              <label className="inline-flex items-center gap-1.5 text-[11px] font-bold" style={{ color: "var(--text-main)" }}>
-                                <input
-                                  type="checkbox"
-                                  checked={row.isDefault}
-                                  onChange={() =>
-                                    setSheetSizes((prev) =>
-                                      prev.map((r, i) => {
-                                        if (i === idx) return { ...r, isDefault: !r.isDefault };
-                                        return { ...r, isDefault: false };
-                                      }),
-                                    )
-                                  }
-                                />
-                                Default
-                              </label>
-                            );
-                          })()}
+                            className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-[11.5px] font-semibold"
+                            style={{ color: row.isDefault ? "var(--brand-strong)" : "var(--text-muted)" }}
+                            title="Use this size by default"
+                          >
+                            <span
+                              className="inline-flex h-4 w-4 items-center justify-center rounded-full border-[1.5px]"
+                              style={{ borderColor: row.isDefault ? "var(--brand)" : "color-mix(in srgb, var(--text-main) 25%, transparent)" }}
+                            >
+                              {row.isDefault ? <span className="h-2 w-2 rounded-full" style={{ backgroundColor: "var(--brand)" }} /> : null}
+                            </span>
+                            Default
+                          </button>
+                          <button type="button" onClick={() => setSheetSizes((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} title="Remove">
+                            <X size={15} />
+                          </button>
                         </div>
                       ))}
-                      <button onClick={() => setSheetSizes((prev) => [...prev, { h: "", w: "", isDefault: false }])} className={`${secondaryButtonClass} mt-1`}>+ Add</button>
+                      <button type="button" onClick={() => setSheetSizes((prev) => [...prev, { h: "", w: "", isDefault: false }])} className={`${secondaryButtonClass} mt-1.5`}>
+                        <Plus size={14} /> Add sheet size
+                      </button>
                     </div>
                   </Panel>
-                  <Panel title="Board Colour Memory">
+                  <Panel title="Board colour memory" icon={Palette} description="Recorded automatically from your cutlists, with the edging tapes used on each colour.">
                     <div className="space-y-1.5">
-                      <div className="grid grid-cols-[24px_30px_1fr_70px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
-                        <p></p>
-                        <p></p>
-                        <p>Colour</p>
-                        <p className="text-center">Used</p>
-                      </div>
+                      {boardColourMemory.length === 0 ? (
+                        <p className="text-[12.5px]" style={{ color: "var(--text-muted)" }}>Nothing recorded yet — colours appear here as they&apos;re used in cutlists.</p>
+                      ) : null}
                       {boardColourMemory.map((row, idx) => {
                         const isExpanded = expandedBoardColourMemoryRows.has(row.value);
                         const hasEdgings = row.edgings.length > 0;
                         return (
-                          <div key={`board_colour_${idx}`} className="space-y-1">
-                            <div className="grid grid-cols-[24px_30px_1fr_70px] items-center gap-2">
+                          <div key={`board_colour_${idx}`}>
+                            <div className={listRowClass}>
                               <button
                                 type="button"
                                 disabled={!hasEdgings}
@@ -3889,59 +4222,26 @@ export default function CompanySettingsPage() {
                                     return next;
                                   })
                                 }
-                                className="inline-flex h-8 w-6 items-center justify-center rounded-[6px] disabled:opacity-30"
+                                className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] disabled:opacity-30"
                                 style={{ color: "var(--text-muted)" }}
                                 title={hasEdgings ? "Show edging tapes used with this colour" : "No edging tapes recorded yet"}
                               >
-                                <ChevronDown size={14} style={{ transform: isExpanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 120ms ease" }} />
+                                <ChevronDown size={15} style={{ transform: isExpanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 200ms ease" }} />
                               </button>
-                              <button
-                                onClick={() => void onDeleteBoardColourMemoryRow(row.value)}
-                                className={dangerIconButtonClass}
-                                style={dangerIconButtonStyle}
-                              >
-                                <X size={15} strokeWidth={2.8} />
+                              <span className="min-w-0 flex-1 truncate text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>{row.value}</span>
+                              <span className={countPillClass} title="Times used">{String(row.count || "0")}</span>
+                              <button type="button" onClick={() => void onDeleteBoardColourMemoryRow(row.value)} className={dangerIconButtonClass} title="Forget this colour">
+                                <X size={15} />
                               </button>
-                              <div
-                                className="inline-flex h-8 items-center rounded-[8px] border px-2.5 text-[12px]"
-                                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                              >
-                                {row.value}
-                              </div>
-                              <div
-                                className="inline-flex h-8 items-center justify-center rounded-[8px] border px-2 text-[12px] font-semibold"
-                                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                              >
-                                {String(row.count || "0")}
-                              </div>
                             </div>
                             {isExpanded && hasEdgings && (
-                              <div className="ml-[52px] space-y-1 border-l-2 pl-2" style={{ borderColor: "var(--glass-border)" }}>
-                                <div className="grid grid-cols-[1fr_60px_26px] items-center gap-2 px-1 text-[9px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
-                                  <p>Edging</p>
-                                  <p className="text-center">Used</p>
-                                  <p></p>
-                                </div>
+                              <div className="my-1.5 ml-8 grid gap-1 rounded-[12px] border border-dashed p-2" style={{ borderColor: "color-mix(in srgb, var(--text-main) 16%, transparent)" }}>
                                 {row.edgings.map((edging, edgingIdx) => (
-                                  <div key={`board_edging_${idx}_${edgingIdx}`} className="grid grid-cols-[1fr_60px_26px] items-center gap-2">
-                                    <div
-                                      className="inline-flex h-7 items-center rounded-[6px] border px-2 text-[11px]"
-                                      style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
-                                    >
-                                      {edging.value}
-                                    </div>
-                                    <div
-                                      className="inline-flex h-7 items-center justify-center rounded-[6px] border px-2 text-[11px] font-semibold"
-                                      style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
-                                    >
-                                      {String(edging.count || "0")}
-                                    </div>
-                                    <button
-                                      onClick={() => void onDeleteBoardEdgingMemoryRow(row.value, edging.value)}
-                                      className="inline-flex h-7 w-7 items-center justify-center rounded-[6px] border transition hover:brightness-95"
-                                      style={dangerIconButtonStyle}
-                                    >
-                                      <X size={12} strokeWidth={2.8} />
+                                  <div key={`board_edging_${idx}_${edgingIdx}`} className="flex items-center gap-2 px-1 text-[12.5px]">
+                                    <span className="min-w-0 flex-1 truncate" style={{ color: "var(--text-main)" }}>{edging.value}</span>
+                                    <span className={countPillClass} title="Times used">{String(edging.count || "0")}</span>
+                                    <button type="button" onClick={() => void onDeleteBoardEdgingMemoryRow(row.value, edging.value)} className={dangerIconButtonClass} title="Forget this edging">
+                                      <X size={14} />
                                     </button>
                                   </div>
                                 ))}
@@ -3956,87 +4256,49 @@ export default function CompanySettingsPage() {
               )}
 
                 {active === "integrations" && (
-                  <div className="space-y-3">
-                    <section
-                      className="glass-panel-settle-in overflow-hidden rounded-[16px] border transition-colors"
-                      style={{
-                        borderColor: "var(--glass-border)",
-                        backgroundColor: zapierLeads.enabled ? "var(--glass-bg-strong)" : "var(--panel-muted)",
-                        backdropFilter: "blur(20px) saturate(180%)",
-                        WebkitBackdropFilter: "blur(20px) saturate(180%)",
-                        boxShadow: "var(--shadow-glass)",
-                      }}
+                  <div className="grid gap-[18px] xl:grid-cols-2">
+                    <Panel
+                      title="Zapier Forms"
+                      description="Send submissions from any Zapier form straight into your Leads tab."
+                      headerRight={
+                        <GlassSwitch
+                          checked={zapierLeads.enabled}
+                          ariaLabel="Zapier Forms"
+                          disabled={!canEditCompanySettings}
+                          onChange={() => {
+                            setConfirmZapierRegenerate(false);
+                            setZapierLeads((prev) => ({
+                              ...prev,
+                              enabled: !prev.enabled,
+                              webhookSecret: prev.webhookSecret || generateZapierSecret(),
+                            }));
+                            triggerToggleAutosave();
+                          }}
+                        />
+                      }
                     >
-                      <div className="space-y-3 px-3.5 pb-2.5 pt-4 text-[12px] transition-colors">
-                        <div
-                          className="grid min-h-[48px] items-center gap-4 md:grid-cols-[auto_minmax(0,1fr)]"
-                          style={{ transform: "translateY(2px)" }}
-                        >
-                          <div className="flex min-w-0 items-center gap-3">
+                      <div className="flex items-start gap-3">
+                        <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[12px] bg-[#FF5A1F] shadow-[0_8px_20px_rgba(255,90,31,0.24)]">
+                          <img src="/logos/Zapier-logo.png" alt="Zapier" className="h-6 w-6 object-contain" />
+                        </span>
+                        <p className="pt-1 text-[12.5px] leading-[1.5]" style={{ color: "var(--text-muted)" }}>
+                          {zapierLeads.enabled
+                            ? "Connected. Paste the webhook URL below into Zapier's “Webhooks by Zapier → POST” action."
+                            : "Turn on to get a webhook URL for Zapier."}
+                        </p>
+                      </div>
+                      {zapierLeads.enabled ? (
+                        <div className="mt-3 grid gap-3">
+                          <FieldRow label="Webhook URL" hint="Already includes your secure company token — no extra headers needed.">
                             <button
                               type="button"
-                              onClick={() =>
-                                {
-                                  setConfirmZapierRegenerate(false);
-                                  setZapierLeads((prev) => ({
-                                    ...prev,
-                                    enabled: !prev.enabled,
-                                    webhookSecret: prev.webhookSecret || generateZapierSecret(),
-                                  }));
-                                  triggerToggleAutosave();
-                                }
-                              }
-                              role="switch"
-                              aria-checked={zapierLeads.enabled}
-                              aria-label={`Zapier Leads: ${zapierLeads.enabled ? "Enabled" : "Disabled"}`}
-                              className="relative inline-flex h-9 w-[74px] items-center rounded-[999px] border px-1 transition-colors"
-                              style={{
-                                borderColor: zapierLeads.enabled ? "var(--brand-strong)" : "var(--glass-border)",
-                                backgroundImage: zapierLeads.enabled ? "var(--brand-gradient)" : "none",
-                                backgroundColor: zapierLeads.enabled ? undefined : "var(--panel-muted)",
-                              }}
-                            >
-                              <span
-                                className="absolute left-1 top-[2px] h-[30px] w-[30px] rounded-full transition-transform"
-                                style={{
-                                  transform: zapierLeads.enabled ? "translateX(34px)" : "translateX(-1px)",
-                                  backgroundColor: "var(--panel-bg)",
-                                  border: "1px solid var(--glass-border)",
-                                  boxShadow: "0 1px 3px rgba(15,23,42,0.14)",
-                                }}
-                              />
-                            </button>
-                            <div
-                              className="inline-flex h-11 w-11 items-center justify-center rounded-[12px] bg-[#FF5A1F] shadow-[0_8px_20px_rgba(255,90,31,0.24)]"
-                              style={{ opacity: zapierLeads.enabled ? 1 : 0.72 }}
-                            >
-                              <img src="/logos/Zapier-logo.png" alt="Zapier" className="h-6 w-6 object-contain" />
-                            </div>
-                            <div className="flex min-w-0 flex-col justify-center" style={{ opacity: zapierLeads.enabled ? 1 : 0.72 }}>
-                              <p className="text-[15px] font-bold text-[var(--text-main)]">Zapier Forms</p>
-                              <p className="mt-1 text-[11px] text-[var(--text-muted)]">
-                                Connect a Zapier Form to your "Leads" tab.
-                              </p>
-                            </div>
-                          </div>
-                          <div
-                            className="flex min-w-0 items-center justify-end gap-3 md:justify-self-stretch"
-                            style={{ opacity: zapierLeads.enabled ? 1 : 0.72 }}
-                          >
-                            {zapierLeads.enabled ? (
-                              <>
-                            <input
-                              value={zapierCopyStatus === "copied" ? "✓ Copied" : zapierWebhookUrl}
-                              readOnly
-                              placeholder="Webhook URL"
+                              title="Copy webhook URL"
                               onClick={async () => {
-                                if (!zapierWebhookUrl || !zapierLeads.enabled) return;
+                                if (!zapierWebhookUrl) return;
                                 try {
                                   await navigator.clipboard.writeText(zapierWebhookUrl);
                                   setZapierCopyStatus("copied");
-                                  if (zapierCopyResetTimerRef.current) {
-                                    window.clearTimeout(zapierCopyResetTimerRef.current);
-                                  }
+                                  if (zapierCopyResetTimerRef.current) window.clearTimeout(zapierCopyResetTimerRef.current);
                                   zapierCopyResetTimerRef.current = window.setTimeout(() => {
                                     setZapierCopyStatus("");
                                     zapierCopyResetTimerRef.current = null;
@@ -4045,40 +4307,42 @@ export default function CompanySettingsPage() {
                                   setZapierCopyStatus("");
                                 }
                               }}
-                              className="h-9 w-[660px] max-w-full rounded-[8px] border px-3 text-[12px] outline-none transition-colors focus:outline-none focus:ring-0 focus-visible:outline-none"
+                              className="flex h-9 w-full min-w-0 items-center gap-2 rounded-[11px] border border-dashed px-3 text-left font-mono text-[11.5px] transition"
                               style={{
-                                borderColor: zapierCopyStatus === "copied" ? "var(--success-border)" : "var(--glass-border)",
-                                backgroundColor: zapierCopyStatus === "copied"
-                                  ? "var(--success-soft)"
-                                  : zapierLeads.enabled
-                                    ? "var(--panel-bg)"
-                                    : "var(--panel-muted)",
-                                color: zapierCopyStatus === "copied" ? "var(--success-strong)" : "var(--text-main)",
-                                cursor: zapierLeads.enabled ? "pointer" : "default",
-                                textAlign: zapierCopyStatus === "copied" ? "center" : "left",
+                                borderColor: zapierCopyStatus === "copied" ? "var(--success-border)" : "color-mix(in srgb, var(--text-main) 18%, transparent)",
+                                backgroundColor: zapierCopyStatus === "copied" ? "var(--success-soft)" : "transparent",
+                                color: zapierCopyStatus === "copied" ? "var(--success-strong)" : "var(--text-muted)",
                               }}
-                            />
+                            >
+                              <Copy size={14} className="shrink-0" />
+                              <span className="min-w-0 flex-1 truncate">{zapierCopyStatus === "copied" ? "Copied to clipboard" : zapierWebhookUrl}</span>
+                            </button>
+                          </FieldRow>
+                          <div className="flex flex-wrap gap-2">
                             <button
                               type="button"
-                              disabled={!zapierLeads.enabled}
-                              onClick={(event) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                if (!zapierLeads.enabled) return;
+                              onClick={() => {
                                 setConfirmZapierRegenerate(false);
                                 setShowLeadFieldsCustomize(true);
                               }}
-                              className="inline-flex h-9 items-center rounded-[10px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-3 text-[12px] font-bold text-[var(--text-muted)] disabled:opacity-55"
+                              className={smallButtonClass}
                             >
-                              Customize
+                              <SlidersHorizontal size={14} /> Customise lead fields
                             </button>
                             <button
                               type="button"
-                              disabled={!zapierLeads.enabled}
-                              onClick={(event) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                if (!zapierLeads.enabled) return;
+                              onClick={() => {
+                                setConfirmZapierRegenerate(false);
+                                setShowZapierHelp(true);
+                              }}
+                              className={smallButtonClass}
+                            >
+                              <CircleHelp size={14} /> How to connect
+                            </button>
+                            <button
+                              type="button"
+                              disabled={!canEditCompanySettings}
+                              onClick={() => {
                                 if (!confirmZapierRegenerate) {
                                   setConfirmZapierRegenerate(true);
                                   return;
@@ -4089,201 +4353,162 @@ export default function CompanySettingsPage() {
                                 }
                                 setZapierCopyStatus("");
                                 setConfirmZapierRegenerate(false);
-                                setZapierLeads((prev) => ({
-                                  ...prev,
-                                  webhookSecret: generateZapierSecret(),
-                                }));
+                                setZapierLeads((prev) => ({ ...prev, webhookSecret: generateZapierSecret() }));
                                 triggerToggleAutosave();
                               }}
-                              className="inline-flex h-9 w-[106px] items-center justify-center rounded-[10px] border px-3 text-[12px] font-bold disabled:opacity-55"
-                              style={{
-                                borderColor: confirmZapierRegenerate ? "var(--success-strong)" : "var(--glass-border)",
-                                backgroundColor: confirmZapierRegenerate ? "var(--success-strong)" : "var(--panel-bg)",
-                                color: confirmZapierRegenerate ? "#ffffff" : "var(--text-muted)",
-                              }}
+                              className={smallButtonClass}
+                              style={confirmZapierRegenerate ? { backgroundImage: "var(--danger-gradient)", color: "#fff", borderColor: "transparent" } : undefined}
+                              title="Makes a new URL — the old one stops working"
                             >
-                              {confirmZapierRegenerate ? "Confirm" : "Regenerate"}
-                            </button>
-                              </>
-                            ) : null}
-                            <button
-                              type="button"
-                              onClick={(event) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                setConfirmZapierRegenerate(false);
-                                setShowZapierHelp(true);
-                              }}
-                              className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-[var(--glass-border)] bg-[var(--panel-bg)] text-[var(--text-muted)]"
-                            >
-                              <CircleHelp size={15} />
+                              <RefreshCw size={14} /> {confirmZapierRegenerate ? "Click again to confirm" : "Regenerate URL"}
                             </button>
                           </div>
                         </div>
-                        <div className="hidden grid gap-3 xl:grid-cols-[180px_1fr] xl:items-start">
-                          <p className="font-bold text-[var(--text-main)]">Webhook URL</p>
-                          <div className="space-y-2">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <input
-                                value={zapierCopyStatus === "copied" ? "✓ Copied" : zapierWebhookUrl}
-                                readOnly
-                                placeholder="Generate a secret to create the webhook URL"
-                                onClick={async () => {
-                                  if (!zapierWebhookUrl) return;
-                                  try {
-                                    await navigator.clipboard.writeText(zapierWebhookUrl);
-                                    setZapierCopyStatus("copied");
-                                    if (zapierCopyResetTimerRef.current) {
-                                      window.clearTimeout(zapierCopyResetTimerRef.current);
-                                    }
-                                    zapierCopyResetTimerRef.current = window.setTimeout(() => {
-                                      setZapierCopyStatus("");
-                                      zapierCopyResetTimerRef.current = null;
-                                    }, 1400);
-                                  } catch {
-                                    setZapierCopyStatus("");
-                                  }
-                                }}
-                                className="h-9 min-w-[360px] flex-1 cursor-pointer rounded-[8px] border px-3 text-[12px] transition-colors"
-                                style={{
-                                  borderColor: zapierCopyStatus === "copied" ? "var(--success-border)" : "var(--glass-border)",
-                                  backgroundColor: zapierCopyStatus === "copied" ? "var(--success-soft)" : "var(--panel-bg)",
-                                  color: zapierCopyStatus === "copied" ? "var(--success-strong)" : "var(--text-main)",
-                                }}
-                              />
-                            </div>
-                          </div>
+                      ) : (
+                        <div className="mt-3">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setConfirmZapierRegenerate(false);
+                              setShowZapierHelp(true);
+                            }}
+                            className={smallButtonClass}
+                          >
+                            <CircleHelp size={14} /> How it works
+                          </button>
                         </div>
-                        <div className="hidden rounded-[10px] border border-[var(--glass-border)] bg-[var(--panel-bg)] p-3">
-                          <p className="text-[12px] font-bold uppercase tracking-[0.8px] text-[var(--text-main)]">Zapier Setup</p>
-                          <div className="mt-2 space-y-2 text-[12px] text-[var(--text-muted)]">
-                            <p>1. Trigger: <span className="font-bold">Zapier Forms → New Submission</span></p>
-                            <p>2. Action: <span className="font-bold">Webhooks by Zapier → POST</span></p>
-                            <p>3. URL: paste the Webhook URL above</p>
-                            <p>4. Payload Type: <span className="font-bold">JSON</span></p>
-                            <p>5. Add whatever lead data keys you want in the POST body.</p>
-                            <p>6. The left-side key names you send from Zapier become the dynamic fields shown in CutSmart.</p>
-                            <p>Headers are optional if you use the full Webhook URL above, because the secure token is already embedded in it.</p>
-                          </div>
-                        </div>
-                      </div>
-                    </section>
-                </div>
+                      )}
+                    </Panel>
+                  </div>
               )}
 
               {active === "nesting" && (
-                <div className="w-full xl:w-1/2">
-                  <Panel title="Machining">
-                    <div className="space-y-2">
-                      {machines.length === 0 ? (
-                        <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>No machines added yet.</p>
-                      ) : null}
-                      {machines.map((m) => (
-                        <div
-                          key={m.id}
-                          className="flex items-center gap-2 rounded-[10px] border px-2.5 py-2"
-                          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}
-                        >
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              machineModalOriginElRef.current = e.currentTarget;
-                              setMachineModalOrigin(captureGlassModalOrigin(e));
-                              setActiveMachineModalId(m.id);
-                            }}
-                            className="min-w-0 flex-1 truncate text-left text-[12px] font-extrabold"
-                            style={{ color: "var(--text-main)" }}
+                <div>
+                  <Panel title="Machines" icon={Factory} description="Each machine's details, servicing history and cutting settings. The default machine of each type is used when a job doesn't pick one.">
+                    <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(220px,1fr))]">
+                      {machines.map((m) => {
+                        const tile = MACHINE_TILE_STYLE[m.type];
+                        const TileIcon = tile.icon;
+                        return (
+                          <div
+                            key={m.id}
+                            className="group relative grid gap-2.5 rounded-[16px] border p-3.5 text-left transition hover:-translate-y-0.5 hover:shadow-[var(--shadow-glass)]"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "color-mix(in srgb, var(--panel-bg) 55%, transparent)" }}
                           >
-                            {toStr(m.name, "Untitled Machine")}
-                            <span className="ml-2 text-[10px] font-bold uppercase tracking-[0.5px]" style={{ color: "var(--text-muted)" }}>
-                              {machineTypeLabel(m)}
-                            </span>
-                          </button>
-                          {m.type !== "other" ? (
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="inline-flex h-[38px] w-[38px] items-center justify-center rounded-[12px] text-white" style={{ backgroundImage: tile.gradient }}>
+                                <TileIcon size={18} />
+                              </span>
+                              <div className="flex items-center gap-1">
+                                {m.type !== "other" ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => setMachineAsDefault(m.id)}
+                                    title={m.isDefaultForType ? `Default ${machineTypeLabel(m)}` : `Make this the default ${machineTypeLabel(m)}`}
+                                    className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10.5px] font-bold transition"
+                                    style={
+                                      m.isDefaultForType
+                                        ? { backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }
+                                        : { color: "var(--text-muted)" }
+                                    }
+                                  >
+                                    <Star size={11} fill={m.isDefaultForType ? "currentColor" : "none"} /> {m.isDefaultForType ? "Default" : "Set default"}
+                                  </button>
+                                ) : null}
+                                <button type="button" onClick={() => setMachines((prev) => prev.filter((row) => row.id !== m.id))} className={dangerIconButtonClass} title="Remove machine">
+                                  <X size={15} />
+                                </button>
+                              </div>
+                            </div>
                             <button
                               type="button"
-                              onClick={() => setMachineAsDefault(m.id)}
-                              title={m.isDefaultForType ? `Default ${machineTypeLabel(m)}` : `Set as default ${machineTypeLabel(m)}`}
-                              className="shrink-0 rounded-[8px] border px-2 py-1 text-[10px] font-bold uppercase tracking-[0.5px] transition hover:brightness-95"
-                              style={
-                                m.isDefaultForType
-                                  ? { borderColor: "var(--brand)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }
-                                  : { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }
-                              }
+                              onClick={(e) => {
+                                machineModalOriginElRef.current = e.currentTarget;
+                                setMachineModalOrigin(captureGlassModalOrigin(e));
+                                setActiveMachineModalId(m.id);
+                              }}
+                              className="text-left after:absolute after:inset-0 after:content-['']"
                             >
-                              {m.isDefaultForType ? "Default" : "Set Default"}
+                              <p className="truncate text-[14px] font-semibold" style={{ color: "var(--text-main)" }}>{toStr(m.name, "Untitled Machine")}</p>
+                              <p className="truncate text-[12px]" style={{ color: "var(--text-muted)" }}>
+                                {machineTypeLabel(m)}
+                                {m.model ? ` · ${m.model}` : ""}
+                              </p>
                             </button>
-                          ) : null}
-                          <button
-                            type="button"
-                            onClick={() => setMachines((prev) => prev.filter((row) => row.id !== m.id))}
-                            className={dangerIconButtonClass}
-                            style={dangerIconButtonStyle}
-                          >
-                            <X size={15} strokeWidth={2.8} />
+                          </div>
+                        );
+                      })}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          setAddMachineOrigin(captureGlassModalOrigin(e));
+                          setNewMachineTypePickerOpen(true);
+                        }}
+                        className="flex min-h-[118px] flex-col items-center justify-center gap-1.5 rounded-[16px] border border-dashed text-[13px] font-semibold transition hover:bg-[var(--brand-soft)]"
+                        style={{ borderColor: "color-mix(in srgb, var(--text-main) 20%, transparent)", color: "var(--brand-strong)" }}
+                      >
+                        <Plus size={18} /> Add machine
+                      </button>
+                    </div>
+                  </Panel>
+                  {shouldRenderAddMachineModal ? (
+                    <div className="fixed inset-0 z-[1700] flex items-center justify-center px-4 py-4">
+                      <button type="button" aria-label="Cancel" onClick={() => setNewMachineTypePickerOpen(false)} className="glass-modal-backdrop absolute inset-0" />
+                      <div ref={addMachinePanelRef} className="glass-modal-panel relative z-[1701] w-full max-w-[520px] overflow-hidden">
+                        <div className="glass-modal-header flex items-center justify-between px-4 py-3">
+                          <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>Add machine</p>
+                          <button type="button" onClick={() => setNewMachineTypePickerOpen(false)} className={dangerIconButtonClass} aria-label="Close">
+                            <X size={16} />
                           </button>
                         </div>
-                      ))}
-                      {newMachineTypePickerOpen ? (
-                        <div
-                          className="flex flex-wrap items-center gap-2 rounded-[10px] border px-2.5 py-2"
-                          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}
-                        >
+                        <div className="grid grid-cols-2 gap-2.5 p-4">
                           {([
                             ["cnc", "CNC"],
                             ["table-saw", "Table Saw"],
                             ["edge-bander", "Edge Bander"],
                             ["other", "Other"],
-                          ] as [MachineType, string][]).map(([type, label]) => (
-                            <button
-                              key={type}
-                              type="button"
-                              onClick={(e) => {
-                                const newMachine: Machine = {
-                                  id: genMachineId(),
-                                  type,
-                                  customTypeLabel: type === "other" ? "Drill Press" : "",
-                                  name: `${label} ${machines.filter((m) => m.type === type).length + 1}`,
-                                  model: "",
-                                  serialNumber: "",
-                                  notes: "",
-                                  maintenanceContact: { name: "", phone: "", email: "" },
-                                  serviceHistory: [],
-                                  isDefaultForType: type !== "other" && !machines.some((m) => m.type === type),
-                                  nestingSettings: emptyMachineNestingSettings(),
-                                  edgebandingSettings: emptyMachineEdgebandingSettings(),
-                                };
-                                setMachines((prev) => [...prev, newMachine]);
-                                setNewMachineTypePickerOpen(false);
-                                machineModalOriginElRef.current = e.currentTarget;
-                                setMachineModalOrigin(captureGlassModalOrigin(e));
-                                setActiveMachineModalId(newMachine.id);
-                              }}
-                              className={secondaryButtonClass}
-                            >
-                              {label}
-                            </button>
-                          ))}
-                          <button
-                            type="button"
-                            onClick={() => setNewMachineTypePickerOpen(false)}
-                            className="text-[11px] font-bold"
-                            style={{ color: "var(--text-muted)" }}
-                          >
-                            Cancel
-                          </button>
+                          ] as [MachineType, string][]).map(([type, label]) => {
+                            const tile = MACHINE_TILE_STYLE[type];
+                            const TileIcon = tile.icon;
+                            return (
+                              <button
+                                key={type}
+                                type="button"
+                                onClick={(e) => {
+                                  const newMachine: Machine = {
+                                    id: genMachineId(),
+                                    type,
+                                    customTypeLabel: type === "other" ? "Drill Press" : "",
+                                    name: `${label} ${machines.filter((m) => m.type === type).length + 1}`,
+                                    model: "",
+                                    serialNumber: "",
+                                    notes: "",
+                                    maintenanceContact: { name: "", phone: "", email: "" },
+                                    serviceHistory: [],
+                                    isDefaultForType: type !== "other" && !machines.some((m) => m.type === type),
+                                    nestingSettings: emptyMachineNestingSettings(),
+                                    edgebandingSettings: emptyMachineEdgebandingSettings(),
+                                  };
+                                  setMachines((prev) => [...prev, newMachine]);
+                                  setNewMachineTypePickerOpen(false);
+                                  machineModalOriginElRef.current = e.currentTarget;
+                                  setMachineModalOrigin(captureGlassModalOrigin(e));
+                                  setActiveMachineModalId(newMachine.id);
+                                }}
+                                className="flex items-center gap-3 rounded-[14px] border p-3 text-left transition hover:-translate-y-0.5 hover:shadow-[var(--shadow-glass)]"
+                                style={{ borderColor: "var(--glass-border)", backgroundColor: "color-mix(in srgb, var(--panel-bg) 55%, transparent)" }}
+                              >
+                                <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[11px] text-white" style={{ backgroundImage: tile.gradient }}>
+                                  <TileIcon size={17} />
+                                </span>
+                                <span className="text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>{label}</span>
+                              </button>
+                            );
+                          })}
                         </div>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => setNewMachineTypePickerOpen(true)}
-                          className={`${secondaryButtonClass} mt-1`}
-                        >
-                          + Add Machine
-                        </button>
-                      )}
+                      </div>
                     </div>
-                  </Panel>
+                  ) : null}
                   {shouldRenderMachineModal ? (
                     <div className="fixed inset-0 z-[1700] flex items-center justify-center px-4 py-4">
                       <button
@@ -4300,71 +4525,65 @@ export default function CompanySettingsPage() {
                           <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
                             {activeMachine ? machineTypeLabel(activeMachine) : "Machine"} Settings
                           </p>
-                          <button
-                            type="button"
-                            onClick={() => setActiveMachineModalId(null)}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border transition hover:brightness-95"
-                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
-                          >
+                          <button type="button" onClick={() => setActiveMachineModalId(null)} className={dangerIconButtonClass} aria-label="Close">
                             <X size={16} />
                           </button>
                         </div>
-                        <div className="flex-1 space-y-5 overflow-y-auto px-4 py-4">
+                        <div className="flex-1 space-y-6 overflow-y-auto px-5 py-5">
                           {activeMachine ? (
                             <>
                               <div className="space-y-2">
                                 <FieldGroupHeading first>Machine</FieldGroupHeading>
                                 <div className="grid gap-3 sm:grid-cols-2">
-                                  <FieldRow label="Name">
+                                  <StackField label="Name">
                                     <input
                                       value={activeMachine.name}
                                       onChange={(e) => updateActiveMachine({ name: e.target.value })}
                                       className={fieldInputClass}
                                     />
-                                  </FieldRow>
+                                  </StackField>
                                   {activeMachine.type === "other" ? (
-                                    <FieldRow label="Type">
+                                    <StackField label="Type">
                                       <input
                                         value={activeMachine.customTypeLabel}
                                         onChange={(e) => updateActiveMachine({ customTypeLabel: e.target.value })}
                                         placeholder="e.g. Drill Press"
                                         className={fieldInputClass}
                                       />
-                                    </FieldRow>
+                                    </StackField>
                                   ) : null}
-                                  <FieldRow label="Model">
+                                  <StackField label="Model">
                                     <input
                                       value={activeMachine.model}
                                       onChange={(e) => updateActiveMachine({ model: e.target.value })}
                                       className={fieldInputClass}
                                     />
-                                  </FieldRow>
-                                  <FieldRow label="Serial Number">
+                                  </StackField>
+                                  <StackField label="Serial number">
                                     <input
                                       value={activeMachine.serialNumber}
                                       onChange={(e) => updateActiveMachine({ serialNumber: e.target.value })}
                                       className={fieldInputClass}
                                     />
-                                  </FieldRow>
+                                  </StackField>
                                 </div>
-                                <FieldRow label="Notes" align="start">
+                                <StackField label="Notes">
                                   <textarea
                                     value={activeMachine.notes}
                                     onChange={(e) => updateActiveMachine({ notes: e.target.value })}
                                     rows={3}
                                     className={`${fieldInputClass} h-auto py-2`}
                                   />
-                                </FieldRow>
+                                </StackField>
                                 {activeMachine.type !== "other" ? (
-                                  <div className="flex items-center gap-2">
-                                    <input
-                                      type="checkbox"
+                                  <div className="flex items-center gap-2.5">
+                                    <GlassSwitch
                                       checked={activeMachine.isDefaultForType}
                                       onChange={() => setMachineAsDefault(activeMachine.id)}
-                                      className="h-4 w-4"
+                                      ariaLabel={`Default ${machineTypeLabel(activeMachine)}`}
                                     />
-                                    <p className="text-[12px] font-bold" style={{ color: "var(--text-muted)" }}>
-                                      Default {machineTypeLabel(activeMachine)} — used when a job doesn&apos;t pick one explicitly
+                                    <p className="text-[12.5px] font-medium" style={{ color: "var(--text-main)" }}>
+                                      Default {machineTypeLabel(activeMachine)} <span style={{ color: "var(--text-muted)" }}>— used when a job doesn&apos;t pick one</span>
                                     </p>
                                   </div>
                                 ) : null}
@@ -4373,27 +4592,27 @@ export default function CompanySettingsPage() {
                               <div className="space-y-2">
                                 <FieldGroupHeading>Maintenance Contact</FieldGroupHeading>
                                 <div className="grid gap-3 sm:grid-cols-3">
-                                  <FieldRow label="Name">
+                                  <StackField label="Name">
                                     <input
                                       value={activeMachine.maintenanceContact.name}
                                       onChange={(e) => updateActiveMachine((m) => ({ maintenanceContact: { ...m.maintenanceContact, name: e.target.value } }))}
                                       className={fieldInputClass}
                                     />
-                                  </FieldRow>
-                                  <FieldRow label="Phone">
+                                  </StackField>
+                                  <StackField label="Phone">
                                     <input
                                       value={activeMachine.maintenanceContact.phone}
                                       onChange={(e) => updateActiveMachine((m) => ({ maintenanceContact: { ...m.maintenanceContact, phone: e.target.value } }))}
                                       className={fieldInputClass}
                                     />
-                                  </FieldRow>
-                                  <FieldRow label="Email">
+                                  </StackField>
+                                  <StackField label="Email">
                                     <input
                                       value={activeMachine.maintenanceContact.email}
                                       onChange={(e) => updateActiveMachine((m) => ({ maintenanceContact: { ...m.maintenanceContact, email: e.target.value } }))}
                                       className={fieldInputClass}
                                     />
-                                  </FieldRow>
+                                  </StackField>
                                 </div>
                               </div>
 
@@ -4404,17 +4623,7 @@ export default function CompanySettingsPage() {
                                     <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>No service entries yet.</p>
                                   ) : null}
                                   {activeMachine.serviceHistory.map((entry, idx) => (
-                                    <div key={entry.id} className="flex flex-wrap items-center gap-2">
-                                      <button
-                                        type="button"
-                                        onClick={() =>
-                                          updateActiveMachine((m) => ({ serviceHistory: m.serviceHistory.filter((_, i) => i !== idx) }))
-                                        }
-                                        className={dangerIconButtonClass}
-                                        style={dangerIconButtonStyle}
-                                      >
-                                        <X size={15} strokeWidth={2.8} />
-                                      </button>
+                                    <div key={entry.id} className={`${listRowClass} flex-wrap`}>
                                       <input
                                         type="date"
                                         value={entry.date}
@@ -4423,7 +4632,7 @@ export default function CompanySettingsPage() {
                                             serviceHistory: m.serviceHistory.map((row, i) => (i === idx ? { ...row, date: e.target.value } : row)),
                                           }))
                                         }
-                                        className={`${fieldInputClass} w-[150px]`}
+                                        className={`${glassFieldSmClass} w-[150px]`}
                                       />
                                       <input
                                         value={entry.notes}
@@ -4433,8 +4642,18 @@ export default function CompanySettingsPage() {
                                           }))
                                         }
                                         placeholder="What was done"
-                                        className={`${fieldInputClass} min-w-[200px] flex-1`}
+                                        className={`${gridCellInputClass} min-w-[200px] flex-1`}
                                       />
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          updateActiveMachine((m) => ({ serviceHistory: m.serviceHistory.filter((_, i) => i !== idx) }))
+                                        }
+                                        className={dangerIconButtonClass}
+                                        title="Remove entry"
+                                      >
+                                        <X size={15} />
+                                      </button>
                                     </div>
                                   ))}
                                   <button
@@ -4446,7 +4665,7 @@ export default function CompanySettingsPage() {
                                     }
                                     className={secondaryButtonClass}
                                   >
-                                    + Add Entry
+                                    <Plus size={14} /> Add entry
                                   </button>
                                 </div>
                               </div>
@@ -4454,30 +4673,27 @@ export default function CompanySettingsPage() {
                               {activeMachine.type === "cnc" || activeMachine.type === "table-saw" ? (
                                 <div className="space-y-2">
                                   <FieldGroupHeading>Nesting Settings</FieldGroupHeading>
-                                  <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-                                    Sheet size comes from each board&apos;s own entry in Materials &amp; Board Types —
+                                  <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
+                                    Sheet size comes from each board&apos;s own entry in Materials &amp; Boards —
                                     only this machine&apos;s own cutting settings live here.
                                   </p>
-                                  <div className="grid gap-3 sm:grid-cols-2">
+                                  <div className="grid gap-3 sm:grid-cols-3">
                                     {(
                                       [
                                         ["Kerf", "kerf"],
                                         ["Margin", "margin"],
-                                        ["Minimum Piece Size", "minPieceSize"],
+                                        ["Minimum piece size", "minPieceSize"],
                                       ] as [string, keyof MachineNestingSettings][]
                                     ).map(([label, key]) => (
-                                      <FieldRow key={key} label={label}>
-                                        <div className="flex h-8 items-center gap-2">
-                                          <input
-                                            value={activeMachine.nestingSettings[key]}
-                                            onChange={(e) =>
-                                              updateActiveMachine((m) => ({ nestingSettings: { ...m.nestingSettings, [key]: e.target.value } }))
-                                            }
-                                            className={`${fieldInputClass} text-center`}
-                                          />
-                                          <p className="shrink-0 text-[12px] font-bold" style={{ color: "var(--text-muted)" }}>mm</p>
-                                        </div>
-                                      </FieldRow>
+                                      <StackField key={key} label={label}>
+                                        <LengthField
+                                          valueMm={activeMachine.nestingSettings[key]}
+                                          onChangeMm={(mm) => updateActiveMachine((m) => ({ nestingSettings: { ...m.nestingSettings, [key]: mm } }))}
+                                          unit={companyUnit}
+                                          className={glassFieldClass}
+                                          width={160}
+                                        />
+                                      </StackField>
                                     ))}
                                   </div>
                                 </div>
@@ -4488,20 +4704,8 @@ export default function CompanySettingsPage() {
                                   <FieldGroupHeading>Edgebanding</FieldGroupHeading>
                                   <div className="space-y-1.5">
                                     {activeMachine.edgebandingSettings.rules.map((rule, idx) => (
-                                      <div key={`machine_edgeband_rule_${idx}`} className="flex flex-wrap items-center gap-2">
-                                        <button
-                                          type="button"
-                                          onClick={() =>
-                                            updateActiveMachine((m) => ({
-                                              edgebandingSettings: { ...m.edgebandingSettings, rules: m.edgebandingSettings.rules.filter((_, i) => i !== idx) },
-                                            }))
-                                          }
-                                          className={dangerIconButtonClass}
-                                          style={dangerIconButtonStyle}
-                                        >
-                                          <X size={15} strokeWidth={2.8} />
-                                        </button>
-                                        <p className="text-[12px] font-bold" style={{ color: "var(--text-muted)" }}>if edgetape is</p>
+                                      <div key={`machine_edgeband_rule_${idx}`} className={`${listRowClass} flex-wrap text-[12.5px] font-medium`} style={{ color: "var(--text-main)" }}>
+                                        <span className="pl-1">If edge tape is</span>
                                         <input
                                           value={rule.upToMeters}
                                           onChange={(e) =>
@@ -4512,9 +4716,9 @@ export default function CompanySettingsPage() {
                                               },
                                             }))
                                           }
-                                          className={`${fieldInputClass} w-[90px]`}
+                                          className={`${glassFieldSmClass} w-[80px] text-center`}
                                         />
-                                        <p className="text-[12px] font-bold" style={{ color: "var(--text-muted)" }}>or less, add</p>
+                                        <span>m or less, add</span>
                                         <input
                                           value={rule.addMeters}
                                           onChange={(e) =>
@@ -4525,8 +4729,22 @@ export default function CompanySettingsPage() {
                                               },
                                             }))
                                           }
-                                          className={`${fieldInputClass} w-[90px]`}
+                                          className={`${glassFieldSmClass} w-[80px] text-center`}
                                         />
+                                        <span>m</span>
+                                        <span className="flex-1" />
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            updateActiveMachine((m) => ({
+                                              edgebandingSettings: { ...m.edgebandingSettings, rules: m.edgebandingSettings.rules.filter((_, i) => i !== idx) },
+                                            }))
+                                          }
+                                          className={dangerIconButtonClass}
+                                          title="Remove rule"
+                                        >
+                                          <X size={15} />
+                                        </button>
                                       </div>
                                     ))}
                                     <button
@@ -4538,51 +4756,49 @@ export default function CompanySettingsPage() {
                                       }
                                       className={secondaryButtonClass}
                                     >
-                                      + Add Rule
+                                      <Plus size={14} /> Add rule
                                     </button>
                                   </div>
-                                  <FieldRow label="Excess per end (mm)">
-                                    <input
-                                      value={activeMachine.edgebandingSettings.excessPerEndMm}
-                                      onChange={(e) =>
-                                        updateActiveMachine((m) => ({ edgebandingSettings: { ...m.edgebandingSettings, excessPerEndMm: e.target.value } }))
-                                      }
-                                      className={`${fieldInputClass} max-w-[140px]`}
+                                  <FieldRow label="Excess per end" hint="Added to each end of every edged part.">
+                                    <LengthField
+                                      valueMm={activeMachine.edgebandingSettings.excessPerEndMm}
+                                      onChangeMm={(mm) => updateActiveMachine((m) => ({ edgebandingSettings: { ...m.edgebandingSettings, excessPerEndMm: mm } }))}
+                                      unit={companyUnit}
+                                      className={glassFieldClass}
+                                      width={140}
                                     />
                                   </FieldRow>
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <input
-                                      type="checkbox"
+                                  <div className="flex flex-wrap items-center gap-2.5 text-[12.5px] font-medium" style={{ color: "var(--text-main)" }}>
+                                    <GlassSwitch
                                       checked={activeMachine.edgebandingSettings.roundEnabled}
-                                      onChange={(e) =>
-                                        updateActiveMachine((m) => ({ edgebandingSettings: { ...m.edgebandingSettings, roundEnabled: e.target.checked } }))
+                                      onChange={(next) =>
+                                        updateActiveMachine((m) => ({ edgebandingSettings: { ...m.edgebandingSettings, roundEnabled: next } }))
                                       }
-                                      className="h-4 w-4"
+                                      ariaLabel="Round edge tape totals"
                                     />
-                                    <p className="text-[12px] font-bold" style={{ color: "var(--text-muted)" }}>Round</p>
-                                    <select
-                                      value={activeMachine.edgebandingSettings.roundDirection}
-                                      onChange={(e) =>
-                                        updateActiveMachine((m) => ({
-                                          edgebandingSettings: { ...m.edgebandingSettings, roundDirection: e.target.value === "down" ? "down" : "up" },
-                                        }))
+                                    <span>Round</span>
+                                    <Segmented
+                                      size="sm"
+                                      value={activeMachine.edgebandingSettings.roundDirection === "down" ? "down" : "up"}
+                                      options={[
+                                        { value: "up", label: "up" },
+                                        { value: "down", label: "down" },
+                                      ]}
+                                      onChange={(dir) =>
+                                        updateActiveMachine((m) => ({ edgebandingSettings: { ...m.edgebandingSettings, roundDirection: dir } }))
                                       }
                                       disabled={!activeMachine.edgebandingSettings.roundEnabled}
-                                      className={`${fieldInputClass} w-[90px]`}
-                                    >
-                                      <option value="up">up</option>
-                                      <option value="down">down</option>
-                                    </select>
-                                    <p className="text-[12px] font-bold" style={{ color: "var(--text-muted)" }}>to the nearest</p>
+                                    />
+                                    <span>to the nearest</span>
                                     <input
                                       value={activeMachine.edgebandingSettings.roundNearestMeters}
                                       onChange={(e) =>
                                         updateActiveMachine((m) => ({ edgebandingSettings: { ...m.edgebandingSettings, roundNearestMeters: e.target.value } }))
                                       }
                                       disabled={!activeMachine.edgebandingSettings.roundEnabled}
-                                      className={`${fieldInputClass} w-[80px]`}
+                                      className={`${glassFieldSmClass} w-[72px] text-center`}
                                     />
-                                    <p className="text-[12px] font-bold" style={{ color: "var(--text-muted)" }}>m.</p>
+                                    <span>m</span>
                                   </div>
                                 </div>
                               ) : null}
@@ -4596,31 +4812,29 @@ export default function CompanySettingsPage() {
               )}
 
               {active === "production" && (
-                <div className="grid gap-3 xl:grid-cols-2">
-                  <Panel title="Cutlist Columns">
+                <div className="grid gap-[18px] xl:grid-cols-2">
+                  <Panel title="Cutlist columns" icon={Columns3} description="Which columns show in Production and Initial Measure cutlists. Drag to set their order.">
                     <div className="space-y-1.5">
-                      <div className="flex items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
-                        <p className="w-7 shrink-0"></p>
-                        <p className="min-w-0 flex-1">Column</p>
-                        <p className="w-[120px] shrink-0 text-center">Production</p>
-                        <p className="w-[120px] shrink-0 text-center">Initial Measure</p>
+                      <div className="flex items-center gap-2 px-2 pb-0.5">
+                        <span className="w-6 shrink-0" />
+                        <span className={`min-w-0 flex-1 ${columnHeadClass}`}>Column</span>
+                        <span className={`w-[96px] shrink-0 text-center ${columnHeadClass}`}>Production</span>
+                        <span className={`w-[110px] shrink-0 text-center ${columnHeadClass}`}>Initial measure</span>
                       </div>
                       {cutlistColumnRows.map((columnName) => {
                         const prodChecked = cutlistProduction.includes(columnName);
                         const initialChecked = cutlistInitial.includes(columnName);
                         const idx = cutlistColumnRows.findIndex((v) => v === columnName);
+                        const toggleIn = (list: string[], on: boolean) =>
+                          on
+                            ? sortCutlistSelectionsByOrder(list.includes(columnName) ? list : [...list, columnName], cutlistColumnRows)
+                            : list.filter((v) => v !== columnName);
                         return (
                           <div
                             key={columnName}
-                            className="flex items-center gap-2 rounded-[8px] transition-colors"
-                            style={{
-                              backgroundColor:
-                                cutlistColumnDragIndex === idx
-                                  ? "var(--brand-soft)"
-                                  : cutlistColumnDragOverIndex === idx
-                                    ? "var(--panel-muted)"
-                                    : "transparent",
-                            }}
+                            id={`settings_cutlist_col_${idx}`}
+                            className={listRowClass}
+                            style={{ opacity: cutlistColumnDragIndex === idx ? 0.45 : 1 }}
                             onDragOver={(e) => {
                               e.preventDefault();
                               e.dataTransfer.dropEffect = "move";
@@ -4639,6 +4853,7 @@ export default function CompanySettingsPage() {
                               e.preventDefault();
                               setCutlistColumnDragIndex(null);
                               setCutlistColumnDragOverIndex(null);
+                              endRowDrag();
                               triggerAutosaveAfterRowDrop();
                             }}
                           >
@@ -4648,241 +4863,203 @@ export default function CompanySettingsPage() {
                               onDragStart={(e) => {
                                 setCutlistColumnDragIndex(idx);
                                 setCutlistColumnDragOverIndex(idx);
-                                e.dataTransfer.effectAllowed = "move";
+                                startRowDrag(e, `settings_cutlist_col_${idx}`, columnName, "#64748B");
                               }}
                               onDragEnd={() => {
                                 setCutlistColumnDragIndex(null);
                                 setCutlistColumnDragOverIndex(null);
+                                endRowDrag();
                               }}
-                              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] border"
-                              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
+                              className={gripClass}
                               title="Drag to reorder"
                             >
-                              <GripVertical size={14} />
+                              <GripVertical size={15} />
                             </button>
-                            <div
-                              className="h-8 min-w-0 flex-1 rounded-[8px] border px-2.5 text-[12px] leading-[30px]"
-                              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                            >
-                              {columnName}
-                            </div>
-                            <label className="inline-flex w-[120px] shrink-0 items-center justify-center">
-                              <input
-                                type="checkbox"
-                                checked={prodChecked}
-                                onChange={(e) =>
-                                  setCutlistProduction((prev) =>
-                                    e.target.checked
-                                      ? sortCutlistSelectionsByOrder(
-                                          prev.includes(columnName) ? prev : [...prev, columnName],
-                                          cutlistColumnRows,
-                                        )
-                                      : prev.filter((v) => v !== columnName),
-                                  )
-                                }
-                              />
-                            </label>
-                            <label className="inline-flex w-[120px] shrink-0 items-center justify-center">
-                              <input
-                                type="checkbox"
-                                checked={initialChecked}
-                                onChange={(e) =>
-                                  setCutlistInitial((prev) =>
-                                    e.target.checked
-                                      ? sortCutlistSelectionsByOrder(
-                                          prev.includes(columnName) ? prev : [...prev, columnName],
-                                          cutlistColumnRows,
-                                        )
-                                      : prev.filter((v) => v !== columnName),
-                                  )
-                                }
-                              />
-                            </label>
+                            <span className="min-w-0 flex-1 truncate pl-1 text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>{columnName}</span>
+                            <span className="flex w-[96px] shrink-0 justify-center">
+                              <GlassSwitch size="sm" checked={prodChecked} onChange={(on) => setCutlistProduction((prev) => toggleIn(prev, on))} ariaLabel={`${columnName} in Production`} />
+                            </span>
+                            <span className="flex w-[110px] shrink-0 justify-center">
+                              <GlassSwitch size="sm" checked={initialChecked} onChange={(on) => setCutlistInitial((prev) => toggleIn(prev, on))} ariaLabel={`${columnName} in Initial Measure`} />
+                            </span>
                           </div>
                         );
                       })}
                     </div>
                   </Panel>
-                  <Panel title="Production Access">
-                    <div className="space-y-3">
-                      <FieldRow label="Unlock Suffix">
-                        <input value={unlockSuffix} onChange={(e) => setUnlockSuffix(e.target.value)} className={fieldInputClass} />
+                  <div className="grid content-start gap-[18px]">
+                    <Panel title="Production access" icon={KeyRound} description="Temporary unlock codes for editing a production cutlist.">
+                      <FieldRow label="Unlock suffix" hint="Added to the end of each generated unlock code.">
+                        <input value={unlockSuffix} onChange={(e) => setUnlockSuffix(e.target.value)} className={`${fieldInputClass} max-w-[160px]`} />
                       </FieldRow>
-                      <FieldRow label="Unlock Duration (hours)">
-                        <input value={unlockHours} onChange={(e) => setUnlockHours(e.target.value)} className={fieldInputClass} />
+                      <FieldRow label="Unlock lasts for">
+                        <span className="relative inline-flex w-[120px] items-center">
+                          <input value={unlockHours} inputMode="numeric" onChange={(e) => setUnlockHours(e.target.value)} className={`${fieldInputClass} pr-12 text-center`} />
+                          <span className="pointer-events-none absolute right-3 text-[12px]" style={{ color: "var(--text-muted)" }}>hours</span>
+                        </span>
                       </FieldRow>
-                    </div>
-                  </Panel>
-                  <Panel title="Contractors">
-                    <div className="space-y-1.5">
-                      {contractors.map((value, idx) => (
-                        <div key={`contractor_${idx}`} className="grid grid-cols-[30px_1fr] items-center gap-2">
-                          <button
-                            onClick={() => {
-                              setContractors((prev) => prev.filter((_, i) => i !== idx));
-                              triggerAutosaveAfterRowDrop();
-                            }}
-                            className={dangerIconButtonClass}
-                            style={dangerIconButtonStyle}
-                          >
-                            <X size={15} strokeWidth={2.8} />
-                          </button>
-                          <input
-                            value={value}
-                            onChange={(e) =>
-                              setContractors((prev) => prev.map((v, i) => (i === idx ? e.target.value : v)))
-                            }
-                            placeholder="e.g. Electrician"
-                            className={fieldInputClass}
-                          />
-                        </div>
-                      ))}
-                      <button
-                        onClick={() => setContractors((prev) => [...prev, ""])}
-                        className={`${secondaryButtonClass} mt-1`}
-                      >
-                        + Add
-                      </button>
-                    </div>
-                  </Panel>
-                  {/* Edgebanding used to be its own panel here — it now lives inside each Edge
-                      Bander machine's own settings modal (Machining tab), see machineTypeLabel's
-                      own usage and the edge-bander branch of the machine modal below. */}
-                  <div className="xl:col-span-2">
-                    <Panel title="Gap Allowances">
-                      <div className="grid gap-4 xl:grid-cols-2">
-                        <div className="space-y-2">
-                          <FieldGroupHeading first>Base Cabinets</FieldGroupHeading>
-                          <div className="space-y-2">
-                            {[
-                              ["baseBelowBenchToTopOfDoorDrawer", "Below bench to top of door/drawer"],
-                              ["baseHorizontalGapNormalHandles", "Horizontal gap between drawers (Normal handles)"],
-                              ["baseHorizontalGapWrapOverHandles", "Horizontal gap between drawers (Wrap over handles)"],
-                              ["baseVerticalGapDoorsPanels", "Vertical gap between doors / panels"],
-                            ].map(([key, label]) => (
-                              <div key={key} className="flex items-center gap-2.5">
-                                <input
-                                  value={gapAllowances[key as keyof GapAllowancesSettings]}
-                                  onChange={(e) => setGapAllowances((prev) => ({ ...prev, [key]: e.target.value }))}
-                                  className={`${fieldInputClass} w-14 shrink-0 text-center`}
-                                />
-                                <p className="text-[12px]" style={{ color: "var(--text-main)" }}>{label}</p>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                        <div className="space-y-2">
-                          <FieldGroupHeading first>Tall Cabinets</FieldGroupHeading>
-                          <div className="space-y-2">
-                            {[
-                              ["tallTopOfDoorToTopWithScribers", "Top of door to top of cabinet (top scribers)"],
-                              ["tallTopOfDoorToTopNoScribers", "Top of door to top of cabinet (no top scribers)"],
-                              ["tallVerticalGapDoorsPanels", "Vertical gap between doors / panels"],
-                            ].map(([key, label]) => (
-                              <div key={key} className="flex items-center gap-2.5">
-                                <input
-                                  value={gapAllowances[key as keyof GapAllowancesSettings]}
-                                  onChange={(e) => setGapAllowances((prev) => ({ ...prev, [key]: e.target.value }))}
-                                  className={`${fieldInputClass} w-14 shrink-0 text-center`}
-                                />
-                                <p className="text-[12px]" style={{ color: "var(--text-main)" }}>{label}</p>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
+                    </Panel>
+                    <Panel title="Contractors" icon={TradeIcon} description="Trades you can assign work to on a project.">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {contractors.map((value, idx) => (
+                          <span key={`contractor_${idx}`} className={chipClass}>
+                            <input
+                              value={value}
+                              placeholder="e.g. Electrician"
+                              size={Math.max(10, value.length + 1)}
+                              onChange={(e) => setContractors((prev) => prev.map((v, i) => (i === idx ? e.target.value : v)))}
+                              className="min-w-0 bg-transparent text-[12.5px] font-semibold outline-none"
+                              style={{ color: "var(--text-main)" }}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setContractors((prev) => prev.filter((_, i) => i !== idx))}
+                              className="inline-flex h-6 w-6 items-center justify-center rounded-full transition hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
+                              style={{ color: "var(--text-muted)" }}
+                              title="Remove"
+                            >
+                              <X size={13} />
+                            </button>
+                          </span>
+                        ))}
+                        <button type="button" onClick={() => setContractors((prev) => [...prev, ""])} className={chipAddClass}>
+                          <Plus size={14} /> Add
+                        </button>
                       </div>
                     </Panel>
                   </div>
-                  <div className="xl:col-span-2">
-                    <Panel title="Part Types">
-                      <div className="space-y-1.5">
-                        <div className="grid grid-cols-[30px_1.2fr_90px_120px_140px_110px_110px_110px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
-                          <p></p>
-                          <p>Name</p>
-                          <p>Color</p>
-                          <p>Type</p>
-                          <p className="text-center">Autoclash</p>
-                          <p>Initial Measure</p>
-                          <p>Incl in Cutlists</p>
-                          <p>Incl in Nesting</p>
+                  {/* Edgebanding used to be its own panel here — it now lives inside each Edge Bander
+                      machine's own settings pop-up (Machining tab). */}
+                  <Panel
+                    className="xl:col-span-2"
+                    title="Gap allowances"
+                    icon={Ruler}
+                    description={`Gaps used when working out door, drawer and panel sizes. Shown in ${companyUnit === "in" ? "inches" : "millimetres"} — follows the measurement unit in Company.`}
+                  >
+                    <div className="grid gap-3 xl:grid-cols-2">
+                      {([
+                        [Archive, "Base cabinets", [
+                          ["baseBelowBenchToTopOfDoorDrawer", "Below bench to top of door / drawer"],
+                          ["baseHorizontalGapNormalHandles", "Gap between drawers — normal handles"],
+                          ["baseHorizontalGapWrapOverHandles", "Gap between drawers — wrap-over handles"],
+                          ["baseVerticalGapDoorsPanels", "Vertical gap between doors / panels"],
+                        ]],
+                        [DoorClosed, "Tall cabinets", [
+                          ["tallTopOfDoorToTopWithScribers", "Top of door to top of cabinet — with top scribers"],
+                          ["tallTopOfDoorToTopNoScribers", "Top of door to top of cabinet — no top scribers"],
+                          ["tallVerticalGapDoorsPanels", "Vertical gap between doors / panels"],
+                        ]],
+                      ] as Array<[React.ComponentType<{ size?: number }>, string, string[][]]>).map(([GroupIcon, groupLabel, rows]) => (
+                        <div key={groupLabel} className="grid gap-2 rounded-[14px] border p-3" style={{ borderColor: "var(--glass-border)", backgroundColor: "color-mix(in srgb, var(--panel-bg) 55%, transparent)" }}>
+                          <p className="flex items-center gap-1.5 text-[12px] font-bold" style={{ color: "var(--text-main)" }}>
+                            <GroupIcon size={14} /> {groupLabel}
+                          </p>
+                          {rows.map(([key, label]) => (
+                            <div key={key} className="flex items-center justify-between gap-3 text-[12.5px]" style={{ color: "var(--text-main)" }}>
+                              <span>{label}</span>
+                              <LengthField
+                                valueMm={gapAllowances[key as keyof GapAllowancesSettings]}
+                                onChangeMm={(mm) => setGapAllowances((prev) => ({ ...prev, [key]: mm }))}
+                                unit={companyUnit}
+                                width={92}
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  </Panel>
+                  <Panel className="xl:col-span-2" title="Part types" icon={Shapes} description="The kinds of part in a cutlist — their colour, behaviour and where they're included." allowOverflow>
+                    <div className="overflow-x-auto">
+                      <div className="min-w-[860px] space-y-1.5">
+                        <div className="grid grid-cols-[36px_minmax(140px,1fr)_150px_210px_96px_86px_80px_32px] items-center gap-2 px-2">
+                          <span />
+                          <span className={columnHeadClass}>Name</span>
+                          <span className={columnHeadClass}>Type</span>
+                          <span className={columnHeadClass}>Autoclash</span>
+                          <span className={`text-center ${columnHeadClass}`}>Initial measure</span>
+                          <span className={`text-center ${columnHeadClass}`}>Cutlists</span>
+                          <span className={`text-center ${columnHeadClass}`}>Nesting</span>
+                          <span />
                         </div>
                         {partTypes.map((row, idx) => (
-                          <div key={`${row.name}_${idx}`} className="grid grid-cols-[30px_1.2fr_90px_120px_140px_110px_110px_110px] items-center gap-2">
-                            <button onClick={() => setPartTypes((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} style={dangerIconButtonStyle}><X size={15} strokeWidth={2.8} /></button>
-                            <input value={row.name} onChange={(e) => setPartTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))} className={fieldInputClass} />
-                            <label className="relative block h-8 w-10 cursor-pointer justify-self-center overflow-hidden rounded-[8px] border" style={{ borderColor: "var(--glass-border)" }} title={row.color || "#7D99B3"}>
-                              <span className="block h-full w-full" style={{ backgroundColor: row.color || "#7D99B3" }} />
-                              <input
-                                type="color"
-                                value={row.color || "#7D99B3"}
-                                onChange={(e) => setPartTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, color: e.target.value } : v)))}
-                                className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                              />
-                            </label>
-                            <select
+                          <div key={`part_type_${idx}`} className={`${listRowClass} grid grid-cols-[36px_minmax(140px,1fr)_150px_210px_96px_86px_80px_32px]`}>
+                            <span className="flex justify-center">
+                              <ColorCircle value={row.color || "#7D99B3"} onChange={(hex) => setPartTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, color: hex } : v)))} />
+                            </span>
+                            <input value={row.name} placeholder="Part type" onChange={(e) => setPartTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))} className={gridCellInputClass} />
+                            <GlassDropdown
                               value={row.category}
-                              onChange={(e) =>
+                              options={[
+                                { value: "", label: "None" },
+                                { value: "cabinetry", label: "Cabinetry" },
+                                { value: "drawer", label: "Drawer" },
+                                { value: "door", label: "Doors" },
+                                { value: "panel", label: "Panels" },
+                                { value: "extra", label: "Extras" },
+                              ]}
+                              onChange={(next) =>
                                 setPartTypes((prev) =>
                                   prev.map((v, i) =>
                                     i === idx
-                                      ? {
-                                          ...v,
-                                          category:
-                                            e.target.value === "cabinetry" || e.target.value === "drawer" || e.target.value === "door" || e.target.value === "panel" || e.target.value === "extra"
-                                              ? e.target.value
-                                              : "",
-                                        }
+                                      ? { ...v, category: next === "cabinetry" || next === "drawer" || next === "door" || next === "panel" || next === "extra" ? next : "" }
                                       : v,
                                   ),
                                 )
                               }
-                              className={fieldInputClass}
-                            >
-                              <option value=""></option>
-                              <option value="cabinetry">Cabinetry</option>
-                              <option value="drawer">Drawer</option>
-                              <option value="door">Doors</option>
-                              <option value="panel">Panels</option>
-                              <option value="extra">Extras</option>
-                            </select>
-                            <div className="grid grid-cols-2 gap-1">
-                              <select
-                                value={row.autoClashLeft}
-                                onChange={(e) => setPartTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, autoClashLeft: e.target.value } : v)))}
-                                className={fieldInputClass}
-                              >
-                                <option value=""></option>
-                                {autoClashLeftOptions.map((opt) => (
-                                  <option key={`acl_${idx}_${opt}`} value={opt}>{opt}</option>
-                                ))}
-                              </select>
-                              <select
-                                value={row.autoClashRight}
-                                onChange={(e) => setPartTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, autoClashRight: e.target.value } : v)))}
-                                className={fieldInputClass}
-                              >
-                                <option value=""></option>
-                                {autoClashRightOptions.map((opt) => (
-                                  <option key={`acr_${idx}_${opt}`} value={opt}>{opt}</option>
-                                ))}
-                              </select>
-                            </div>
-                            <label className="inline-flex items-center justify-center"><input type="checkbox" checked={row.initialMeasure} onChange={() => setPartTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, initialMeasure: !v.initialMeasure } : v)))} /></label>
-                            <label className="inline-flex items-center justify-center"><input type="checkbox" checked={row.inCutlists} onChange={() => setPartTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, inCutlists: !v.inCutlists } : v)))} /></label>
-                            <label className="inline-flex items-center justify-center"><input type="checkbox" checked={row.inNesting} onChange={() => setPartTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, inNesting: !v.inNesting } : v)))} /></label>
+                              ariaLabel="Part type category"
+                              triggerClassName={`${glassFieldSmClass} justify-between`}
+                            />
+                            <span className="flex items-center gap-1.5">
+                              {/* Autoclash: Off, or which long / short edges clash — the selected option in brand blue. */}
+                              <Segmented
+                                size="sm"
+                                tone="brand"
+                                value={row.autoClashLeft || ""}
+                                options={[{ value: "", label: "Off" }, ...autoClashLeftOptions.map((opt) => ({ value: opt, label: opt }))]}
+                                onChange={(next) => setPartTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, autoClashLeft: next } : v)))}
+                              />
+                              <Segmented
+                                size="sm"
+                                tone="brand"
+                                value={row.autoClashRight || ""}
+                                options={[{ value: "", label: "Off" }, ...autoClashRightOptions.map((opt) => ({ value: opt, label: opt }))]}
+                                onChange={(next) => setPartTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, autoClashRight: next } : v)))}
+                              />
+                            </span>
+                            <span className="flex justify-center">
+                              <GlassSwitch size="sm" checked={row.initialMeasure} onChange={(on) => setPartTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, initialMeasure: on } : v)))} ariaLabel="Initial measure" />
+                            </span>
+                            <span className="flex justify-center">
+                              <GlassSwitch size="sm" checked={row.inCutlists} onChange={(on) => setPartTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, inCutlists: on } : v)))} ariaLabel="Include in cutlists" />
+                            </span>
+                            <span className="flex justify-center">
+                              <GlassSwitch size="sm" checked={row.inNesting} onChange={(on) => setPartTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, inNesting: on } : v)))} ariaLabel="Include in nesting" />
+                            </span>
+                            <button type="button" onClick={() => setPartTypes((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} title="Remove">
+                              <X size={15} />
+                            </button>
                           </div>
                         ))}
-                        <button onClick={() => setPartTypes((prev) => [...prev, { name: "", color: "#7D99B3", category: "", autoClashLeft: "", autoClashRight: "", initialMeasure: false, inCutlists: true, inNesting: true }])} className={`${secondaryButtonClass} mt-1`}>+ Add Part Type</button>
                       </div>
-                    </Panel>
-                  </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setPartTypes((prev) => [...prev, { name: "", color: "#7D99B3", category: "", autoClashLeft: "", autoClashRight: "", initialMeasure: false, inCutlists: true, inNesting: true }])}
+                      className={`${secondaryButtonClass} mt-2`}
+                    >
+                      <Plus size={14} /> Add part type
+                    </button>
+                  </Panel>
                 </div>
               )}
 
               {active === "staff" && (
-                <div className="grid gap-3 xl:grid-cols-[1fr_380px]">
+                <div className="grid gap-[18px] xl:grid-cols-[minmax(0,1fr)_340px]">
                   <Panel
                     title="Staff"
+                    icon={Users}
+                    description="Everyone in your company. Change someone's role from their role pill."
                     allowOverflow
                     headerRight={
                       canAddStaff ? (
@@ -4890,298 +5067,175 @@ export default function CompanySettingsPage() {
                           type="button"
                           onClick={() => void inviteStaffFromTopBar()}
                           disabled={isInvitingStaff || isLoading || !activeCompanyId}
-                          className="h-8 rounded-[8px] border px-3 text-[11px] font-bold disabled:opacity-60"
-                          style={{ borderColor: "var(--brand-soft)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+                          className={primaryButtonClass}
+                          style={primaryButtonStyle}
                         >
-                          {isInvitingStaff ? "Inviting..." : "Add Staff"}
+                          <UserPlus size={15} /> {isInvitingStaff ? "Inviting..." : "Add staff"}
                         </button>
                       ) : null
                     }
                   >
-                    <div className="space-y-1.5">
-                      <div
-                        className="grid gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]"
-                        style={{ gridTemplateColumns: "32px 74px minmax(0,1fr) minmax(0,1fr) 170px 140px", color: "var(--text-muted)" }}
-                      >
-                        <p></p>
-                        <p className="text-center">Icon</p>
-                        <p>Name</p>
-                        <p>Staff Email</p>
-                        <p>Mobile</p>
-                        <p>Staff Role</p>
-                      </div>
-                      {staff.map((row) => (
-                        <div
-                          key={row.uid}
-                          className="grid items-center gap-2"
-                          style={{ gridTemplateColumns: "32px 74px minmax(0,1fr) minmax(0,1fr) 170px 140px" }}
-                        >
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              // Captured synchronously here, before openStaffRemovalDialog's own
-                              // internal `await fetchProjects(...)` — by the time that resolves,
-                              // React may have already re-rendered this row away from under
-                              // `e.currentTarget`, per captureGlassModalOrigin's own doc comment.
-                              staffRemovalOriginElRef.current = e.currentTarget;
-                              setStaffRemovalOrigin(captureGlassModalOrigin(e));
-                              void openStaffRemovalDialog(row);
-                            }}
-                            disabled={
-                              !canRemoveStaff ||
-                              normalizeRoleKey(row.roleId || row.role) === "owner" ||
-                              preparingStaffRemovalUid === row.uid ||
-                              removingStaffUid === row.uid
-                            }
-                            title={
-                              normalizeRoleKey(row.roleId || row.role) === "owner"
-                                ? "Owner cannot be removed"
-                                : "Remove staff member"
-                            }
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border transition disabled:cursor-not-allowed disabled:opacity-40"
-                            style={
-                              normalizeRoleKey(row.roleId || row.role) === "owner"
-                                ? { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }
-                                : dangerIconButtonStyle
-                            }
-                          >
-                            <img src="/trash.png" alt="" className="h-3.5 w-3.5 object-contain" />
-                          </button>
-                          <div className="inline-flex h-8 w-full items-center justify-center rounded-[8px] border" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}>
-                            {(() => {
-                              const name = toStr(row.displayName, "CU");
-                              const parts = name.split(/\s+/).filter(Boolean);
-                              const initials =
-                                parts.length >= 2
-                                  ? `${parts[0]?.[0] ?? ""}${parts[1]?.[0] ?? ""}`.toUpperCase()
-                                  : `${parts[0]?.[0] ?? name[0] ?? ""}`.toUpperCase();
-                              const currentUserRowColor =
-                                String(row.uid || "").trim() === String(user?.uid || "").trim()
-                                  ? toStr(user?.userColor)
-                                  : "";
-                              const iconColor =
-                                currentUserRowColor ||
-                                toStr(staffIconColorByUid[row.uid]) ||
-                                toStr(row.badgeColor) ||
-                                toStr(row.userColor) ||
-                                toStr(form.themeColor) ||
-                                "#7D99B3";
-                              return (
-                            <div
-                              className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-extrabold text-white"
-                              style={{ backgroundColor: iconColor }}
-                              title="User icon"
-                            >
-                              {initials || "CU"}
+                    <div className="overflow-x-auto">
+                      <div className="min-w-[720px] space-y-1.5">
+                        <div className="grid items-center gap-2 px-2" style={{ gridTemplateColumns: "minmax(180px,1.2fr) minmax(160px,1fr) 130px 170px 32px" }}>
+                          <span className={columnHeadClass}>Name</span>
+                          <span className={columnHeadClass}>Email</span>
+                          <span className={columnHeadClass}>Mobile</span>
+                          <span className={columnHeadClass}>Role</span>
+                          <span />
+                        </div>
+                        {staff.map((row) => {
+                          const roleKeyForRow = normalizeRoleKey(row.roleId || row.role);
+                          const isOwnerRow = roleKeyForRow === "owner";
+                          const name = toStr(row.displayName, "CU");
+                          const parts = name.split(/\s+/).filter(Boolean);
+                          const initials =
+                            parts.length >= 2 ? `${parts[0]?.[0] ?? ""}${parts[1]?.[0] ?? ""}`.toUpperCase() : `${parts[0]?.[0] ?? name[0] ?? ""}`.toUpperCase();
+                          const currentUserRowColor = String(row.uid || "").trim() === String(user?.uid || "").trim() ? toStr(user?.userColor) : "";
+                          const iconColor =
+                            currentUserRowColor || toStr(staffIconColorByUid[row.uid]) || toStr(row.badgeColor) || toStr(row.userColor) || toStr(form.themeColor) || "#7D99B3";
+                          const roleColor = roleColorById.get(roleKeyForRow) || "#7D99B3";
+                          const roleOptions: GlassDropdownOption[] = [
+                            ...staffRoleOptions.map((role) => ({ value: normalizeRoleKey(role.id || role.name), label: toStr(role.name, role.id), color: toStr(role.color, "#7D99B3") })),
+                            ...(!staffRoleOptions.some((role) => normalizeRoleKey(role.id || role.name) === roleKeyForRow) && toStr(row.roleId || row.role)
+                              ? [{ value: roleKeyForRow, label: toStr(roleNameById.get(roleKeyForRow) || row.roleId || row.role), color: roleColor }]
+                              : []),
+                          ];
+                          return (
+                            <div key={row.uid} className={`${listRowClass} grid`} style={{ gridTemplateColumns: "minmax(180px,1.2fr) minmax(160px,1fr) 130px 170px 32px" }}>
+                              <span className="flex min-w-0 items-center gap-2">
+                                <span className="inline-flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white" style={{ backgroundColor: iconColor }}>
+                                  {initials || "CU"}
+                                </span>
+                                <input
+                                  value={String(row.displayName ?? "")}
+                                  onFocus={() => {
+                                    staffNameEditStartRef.current[row.uid] = String(row.displayName ?? "");
+                                  }}
+                                  onChange={(e) =>
+                                    setStaff((prev) => prev.map((member) => (member.uid === row.uid ? { ...member, displayName: e.target.value } : member)))
+                                  }
+                                  onBlur={(e) => void persistStaffDisplayName({ ...row, displayName: e.currentTarget.value })}
+                                  readOnly={!canChangeStaffDisplayName}
+                                  disabled={savingStaffNameUid === row.uid}
+                                  className={`${gridCellInputClass} font-semibold ${savingStaffNameUid === row.uid ? "opacity-60" : ""}`}
+                                />
+                              </span>
+                              <span className="truncate px-1 text-[12.5px]" style={{ color: "var(--text-muted)" }}>{toStr(row.email) || "—"}</span>
+                              <span className="truncate px-1 text-[12.5px]" style={{ color: "var(--text-muted)" }}>{toStr(row.mobile) || "—"}</span>
+                              <span className="min-w-0">
+                                <GlassDropdown
+                                  value={roleKeyForRow}
+                                  options={roleOptions}
+                                  disabled={!canChangeStaffRole || savingStaffRoleUid === row.uid}
+                                  ariaLabel={`Role for ${name}`}
+                                  menuMinWidth={180}
+                                  hideChevron
+                                  onChange={(roleKey) => {
+                                    setOwnerTransferOrigin(null);
+                                    ownerTransferOriginElRef.current = null;
+                                    // Same rule as before: the only owner can't step down until someone else is made owner.
+                                    const shouldRequireOwnerTransfer =
+                                      toStr(row.uid) === toStr(user?.uid) && isOwnerRow && roleKey !== "owner" && !hasAnotherOwnerBesidesCurrentUser;
+                                    if (!shouldRequireOwnerTransfer) {
+                                      setStaff((prev) => prev.map((member) => (member.uid === row.uid ? { ...member, role: roleKey, roleId: roleKey } : member)));
+                                    }
+                                    void persistStaffRole(row, roleKey);
+                                  }}
+                                  triggerClassName={`inline-flex h-7 max-w-full items-center rounded-full px-3 text-[12px] font-semibold ${savingStaffRoleUid === row.uid ? "opacity-60" : ""}`}
+                                  triggerStyle={{ backgroundColor: roleColor, color: contrastTextForFill(roleColor) }}
+                                />
+                              </span>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  // Captured synchronously here, before openStaffRemovalDialog's own
+                                  // internal `await fetchProjects(...)` — by the time that resolves,
+                                  // React may have already re-rendered this row away from under
+                                  // `e.currentTarget`, per captureGlassModalOrigin's own doc comment.
+                                  staffRemovalOriginElRef.current = e.currentTarget;
+                                  setStaffRemovalOrigin(captureGlassModalOrigin(e));
+                                  void openStaffRemovalDialog(row);
+                                }}
+                                disabled={!canRemoveStaff || isOwnerRow || preparingStaffRemovalUid === row.uid || removingStaffUid === row.uid}
+                                title={isOwnerRow ? "Owner cannot be removed" : "Remove staff member"}
+                                className={dangerIconButtonClass}
+                              >
+                                <UserMinus size={15} />
+                              </button>
                             </div>
-                              );
-                            })()}
-                          </div>
-                          <input
-                            value={String(row.displayName ?? "")}
-                            onFocus={() => {
-                              staffNameEditStartRef.current[row.uid] = String(row.displayName ?? "");
-                            }}
-                            onChange={(e) =>
-                              setStaff((prev) =>
-                                prev.map((member) =>
-                                  member.uid === row.uid ? { ...member, displayName: e.target.value } : member,
-                                ),
-                              )
-                            }
-                            onBlur={(e) =>
-                              void persistStaffDisplayName({ ...row, displayName: e.currentTarget.value })
-                            }
-                            readOnly={!canChangeStaffDisplayName}
-                            disabled={savingStaffNameUid === row.uid}
-                            className={`${fieldInputClass} min-w-0 ${savingStaffNameUid === row.uid ? "opacity-60" : ""}`}
-                            style={{ backgroundColor: canChangeStaffDisplayName ? "var(--panel-bg)" : "var(--panel-muted)" }}
-                          />
-                          <input readOnly value={toStr(row.email)} className={`${fieldInputClass} min-w-0`} style={{ backgroundColor: "var(--panel-muted)" }} />
-                          <input
-                            readOnly
-                            value={toStr(row.mobile)}
-                            className={fieldInputClass}
-                            style={{ backgroundColor: "var(--panel-muted)" }}
-                          />
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </Panel>
+                  <Panel title="Roles" icon={Shield} description="Click a role to edit what it can do. Drag to reorder.">
+                    <div className="space-y-1.5">
+                      {roles.map((row, idx) => {
+                        const fill = row.color || "#7D99B3";
+                        const fg = contrastTextForFill(fill);
+                        return (
                           <div
-                            ref={openStaffRoleUid === row.uid ? openStaffRoleMenuRef : null}
-                            className="relative"
+                            key={`${row.id}_${idx}`}
+                            id={`settings_role_${idx}`}
+                            className="flex items-center gap-2 rounded-[12px] px-2 py-1.5 transition"
+                            style={{ backgroundColor: fill, color: fg, opacity: roleDragIndex === idx ? 0.45 : 1 }}
+                            onDragOver={(e) => {
+                              e.preventDefault();
+                              e.dataTransfer.dropEffect = "move";
+                            }}
+                            onDragEnter={(e) => {
+                              e.preventDefault();
+                              if (roleDragIndex == null || roleDragIndex === idx) return;
+                              setRoles((prev) => moveRowTo(prev, roleDragIndex, idx));
+                              setRoleDragIndex(idx);
+                              setRoleDragOverIndex(idx);
+                            }}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              setRoleDragIndex(null);
+                              setRoleDragOverIndex(null);
+                              endRowDrag();
+                              triggerAutosaveAfterRowDrop();
+                            }}
                           >
                             <button
                               type="button"
-                              disabled={!canChangeStaffRole || savingStaffRoleUid === row.uid}
-                              onClick={() =>
-                                setOpenStaffRoleUid((prev) => (prev === row.uid ? "" : row.uid))
-                              }
-                              className={`flex h-7 w-full items-center justify-between rounded-[8px] border px-2 text-[11px] ${
-                                savingStaffRoleUid === row.uid ? "opacity-60" : ""
-                              }`}
-                              style={{
-                                backgroundColor: roleColorById.get(normalizeRoleKey(row.roleId || row.role)) || "var(--panel-bg)",
-                                borderColor: roleColorById.get(normalizeRoleKey(row.roleId || row.role)) || "var(--glass-border)",
-                                color: contrastTextForFill(
-                                  roleColorById.get(normalizeRoleKey(row.roleId || row.role)) || "#FFFFFF",
-                                ),
+                              draggable
+                              onDragStart={(e) => {
+                                setRoleDragIndex(idx);
+                                setRoleDragOverIndex(idx);
+                                e.dataTransfer.setData("text/plain", `${row.id}`);
+                                startRowDrag(e, `settings_role_${idx}`, toStr(row.name, "Untitled Role"), fill);
                               }}
+                              onDragEnd={() => {
+                                setRoleDragIndex(null);
+                                setRoleDragOverIndex(null);
+                                endRowDrag();
+                              }}
+                              className="inline-flex h-7 w-6 shrink-0 cursor-grab items-center justify-center rounded-[7px] opacity-80 transition hover:bg-white/15 hover:opacity-100 active:cursor-grabbing"
+                              title="Drag to reorder"
                             >
-                              <span className="truncate text-left">
-                                {toStr(
-                                  roleNameById.get(normalizeRoleKey(row.roleId || row.role)) || row.roleId || row.role,
-                                  "Choose role",
-                                )}
-                              </span>
-                              <span className="ml-2 shrink-0 text-[9px]" style={{ color: "inherit", opacity: 0.7 }}>▼</span>
+                              <GripVertical size={15} />
                             </button>
-                            {openStaffRoleUid === row.uid ? (
-                              <div
-                                className="glass-panel-settle-in absolute left-0 right-0 top-[calc(100%+4px)] z-[1400] rounded-[10px] border p-1.5"
-                                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-bg-strong)", backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", boxShadow: "var(--shadow-glass)" }}
-                              >
-                                <div className="space-y-1">
-                                  {staffRoleOptions.map((role) => {
-                                    const roleKey = normalizeRoleKey(role.id || role.name);
-                                    const selected = roleKey === normalizeRoleKey(row.roleId || row.role);
-                                    return (
-                                      <button
-                                        key={role.id}
-                                        type="button"
-                                        onClick={(e) => {
-                                          ownerTransferOriginElRef.current = e.currentTarget;
-                                          setOwnerTransferOrigin(captureGlassModalOrigin(e));
-                                          setOpenStaffRoleUid("");
-                                          const shouldRequireOwnerTransfer =
-                                            toStr(row.uid) === toStr(user?.uid) &&
-                                            normalizeRoleKey(row.roleId || row.role) === "owner" &&
-                                            roleKey !== "owner" &&
-                                            !hasAnotherOwnerBesidesCurrentUser;
-                                          if (!shouldRequireOwnerTransfer) {
-                                            setStaff((prev) =>
-                                              prev.map((member) =>
-                                                member.uid === row.uid
-                                                  ? {
-                                                      ...member,
-                                                      role: roleKey,
-                                                      roleId: roleKey,
-                                                    }
-                                                  : member,
-                                              ),
-                                            );
-                                          }
-                                          void persistStaffRole(row, roleKey);
-                                        }}
-                                        className={`flex h-7 w-full items-center justify-between rounded-[8px] border px-2.5 text-left text-[11px] font-semibold transition-colors ${
-                                          selected ? "ring-2 ring-[var(--brand)] ring-offset-1" : ""
-                                        }`}
-                                        style={{
-                                          backgroundColor: toStr(role.color, "#7D99B3"),
-                                          borderColor: toStr(role.color, "#7D99B3"),
-                                          color: contrastTextForFill(toStr(role.color, "#7D99B3")),
-                                        }}
-                                      >
-                                        <span className="truncate">{toStr(role.name, role.id)}</span>
-                                        {selected ? <span className="ml-2 text-[9px]">✓</span> : null}
-                                      </button>
-                                    );
-                                  })}
-                                  {!staffRoleOptions.some((role) => normalizeRoleKey(role.id || role.name) === normalizeRoleKey(row.roleId || row.role)) &&
-                                  toStr(row.roleId || row.role) ? (
-                                    <div
-                                      className="flex h-6 items-center rounded-[8px] border px-2.5 text-[11px] font-semibold"
-                                      style={{
-                                        backgroundColor:
-                                          roleColorById.get(normalizeRoleKey(row.roleId || row.role)) || "#7D99B3",
-                                        borderColor:
-                                          roleColorById.get(normalizeRoleKey(row.roleId || row.role)) || "#7D99B3",
-                                        color: contrastTextForFill(
-                                          roleColorById.get(normalizeRoleKey(row.roleId || row.role)) || "#7D99B3",
-                                        ),
-                                      }}
-                                    >
-                                      {toStr(
-                                        roleNameById.get(normalizeRoleKey(row.roleId || row.role)) || row.roleId || row.role,
-                                      )}
-                                    </div>
-                                  ) : null}
-                                </div>
-                              </div>
-                            ) : null}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                roleModalOriginElRef.current = e.currentTarget;
+                                setRoleModalOrigin(captureGlassModalOrigin(e));
+                                setActiveRoleModalIndex(idx);
+                              }}
+                              className="flex min-w-0 flex-1 items-center gap-2 py-1 text-left text-[13px] font-semibold"
+                            >
+                              <span className="min-w-0 flex-1 truncate">{toStr(row.name, "Untitled Role")}</span>
+                              {isProtectedStarterRole(row.id || row.name) ? <Lock size={13} className="shrink-0 opacity-80" /> : null}
+                              <span className="shrink-0 text-[11px] opacity-80">{row.permissions.length} perms</span>
+                            </button>
                           </div>
-                        </div>
-                      ))}
-                    </div>
-                  </Panel>
-                  <Panel title="Roles">
-                    <div className="space-y-1.5">
-                      <div className="grid grid-cols-[22px_1fr] gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
-                        <p></p>
-                        <p>Role Name</p>
-                      </div>
-                      {roles.map((row, idx) => (
-                        <div
-                          key={`${row.id}_${idx}`}
-                          className={`grid grid-cols-[22px_1fr] items-center gap-2 rounded-[10px] border px-3 py-2 transition-all ${
-                            roleDragIndex === idx
-                              ? "z-10 opacity-80 shadow-[0_8px_24px_rgba(15,23,42,0.18)]"
-                              : roleDragOverIndex === idx
-                                ? "brightness-[0.98]"
-                                : ""
-                          }`}
-                          style={{
-                            backgroundColor: row.color || "#7D99B3",
-                            borderColor: row.color || "#7D99B3",
-                            color: contrastTextForFill(row.color || "#7D99B3"),
-                          }}
-                          onDragOver={(e) => {
-                            e.preventDefault();
-                            e.dataTransfer.dropEffect = "move";
-                          }}
-                          onDragEnter={(e) => {
-                            e.preventDefault();
-                            if (roleDragIndex == null || roleDragIndex === idx) return;
-                            setRoles((prev) => moveRowTo(prev, roleDragIndex, idx));
-                            setRoleDragIndex(idx);
-                            setRoleDragOverIndex(idx);
-                          }}
-                          onDrop={(e) => {
-                            e.preventDefault();
-                            setRoleDragIndex(null);
-                            setRoleDragOverIndex(null);
-                            triggerAutosaveAfterRowDrop();
-                          }}
-                        >
-                          <button
-                            type="button"
-                            draggable
-                            onDragStart={(e) => {
-                              setRoleDragIndex(idx);
-                              setRoleDragOverIndex(idx);
-                              e.dataTransfer.effectAllowed = "move";
-                              e.dataTransfer.setData("text/plain", `${row.id}`);
-                            }}
-                            onDragEnd={() => {
-                              setRoleDragIndex(null);
-                              setRoleDragOverIndex(null);
-                            }}
-                            className="inline-flex h-7 w-7 cursor-grab items-center justify-center rounded-[8px] border border-white/35 bg-white/15 active:cursor-grabbing"
-                            title="Drag to reorder"
-                          >
-                            <GripVertical size={14} />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              roleModalOriginElRef.current = e.currentTarget;
-                              setRoleModalOrigin(captureGlassModalOrigin(e));
-                              setActiveRoleModalIndex(idx);
-                            }}
-                            className="truncate text-left text-[12px] font-extrabold"
-                          >
-                            {toStr(row.name, "Untitled Role")}
-                          </button>
-                        </div>
-                      ))}
+                        );
+                      })}
                       <button
+                        type="button"
                         onClick={(e) => {
                           roleModalOriginElRef.current = e.currentTarget;
                           setRoleModalOrigin(captureGlassModalOrigin(e));
@@ -5191,97 +5245,70 @@ export default function CompanySettingsPage() {
                             return next;
                           });
                         }}
-                        className={`${secondaryButtonClass} mt-1`}
+                        className={`${secondaryButtonClass} mt-1.5`}
                       >
-                        + Add Role
+                        <Plus size={14} /> Add role
                       </button>
                     </div>
                   </Panel>
                   {shouldRenderRoleModal ? (
                     <div className="fixed inset-0 z-[1600] flex items-center justify-center px-4 py-4">
-                      <button
-                        type="button"
-                        aria-label="Close role permissions popup"
-                        onClick={() => setActiveRoleModalIndex(null)}
-                        className="glass-modal-backdrop absolute inset-0"
-                      />
-                      <div ref={roleModalPanelRef} className="glass-modal-panel relative z-[1601] flex w-full max-w-[760px] flex-col overflow-hidden">
+                      <button type="button" aria-label="Close role permissions" onClick={() => setActiveRoleModalIndex(null)} className="glass-modal-backdrop absolute inset-0" />
+                      <div ref={roleModalPanelRef} className="glass-modal-panel relative z-[1601] flex max-h-[calc(100svh-32px)] w-full max-w-[820px] flex-col overflow-hidden">
                         <div className="glass-modal-header flex items-center justify-between px-4 py-3">
-                          <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
-                            Role Permissions
-                          </p>
-                          <button
-                            type="button"
-                            onClick={() => setActiveRoleModalIndex(null)}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border transition hover:brightness-95"
-                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
-                          >
+                          <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>Role permissions</p>
+                          <button type="button" onClick={() => setActiveRoleModalIndex(null)} className={dangerIconButtonClass} aria-label="Close">
                             <X size={16} />
                           </button>
                         </div>
-                        <div className="space-y-4 px-4 py-4">
-                          <div className="grid grid-cols-[1fr_64px] gap-3">
-                            <div className="space-y-1">
-                              <p className="text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>Role Name</p>
+                        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
+                          <div className="flex items-end gap-3">
+                            <StackField label="Role name" className="flex-1">
                               <input
                                 value={activeRoleModal?.name ?? ""}
-                                onChange={(e) =>
-                                  setRoles((prev) =>
-                                    prev.map((role, idx) =>
-                                      idx === activeRoleModalIndex ? { ...role, name: e.target.value } : role,
-                                    ),
-                                  )
-                                }
-                                className={`${fieldInputClass} h-9`}
+                                onChange={(e) => setRoles((prev) => prev.map((role, idx) => (idx === activeRoleModalIndex ? { ...role, name: e.target.value } : role)))}
+                                className={fieldInputClass}
+                              />
+                            </StackField>
+                            <div className="grid gap-1.5 text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
+                              Colour
+                              <ColorCircle
+                                size={36}
+                                value={activeRoleModal?.color || "#7D99B3"}
+                                onChange={(hex) => setRoles((prev) => prev.map((role, idx) => (idx === activeRoleModalIndex ? { ...role, color: hex } : role)))}
                               />
                             </div>
-                            <div className="space-y-1">
-                              <p className="text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>Color</p>
-                              <label
-                                className="relative inline-flex h-9 w-full overflow-hidden rounded-[10px] border"
-                                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}
-                              >
-                                <span className="block h-full w-full" style={{ backgroundColor: activeRoleModal?.color || "#7D99B3" }} />
-                                <input
-                                  type="color"
-                                  value={activeRoleModal?.color || "#7D99B3"}
-                                  onChange={(e) =>
-                                    setRoles((prev) =>
-                                      prev.map((role, idx) =>
-                                        idx === activeRoleModalIndex ? { ...role, color: e.target.value } : role,
-                                      ),
-                                    )
-                                  }
-                                  className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                                />
-                              </label>
-                            </div>
                           </div>
-                          <div className="rounded-[12px] border p-3" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>
-                            <div className="mb-2 flex items-center justify-between">
-                              <p className="text-[11px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>Permissions</p>
-                              <span className="text-[11px] font-semibold" style={{ color: "var(--text-muted)" }}>
-                                {activeRoleModal?.permissions.length ?? 0} selected
-                              </span>
-                            </div>
-                            <div className="grid grid-cols-2 gap-x-2 gap-y-1">
-                              {desktopPermissionKeys.map((perm) => (
-                                <label
-                                  key={perm}
-                                  className="inline-flex items-center gap-2 rounded-[8px] px-2 py-1 text-[11px] font-semibold"
-                                  style={{ backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={activeRoleModal?.permissions.includes(perm) ?? false}
-                                    onChange={() => {
-                                      if (activeRoleModalIndex !== null) toggleRolePermission(activeRoleModalIndex, perm);
-                                    }}
-                                  />
-                                  <span>{permissionLabels[perm] ?? perm}</span>
-                                </label>
-                              ))}
-                            </div>
+                          <div className="flex items-center justify-between">
+                            <p className="text-[10.5px] font-bold uppercase tracking-[0.8px]" style={{ color: "var(--text-muted)" }}>Permissions</p>
+                            <span className={countPillClass}>{activeRoleModal?.permissions.length ?? 0} on</span>
+                          </div>
+                          <div className="grid gap-2.5 md:grid-cols-2">
+                            {groupPermissionKeys(desktopPermissionKeys).map((group) => (
+                              <div key={group.label} className="rounded-[14px] border px-3 py-2" style={{ borderColor: "var(--glass-border)", backgroundColor: "color-mix(in srgb, var(--panel-bg) 55%, transparent)" }}>
+                                <p className="pb-1 text-[10.5px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>{group.label}</p>
+                                {group.keys.map((perm) => {
+                                  const label = permissionLabels[perm] ?? perm;
+                                  const [, ...rest] = label.split(" - ");
+                                  return (
+                                    <div key={perm} className="flex items-center justify-between gap-3 border-t py-2 first:border-t-0" style={{ borderColor: "var(--glass-border)" }}>
+                                      <div className="min-w-0">
+                                        <p className="text-[12.5px] font-medium" style={{ color: "var(--text-main)" }}>{rest.length ? rest.join(" - ") : label}</p>
+                                        <p className="font-mono text-[10.5px]" style={{ color: "var(--text-muted)" }}>{perm}</p>
+                                      </div>
+                                      <GlassSwitch
+                                        size="sm"
+                                        checked={activeRoleModal?.permissions.includes(perm) ?? false}
+                                        onChange={() => {
+                                          if (activeRoleModalIndex !== null) toggleRolePermission(activeRoleModalIndex, perm);
+                                        }}
+                                        ariaLabel={label}
+                                      />
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            ))}
                           </div>
                         </div>
                         <div className="flex items-center justify-between border-t px-4 py-3" style={{ borderColor: "var(--glass-border)" }}>
@@ -5293,20 +5320,20 @@ export default function CompanySettingsPage() {
                               setActiveRoleModalIndex(null);
                             }}
                             disabled={activeRoleIsProtected}
-                            className="rounded-[8px] border px-3 py-1.5 text-[11px] font-bold disabled:cursor-not-allowed"
-                            style={
-                              activeRoleIsProtected
-                                ? { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }
-                                : dangerIconButtonStyle
-                            }
+                            className={smallButtonClass}
+                            style={activeRoleIsProtected ? undefined : { backgroundImage: "var(--danger-gradient)", color: "#fff", borderColor: "transparent" }}
                           >
-                            {activeRoleIsProtected ? "Protected Role" : "Delete Role"}
+                            {activeRoleIsProtected ? (
+                              <>
+                                <Lock size={14} /> Protected role
+                              </>
+                            ) : (
+                              <>
+                                <Trash2 size={14} /> Delete role
+                              </>
+                            )}
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => setActiveRoleModalIndex(null)}
-                            className={secondaryButtonClass}
-                          >
+                          <button type="button" onClick={() => setActiveRoleModalIndex(null)} className={primaryButtonClass} style={primaryButtonStyle}>
                             Done
                           </button>
                         </div>
@@ -5335,8 +5362,8 @@ export default function CompanySettingsPage() {
                               setPendingOwnerTransfer(null);
                               setPendingOwnerTransferTargetUid("");
                             }}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border transition hover:brightness-95"
-                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
+                            className={dangerIconButtonClass}
+                            aria-label="Close"
                           >
                             <X size={16} />
                           </button>
@@ -5349,19 +5376,17 @@ export default function CompanySettingsPage() {
                             Choose another staff member to become the new Owner first.
                           </p>
                           <div className="space-y-1">
-                            <p className="text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>New Owner</p>
-                            <select
+                            <p className="text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>New owner</p>
+                            <GlassDropdown
                               value={pendingOwnerTransferTargetUid}
-                              onChange={(e) => setPendingOwnerTransferTargetUid(toStr(e.target.value))}
-                              className={`${fieldInputClass} h-9`}
-                            >
-                              <option value="">Choose staff member</option>
-                              {ownerTransferCandidates.map((member) => (
-                                <option key={member.uid} value={member.uid}>
-                                  {toStr(member.displayName || member.email || member.uid)}
-                                </option>
-                              ))}
-                            </select>
+                              options={[
+                                { value: "", label: "Choose staff member" },
+                                ...ownerTransferCandidates.map((member) => ({ value: member.uid, label: toStr(member.displayName || member.email || member.uid) })),
+                              ]}
+                              onChange={(uid) => setPendingOwnerTransferTargetUid(toStr(uid))}
+                              ariaLabel="New owner"
+                              triggerClassName={`${fieldInputClass} justify-between`}
+                            />
                           </div>
                         </div>
                         <div className="flex items-center justify-end gap-2 border-t px-4 py-3" style={{ borderColor: "var(--glass-border)" }}>
@@ -5379,10 +5404,10 @@ export default function CompanySettingsPage() {
                             type="button"
                             onClick={() => void confirmOwnerTransferAndRoleChange()}
                             disabled={!pendingOwnerTransferTargetUid || !!savingStaffRoleUid}
-                            className="rounded-[8px] px-4 py-1.5 text-[11px] font-bold text-white transition hover:brightness-105 disabled:opacity-60"
-                            style={{ backgroundImage: "var(--brand-gradient)" }}
+                            className={primaryButtonClass}
+                            style={primaryButtonStyle}
                           >
-                            Confirm Transfer
+                            Confirm transfer
                           </button>
                         </div>
                       </div>
@@ -5412,15 +5437,15 @@ export default function CompanySettingsPage() {
                               setPendingStaffRemoval(null);
                               setStaffRemovalError("");
                             }}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border transition hover:brightness-95"
-                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
+                            className={dangerIconButtonClass}
+                            aria-label="Close"
                           >
                             <X size={16} />
                           </button>
                         </div>
                         <div className="space-y-4 px-4 py-4">
                           <div className="space-y-1">
-                            <p className="text-[16px] font-extrabold" style={{ color: "var(--text-main)" }}>Are you sure?</p>
+                            <p className="text-[16px] font-semibold" style={{ color: "var(--text-main)" }}>Are you sure?</p>
                             <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
                               <span className="font-bold" style={{ color: "var(--text-main)" }}>{pendingStaffRemoval?.displayName}</span>
                               {" "}
@@ -5434,31 +5459,20 @@ export default function CompanySettingsPage() {
                           </div>
                           {(pendingStaffRemoval?.activeProjectCount ?? 0) > 0 ? (
                             <div className="space-y-1">
-                              <p className="text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
-                                Transfer Projects To
-                              </p>
-                              <select
+                              <p className="text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>Transfer their projects to</p>
+                              <GlassDropdown
                                 value={pendingStaffRemoval?.transferToUid ?? ""}
-                                onChange={(e) =>
-                                  setPendingStaffRemoval((current) =>
-                                    current
-                                      ? {
-                                          ...current,
-                                          transferToUid: toStr(e.target.value),
-                                        }
-                                      : current,
-                                  )
+                                options={[
+                                  { value: "", label: "Choose staff member" },
+                                  ...staffRemovalTransferCandidates.map((member) => ({ value: member.uid, label: toStr(member.displayName || member.email || member.uid) })),
+                                ]}
+                                onChange={(uid) =>
+                                  setPendingStaffRemoval((current) => (current ? { ...current, transferToUid: toStr(uid) } : current))
                                 }
                                 disabled={pendingStaffRemoval?.confirmPhase === "type_name" || !!removingStaffUid}
-                                className={`${fieldInputClass} h-10`}
-                              >
-                                <option value="">Choose staff member</option>
-                                {staffRemovalTransferCandidates.map((member) => (
-                                  <option key={member.uid} value={member.uid}>
-                                    {toStr(member.displayName || member.email || member.uid)}
-                                  </option>
-                                ))}
-                              </select>
+                                ariaLabel="Transfer projects to"
+                                triggerClassName={`${fieldInputClass} justify-between`}
+                              />
                               {!staffRemovalTransferCandidates.length ? (
                                 <p className="text-[11px] font-semibold" style={{ color: "var(--danger-strong)" }}>
                                   There are no other staff members available to transfer these projects to.
@@ -5490,7 +5504,7 @@ export default function CompanySettingsPage() {
                                 autoCapitalize="off"
                                 autoCorrect="off"
                                 spellCheck={false}
-                                className={`${fieldInputClass} h-10`}
+                                className={fieldInputClass}
                                 placeholder={pendingStaffRemoval?.displayName}
                               />
                             </div>
@@ -5521,10 +5535,10 @@ export default function CompanySettingsPage() {
                                 !!removingStaffUid ||
                                 !namesMatchForConfirmation(pendingStaffRemoval?.typedName ?? "", pendingStaffRemoval?.displayName ?? "")
                               }
-                              className="rounded-[8px] px-4 py-1.5 text-[11px] font-bold text-white transition hover:brightness-105 disabled:opacity-60"
+                              className={primaryButtonClass}
                               style={{ backgroundImage: "var(--danger-gradient)" }}
                             >
-                              {removingStaffUid ? "Removing..." : "Confirm"}
+                              {removingStaffUid ? "Removing..." : "Remove"}
                             </button>
                           ) : (
                             <button
@@ -5535,117 +5549,12 @@ export default function CompanySettingsPage() {
                                 ((pendingStaffRemoval?.activeProjectCount ?? 0) > 0 &&
                                   (!pendingStaffRemoval?.transferToUid || !staffRemovalTransferCandidates.length))
                               }
-                              className="rounded-[8px] px-4 py-1.5 text-[11px] font-bold text-white transition hover:brightness-105 disabled:opacity-60"
-                              style={{ backgroundImage: "var(--brand-gradient)" }}
+                              className={primaryButtonClass}
+                              style={primaryButtonStyle}
                             >
-                              Confirm
+                              Continue
                             </button>
                           )}
-                        </div>
-                      </div>
-                    </div>
-                  ) : null}
-                  {false && showZapierHelp ? (
-                    <div className="fixed inset-0 z-[1750] flex items-center justify-center px-4 py-4">
-                      <button
-                        type="button"
-                        aria-label="Close Zapier help"
-                        onClick={() => setShowZapierHelp(false)}
-                        className="absolute inset-0 bg-[rgba(15,23,42,0.42)] backdrop-blur-[3px]"
-                      />
-                      <div className="relative z-[1751] flex h-[min(760px,calc(100svh-32px))] w-full max-w-[980px] flex-col overflow-hidden rounded-[16px] border border-[var(--glass-border)] bg-[var(--panel-bg)] shadow-[0_28px_70px_rgba(2,6,23,0.28)]">
-                        <div className="flex items-center justify-between border-b border-[var(--glass-border)] px-4 py-3">
-                          <div className="flex min-w-0 items-center gap-3">
-                            <div className="inline-flex h-10 w-10 items-center justify-center rounded-[12px] bg-[#FF5A1F] shadow-[0_8px_20px_rgba(255,90,31,0.24)]">
-                              <img src="/logos/Zapier-logo.png" alt="Zapier" className="h-5 w-5 object-contain" />
-                            </div>
-                            <div>
-                              <p className="text-[13px] font-extrabold uppercase tracking-[0.8px] text-[var(--text-main)]">
-                                Connect Zapier Leads
-                              </p>
-                              <p className="text-[11px] text-[var(--text-muted)]">
-                                Use your company webhook URL to connect any Zapier form into CutSmart Leads.
-                              </p>
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => setShowZapierHelp(false)}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] text-[var(--text-muted)]"
-                          >
-                            <X size={16} />
-                          </button>
-                        </div>
-                        <div className="flex-1 overflow-y-auto px-5 py-5">
-                          <div className="grid gap-5 lg:grid-cols-[1.1fr_0.9fr]">
-                            <div className="space-y-4">
-                              <div className="rounded-[14px] border border-[var(--glass-border)] bg-[var(--panel-muted)] p-4">
-                                <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[var(--text-main)]">What To Do In Zapier</p>
-                                <div className="mt-3 space-y-3 text-[12px] text-[var(--text-muted)]">
-                                  <p>1. Create a Zap with <span className="font-bold text-[var(--text-main)]">Zapier Forms -&gt; New Submission</span> as the trigger.</p>
-                                  <p>2. Add <span className="font-bold text-[var(--text-main)]">Webhooks by Zapier -&gt; POST</span> as the action.</p>
-                                  <p>3. Paste your company webhook URL into the Zapier URL field.</p>
-                                  <p>4. Set <span className="font-bold text-[var(--text-main)]">Payload Type</span> to <span className="font-bold text-[var(--text-main)]">JSON</span>.</p>
-                                  <p>5. Add the lead fields you want to send in the body. The left-side key names become the dynamic fields shown in CutSmart.</p>
-                                  <p>6. Test the Zap and then publish it.</p>
-                                </div>
-                              </div>
-                              <div className="rounded-[14px] border border-[var(--glass-border)] bg-[var(--panel-bg)] p-4">
-                                <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[var(--text-main)]">Dynamic Field Tip</p>
-                                <p className="mt-3 text-[12px] text-[var(--text-muted)]">
-                                  If you send keys like <span className="font-bold text-[var(--text-main)]">Email</span>, <span className="font-bold text-[var(--text-main)]">Daytime Phone</span>, <span className="font-bold text-[var(--text-main)]">Suburb</span>, or <span className="font-bold text-[var(--text-main)]">Kitchen Age</span>, those exact names become the lead fields CutSmart shows for this company.
-                                </p>
-                              </div>
-                            </div>
-                            <div className="space-y-4">
-                              <div className="rounded-[14px] border border-[var(--glass-border)] bg-[var(--panel-bg)] p-4">
-                                <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[var(--text-main)]">Webhook URL</p>
-                                <div className="mt-3 flex items-center gap-2">
-                                  <input
-                                    value={zapierWebhookUrl}
-                                    readOnly
-                                    className="h-10 flex-1 rounded-[10px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-3 text-[12px] text-[var(--text-main)]"
-                                  />
-                                  <button
-                                    type="button"
-                                    disabled={!zapierWebhookUrl}
-                                    onClick={async () => {
-                                      if (!zapierWebhookUrl) return;
-                                      try {
-                                        await navigator.clipboard.writeText(zapierWebhookUrl);
-                                        setZapierCopyStatus("Webhook URL copied");
-                                      } catch {
-                                        setZapierCopyStatus("Copy failed");
-                                      }
-                                    }}
-                                    className="h-10 rounded-[10px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-3 text-[12px] font-bold text-[var(--text-muted)] disabled:opacity-55"
-                                  >
-                                    Copy
-                                  </button>
-                                </div>
-                                <p className="mt-2 text-[11px] text-[var(--text-muted)]">
-                                  This URL already includes the secure company token, so you do not need to add separate auth headers in Zapier.
-                                </p>
-                              </div>
-                              <div className="rounded-[14px] border border-[var(--glass-border)] bg-[var(--panel-muted)] p-4">
-                                <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[var(--text-main)]">What Happens Next</p>
-                                <div className="mt-3 space-y-2 text-[12px] text-[var(--text-muted)]">
-                                  <p>Leads are saved under this company automatically.</p>
-                                  <p>The Leads tab reads them back through the server route.</p>
-                                  <p>You can use different field names for different companies because the lead display is dynamic.</p>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                        <div className="flex items-center justify-end gap-2 border-t border-[var(--glass-border)] px-4 py-3">
-                          <button
-                            type="button"
-                            onClick={() => setShowZapierHelp(false)}
-                            className="rounded-[10px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-4 py-2 text-[12px] font-bold text-[var(--text-muted)]"
-                          >
-                            Close
-                          </button>
                         </div>
                       </div>
                     </div>
@@ -5654,108 +5563,15 @@ export default function CompanySettingsPage() {
               )}
 
               {active === "dashboard" && (
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                  <Panel title="Completed Project Legend">
+                <div className="grid gap-[18px] xl:grid-cols-2">
+                  <Panel title="Project statuses" icon={KanbanSquare} description="The columns on your Dashboard board, in order. Drag to reorder; expand a status to add sub-stages.">
                     <div className="space-y-1.5">
-                      <div className="grid grid-cols-[30px_30px_1fr_46px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
-                        <p></p>
-                        <p></p>
-                        <p>Name</p>
-                        <p>Color</p>
-                      </div>
-                      {dashboardLegend.map((row, idx) => (
-                        <div
-                          key={`${row.id}_${idx}`}
-                          className="grid grid-cols-[30px_30px_1fr_46px] items-center gap-2 rounded-[8px] transition-colors"
-                          style={{
-                            backgroundColor:
-                              legendDragIndex === idx
-                                ? "var(--brand-soft)"
-                                : legendDragOverIndex === idx
-                                  ? "var(--panel-muted)"
-                                  : "transparent",
-                          }}
-                          onDragOver={(e) => {
-                            e.preventDefault();
-                            e.dataTransfer.dropEffect = "move";
-                          }}
-                          onDragEnter={(e) => {
-                            e.preventDefault();
-                            if (legendDragIndex == null || legendDragIndex === idx) return;
-                            setDashboardLegend((prev) => moveRowTo(prev, legendDragIndex, idx));
-                            setLegendDragIndex(idx);
-                            setLegendDragOverIndex(idx);
-                          }}
-                          onDrop={(e) => {
-                            e.preventDefault();
-                            setLegendDragIndex(null);
-                            setLegendDragOverIndex(null);
-                            triggerAutosaveAfterRowDrop();
-                          }}
-                        >
-                          <button
-                            type="button"
-                            draggable
-                            onDragStart={(e) => {
-                              setLegendDragIndex(idx);
-                              setLegendDragOverIndex(idx);
-                              e.dataTransfer.effectAllowed = "move";
-                              e.dataTransfer.setData("text/plain", `${row.id}`);
-                            }}
-                            onDragEnd={() => {
-                              setLegendDragIndex(null);
-                              setLegendDragOverIndex(null);
-                            }}
-                            className="inline-flex h-8 w-8 cursor-grab items-center justify-center rounded-[8px] border active:cursor-grabbing"
-                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
-                            title="Drag to reorder"
-                          >
-                            <GripVertical size={14} />
-                          </button>
-                          <button
-                            onClick={() => setDashboardLegend((prev) => prev.filter((_, i) => i !== idx))}
-                            className={dangerIconButtonClass}
-                            style={dangerIconButtonStyle}
-                            title="Delete row"
-                          >
-                            <X size={15} strokeWidth={2.8} />
-                          </button>
-                          <input value={row.name} onChange={(e) => setDashboardLegend((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))} className={fieldInputClass} />
-                          <label className="relative block h-8 w-10 cursor-pointer justify-self-center overflow-hidden rounded-[8px] border" style={{ borderColor: "var(--glass-border)" }} title={row.color || "#2A7A3B"}>
-                            <span className="block h-full w-full" style={{ backgroundColor: row.color || "#2A7A3B" }} />
-                            <input
-                              type="color"
-                              value={row.color || "#2A7A3B"}
-                              onChange={(e) => setDashboardLegend((prev) => prev.map((v, i) => (i === idx ? { ...v, color: e.target.value } : v)))}
-                              className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                            />
-                          </label>
-                        </div>
-                      ))}
-                      <button onClick={() => setDashboardLegend((prev) => [...prev, { id: `legend_${prev.length + 1}`, name: "", color: form.themeColor || "#2A7A3B" }])} className={`${secondaryButtonClass} mt-1`}>+ Add</button>
-                    </div>
-                  </Panel>
-                  <Panel title="Project Statuses">
-                    <div className="space-y-1.5">
-                      <div className="grid grid-cols-[30px_30px_1fr_46px_30px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
-                        <p></p>
-                        <p>Del</p>
-                        <p>Status Name</p>
-                        <p className="text-center">Color</p>
-                        <p></p>
-                      </div>
                       {statuses.map((row, idx) => (
                         <div key={`project_status_${idx}`}>
                           <div
-                            className="grid grid-cols-[30px_30px_1fr_46px_30px] items-center gap-2 rounded-[8px] transition-colors"
-                            style={{
-                              backgroundColor:
-                                statusDragIndex === idx
-                                  ? "var(--brand-soft)"
-                                  : statusDragOverIndex === idx
-                                    ? "var(--panel-muted)"
-                                    : "transparent",
-                            }}
+                            id={`settings_status_${idx}`}
+                            className={listRowClass}
+                            style={{ opacity: statusDragIndex === idx ? 0.45 : 1 }}
                             onDragOver={(e) => {
                               e.preventDefault();
                               e.dataTransfer.dropEffect = "move";
@@ -5771,6 +5587,7 @@ export default function CompanySettingsPage() {
                               e.preventDefault();
                               setStatusDragIndex(null);
                               setStatusDragOverIndex(null);
+                              endRowDrag();
                               triggerAutosaveAfterRowDrop();
                             }}
                           >
@@ -5780,136 +5597,99 @@ export default function CompanySettingsPage() {
                               onDragStart={(e) => {
                                 setStatusDragIndex(idx);
                                 setStatusDragOverIndex(idx);
-                                e.dataTransfer.effectAllowed = "move";
                                 e.dataTransfer.setData("text/plain", `${idx}`);
+                                startRowDrag(e, `settings_status_${idx}`, row.name, row.color);
                               }}
                               onDragEnd={() => {
                                 setStatusDragIndex(null);
                                 setStatusDragOverIndex(null);
+                                endRowDrag();
                               }}
-                              className="inline-flex h-8 w-8 cursor-grab items-center justify-center rounded-[8px] border active:cursor-grabbing"
-                              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
+                              className={gripClass}
                               title="Drag to reorder"
                             >
-                              <GripVertical size={14} />
+                              <GripVertical size={15} />
                             </button>
-                            <button
-                              type="button"
-                              onClick={() => setStatuses((prev) => prev.filter((_, i) => i !== idx))}
-                              className={dangerIconButtonClass}
-                              style={dangerIconButtonStyle}
-                            >
-                              <X size={15} strokeWidth={2.8} />
-                            </button>
+                            <ColorCircle value={row.color || "#64748B"} onChange={(hex) => setStatuses((prev) => prev.map((v, i) => (i === idx ? { ...v, color: hex } : v)))} />
                             <input
                               value={row.name}
+                              placeholder="Status name"
                               onChange={(e) => setStatuses((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))}
-                              className={fieldInputClass}
+                              className={gridCellInputClass}
                             />
-                            <label className="relative block h-8 w-10 cursor-pointer justify-self-center overflow-hidden rounded-[8px] border" style={{ borderColor: "var(--glass-border)" }} title={row.color || "#64748B"}>
-                              <span className="block h-full w-full" style={{ backgroundColor: row.color || "#64748B" }} />
-                              <input
-                                type="color"
-                                value={row.color || "#64748B"}
-                                onChange={(e) => setStatuses((prev) => prev.map((v, i) => (i === idx ? { ...v, color: e.target.value } : v)))}
-                                className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                              />
-                            </label>
+                            {(row.subStages ?? []).length > 0 ? <span className={countPillClass}>{(row.subStages ?? []).length} sub-stages</span> : null}
                             <button
                               type="button"
                               onClick={() => toggleStatusSubStagesExpanded(idx)}
-                              className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border"
-                              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
-                              title={statusSubStagesExpanded[idx] ? "Collapse sub-stages" : "Expand sub-stages"}
+                              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] transition hover:bg-[color-mix(in_srgb,var(--text-main)_6%,transparent)]"
+                              style={{ color: "var(--text-muted)" }}
+                              title={statusSubStagesExpanded[idx] ? "Hide sub-stages" : "Sub-stages"}
                             >
                               <ChevronDown
-                                size={14}
-                                style={{ transform: statusSubStagesExpanded[idx] ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 120ms ease" }}
+                                size={15}
+                                style={{ transform: statusSubStagesExpanded[idx] ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 200ms ease" }}
                               />
+                            </button>
+                            <button type="button" onClick={() => setStatuses((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} title="Remove">
+                              <X size={15} />
                             </button>
                           </div>
                           {statusSubStagesExpanded[idx] && (
-                            <div className="ml-8 space-y-1.5 border-l py-1.5 pl-3" style={{ borderColor: "var(--glass-border)" }}>
-                              <p className="px-1 text-[9px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
-                                Sub-stages (optional — click this status&apos;s column header on the Dashboard board to drill in)
+                            <div className="my-1.5 ml-8 grid gap-1.5 rounded-[12px] border border-dashed p-2.5" style={{ borderColor: "color-mix(in srgb, var(--text-main) 16%, transparent)" }}>
+                              <p className="text-[11.5px]" style={{ color: "var(--text-muted)" }}>
+                                Sub-stages are optional — click this status&apos;s column header on the Dashboard board to drill in.
                               </p>
                               {(row.subStages ?? []).map((sub, subIdx) => (
-                                <div key={`project_status_${idx}_sub_${subIdx}`} className="grid grid-cols-[30px_1fr_46px_64px] items-center gap-2">
-                                  <button
-                                    type="button"
-                                    onClick={() => removeStatusSubStage(idx, subIdx)}
-                                    className={dangerIconButtonClass}
-                                    style={dangerIconButtonStyle}
-                                  >
-                                    <X size={15} strokeWidth={2.8} />
-                                  </button>
+                                <div key={`project_status_${idx}_sub_${subIdx}`} className={listRowClass}>
+                                  <ColorCircle value={sub.color || "#64748B"} size={24} onChange={(hex) => updateStatusSubStage(idx, subIdx, { color: hex })} />
                                   <input
                                     value={sub.name}
                                     onChange={(e) => updateStatusSubStage(idx, subIdx, { name: e.target.value })}
                                     placeholder="Sub-stage name"
-                                    className={fieldInputClass}
+                                    className={gridCellInputClass}
                                   />
-                                  <label className="relative block h-8 w-10 cursor-pointer justify-self-center overflow-hidden rounded-[8px] border" style={{ borderColor: "var(--glass-border)" }} title={sub.color || "#64748B"}>
-                                    <span className="block h-full w-full" style={{ backgroundColor: sub.color || "#64748B" }} />
-                                    <input
-                                      type="color"
-                                      value={sub.color || "#64748B"}
-                                      onChange={(e) => updateStatusSubStage(idx, subIdx, { color: e.target.value })}
-                                      className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                                    />
-                                  </label>
-                                  <label
-                                    className="flex cursor-pointer items-center gap-1"
+                                  <button
+                                    type="button"
+                                    onClick={() => setDefaultStatusSubStage(idx, subIdx)}
                                     title="Cards entering this status land here by default — only one sub-stage per status can be the default"
+                                    className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-[11.5px] font-semibold"
+                                    style={{ color: sub.isDefault ? "var(--brand-strong)" : "var(--text-muted)" }}
                                   >
-                                    <input
-                                      type="checkbox"
-                                      checked={Boolean(sub.isDefault)}
-                                      onChange={() => setDefaultStatusSubStage(idx, subIdx)}
-                                      className="h-3.5 w-3.5 cursor-pointer"
-                                    />
-                                    <span className="text-[10px] font-bold" style={{ color: "var(--text-muted)" }}>Default</span>
-                                  </label>
+                                    <span
+                                      className="inline-flex h-4 w-4 items-center justify-center rounded-full border-[1.5px]"
+                                      style={{ borderColor: sub.isDefault ? "var(--brand)" : "color-mix(in srgb, var(--text-main) 25%, transparent)" }}
+                                    >
+                                      {sub.isDefault ? <span className="h-2 w-2 rounded-full" style={{ backgroundColor: "var(--brand)" }} /> : null}
+                                    </span>
+                                    Default
+                                  </button>
+                                  <button type="button" onClick={() => removeStatusSubStage(idx, subIdx)} className={dangerIconButtonClass} title="Remove">
+                                    <X size={15} />
+                                  </button>
                                 </div>
                               ))}
-                              <button
-                                onClick={() => addStatusSubStage(idx)}
-                                className={`${secondaryButtonClass} mt-1`}
-                              >
-                                + Add Sub-Stage
-                              </button>
+                              <div>
+                                <button type="button" onClick={() => addStatusSubStage(idx)} className="inline-flex items-center gap-1 text-[12px] font-semibold" style={{ color: "var(--brand-strong)" }}>
+                                  <Plus size={14} /> Add sub-stage
+                                </button>
+                              </div>
                             </div>
                           )}
                         </div>
                       ))}
-                      <button
-                        onClick={() => setStatuses((prev) => [...prev, { name: "", color: "#64748B" }])}
-                        className={`${secondaryButtonClass} mt-1`}
-                      >
-                        + Add
+                      <button type="button" onClick={() => setStatuses((prev) => [...prev, { name: "", color: "#64748B" }])} className={`${secondaryButtonClass} mt-1.5`}>
+                        <Plus size={14} /> Add status
                       </button>
                     </div>
                   </Panel>
-                  <Panel title="Leads Statuses">
+                  <Panel title="Lead statuses" icon={Inbox} description="The columns on your Leads board.">
                     <div className="space-y-1.5">
-                      <div className="grid grid-cols-[30px_30px_1fr_46px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
-                        <p></p>
-                        <p>Del</p>
-                        <p>Status Name</p>
-                        <p className="text-center">Color</p>
-                      </div>
                       {leadStatuses.map((row, idx) => (
                         <div
                           key={`lead_status_${idx}`}
-                          className="grid grid-cols-[30px_30px_1fr_46px] items-center gap-2 rounded-[8px] transition-colors"
-                          style={{
-                            backgroundColor:
-                              leadStatusDragIndex === idx
-                                ? "var(--brand-soft)"
-                                : leadStatusDragOverIndex === idx
-                                  ? "var(--panel-muted)"
-                                  : "transparent",
-                          }}
+                          id={`settings_lead_status_${idx}`}
+                          className={listRowClass}
+                          style={{ opacity: leadStatusDragIndex === idx ? 0.45 : 1 }}
                           onDragOver={(e) => {
                             e.preventDefault();
                             e.dataTransfer.dropEffect = "move";
@@ -5925,6 +5705,7 @@ export default function CompanySettingsPage() {
                             e.preventDefault();
                             setLeadStatusDragIndex(null);
                             setLeadStatusDragOverIndex(null);
+                            endRowDrag();
                             triggerAutosaveAfterRowDrop();
                           }}
                         >
@@ -5934,146 +5715,332 @@ export default function CompanySettingsPage() {
                             onDragStart={(e) => {
                               setLeadStatusDragIndex(idx);
                               setLeadStatusDragOverIndex(idx);
-                              e.dataTransfer.effectAllowed = "move";
                               e.dataTransfer.setData("text/plain", `${idx}`);
+                              startRowDrag(e, `settings_lead_status_${idx}`, row.name, row.color);
                             }}
                             onDragEnd={() => {
                               setLeadStatusDragIndex(null);
                               setLeadStatusDragOverIndex(null);
+                              endRowDrag();
                             }}
-                            className="inline-flex h-8 w-8 cursor-grab items-center justify-center rounded-[8px] border active:cursor-grabbing"
-                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
+                            className={gripClass}
                             title="Drag to reorder"
                           >
-                            <GripVertical size={14} />
+                            <GripVertical size={15} />
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => setLeadStatuses((prev) => prev.filter((_, i) => i !== idx))}
-                            className={dangerIconButtonClass}
-                            style={dangerIconButtonStyle}
-                          >
-                            <X size={15} strokeWidth={2.8} />
-                          </button>
+                          <ColorCircle value={row.color || "#64748B"} onChange={(hex) => setLeadStatuses((prev) => prev.map((v, i) => (i === idx ? { ...v, color: hex } : v)))} />
                           <input
                             value={row.name}
+                            placeholder="Status name"
                             onChange={(e) => setLeadStatuses((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))}
-                            className={fieldInputClass}
+                            className={gridCellInputClass}
                           />
-                          <label className="relative block h-8 w-10 cursor-pointer justify-self-center overflow-hidden rounded-[8px] border" style={{ borderColor: "var(--glass-border)" }} title={row.color || "#64748B"}>
-                            <span className="block h-full w-full" style={{ backgroundColor: row.color || "#64748B" }} />
-                            <input
-                              type="color"
-                              value={row.color || "#64748B"}
-                              onChange={(e) => setLeadStatuses((prev) => prev.map((v, i) => (i === idx ? { ...v, color: e.target.value } : v)))}
-                              className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                            />
-                          </label>
+                          <button type="button" onClick={() => setLeadStatuses((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} title="Remove">
+                            <X size={15} />
+                          </button>
                         </div>
                       ))}
-                      <button
-                        onClick={() => setLeadStatuses((prev) => [...prev, { name: "", color: "#64748B" }])}
-                        className={`${secondaryButtonClass} mt-1`}
-                      >
-                        + Add
+                      <button type="button" onClick={() => setLeadStatuses((prev) => [...prev, { name: "", color: "#64748B" }])} className={`${secondaryButtonClass} mt-1.5`}>
+                        <Plus size={14} /> Add status
                       </button>
                     </div>
                   </Panel>
-                  <Panel title="Tags">
+                  <Panel title="Contact categories" icon={Contact} description="Group your contacts — the colour themes each contact's card. Drag to set the order they're listed in.">
                     <div className="space-y-1.5">
-                      <div className="grid grid-cols-[30px_1fr_60px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
-                        <p></p>
-                        <p>Tag</p>
-                        <p className="text-center">Count</p>
-                      </div>
+                      {contactCategories.map((row, idx) => (
+                        <div
+                          key={`contact_category_${idx}`}
+                          id={`settings_contact_category_${idx}`}
+                          className={listRowClass}
+                          style={{ opacity: contactCategoryDragIndex === idx ? 0.45 : 1 }}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = "move";
+                          }}
+                          onDragEnter={(e) => {
+                            e.preventDefault();
+                            if (contactCategoryDragIndex == null || contactCategoryDragIndex === idx) return;
+                            setContactCategories((prev) => moveRowTo(prev, contactCategoryDragIndex, idx));
+                            setContactCategoryDragIndex(idx);
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            setContactCategoryDragIndex(null);
+                            endRowDrag();
+                          }}
+                        >
+                          <button
+                            type="button"
+                            draggable
+                            onDragStart={(e) => {
+                              setContactCategoryDragIndex(idx);
+                              e.dataTransfer.setData("text/plain", `${idx}`);
+                              startRowDrag(e, `settings_contact_category_${idx}`, row.name, row.color);
+                            }}
+                            onDragEnd={() => {
+                              setContactCategoryDragIndex(null);
+                              endRowDrag();
+                            }}
+                            className={gripClass}
+                            title="Drag to reorder"
+                          >
+                            <GripVertical size={15} />
+                          </button>
+                          <ColorCircle value={row.color || "#7D99B3"} onChange={(hex) => setContactCategories((prev) => prev.map((v, i) => (i === idx ? { ...v, color: hex } : v)))} />
+                          <input
+                            value={row.name}
+                            placeholder="Category name"
+                            onChange={(e) => setContactCategories((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))}
+                            className={gridCellInputClass}
+                          />
+                          <button type="button" onClick={() => setContactCategories((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} title="Remove">
+                            <X size={15} />
+                          </button>
+                        </div>
+                      ))}
+                      <button type="button" onClick={() => setContactCategories((prev) => [...prev, { name: "", color: "#7D99B3" }])} className={`${secondaryButtonClass} mt-1.5`}>
+                        <Plus size={14} /> Add category
+                      </button>
+                    </div>
+                  </Panel>
+                  <Panel title="Completed project legend" icon={Award} description="Categories for the completed-projects breakdown on the Dashboard.">
+                    <div className="space-y-1.5">
+                      {dashboardLegend.map((row, idx) => (
+                        <div
+                          key={`${row.id}_${idx}`}
+                          id={`settings_legend_${idx}`}
+                          className={listRowClass}
+                          style={{ opacity: legendDragIndex === idx ? 0.45 : 1 }}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = "move";
+                          }}
+                          onDragEnter={(e) => {
+                            e.preventDefault();
+                            if (legendDragIndex == null || legendDragIndex === idx) return;
+                            setDashboardLegend((prev) => moveRowTo(prev, legendDragIndex, idx));
+                            setLegendDragIndex(idx);
+                            setLegendDragOverIndex(idx);
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            setLegendDragIndex(null);
+                            setLegendDragOverIndex(null);
+                            endRowDrag();
+                            triggerAutosaveAfterRowDrop();
+                          }}
+                        >
+                          <button
+                            type="button"
+                            draggable
+                            onDragStart={(e) => {
+                              setLegendDragIndex(idx);
+                              setLegendDragOverIndex(idx);
+                              e.dataTransfer.setData("text/plain", `${idx}`);
+                              startRowDrag(e, `settings_legend_${idx}`, row.name, row.color);
+                            }}
+                            onDragEnd={() => {
+                              setLegendDragIndex(null);
+                              setLegendDragOverIndex(null);
+                              endRowDrag();
+                            }}
+                            className={gripClass}
+                            title="Drag to reorder"
+                          >
+                            <GripVertical size={15} />
+                          </button>
+                          <ColorCircle value={row.color || "#2A7A3B"} onChange={(hex) => setDashboardLegend((prev) => prev.map((v, i) => (i === idx ? { ...v, color: hex } : v)))} />
+                          <input
+                            value={row.name}
+                            placeholder="Legend name"
+                            onChange={(e) => setDashboardLegend((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))}
+                            className={gridCellInputClass}
+                          />
+                          <button type="button" onClick={() => setDashboardLegend((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} title="Remove">
+                            <X size={15} />
+                          </button>
+                        </div>
+                      ))}
+                      <button type="button" onClick={() => setDashboardLegend((prev) => [...prev, { id: `legend_${prev.length + 1}`, name: "", color: form.themeColor || "#2A7A3B" }])} className={`${secondaryButtonClass} mt-1.5`}>
+                        <Plus size={14} /> Add legend item
+                      </button>
+                    </div>
+                  </Panel>
+                  <Panel title="Tags" icon={Tags} description="Tags you can put on projects. The number is how many projects use each one.">
+                    <div className="flex flex-wrap items-center gap-1.5">
                       {projectTagUsage.map((row, idx) => (
-                        <div key={`tag_row_${idx}`} className="grid grid-cols-[30px_1fr_60px] items-center gap-2">
+                        <span key={`tag_row_${idx}`} className={chipClass}>
+                          <input
+                            value={row.value}
+                            onChange={(e) => setProjectTagUsage((prev) => prev.map((v, i) => (i === idx ? { ...v, value: e.target.value } : v)))}
+                            placeholder="Tag"
+                            size={Math.max(4, row.value.length + 1)}
+                            className="min-w-0 bg-transparent text-[12.5px] font-semibold outline-none"
+                            style={{ color: "var(--text-main)" }}
+                          />
+                          <span className={countPillClass} title="Projects using this tag">{String(row.count || "0")}</span>
                           <button
                             type="button"
                             onClick={() => setProjectTagUsage((prev) => prev.filter((_, i) => i !== idx))}
-                            className={dangerIconButtonClass}
-                            style={dangerIconButtonStyle}
+                            className="inline-flex h-6 w-6 items-center justify-center rounded-full transition hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
+                            style={{ color: "var(--text-muted)" }}
+                            title="Remove tag"
                           >
-                            <X size={15} strokeWidth={2.8} />
+                            <X size={13} />
                           </button>
-                          <input value={row.value} onChange={(e) => setProjectTagUsage((prev) => prev.map((v, i) => (i === idx ? { ...v, value: e.target.value } : v)))} className={fieldInputClass} />
-                          <div
-                            className="inline-flex h-8 w-full items-center justify-center rounded-[8px] border px-2 text-center text-[12px] font-semibold"
-                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                        </span>
+                      ))}
+                      <button type="button" onClick={() => setProjectTagUsage((prev) => [...prev, { value: "", count: "0" }])} className={chipAddClass}>
+                        <Plus size={14} /> Add tag
+                      </button>
+                    </div>
+                  </Panel>
+                  <Panel title="Recently deleted" icon={Trash2} description="How long deleted projects stay in Recently Deleted before they're removed for good." allowOverflow>
+                    <FieldRow label="Keep deleted items for">
+                      <GlassDropdown
+                        value={form.deletedRetentionDays}
+                        options={deletedRetentionOptions.map((opt) => ({ value: opt.days, label: opt.label }))}
+                        onChange={(days) => setForm((prev) => ({ ...prev, deletedRetentionDays: days }))}
+                        ariaLabel="Keep deleted items for"
+                        disabled={!canEditCompanySettings}
+                        triggerClassName={`${fieldInputClass} max-w-[220px] justify-between`}
+                      />
+                    </FieldRow>
+                  </Panel>
+                </div>
+              )}
+
+              {active === "calendar" && (
+                <div className="grid gap-[18px] xl:grid-cols-2">
+                  <Panel
+                    title="Calendar categories"
+                    icon={CalendarDays}
+                    description="Every event on the Calendar tab belongs to one of these — its colour shows on the calendar and each can be shown or hidden there. Drag to set the order."
+                  >
+                    <div className="space-y-1.5">
+                      {calendarCategories.map((row, idx) => (
+                        <div
+                          key={row.id || `calendar_category_${idx}`}
+                          id={`settings_calendar_category_${idx}`}
+                          className={listRowClass}
+                          style={{ opacity: calendarCategoryDragIndex === idx ? 0.45 : 1 }}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = "move";
+                          }}
+                          onDragEnter={(e) => {
+                            e.preventDefault();
+                            if (calendarCategoryDragIndex == null || calendarCategoryDragIndex === idx) return;
+                            setCalendarCategories((prev) => moveRowTo(prev, calendarCategoryDragIndex, idx));
+                            setCalendarCategoryDragIndex(idx);
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            setCalendarCategoryDragIndex(null);
+                            endRowDrag();
+                          }}
+                        >
+                          <button
+                            type="button"
+                            draggable
+                            onDragStart={(e) => {
+                              setCalendarCategoryDragIndex(idx);
+                              e.dataTransfer.setData("text/plain", `${idx}`);
+                              startRowDrag(e, `settings_calendar_category_${idx}`, row.name, row.color);
+                            }}
+                            onDragEnd={() => {
+                              setCalendarCategoryDragIndex(null);
+                              endRowDrag();
+                            }}
+                            className={gripClass}
+                            title="Drag to reorder"
                           >
-                            {String(row.count || "0")}
-                          </div>
+                            <GripVertical size={15} />
+                          </button>
+                          <ColorCircle value={row.color || "#7D99B3"} onChange={(hex) => setCalendarCategories((prev) => prev.map((v, i) => (i === idx ? { ...v, color: hex } : v)))} />
+                          <input
+                            value={row.name}
+                            placeholder="Category name"
+                            onChange={(e) => setCalendarCategories((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))}
+                            className={gridCellInputClass}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setCalendarCategories((prev) => prev.filter((_, i) => i !== idx))}
+                            className={dangerIconButtonClass}
+                            title="Remove — its events stay, shown as uncategorised"
+                          >
+                            <X size={15} />
+                          </button>
                         </div>
                       ))}
-                      <button onClick={() => setProjectTagUsage((prev) => [...prev, { value: "", count: "0" }])} className={`${secondaryButtonClass} mt-1`}>+ Add Tag</button>
+                      <button
+                        type="button"
+                        onClick={() => setCalendarCategories((prev) => [...prev, { id: newCalendarId("cat"), name: "", color: form.themeColor || "#2F6BFF" }])}
+                        className={`${secondaryButtonClass} mt-1.5`}
+                      >
+                        <Plus size={14} /> Add category
+                      </button>
                     </div>
                   </Panel>
                 </div>
               )}
 
               {active === "sales" && (
-                <div className="space-y-3">
-                  <div className="grid gap-3 xl:grid-cols-2">
-                    <Panel title="Lead Form">
-                      <div className="space-y-3">
-                        <FieldRow label="Public Form URL">
-                          <input
-                            value={salesLeadFormUrl}
-                            onChange={(e) => setSalesLeadFormUrl(e.target.value)}
-                            placeholder="https://..."
-                            className={fieldInputClass}
-                          />
-                        </FieldRow>
-                      </div>
-                    </Panel>
-                    <Panel title="Layout Builders">
-                      <div className="flex flex-wrap gap-2.5">
-                        <button
-                          type="button"
-                          onClick={() => setIsSpecsLayoutModalOpen(true)}
-                          className={secondaryButtonClass}
-                        >
-                          Open Specs Layout Builder
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setIsQuoteLayoutModalOpen(true)}
-                          className={secondaryButtonClass}
-                        >
-                          Open Quote Layout Builder
-                        </button>
-                      </div>
-                    </Panel>
-                  </div>
-                  <Panel title="Client Confirmation">
-                    <label className="inline-flex items-center gap-2 text-[12px] font-bold" style={{ color: "var(--text-main)" }}>
-                      <input
-                        type="checkbox"
-                        checked={salesAllowReopenForEditing}
-                        onChange={() => setSalesAllowReopenForEditing((v) => !v)}
-                      />
-                      Allow staff to reopen a sent/submitted Quote or Specifications sheet for editing
-                    </label>
-                    <p className="mt-1.5 text-[11px]" style={{ color: "var(--text-muted)" }}>
-                      Turn off to hide the &quot;Reopen for Editing&quot; button once a Quote has been sent or a Specifications sheet submitted — the only way back to an editable copy is then Resetting to Template.
-                    </p>
+                <div className="grid gap-[18px] xl:grid-cols-2">
+                  <Panel title="Lead form" icon={FileInput} description="Your public enquiry form. Submissions land in Leads.">
+                    <FieldRow label="Public form URL">
+                      <input value={salesLeadFormUrl} onChange={(e) => setSalesLeadFormUrl(e.target.value)} placeholder="https://..." className={fieldInputClass} />
+                    </FieldRow>
                   </Panel>
-                  <Panel title="Item Categories">
-                    <div className="space-y-3">
-                      <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
-                        {itemCategories.length} categor{itemCategories.length === 1 ? "y" : "ies"} configured for the Sales item picker.
-                      </p>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          itemCategoriesModalOriginElRef.current = e.currentTarget;
-                          setItemCategoriesModalOrigin(captureGlassModalOrigin(e));
-                          setIsItemCategoriesModalOpen(true);
-                        }}
-                        className={secondaryButtonClass}
-                      >
-                        Manage Item Categories
-                      </button>
+                  <Panel title="Client confirmation" icon={ShieldCheck} description="What staff can do once a quote or specs sheet has gone to the client.">
+                    <FieldRow
+                      label="Allow reopening for editing"
+                      hint="When off, the “Reopen for Editing” button is hidden once a Quote is sent or Specs submitted — the only way back is Reset to Template."
+                    >
+                      <GlassSwitch checked={salesAllowReopenForEditing} onChange={(on) => setSalesAllowReopenForEditing(on)} ariaLabel="Allow reopening for editing" />
+                    </FieldRow>
+                  </Panel>
+                  <Panel className="xl:col-span-2" title="Layout builders" icon={LayoutTemplate} description="The templates every new quote and specifications sheet starts from, and the items in the Sales item picker.">
+                    <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(220px,1fr))]">
+                      {([
+                        { key: "specs", title: "Specs layout", desc: "Grid template with placeholders for project data.", icon: ClipboardList, gradient: "linear-gradient(135deg,#8B5CF6,#6B4FB3)" },
+                        { key: "quote", title: "Quote layout", desc: "Grid template, quote extras and grouped pricing.", icon: Receipt, gradient: "var(--brand-gradient)" },
+                        {
+                          key: "items",
+                          title: "Item categories",
+                          desc: `${itemCategories.length} categor${itemCategories.length === 1 ? "y" : "ies"} · ${itemCategories.reduce((sum, c) => sum + (c.items?.length ?? 0), 0)} items for the Sales item picker.`,
+                          icon: FolderTree,
+                          gradient: "linear-gradient(135deg,#14B8A6,#0F766E)",
+                        },
+                      ] as const).map((tile) => {
+                        const TileIcon = tile.icon;
+                        return (
+                          <button
+                            key={tile.key}
+                            type="button"
+                            onClick={(e) => {
+                              if (tile.key === "specs") setIsSpecsLayoutModalOpen(true);
+                              else if (tile.key === "quote") setIsQuoteLayoutModalOpen(true);
+                              else {
+                                itemCategoriesModalOriginElRef.current = e.currentTarget;
+                                setItemCategoriesModalOrigin(captureGlassModalOrigin(e));
+                                setIsItemCategoriesModalOpen(true);
+                              }
+                            }}
+                            className="grid gap-2.5 rounded-[16px] border p-3.5 text-left transition hover:-translate-y-0.5 hover:shadow-[var(--shadow-glass)]"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "color-mix(in srgb, var(--panel-bg) 55%, transparent)" }}
+                          >
+                            <span className="inline-flex h-[38px] w-[38px] items-center justify-center rounded-[12px] text-white" style={{ backgroundImage: tile.gradient }}>
+                              <TileIcon size={18} />
+                            </span>
+                            <span>
+                              <span className="block text-[14px] font-semibold" style={{ color: "var(--text-main)" }}>{tile.title}</span>
+                              <span className="block text-[12px]" style={{ color: "var(--text-muted)" }}>{tile.desc}</span>
+                            </span>
+                          </button>
+                        );
+                      })}
                     </div>
                   </Panel>
                   {shouldRenderItemCategoriesModal ? (
@@ -6086,20 +6053,15 @@ export default function CompanySettingsPage() {
                       />
                       <div ref={itemCategoriesModalPanelRef} className="glass-modal-panel relative z-[1751] flex h-[min(760px,calc(100svh-32px))] w-full max-w-[1080px] flex-col overflow-hidden">
                         <div className="glass-modal-header flex items-center justify-between px-4 py-3">
-                          <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>Item Categories</p>
-                          <button
-                            type="button"
-                            onClick={() => setIsItemCategoriesModalOpen(false)}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border transition hover:brightness-95"
-                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
-                          >
+                          <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>Item categories</p>
+                          <button type="button" onClick={() => setIsItemCategoriesModalOpen(false)} className={dangerIconButtonClass} aria-label="Close">
                             <X size={16} />
                           </button>
                         </div>
                         <div className="flex-1 overflow-y-auto">
                           <div
-                            className="grid grid-cols-[30px_30px_30px_72px_1fr_1fr] gap-2 border-b px-4 py-2 text-[10px] font-extrabold uppercase tracking-[0.6px]"
-                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
+                            className="grid grid-cols-[30px_30px_30px_72px_1fr_1fr] gap-2 border-b px-4 py-2 text-[10.5px] font-bold uppercase tracking-[0.6px]"
+                            style={{ borderColor: "var(--glass-border)", color: "var(--text-muted)" }}
                           >
                             <p></p>
                             <p></p>
@@ -6111,16 +6073,9 @@ export default function CompanySettingsPage() {
                           {itemCategories.map((row, idx) => (
                               <div key={idx}>
                                 <div
+                                  id={`settings_item_category_${idx}`}
                                   className={`grid grid-cols-[30px_30px_30px_72px_1fr_1fr] items-center gap-2 px-4 py-2 transition-colors ${idx < itemCategories.length - 1 || itemCategoryExpanded[idx] ? "border-b" : ""}`}
-                                  style={{
-                                    borderColor: "var(--glass-border)",
-                                    backgroundColor:
-                                      itemCategoryDragIndex === idx
-                                        ? "var(--brand-soft)"
-                                        : itemCategoryDragOverIndex === idx
-                                          ? "var(--panel-muted)"
-                                          : "transparent",
-                                  }}
+                                  style={{ borderColor: "var(--glass-border)", opacity: itemCategoryDragIndex === idx ? 0.45 : 1 }}
                                   onDragOver={(e) => {
                                     e.preventDefault();
                                     e.dataTransfer.dropEffect = "move";
@@ -6136,6 +6091,7 @@ export default function CompanySettingsPage() {
                                     e.preventDefault();
                                     setItemCategoryDragIndex(null);
                                     setItemCategoryDragOverIndex(null);
+                                    endRowDrag();
                                     triggerAutosaveAfterRowDrop();
                                   }}
                                 >
@@ -6145,67 +6101,54 @@ export default function CompanySettingsPage() {
                                     onDragStart={(e) => {
                                       setItemCategoryDragIndex(idx);
                                       setItemCategoryDragOverIndex(idx);
-                                      e.dataTransfer.effectAllowed = "move";
                                       e.dataTransfer.setData("text/plain", `itemcat_${idx}`);
+                                      startRowDrag(e, `settings_item_category_${idx}`, row.name, row.color);
                                     }}
                                     onDragEnd={() => {
                                       setItemCategoryDragIndex(null);
                                       setItemCategoryDragOverIndex(null);
+                                      endRowDrag();
                                     }}
-                                    className="inline-flex h-8 w-8 cursor-grab items-center justify-center rounded-[8px] border active:cursor-grabbing"
-                                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
+                                    className={gripClass}
                                     title="Drag to reorder"
                                   >
-                                    <GripVertical size={14} />
+                                    <GripVertical size={15} />
                                   </button>
-                                  <button onClick={() => setItemCategories((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} style={dangerIconButtonStyle}><X size={15} strokeWidth={2.8} /></button>
+                                  <button type="button" onClick={() => setItemCategories((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} title="Remove category"><X size={15} /></button>
                                   <button
                                     type="button"
                                     onClick={() => toggleItemCategoryExpanded(idx)}
-                                    className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border"
-                                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
-                                    title={itemCategoryExpanded[idx] ? "Collapse" : "Expand"}
+                                    className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] transition hover:bg-[color-mix(in_srgb,var(--text-main)_6%,transparent)]"
+                                    style={{ color: "var(--text-muted)" }}
+                                    title={itemCategoryExpanded[idx] ? "Hide items" : "Show items"}
                                   >
                                     <ChevronDown
                                       size={15}
                                       style={{ transform: itemCategoryExpanded[idx] ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 120ms ease" }}
                                     />
                                   </button>
-                                  <label className="relative block h-8 w-10 cursor-pointer justify-self-center overflow-hidden rounded-[8px] border" style={{ borderColor: "var(--glass-border)" }} title={row.color || "#7D99B3"}>
-                                    <span className="block h-full w-full" style={{ backgroundColor: row.color || "#7D99B3" }} />
-                                    <input
-                                      type="color"
-                                      value={row.color || "#7D99B3"}
-                                      onChange={(e) => setItemCategories((prev) => prev.map((v, i) => (i === idx ? { ...v, color: e.target.value } : v)))}
-                                      className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                                    />
-                                  </label>
-                                  <input value={row.name} onChange={(e) => setItemCategories((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))} className={fieldInputClass} />
+                                  <span className="flex justify-center">
+                                    <ColorCircle value={row.color || "#7D99B3"} onChange={(hex) => setItemCategories((prev) => prev.map((v, i) => (i === idx ? { ...v, color: hex } : v)))} />
+                                  </span>
+                                  <input value={row.name} placeholder="Category name" onChange={(e) => setItemCategories((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))} className={gridCellInputClass} />
                                   <div className="flex min-h-8 flex-wrap items-center gap-1 px-1 py-1">
-                                    <button
-                                      type="button"
-                                      onClick={() => addItemCategorySubcategory(idx)}
-                                      className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border transition hover:brightness-95"
-                                      style={{ borderColor: "var(--success-border)", backgroundColor: "var(--success-soft)", color: "var(--success-strong)" }}
-                                      title="Add sub-category"
-                                    >
-                                      <Plus size={13} className="mx-auto" strokeWidth={2.8} />
+                                    <button type="button" onClick={() => void addItemCategorySubcategory(idx)} className={chipAddClass} title="Add sub-category">
+                                      <Plus size={13} /> Sub-category
                                     </button>
                                     {parseSubcategoryNames(row.subcategories).map((sub) => (
                                       <span
                                         key={`${idx}_${sub}`}
-                                        className="inline-flex h-7 items-center gap-1 rounded-[999px] border px-2 text-[11px]"
-                                        style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                                        className={chipClass}
                                       >
                                         {sub}
                                         <button
                                           type="button"
                                           onClick={() => removeItemCategorySubcategory(idx, sub)}
-                                          className="inline-flex h-4 w-4 items-center justify-center rounded-[6px] border"
-                                          style={dangerIconButtonStyle}
+                                          className="inline-flex h-6 w-6 items-center justify-center rounded-full transition hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
+                                          style={{ color: "var(--text-muted)" }}
                                           title="Remove sub-category"
                                         >
-                                          <X size={11} strokeWidth={2.8} />
+                                          <X size={12} />
                                         </button>
                                       </span>
                                     ))}
@@ -6215,11 +6158,11 @@ export default function CompanySettingsPage() {
                                 {itemCategoryExpanded[idx] && (
                                   <div
                                     className={idx < itemCategories.length - 1 ? "border-b" : ""}
-                                    style={{ backgroundColor: tintHex(row.color, 0.9), borderColor: "var(--glass-border)" }}
+                                    style={{ backgroundColor: `color-mix(in srgb, ${row.color || "#7D99B3"} 8%, transparent)`, borderColor: "var(--glass-border)" }}
                                   >
                                     <div
-                                      className="grid grid-cols-[30px_1fr_2.2fr_110px_110px_110px_110px] items-center gap-2 border-b px-4 py-1.5 text-[10px] font-extrabold uppercase tracking-[0.6px]"
-                                      style={{ borderColor: row.color || "#7D93B3", backgroundColor: tintHex(row.color, 0.78), color: "var(--text-muted)" }}
+                                      className="grid grid-cols-[30px_1fr_2.2fr_130px_110px_100px_110px] items-center gap-2 border-b px-4 py-1.5 text-[10.5px] font-bold uppercase tracking-[0.6px]"
+                                      style={{ borderColor: "var(--glass-border)", color: "var(--text-muted)" }}
                                     >
                                       <p></p>
                                       <p>Name</p>
@@ -6235,17 +6178,16 @@ export default function CompanySettingsPage() {
                                       return (
                                         <div
                                           key={`${idx}_item_${itemIdx}`}
-                                          className={`grid grid-cols-[30px_1fr_2.2fr_110px_110px_110px_110px] items-center gap-2 px-4 py-1.5 ${isLastItem ? "" : "border-b"}`}
-                                          style={{ borderColor: row.color || "#7D99B3" }}
+                                          className={`grid grid-cols-[30px_1fr_2.2fr_130px_110px_100px_110px] items-center gap-2 px-4 py-1.5 ${isLastItem ? "" : "border-b"}`}
+                                          style={{ borderColor: "var(--glass-border)" }}
                                         >
                                           <button
                                             type="button"
                                             onClick={() => removeItemCategoryItem(idx, itemIdx)}
                                             className={dangerIconButtonClass}
-                                            style={dangerIconButtonStyle}
                                             title="Delete item"
                                           >
-                                            <X size={15} strokeWidth={2.8} />
+                                            <X size={15} />
                                           </button>
                                           <input
                                             value={itemRow.name}
@@ -6257,22 +6199,19 @@ export default function CompanySettingsPage() {
                                             onChange={(e) => updateItemCategoryItem(idx, itemIdx, { description: e.target.value })}
                                             className={gridCellInputClass}
                                           />
-                                          <select
+                                          <GlassDropdown
                                             value={itemRow.subcategory}
-                                            onChange={(e) => updateItemCategoryItem(idx, itemIdx, { subcategory: e.target.value })}
-                                            className={`${gridCellInputClass} ${gridCellSelectOverrideClass}`}
-                                          >
-                                            <option value=""></option>
-                                            {subcategoryOptions.map((sub) => (
-                                              <option key={`${idx}_sub_opt_${sub}`} value={sub}>{sub}</option>
-                                            ))}
-                                          </select>
+                                            options={[{ value: "", label: "None" }, ...subcategoryOptions.map((sub) => ({ value: sub, label: sub }))]}
+                                            onChange={(next) => updateItemCategoryItem(idx, itemIdx, { subcategory: next })}
+                                            ariaLabel="Sub-category"
+                                            triggerClassName={`${glassFieldSmClass} justify-between`}
+                                          />
                                           <input
                                             value={itemRow.price}
                                             onChange={(e) => updateItemCategoryItem(idx, itemIdx, { price: e.target.value })}
                                             onBlur={(e) => updateItemCategoryItem(idx, itemIdx, { price: ensureDollarFormat(e.target.value) })}
                                             className={gridCellInputClass}
-                                            placeholder="$0.00"
+                                            placeholder={formatMoney(0, companyCurrency)}
                                           />
                                           <input
                                             value={itemRow.markupPercent}
@@ -6290,11 +6229,11 @@ export default function CompanySettingsPage() {
                                       <button
                                         type="button"
                                         onClick={() => addItemCategoryItem(idx)}
-                                        className="inline-flex h-8 items-center gap-1 rounded-[8px] border px-3 text-[11px] font-bold transition hover:brightness-95"
-                                        style={{ borderColor: "var(--success-border)", backgroundColor: "var(--success-soft)", color: "var(--success-strong)" }}
+                                        className="inline-flex items-center gap-1 text-[12px] font-semibold"
+                                        style={{ color: "var(--brand-strong)" }}
                                       >
-                                        <Plus size={13} strokeWidth={2.8} />
-                                        Add Item
+                                        <Plus size={14} />
+                                        Add item
                                       </button>
                                     </div>
                                   </div>
@@ -6302,16 +6241,17 @@ export default function CompanySettingsPage() {
                               </div>
                             ))}
                           <div className="px-4 py-3">
-                            <button onClick={() => setItemCategories((prev) => [...prev, { name: "", color: "#7D99B3", subcategories: "", items: [] }])} className={secondaryButtonClass}>+ Add Category</button>
+                            <button type="button" onClick={() => setItemCategories((prev) => [...prev, { name: "", color: "#7D99B3", subcategories: "", items: [] }])} className={secondaryButtonClass}><Plus size={14} /> Add category</button>
                           </div>
                         </div>
                         <div className="flex items-center justify-end gap-2 border-t border-[var(--glass-border)] px-4 py-3">
                           <button
                             type="button"
                             onClick={() => setIsItemCategoriesModalOpen(false)}
-                            className="rounded-[10px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-4 py-2 text-[12px] font-bold text-[var(--text-muted)]"
+                            className={primaryButtonClass}
+                            style={primaryButtonStyle}
                           >
-                            Close
+                            Done
                           </button>
                         </div>
                       </div>
@@ -6629,30 +6569,14 @@ export default function CompanySettingsPage() {
                       </div>
                     </div>
                   ) : null}
-                  <div className="grid gap-3 xl:grid-cols-[auto_560px] xl:justify-start">
-                    <Panel title="Product">
+                  <Panel className="xl:col-span-2" title="Products" icon={Box} description="Your products (job types), their type and per-sheet pricing. Drag to set the order they appear in." allowOverflow>
                     <div className="space-y-1.5">
-                      <div className="grid grid-cols-[30px_30px_30px_minmax(0,220px)_120px_130px_90px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
-                        <p></p>
-                        <p></p>
-                        <p></p>
-                        <p>Name</p>
-                        <p className="text-center">Sheet Sizes</p>
-                        <p className="text-center">Type</p>
-                        <p className="text-center">INCL IN SALES</p>
-                      </div>
                       {jobTypes.map((row, idx) => (
-                        <div key={idx} className="space-y-2">
+                        <div key={idx}>
                           <div
-                            className="grid grid-cols-[30px_30px_30px_minmax(0,220px)_120px_130px_90px] items-center gap-2 rounded-[8px] transition-colors"
-                            style={{
-                              backgroundColor:
-                                jobTypeDragIndex === idx
-                                  ? "var(--brand-soft)"
-                                  : jobTypeDragOverIndex === idx
-                                    ? "var(--panel-muted)"
-                                    : "transparent",
-                            }}
+                            id={`settings_product_${idx}`}
+                            className={`${listRowClass} flex-wrap`}
+                            style={{ opacity: jobTypeDragIndex === idx ? 0.45 : 1 }}
                             onDragOver={(e) => {
                               e.preventDefault();
                               e.dataTransfer.dropEffect = "move";
@@ -6668,6 +6592,7 @@ export default function CompanySettingsPage() {
                               e.preventDefault();
                               setJobTypeDragIndex(null);
                               setJobTypeDragOverIndex(null);
+                              endRowDrag();
                               triggerAutosaveAfterRowDrop();
                             }}
                           >
@@ -6677,376 +6602,206 @@ export default function CompanySettingsPage() {
                               onDragStart={(e) => {
                                 setJobTypeDragIndex(idx);
                                 setJobTypeDragOverIndex(idx);
-                                e.dataTransfer.effectAllowed = "move";
                                 e.dataTransfer.setData("text/plain", `jobtype_${idx}`);
+                                startRowDrag(e, `settings_product_${idx}`, row.name, "#7D99B3");
                               }}
                               onDragEnd={() => {
                                 setJobTypeDragIndex(null);
                                 setJobTypeDragOverIndex(null);
+                                endRowDrag();
                               }}
-                              className="inline-flex h-8 w-8 cursor-grab items-center justify-center rounded-[8px] border active:cursor-grabbing"
-                              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
+                              className={gripClass}
                               title="Drag to reorder"
                             >
-                              <GripVertical size={14} />
+                              <GripVertical size={15} />
                             </button>
-                            <button onClick={() => setJobTypes((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} style={dangerIconButtonStyle}><X size={15} strokeWidth={2.8} /></button>
+                            <input
+                              value={row.name}
+                              placeholder="Product name"
+                              onChange={(e) => setJobTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))}
+                              className={`${gridCellInputClass} min-w-[160px] flex-1`}
+                            />
+                            <span className="w-[170px] shrink-0">
+                              <GlassDropdown
+                                value={row.type}
+                                options={[
+                                  { value: "", label: "No type" },
+                                  { value: "grain", label: "Grain" },
+                                  { value: "lacquer-1", label: "Lacquer (1 side)" },
+                                  { value: "lacquer-2", label: "Lacquer (2 side)" },
+                                  { value: "melteca", label: "Melteca" },
+                                ]}
+                                onChange={(next) => setJobTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, type: next as JobTypeProductType } : v)))}
+                                ariaLabel="Product type"
+                                triggerClassName={`${glassFieldSmClass} justify-between`}
+                              />
+                            </span>
                             <button
                               type="button"
                               onClick={() => toggleJobTypeExpanded(idx)}
-                              className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border"
-                              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}
-                              title={jobTypeExpanded[idx] ? "Collapse" : "Expand"}
+                              className={`${countPillClass} gap-1 transition hover:brightness-95`}
+                              title="Sheet sizes & prices"
                             >
-                              <img
-                                src="/Arrow.png"
-                                alt="Expand"
-                                className={`h-3 w-3 transition-transform ${jobTypeExpanded[idx] ? "[transform:rotate(90deg)_scaleX(-1)]" : "[transform:rotate(270deg)_scaleX(-1)]"}`}
-                              />
+                              {row.sheetPrices?.length || 0} sheet size{(row.sheetPrices?.length || 0) === 1 ? "" : "s"}
+                              <ChevronDown size={12} style={{ transform: jobTypeExpanded[idx] ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 200ms ease" }} />
                             </button>
-                            <input value={row.name} onChange={(e) => setJobTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))} className={fieldInputClass} />
-                            <div
-                              className="inline-flex h-8 items-center justify-center rounded-[8px] border px-2 text-[11px] font-semibold"
-                              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
-                            >
-                              {row.sheetPrices?.length || 0} options
-                            </div>
-                            <select
-                              value={row.type}
-                              onChange={(e) =>
-                                setJobTypes((prev) =>
-                                  prev.map((v, i) => (i === idx ? { ...v, type: e.target.value as JobTypeProductType } : v)),
-                                )
-                              }
-                              className={`${fieldInputClass} font-semibold`}
-                            >
-                              <option value="">-</option>
-                              <option value="grain">Grain</option>
-                              <option value="lacquer-1">Lacquer (1 side)</option>
-                              <option value="lacquer-2">Lacquer (2 side)</option>
-                              <option value="melteca">Melteca</option>
-                            </select>
-                            <label className="inline-flex items-center justify-center text-[11px] font-bold" style={{ color: "var(--text-muted)" }}><input type="checkbox" checked={row.showInSales} onChange={() => setJobTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, showInSales: !v.showInSales } : v)))} /></label>
+                            <span className="inline-flex shrink-0 items-center gap-1.5 text-[11.5px] font-medium" style={{ color: "var(--text-muted)" }}>
+                              In sales
+                              <GlassSwitch size="sm" checked={row.showInSales} onChange={(on) => setJobTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, showInSales: on } : v)))} ariaLabel="Include in sales" />
+                            </span>
+                            <button type="button" onClick={() => setJobTypes((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} title="Remove product">
+                              <X size={15} />
+                            </button>
                           </div>
-
                           {jobTypeExpanded[idx] && (
-                            <div className="rounded-[10px] border p-2" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>
-                              <div className="mb-2 grid grid-cols-[30px_220px_140px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
-                                <p></p>
-                                <p>Sheet Size</p>
-                                <p>Price/Sheet</p>
-                              </div>
-                              <div className="space-y-2">
-                                {(row.sheetPrices ?? []).map((sp, spIdx) => (
-                                  <div key={`${idx}_sheetprice_${spIdx}`} className="grid grid-cols-[30px_220px_140px] items-center gap-2">
-                                    <button
-                                      type="button"
-                                      onClick={() => removeJobTypeSheetPrice(idx, spIdx)}
-                                      className={dangerIconButtonClass}
-                                      style={dangerIconButtonStyle}
-                                      title="Delete sheet size option"
-                                    >
-                                      <X size={15} strokeWidth={2.8} />
-                                    </button>
-                                    <select
+                            <div className="my-1.5 ml-8 grid gap-1.5 rounded-[12px] border border-dashed p-2.5" style={{ borderColor: "color-mix(in srgb, var(--text-main) 16%, transparent)" }}>
+                              {(row.sheetPrices ?? []).map((sp, spIdx) => (
+                                <div key={`${idx}_sheetprice_${spIdx}`} className={listRowClass}>
+                                  <span className="w-[200px] shrink-0">
+                                    <GlassDropdown
                                       value={sp.sheetSize}
-                                      onChange={(e) => updateJobTypeSheetPrice(idx, spIdx, { sheetSize: e.target.value })}
-                                      className={fieldInputClass}
-                                    >
-                                      <option value=""></option>
-                                      {sheetSizes.map((ss, sIdx) => {
-                                        const label = `${ss.h} x ${ss.w}`;
-                                        return <option key={`${idx}_sheetsize_opt_${sIdx}_${label}`} value={label}>{label}</option>;
-                                      })}
-                                    </select>
-                                    <input
-                                      value={sp.pricePerSheet}
-                                      onChange={(e) => updateJobTypeSheetPrice(idx, spIdx, { pricePerSheet: e.target.value })}
-                                      onBlur={(e) => updateJobTypeSheetPrice(idx, spIdx, { pricePerSheet: ensureDollarFormat(e.target.value) })}
-                                      className={fieldInputClass}
-                                      placeholder="$0.00"
+                                      options={[
+                                        { value: "", label: "Choose sheet size" },
+                                        ...sheetSizes.map((ss) => {
+                                          const value = `${ss.h} x ${ss.w}`;
+                                          return { value, label: `${formatLength(ss.h, companyUnit, { withUnit: false })} × ${formatLength(ss.w, companyUnit)}` };
+                                        }),
+                                        ...(sp.sheetSize && !sheetSizes.some((ss) => `${ss.h} x ${ss.w}` === sp.sheetSize) ? [{ value: sp.sheetSize, label: sp.sheetSize }] : []),
+                                      ]}
+                                      onChange={(next) => updateJobTypeSheetPrice(idx, spIdx, { sheetSize: next })}
+                                      ariaLabel="Sheet size"
+                                      triggerClassName={`${glassFieldSmClass} justify-between`}
                                     />
-                                  </div>
-                                ))}
+                                  </span>
+                                  <input
+                                    value={sp.pricePerSheet}
+                                    onChange={(e) => updateJobTypeSheetPrice(idx, spIdx, { pricePerSheet: e.target.value })}
+                                    onBlur={(e) => updateJobTypeSheetPrice(idx, spIdx, { pricePerSheet: ensureDollarFormat(e.target.value) })}
+                                    className={`${glassFieldSmClass} w-[120px]`}
+                                    placeholder={formatMoney(0, companyCurrency)}
+                                  />
+                                  <span className="text-[12px]" style={{ color: "var(--text-muted)" }}>per sheet</span>
+                                  <span className="flex-1" />
+                                  <button type="button" onClick={() => removeJobTypeSheetPrice(idx, spIdx)} className={dangerIconButtonClass} title="Remove sheet size">
+                                    <X size={15} />
+                                  </button>
+                                </div>
+                              ))}
+                              <div>
+                                <button type="button" onClick={() => addJobTypeSheetPrice(idx)} className="inline-flex items-center gap-1 text-[12px] font-semibold" style={{ color: "var(--brand-strong)" }}>
+                                  <Plus size={14} /> Add sheet size
+                                </button>
                               </div>
-                              <button
-                                type="button"
-                                onClick={() => addJobTypeSheetPrice(idx)}
-                                className="mt-2 inline-flex h-8 items-center gap-1 rounded-[8px] border px-3 text-[11px] font-bold transition hover:brightness-95"
-                                style={{ borderColor: "var(--success-border)", backgroundColor: "var(--success-soft)", color: "var(--success-strong)" }}
-                              >
-                                <Plus size={13} strokeWidth={2.8} />
-                                Add Sheet Size
-                              </button>
                             </div>
                           )}
                         </div>
                       ))}
                       <button
+                        type="button"
                         onClick={() =>
                           setJobTypes((prev) => [
                             ...prev,
                             {
                               name: "",
-                              sheetPrices: [
-                                {
-                                  sheetSize: defaultSheetSizeValue(sheetSizes),
-                                  pricePerSheet: "$0.00",
-                                },
-                              ],
+                              sheetPrices: [{ sheetSize: defaultSheetSizeValue(sheetSizes), pricePerSheet: ensureDollarFormat("0") }],
                               showInSales: true,
                               type: "",
                             },
                           ])
                         }
-                        className={`${secondaryButtonClass} mt-1`}
+                        className={`${secondaryButtonClass} mt-1.5`}
                       >
-                        + Add Product
+                        <Plus size={14} /> Add product
                       </button>
                     </div>
                   </Panel>
-                  <Panel title="Quote Helpers">
-                        <div className="space-y-3">
-                          <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
-                            Add reusable helper snippets here. They will appear in the live quote sidebar and insert at the current cursor position in the project text field.
-                          </p>
-                          {quoteHelpers.map((row, idx) => (
-                            <div
-                              key={row.id || idx}
-                              className="rounded-[12px] border p-3 transition-all"
-                              style={{
-                                borderColor: "var(--glass-border)",
-                                backgroundColor: quoteHelperDragOverIndex === idx ? "var(--panel-muted)" : "var(--panel-bg)",
-                                opacity: quoteHelperDragIndex === idx ? 0.8 : 1,
-                                boxShadow: quoteHelperDragIndex === idx ? "var(--shadow-md)" : "none",
-                              }}
-                              onDragOver={(e) => {
-                                e.preventDefault();
-                                e.dataTransfer.dropEffect = "move";
-                              }}
-                              onDragEnter={(e) => {
-                                e.preventDefault();
-                                if (quoteHelperDragIndex == null || quoteHelperDragIndex === idx) return;
-                                setQuoteHelpers((prev) => moveRowTo(prev, quoteHelperDragIndex, idx));
-                                setQuoteHelperDragIndex(idx);
-                                setQuoteHelperDragOverIndex(idx);
-                              }}
-                              onDrop={(e) => {
-                                e.preventDefault();
-                                setQuoteHelperDragIndex(null);
-                                setQuoteHelperDragOverIndex(null);
-                                triggerAutosaveAfterRowDrop();
-                              }}
-                            >
-                              <div className="grid grid-cols-[28px_auto_minmax(0,1fr)] items-center gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() => setQuoteHelpers((prev) => prev.filter((_, helperIdx) => helperIdx !== idx))}
-                                  className={`${dangerIconButtonClass} shrink-0`}
-                                  style={dangerIconButtonStyle}
-                                  title="Delete helper"
-                                >
-                                  <X size={15} strokeWidth={2.8} />
-                                </button>
-                                <div className="flex items-center gap-1 whitespace-nowrap">
-                                  <button
-                                    type="button"
-                                    draggable
-                                    onDragStart={(e) => {
-                                      setQuoteHelperDragIndex(idx);
-                                      setQuoteHelperDragOverIndex(idx);
-                                      e.dataTransfer.effectAllowed = "move";
-                                      e.dataTransfer.setData("text/plain", `quotehelper_${idx}`);
-                                    }}
-                                    onDragEnd={() => {
-                                      setQuoteHelperDragIndex(null);
-                                      setQuoteHelperDragOverIndex(null);
-                                    }}
-                                    className="inline-flex h-8 w-8 cursor-grab items-center justify-center rounded-[8px] border active:cursor-grabbing"
-                                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
-                                    title="Drag to reorder"
-                                  >
-                                    <GripVertical size={14} />
-                                  </button>
-                                  {[
-                                    { command: "bold" as const, label: "B" },
-                                    { command: "italic" as const, label: "I" },
-                                    { command: "underline" as const, label: "U" },
-                                    { command: "strikeThrough" as const, label: "S" },
-                                  ].map((item) => (
-                                    <button
-                                      key={`${row.id}_${item.command}`}
-                                      type="button"
-                                      onMouseDown={(e) => {
-                                        e.preventDefault();
-                                        applyQuoteRichTextCommand(
-                                          quoteHelperRefs.current[row.id] ?? null,
-                                          item.command,
-                                          (nextValue) =>
-                                            setQuoteHelpers((prev) =>
-                                              prev.map((helper, helperIdx) =>
-                                                helperIdx === idx ? { ...helper, content: nextValue } : helper,
-                                              ),
-                                            ),
-                                        );
-                                      }}
-                                      className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border text-[11px] font-bold"
-                                      style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
-                                    >
-                                      {item.label}
-                                    </button>
-                                  ))}
-                                </div>
-                                <div
-                                  ref={(node) => {
-                                    quoteHelperRefs.current[row.id] = node;
-                                    if (node) {
-                                      const nextHtml = renderQuoteRichTextHtml(row.content);
-                                      if (document.activeElement !== node && node.innerHTML !== nextHtml) {
-                                        node.innerHTML = nextHtml;
-                                      }
-                                    }
-                                  }}
-                                  contentEditable
-                                  suppressContentEditableWarning
-                                  onInput={(e) => {
-                                    const nextValue = sanitizeQuoteRichTextMarkup(e.currentTarget.innerHTML);
-                                    setQuoteHelpers((prev) =>
-                                      prev.map((helper, helperIdx) =>
-                                        helperIdx === idx ? { ...helper, content: nextValue } : helper,
-                                      ),
-                                    );
-                                  }}
-                                  className="block min-h-[32px] min-w-0 overflow-hidden rounded-[10px] border px-3 py-1.5 text-[12px] leading-[1.5] outline-none empty:content-['Type_helper_text_here...']"
-                                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                                />
-                              </div>
-                            </div>
-                          ))}
+                  <Panel className="xl:col-span-2" title="Quote discount" icon={Percent} description="Automatic discount tiers based on the quote total.">
+                    <FieldRow label="Subtract from the quote total" hint="Shows the discount as an amount taken off the quote total.">
+                      <GlassSwitch checked={minusOffQuoteTotal} onChange={(on) => setMinusOffQuoteTotal(on)} ariaLabel="Subtract discount from the quote total" />
+                    </FieldRow>
+                    <div className="mt-2 space-y-1.5">
+                      <div className="flex items-center gap-2 px-2">
+                        <span className="w-6 shrink-0" />
+                        <span className={`flex-1 ${columnHeadClass}`}>Quote total from</span>
+                        <span className={`flex-1 ${columnHeadClass}`}>Up to</span>
+                        <span className={`flex-1 ${columnHeadClass}`}>Discount</span>
+                        <span className="w-7 shrink-0" />
+                      </div>
+                      {discountTiers.map((row, idx) => (
+                        <div
+                          key={idx}
+                          id={`settings_discount_${idx}`}
+                          className={listRowClass}
+                          style={{ opacity: discountTierDragIndex === idx ? 0.45 : 1 }}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = "move";
+                          }}
+                          onDragEnter={(e) => {
+                            e.preventDefault();
+                            if (discountTierDragIndex == null || discountTierDragIndex === idx) return;
+                            setDiscountTiers((prev) => moveRowTo(prev, discountTierDragIndex, idx));
+                            setDiscountTierDragIndex(idx);
+                            setDiscountTierDragOverIndex(idx);
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            setDiscountTierDragIndex(null);
+                            setDiscountTierDragOverIndex(null);
+                            endRowDrag();
+                            triggerAutosaveAfterRowDrop();
+                          }}
+                        >
                           <button
                             type="button"
-                            onClick={() =>
-                              setQuoteHelpers((prev) => [
-                                ...prev,
-                                {
-                                  id: `quote_helper_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
-                                  content: "",
-                                },
-                              ])
-                            }
-                            className={secondaryButtonClass}
-                          >
-                            + Add Helper
-                          </button>
-                        </div>
-                      </Panel>
-                  </div>
-                  <Panel title="Quote Discount">
-                      <div className="space-y-3">
-                        <label className="inline-flex items-center gap-2 text-[12px] font-bold" style={{ color: "var(--text-main)" }}><input type="checkbox" checked={minusOffQuoteTotal} onChange={() => setMinusOffQuoteTotal((v) => !v)} />minus off quote total</label>
-                        <div className="grid grid-cols-[30px_30px_1fr_1fr_1fr] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
-                          <p></p>
-                          <p></p>
-                          <p className="text-center">Low</p>
-                          <p className="text-center">High</p>
-                          <p className="text-center">Discount</p>
-                        </div>
-                        {discountTiers.map((row, idx) => (
-                          <div
-                            key={idx}
-                            className="grid grid-cols-[30px_30px_1fr_1fr_1fr] items-center gap-2 rounded-[8px] transition-colors"
-                            style={{
-                              backgroundColor:
-                                discountTierDragIndex === idx
-                                  ? "var(--brand-soft)"
-                                  : discountTierDragOverIndex === idx
-                                    ? "var(--panel-muted)"
-                                    : "transparent",
-                            }}
-                            onDragOver={(e) => {
-                              e.preventDefault();
-                              e.dataTransfer.dropEffect = "move";
-                            }}
-                            onDragEnter={(e) => {
-                              e.preventDefault();
-                              if (discountTierDragIndex == null || discountTierDragIndex === idx) return;
-                              setDiscountTiers((prev) => moveRowTo(prev, discountTierDragIndex, idx));
+                            draggable
+                            onDragStart={(e) => {
                               setDiscountTierDragIndex(idx);
                               setDiscountTierDragOverIndex(idx);
+                              e.dataTransfer.setData("text/plain", `discount_${idx}`);
+                              startRowDrag(e, `settings_discount_${idx}`, `${row.low || "0"} – ${row.high || "…"}`, "#16A34A");
                             }}
-                            onDrop={(e) => {
-                              e.preventDefault();
+                            onDragEnd={() => {
                               setDiscountTierDragIndex(null);
                               setDiscountTierDragOverIndex(null);
-                              triggerAutosaveAfterRowDrop();
+                              endRowDrag();
                             }}
+                            className={gripClass}
+                            title="Drag to reorder"
                           >
-                            <button
-                              type="button"
-                              draggable
-                              onDragStart={(e) => {
-                                setDiscountTierDragIndex(idx);
-                                setDiscountTierDragOverIndex(idx);
-                                e.dataTransfer.effectAllowed = "move";
-                                e.dataTransfer.setData("text/plain", `discount_${idx}`);
-                              }}
-                              onDragEnd={() => {
-                                setDiscountTierDragIndex(null);
-                                setDiscountTierDragOverIndex(null);
-                              }}
-                              className="inline-flex h-8 w-8 cursor-grab items-center justify-center rounded-[8px] border active:cursor-grabbing"
-                              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
-                              title="Drag to reorder"
-                            >
-                              <GripVertical size={14} />
-                            </button>
-                            <button onClick={() => setDiscountTiers((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} style={dangerIconButtonStyle}><X size={15} strokeWidth={2.8} /></button>
+                            <GripVertical size={15} />
+                          </button>
+                          {(["low", "high", "discount"] as const).map((field) => (
                             <input
-                              value={row.low}
-                              onChange={(e) => setDiscountTiers((prev) => prev.map((v, i) => (i === idx ? { ...v, low: e.target.value } : v)))}
-                              onBlur={(e) => setDiscountTiers((prev) => prev.map((v, i) => (i === idx ? { ...v, low: formatDiscountCurrency(e.target.value) } : v)))}
-                              className={fieldInputClass}
+                              key={field}
+                              value={row[field]}
+                              placeholder={formatMoney(0, companyCurrency)}
+                              onChange={(e) => setDiscountTiers((prev) => prev.map((v, i) => (i === idx ? { ...v, [field]: e.target.value } : v)))}
+                              onBlur={(e) => setDiscountTiers((prev) => prev.map((v, i) => (i === idx ? { ...v, [field]: formatDiscountCurrency(e.target.value) } : v)))}
+                              className={`${glassFieldSmClass} min-w-0 flex-1`}
                             />
-                            <input
-                              value={row.high}
-                              onChange={(e) => setDiscountTiers((prev) => prev.map((v, i) => (i === idx ? { ...v, high: e.target.value } : v)))}
-                              onBlur={(e) => setDiscountTiers((prev) => prev.map((v, i) => (i === idx ? { ...v, high: formatDiscountCurrency(e.target.value) } : v)))}
-                              className={fieldInputClass}
-                            />
-                            <input
-                              value={row.discount}
-                              onChange={(e) => setDiscountTiers((prev) => prev.map((v, i) => (i === idx ? { ...v, discount: e.target.value } : v)))}
-                              onBlur={(e) => setDiscountTiers((prev) => prev.map((v, i) => (i === idx ? { ...v, discount: formatDiscountCurrency(e.target.value) } : v)))}
-                              className={fieldInputClass}
-                            />
-                          </div>
-                        ))}
-                        <button onClick={() => setDiscountTiers((prev) => [...prev, { low: "", high: "", discount: "" }])} className={`${secondaryButtonClass} mt-1`}>+ Add Tier</button>
-                      </div>
-                    </Panel>
+                          ))}
+                          <button type="button" onClick={() => setDiscountTiers((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} title="Remove tier">
+                            <X size={15} />
+                          </button>
+                        </div>
+                      ))}
+                      <button type="button" onClick={() => setDiscountTiers((prev) => [...prev, { low: "", high: "", discount: "" }])} className={`${secondaryButtonClass} mt-1.5`}>
+                        <Plus size={14} /> Add tier
+                      </button>
+                    </div>
+                  </Panel>
                 </div>
               )}
 
               {active === "hardware" && (
-                <Panel title="Hardware">
+                <Panel title="Hardware brands" icon={HardHat} description="Each brand's drawers, hinges and other parts. The default brand is used for new jobs. Drag to reorder.">
                   <div className="space-y-1.5">
-                    <div className="grid grid-cols-[28px_28px_28px_1fr_110px_90px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
-                      <p></p>
-                      <p></p>
-                      <p></p>
-                      <p>Hardware Name</p>
-                      <p>Color</p>
-                      <p>Default</p>
-                    </div>
                     {hardware.map((row, idx) => (
                       <div
                         key={idx}
-                        className="space-y-2 rounded-[8px] transition-all"
-                        style={
-                          hardwareDragOverIndex === idx
-                            ? { backgroundColor: "var(--brand-soft)", boxShadow: "var(--shadow-sm)" }
-                            : undefined
-                        }
+                        className="space-y-1.5 rounded-[12px] transition-all"
+                        style={{ opacity: hardwareDragIndex === idx ? 0.45 : 1 }}
                         onDragOver={(e) => {
                           e.preventDefault();
                           e.dataTransfer.dropEffect = "move";
@@ -7062,11 +6817,13 @@ export default function CompanySettingsPage() {
                           e.preventDefault();
                           setHardwareDragIndex(null);
                           setHardwareDragOverIndex(null);
+                          endRowDrag();
                           triggerAutosaveAfterRowDrop();
                         }}
                       >
                         <div
-                          className="grid grid-cols-[28px_28px_28px_1fr_110px_90px] items-center gap-2 rounded-[8px] px-1 py-1"
+                          id={`settings_hardware_${idx}`}
+                          className="flex items-center gap-2 rounded-[12px] px-2 py-1.5"
                           style={{ backgroundColor: row.color || "#7D99B3", color: textColorForHex(row.color || "#7D99B3") }}
                         >
                         <button
@@ -7075,127 +6832,76 @@ export default function CompanySettingsPage() {
                           onDragStart={(e) => {
                             setHardwareDragIndex(idx);
                             setHardwareDragOverIndex(idx);
-                            e.dataTransfer.effectAllowed = "move";
                             e.dataTransfer.setData("text/plain", `hardware_${idx}`);
+                            startRowDrag(e, `settings_hardware_${idx}`, row.name, row.color);
                           }}
                           onDragEnd={() => {
                             setHardwareDragIndex(null);
                             setHardwareDragOverIndex(null);
+                            endRowDrag();
                           }}
-                          className="inline-flex h-7 w-7 cursor-grab items-center justify-center rounded-[8px] border active:cursor-grabbing"
-                          style={{
-                            backgroundColor: tintHex(row.color || "#7D99B3", 0.6),
-                            borderColor: tintHex(row.color || "#7D99B3", 0.45),
-                            color: textColorForHex(tintHex(row.color || "#7D99B3", 0.6)),
-                          }}
+                          className="inline-flex h-7 w-6 shrink-0 cursor-grab items-center justify-center rounded-[7px] opacity-80 transition hover:bg-white/15 hover:opacity-100 active:cursor-grabbing"
                           title="Drag to reorder"
                         >
-                          <GripVertical size={14} />
+                          <GripVertical size={15} />
                         </button>
-                        <button onClick={() => setHardware((prev) => sanitizeHardwareRows(prev.filter((_, i) => i !== idx)))} className={dangerIconButtonClass} style={dangerIconButtonStyle}><X size={15} strokeWidth={2.8} /></button>
                         <button
                           type="button"
                           onClick={() => toggleHardwareExpanded(idx)}
-                          className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border"
-                          style={{
-                            backgroundColor: tintHex(row.color || "#7D99B3", 0.6),
-                            borderColor: tintHex(row.color || "#7D99B3", 0.45),
-                          }}
-                          title={(hardwareExpanded[idx] ?? false) ? "Collapse" : "Expand"}
+                          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] opacity-85 transition hover:bg-white/15"
+                          title={(hardwareExpanded[idx] ?? false) ? "Hide parts" : "Show drawers, hinges and other parts"}
                         >
-                          <img
-                            src="/Arrow.png"
-                            alt="Expand"
-                            className={`h-3 w-3 transition-transform ${(hardwareExpanded[idx] ?? false) ? "[transform:rotate(90deg)_scaleX(-1)]" : "[transform:rotate(270deg)_scaleX(-1)]"}`}
-                          />
+                          <ChevronDown size={15} style={{ transform: (hardwareExpanded[idx] ?? false) ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 200ms ease" }} />
                         </button>
                         <input
                           value={row.name}
+                          placeholder="Brand name"
                           onChange={(e) => setHardware((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))}
-                          className="h-7 rounded-[8px] border px-2 text-[12px]"
-                          style={{
-                            backgroundColor: tintHex(row.color || "#7D99B3", 0.72),
-                            borderColor: tintHex(row.color || "#7D99B3", 0.45),
-                            color: textColorForHex(tintHex(row.color || "#7D99B3", 0.72)),
-                          }}
+                          className="h-8 min-w-0 flex-1 rounded-[8px] border border-transparent bg-transparent px-2 text-[13px] font-semibold outline-none transition placeholder:opacity-70 hover:border-white/40 focus:border-white/70 focus:bg-white/15"
+                          style={{ color: "inherit" }}
                         />
-                        <label
-                          className="relative block h-7 w-10 cursor-pointer justify-self-center overflow-hidden rounded-[8px] border"
-                          style={{ borderColor: tintHex(row.color || "#7D99B3", 0.38) }}
-                          title={row.color || "#7D99B3"}
+                        <ColorCircle value={row.color || "#7D99B3"} onChange={(hex) => setHardware((prev) => prev.map((v, i) => (i === idx ? { ...v, color: hex } : v)))} />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setHardware((prev) => sanitizeHardwareRows(prev.map((v, i) => ({ ...v, default: i === idx ? !row.default : false }))))
+                          }
+                          className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-[11.5px] font-semibold"
+                          style={{ color: "inherit", opacity: row.default ? 1 : 0.8 }}
+                          title="Use this brand by default"
                         >
-                          <span className="block h-full w-full" style={{ backgroundColor: row.color || "#7D99B3" }} />
-                          <input
-                            type="color"
-                            value={row.color || "#7D99B3"}
-                            onChange={(e) => setHardware((prev) => prev.map((v, i) => (i === idx ? { ...v, color: e.target.value } : v)))}
-                            className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                          />
-                        </label>
-                        {hardware.some((h) => h.default) ? (
-                          row.default ? (
-                            <label className="inline-flex items-center gap-1 text-[11px] font-bold text-[var(--text-muted)]">
-                              <input
-                                type="checkbox"
-                                checked
-                                onChange={(e) => {
-                                  if (!e.target.checked) {
-                                    setHardware((prev) => sanitizeHardwareRows(prev.map((v, i) => (i === idx ? { ...v, default: false } : v))));
-                                  }
-                                }}
-                              />
-                              Default
-                            </label>
-                          ) : (
-                            <span className="inline-block h-7" />
-                          )
-                        ) : (
-                          <label className="inline-flex items-center gap-1 text-[11px] font-bold text-[var(--text-muted)]">
-                            <input
-                              type="checkbox"
-                              checked={Boolean(row.default)}
-                              onChange={(e) => {
-                                if (e.target.checked) {
-                                  setHardware((prev) => sanitizeHardwareRows(prev.map((v, i) => ({ ...v, default: i === idx }))));
-                                }
-                              }}
-                            />
-                            Default
-                          </label>
-                        )}
+                          <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border-[1.5px]" style={{ borderColor: "currentColor" }}>
+                            {row.default ? <span className="h-2 w-2 rounded-full" style={{ backgroundColor: "currentColor" }} /> : null}
+                          </span>
+                          Default
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setHardware((prev) => sanitizeHardwareRows(prev.filter((_, i) => i !== idx)))}
+                          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] opacity-85 transition hover:bg-white/20"
+                          title="Remove brand"
+                        >
+                          <X size={15} />
+                        </button>
                         </div>
                         {(hardwareExpanded[idx] ?? false) && (
                           <div
-                            className="space-y-2 rounded-[8px] border p-2"
-                            style={{ backgroundColor: tintHex(row.color || "#7D99B3", 0.82), borderColor: row.color || "#7D99B3" }}
+                            className="ml-8 space-y-2 rounded-[14px] border p-3"
+                            style={{ backgroundColor: `color-mix(in srgb, ${row.color || "#7D99B3"} 7%, transparent)`, borderColor: "var(--glass-border)" }}
                           >
-                            <div className="inline-flex rounded-[10px] border p-1" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}>
-                              {(["drawers", "hinges", "other"] as const).map((tab) => {
-                                const selected = (hardwareActiveTab[idx] ?? "drawers") === tab;
-                                return (
-                                  <button
-                                    key={tab}
-                                    type="button"
-                                    onClick={() => setHardwareActiveTab((prev) => ({ ...prev, [idx]: tab }))}
-                                    className="h-7 rounded-[8px] px-3 text-[11px] font-extrabold uppercase tracking-[0.5px]"
-                                    style={{
-                                      backgroundColor: selected ? (row.color || "#7D99B3") : tintHex(row.color || "#7D99B3", 0.5),
-                                      color: textColorForHex(selected ? (row.color || "#7D99B3") : tintHex(row.color || "#7D99B3", 0.5)),
-                                      border: `1px solid ${tintHex(row.color || "#7D99B3", 0.35)}`,
-                                    }}
-                                  >
-                                    {tab}
-                                  </button>
-                                );
-                              })}
-                            </div>
+                            <Segmented
+                              value={hardwareActiveTab[idx] ?? "drawers"}
+                              options={[
+                                { value: "drawers", label: "Drawers" },
+                                { value: "hinges", label: "Hinges" },
+                                { value: "other", label: "Other" },
+                              ]}
+                              onChange={(tab) => setHardwareActiveTab((prev) => ({ ...prev, [idx]: tab }))}
+                            />
                             {(hardwareActiveTab[idx] ?? "drawers") === "drawers" && (
-                              <div
-                                className="space-y-2 rounded-[8px] border p-2"
-                                style={{ backgroundColor: tintHex(row.color || "#7D99B3", 0.82), borderColor: row.color || "#7D99B3" }}
-                              >
+                              <div className="space-y-2">
                           <div className="flex items-center justify-between">
-                            <p className="text-[11px] font-extrabold uppercase tracking-[0.6px] text-[var(--text-main)]">Drawers</p>
+                            <p className="text-[10.5px] font-bold uppercase tracking-[0.8px] text-[var(--text-muted)]">Drawers</p>
                             <button
                               onClick={() =>
                                 updateHardwareJsonList(idx, "drawersJson", (items) => [
@@ -7203,32 +6909,25 @@ export default function CompanySettingsPage() {
                                   { name: "", bottoms: { widthMinus: "", depthMinus: "" }, backs: { widthMinus: "" }, hardwareLengths: [], spaceRequirement: "", default: items.length === 0 },
                                 ])
                               }
-                              className="rounded-[8px] bg-[var(--panel-muted)] px-3 py-1 text-[11px] font-bold text-[var(--text-muted)]"
+                              className="inline-flex items-center gap-1 text-[12px] font-semibold"
+                              style={{ color: "var(--brand-strong)" }}
                             >
-                              + Add Drawer
+                              <Plus size={14} /> Add drawer
                             </button>
                           </div>
                           <div className="space-y-2">
-                            <div className="grid grid-cols-[26px_26px_26px_1fr_84px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[var(--text-muted)]">
-                              <p></p>
-                              <p></p>
-                              <p></p>
-                              <p>Name</p>
-                              <p>Default</p>
-                            </div>
+
                             {(() => {
                               const drawerRows = parseJsonObjects(row.drawersJson);
-                              const hasDrawerDefault = drawerRows.some((d) => Boolean(d.default));
                               return drawerRows.map((drawer, drawerIdx) => {
                                 const drawerKey = `${idx}:${drawerIdx}`;
                                 const isExpanded = drawerRowExpanded[drawerKey] ?? false;
                                 return (
                                   <div
                                     key={drawerIdx}
-                                    className={`space-y-2 rounded-[8px] border p-2 ${
-                                      drawerDragHardwareIndex === idx && drawerDragOverIndex === drawerIdx
-                                        ? "border-[var(--brand)] bg-[var(--brand-soft)]"
-                                        : "border-[var(--glass-border)] bg-[var(--panel-bg)]"
+                                    id={`settings_drawer_${idx}_${drawerIdx}`}
+                                    className={`space-y-2 rounded-[12px] border border-[var(--glass-border)] bg-[color-mix(in_srgb,var(--panel-bg)_60%,transparent)] p-1.5 transition ${
+                                      drawerDragHardwareIndex === idx && drawerDragIndex === drawerIdx ? "opacity-45" : ""
                                     }`}
                                     onDragOver={(e) => {
                                       e.preventDefault();
@@ -7246,10 +6945,11 @@ export default function CompanySettingsPage() {
                                       setDrawerDragHardwareIndex(null);
                                       setDrawerDragIndex(null);
                                       setDrawerDragOverIndex(null);
+                                      endRowDrag();
                                       triggerAutosaveAfterRowDrop();
                                     }}
                                   >
-                                    <div className="grid grid-cols-[26px_26px_26px_1fr_84px] items-center gap-2">
+                                    <div className="flex items-center gap-2">
                                       <button
                                         type="button"
                                         draggable
@@ -7257,37 +6957,28 @@ export default function CompanySettingsPage() {
                                           setDrawerDragHardwareIndex(idx);
                                           setDrawerDragIndex(drawerIdx);
                                           setDrawerDragOverIndex(drawerIdx);
-                                          e.dataTransfer.effectAllowed = "move";
                                           e.dataTransfer.setData("text/plain", `drawer_${idx}_${drawerIdx}`);
+                                          startRowDrag(e, `settings_drawer_${idx}_${drawerIdx}`, readDrawerName(drawer), row.color);
                                         }}
                                         onDragEnd={() => {
                                           setDrawerDragHardwareIndex(null);
                                           setDrawerDragIndex(null);
                                           setDrawerDragOverIndex(null);
+                                          endRowDrag();
                                         }}
-                                        className="inline-flex h-7 w-7 cursor-grab items-center justify-center rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-muted)] text-[var(--text-muted)] active:cursor-grabbing"
+                                        className={gripClass}
                                         title="Drag to reorder"
                                       >
-                                        <GripVertical size={14} />
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => updateHardwareJsonList(idx, "drawersJson", (items) => items.filter((_, i) => i !== drawerIdx))}
-                                        className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[var(--danger-border)] bg-[var(--danger-soft)] text-[var(--danger-strong)]"
-                                      >
-                                        <X size={15} strokeWidth={2.8} />
+                                        <GripVertical size={15} />
                                       </button>
                                       <button
                                         type="button"
                                         onClick={() => toggleDrawerRowExpanded(idx, drawerIdx)}
-                                        className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-muted)]"
-                                        title={isExpanded ? "Collapse" : "Expand"}
+                                        className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] transition hover:bg-[color-mix(in_srgb,var(--text-main)_6%,transparent)]"
+                                        style={{ color: "var(--text-muted)" }}
+                                        title={isExpanded ? "Hide details" : "Show details"}
                                       >
-                                        <img
-                                          src="/Arrow.png"
-                                          alt="Expand"
-                                          className={`h-3 w-3 transition-transform ${isExpanded ? "[transform:rotate(90deg)_scaleX(-1)]" : "[transform:rotate(270deg)_scaleX(-1)]"}`}
-                                        />
+                                        <ChevronDown size={15} style={{ transform: isExpanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 200ms ease" }} />
                                       </button>
                                       <input
                                         value={readDrawerName(drawer)}
@@ -7297,48 +6988,40 @@ export default function CompanySettingsPage() {
                                           )
                                         }
                                         placeholder="Drawer name"
-                                        className="h-7 rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px]"
+                                        className={`${gridCellInputClass} min-w-0 flex-1 font-semibold`}
                                       />
-                                      {hasDrawerDefault ? (
-                                        Boolean(drawer.default) ? (
-                                          <label className="inline-flex items-center gap-1 text-[11px] font-bold text-[var(--text-muted)]">
-                                            <input
-                                              type="checkbox"
-                                              checked
-                                              onChange={(e) => {
-                                                if (!e.target.checked) {
-                                                  updateHardwareJsonList(idx, "drawersJson", (items) =>
-                                                    items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "default", false) : v)),
-                                                  );
-                                                }
-                                              }}
-                                            />
-                                            Default
-                                          </label>
-                                        ) : (
-                                          <span className="inline-block h-7" />
-                                        )
-                                      ) : (
-                                        <label className="inline-flex items-center gap-1 text-[11px] font-bold text-[var(--text-muted)]">
-                                          <input
-                                            type="checkbox"
-                                            checked={Boolean(drawer.default)}
-                                            onChange={(e) => {
-                                              if (e.target.checked) {
-                                                updateHardwareJsonList(idx, "drawersJson", (items) =>
-                                                  items.map((v, i) => writeDrawerField(v, "default", i === drawerIdx)),
-                                                );
-                                              }
-                                            }}
-                                          />
-                                          Default
-                                        </label>
-                                      )}
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          updateHardwareJsonList(idx, "drawersJson", (items) =>
+                                            items.map((v, i) => writeDrawerField(v, "default", i === drawerIdx ? !drawer.default : false)),
+                                          )
+                                        }
+                                        className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-[11.5px] font-semibold"
+                                        style={{ color: drawer.default ? "var(--brand-strong)" : "var(--text-muted)" }}
+                                        title="Use this drawer by default"
+                                      >
+                                        <span
+                                          className="inline-flex h-4 w-4 items-center justify-center rounded-full border-[1.5px]"
+                                          style={{ borderColor: drawer.default ? "var(--brand)" : "color-mix(in srgb, var(--text-main) 25%, transparent)" }}
+                                        >
+                                          {drawer.default ? <span className="h-2 w-2 rounded-full" style={{ backgroundColor: "var(--brand)" }} /> : null}
+                                        </span>
+                                        Default
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => updateHardwareJsonList(idx, "drawersJson", (items) => items.filter((_, i) => i !== drawerIdx))}
+                                        className={dangerIconButtonClass}
+                                        title="Remove drawer"
+                                      >
+                                        <X size={15} />
+                                      </button>
                                     </div>
                                     {isExpanded && (
-                                      <div className="space-y-2 pl-[84px]">
+                                      <div className="space-y-2.5 px-2 pb-1.5 pl-9">
                                         <div className="flex items-center gap-2 text-[12px]">
-                                          <p className="w-[70px] font-bold text-[var(--text-main)]">Bottoms:</p>
+                                          <p className="w-[70px] font-semibold text-[var(--text-main)]">Bottoms</p>
                                           <span className="text-[var(--text-muted)]">Width</span>
                                           <input
                                             value={readDrawerBottomWidth(drawer)}
@@ -7347,7 +7030,7 @@ export default function CompanySettingsPage() {
                                                 items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "bottomWidth", e.target.value) : v)),
                                               )
                                             }
-                                            className="h-7 w-[90px] rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px]"
+                                            className={`${glassFieldSmClass} w-[90px]`}
                                           />
                                           <span className="text-[var(--text-muted)]">Depth</span>
                                           <input
@@ -7357,12 +7040,12 @@ export default function CompanySettingsPage() {
                                                 items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "bottomDepth", e.target.value) : v)),
                                               )
                                             }
-                                            className="h-7 w-[90px] rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px]"
+                                            className={`${glassFieldSmClass} w-[90px]`}
                                           />
                                         </div>
 
                                         <div className="flex flex-wrap items-center gap-2 text-[12px]">
-                                          <p className="w-[70px] font-bold text-[var(--text-main)]">Backs:</p>
+                                          <p className="w-[70px] font-semibold text-[var(--text-main)]">Backs</p>
                                           <span className="text-[var(--text-muted)]">Width</span>
                                           <input
                                             value={readDrawerBackWidth(drawer)}
@@ -7371,25 +7054,25 @@ export default function CompanySettingsPage() {
                                                 items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "backWidth", e.target.value) : v)),
                                               )
                                             }
-                                            className="h-7 w-[90px] rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px]"
+                                            className={`${glassFieldSmClass} w-[90px]`}
                                           />
                                           <span className="ml-2 text-[var(--text-muted)]">Heights</span>
                                           <button
                                             type="button"
                                             onClick={() => toggleDrawerHeightsExpanded(idx, drawerIdx)}
-                                            className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-muted)]"
-                                            title={(drawerHeightsExpanded[`${idx}:${drawerIdx}:heights`] ?? false) ? "Collapse heights" : "Expand heights"}
+                                            className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] transition hover:bg-[color-mix(in_srgb,var(--text-main)_6%,transparent)]"
+                                            style={{ color: "var(--text-muted)" }}
+                                            title={(drawerHeightsExpanded[`${idx}:${drawerIdx}:heights`] ?? false) ? "Hide heights" : "Edit heights"}
                                           >
-                                            <img
-                                              src="/Arrow.png"
-                                              alt="Expand heights"
-                                              className={`h-3 w-3 transition-transform ${(drawerHeightsExpanded[`${idx}:${drawerIdx}:heights`] ?? false) ? "[transform:rotate(90deg)_scaleX(-1)]" : "[transform:rotate(270deg)_scaleX(-1)]"}`}
+                                            <ChevronDown
+                                              size={15}
+                                              style={{ transform: (drawerHeightsExpanded[`${idx}:${drawerIdx}:heights`] ?? false) ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 200ms ease" }}
                                             />
                                           </button>
                                           <button
                                             type="button"
-                                            onClick={() => {
-                                              const next = window.prompt("Add back height (example: M 500)");
+                                            onClick={async () => {
+                                              const next = await ask.prompt({ title: "Add back height", label: "Back height", placeholder: "e.g. M 500" });
                                               const value = toStr(next);
                                               if (!value) return;
                                               const current = readDrawerBackHeights(drawer);
@@ -7397,10 +7080,10 @@ export default function CompanySettingsPage() {
                                                 items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "backHeights", [...current, value]) : v)),
                                               );
                                             }}
-                                            className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[var(--success-border)] bg-[var(--success-soft)] text-[var(--success-strong)] hover:brightness-95"
+                                            className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-dashed border-[color-mix(in_srgb,var(--text-main)_22%,transparent)] text-[var(--brand-strong)] transition hover:bg-[var(--brand-soft)]"
                                             title="Add back height"
                                           >
-                                            <Plus size={13} strokeWidth={2.8} />
+                                            <Plus size={14} />
                                           </button>
                                           {(() => {
                                             const heightRows = readDrawerBackHeights(drawer);
@@ -7444,9 +7127,9 @@ export default function CompanySettingsPage() {
                                                         items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "backHeights", nextHeights) : v)),
                                                       );
                                                     }}
-                                                    className="inline-flex h-6 w-6 items-center justify-center rounded-[7px] border border-[var(--danger-border)] bg-[var(--danger-soft)] text-[var(--danger-strong)]"
+                                                    className={dangerIconButtonClass}
                                                   >
-                                                    <X size={13} strokeWidth={2.8} />
+                                                    <X size={13} />
                                                   </button>
                                                   <input
                                                     value={readDrawerHeightLabel(firstHeight)}
@@ -7459,7 +7142,7 @@ export default function CompanySettingsPage() {
                                                         items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "backHeights", nextHeights) : v)),
                                                       );
                                                     }}
-                                                    className="h-7 w-[92px] rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px]"
+                                                    className={`${glassFieldSmClass} w-[92px]`}
                                                     title={firstHeight}
                                                   />
                                                   <span className="inline-flex h-7 min-w-[56px] items-center justify-center rounded-[999px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[11px] font-semibold text-[var(--text-main)]">
@@ -7481,9 +7164,9 @@ export default function CompanySettingsPage() {
                                                                 items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "backHeights", nextHeights) : v)),
                                                               );
                                                             }}
-                                                            className="inline-flex h-6 w-6 items-center justify-center rounded-[7px] border border-[var(--danger-border)] bg-[var(--danger-soft)] text-[var(--danger-strong)]"
+                                                            className={dangerIconButtonClass}
                                                           >
-                                                            <X size={13} strokeWidth={2.8} />
+                                                            <X size={13} />
                                                           </button>
                                                           <input
                                                             value={readDrawerHeightLabel(height)}
@@ -7496,7 +7179,7 @@ export default function CompanySettingsPage() {
                                                                 items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "backHeights", nextHeights) : v)),
                                                               );
                                                             }}
-                                                            className="h-7 w-[92px] rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px]"
+                                                            className={`${glassFieldSmClass} w-[92px]`}
                                                             title={height}
                                                           />
                                                           <span className="inline-flex h-7 min-w-[56px] items-center justify-center rounded-[999px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[11px] font-semibold text-[var(--text-main)]">
@@ -7513,11 +7196,11 @@ export default function CompanySettingsPage() {
                                         </div>
 
                                         <div className="flex flex-wrap items-center gap-2 text-[12px]">
-                                          <p className="w-[120px] font-bold text-[var(--text-main)]">Hardware Lengths:</p>
+                                          <p className="w-[120px] font-semibold text-[var(--text-main)]">Hardware lengths</p>
                                           <button
                                             type="button"
-                                            onClick={() => {
-                                              const next = window.prompt("Add hardware length (number)");
+                                            onClick={async () => {
+                                              const next = await ask.prompt({ title: "Add hardware length", label: "Length", placeholder: "e.g. 500", inputMode: "decimal" });
                                               const value = toStr(next);
                                               if (!value) return;
                                               const current = readDrawerLengths(drawer);
@@ -7525,10 +7208,10 @@ export default function CompanySettingsPage() {
                                                 items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "hardwareLengths", [...current, value]) : v)),
                                               );
                                             }}
-                                            className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[var(--success-border)] bg-[var(--success-soft)] text-[var(--success-strong)] hover:brightness-95"
+                                            className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-dashed border-[color-mix(in_srgb,var(--text-main)_22%,transparent)] text-[var(--brand-strong)] transition hover:bg-[var(--brand-soft)]"
                                             title="Add hardware length"
                                           >
-                                            <Plus size={13} strokeWidth={2.8} />
+                                            <Plus size={14} />
                                           </button>
                                           <div className="flex flex-wrap items-center gap-2">
                                             {readDrawerLengths(drawer).map((length, lIdx) => (
@@ -7542,9 +7225,9 @@ export default function CompanySettingsPage() {
                                                       items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "hardwareLengths", nextLengths) : v)),
                                                     );
                                                   }}
-                                                  className="inline-flex h-6 w-6 items-center justify-center rounded-[7px] border border-[var(--danger-border)] bg-[var(--danger-soft)] text-[var(--danger-strong)]"
+                                                  className={dangerIconButtonClass}
                                                 >
-                                                  <X size={13} strokeWidth={2.8} />
+                                                  <X size={13} />
                                                 </button>
                                                 <input
                                                   value={length}
@@ -7555,7 +7238,7 @@ export default function CompanySettingsPage() {
                                                       items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "hardwareLengths", nextLengths) : v)),
                                                     );
                                                   }}
-                                                  className="h-7 w-[90px] rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px]"
+                                                  className={`${glassFieldSmClass} w-[90px]`}
                                                 />
                                               </div>
                                             ))}
@@ -7563,7 +7246,7 @@ export default function CompanySettingsPage() {
                                         </div>
 
                                         <div className="flex items-center gap-2 text-[12px]">
-                                          <p className="w-[120px] font-bold text-[var(--text-main)]">Depth Requirement</p>
+                                          <p className="w-[120px] font-semibold text-[var(--text-main)]">Depth requirement</p>
                                           <input
                                             value={readDrawerSpaceRequirement(drawer)}
                                             onChange={(e) =>
@@ -7571,7 +7254,7 @@ export default function CompanySettingsPage() {
                                                 items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "spaceRequirement", e.target.value) : v)),
                                               )
                                             }
-                                            className="h-7 w-[120px] rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px]"
+                                            className={`${glassFieldSmClass} w-[120px]`}
                                           />
                                         </div>
                                       </div>
@@ -7585,29 +7268,27 @@ export default function CompanySettingsPage() {
                             )}
 
                             {(hardwareActiveTab[idx] ?? "drawers") === "hinges" && (
-                              <div
-                                className="space-y-2 rounded-[8px] border p-2"
-                                style={{ backgroundColor: tintHex(row.color || "#7D99B3", 0.82), borderColor: row.color || "#7D99B3" }}
-                              >
+                              <div className="space-y-2">
                           <div className="flex items-center justify-between">
-                            <p className="text-[11px] font-extrabold uppercase tracking-[0.6px] text-[var(--text-main)]">Hinges</p>
+                            <p className="text-[10.5px] font-bold uppercase tracking-[0.8px] text-[var(--text-muted)]">Hinges</p>
                             <button
                               onClick={() => updateHardwareJsonList(idx, "hingesJson", (items) => [...items, { name: "" }])}
-                              className="rounded-[8px] bg-[var(--panel-muted)] px-3 py-1 text-[11px] font-bold text-[var(--text-muted)]"
+                              className="inline-flex items-center gap-1 text-[12px] font-semibold"
+                              style={{ color: "var(--brand-strong)" }}
                             >
-                              + Add Hinge
+                              <Plus size={14} /> Add hinge
                             </button>
                           </div>
                           <div className="space-y-2">
-                            <div className="grid grid-cols-4 gap-2">
+                            <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-4">
                               {parseJsonObjects(row.hingesJson).map((hinge, hingeIdx) => (
-                                <div key={hingeIdx} className="grid grid-cols-[26px_1fr] items-center gap-2 rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] p-1">
+                                <div key={hingeIdx} className={listRowClass}>
                                   <button
                                     type="button"
                                     onClick={() => updateHardwareJsonList(idx, "hingesJson", (items) => items.filter((_, i) => i !== hingeIdx))}
-                                    className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[var(--danger-border)] bg-[var(--danger-soft)] text-[var(--danger-strong)]"
+                                    className={dangerIconButtonClass}
                                   >
-                                    <X size={15} strokeWidth={2.8} />
+                                    <X size={15} />
                                   </button>
                                   <input
                                     value={toStr(hinge.name)}
@@ -7617,7 +7298,7 @@ export default function CompanySettingsPage() {
                                       )
                                     }
                                     placeholder="Hinge name"
-                                    className="h-7 rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px]"
+                                    className={gridCellInputClass}
                                   />
                                 </div>
                               ))}
@@ -7627,29 +7308,27 @@ export default function CompanySettingsPage() {
                             )}
 
                             {(hardwareActiveTab[idx] ?? "drawers") === "other" && (
-                              <div
-                                className="space-y-2 rounded-[8px] border p-2"
-                                style={{ backgroundColor: tintHex(row.color || "#7D99B3", 0.82), borderColor: row.color || "#7D99B3" }}
-                              >
+                              <div className="space-y-2">
                           <div className="flex items-center justify-between">
-                            <p className="text-[11px] font-extrabold uppercase tracking-[0.6px] text-[var(--text-main)]">Other</p>
+                            <p className="text-[10.5px] font-bold uppercase tracking-[0.8px] text-[var(--text-muted)]">Other</p>
                             <button
                               onClick={() => updateHardwareJsonList(idx, "otherJson", (items) => [...items, { name: "" }])}
-                              className="rounded-[8px] bg-[var(--panel-muted)] px-3 py-1 text-[11px] font-bold text-[var(--text-muted)]"
+                              className="inline-flex items-center gap-1 text-[12px] font-semibold"
+                              style={{ color: "var(--brand-strong)" }}
                             >
-                              + Add Other
+                              <Plus size={14} /> Add other
                             </button>
                           </div>
                           <div className="space-y-2">
-                            <div className="grid grid-cols-4 gap-2">
+                            <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-4">
                               {parseJsonObjects(row.otherJson).map((other, otherIdx) => (
-                                <div key={otherIdx} className="grid grid-cols-[26px_1fr] items-center gap-2 rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] p-1">
+                                <div key={otherIdx} className={listRowClass}>
                                   <button
                                     type="button"
                                     onClick={() => updateHardwareJsonList(idx, "otherJson", (items) => items.filter((_, i) => i !== otherIdx))}
-                                    className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[var(--danger-border)] bg-[var(--danger-soft)] text-[var(--danger-strong)]"
+                                    className={dangerIconButtonClass}
                                   >
-                                    <X size={15} strokeWidth={2.8} />
+                                    <X size={15} />
                                   </button>
                                   <input
                                     value={toStr(other.name)}
@@ -7659,7 +7338,7 @@ export default function CompanySettingsPage() {
                                       )
                                     }
                                     placeholder="Other name"
-                                    className="h-7 rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px]"
+                                    className={gridCellInputClass}
                                   />
                                 </div>
                               ))}
@@ -7678,64 +7357,85 @@ export default function CompanySettingsPage() {
                         setHardwareExpanded((prev) => ({ ...prev, [nextIndex]: false }));
                         setHardwareActiveTab((prev) => ({ ...prev, [nextIndex]: "drawers" }));
                       }}
-                      className="rounded-[8px] bg-[var(--panel-muted)] px-3 py-1 text-[11px] font-bold text-[var(--text-muted)]"
+                      className={`${secondaryButtonClass} mt-1.5`}
                     >
-                      + Add Hardware
+                      <Plus size={14} /> Add hardware brand
                     </button>
                   </div>
                 </Panel>
               )}
 
               {active === "backup" && (
-                <div className="space-y-3">
-                  <Panel title="Quote Output Templates">
-                    <div className="grid gap-2 text-[12px] xl:grid-cols-2">
-                      <div className="space-y-2">
-                        <p className="font-bold text-[var(--text-main)]">Header HTML</p>
+                <div className="grid gap-[18px]">
+                  <Panel title="Quote output template" icon={FileText} description="The header and footer printed on every exported quote." allowOverflow>
+                    <div className="grid gap-3 xl:grid-cols-2">
+                      <StackField label="Header HTML">
                         <textarea
                           value={backupTemplate.quoteTemplateHeaderHtml}
                           onChange={(e) => setBackupTemplate((prev) => ({ ...prev, quoteTemplateHeaderHtml: e.target.value }))}
-                          className="min-h-[120px] rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 py-1 text-[11px] text-[var(--text-main)]"
+                          className={`${fieldInputClass} h-auto min-h-[130px] py-2 font-mono text-[12px]`}
                         />
-                      </div>
-                      <div className="space-y-2">
-                        <p className="font-bold text-[var(--text-main)]">Footer HTML</p>
+                      </StackField>
+                      <StackField label="Footer HTML">
                         <textarea
                           value={backupTemplate.quoteTemplateFooterHtml}
                           onChange={(e) => setBackupTemplate((prev) => ({ ...prev, quoteTemplateFooterHtml: e.target.value }))}
-                          className="min-h-[120px] rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 py-1 text-[11px] text-[var(--text-main)]"
+                          className={`${fieldInputClass} h-auto min-h-[130px] py-2 font-mono text-[12px]`}
                         />
-                      </div>
+                      </StackField>
                     </div>
-                    <div className="mt-2 grid gap-2 text-[12px] xl:grid-cols-[1fr_1fr_1fr]">
-                      <div className="grid grid-cols-[110px_1fr] items-center gap-2">
-                        <p className="font-bold text-[var(--text-main)]">Page Size</p>
-                        <input value={backupTemplate.quoteTemplatePageSize} onChange={(e) => setBackupTemplate((prev) => ({ ...prev, quoteTemplatePageSize: e.target.value }))} className="h-7 rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px]" />
-                      </div>
-                      <div className="grid grid-cols-[110px_1fr] items-center gap-2">
-                        <p className="font-bold text-[var(--text-main)]">Margin (mm)</p>
-                        <input value={backupTemplate.quoteTemplateMarginMm} onChange={(e) => setBackupTemplate((prev) => ({ ...prev, quoteTemplateMarginMm: e.target.value.replace(/[^\d]/g, "") }))} className="h-7 rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px]" />
-                      </div>
-                      <label className="inline-flex items-center gap-2 text-[12px] font-bold text-[var(--text-main)]">
-                        <input type="checkbox" checked={backupTemplate.quoteTemplateFooterPinBottom} onChange={() => setBackupTemplate((prev) => ({ ...prev, quoteTemplateFooterPinBottom: !prev.quoteTemplateFooterPinBottom }))} />
-                        Footer Pin Bottom
-                      </label>
+                    <div className="mt-2">
+                      <FieldRow label="Page size">
+                        <GlassDropdown
+                          value={backupTemplate.quoteTemplatePageSize || "A4"}
+                          options={[
+                            ...["A4", "A3", "Letter", "Legal"].map((v) => ({ value: v, label: v })),
+                            ...(backupTemplate.quoteTemplatePageSize && !["A4", "A3", "Letter", "Legal"].includes(backupTemplate.quoteTemplatePageSize)
+                              ? [{ value: backupTemplate.quoteTemplatePageSize, label: backupTemplate.quoteTemplatePageSize }]
+                              : []),
+                          ]}
+                          onChange={(next) => setBackupTemplate((prev) => ({ ...prev, quoteTemplatePageSize: next }))}
+                          ariaLabel="Page size"
+                          triggerClassName={`${fieldInputClass} max-w-[180px] justify-between`}
+                        />
+                      </FieldRow>
+                      <FieldRow label="Margin">
+                        <LengthField
+                          valueMm={backupTemplate.quoteTemplateMarginMm}
+                          onChangeMm={(mm) => setBackupTemplate((prev) => ({ ...prev, quoteTemplateMarginMm: String(Math.round(Number(mm || 0))) }))}
+                          unit={companyUnit}
+                          className={fieldInputClass}
+                          width={120}
+                        />
+                      </FieldRow>
+                      <FieldRow label="Pin footer to the bottom" hint="Keeps the footer at the bottom of the last page.">
+                        <GlassSwitch
+                          checked={backupTemplate.quoteTemplateFooterPinBottom}
+                          onChange={(on) => setBackupTemplate((prev) => ({ ...prev, quoteTemplateFooterPinBottom: on }))}
+                          ariaLabel="Pin footer to the bottom"
+                        />
+                      </FieldRow>
                     </div>
                   </Panel>
-                  <Panel title="Backup Snapshot">
-                    <div className="mb-2 flex items-center justify-between gap-2">
-                      <p className="text-[12px] text-[var(--text-muted)]">Desktop-key snapshot from current company document for backup verification.</p>
-                      <button
-                        type="button"
-                        onClick={downloadBackupSnapshot}
-                        className="h-7 rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-muted)] px-3 text-[11px] font-bold text-[var(--text-muted)]"
-                      >
-                        Export JSON
+                  <Panel
+                    title="Backup snapshot"
+                    icon={DatabaseBackup}
+                    description="A copy of your key company settings to keep or check."
+                    headerRight={
+                      <button type="button" onClick={downloadBackupSnapshot} className={primaryButtonClass} style={primaryButtonStyle}>
+                        <Download size={15} /> Export JSON
                       </button>
-                    </div>
-                    <pre className="max-h-[360px] overflow-auto rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] p-2 text-[11px] text-[var(--text-main)]">
+                    }
+                  >
+                    <pre
+                      className="max-h-[360px] overflow-auto rounded-[12px] border border-dashed p-3 font-mono text-[11.5px]"
+                      style={{ borderColor: "color-mix(in srgb, var(--text-main) 16%, transparent)", color: "var(--text-main)" }}
+                    >
 {JSON.stringify({
   companyId: activeCompanyId,
+  defaultCurrency: companyCurrency,
+  measurementUnit: companyUnit,
+  dateFormat: normalizeDateFormat(form.dateFormat),
   deletedRetentionDays: form.deletedRetentionDays,
   projectStatuses: statuses,
   leadStatuses,
@@ -7753,180 +7453,113 @@ export default function CompanySettingsPage() {
           </div>
         </div>
         )}
-        {showZapierHelp ? (
+        {shouldRenderZapierHelp ? (
           <div className="fixed inset-0 z-[1750] flex items-center justify-center px-4 py-4">
-            <button
-              type="button"
-              aria-label="Close Zapier help"
-              onClick={() => setShowZapierHelp(false)}
-              className="absolute inset-0 bg-[rgba(15,23,42,0.42)] backdrop-blur-[3px]"
-            />
-            <div className="relative z-[1751] flex h-[min(760px,calc(100svh-32px))] w-full max-w-[980px] flex-col overflow-hidden rounded-[16px] border border-[var(--glass-border)] bg-[var(--panel-bg)] shadow-[0_28px_70px_rgba(2,6,23,0.28)]">
-              <div className="flex items-center justify-between border-b border-[var(--glass-border)] px-4 py-3">
-                <div className="flex min-w-0 items-center gap-3">
-                  <div className="inline-flex h-10 w-10 items-center justify-center rounded-[12px] bg-[#FF5A1F] shadow-[0_8px_20px_rgba(255,90,31,0.24)]">
-                    <img src="/logos/Zapier-logo.png" alt="Zapier" className="h-5 w-5 object-contain" />
-                  </div>
-                  <div>
-                    <p className="text-[13px] font-extrabold uppercase tracking-[0.8px] text-[var(--text-main)]">
-                      Connect Zapier Leads
-                    </p>
-                    <p className="text-[11px] text-[var(--text-muted)]">
-                      Use your company webhook URL to connect any Zapier form into CutSmart Leads.
-                    </p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setShowZapierHelp(false)}
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] text-[var(--text-muted)]"
-                >
+            <button type="button" aria-label="Close" onClick={() => setShowZapierHelp(false)} className="glass-modal-backdrop absolute inset-0" />
+            <div ref={zapierHelpPanelRef} className="glass-modal-panel relative z-[1751] flex max-h-[calc(100svh-32px)] w-full max-w-[640px] flex-col overflow-hidden">
+              <div className="glass-modal-header flex items-center gap-3 px-4 py-3">
+                <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[11px] bg-[#FF5A1F]">
+                  <img src="/logos/Zapier-logo.png" alt="Zapier" className="h-5 w-5 object-contain" />
+                </span>
+                <p className="flex-1 text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>Connect Zapier leads</p>
+                <button type="button" onClick={() => setShowZapierHelp(false)} className={dangerIconButtonClass} aria-label="Close">
                   <X size={16} />
                 </button>
               </div>
-              <div className="flex-1 overflow-y-auto px-5 py-5">
-                <div className="grid gap-5 lg:grid-cols-[1.1fr_0.9fr]">
-                  <div className="space-y-4">
-                    <div className="rounded-[14px] border border-[var(--glass-border)] bg-[var(--panel-muted)] p-4">
-                      <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[var(--text-main)]">What To Do In Zapier</p>
-                      <div className="mt-3 space-y-3 text-[12px] text-[var(--text-muted)]">
-                        <p>1. Create a Zap with <span className="font-bold text-[var(--text-main)]">Zapier Forms -&gt; New Submission</span> as the trigger.</p>
-                        <p>2. Add <span className="font-bold text-[var(--text-main)]">Webhooks by Zapier -&gt; POST</span> as the action.</p>
-                        <p>3. Paste your company webhook URL into the Zapier URL field.</p>
-                        <p>4. Set <span className="font-bold text-[var(--text-main)]">Payload Type</span> to <span className="font-bold text-[var(--text-main)]">JSON</span>.</p>
-                        <p>5. Add the lead fields you want to send in the body. The left-side key names become the dynamic fields shown in CutSmart.</p>
-                        <p>6. Test the Zap and then publish it.</p>
-                      </div>
-                    </div>
-                    <div className="rounded-[14px] border border-[var(--glass-border)] bg-[var(--panel-bg)] p-4">
-                      <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[var(--text-main)]">Dynamic Field Tip</p>
-                      <p className="mt-3 text-[12px] text-[var(--text-muted)]">
-                        If you send keys like <span className="font-bold text-[var(--text-main)]">Email</span>, <span className="font-bold text-[var(--text-main)]">Daytime Phone</span>, <span className="font-bold text-[var(--text-main)]">Suburb</span>, or <span className="font-bold text-[var(--text-main)]">Kitchen Age</span>, those exact names become the lead fields CutSmart shows for this company.
-                      </p>
-                    </div>
+              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4 text-[13px]" style={{ color: "var(--text-main)" }}>
+                {[
+                  <>Create a Zap with <strong>Zapier Forms → New Submission</strong> as the trigger.</>,
+                  <>Add <strong>Webhooks by Zapier → POST</strong> as the action.</>,
+                  <>Paste your company webhook URL into the URL field.</>,
+                  <>Set <strong>Payload Type</strong> to <strong>JSON</strong>.</>,
+                  <>Add the lead fields you want to send — their key names become the lead fields CutSmart shows.</>,
+                  <>Test the Zap, then publish it.</>,
+                ].map((step, i) => (
+                  <div key={i} className="flex items-start gap-3">
+                    <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#FF5A1F] text-[11px] font-bold text-white">{i + 1}</span>
+                    <p className="pt-0.5">{step}</p>
                   </div>
-                  <div className="space-y-4">
-                    <div className="rounded-[14px] border border-[var(--glass-border)] bg-[var(--panel-bg)] p-4">
-                      <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[var(--text-main)]">Webhook URL</p>
-                      <div className="mt-3 flex items-center gap-2">
-                        <input
-                          value={zapierWebhookUrl}
-                          readOnly
-                          className="h-10 flex-1 rounded-[10px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-3 text-[12px] text-[var(--text-main)]"
-                        />
-                        <button
-                          type="button"
-                          disabled={!zapierWebhookUrl}
-                          onClick={async () => {
-                            if (!zapierWebhookUrl) return;
-                            try {
-                              await navigator.clipboard.writeText(zapierWebhookUrl);
-                              setZapierCopyStatus("Webhook URL copied");
-                            } catch {
-                              setZapierCopyStatus("Copy failed");
-                            }
-                          }}
-                          className="h-10 rounded-[10px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-3 text-[12px] font-bold text-[var(--text-muted)] disabled:opacity-55"
-                        >
-                          Copy
-                        </button>
-                      </div>
-                      <p className="mt-2 text-[11px] text-[var(--text-muted)]">
-                        This URL already includes the secure company token, so you do not need to add separate auth headers in Zapier.
-                      </p>
-                    </div>
-                    <div className="rounded-[14px] border border-[var(--glass-border)] bg-[var(--panel-muted)] p-4">
-                      <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[var(--text-main)]">What Happens Next</p>
-                      <div className="mt-3 space-y-2 text-[12px] text-[var(--text-muted)]">
-                        <p>Leads are saved under this company automatically.</p>
-                        <p>The Leads tab reads them back through the server route.</p>
-                        <p>You can use different field names for different companies because the lead display is dynamic.</p>
-                      </div>
-                    </div>
-                  </div>
+                ))}
+                <div className="flex gap-2.5 rounded-[12px] px-3 py-2.5 text-[12px] leading-[1.5]" style={{ backgroundColor: "color-mix(in srgb, var(--text-main) 4%, transparent)", color: "var(--text-muted)" }}>
+                  <Lightbulb size={15} className="mt-0.5 shrink-0" style={{ color: "var(--brand)" }} />
+                  <p>
+                    Keys like <strong style={{ color: "var(--text-main)" }}>Email</strong>, <strong style={{ color: "var(--text-main)" }}>Daytime Phone</strong> or{" "}
+                    <strong style={{ color: "var(--text-main)" }}>Suburb</strong> show up on each lead automatically. The URL already includes your secure
+                    company token, so no extra headers are needed.
+                  </p>
                 </div>
+                {zapierWebhookUrl ? (
+                  <StackField label="Webhook URL">
+                    <div className="flex items-center gap-2">
+                      <input value={zapierWebhookUrl} readOnly className={`${fieldInputClass} font-mono text-[11.5px]`} />
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(zapierWebhookUrl);
+                            setZapierCopyStatus("copied");
+                            if (zapierCopyResetTimerRef.current) window.clearTimeout(zapierCopyResetTimerRef.current);
+                            zapierCopyResetTimerRef.current = window.setTimeout(() => {
+                              setZapierCopyStatus("");
+                              zapierCopyResetTimerRef.current = null;
+                            }, 1400);
+                          } catch {
+                            setZapierCopyStatus("");
+                          }
+                        }}
+                        className={secondaryButtonClass}
+                      >
+                        <Copy size={14} /> {zapierCopyStatus === "copied" ? "Copied" : "Copy"}
+                      </button>
+                    </div>
+                  </StackField>
+                ) : null}
               </div>
-              <div className="flex items-center justify-end gap-2 border-t border-[var(--glass-border)] px-4 py-3">
-                <button
-                  type="button"
-                  onClick={() => setShowZapierHelp(false)}
-                  className="rounded-[10px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-4 py-2 text-[12px] font-bold text-[var(--text-muted)]"
-                >
-                  Close
-                </button>
+              <div className="flex justify-end border-t px-4 py-3" style={{ borderColor: "var(--glass-border)" }}>
+                <button type="button" onClick={() => setShowZapierHelp(false)} className={primaryButtonClass} style={primaryButtonStyle}>Got it</button>
               </div>
             </div>
           </div>
         ) : null}
-        {showLeadFieldsCustomize ? (
+        {shouldRenderLeadFieldsCustomize ? (
           <div className="fixed inset-0 z-[1750] flex items-center justify-center px-4 py-4">
-            <button
-              type="button"
-              aria-label="Close lead field customization"
-              onClick={() => setShowLeadFieldsCustomize(false)}
-              className="absolute inset-0 bg-[rgba(15,23,42,0.42)] backdrop-blur-[3px]"
-            />
-            <div className="relative z-[1751] flex h-[min(760px,calc(100svh-32px))] w-full max-w-[940px] flex-col overflow-hidden rounded-[16px] border border-[var(--glass-border)] bg-[var(--panel-bg)] shadow-[0_28px_70px_rgba(2,6,23,0.28)]">
-              <div className="flex items-center justify-between border-b border-[var(--glass-border)] px-4 py-3">
-                <div>
-                  <p className="text-[13px] font-extrabold uppercase tracking-[0.8px] text-[var(--text-main)]">
-                    Customize Lead Fields
-                  </p>
-                  <p className="text-[11px] text-[var(--text-muted)]">
-                    Choose which webhook fields show in the main row, which stay in the detail view, and which ones autofill New Project.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setShowLeadFieldsCustomize(false)}
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] text-[var(--text-muted)]"
-                >
+            <button type="button" aria-label="Close" onClick={() => setShowLeadFieldsCustomize(false)} className="glass-modal-backdrop absolute inset-0" />
+            <div ref={leadFieldsPanelRef} className="glass-modal-panel relative z-[1751] flex h-[min(760px,calc(100svh-32px))] w-full max-w-[860px] flex-col overflow-hidden">
+              <div className="glass-modal-header flex items-center justify-between px-4 py-3">
+                <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>Customise lead fields</p>
+                <button type="button" onClick={() => setShowLeadFieldsCustomize(false)} className={dangerIconButtonClass} aria-label="Close">
                   <X size={16} />
                 </button>
               </div>
-              <div className="flex-1 overflow-y-auto px-5 py-5">
-                <div className="rounded-[14px] border border-[var(--glass-border)] bg-[var(--panel-bg)] p-4">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[var(--text-main)]">Lead Fields</p>
-                      <p className="mt-1 text-[12px] text-[var(--text-muted)]">
-                        Drag to reorder. The order you set here controls both the compact lead row and the expanded details.
-                      </p>
-                      <p className="mt-1 text-[12px] text-[var(--text-muted)]">
-                        Use the <span className="font-bold text-[var(--text-main)]">Use For</span> column to tell CutSmart which incoming field should fill client name, phone, email, address, or notes when creating a project.
-                      </p>
+              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4">
+                <div className="flex gap-2.5 rounded-[12px] px-3 py-2.5 text-[12px] leading-[1.5]" style={{ backgroundColor: "color-mix(in srgb, var(--text-main) 4%, transparent)", color: "var(--text-muted)" }}>
+                  <Lightbulb size={15} className="mt-0.5 shrink-0" style={{ color: "var(--brand)" }} />
+                  <p>
+                    Drag to reorder — the order controls both the compact lead row and the expanded details. <strong style={{ color: "var(--text-main)" }}>Use for</strong>{" "}
+                    tells CutSmart which field fills the client name, phone, email, address or notes when a lead becomes a project.
+                  </p>
+                </div>
+                {leadFieldsLoading ? (
+                  <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>Loading fields...</p>
+                ) : mergedLeadFieldLayout.length === 0 ? (
+                  <p className="rounded-[12px] border border-dashed px-3 py-4 text-[12.5px]" style={{ borderColor: "color-mix(in srgb, var(--text-main) 16%, transparent)", color: "var(--text-muted)" }}>
+                    No lead fields yet. Submit at least one Zapier lead and its fields will appear here.
+                  </p>
+                ) : (
+                  <div className="space-y-1.5">
+                    <div className="grid grid-cols-[28px_minmax(0,1fr)_170px_80px_80px] items-center gap-2 px-2">
+                      <span />
+                      <span className={columnHeadClass}>Field</span>
+                      <span className={columnHeadClass}>Use for</span>
+                      <span className={`text-center ${columnHeadClass}`}>Main row</span>
+                      <span className={`text-center ${columnHeadClass}`}>Details</span>
                     </div>
-                    {leadFieldsLoading ? (
-                      <span className="text-[11px] font-semibold text-[var(--text-muted)]">Loading fields...</span>
-                    ) : (
-                      <span className="text-[11px] font-semibold text-[var(--text-muted)]">
-                        {mergedLeadFieldLayout.length} field{mergedLeadFieldLayout.length === 1 ? "" : "s"}
-                      </span>
-                    )}
-                  </div>
-                  {mergedLeadFieldLayout.length === 0 ? (
-                    <p className="mt-4 rounded-[10px] border border-dashed border-[var(--glass-border)] bg-[var(--panel-muted)] px-3 py-4 text-[12px] text-[var(--text-muted)]">
-                      No lead fields detected yet. Submit at least one Zapier lead and the available webhook fields will appear here.
-                    </p>
-                  ) : (
-                    <div className="mt-4 space-y-2">
-                      <div className="grid grid-cols-[32px_minmax(0,1fr)_148px_92px_92px] items-center gap-2 px-2 text-[10px] font-extrabold uppercase tracking-[0.7px] text-[var(--text-muted)]">
-                        <p></p>
-                        <p>Field</p>
-                        <p className="text-center">Use For</p>
-                        <p className="text-center">Main Row</p>
-                        <p className="text-center">Details</p>
-                      </div>
                       {mergedLeadFieldLayout.map((field, idx) => (
                         <div
                           key={field.key}
-                          className={`grid grid-cols-[32px_minmax(0,1fr)_148px_92px_92px] items-center gap-2 rounded-[10px] border px-2 py-2 ${
-                            leadFieldDragIndex === idx
-                              ? "border-[var(--brand)] bg-[var(--brand-soft)]"
-                              : leadFieldDragOverIndex === idx
-                                ? "border-[var(--glass-border)] bg-[var(--panel-muted)]"
-                                : "border-[var(--glass-border)] bg-[var(--panel-muted)]"
-                          }`}
+                          id={`settings_lead_field_${idx}`}
+                          className={`${listRowClass} grid grid-cols-[28px_minmax(0,1fr)_170px_80px_80px]`}
+                          style={{ opacity: leadFieldDragIndex === idx ? 0.45 : 1 }}
                           onDragOver={(event) => {
                             event.preventDefault();
                             event.dataTransfer.dropEffect = "move";
@@ -7951,6 +7584,7 @@ export default function CompanySettingsPage() {
                             event.preventDefault();
                             setLeadFieldDragIndex(null);
                             setLeadFieldDragOverIndex(null);
+                            endRowDrag();
                             triggerToggleAutosave();
                           }}
                         >
@@ -7960,26 +7594,30 @@ export default function CompanySettingsPage() {
                             onDragStart={(event) => {
                               setLeadFieldDragIndex(idx);
                               setLeadFieldDragOverIndex(idx);
-                              event.dataTransfer.effectAllowed = "move";
+                              startRowDrag(event, `settings_lead_field_${idx}`, field.label, "#FF5A1F");
                             }}
                             onDragEnd={() => {
                               setLeadFieldDragIndex(null);
                               setLeadFieldDragOverIndex(null);
+                              endRowDrag();
                             }}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] text-[var(--text-muted)]"
+                            className={gripClass}
                             title="Drag to reorder"
                           >
-                            <GripVertical size={14} />
+                            <GripVertical size={15} />
                           </button>
                           <div className="min-w-0">
-                            <p className="truncate text-[12px] font-semibold text-[var(--text-main)]">{field.label}</p>
-                            <p className="truncate text-[10px] text-[var(--text-muted)]">{field.key}</p>
+                            <p className="truncate text-[13px] font-semibold text-[var(--text-main)]">{field.label}</p>
+                            <p className="truncate font-mono text-[10.5px] text-[var(--text-muted)]">{field.key}</p>
                           </div>
-                          <label className="flex items-center justify-center">
-                            <select
+                          <span className="min-w-0">
+                            <GlassDropdown
                               value={field.projectFieldTarget || ""}
-                              onChange={(event) => {
-                                const nextTarget = String(event.target.value || "") as LeadProjectFieldTarget;
+                              options={LEAD_PROJECT_FIELD_TARGET_OPTIONS.map((option) => ({ value: option.value, label: option.label }))}
+                              ariaLabel="Use for"
+                              triggerClassName={`${glassFieldSmClass} justify-between`}
+                              onChange={(value) => {
+                                const nextTarget = String(value || "") as LeadProjectFieldTarget;
                                 setZapierLeads((prev) => ({
                                   ...prev,
                                   fieldLayout: mergeLeadFieldLayout(availableLeadFields, prev.fieldLayout).map((row) => {
@@ -7996,18 +7634,12 @@ export default function CompanySettingsPage() {
                                 }));
                                 triggerToggleAutosave();
                               }}
-                              className="h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[11px] font-semibold text-[var(--text-main)] outline-none"
-                            >
-                              {LEAD_PROJECT_FIELD_TARGET_OPTIONS.map((option) => (
-                                <option key={option.value || "none"} value={option.value}>
-                                  {option.label}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                          <label className="flex items-center justify-center">
-                            <input
-                              type="checkbox"
+                            />
+                          </span>
+                          <span className="flex justify-center">
+                            <GlassSwitch
+                              size="sm"
+                              ariaLabel="Show in main row"
                               checked={field.showInRow}
                               onChange={() =>
                                 setZapierLeads((prev) => ({
@@ -8020,10 +7652,11 @@ export default function CompanySettingsPage() {
                                 }))
                               }
                             />
-                          </label>
-                          <label className="flex items-center justify-center">
-                            <input
-                              type="checkbox"
+                          </span>
+                          <span className="flex justify-center">
+                            <GlassSwitch
+                              size="sm"
+                              ariaLabel="Show in details"
                               checked={field.showInDetail}
                               onChange={() =>
                                 setZapierLeads((prev) => ({
@@ -8036,25 +7669,20 @@ export default function CompanySettingsPage() {
                                 }))
                               }
                             />
-                          </label>
+                          </span>
                         </div>
                       ))}
-                    </div>
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
-              <div className="flex items-center justify-end gap-2 border-t border-[var(--glass-border)] px-4 py-3">
-                <button
-                  type="button"
-                  onClick={() => setShowLeadFieldsCustomize(false)}
-                  className="rounded-[10px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-4 py-2 text-[12px] font-bold text-[var(--text-muted)]"
-                >
-                  Close
-                </button>
+              <div className="flex justify-end border-t px-4 py-3" style={{ borderColor: "var(--glass-border)" }}>
+                <button type="button" onClick={() => setShowLeadFieldsCustomize(false)} className={primaryButtonClass} style={primaryButtonStyle}>Done</button>
               </div>
             </div>
           </div>
         ) : null}
+        <DragGhostLayer controller={rowDragGhost} />
+        {ask.element}
     </>
   );
 }
