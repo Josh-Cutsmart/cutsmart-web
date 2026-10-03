@@ -6,12 +6,12 @@
 // (lib/calendar-data.ts). Categories (with colours) are managed in Company Settings > Calendar and can
 // be shown/hidden here per person. Who can see / edit is the role's calendar.view / calendar.edit.
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
-import { CalendarDays, ChevronLeft, ChevronRight, ExternalLink, Filter, FolderKanban, MapPin, Plus, Search, Trash2, X } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, Clock, ExternalLink, Filter, FolderKanban, MapPin, Pencil, Plus, Search, Trash2, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
-import { fetchCompanyDoc, fetchProjects } from "@/lib/firestore-data";
+import { fetchCompanyDoc, fetchCompanyMembers, fetchProjects } from "@/lib/firestore-data";
 import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { DragGhostLayer, useDragGhost } from "@/lib/use-drag-ghost";
@@ -20,6 +20,8 @@ import {
   deleteCalendarEvent,
   newCalendarId,
   normalizeCalendarCategories,
+  normalizeCalendarWorkdays,
+  DEFAULT_CALENDAR_WORKDAYS,
   saveCalendarEvent,
   subscribeCalendarEvents,
   type CalendarCategory,
@@ -108,8 +110,13 @@ function textOn(hex: string) {
 // The visible range for a view (end exclusive).
 function viewRange(view: CalendarView, cursor: Date): { from: Date; to: Date } {
   if (view === "month") {
-    const from = startOfWeek(startOfMonth(cursor));
-    return { from, to: addDays(from, 42) };
+    // The month plus the ones either side, so swiping to the next/previous month (mobile) shows its
+    // events straight away.
+    const prev = startOfMonth(cursor);
+    prev.setMonth(prev.getMonth() - 1);
+    const next = startOfMonth(cursor);
+    next.setMonth(next.getMonth() + 1);
+    return { from: startOfWeek(prev), to: addDays(startOfWeek(next), 42) };
   }
   if (view === "week") {
     const from = startOfWeek(cursor);
@@ -180,8 +187,33 @@ function layoutBars(rowStart: Date, cols: number, evs: CalendarEvent[]): { bars:
   });
   return { bars, lanes: laneEnds.length };
 }
+// One event "slot" in a month day: an 18px event plus a 2px gap.
 const BAR_H = 20;
 const PREVIEW_SUFFIX = "__preview";
+
+// e.g. "Monday 6 Oct 2026 · 9:00am – 10:30am", "Mon 6 Oct – Wed 8 Oct 2026 · All day".
+function eventWhenText(e: CalendarEvent, fmtDate: (d: Date) => string): { primary: string; secondary: string } {
+  const weekday = (ms: number, style: "long" | "short") => new Intl.DateTimeFormat(undefined, { weekday: style }).format(new Date(ms));
+  const lastDayMs = e.allDay ? e.endMs - DAY_MS : e.endMs;
+  const oneDay = startOfDay(e.startMs).getTime() === startOfDay(e.allDay ? lastDayMs : e.endMs - 1).getTime();
+  if (oneDay) {
+    return {
+      primary: `${weekday(e.startMs, "long")} ${fmtDate(new Date(e.startMs))}`,
+      secondary: e.allDay ? "All day" : `${timeText(e.startMs)} – ${timeText(e.endMs)}`,
+    };
+  }
+  if (e.allDay) {
+    const days = Math.round((startOfDay(lastDayMs).getTime() - startOfDay(e.startMs).getTime()) / DAY_MS) + 1;
+    return {
+      primary: `${weekday(e.startMs, "short")} ${fmtDate(new Date(e.startMs))} – ${weekday(lastDayMs, "short")} ${fmtDate(new Date(lastDayMs))}`,
+      secondary: `All day · ${days} days`,
+    };
+  }
+  return {
+    primary: `${weekday(e.startMs, "short")} ${fmtDate(new Date(e.startMs))}, ${timeText(e.startMs)}`,
+    secondary: `until ${weekday(e.endMs, "short")} ${fmtDate(new Date(e.endMs))}, ${timeText(e.endMs)}`,
+  };
+}
 
 type Draft = {
   id: string;
@@ -271,10 +303,14 @@ export default function CalendarPage() {
   const [view, setView] = useState<CalendarView>("month");
   const [cursor, setCursor] = useState<Date>(() => startOfDay(new Date()));
   const [categories, setCategories] = useState<CalendarCategory[]>([]);
+  // Company Settings > Calendar > Workdays. Other days are drawn hatched ("crossed out").
+  const [workdays, setWorkdays] = useState<number[]>(DEFAULT_CALENDAR_WORKDAYS);
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [loadError, setLoadError] = useState("");
   const [projects, setProjects] = useState<Project[]>([]);
+  // Staff colours, for the "Added by" emblem in the event pop-up.
+  const [memberColorByUid, setMemberColorByUid] = useState<Record<string, string>>({});
 
   // Per-person view + hidden categories, remembered on this device.
   useEffect(() => {
@@ -318,7 +354,15 @@ export default function CalendarPage() {
     if (!companyId || !canView) return;
     let cancelled = false;
     void fetchCompanyDoc(companyId).then((docData) => {
-      if (!cancelled) setCategories(normalizeCalendarCategories((docData as Record<string, unknown> | null)?.calendarCategories));
+      if (cancelled) return;
+      setCategories(normalizeCalendarCategories((docData as Record<string, unknown> | null)?.calendarCategories));
+      setWorkdays(normalizeCalendarWorkdays((docData as Record<string, unknown> | null)?.calendarWorkdays));
+    });
+    void fetchCompanyMembers(companyId).then((members) => {
+      if (cancelled) return;
+      const map: Record<string, string> = {};
+      for (const m of members) map[m.uid] = String(m.userColor || m.badgeColor || "").trim();
+      setMemberColorByUid(map);
     });
     if (user?.uid) {
       void fetchProjects(user.uid, [companyId], { lightweight: true }).then((rows) => {
@@ -369,6 +413,8 @@ export default function CalendarPage() {
   const [modalError, setModalError] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [projectQuery, setProjectQuery] = useState("");
+  // Clicking an event opens it read-only ("view"); Edit switches the same pop-up to the form.
+  const [eventMode, setEventMode] = useState<"view" | "edit">("edit");
 
   const openNew = (startMs: number, allDay: boolean, e?: ReactMouseEvent<HTMLElement> | ReactPointerEvent<HTMLElement>) => {
     if (!canEdit) return;
@@ -377,6 +423,7 @@ export default function CalendarPage() {
     setModalError("");
     setConfirmDelete(false);
     setProjectQuery("");
+    setEventMode("edit");
     const next: Draft = {
       id: newCalendarId("evt"),
       isNew: true,
@@ -402,6 +449,7 @@ export default function CalendarPage() {
     setModalError("");
     setConfirmDelete(false);
     setProjectQuery("");
+    setEventMode("view");
     const next = draftFromEvent(event);
     setDraft(next);
     setRenderedDraft(next);
@@ -484,6 +532,9 @@ export default function CalendarPage() {
   const [monthDragId, setMonthDragId] = useState("");
   const [monthDropDay, setMonthDropDay] = useState<number | null>(null);
   const today = startOfDay(new Date());
+  const isOffDay = (day: Date) => !workdays.includes(day.getDay());
+  // The "crossed out" look for days that aren't workdays.
+  const offDayHatch = "repeating-linear-gradient(135deg, color-mix(in srgb, var(--text-main) 6%, transparent) 0 2px, transparent 2px 9px)";
 
   // How many days into the event the user grabbed it (so dropping keeps that day under the cursor).
   const [grabOffsetDays, setGrabOffsetDays] = useState(0);
@@ -564,7 +615,7 @@ export default function CalendarPage() {
           e.stopPropagation();
           openExisting(event, e);
         }}
-        className="flex h-[18px] w-full min-w-0 items-center gap-1.5 truncate rounded-[6px] px-1.5 text-left text-[10.5px] font-medium transition hover:bg-[color-mix(in_srgb,var(--text-main)_6%,transparent)]"
+        className="flex h-[18px] w-full min-w-0 shrink-0 items-center gap-1.5 truncate rounded-[6px] px-1.5 text-left text-[10.5px] font-normal transition hover:bg-[color-mix(in_srgb,var(--text-main)_6%,transparent)]"
         style={{
           color: "var(--text-main)",
           opacity: monthDragId === event.id ? 0.35 : 1,
@@ -610,12 +661,12 @@ export default function CalendarPage() {
               e.stopPropagation();
               openExisting(b.event, e);
             }}
-            className="pointer-events-auto absolute flex items-center gap-1 truncate px-2 text-left text-[11px] font-semibold transition hover:brightness-95"
+            className="pointer-events-auto absolute flex items-center gap-1 truncate px-2 text-left text-[11px] font-normal transition hover:brightness-95"
             style={{
               top: b.lane * BAR_H,
-              height: BAR_H - 3,
-              left: `calc(${(b.startCol / cols) * 100}% + ${b.contBefore ? 0 : 3}px)`,
-              width: `calc(${(span / cols) * 100}% - ${(b.contBefore ? 0 : 3) + (b.contAfter ? 0 : 3)}px)`,
+              height: BAR_H - 2,
+              left: `calc(${(b.startCol / cols) * 100}% + ${b.contBefore ? 0 : 2}px)`,
+              width: `calc(${(span / cols) * 100}% - ${(b.contBefore ? 0 : 2) + (b.contAfter ? 0 : 2)}px)`,
               backgroundColor: cat.color,
               color: textOn(cat.color),
               borderRadius: `${b.contBefore ? 0 : 6}px ${b.contAfter ? 0 : 6}px ${b.contAfter ? 0 : 6}px ${b.contBefore ? 0 : 6}px`,
@@ -635,93 +686,205 @@ export default function CalendarPage() {
         );
       });
 
-  const monthView = () => {
-    const from = range.from;
-    const weeks = Array.from({ length: 6 }, (_, w) => addDays(from, w * 7));
-    const month = cursor.getMonth();
-    const MAX_LANES = 3;
-    const SLOTS = 4; // bar lanes + timed chips shown per day before "+N more"
+  // ---- Month view. Every day is the same height (6 equal rows filling the space); each day shows as
+  // many events as fit and "+N more" for the rest.
+  const [monthRowsHeight, setMonthRowsHeight] = useState(0);
+  const monthRowsObserverRef = useRef<ResizeObserver | null>(null);
+  const monthRowsRef = useCallback((el: HTMLDivElement | null) => {
+    monthRowsObserverRef.current?.disconnect();
+    monthRowsObserverRef.current = null;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const measure = () => setMonthRowsHeight(el.clientHeight);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    monthRowsObserverRef.current = observer;
+  }, []);
+  // Day number row (4px padding + 24px + 2px) sits above the event slots.
+  const DAY_HEADER_PX = 30;
+  const slotsPerDay = Math.max(1, Math.floor((monthRowsHeight / 6 - DAY_HEADER_PX - 2) / BAR_H));
+
+  const monthGrid = (monthDate: Date) => {
+    const firstWeek = startOfWeek(startOfMonth(monthDate));
+    const weeks = Array.from({ length: 6 }, (_, w) => addDays(firstWeek, w * 7));
+    const month = monthDate.getMonth();
+    const S = slotsPerDay;
     return (
-      <div className="overflow-hidden rounded-[20px] border" style={cardStyle}>
-        <div className="grid grid-cols-7 border-b" style={{ borderColor: "var(--glass-border)" }}>
-          {Array.from({ length: 7 }, (_, i) => addDays(from, i)).map((d) => (
-            <div key={d.getTime()} className="px-2 py-2 text-center text-[11px] font-semibold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
-              {weekdayShort(d)}
-            </div>
-          ))}
-        </div>
+      <div className="grid h-full grid-rows-6">
         {weeks.map((weekStart) => {
           const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
           const { bars, lanes } = layoutBars(weekStart, 7, dayLayoutEvents);
-          const shownLanes = Math.min(lanes, MAX_LANES);
+          const lanesCovering = (col: number, limit: number) =>
+            Math.max(0, ...bars.filter((b) => b.lane < limit && b.startCol <= col && b.endCol >= col).map((b) => b.lane + 1));
+          const chipsFor = (d: Date) => dayLayoutEvents.filter((e) => !isBarEvent(e) && overlapsDay(e, d));
+          // Bar lanes shown in this row — every slot can hold an event, since the "+N" count sits up in the
+          // day's header rather than taking a slot.
+          const L = Math.min(lanes, S);
           return (
-            <div key={weekStart.getTime()} className="relative grid grid-cols-7 border-b last:border-b-0" style={{ borderColor: "var(--glass-border)" }}>
-              {days.map((d, col) => {
-                const dayMs = d.getTime();
-                const isToday = sameDay(d, today);
-                const inMonth = d.getMonth() === month;
-                const hiddenBars = bars.filter((b) => b.lane >= MAX_LANES && b.startCol <= col && b.endCol >= col).length;
-                const chips = dayLayoutEvents.filter((e) => !isBarEvent(e) && overlapsDay(e, d));
-                const lanesHere = Math.max(0, ...bars.filter((b) => b.lane < MAX_LANES && b.startCol <= col && b.endCol >= col).map((b) => b.lane + 1));
-                const chipRoom = Math.max(1, SLOTS - lanesHere);
-                const shownChips = chips.slice(0, chips.length > chipRoom ? chipRoom - 1 : chipRoom);
+            <div key={weekStart.getTime()} className="relative grid min-h-0 grid-cols-7 overflow-hidden border-b last:border-b-0" style={{ borderColor: "var(--glass-border)" }}>
+              {days.map((dd, col) => {
+                const dayMs = dd.getTime();
+                const isToday = sameDay(dd, today);
+                const inMonth = dd.getMonth() === month;
+                const lanesHere = lanesCovering(col, L);
+                const hiddenBars = bars.filter((b) => b.lane >= L && b.startCol <= col && b.endCol >= col).length;
+                const chips = chipsFor(dd);
+                const room = Math.max(0, S - lanesHere);
+                const shownChips = chips.slice(0, room);
                 const more = chips.length - shownChips.length + hiddenBars;
                 return (
                   <div
                     key={dayMs}
                     onClick={(e) => openNew(dayMs, true, e)}
                     {...dayDropProps(dayMs)}
-                    className={`group relative flex min-h-[92px] min-w-0 flex-col gap-0.5 border-r p-1 transition-colors [&:nth-child(7)]:border-r-0 md:min-h-[118px] ${canEdit ? "cursor-pointer hover:bg-[color-mix(in_srgb,var(--text-main)_3%,transparent)]" : ""}`}
+                    className={`group relative flex min-h-0 min-w-0 flex-col gap-0.5 overflow-hidden border-r p-1 transition-colors [&:nth-child(7)]:border-r-0 ${canEdit ? "cursor-pointer hover:bg-[color-mix(in_srgb,var(--text-main)_3%,transparent)]" : ""}`}
                     style={{
                       borderColor: "var(--glass-border)",
                       backgroundColor: monthDropDay === dayMs ? "var(--brand-soft)" : inMonth ? undefined : "color-mix(in srgb, var(--text-main) 2.5%, transparent)",
+                      backgroundImage: isOffDay(dd) && monthDropDay !== dayMs ? offDayHatch : undefined,
                     }}
                   >
-                    <div className="flex items-center justify-between px-0.5">
+                    <div className="flex h-6 shrink-0 items-center justify-between px-0.5">
                       <button
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
-                          setCursor(startOfDay(d));
+                          setCursor(startOfDay(dd));
                           changeView("day");
                         }}
                         className="inline-flex h-6 min-w-6 items-center justify-center rounded-full px-1 text-[12px] font-semibold transition hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)]"
                         style={isToday ? { backgroundImage: "var(--brand-gradient)", color: "#fff" } : { color: inMonth ? "var(--text-main)" : "var(--text-muted)" }}
                         title="Open this day"
                       >
-                        {d.getDate()}
+                        {dd.getDate()}
                       </button>
-                      {canEdit ? <Plus size={13} className="opacity-0 transition group-hover:opacity-60" style={{ color: "var(--text-muted)" }} /> : null}
-                    </div>
-                    {/* Room for this row's bars, which are drawn over the whole week below. */}
-                    <div className="shrink-0" style={{ height: shownLanes * BAR_H }} />
-                    <div className="flex min-w-0 flex-col gap-0.5">
-                      {shownChips.map((e) => renderChip(e, d))}
                       {more > 0 ? (
+                        // Events that don't fit: the count, in a pill at the right of the day's header. Opens the day.
                         <button
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
-                            setCursor(startOfDay(d));
+                            setCursor(startOfDay(dd));
                             changeView("day");
                           }}
-                          className="px-1.5 text-left text-[11px] font-semibold"
-                          style={{ color: "var(--brand-strong)" }}
+                          className="inline-flex h-[18px] shrink-0 items-center rounded-full px-1.5 text-[10.5px] font-semibold transition hover:brightness-95"
+                          style={{ backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+                          title={`${more} more event${more === 1 ? "" : "s"} — open this day`}
                         >
-                          +{more} more
+                          +{more}
                         </button>
+                      ) : canEdit ? (
+                        <Plus size={13} className="opacity-0 transition group-hover:opacity-60" style={{ color: "var(--text-muted)" }} />
                       ) : null}
                     </div>
+                    {/* Room for the bars on this day (drawn across the week below), then the timed events. */}
+                    {lanesHere > 0 ? <div className="shrink-0" style={{ height: lanesHere * BAR_H - 2 }} /> : null}
+                    {shownChips.map((e) => renderChip(e, dd))}
                   </div>
                 );
               })}
               {/* The week's continuous bars, positioned under the day numbers. */}
-              <div className="pointer-events-none absolute inset-x-0" style={{ top: 30, height: shownLanes * BAR_H }}>
-                {renderBars(bars, weekStart, 7, MAX_LANES)}
+              <div className="pointer-events-none absolute inset-x-0" style={{ top: DAY_HEADER_PX, height: L * BAR_H }}>
+                {renderBars(bars, weekStart, 7, L)}
               </div>
             </div>
           );
         })}
+      </div>
+    );
+  };
+
+  // ---- Mobile: swipe up/down between months. Three months are rendered stacked (previous, current,
+  // next), the scroller snaps to whole months, and once it settles on the previous or next one the
+  // cursor moves and the scroller is put back on the middle — so there's always a loaded month on
+  // each side and it can never rest between two months.
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 767px)");
+    const sync = () => setIsMobile(query.matches);
+    sync();
+    query.addEventListener("change", sync);
+    return () => query.removeEventListener("change", sync);
+  }, []);
+  const monthScrollerRef = useRef<HTMLDivElement | null>(null);
+  const monthSettleTimerRef = useRef<number | null>(null);
+  const centreMonthScroller = useCallback(() => {
+    const el = monthScrollerRef.current;
+    if (el) el.scrollTop = el.clientHeight;
+  }, []);
+  useLayoutEffect(() => {
+    if (view === "month" && isMobile) centreMonthScroller();
+  }, [centreMonthScroller, cursor, isMobile, monthRowsHeight, view]);
+  const settleMonthScroller = () => {
+    const el = monthScrollerRef.current;
+    if (!el || !el.clientHeight) return;
+    const idx = Math.round(el.scrollTop / el.clientHeight);
+    if (idx === 1) return;
+    setCursor((prev) => {
+      const next = startOfMonth(prev);
+      next.setMonth(next.getMonth() + (idx === 0 ? -1 : 1));
+      return next;
+    });
+  };
+  const onMonthScroll = () => {
+    if (monthSettleTimerRef.current) window.clearTimeout(monthSettleTimerRef.current);
+    monthSettleTimerRef.current = window.setTimeout(settleMonthScroller, 110);
+  };
+  useEffect(() => {
+    const el = monthScrollerRef.current;
+    if (!el || !("onscrollend" in el)) return;
+    const onEnd = () => {
+      if (monthSettleTimerRef.current) window.clearTimeout(monthSettleTimerRef.current);
+      settleMonthScroller();
+    };
+    el.addEventListener("scrollend", onEnd);
+    return () => el.removeEventListener("scrollend", onEnd);
+  });
+
+  const weekdayHeader = (
+    <div className="grid shrink-0 grid-cols-7 border-b" style={{ borderColor: "var(--glass-border)" }}>
+      {Array.from({ length: 7 }, (_, i) => addDays(startOfWeek(cursor), i)).map((day) => (
+        <div key={day.getTime()} className="px-2 py-2 text-center text-[11px] font-semibold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
+          {weekdayShort(day)}
+        </div>
+      ))}
+    </div>
+  );
+
+  const monthView = () => {
+    if (isMobile) {
+      const prev = startOfMonth(cursor);
+      prev.setMonth(prev.getMonth() - 1);
+      const next = startOfMonth(cursor);
+      next.setMonth(next.getMonth() + 1);
+      // Edge to edge on a phone: no floating card, it spans the full width.
+      return (
+        <div className="-mx-3 flex flex-col border-y" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-bg-strong)" }}>
+          {weekdayHeader}
+          <div
+            ref={(el) => {
+              monthScrollerRef.current = el;
+              monthRowsRef(el);
+            }}
+            onScroll={onMonthScroll}
+            className="snap-y snap-mandatory overflow-y-auto overscroll-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+            style={{ height: "calc(100svh - 168px - env(safe-area-inset-bottom, 0px))" }}
+          >
+            {[prev, startOfMonth(cursor), next].map((m) => (
+              <div key={m.getTime()} className="h-full snap-start [scroll-snap-stop:always]">
+                {monthGrid(m)}
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div className="flex flex-col overflow-hidden rounded-[20px] border" style={cardStyle}>
+        {weekdayHeader}
+        <div ref={monthRowsRef} style={{ height: "max(540px, calc(100svh - 196px))" }}>
+          {monthGrid(cursor)}
+        </div>
       </div>
     );
   };
@@ -838,7 +1001,11 @@ export default function CalendarPage() {
                       onClick={(e) => openNew(d.getTime(), true, e)}
                       {...dayDropProps(d.getTime())}
                       className={`border-l first:border-l-0 ${canEdit ? "cursor-pointer hover:bg-[color-mix(in_srgb,var(--text-main)_3%,transparent)]" : ""}`}
-                      style={{ borderColor: "var(--glass-border)", backgroundColor: monthDropDay === d.getTime() ? "var(--brand-soft)" : undefined }}
+                      style={{
+                        borderColor: "var(--glass-border)",
+                        backgroundColor: monthDropDay === d.getTime() ? "var(--brand-soft)" : undefined,
+                        backgroundImage: isOffDay(d) && monthDropDay !== d.getTime() ? offDayHatch : undefined,
+                      }}
                       title={canEdit ? "Add an all-day event" : undefined}
                     />
                   ))}
@@ -876,7 +1043,10 @@ export default function CalendarPage() {
                     className={`relative border-l first:border-l-0 ${canEdit ? "cursor-pointer" : ""}`}
                     style={{
                       borderColor: "var(--glass-border)",
-                      backgroundImage: `repeating-linear-gradient(to bottom, var(--glass-border) 0, var(--glass-border) 1px, transparent 1px, transparent ${HOUR_PX}px)`,
+                      backgroundImage: [
+                        `repeating-linear-gradient(to bottom, var(--glass-border) 0, var(--glass-border) 1px, transparent 1px, transparent ${HOUR_PX}px)`,
+                        ...(isOffDay(d) ? [offDayHatch] : []),
+                      ].join(", "),
                     }}
                     onClick={(e) => {
                       const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -924,7 +1094,7 @@ export default function CalendarPage() {
                             outline: dragging ? "2px solid var(--text-main)" : undefined,
                           }}
                         >
-                          <p className="truncate font-semibold">{event.title || "Untitled event"}</p>
+                          <p className="truncate font-normal">{event.title || "Untitled event"}</p>
                           {height > 30 ? (
                             <p className="truncate opacity-85">
                               {timeText(event.startMs)} – {timeText(event.endMs)}
@@ -987,7 +1157,7 @@ export default function CalendarPage() {
                     </span>
                     <span className="h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: cat.color }} />
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[13px] font-medium" style={{ color: "var(--text-main)" }}>{e.title || "Untitled event"}</span>
+                      <span className="block truncate text-[13px] font-normal" style={{ color: "var(--text-main)" }}>{e.title || "Untitled event"}</span>
                       <span className="block truncate text-[11.5px]" style={{ color: "var(--text-muted)" }}>
                         {[cat.name, e.location, e.projectName].filter(Boolean).join(" · ")}
                       </span>
@@ -1058,6 +1228,22 @@ export default function CalendarPage() {
   const d = draft ?? renderedDraft;
   const readOnly = !canEdit;
   const draftCategory = d ? categoryById.get(d.categoryId) ?? UNCATEGORISED : UNCATEGORISED;
+  // Existing events open read-only first (and always, for people who can't edit).
+  const viewingEvent = Boolean(d && !d.isNew && (eventMode === "view" || readOnly));
+  const viewEvent = d && viewingEvent ? eventFromDraft(d) : null;
+  // "Added by <name>" with the person's emblem — in the bottom bar on desktop, in the body on phones.
+  const addedBy = (className: string) =>
+    d ? (
+      <p className={`flex items-center gap-2 text-[12.5px] font-medium ${className}`} style={{ color: "var(--text-main)" }}>
+        <span
+          className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white"
+          style={{ backgroundColor: (d.createdByUid === user?.uid ? String(user?.userColor || "") : "") || memberColorByUid[d.createdByUid] || "#7D99B3" }}
+        >
+          {d.createdByName.trim().split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]?.toUpperCase() ?? "").join("") || "?"}
+        </span>
+        Added by {d.createdByName}
+      </p>
+    ) : null;
 
   return (
     <div
@@ -1139,7 +1325,116 @@ export default function CalendarPage() {
         ? createPortal(
             <div className="fixed inset-0 z-[1700] flex items-center justify-center px-4 py-4">
               <button type="button" aria-label="Close" onClick={closeModal} className="glass-modal-backdrop absolute inset-0" />
-              <div ref={modalPanelRef} className="glass-modal-panel relative z-[1701] flex max-h-[calc(100svh-32px)] w-full max-w-[560px] flex-col overflow-hidden">
+              <div
+                ref={modalPanelRef}
+                className="glass-modal-panel relative z-[1701] flex max-h-[calc(100svh-32px)] w-full max-w-[560px] flex-col overflow-hidden"
+                style={
+                  viewingEvent
+                    ? {
+                        // Themed by the event's category: a wash of its colour over the glass.
+                        backgroundImage: [
+                          `radial-gradient(120% 70% at 0% 0%, color-mix(in srgb, ${draftCategory.color} 30%, transparent), transparent 70%)`,
+                          `radial-gradient(90% 60% at 100% 100%, color-mix(in srgb, ${draftCategory.color} 14%, transparent), transparent 70%)`,
+                          `linear-gradient(to bottom, color-mix(in srgb, ${draftCategory.color} 10%, transparent), color-mix(in srgb, ${draftCategory.color} 5%, transparent))`,
+                        ].join(", "),
+                      }
+                    : undefined
+                }
+              >
+                {viewingEvent && viewEvent ? (
+                  <>
+                    <div className="relative px-5 pb-4 pt-5">
+                      <button type="button" onClick={closeModal} className={`${iconRemoveButtonClass} absolute right-3 top-3`} aria-label="Close">
+                        <X size={16} />
+                      </button>
+                      <span
+                        className="inline-flex max-w-full items-center gap-1.5 truncate rounded-full border px-2.5 py-[3px] text-[12px] font-medium"
+                        style={{
+                          borderColor: `color-mix(in srgb, ${draftCategory.color} 45%, transparent)`,
+                          backgroundColor: `color-mix(in srgb, ${draftCategory.color} 18%, transparent)`,
+                          color: "var(--text-main)",
+                        }}
+                      >
+                        <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: draftCategory.color }} />
+                        {draftCategory.name}
+                      </span>
+                      <h2 className="mt-2.5 pr-8 text-[22px] font-semibold leading-tight" style={{ color: "var(--text-main)" }}>
+                        {viewEvent.title || "Untitled event"}
+                      </h2>
+                      {(() => {
+                        const when = eventWhenText(viewEvent, (date) => activeDate(date));
+                        return (
+                          <div className="mt-2 flex items-start gap-2.5">
+                            <span
+                              className="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[11px]"
+                              style={{ backgroundColor: draftCategory.color, color: textOn(draftCategory.color) }}
+                            >
+                              <Clock size={17} />
+                            </span>
+                            <div className="min-w-0">
+                              <p className="text-[15px] font-medium" style={{ color: "var(--text-main)" }}>{when.primary}</p>
+                              <p className="text-[13.5px]" style={{ color: "var(--text-muted)" }}>{when.secondary}</p>
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                    <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-5 pb-4">
+                      {viewEvent.location ? (
+                        <a
+                          href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(viewEvent.location)}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-3 rounded-[14px] border px-3 py-2.5 transition hover:brightness-95"
+                          style={{ borderColor: "var(--glass-border)", backgroundColor: "color-mix(in srgb, var(--panel-bg) 55%, transparent)" }}
+                        >
+                          <MapPin size={17} className="shrink-0" style={{ color: draftCategory.color }} />
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-[11px] font-semibold uppercase tracking-[0.5px]" style={{ color: "var(--text-muted)" }}>Location</span>
+                            <span className="block truncate text-[14px]" style={{ color: "var(--text-main)" }}>{viewEvent.location}</span>
+                          </span>
+                          <ExternalLink size={14} style={{ color: "var(--text-muted)" }} />
+                        </a>
+                      ) : null}
+                      {viewEvent.projectId ? (
+                        <Link
+                          href={`/projects/${viewEvent.projectId}`}
+                          className="flex items-center gap-3 rounded-[14px] border px-3 py-2.5 transition hover:brightness-95"
+                          style={{ borderColor: "var(--glass-border)", backgroundColor: "color-mix(in srgb, var(--panel-bg) 55%, transparent)" }}
+                        >
+                          <FolderKanban size={17} className="shrink-0" style={{ color: draftCategory.color }} />
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-[11px] font-semibold uppercase tracking-[0.5px]" style={{ color: "var(--text-muted)" }}>Project</span>
+                            <span className="block truncate text-[14px]" style={{ color: "var(--text-main)" }}>{viewEvent.projectName || "Linked project"}</span>
+                          </span>
+                          <ChevronRight size={16} style={{ color: "var(--text-muted)" }} />
+                        </Link>
+                      ) : null}
+                      {viewEvent.notes.trim() ? (
+                        <div className="rounded-[14px] border px-3 py-2.5" style={{ borderColor: "var(--glass-border)", backgroundColor: "color-mix(in srgb, var(--panel-bg) 55%, transparent)" }}>
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.5px]" style={{ color: "var(--text-muted)" }}>Notes</p>
+                          <p className="mt-0.5 whitespace-pre-wrap text-[14px]" style={{ color: "var(--text-main)" }}>{viewEvent.notes}</p>
+                        </div>
+                      ) : null}
+                      {d.createdByName ? addedBy("pt-1 md:hidden") : null}
+                    </div>
+                    <div className="flex items-center justify-end gap-2 border-t px-4 py-3" style={{ borderColor: "var(--glass-border)" }}>
+                      {d.createdByName ? addedBy("mr-auto hidden md:flex") : null}
+                      <button type="button" onClick={closeModal} className={secondaryButtonClass}>Close</button>
+                      {canEdit ? (
+                        <button
+                          type="button"
+                          onClick={() => setEventMode("edit")}
+                          className={primaryButtonClass}
+                          style={{ backgroundColor: draftCategory.color, color: textOn(draftCategory.color), boxShadow: `0 6px 16px color-mix(in srgb, ${draftCategory.color} 35%, transparent)` }}
+                        >
+                          <Pencil size={14} /> Edit
+                        </button>
+                      ) : null}
+                    </div>
+                  </>
+                ) : (
+                <>
                 <div className="glass-modal-header flex items-center gap-2.5 px-4 py-3">
                   <span className="h-3.5 w-3.5 shrink-0 rounded-full" style={{ backgroundColor: draftCategory.color }} />
                   <p className="flex-1 truncate text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
@@ -1322,14 +1617,13 @@ export default function CalendarPage() {
                         className={`${glassFieldClass} h-auto py-2`}
                       />
                     </label>
-                    {!d.isNew && d.createdByName ? (
-                      <p className="text-[11.5px]" style={{ color: "var(--text-muted)" }}>Added by {d.createdByName}</p>
-                    ) : null}
+                    {!d.isNew && d.createdByName ? addedBy("pt-1 md:hidden") : null}
                     {modalError ? (
                       <p className="text-[12px] font-medium" style={{ color: "var(--danger-strong)" }}>{modalError}</p>
                     ) : null}
                   </div>
                   <div className="flex items-center gap-2 border-t px-4 py-3" style={{ borderColor: "var(--glass-border)" }}>
+                    {!d.isNew && d.createdByName ? addedBy("hidden md:flex") : null}
                     {!d.isNew && !readOnly ? (
                       <button
                         type="button"
@@ -1352,6 +1646,8 @@ export default function CalendarPage() {
                     ) : null}
                   </div>
                 </form>
+                </>
+                )}
               </div>
             </div>,
             document.body,

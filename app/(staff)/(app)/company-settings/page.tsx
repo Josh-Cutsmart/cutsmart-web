@@ -33,7 +33,7 @@ import { type SpecsGrid, createEmptyGrid, normalizeSpecsGrid } from "@/lib/specs
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { GlassDropdown, type GlassDropdownOption } from "@/components/glass-dropdown";
 import { DragGhostLayer, useDragGhost } from "@/lib/use-drag-ghost";
-import { newCalendarId, normalizeCalendarCategories, type CalendarCategory } from "@/lib/calendar-data";
+import { newCalendarId, normalizeCalendarCategories, normalizeCalendarWorkdays, type CalendarCategory } from "@/lib/calendar-data";
 import {
   CURRENCY_OPTIONS,
   DATE_FORMAT_OPTIONS,
@@ -1523,6 +1523,7 @@ export default function CompanySettingsPage() {
   const [contactCategoryDragIndex, setContactCategoryDragIndex] = useState<number | null>(null);
   const [calendarCategories, setCalendarCategories] = useState<CalendarCategory[]>([]);
   const [calendarCategoryDragIndex, setCalendarCategoryDragIndex] = useState<number | null>(null);
+  const [calendarWorkdays, setCalendarWorkdays] = useState<number[]>([1, 2, 3, 4, 5]);
   const [contractors, setContractors] = useState<string[]>([]);
   const [roles, setRoles] = useState<RoleRow[]>([]);
   // Fed to both the Specs and Quote grid builders' group-editor modal ("Allow Editable By") — the
@@ -1814,6 +1815,7 @@ export default function CompanySettingsPage() {
         setPartTypes(normalizePartTypes(doc.partTypes));
         setContactCategories(normalizeContactCategories((doc as Record<string, unknown>).contactCategories));
         setCalendarCategories(normalizeCalendarCategories((doc as Record<string, unknown>).calendarCategories));
+        setCalendarWorkdays(normalizeCalendarWorkdays((doc as Record<string, unknown>).calendarWorkdays));
         setContractors(normalizeStringList(doc.contractors, []));
         setRoles(normalizeRoles(doc.roles));
         setItemCategories(normalizeItemCategories(doc.itemCategories));
@@ -3069,6 +3071,7 @@ export default function CompanySettingsPage() {
           };
         })
         .filter(Boolean),
+      calendarWorkdays,
       calendarCategories: calendarCategories
         .map((row) => ({ id: toStr(row.id) || newCalendarId("cat"), name: toStr(row.name), color: toStr(row.color, "#7D99B3") }))
         .filter((row) => row.name),
@@ -3656,6 +3659,7 @@ export default function CompanySettingsPage() {
     leadStatuses,
     dashboardLegend,
     calendarCategories,
+    calendarWorkdays,
     projectTagUsage,
     boardThicknesses,
     boardFinishes,
@@ -5912,6 +5916,39 @@ export default function CompanySettingsPage() {
 
               {active === "calendar" && (
                 <div className="grid gap-[18px] xl:grid-cols-2">
+                  <Panel title="Workdays" icon={CalendarDays} description="The days your business works. The rest are shown crossed out on the calendar (you can still add events to them).">
+                    <div className="flex flex-wrap gap-1.5">
+                      {([1, 2, 3, 4, 5, 6, 0] as const).map((dow) => {
+                        const on = calendarWorkdays.includes(dow);
+                        const label = new Intl.DateTimeFormat(undefined, { weekday: "short" }).format(new Date(2024, 0, 7 + dow));
+                        return (
+                          <button
+                            key={dow}
+                            type="button"
+                            aria-pressed={on}
+                            disabled={!canEditCompanySettings}
+                            onClick={() =>
+                              setCalendarWorkdays((prev) => (prev.includes(dow) ? prev.filter((v) => v !== dow) : [...prev, dow].sort()))
+                            }
+                            className="inline-flex h-9 min-w-[52px] items-center justify-center rounded-full border px-3 text-[13px] font-semibold transition disabled:opacity-60"
+                            style={
+                              on
+                                ? { backgroundImage: "var(--brand-gradient)", color: "#fff", borderColor: "transparent" }
+                                : {
+                                    borderColor: "var(--glass-border)",
+                                    color: "var(--text-muted)",
+                                    textDecoration: "line-through",
+                                    backgroundImage:
+                                      "repeating-linear-gradient(135deg, color-mix(in srgb, var(--text-main) 7%, transparent) 0 2px, transparent 2px 7px)",
+                                  }
+                            }
+                          >
+                            {label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </Panel>
                   <Panel
                     title="Calendar categories"
                     icon={CalendarDays}

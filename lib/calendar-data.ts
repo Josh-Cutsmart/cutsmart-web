@@ -39,6 +39,14 @@ export function newCalendarId(prefix = "cal") {
   return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 }
 
+// Workdays: day-of-week numbers as Date.getDay() gives them (0 = Sunday ... 6 = Saturday). Defaults to
+// Monday–Friday. The other days are shown crossed out (hatched) on the calendar.
+export const DEFAULT_CALENDAR_WORKDAYS = [1, 2, 3, 4, 5];
+export function normalizeCalendarWorkdays(raw: unknown): number[] {
+  if (!Array.isArray(raw)) return DEFAULT_CALENDAR_WORKDAYS;
+  return Array.from(new Set(raw.map((v) => Number(v)).filter((v) => Number.isInteger(v) && v >= 0 && v <= 6))).sort();
+}
+
 export function normalizeCalendarCategories(raw: unknown): CalendarCategory[] {
   if (!Array.isArray(raw)) return DEFAULT_CALENDAR_CATEGORIES;
   const seen = new Set<string>();
