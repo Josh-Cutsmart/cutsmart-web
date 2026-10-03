@@ -4,7 +4,7 @@ import { Fragment, startTransition, useCallback, useDeferredValue, useEffect, us
 import { createPortal } from "react-dom";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Great_Vibes } from "next/font/google";
-import { ArrowLeft, ArrowLeftRight, ArrowRight, Bell, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, File as FileIcon, FileSpreadsheet, FileText, GitBranch, GripVertical, HardHat, Image as ImageIcon, Info, Link2, ListChecks, Lock, Mail, MapPin, Minus, NotebookPen, Pencil, Phone, Plus, Printer, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, Unlock, User, Users, Wrench, X } from "lucide-react";
+import { ArrowLeft, ArrowLeftRight, ArrowRight, Bell, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, File as FileIcon, FileSpreadsheet, FileText, GitBranch, GripVertical, HardHat, Image as ImageIcon, Info, Link2, ListChecks, Lock, Mail, MapPin, Minus, NotebookPen, Pencil, Phone, Plus, Printer, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, Unlock, User, UserPlus, Users, Wrench, X } from "lucide-react";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import { PDFDocument } from "pdf-lib";
@@ -14,6 +14,7 @@ import type { CellInput as AutoTableCellInput, RowInput as AutoTableRowInput } f
 import { toJpeg } from "html-to-image";
 import { deleteObject, getBlob, getDownloadURL, ref as storageRef, uploadBytesResumable } from "firebase/storage";
 import { FullscreenImageViewerShell } from "@/components/fullscreen-image-viewer-shell";
+import { GlassDropdown } from "@/components/glass-dropdown";
 import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
 import { InitialMeasureCloseSummaryModal } from "@/components/initial-measure-close-summary-modal";
 import { ProductionCutlistCloseSummaryModal } from "@/components/production-cutlist-close-summary-modal";
@@ -39,6 +40,7 @@ import { buildSpecsGridPdfBlob, openPdfBlobInPrintWindow, resolveProjectImageUrl
 import { isProjectNotifySubscribed, projectNotifySubscriberUids } from "@/lib/project-notify";
 import { retryAsync, withTimeout } from "@/lib/load-retry";
 import {
+  updateCompanyClientProfile,
   fetchChecklistTemplates,
   fetchCompanyDoc,
   fetchCompanyMembers,
@@ -63,6 +65,8 @@ import {
   saveGridVersion,
   saveProductComparison,
   syncCompanyClientProfileFromProject,
+  createOrAttachManualCompanyClient,
+  findCompanyClientForProject,
   softDeleteProject,
   saveCutlistData,
   saveProjectChecklist,
@@ -76,10 +80,10 @@ import {
   updateProjectStatus,
   updateProjectTags,
 } from "@/lib/firestore-data";
-import type { CompanyMemberOption } from "@/lib/firestore-data";
+import type { CompanyClientRow, CompanyMemberOption } from "@/lib/firestore-data";
 import { bumpCompanyStatCounter, bumpCompanyStatLeaderboard } from "@/lib/company-stats";
 import { getProductionUnlockRemainingSeconds, projectTabAccess } from "@/lib/permissions";
-import { useCompanyAccess } from "@/lib/use-company-access";
+import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
 import { useProjectCutlistRaw } from "@/lib/use-project-cutlist";
 import { useProjectChecklists } from "@/lib/use-project-checklists";
 import { useProjectSalesGrid } from "@/lib/use-project-sales-grid";
@@ -133,6 +137,24 @@ function fallbackStatusPillColors(status: string) {
   };
   const bg = defaults[key] ?? "#64748B";
   return { backgroundColor: bg, color: isLightHex(bg, 0.75) ? "#0F172A" : "#FFFFFF" };
+}
+
+// Contact-card theming for the General tab's Client Details card —
+// the same recipe as the Contacts page's contact view (clients/page.tsx): one registered <color>
+// custom property (--ambient-color, see globals.css) that every tint is color-mixed from, so a change
+// cross-fades everywhere at once.
+const CONTACT_NEUTRAL_COLOR = "#7D99B3";
+const DEFAULT_CONTACT_CATEGORIES: Array<{ name: string; color: string }> = [
+  { name: "Clients", color: "#4ADE80" },
+  { name: "Contractor", color: "#F2A33C" },
+  { name: "Supplier", color: "#7D99B3" },
+];
+function ambientMix(percent: number) {
+  return `color-mix(in srgb, var(--ambient-color) ${percent}%, transparent)`;
+}
+// Dark initials on a light category colour, white on a dark one (same threshold as the Contacts page).
+function contactBadgeTextOn(color: string) {
+  return isLightHex(color, 0.62) ? "#0F172A" : "#FFFFFF";
 }
 
 function normalizeProjectStatuses(raw: unknown): ProjectStatusRow[] {
@@ -16720,6 +16742,240 @@ export default function ProjectDetailsPage() {
     return fallbackStatusPillColors(statusLabel);
   };
 
+  // --- Client Details <-> Contacts ---------------------------------------------------------------
+  // The contact card matching this project's client (as this user would see it on the Contacts page),
+  // which themes the Client Details card with its category colour; when there's none, the card offers
+  // "Create Contact". `undefined` = not checked yet / couldn't check, so neither shows prematurely.
+  const canViewAllContacts =
+    companyAccess.status === "ready" &&
+    (isOwnerOrAdmin(companyAccess.role) || hasPermissionKey(companyAccess.permissionKeys, "clients.view.all"));
+  const canAccessContacts =
+    companyAccess.status === "ready" &&
+    (canViewAllContacts || hasPermissionKey(companyAccess.permissionKeys, "clients.view"));
+  const [projectContact, setProjectContact] = useState<CompanyClientRow | null | undefined>(undefined);
+  // false when the card shown is only derived from this project (no saved card to link or update).
+  const [projectContactPersisted, setProjectContactPersisted] = useState(false);
+  const [projectContactTick, setProjectContactTick] = useState(0);
+  const [isCreatingProjectContact, setIsCreatingProjectContact] = useState(false);
+  const [createProjectContactError, setCreateProjectContactError] = useState("");
+  const projectContactCompanyId = String(project?.companyId || "").trim();
+  useEffect(() => {
+    if (!project || !projectContactCompanyId || !canAccessContacts) {
+      setProjectContact(undefined);
+      return;
+    }
+    let cancelled = false;
+    void findCompanyClientForProject(projectContactCompanyId, project, {
+      viewerUid: String(user?.uid || "").trim(),
+      includeAll: canViewAllContacts,
+    })
+      .then((result) => {
+        if (cancelled) return;
+        setProjectContact(result?.contact ?? null);
+        setProjectContactPersisted(Boolean(result?.persisted));
+        // Link the project to its card by the card's own id (project.clientId), so from now on the two
+        // stay attached even if the project's client details change — no more re-matching by email/phone.
+        if (result?.persisted && String(project.clientId || "").trim() !== result.contact.id) {
+          const clientId = result.contact.id;
+          void updateProjectPatch(project, { clientId }).then((ok) => {
+            if (ok) setProject((prev) => (prev && prev.id === project.id ? { ...prev, clientId } : prev));
+          });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setProjectContact(undefined);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // Re-checked when the client fields themselves change, not on every project update.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    projectContactCompanyId,
+    project?.id,
+    project?.clientId,
+    project?.customer,
+    project?.clientEmail,
+    project?.clientPhone,
+    project?.clientAddress,
+    canAccessContacts,
+    canViewAllContacts,
+    user?.uid,
+    projectContactTick,
+  ]);
+  // The company's contact categories (Company Settings), falling back to the same starter set the Contacts
+  // page uses when none have been saved.
+  const contactCategories = useMemo(() => {
+    const raw = (companyDoc as Record<string, unknown> | null)?.contactCategories;
+    if (!Array.isArray(raw)) return DEFAULT_CONTACT_CATEGORIES;
+    return raw
+      .filter((item) => item && typeof item === "object")
+      .map((item) => ({
+        name: String((item as Record<string, unknown>).name ?? "").trim(),
+        color: String((item as Record<string, unknown>).color ?? "").trim() || CONTACT_NEUTRAL_COLOR,
+      }))
+      .filter((item) => item.name);
+  }, [companyDoc]);
+  const contactCategoryColor = projectContact?.category
+    ? contactCategories.find((c) => c.name === projectContact.category)?.color || ""
+    : "";
+  const clientCardAmbientColor = contactCategoryColor || CONTACT_NEUTRAL_COLOR;
+  const hasProjectClientInfo = Boolean(
+    String(project?.customer || "").trim() || String(project?.clientEmail || "").trim() || String(project?.clientPhone || "").trim(),
+  );
+  // "Create Contact" opens a glass modal (same Add Contact form as the Contacts page) prefilled from the
+  // project's client details, so every field — category included — can be set before saving.
+  const [isCreateContactModalOpen, setIsCreateContactModalOpen] = useState(false);
+  const [createContactModalOrigin, setCreateContactModalOrigin] = useState<GlassModalOrigin>(null);
+  const createContactModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const createContactModalOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderCreateContactModal = useGlassModalPopOrigin(
+    isCreateContactModalOpen,
+    createContactModalOrigin,
+    createContactModalPanelRef,
+    undefined,
+    createContactModalOriginElRef,
+  );
+  const [createContactForm, setCreateContactForm] = useState({ name: "", email: "", phone: "", address: "", category: "", notes: "" });
+  const openCreateContactModal = (event: ReactMouseEvent<HTMLElement>) => {
+    if (!project) return;
+    createContactModalOriginElRef.current = event.currentTarget;
+    setCreateContactModalOrigin(captureGlassModalOrigin(event));
+    setCreateContactForm({
+      name: String(project.customer || "").trim(),
+      email: String(project.clientEmail || "").trim(),
+      phone: String(project.clientPhone || "").trim(),
+      address: String(project.clientAddress || "").trim(),
+      category: "",
+      notes: "",
+    });
+    setCreateProjectContactError("");
+    setIsCreateContactModalOpen(true);
+  };
+  const onCreateProjectContact = async () => {
+    if (!project || !projectContactCompanyId || !user?.uid || isCreatingProjectContact) return;
+    const form = {
+      name: createContactForm.name.trim(),
+      email: createContactForm.email.trim(),
+      phone: createContactForm.phone.trim(),
+      address: createContactForm.address.trim(),
+      category: createContactForm.category.trim(),
+      notes: createContactForm.notes.trim(),
+    };
+    if (!form.name && !form.email && !form.phone) {
+      setCreateProjectContactError("Enter at least a name, email, or phone.");
+      return;
+    }
+    setIsCreatingProjectContact(true);
+    setCreateProjectContactError("");
+    try {
+      const result = await createOrAttachManualCompanyClient(projectContactCompanyId, form, user.uid);
+      if (!result.ok) {
+        setCreateProjectContactError("Couldn't create the contact — try again.");
+        return;
+      }
+      if (result.clientId) {
+        const clientId = result.clientId;
+        if (await updateProjectPatch(project, { clientId })) {
+          setProject((prev) => (prev && prev.id === project.id ? { ...prev, clientId } : prev));
+        }
+      }
+      setIsCreateContactModalOpen(false);
+      setProjectContactTick((tick) => tick + 1);
+    } finally {
+      setIsCreatingProjectContact(false);
+    }
+  };
+
+  // --- "Update contact card for <name>?" ------------------------------------------------------------
+  // Changing a project's client details never silently rewrites its contact card. Instead, when a changed
+  // field no longer matches the linked card, this asks whether to update the card too (per field, all
+  // ticked by default). Also used once right after a project is created for an existing client.
+  type ContactCardField = "name" | "email" | "phone" | "address";
+  type ContactCardDiffRow = { field: ContactCardField; label: string; card: string; next: string; selected: boolean };
+  const [contactCardPrompt, setContactCardPrompt] = useState<{ contact: CompanyClientRow; rows: ContactCardDiffRow[] } | null>(null);
+  const [isUpdatingContactCard, setIsUpdatingContactCard] = useState(false);
+  const [contactCardPromptError, setContactCardPromptError] = useState("");
+  const contactCardPromptPanelRef = useRef<HTMLDivElement | null>(null);
+  const shouldRenderContactCardPrompt = useGlassModalPopOrigin(Boolean(contactCardPrompt), null, contactCardPromptPanelRef);
+  const [renderedContactCardPrompt, setRenderedContactCardPrompt] = useState<{ contact: CompanyClientRow; rows: ContactCardDiffRow[] } | null>(null);
+  useEffect(() => {
+    if (contactCardPrompt) setRenderedContactCardPrompt(contactCardPrompt);
+  }, [contactCardPrompt]);
+  const buildContactCardDiffs = (
+    contact: CompanyClientRow,
+    values: Partial<Record<ContactCardField, string>>,
+  ): ContactCardDiffRow[] => {
+    const labels: Record<ContactCardField, string> = { name: "Name", email: "Email", phone: "Phone", address: "Address" };
+    return (Object.keys(values) as ContactCardField[])
+      .map((field) => ({ field, label: labels[field], card: String(contact[field] || "").trim(), next: String(values[field] || "").trim(), selected: true }))
+      .filter((row) => {
+        if (!row.next) return false;
+        if (row.field === "email") return row.card.toLowerCase() !== row.next.toLowerCase();
+        if (row.field === "phone") return row.card.replace(/\s+/g, "") !== row.next.replace(/\s+/g, "");
+        return row.card !== row.next;
+      });
+  };
+  const offerContactCardUpdate = (values: Partial<Record<ContactCardField, string>>) => {
+    if (!projectContact || !projectContactPersisted) return;
+    const rows = buildContactCardDiffs(projectContact, values);
+    if (!rows.length) return;
+    setContactCardPromptError("");
+    setContactCardPrompt({ contact: projectContact, rows });
+  };
+  const applyContactCardUpdate = async () => {
+    const prompt = contactCardPrompt;
+    if (!prompt || !projectContactCompanyId || isUpdatingContactCard) return;
+    const patch: Partial<Record<ContactCardField, string>> = {};
+    prompt.rows.filter((row) => row.selected).forEach((row) => {
+      patch[row.field] = row.next;
+    });
+    if (!Object.keys(patch).length) {
+      setContactCardPrompt(null);
+      return;
+    }
+    setIsUpdatingContactCard(true);
+    setContactCardPromptError("");
+    try {
+      const result = await updateCompanyClientProfile(
+        projectContactCompanyId,
+        prompt.contact.id,
+        patch,
+        { viewerUid: String(user?.uid || "").trim(), includeAll: canViewAllContacts },
+        prompt.contact,
+      );
+      if (!result.ok) {
+        setContactCardPromptError("Couldn't update the contact card — try again.");
+        return;
+      }
+      setContactCardPrompt(null);
+      setProjectContactTick((tick) => tick + 1);
+    } finally {
+      setIsUpdatingContactCard(false);
+    }
+  };
+  // Right after creating a project for an existing client (flagged by the New Project flow), compare the
+  // details it was created with against the card once.
+  useEffect(() => {
+    if (!project || !projectContact || !projectContactPersisted) return;
+    const key = `cs_contact_card_check_${project.id}`;
+    let flagged = false;
+    try {
+      flagged = window.sessionStorage.getItem(key) === "1";
+      if (flagged) window.sessionStorage.removeItem(key);
+    } catch {
+      flagged = false;
+    }
+    if (!flagged) return;
+    offerContactCardUpdate({
+      name: String(project.customer || ""),
+      email: String(project.clientEmail || ""),
+      phone: String(project.clientPhone || ""),
+      address: String(project.clientAddress || ""),
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project?.id, projectContact?.id, projectContactPersisted]);
+
   const onChangeStatus = async (value: string) => {
     if (!project || !value) {
       return;
@@ -16832,7 +17088,7 @@ export default function ProjectDetailsPage() {
         "clientPhone" in patch ||
         "clientEmail" in patch ||
         "clientAddress" in patch;
-      if (shouldSyncClientProfile && String(nextProject.clientEmail || "").trim()) {
+      if (shouldSyncClientProfile && (String(nextProject.clientId || "").trim() || String(nextProject.clientEmail || "").trim())) {
         void syncCompanyClientProfileFromProject(nextProject);
       }
       const valueChanges = describeFieldChanges(project, patch, PROJECT_CHANGE_VALUE_FIELD_LABELS);
@@ -17032,7 +17288,15 @@ export default function ProjectDetailsPage() {
     if (nextEmail !== String(project.clientEmail ?? "").trim()) patch.clientEmail = nextEmail;
     if (nextAddress !== String(project.clientAddress ?? "").trim()) patch.clientAddress = nextAddress;
     if (Object.keys(patch).length > 0) {
-      await saveGeneralDetailsPatch(patch);
+      const saved = await saveGeneralDetailsPatch(patch);
+      if (saved !== false) {
+        offerContactCardUpdate({
+          ...("customer" in patch ? { name: nextCustomer } : {}),
+          ...("clientEmail" in patch ? { email: nextEmail } : {}),
+          ...("clientPhone" in patch ? { phone: nextPhone } : {}),
+          ...("clientAddress" in patch ? { address: nextAddress } : {}),
+        });
+      }
     }
   };
 
@@ -49713,9 +49977,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 <div className="grid gap-4 xl:grid-cols-2">
                   <div className="space-y-4">
                     <div ref={clientDetailsContainerRef}>
+                      {/* Themed like the client's contact card on the Contacts page: initials badge and tinted
+                          icon circles in their contact category's colour (no ambient wash, no category name) (neutral when they
+                          have no category, or no contact card yet). */}
                       <section
                         className="overflow-hidden rounded-[18px] border"
                         style={{
+                          ["--ambient-color" as string]: clientCardAmbientColor,
+                          transition: "--ambient-color 800ms ease-in-out",
                           borderColor: "var(--glass-border)",
                           backgroundColor: "var(--glass-bg-strong)",
                           backdropFilter: "blur(20px) saturate(180%)",
@@ -49734,6 +50003,210 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             <Info size={14} style={{ color: projectPalette.textMuted }} />
                             Client Details
                           </CardTitle>
+                          <div className="flex shrink-0 items-center gap-2">
+                          {/* No contact card for this client on this user's Contacts page -> offer to make one
+                              from the project's client details (attaches to an existing record if one matches). */}
+                          {projectContact === null && hasProjectClientInfo ? (
+                            <button
+                              type="button"
+                              onClick={openCreateContactModal}
+                              className="glass-nav-arrow inline-flex h-8 items-center gap-1.5 rounded-[10px] px-2.5 text-[12px] font-medium transition hover:brightness-95"
+                              title="Add this client to your Contacts"
+                            >
+                              <UserPlus size={14} />
+                              Create Contact
+                            </button>
+                          ) : null}
+                          {/* "Update contact card?" — glass modal (see offerContactCardUpdate). */}
+                          {shouldRenderContactCardPrompt && renderedContactCardPrompt && typeof document !== "undefined"
+                            ? createPortal(
+                                <div className="fixed inset-0 z-[1700] flex items-center justify-center px-4 py-4">
+                                  <button
+                                    type="button"
+                                    aria-label="Keep contact card as is"
+                                    onClick={() => (isUpdatingContactCard ? null : setContactCardPrompt(null))}
+                                    className="glass-modal-backdrop absolute inset-0"
+                                  />
+                                  <div ref={contactCardPromptPanelRef} className="glass-modal-panel relative z-[1701] w-full max-w-[460px] overflow-hidden">
+                                    <div className="glass-modal-header px-4 py-3">
+                                      <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
+                                        Update Contact Card?
+                                      </p>
+                                    </div>
+                                    <div className="space-y-3 px-4 py-4">
+                                      <p className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
+                                        Do you want to update the contact card for{" "}
+                                        <span className="font-bold">{renderedContactCardPrompt.contact.name || "this client"}</span> too?
+                                      </p>
+                                      <div className="space-y-2">
+                                        {renderedContactCardPrompt.rows.map((row) => (
+                                          <label
+                                            key={row.field}
+                                            className="flex cursor-pointer items-start gap-2.5 rounded-[10px] border px-3 py-2"
+                                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}
+                                          >
+                                            <input
+                                              type="checkbox"
+                                              checked={row.selected}
+                                              disabled={isUpdatingContactCard}
+                                              onChange={(e) => {
+                                                const checked = e.target.checked;
+                                                setContactCardPrompt((prev) =>
+                                                  prev ? { ...prev, rows: prev.rows.map((r) => (r.field === row.field ? { ...r, selected: checked } : r)) } : prev,
+                                                );
+                                              }}
+                                              className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--brand)]"
+                                            />
+                                            <span className="min-w-0 flex-1 text-[12px]">
+                                              <span className="block font-bold" style={{ color: "var(--text-main)" }}>{row.label}</span>
+                                              <span className="block break-words font-medium" style={{ color: "var(--text-muted)" }}>
+                                                <span className="line-through">{row.card || "-"}</span>
+                                                {"  →  "}
+                                                <span style={{ color: "var(--text-main)" }}>{row.next}</span>
+                                              </span>
+                                            </span>
+                                          </label>
+                                        ))}
+                                      </div>
+                                      {contactCardPromptError ? (
+                                        <p className="text-[12px] font-medium" style={{ color: "var(--danger-strong)" }}>{contactCardPromptError}</p>
+                                      ) : null}
+                                    </div>
+                                    <div className="flex items-center justify-end gap-2 border-t px-4 py-3" style={{ borderColor: "var(--glass-border)" }}>
+                                      <button
+                                        type="button"
+                                        onClick={() => setContactCardPrompt(null)}
+                                        disabled={isUpdatingContactCard}
+                                        className="inline-flex h-9 items-center justify-center rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-3 text-[12px] font-medium text-[var(--text-main)] transition hover:brightness-95 disabled:opacity-60"
+                                      >
+                                        Keep Card As Is
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => void applyContactCardUpdate()}
+                                        disabled={isUpdatingContactCard || !(contactCardPrompt?.rows ?? []).some((row) => row.selected)}
+                                        className="inline-flex h-9 items-center gap-1.5 rounded-[8px] border px-3 text-[12px] font-medium text-white transition hover:brightness-95 disabled:opacity-60"
+                                        style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                                      >
+                                        {isUpdatingContactCard ? "Updating..." : "Update Contact Card"}
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>,
+                                document.body,
+                              )
+                            : null}
+                          {/* Create Contact — glass modal (same fields as the Contacts page's Add Contact). */}
+                          {shouldRenderCreateContactModal && typeof document !== "undefined"
+                            ? createPortal(
+                                <div className="fixed inset-0 z-[1700] flex items-center justify-center px-4 py-4">
+                                  <button
+                                    type="button"
+                                    aria-label="Close create contact"
+                                    onClick={() => (isCreatingProjectContact ? null : setIsCreateContactModalOpen(false))}
+                                    className="glass-modal-backdrop absolute inset-0"
+                                  />
+                                  <div
+                                    ref={createContactModalPanelRef}
+                                    className="glass-modal-panel relative z-[1701] flex max-h-[calc(100svh-32px)] w-full max-w-[520px] flex-col overflow-hidden"
+                                  >
+                                    <div className="glass-modal-header flex items-center justify-between px-4 py-3">
+                                      <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
+                                        Create Contact
+                                      </p>
+                                      <button
+                                        type="button"
+                                        onClick={() => setIsCreateContactModalOpen(false)}
+                                        disabled={isCreatingProjectContact}
+                                        aria-label="Close"
+                                        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] border transition hover:brightness-95 disabled:opacity-60"
+                                        style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
+                                      >
+                                        <X size={16} />
+                                      </button>
+                                    </div>
+                                    <form
+                                      className="flex min-h-0 flex-1 flex-col"
+                                      onSubmit={(e) => {
+                                        e.preventDefault();
+                                        void onCreateProjectContact();
+                                      }}
+                                    >
+                                      <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto px-4 py-4">
+                                        {([
+                                          { key: "name", label: "Name" },
+                                          { key: "email", label: "Email" },
+                                          { key: "phone", label: "Phone" },
+                                          { key: "address", label: "Address" },
+                                        ] as const).map((field) => (
+                                          <label key={field.key} className="block text-[11px] font-bold" style={{ color: "var(--text-main)" }}>
+                                            {field.label}
+                                            <input
+                                              value={createContactForm[field.key]}
+                                              onChange={(e) => {
+                                                const nextValue = e.target.value;
+                                                setCreateContactForm((prev) => ({ ...prev, [field.key]: nextValue }));
+                                              }}
+                                              className="mt-1 h-9 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2.5 text-[12px] font-medium text-[var(--text-main)] outline-none transition focus:border-[var(--brand)]"
+                                            />
+                                          </label>
+                                        ))}
+                                        <div className="block text-[11px] font-bold" style={{ color: "var(--text-main)" }}>
+                                          Category
+                                          <div className="mt-1">
+                                            <GlassDropdown
+                                              value={createContactForm.category}
+                                              options={[
+                                                { value: "", label: "Uncategorized" },
+                                                ...contactCategories.map((c) => ({ value: c.name, label: c.name, color: c.color })),
+                                              ]}
+                                              onChange={(next) => setCreateContactForm((prev) => ({ ...prev, category: next }))}
+                                              ariaLabel="Contact category"
+                                              triggerClassName="h-9 w-full justify-between rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2.5 text-[12px] font-medium text-[var(--text-main)]"
+                                            />
+                                          </div>
+                                        </div>
+                                        <label className="block text-[11px] font-bold" style={{ color: "var(--text-main)" }}>
+                                          Notes
+                                          <textarea
+                                            value={createContactForm.notes}
+                                            onChange={(e) => {
+                                              const nextValue = e.target.value;
+                                              setCreateContactForm((prev) => ({ ...prev, notes: nextValue }));
+                                            }}
+                                            rows={3}
+                                            className="mt-1 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2.5 py-2 text-[12px] font-medium text-[var(--text-main)] outline-none transition focus:border-[var(--brand)]"
+                                          />
+                                        </label>
+                                        {createProjectContactError ? (
+                                          <p className="text-[12px] font-medium" style={{ color: "var(--danger-strong)" }}>{createProjectContactError}</p>
+                                        ) : null}
+                                      </div>
+                                      <div className="flex items-center justify-end gap-2 border-t px-4 py-3" style={{ borderColor: "var(--glass-border)" }}>
+                                        <button
+                                          type="button"
+                                          onClick={() => setIsCreateContactModalOpen(false)}
+                                          disabled={isCreatingProjectContact}
+                                          className="inline-flex h-9 items-center justify-center rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-3 text-[12px] font-medium text-[var(--text-main)] transition hover:brightness-95 disabled:opacity-60"
+                                        >
+                                          Cancel
+                                        </button>
+                                        <button
+                                          type="submit"
+                                          disabled={isCreatingProjectContact}
+                                          className="inline-flex h-9 items-center gap-1.5 rounded-[8px] border px-3 text-[12px] font-medium text-white transition hover:brightness-95 disabled:opacity-60"
+                                          style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                                        >
+                                          <UserPlus size={14} />
+                                          {isCreatingProjectContact ? "Saving..." : "Save Contact"}
+                                        </button>
+                                      </div>
+                                    </form>
+                                  </div>
+                                </div>,
+                                document.body,
+                              )
+                            : null}
                           <button
                             type="button"
                             disabled={!generalAccess.edit || isSavingGeneralDetails}
@@ -49761,15 +50234,30 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               }}
                             />
                           </button>
+                          </div>
                         </CardHeader>
                         <CardContent className="pt-1 text-[13px] text-[#1F2937]">
                           <div className="flex items-center gap-3 border-b pb-3 pt-2" style={{ borderBottomColor: "var(--glass-border)" }}>
-                            <div
-                              className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-[15px] font-bold text-white"
-                              style={{ backgroundColor: companyThemeColor }}
+                            {/* Initials badge in the contact's category colour, like their contact card; opens
+                                that card when there is one. */}
+                            <button
+                              type="button"
+                              disabled={!projectContact}
+                              onClick={() => {
+                                if (projectContact) router.push(`/clients?contact=${encodeURIComponent(projectContact.id)}`);
+                              }}
+                              className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-full text-[16px] font-medium leading-none transition enabled:hover:brightness-105 disabled:cursor-default"
+                              title={projectContact ? "Open contact card" : undefined}
+                              aria-label={projectContact ? "Open contact card" : undefined}
+                              style={{
+                                background: "linear-gradient(145deg, color-mix(in srgb, var(--ambient-color) 78%, white), var(--ambient-color))",
+                                color: contactBadgeTextOn(clientCardAmbientColor),
+                                border: "1px solid rgba(255,255,255,0.4)",
+                                boxShadow: `0 6px 16px ${ambientMix(24)}, inset 0 1px 0 rgba(255,255,255,0.5)`,
+                              }}
                             >
                               {initials(project.customer || "")}
-                            </div>
+                            </button>
                             <div className="relative min-h-[24px] min-w-0 flex-1">
                               <p
                                 className={`truncate text-[16px] font-semibold ${isEditingClientDetails && generalAccess.edit ? "opacity-0" : ""}`}
@@ -49800,15 +50288,26 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             const RowIcon = row.icon;
                             const isEditingRow = isEditingClientDetails && generalAccess.edit;
                             return (
-                              <div key={row.key} className="flex items-center gap-2.5 border-b py-[9px] last:border-none" style={{ borderBottomColor: "var(--glass-border)" }}>
-                                <RowIcon size={14} className="shrink-0" style={{ color: projectPalette.textMuted }} />
+                              <div key={row.key} className="flex items-center gap-2.5 border-b py-[7px] last:border-none" style={{ borderBottomColor: "var(--glass-border)" }}>
+                                {/* Same category-tinted glass circle as the Call / Email / Maps buttons on the contact card. */}
+                                <span
+                                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border"
+                                  style={{
+                                    borderColor: "var(--glass-border)",
+                                    background: "color-mix(in srgb, var(--ambient-color) 16%, var(--glass-modal-bg))",
+                                    boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.07)" : "rgba(255,255,255,0.55)"}`,
+                                    color: "var(--text-main)",
+                                  }}
+                                >
+                                  <RowIcon size={13} />
+                                </span>
                                 <div className="relative min-h-[20px] min-w-0 flex-1">
                                   {row.href && !isEditingRow ? (
-                                    <a href={row.href} className="hover:underline" style={{ color: projectPalette.textSoft }}>
+                                    <a href={row.href} className="font-medium hover:underline" style={{ color: "var(--text-main)" }}>
                                       {row.value}
                                     </a>
                                   ) : (
-                                    <p className={isEditingRow ? "opacity-0" : ""} style={{ color: projectPalette.textSoft }}>
+                                    <p className={`font-medium ${isEditingRow ? "opacity-0" : ""}`} style={{ color: "var(--text-main)" }}>
                                       {row.value}
                                     </p>
                                   )}

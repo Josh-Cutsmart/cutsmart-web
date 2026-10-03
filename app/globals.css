@@ -837,69 +837,83 @@ body[data-theme="dark"] .glass-modal-header {
   initial-value: #7d99b3;
 }
 
-/* Mobile-only look for a row sitting inside a glass card — the Contacts page's project rows — made to match the
+/* Look for a row sitting inside a glass card — the Contacts page's project rows — made to match the
  * round icon buttons in its Phone / Email / Address containers: the same category-tinted glass fill (the
  * --ambient-color tint over the glass fill, no extra blur), glass border and sheen. Follows --ambient-color, so
  * it cross-fades with the rest of the page when the category changes. */
-@media (max-width: 767px) {
-  .cs-app .glass-tint-row {
-    background: color-mix(in srgb, var(--ambient-color) 16%, var(--glass-modal-bg));
-    border-color: var(--glass-border);
-    -webkit-backdrop-filter: none;
-    backdrop-filter: none;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55), var(--shadow-glass);
-  }
-  body[data-theme="dark"].cs-app .glass-tint-row {
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), var(--shadow-glass);
-  }
+.cs-app .glass-tint-row {
+  background: color-mix(in srgb, var(--ambient-color) 16%, var(--glass-modal-bg));
+  border-color: var(--glass-border);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55), var(--shadow-glass);
+}
+body[data-theme="dark"].cs-app .glass-tint-row {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), var(--shadow-glass);
 }
 
-/* Mobile-only frosted treatment for form fields that sit INSIDE .glass-card-mobile containers (the Contacts
+
+/* Frosted treatment for form fields that sit INSIDE .glass-card-mobile containers (the Contacts
  * page's profile fields while editing): a translucent fill + soft blur + a border drawn from the text colour,
  * so the box takes on the colour behind the container instead of being a solid white/grey rectangle in it. The
  * dark-mode rules repeat the blanket input rules' selector shape (plus this class) so they out-rank their
  * !important grey background/border. */
-@media (max-width: 767px) {
-  .cs-app .cs-glass-field {
-    background: color-mix(in srgb, var(--panel-bg) 40%, transparent);
-    border-color: color-mix(in srgb, var(--text-main) 16%, transparent);
-    -webkit-backdrop-filter: blur(8px);
-    backdrop-filter: blur(8px);
-  }
-  .cs-app .cs-glass-field:focus {
-    border-color: var(--brand);
-  }
-  /* button.cs-glass-field is the glass dropdown's trigger — it has to land on exactly the same dark fill as the
-     text boxes beside it, which the blanket input rules above would otherwise be the only thing colouring. */
-  body[data-theme="dark"].cs-app input.cs-glass-field:not([type="color"]):not([type="checkbox"]):not([type="radio"]),
-  body[data-theme="dark"].cs-app textarea.cs-glass-field,
-  body[data-theme="dark"].cs-app button.cs-glass-field {
-    background: rgba(255, 255, 255, 0.07) !important;
-    border-color: rgba(255, 255, 255, 0.18) !important;
-  }
-  body[data-theme="dark"].cs-app input.cs-glass-field:not([type="color"]):not([type="checkbox"]):not([type="radio"]):focus,
-  body[data-theme="dark"].cs-app textarea.cs-glass-field:focus,
-  body[data-theme="dark"].cs-app button.cs-glass-field:focus-visible {
-    border-color: var(--brand) !important;
-  }
+.cs-app .cs-glass-field {
+  background: color-mix(in srgb, var(--panel-bg) 40%, transparent);
+  border-color: color-mix(in srgb, var(--text-main) 16%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+.cs-app .cs-glass-field:focus {
+  border-color: var(--brand);
+}
+/* button.cs-glass-field is the glass dropdown's trigger — it has to land on exactly the same dark fill as the
+   text boxes beside it, which the blanket input rules above would otherwise be the only thing colouring. */
+body[data-theme="dark"].cs-app input.cs-glass-field:not([type="color"]):not([type="checkbox"]):not([type="radio"]),
+body[data-theme="dark"].cs-app textarea.cs-glass-field,
+body[data-theme="dark"].cs-app button.cs-glass-field {
+  background: rgba(255, 255, 255, 0.07) !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
+}
+body[data-theme="dark"].cs-app input.cs-glass-field:not([type="color"]):not([type="checkbox"]):not([type="radio"]):focus,
+body[data-theme="dark"].cs-app textarea.cs-glass-field:focus,
+body[data-theme="dark"].cs-app button.cs-glass-field:focus-visible {
+  border-color: var(--brand) !important;
 }
 
-/* Mobile-only glass treatment for cards that are solid panels on desktop (e.g. the Contacts page's field
- * and project containers) — same frosted recipe as .glass-nav-arrow below, so on a phone they take on the
+
+/* Glass treatment for the Contacts page's contact view containers (field and project cards — the
+ * contact view uses its phone layout everywhere, in a right-hand drawer on desktop) — same frosted recipe as .glass-nav-arrow below, so on a phone they take on the
  * colour behind them (the contact's ambient category colour) instead of reading as flat white. Scoped
  * under .cs-app so it out-ranks the utility classes that set the desktop panel look. */
-@media (max-width: 767px) {
-  .cs-app .glass-card-mobile {
-    border-color: var(--glass-border);
-    background: var(--glass-modal-bg);
-    -webkit-backdrop-filter: blur(12px) saturate(220%);
-    backdrop-filter: blur(12px) saturate(220%);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55), var(--shadow-glass);
-  }
-  body[data-theme="dark"].cs-app .glass-card-mobile {
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), var(--shadow-glass);
-  }
+.cs-app .glass-card-mobile {
+  border-color: var(--glass-border);
+  background: var(--glass-modal-bg);
+  -webkit-backdrop-filter: blur(12px) saturate(220%);
+  backdrop-filter: blur(12px) saturate(220%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55), var(--shadow-glass);
 }
+body[data-theme="dark"].cs-app .glass-card-mobile {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), var(--shadow-glass);
+}
+
+
+/* Inside the Contacts page's contact view (phone, or the desktop drawer), the glass containers/buttons/fields drop their
+ * backdrop-filter and show their translucent fill straight over the ambient category wash behind them.
+ * iOS WebKit doesn't reliably repaint a backdrop-filter when what's behind it changes without the
+ * element itself changing — after the slide-in, or while --ambient-color cross-fades to a new category —
+ * so the containers showed one tint until a touch forced a repaint, then flipped to another (and a
+ * category change only half-applied until touched). The un-repainted look (no backdrop pass) is the
+ * one we keep, now on purpose and consistently. The blur itself bought nothing here anyway: the wash
+ * behind is a smooth gradient. The collapsed header bar keeps its own inline blur — content scrolls
+ * under that one. */
+.cs-app .cs-contact-pane .glass-card-mobile,
+.cs-app .cs-contact-pane .glass-nav-arrow,
+.cs-app .cs-contact-pane .cs-glass-field {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
 
 /* Floating circular "glass" control — e.g. the prev/next arrows over a
  * fullscreen image viewer. Same frosted-panel recipe as .glass-modal-panel

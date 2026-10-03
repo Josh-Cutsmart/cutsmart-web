@@ -10,11 +10,13 @@ import {
   useState,
   type CSSProperties,
   type MouseEvent as ReactMouseEvent,
+  type TouchEvent as ReactTouchEvent,
   type UIEvent as ReactUIEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { ArrowLeft, Check, ChevronLeft, Mail, MapPin, MessageSquare, Pencil, Phone, Plus, Search, Users, X } from "lucide-react";
+import { Archive, Check, ChevronLeft, Mail, MapPin, MessageSquare, Pencil, Phone, Plus, Search, Users, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import {
   createOrAttachManualCompanyClient,
@@ -28,6 +30,7 @@ import {
 import { retryAsync } from "@/lib/load-retry";
 import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
+import { useLongPress } from "@/lib/use-long-press";
 import { GlassActionMenu, GlassDropdown, type GlassActionMenuItem, type GlassDropdownOption } from "@/components/glass-dropdown";
 
 type ContactCategoryOption = { name: string; color: string };
@@ -46,9 +49,10 @@ const fieldReadonlyClass =
 // On mobile each profile field sits in its own container; from md up this adds nothing (the single
 // Profile card around them provides the chrome).
 const mobileFieldCardClass =
-  "glass-card-mobile max-md:rounded-[14px] max-md:border max-md:px-3 max-md:py-2";
+  "glass-card-mobile rounded-[14px] border px-3 py-2";
 // A single-line read-mode value on mobile: short and flush-left, so a container is label + value and little else.
-const mobileReadonlyLineClass = "max-md:mt-0 max-md:h-6 max-md:px-0 max-md:text-[14px]";
+// ! so these win over fieldReadonlyClass's own margin/height/padding/size on the same element.
+const mobileReadonlyLineClass = "!mt-0 !h-6 !px-0 !text-[14px]";
 const secondaryButtonClass =
   "inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-3 text-[12px] font-bold text-[var(--text-main)] transition hover:brightness-95 disabled:opacity-60";
 
@@ -244,6 +248,16 @@ function ClientsPageInner() {
   const [isDetailOpen, setIsDetailOpen] = useState(false);
   const [skipStageTransition, setSkipStageTransition] = useState(false);
   const [isMobileHeaderCollapsed, setIsMobileHeaderCollapsed] = useState(false);
+  // md+ (768px): the contact opens as a right-hand drawer over the list instead of replacing it, so the
+  // list stays visible and usable (tap another contact to switch).
+  const [isDesktopViewport, setIsDesktopViewport] = useState(false);
+  useEffect(() => {
+    const query = window.matchMedia("(min-width: 768px)");
+    const sync = () => setIsDesktopViewport(query.matches);
+    sync();
+    query.addEventListener("change", sync);
+    return () => query.removeEventListener("change", sync);
+  }, []);
   const mobileHeaderRef = useRef<HTMLDivElement | null>(null);
   const [saveError, setSaveError] = useState("");
   // Bumped when a failed save is rolled back so the uncontrolled text inputs (defaultValue + key)
@@ -547,9 +561,16 @@ function ClientsPageInner() {
 
   const openContact = (id: string, rowEl: HTMLElement) => {
     lastRowElRef.current = rowEl;
+    // Desktop: the list stays usable beside the drawer, so a contact can be opened while another is
+    // already showing — swap the current ?contact= entry rather than stacking a new one, so closing
+    // still goes straight back to the plain list.
+    const replacing = isDetailOpen && pushedDetailEntryRef.current;
+    (document.activeElement as HTMLElement | null)?.blur?.();
     showDetail(id);
     try {
-      window.history.pushState({ contactDetail: true }, "", `${window.location.pathname}?contact=${encodeURIComponent(id)}`);
+      const url = `${window.location.pathname}?contact=${encodeURIComponent(id)}`;
+      if (replacing) window.history.replaceState({ contactDetail: true }, "", url);
+      else window.history.pushState({ contactDetail: true }, "", url);
       pushedDetailEntryRef.current = true;
     } catch {
       pushedDetailEntryRef.current = false;
@@ -645,6 +666,135 @@ function ClientsPageInner() {
       if (exitTimerRef.current) window.clearTimeout(exitTimerRef.current);
     };
   }, []);
+
+  // --- Swipe right to go back (touch) ---------------------------------------------------------
+  // A left-to-right swipe anywhere on the contact page drags it (and the list, sitting just off-screen
+  // to its left) with the finger; letting go past a third of the width, or with a quick flick, finishes
+  // the slide back to the list, otherwise it springs back. While dragging, data-swipe-dragging switches
+  // both panes' CSS transitions off so they track the finger 1:1; on release it's cleared first, so the
+  // finish/spring-back animates from wherever the finger left them. The transforms written here are the
+  // exact strings the panes' own style props use, so React's next render agrees with the DOM.
+  const listPaneRef = useRef<HTMLDivElement | null>(null);
+  const detailPaneRef = useRef<HTMLDivElement | null>(null);
+  const swipeBackRef = useRef<{ x: number; y: number; t: number; width: number; axis: "" | "x" | "none"; dx: number } | null>(null);
+  const setPaneTransforms = (detail: string, list: string) => {
+    if (detailPaneRef.current) detailPaneRef.current.style.transform = detail;
+    if (listPaneRef.current) listPaneRef.current.style.transform = list;
+  };
+  const setPanesDragging = (dragging: boolean) => {
+    for (const pane of [detailPaneRef.current, listPaneRef.current]) {
+      if (!pane) continue;
+      if (dragging) pane.dataset.swipeDragging = "true";
+      else delete pane.dataset.swipeDragging;
+    }
+  };
+  const onDetailTouchStart = (event: ReactTouchEvent<HTMLDivElement>) => {
+    const touch = event.touches[0];
+    // A glass dropdown/menu being open owns the touch (tapping outside it just closes it).
+    if (!isDetailOpen || !touch || event.touches.length > 1 || document.querySelector('[data-glass-dropdown-menu="true"]')) {
+      swipeBackRef.current = null;
+      return;
+    }
+    swipeBackRef.current = {
+      x: touch.clientX,
+      y: touch.clientY,
+      t: performance.now(),
+      width: event.currentTarget.getBoundingClientRect().width || window.innerWidth,
+      axis: "",
+      dx: 0,
+    };
+  };
+  const onDetailTouchMove = (event: ReactTouchEvent<HTMLDivElement>) => {
+    const swipe = swipeBackRef.current;
+    const touch = event.touches[0];
+    if (!swipe || !touch || swipe.axis === "none") return;
+    if (event.touches.length > 1) {
+      swipeBackRef.current = null;
+      if (swipe.axis === "x") {
+        setPanesDragging(false);
+        setPaneTransforms("translate3d(0, 0, 0)", "translate3d(-100%, 0, 0)");
+      }
+      return;
+    }
+    const dx = touch.clientX - swipe.x;
+    const dy = touch.clientY - swipe.y;
+    if (!swipe.axis) {
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+      // Only a clearly sideways, rightward drag becomes the back swipe; anything else is left to scroll.
+      swipe.axis = dx > 0 && Math.abs(dx) > Math.abs(dy) * 1.2 ? "x" : "none";
+      if (swipe.axis !== "x") return;
+      (document.activeElement as HTMLElement | null)?.blur?.();
+      setPanesDragging(true);
+    }
+    swipe.dx = Math.max(0, dx);
+    setPaneTransforms(`translate3d(${swipe.dx}px, 0, 0)`, `translate3d(calc(-100% + ${swipe.dx}px), 0, 0)`);
+  };
+  const onDetailTouchEnd = (event: ReactTouchEvent<HTMLDivElement>) => {
+    const swipe = swipeBackRef.current;
+    swipeBackRef.current = null;
+    if (!swipe || swipe.axis !== "x") return;
+    const cancelled = event.type === "touchcancel";
+    const velocity = swipe.dx / Math.max(1, performance.now() - swipe.t);
+    setPanesDragging(false);
+    // Flush the transition-off state before writing the end position, so the move animates.
+    void detailPaneRef.current?.offsetWidth;
+    if (!cancelled && (swipe.dx > swipe.width * 0.3 || (velocity > 0.5 && swipe.dx > 40))) {
+      setPaneTransforms("translate3d(100%, 0, 0)", "translate3d(0, 0, 0)");
+      closeContact();
+    } else {
+      setPaneTransforms("translate3d(0, 0, 0)", "translate3d(-100%, 0, 0)");
+    }
+  };
+
+  // --- Long-press a contact in the list -> menu (Archive) --------------------------------------
+  // Same hold time as the Specifications cells' long-press (500ms, lib/use-long-press.ts). The menu
+  // drops from the pressed row; Archive asks for a second tap before it actually archives.
+  const rowLongPress = useLongPress();
+  const rowMenuRef = useRef<HTMLDivElement | null>(null);
+  const [rowMenu, setRowMenu] = useState<{ clientId: string; left: number; top: number; openUp: boolean } | null>(null);
+  const [rowMenuClosing, setRowMenuClosing] = useState(false);
+  const [rowMenuConfirming, setRowMenuConfirming] = useState(false);
+  const [rowMenuBusy, setRowMenuBusy] = useState(false);
+  const [rowMenuError, setRowMenuError] = useState("");
+  const closeRowMenu = useCallback(() => {
+    setRowMenuClosing(true);
+    window.setTimeout(() => {
+      setRowMenu(null);
+      setRowMenuClosing(false);
+      setRowMenuConfirming(false);
+      setRowMenuError("");
+    }, 180);
+  }, []);
+  const openRowMenu = (clientId: string, rowRect: { left: number; top: number; width: number; height: number }) => {
+    const MENU_WIDTH = 220;
+    const MENU_HEIGHT_ESTIMATE = 110;
+    const openUp = rowRect.top + rowRect.height + MENU_HEIGHT_ESTIMATE > window.innerHeight - 12;
+    setRowMenuClosing(false);
+    setRowMenuConfirming(false);
+    setRowMenuError("");
+    setRowMenu({
+      clientId,
+      left: Math.min(Math.max(12, rowRect.left + 16), window.innerWidth - MENU_WIDTH - 12),
+      top: openUp ? rowRect.top - 6 : rowRect.top + rowRect.height + 6,
+      openUp,
+    });
+  };
+  useEffect(() => {
+    if (!rowMenu || rowMenuClosing) return;
+    const onOutside = (event: Event) => {
+      if (rowMenuRef.current?.contains(event.target as Node)) return;
+      closeRowMenu();
+    };
+    const list = listScrollRef.current;
+    document.addEventListener("mousedown", onOutside);
+    document.addEventListener("touchstart", onOutside);
+    list?.addEventListener("scroll", closeRowMenu, { passive: true });
+    return () => {
+      document.removeEventListener("mousedown", onOutside);
+      document.removeEventListener("touchstart", onOutside);
+      list?.removeEventListener("scroll", closeRowMenu);
+    };
+  }, [closeRowMenu, rowMenu, rowMenuClosing]);
 
   // Drives the mobile collapsing header from the contact scroller's position. The continuous part
   // (height + --p) is written straight to the element so scrolling doesn't re-render the page; only
@@ -753,6 +903,36 @@ function ClientsPageInner() {
     }
   };
 
+  // The list's long-press menu: same archive write as the contact page's Archive button, for any row.
+  const handleArchiveFromRowMenu = async (clientId: string) => {
+    if (!activeCompanyId || !clientId) return;
+    setRowMenuBusy(true);
+    setRowMenuError("");
+    try {
+      const row = clientDetailsById[clientId] ?? clients.find((c) => c.id === clientId) ?? null;
+      const result = await updateCompanyClientProfile(
+        activeCompanyId,
+        clientId,
+        { archived: true },
+        { viewerUid: String(user?.uid || "").trim(), includeAll: canViewAllClients },
+        row,
+      );
+      if (!result.ok) {
+        setRowMenuError("Couldn't archive — try again.");
+        return;
+      }
+      setClients((prev) => prev.filter((c) => c.id !== clientId));
+      setClientDetailsById((prev) => {
+        const next = { ...prev };
+        delete next[clientId];
+        return next;
+      });
+      closeRowMenu();
+    } finally {
+      setRowMenuBusy(false);
+    }
+  };
+
   const handleAddContactSubmit = async () => {
     if (!activeCompanyId || !user?.uid) return;
     const name = contactForm.name.trim();
@@ -824,17 +1004,6 @@ function ClientsPageInner() {
       />
     ) : null;
 
-  const backButtonDesktop = (
-    <button
-      type="button"
-      onClick={closeContact}
-      className="glass-nav-arrow inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3 text-[12px] font-medium transition hover:brightness-95"
-      aria-label="Back to contacts"
-    >
-      <ArrowLeft size={15} />
-      <span>Contacts</span>
-    </button>
-  );
   // Mobile header buttons: round glass buttons, 40px — the same size as the badge once it has shrunk.
   const mobileRoundButtonClass =
     "glass-nav-arrow inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition hover:brightness-95";
@@ -860,53 +1029,35 @@ function ClientsPageInner() {
   const editButtonStyle: CSSProperties | undefined = isEditingProfile
     ? { backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)", color: "#FFFFFF" }
     : undefined;
-  const editButtonContent = isEditingProfile ? (
-    <>
-      <Check size={15} />
-      <span>Done</span>
-    </>
-  ) : (
-    <>
-      <Pencil size={14} />
-      <span>Edit</span>
-    </>
-  );
-  // Mobile: its width, and its label's width/gap/opacity, follow the header's scroll progress (--p), so
-  // the labelled pill visibly shrinks down to an icon-only circle as the header turns into the sticky bar.
+  // Mobile: stays the full labelled pill while the header shrinks; only once the header bottoms out and the
+  // badge starts sliding left (isMobileHeaderCollapsed) does the label slide away and the pill close up to
+  // an icon-only circle — same 220ms ease-out as the badge's slide, so the two move together.
   const editButtonMobile = (
     <button
       type="button"
       onClick={toggleEditingProfile}
       aria-pressed={isEditingProfile}
       aria-label={isEditingProfile ? "Done editing" : "Edit contact"}
-      className="glass-nav-arrow inline-flex h-10 shrink-0 items-center justify-center overflow-hidden rounded-full text-[13px] font-medium transition-[filter] hover:brightness-95"
+      className="glass-nav-arrow inline-flex h-10 shrink-0 items-center justify-center overflow-hidden rounded-full text-[13px] font-medium hover:brightness-95 motion-reduce:!transition-none"
       style={{
-        width: `calc(${MOBILE_EDIT_BUTTON_EXPANDED_PX}px - ${MOBILE_EDIT_BUTTON_EXPANDED_PX - MOBILE_EDIT_BUTTON_COLLAPSED_PX}px * var(--p))`,
+        width: isMobileHeaderCollapsed ? MOBILE_EDIT_BUTTON_COLLAPSED_PX : MOBILE_EDIT_BUTTON_EXPANDED_PX,
+        transition: "width 220ms ease-out, filter 150ms ease",
         ...editButtonStyle,
       }}
     >
       {isEditingProfile ? <Check size={16} className="shrink-0" /> : <Pencil size={15} className="shrink-0" />}
       <span
-        className="overflow-hidden whitespace-nowrap"
+        className="overflow-hidden whitespace-nowrap motion-reduce:!transition-none"
         style={{
-          maxWidth: "calc(36px * (1 - var(--p)))",
-          marginLeft: "calc(6px * (1 - var(--p)))",
-          opacity: "max(0, calc(1 - var(--p) * 2))",
+          maxWidth: isMobileHeaderCollapsed ? 0 : 36,
+          marginLeft: isMobileHeaderCollapsed ? 0 : 6,
+          opacity: isMobileHeaderCollapsed ? 0 : 1,
+          transform: isMobileHeaderCollapsed ? "translateX(-10px)" : "translateX(0)",
+          transition: "max-width 220ms ease-out, margin-left 220ms ease-out, transform 220ms ease-out, opacity 180ms ease-out",
         }}
       >
         {isEditingProfile ? "Done" : "Edit"}
       </span>
-    </button>
-  );
-  const editButtonDesktop = (
-    <button
-      type="button"
-      onClick={toggleEditingProfile}
-      aria-pressed={isEditingProfile}
-      className="glass-nav-arrow inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full px-4 text-[12px] font-medium transition hover:brightness-95"
-      style={editButtonStyle}
-    >
-      {editButtonContent}
     </button>
   );
   // Call / Email: one tap when the contact has a single number/email; several (e.g. different people on
@@ -980,10 +1131,11 @@ function ClientsPageInner() {
         >
           {/* LIST PANE */}
           <div
-            className={`absolute inset-0 flex flex-col ${STAGE_SLIDE_CLASS} ${skipStageTransition ? "!transition-none" : ""}`}
+            ref={listPaneRef}
+            className={`absolute inset-0 flex flex-col ${STAGE_SLIDE_CLASS} ${skipStageTransition ? "!transition-none" : ""} data-[swipe-dragging=true]:!transition-none md:![transform:none]`}
             style={{ transform: isDetailOpen ? "translate3d(-100%, 0, 0)" : "translate3d(0, 0, 0)" }}
-            aria-hidden={isDetailOpen}
-            inert={isDetailOpen}
+            aria-hidden={isDetailOpen && !isDesktopViewport}
+            inert={isDetailOpen && !isDesktopViewport}
           >
             <div className="glass-page-header relative z-[2] shrink-0">
               <div
@@ -1169,13 +1321,22 @@ function ClientsPageInner() {
                       </div>
                       {letterClients.map((client) => {
                         const emblemColor = (client.category ? categoryColorByName.get(client.category) : undefined) || NEUTRAL_AMBIENT_COLOR;
+                        // Long-press (touch) opens the row's menu; a normal tap still opens the contact.
+                        const { style: longPressStyle, ...longPressHandlers } = rowLongPress.makeHandlers((origin) => openRowMenu(client.id, origin));
+                        const isMenuRow = rowMenu?.clientId === client.id && !rowMenuClosing;
                         return (
                           <button
                             key={client.id}
                             type="button"
+                            {...longPressHandlers}
                             onClick={(e) => openContact(client.id, e.currentTarget)}
-                            className="grid min-w-full grid-cols-1 items-center gap-3 border-b bg-[var(--panel-bg)] px-4 py-[9px] text-left text-[12px] transition-colors hover:bg-[var(--panel-muted)] max-md:pr-9 md:grid-cols-[minmax(220px,1.4fr)_minmax(200px,1.1fr)_minmax(160px,1fr)_140px_110px] md:px-5"
-                            style={{ borderColor: border, color: text }}
+                            onContextMenu={(e) => {
+                              // The hold already opened our own menu; don't also show the browser's.
+                              if (e.nativeEvent instanceof PointerEvent && e.nativeEvent.pointerType === "mouse") return;
+                              e.preventDefault();
+                            }}
+                            className={`grid min-w-full grid-cols-1 items-center gap-3 border-b px-4 py-[9px] text-left text-[12px] transition-colors hover:bg-[var(--panel-muted)] max-md:pr-9 md:grid-cols-[minmax(220px,1.4fr)_minmax(200px,1.1fr)_minmax(160px,1fr)_140px_110px] md:px-5 ${isMenuRow ? "bg-[var(--panel-muted)]" : "bg-[var(--panel-bg)]"}`}
+                            style={{ ...longPressStyle, borderColor: border, color: text }}
                           >
                             <span className="flex min-w-0 items-center gap-3">
                               {/* The contact's initials emblem in their category's colour (neutral when
@@ -1255,15 +1416,26 @@ function ClientsPageInner() {
             </div>
           </div>
 
-          {/* CONTACT PANE — slides in from the right. data-horizontal-swipe-scroll keeps a sideways swipe
+          {/* CONTACT PANE — slides in from the right: over the whole stage on a phone, as a 440px drawer over
+              the list from md up; the same phone layout either way. data-horizontal-swipe-scroll keeps a sideways swipe
               here from opening the nav drawer / notifications (the shell's own gestures), while the
-              vertical pull-down still works. */}
+              vertical pull-down still works; a rightward swipe is this pane's own "back to the list"
+              (onDetailTouch*). touch-pan-y leaves vertical scrolling to the browser and hands
+              horizontal drags to that gesture. */}
           <div
-            className={`absolute inset-0 flex flex-col ${STAGE_SLIDE_CLASS} ${skipStageTransition ? "!transition-none" : ""} motion-reduce:!transition-none`}
+            ref={detailPaneRef}
+            onTouchStart={onDetailTouchStart}
+            onTouchMove={onDetailTouchMove}
+            onTouchEnd={onDetailTouchEnd}
+            onTouchCancel={onDetailTouchEnd}
+            className={`cs-contact-pane @container absolute inset-y-0 right-0 z-[5] flex w-full touch-pan-y flex-col overflow-hidden md:w-[min(440px,100%)] md:border-l md:border-[var(--glass-border)] ${STAGE_SLIDE_CLASS} ${skipStageTransition ? "!transition-none" : ""} motion-reduce:!transition-none data-[swipe-dragging=true]:!transition-none`}
             style={
               {
                 transform: isDetailOpen ? "translate3d(0, 0, 0)" : "translate3d(100%, 0, 0)",
                 backgroundColor: pageBg,
+                // The drawer's edge shadow over the list (desktop); off while closed so it can't peek in
+                // from the right edge.
+                boxShadow: isDesktopViewport && isDetailOpen ? "-16px 0 48px rgba(15, 23, 42, 0.18)" : "none",
                 // The contact's category colour, as one registered <color> property that everything on this page
                 // tints from. Besides the slide, it carries its own (slower) transition, so changing a contact's
                 // category fades the old colour into the new one everywhere at once.
@@ -1288,7 +1460,7 @@ function ClientsPageInner() {
                     stops at its bottom edge.) */}
                 <div
                   aria-hidden
-                  className="pointer-events-none absolute inset-0 z-0 md:hidden"
+                  className="pointer-events-none absolute inset-0 z-0"
                   style={{
                     backgroundImage: [
                       `radial-gradient(380px 360px at 50% 130px, ${mix(AMBIENT_VAR, 20)}, transparent 100%)`,
@@ -1297,41 +1469,6 @@ function ClientsPageInner() {
                     ].join(", "),
                   }}
                 />
-
-                {/* Desktop/tablet: full-width glass banner with the contact's name. */}
-                <div
-                  className="relative z-[1] hidden shrink-0 overflow-hidden border-b md:block"
-                  style={{
-                    borderColor: "var(--glass-border)",
-                    backgroundColor: "var(--glass-modal-bg)",
-                    backdropFilter: "blur(12px) saturate(220%)",
-                    WebkitBackdropFilter: "blur(12px) saturate(220%)",
-                  }}
-                >
-                  <div
-                    aria-hidden
-                    className="pointer-events-none absolute inset-0"
-                    style={{
-                      backgroundImage: [
-                        `radial-gradient(70% 160% at 0% 0%, ${mix(AMBIENT_VAR, 20)}, transparent 62%)`,
-                        `radial-gradient(60% 140% at 100% 100%, ${mix(AMBIENT_VAR, 12)}, transparent 66%)`,
-                        `linear-gradient(90deg, ${mix(AMBIENT_VAR, 5)}, transparent 55%)`,
-                      ].join(", "),
-                    }}
-                  />
-                  <div className="relative flex items-center gap-5 px-5 py-6">
-                    {backButtonDesktop}
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-[34px] font-medium leading-tight" style={{ color: "var(--text-main)" }}>
-                        {activeDetail?.name || (activeDetailLoading ? "Loading..." : "Contact")}
-                      </p>
-                      <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-                        {categoryPill()}
-                      </div>
-                    </div>
-                    <div className="self-start">{editButtonDesktop}</div>
-                  </div>
-                </div>
 
                 {/* Mobile: a collapsing, sticky header. It overlays the top of the scroller (which reserves
                     MOBILE_HDR_EXPANDED_PX of top padding for it), and as the page scrolls its height tracks
@@ -1343,7 +1480,7 @@ function ClientsPageInner() {
                     still scrolls the list underneath. */}
                 <div
                   ref={mobileHeaderRef}
-                  className="pointer-events-none absolute inset-x-0 top-0 z-[2] overflow-hidden md:hidden"
+                  className="pointer-events-none absolute inset-x-0 top-0 z-[2] overflow-hidden"
                   style={{ height: MOBILE_HDR_EXPANDED_PX, "--p": 0 } as CSSProperties}
                 >
                   <div
@@ -1421,7 +1558,7 @@ function ClientsPageInner() {
                       height: MOBILE_HDR_COLLAPSED_PX,
                       clipPath: isMobileHeaderCollapsed
                         ? "inset(0 0 0 0px)"
-                        : `inset(0 0 0 calc(50vw + ${MOBILE_BADGE_COLLAPSED_PX / 2 - MOBILE_NAME_LEFT_COLLAPSED_PX}px))`,
+                        : `inset(0 0 0 calc(50cqw + ${MOBILE_BADGE_COLLAPSED_PX / 2 - MOBILE_NAME_LEFT_COLLAPSED_PX}px))`,
                       opacity: isMobileHeaderCollapsed ? 1 : 0,
                       transition: "clip-path 220ms cubic-bezier(0, 0, 0.2, 1), opacity 160ms ease-out",
                     }}
@@ -1433,7 +1570,7 @@ function ClientsPageInner() {
                 </div>
 
                 <div
-                  className="glass-scroll relative z-[1] min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pt-[var(--mobile-hdr-h)] max-md:scroll-pt-16 md:px-5 md:pt-4"
+                  className="glass-scroll relative z-[1] min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pt-[var(--mobile-hdr-h)] scroll-pt-16"
                   style={{
                     "--mobile-hdr-h": `${MOBILE_HDR_EXPANDED_PX}px`,
                     paddingBottom: "calc(16px + var(--keyboard-inset-px, 0px) + env(safe-area-inset-bottom, 0px))",
@@ -1449,18 +1586,17 @@ function ClientsPageInner() {
                     // card / Archive button. (With only a little content the mobile header simply collapses as far
                     // as the available scroll allows.)
                     <div className="mx-auto w-full max-w-[1100px]">
-                    <div className="grid w-full gap-4 lg:grid-cols-[360px_1fr]">
+                    <div className="grid w-full gap-4">
                       <div className="space-y-3">
-                        {/* Desktop: one Profile card holding every field. Mobile: the card chrome drops away and each
-                            field becomes its own container (Phone, Email, Address, Notes — with a call button on
-                            Phone); Name and Category are already at the top of the page so they only show on
-                            mobile while editing. */}
-                        <div className="rounded-[14px] border border-[var(--glass-border)] bg-[var(--panel-bg)] p-4 max-md:border-0 max-md:bg-transparent max-md:p-0">
-                          <p className="text-[12px] font-extrabold uppercase tracking-[0.8px] max-md:hidden" style={{ color: "var(--text-main)" }}>
+                        {/* Each field is its own full-width container (Phone, Email, Address, Notes — with call /
+                            email / maps buttons); Name and Category are already at the top of the page so they only
+                            show while editing. */}
+                        <div>
+                          <p className="text-[12px] font-extrabold uppercase tracking-[0.8px] hidden" style={{ color: "var(--text-main)" }}>
                             Profile
                           </p>
-                          <div className="mt-3 flex flex-col gap-2.5 max-md:mt-0 max-md:gap-2">
-                            <label className={`block text-[11px] font-bold ${mobileFieldCardClass} ${isEditingProfile ? "max-md:order-[-2]" : "max-md:hidden"}`} style={{ color: "var(--text-muted)" }}>
+                          <div className="flex flex-col gap-2">
+                            <label className={`block text-[11px] font-bold ${mobileFieldCardClass} ${isEditingProfile ? "order-[-2]" : "!hidden"}`} style={{ color: "var(--text-muted)" }}>
                               Name
                               <input
                                 defaultValue={activeDetail.name}
@@ -1472,7 +1608,7 @@ function ClientsPageInner() {
                                 className={`${isEditingProfile ? fieldInputEditClass : fieldReadonlyClass} mt-1`}
                               />
                             </label>
-                            <div className={`flex items-center gap-2 ${mobileFieldCardClass} max-md:order-2`}>
+                            <div className={`flex items-center gap-2 ${mobileFieldCardClass} order-2`}>
                               <label className="block min-w-0 flex-1 text-[11px] font-bold" style={{ color: "var(--text-muted)" }}>
                                 Email
                                 <input
@@ -1487,14 +1623,14 @@ function ClientsPageInner() {
                               </label>
                               {/* Mobile only, and not while editing: email this contact (several addresses -> pick which). */}
                               {!isEditingProfile ? (
-                                <div className="shrink-0 md:hidden">
+                                <div className="shrink-0">
                                   <GlassActionMenu items={emailItems} ariaLabel="Email" triggerClassName={mobileCompactRoundButtonClass} triggerStyle={containerIconButtonStyle} menuMinWidth={320}>
                                     <Mail size={16} />
                                   </GlassActionMenu>
                                 </div>
                               ) : null}
                             </div>
-                            <div className={`flex items-center gap-2 ${mobileFieldCardClass} max-md:order-1`}>
+                            <div className={`flex items-center gap-2 ${mobileFieldCardClass} order-1`}>
                               <label className="block min-w-0 flex-1 text-[11px] font-bold" style={{ color: "var(--text-muted)" }}>
                                 Phone
                                 <input
@@ -1510,14 +1646,14 @@ function ClientsPageInner() {
                               {/* Mobile only, and not while editing: call this contact (several numbers -> pick which,
                                   same glass menu as the header's). */}
                               {!isEditingProfile ? (
-                                <div className="shrink-0 md:hidden">
+                                <div className="shrink-0">
                                   <GlassActionMenu items={callItems} ariaLabel="Call" triggerClassName={mobileCompactRoundButtonClass} triggerStyle={containerIconButtonStyle} menuMinWidth={300}>
                                     <Phone size={18} />
                                   </GlassActionMenu>
                                 </div>
                               ) : null}
                             </div>
-                            <div className={`flex items-center gap-2 ${mobileFieldCardClass} max-md:order-3`}>
+                            <div className={`flex items-center gap-2 ${mobileFieldCardClass} order-3`}>
                               <label className="block min-w-0 flex-1 text-[11px] font-bold" style={{ color: "var(--text-muted)" }}>
                                 Address
                                 <input
@@ -1532,7 +1668,7 @@ function ClientsPageInner() {
                               </label>
                               {/* Mobile only, and not while editing: open the address in the phone's default maps app. */}
                               {!isEditingProfile ? (
-                                <div className="shrink-0 md:hidden">
+                                <div className="shrink-0">
                                   <button
                                     type="button"
                                     onClick={() => openAddressInMaps(activeDetail.address)}
@@ -1546,7 +1682,7 @@ function ClientsPageInner() {
                                 </div>
                               ) : null}
                             </div>
-                            <div className={`block text-[11px] font-bold ${mobileFieldCardClass} ${isEditingProfile ? "max-md:order-[-1]" : "max-md:hidden"}`} style={{ color: "var(--text-muted)" }}>
+                            <div className={`block text-[11px] font-bold ${mobileFieldCardClass} ${isEditingProfile ? "order-[-1]" : "!hidden"}`} style={{ color: "var(--text-muted)" }}>
                               Category
                               <div className="mt-1">
                                 <GlassDropdown
@@ -1559,7 +1695,7 @@ function ClientsPageInner() {
                                 />
                               </div>
                             </div>
-                            <label className={`block text-[11px] font-bold ${mobileFieldCardClass} max-md:order-4`} style={{ color: "var(--text-muted)" }}>
+                            <label className={`block text-[11px] font-bold ${mobileFieldCardClass} order-4`} style={{ color: "var(--text-muted)" }}>
                               Notes
                               <textarea
                                 defaultValue={activeDetail.notes}
@@ -1570,14 +1706,14 @@ function ClientsPageInner() {
                                 rows={isEditingProfile ? 3 : 2}
                                 // Notes stay editable without pressing Edit (tap and type, saves on blur) but, outside Edit
                                 // mode, show no box — not even on focus — so it just reads as an (empty) container.
-                                className={`${isEditingProfile ? fieldInputEditClass : `${fieldReadonlyClass} cursor-text max-md:mt-0 max-md:px-0 max-md:py-0`} mt-1 h-auto py-2 max-md:text-[14px] ${isEditingProfile ? "" : "resize-none"}`}
+                                className={`${isEditingProfile ? fieldInputEditClass : `${fieldReadonlyClass} cursor-text !mt-0 !px-0 !py-0`} mt-1 h-auto py-2 text-[14px] ${isEditingProfile ? "" : "resize-none"}`}
                               />
                             </label>
                             {saveError ? (
-                              <p className="text-[12px] font-medium max-md:order-5" style={{ color: "var(--danger-strong)" }}>{saveError}</p>
+                              <p className="text-[12px] font-medium order-5" style={{ color: "var(--danger-strong)" }}>{saveError}</p>
                             ) : null}
                             {/* First / last project dates: shown in the desktop Profile card; removed on mobile. */}
-                            <div className="space-y-1 pt-1 text-[12px] max-md:hidden" style={{ color: "var(--text-muted)" }}>
+                            <div className="space-y-1 pt-1 text-[12px] hidden" style={{ color: "var(--text-muted)" }}>
                               <p><span className="font-semibold" style={{ color: "var(--text-main)" }}>First Project:</span> {activeDetail.firstProjectAtIso ? formatClientDate(activeDetail.firstProjectAtIso) : "-"}</p>
                               <p><span className="font-semibold" style={{ color: "var(--text-main)" }}>Last Project:</span> {activeDetail.lastProjectAtIso ? formatClientDate(activeDetail.lastProjectAtIso) : "-"}</p>
                               <p><span className="font-semibold" style={{ color: "var(--text-main)" }}>Time Since Last Project:</span> {activeDetail.lastProjectAtIso ? timeSinceLabel(activeDetail.lastProjectAtIso) : "-"}</p>
@@ -1586,7 +1722,7 @@ function ClientsPageInner() {
                         </div>
                       </div>
                       {/* Active / Completed Projects aren't editable, so on mobile they step aside while editing. */}
-                      <div className={`space-y-3 ${isEditingProfile ? "max-md:hidden" : ""}`}>
+                      <div className={`space-y-3 ${isEditingProfile ? "hidden" : ""}`}>
                         {([
                           { title: "Active Projects", rows: activeDetail.history.filter((h) => !isCompletedClientProjectStatus(h.statusLabel)), empty: "No active projects." },
                           { title: "Completed Projects", rows: activeDetail.history.filter((h) => isCompletedClientProjectStatus(h.statusLabel)), empty: "No completed projects." },
@@ -1645,12 +1781,12 @@ function ClientsPageInner() {
                         page's Delete button (the danger gradient). */}
                     <div className="w-full pt-4" style={{ display: isEditingProfile ? undefined : "none" }}>
                       {isConfirmingArchive ? (
-                        <p className="mb-2 text-center text-[12px] font-medium lg:text-left" style={{ color: "var(--danger-strong)" }}>
+                        <p className="mb-2 text-center text-[12px] font-medium" style={{ color: "var(--danger-strong)" }}>
                           Remove this contact from the main list?
                         </p>
                       ) : null}
                       {archiveError ? (
-                        <p className="mb-2 text-center text-[12px] font-medium lg:text-left" style={{ color: "var(--danger-strong)" }}>{archiveError}</p>
+                        <p className="mb-2 text-center text-[12px] font-medium" style={{ color: "var(--danger-strong)" }}>{archiveError}</p>
                       ) : null}
                       <button
                         type="button"
@@ -1662,7 +1798,7 @@ function ClientsPageInner() {
                           }
                         }}
                         disabled={isArchiving}
-                        className="flex h-12 w-full items-center justify-center rounded-[14px] border text-[16px] font-medium text-white transition hover:brightness-95 disabled:opacity-60 lg:max-w-[360px]"
+                        className="flex h-12 w-full items-center justify-center rounded-[14px] border text-[16px] font-medium text-white transition hover:brightness-95 disabled:opacity-60"
                         // Same red as the "Delete" button in the project details top bar (projects/[projectId]/page.tsx).
                         style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
                       >
@@ -1681,6 +1817,54 @@ function ClientsPageInner() {
           </div>
         </div>
       )}
+
+      {/* Long-press menu for a contact row (see rowLongPress). Same small glass pop-up as the Specifications
+          long-press menu; portaled to <body> so the list's scroller can't clip it. */}
+      {rowMenu && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              ref={rowMenuRef}
+              className={`${rowMenuClosing ? "floating-bar-slot-pop" : "glass-bubble-pop"} fixed z-[2000] w-[220px] overflow-hidden rounded-[12px] border py-1.5`}
+              style={{
+                left: rowMenu.left,
+                top: rowMenu.top,
+                translate: rowMenu.openUp ? "0 -100%" : undefined,
+                borderColor: "var(--glass-border)",
+                backgroundColor: "var(--glass-bg-strong)",
+                backdropFilter: "blur(24px) saturate(180%)",
+                WebkitBackdropFilter: "blur(24px) saturate(180%)",
+                boxShadow: "var(--shadow-glass)",
+              }}
+            >
+              <p className="truncate px-4 pb-1 pt-1.5 text-[11px] font-medium" style={{ color: "var(--text-muted)" }}>
+                {clients.find((c) => c.id === rowMenu.clientId)?.name || "Contact"}
+              </p>
+              <button
+                type="button"
+                disabled={rowMenuBusy}
+                onClick={() => {
+                  if (rowMenuConfirming) void handleArchiveFromRowMenu(rowMenu.clientId);
+                  else setRowMenuConfirming(true);
+                }}
+                className="flex w-full items-center gap-2.5 whitespace-nowrap px-4 py-3 text-left text-[14px] font-medium disabled:opacity-60"
+                style={{
+                  color: "var(--danger-strong)",
+                  WebkitTapHighlightColor: "transparent",
+                  WebkitUserSelect: "none",
+                  userSelect: "none",
+                  WebkitTouchCallout: "none",
+                }}
+              >
+                <Archive size={16} />
+                {rowMenuBusy ? "Archiving..." : rowMenuConfirming ? "Tap again to archive" : "Archive"}
+              </button>
+              {rowMenuError ? (
+                <p className="px-4 pb-1.5 text-[11px] font-medium" style={{ color: "var(--danger-strong)" }}>{rowMenuError}</p>
+              ) : null}
+            </div>,
+            document.body,
+          )
+        : null}
 
       {/* Add Contact — glass modal. */}
       {shouldRenderAddContactModal ? (

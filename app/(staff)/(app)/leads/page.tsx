@@ -1987,6 +1987,8 @@ export default function LeadsPage() {
     }
     state.lastX = touch.clientX;
     state.lastY = touch.clientY;
+    // Holding the card at the screen's left/right edge steps the board a column that way.
+    leadBoardDragGhost.trackPointer(touch.clientX, touch.clientY);
     const target = document.elementFromPoint(touch.clientX, touch.clientY);
     const columnEl = target?.closest<HTMLElement>("[data-board-column]");
     const columnName = columnEl?.getAttribute("data-column-name") || "";
@@ -2001,6 +2003,12 @@ export default function LeadsPage() {
     if (!state) return;
     if (state.longPressTimer) clearTimeout(state.longPressTimer);
     if (!state.dragging) return;
+    // Re-resolve the column under the finger at release: if the board auto-scrolled (edge hold)
+    // while the finger stayed still, no touchmove ran to update targetColumn.
+    if (commit && typeof document !== "undefined") {
+      const columnEl = document.elementFromPoint(state.lastX, state.lastY)?.closest<HTMLElement>("[data-board-column]");
+      if (columnEl) state.targetColumn = columnEl.getAttribute("data-column-name") || state.targetColumn;
+    }
     setDraggingLeadId("");
     setDragOverStatusColumn("");
     leadBoardDragGhost.end();

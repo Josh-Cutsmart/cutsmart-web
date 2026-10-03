@@ -50,10 +50,14 @@ export function useBoardStickyRef(
       const setCardListsScrollable = (scrollable: boolean) => {
         el.querySelectorAll<HTMLElement>(".glass-scroll.flex-1").forEach((list) => {
           list.style.overflowY = scrollable ? "auto" : "hidden";
-          // Only claim the vertical axis (handing horizontal off to the board's own scroller) once
-          // this list is actually the vertical scroller — see the comment on this div in
-          // renderBoardColumn for why applying it unconditionally broke horizontal drag-scroll.
-          list.style.touchAction = scrollable ? "pan-y" : "auto";
+          // touch-action stays at the browser default in both states. It used to flip to "pan-y"
+          // once the list became the vertical scroller, but touch-action doesn't hand the other
+          // axis off to an ancestor — it forbids it for any touch that starts inside the element —
+          // so once the board locked into its full-screen position a sideways swipe over a column's
+          // cards couldn't scroll the board between columns at all. With the default, the browser
+          // routes each gesture by its own direction: vertical scrolls this list, horizontal chains
+          // to the board's horizontal scroller.
+          list.style.touchAction = "";
         });
       };
       // Each column is two nested elements: an outer shell (marked `data-board-column`) that owns

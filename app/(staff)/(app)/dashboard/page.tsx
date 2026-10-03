@@ -1622,14 +1622,10 @@ export default function DashboardPage() {
           style={{ borderColor: glassColumnBorder, ...glassColumnSurface }}
         >
           {options.renderHeader(columnBadgeBg, columnBadgeText)}
-          {/* touchAction: left to the browser default (not "pan-y") while this list is still
-              overflow-y-hidden (not yet the real vertical scroller, per setCardListsScrollable
-              below) — pinning it to pan-y here blocked horizontal drag-scroll everywhere in the
-              column body instead of handing it off, since there's no vertical overflow yet for
-              the browser to actually delegate around. setCardListsScrollable flips it to pan-y
-              only once this list becomes the genuine scroller, which is the one moment the
-              nested-perpendicular-scroll trap (this list swallowing a mostly-horizontal drag) can
-              actually happen. */}
+          {/* touchAction: always left to the browser default (never "pan-y") — pan-y forbids
+              horizontal panning for any touch starting inside the list rather than handing it to
+              the board's horizontal scroller, which blocked swiping between columns. See
+              setCardListsScrollable in lib/board-sticky-scroll.ts. */}
           <div className="glass-scroll board-column-scroll flex-1 space-y-2.5 overflow-y-hidden p-2.5" style={{ scrollbarWidth: "none" }}>
             {options.projects.length === 0 ? (
               <p className="px-1 py-6 text-center text-[11px] font-semibold" style={{ color: columnTitleTextColor }}>{options.emptyLabel ?? "No projects."}</p>

@@ -58,7 +58,103 @@ export type DragGhostController = {
   spawn: (event: { clientX: number; clientY: number }, originElId: string, content: { label: string; color: string }) => void;
   // Call from onDragEnd.
   end: () => void;
+  // For drags the hook can't see itself (a touch-driven drag never dispatches `dragover`): report
+  // the pointer position each move so the board edge auto-scroll below still runs.
+  trackPointer: (clientX: number, clientY: number) => void;
 };
+
+// Board edge auto-scroll: while a card is being dragged, holding it against the left/right edge of
+// the board's horizontal scroller steps the board one column in that direction, repeating while it
+// stays there. Stepping a whole column (rather than a continuous crawl) matches the mobile board's
+// one-column-per-screen snap layout. The scroller is the dragged card's own
+// [data-horizontal-swipe-scroll] ancestor (both the Dashboard and Leads boards carry it).
+const EDGE_ZONE_PX = 40;
+const EDGE_DWELL_MS = 280;
+const EDGE_REPEAT_MS = 700;
+
+function createBoardEdgeAutoScroll() {
+  let scroller: HTMLElement | null = null;
+  let direction: -1 | 0 | 1 = 0;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const clearTimer = () => {
+    if (timer) clearTimeout(timer);
+    timer = null;
+  };
+
+  const step = (dir: -1 | 1) => {
+    if (!scroller) return;
+    const scRect = scroller.getBoundingClientRect();
+    const columns = Array.from(scroller.querySelectorAll<HTMLElement>("[data-board-column]")).filter(
+      (col) => col.getBoundingClientRect().width > 0,
+    );
+    if (!columns.length) return;
+    const snaps = getComputedStyle(scroller).scrollSnapType.includes("mandatory");
+    if (snaps) {
+      // One column per screen: centre the column after/before the one currently nearest the middle.
+      const mid = scRect.left + scRect.width / 2;
+      let current = 0;
+      let best = Infinity;
+      columns.forEach((col, index) => {
+        const rect = col.getBoundingClientRect();
+        const distance = Math.abs(rect.left + rect.width / 2 - mid);
+        if (distance < best) {
+          best = distance;
+          current = index;
+        }
+      });
+      const target = columns[Math.max(0, Math.min(columns.length - 1, current + dir))];
+      const rect = target.getBoundingClientRect();
+      scroller.scrollBy({ left: rect.left + rect.width / 2 - mid, behavior: "smooth" });
+      return;
+    }
+    // Several columns visible: bring the next column that's cut off on that side fully into view.
+    const target =
+      dir === 1
+        ? columns.find((col) => col.getBoundingClientRect().right > scRect.right + 1)
+        : [...columns].reverse().find((col) => col.getBoundingClientRect().left < scRect.left - 1);
+    if (!target) return;
+    const rect = target.getBoundingClientRect();
+    scroller.scrollBy({ left: dir === 1 ? rect.right - scRect.right + 12 : rect.left - scRect.left - 12, behavior: "smooth" });
+  };
+
+  const schedule = (delay: number) => {
+    clearTimer();
+    timer = setTimeout(() => {
+      timer = null;
+      if (!direction) return;
+      step(direction);
+      schedule(EDGE_REPEAT_MS);
+    }, delay);
+  };
+
+  const stop = () => {
+    clearTimer();
+    direction = 0;
+    scroller = null;
+  };
+
+  return {
+    begin(originEl: HTMLElement | null) {
+      stop();
+      // Mobile/tablet boards only — desktop keeps its existing drag behaviour.
+      if (!window.matchMedia("(max-width: 1023px)").matches) return;
+      scroller = originEl?.closest<HTMLElement>('[data-horizontal-swipe-scroll="true"]') ?? null;
+    },
+    update(clientX: number) {
+      if (!scroller || scroller.scrollWidth <= scroller.clientWidth + 1) return;
+      const rect = scroller.getBoundingClientRect();
+      const left = Math.max(0, rect.left);
+      const right = Math.min(window.innerWidth, rect.right);
+      const next: -1 | 0 | 1 = clientX <= left + EDGE_ZONE_PX ? -1 : clientX >= right - EDGE_ZONE_PX ? 1 : 0;
+      if (next === direction) return;
+      direction = next;
+      if (next) schedule(EDGE_DWELL_MS);
+      else clearTimer();
+    },
+    stop,
+  };
+}
 
 // Native drag fires `dragover` almost immediately and continuously, often at
 // essentially the same spot the drag started — cancelling the pickup
@@ -76,12 +172,15 @@ export function useDragGhost(): DragGhostController {
   const growFrameRef = useRef<number | null>(null);
   const settleCleanupRef = useRef<(() => void) | null>(null);
   const transparentImageRef = useRef<HTMLDivElement | null>(null);
+  // One edge auto-scroller per hook instance (lazy useState init, so it's created exactly once).
+  const [edgeScroll] = useState(createBoardEdgeAutoScroll);
   const dragOverListenerRef = useRef((event: DragEvent) => {
     const ghost = ghostRef.current?.getEl();
     if (!ghost) return;
     const x = event.clientX;
     const y = event.clientY;
     if (x === 0 && y === 0) return;
+    edgeScroll.update(x);
     if (growFrameRef.current !== null || settleCleanupRef.current) {
       const movedPx = Math.hypot(x - startPointRef.current.x, y - startPointRef.current.y);
       if (movedPx > DRAG_GHOST_MOVE_CANCEL_PX) {
@@ -130,6 +229,7 @@ export function useDragGhost(): DragGhostController {
     ghost.style.transform = "none";
     const naturalRect = ghost.getBoundingClientRect();
     const originEl = typeof document !== "undefined" ? document.getElementById(originElId) : null;
+    edgeScroll.begin(originEl);
     const originRect = originEl ? originEl.getBoundingClientRect() : naturalRect;
     const scaleX = naturalRect.width > 0 ? Math.max(originRect.width, 1) / naturalRect.width : 1;
     const scaleY = naturalRect.height > 0 ? Math.max(originRect.height, 1) / naturalRect.height : 1;
@@ -166,6 +266,7 @@ export function useDragGhost(): DragGhostController {
 
   const end: DragGhostController["end"] = () => {
     clearPendingGrow();
+    edgeScroll.stop();
     if (typeof document !== "undefined") {
       document.removeEventListener("dragover", dragOverListenerRef.current, true);
     }
@@ -178,7 +279,11 @@ export function useDragGhost(): DragGhostController {
     handle?.setContent(null);
   };
 
-  return { ghostRef, transparentImageRef, spawn, end };
+  const trackPointer: DragGhostController["trackPointer"] = (clientX) => {
+    edgeScroll.update(clientX);
+  };
+
+  return { ghostRef, transparentImageRef, spawn, end, trackPointer };
 }
 
 // Renders the two portal-mounted pieces a drag ghost needs: the 1x1

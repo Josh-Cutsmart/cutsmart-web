@@ -2034,6 +2034,29 @@ export function AppShell({
   // since it depends on page-local state a shared layout can't see; every other
   // route never registers a tab, so this shell no longer touches the tab context.
 
+  // iOS Safari treats a horizontal swipe that starts at the very left/right edge of the screen as
+  // Back/Forward navigation and slides in its saved snapshot of that page — which, when you last left
+  // that page by tapping a link in this drawer, is a picture of this same drawer. Swiping left to close
+  // the drawer from near the right edge was therefore sliding in what looked like a second copy of the
+  // nav. Cancelling the touchstart in those edge strips stops Safari claiming the gesture (it needs a
+  // non-passive native listener — React's touch listeners are passive); the drawer's own swipe-to-close
+  // still gets the touchmove/touchend that follow. Taps on real controls in the strip are left alone.
+  useEffect(() => {
+    const panel = mobileNavPanelRef.current;
+    if (!panel) return;
+    const EDGE_STRIP_PX = 20;
+    const onTouchStart = (event: TouchEvent) => {
+      const touch = event.touches[0];
+      if (!touch || event.touches.length > 1) return;
+      const nearEdge = touch.clientX <= EDGE_STRIP_PX || touch.clientX >= window.innerWidth - EDGE_STRIP_PX;
+      if (!nearEdge) return;
+      if ((event.target as HTMLElement | null)?.closest("a, button, input, textarea, select, [role='button']")) return;
+      event.preventDefault();
+    };
+    panel.addEventListener("touchstart", onTouchStart, { passive: false });
+    return () => panel.removeEventListener("touchstart", onTouchStart);
+  }, [effectiveHideSidebar]);
+
   useEffect(() => {
     if (typeof document === "undefined") return;
     // Tied to shouldRenderMobileNav (not the raw mobileNavOpen) so the page behind doesn't
@@ -2769,6 +2792,16 @@ export function AppShell({
           }),
         );
       }
+      // If this project's client matched an existing contact card, the card kept its own details (see
+      // /api/clients POST). Flag the new project so its page checks once for differences and asks whether
+      // to update the card ("Update contact card for <name>?").
+      if (customer || clientEmail.trim() || clientPhone.trim()) {
+        try {
+          window.sessionStorage.setItem(`cs_contact_card_check_${projectId}`, "1");
+        } catch {
+          // storage unavailable — the check is a convenience only
+        }
+      }
       setShowNewProject(false);
       resetProjectForm();
       router.push(`/projects/${projectId}`);
@@ -2856,12 +2889,25 @@ export function AppShell({
           from the drawer this hamburger opens (the sidebar's own New Project button) and from the
           project's tab close (X) respectively. */}
 
-      {!effectiveHideSidebar && shouldRenderMobileNav && (
-        <div className="fixed inset-0 z-[120] lg:hidden">
+      {/* Kept mounted (just hidden off-screen) while closed rather than mounted on open, so the
+          company logo and every button inside are already loaded, decoded and laid out the moment
+          the drawer slides in — mounting on open is what made the logo pop in a beat late.
+          visibility:hidden still loads/decodes images (display:none can defer them). The panel's
+          and backdrop's starting transform/opacity are set here once (React never rewrites a
+          constant style value) so the very first open slides in from closed instead of flashing
+          open for a frame; useSwipeToClose's own inline writes take over from there. */}
+      {!effectiveHideSidebar && (
+        <div
+          className="fixed inset-0 z-[120] lg:hidden"
+          style={{ visibility: shouldRenderMobileNav ? "visible" : "hidden", pointerEvents: shouldRenderMobileNav ? undefined : "none" }}
+          aria-hidden={!shouldRenderMobileNav}
+          inert={!shouldRenderMobileNav}
+        >
           <button
             type="button"
             data-swipe-backdrop="true"
             className="absolute inset-0 bg-[rgba(15,23,42,0.45)]"
+            style={{ opacity: 0 }}
             onClick={() => setMobileNavOpen(false)}
             aria-label="Close menu backdrop"
           />
@@ -2873,6 +2919,7 @@ export function AppShell({
               backgroundColor: "var(--panel-bg)",
               color: shellPalette.text,
               touchAction: "pan-y",
+              transform: "translateX(-100%)",
             }}
           >
             {/* Alongside the swipe-to-close gesture — an explicit tap target in the corner the

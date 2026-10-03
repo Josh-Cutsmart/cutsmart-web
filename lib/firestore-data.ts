@@ -3167,14 +3167,18 @@ async function syncCompanyClientProfileFromProjectInternal(
     const latestHistory = sortedHistory[0];
     const projectCreatedIso = String(project.createdAt || project.updatedAt || "").trim();
     const projectUpdatedIso = String(project.updatedAt || project.createdAt || "").trim();
+    // An existing contact card's own details are never overwritten from a project here — the project
+    // only fills in fields the card doesn't have yet. Changing a card's details from project client
+    // details is an explicit choice the project page asks the user about ("Update contact card?").
+    const cardEmail = String(currentRow?.email || "").trim();
     const payload: Record<string, unknown> = {
       id: clientId,
       companyId: cid,
-      name: String(project.customer || currentRow?.name || "").trim(),
-      email: emailNormalized || email,
-      emailNormalized,
-      phone: String(project.clientPhone || currentRow?.phone || "").trim(),
-      address: String(project.clientAddress || currentRow?.address || "").trim(),
+      name: String(currentRow?.name || project.customer || "").trim(),
+      email: cardEmail || emailNormalized || email,
+      emailNormalized: normalizeClientEmail(cardEmail) || emailNormalized,
+      phone: String(currentRow?.phone || project.clientPhone || "").trim(),
+      address: String(currentRow?.address || project.clientAddress || "").trim(),
       notes: String(currentRow?.notes || "").trim(),
       createdAt: existing ? (existing.createdAt ?? serverTimestamp()) : serverTimestamp(),
       createdAtIso: currentRow?.createdAtIso || nowIso,
@@ -3255,9 +3259,12 @@ export async function fetchCompanyClients(companyId: string, filter?: CompanyCli
   try {
     const projects = await collectCompanyProjectsForClients(cid);
     for (const project of projects) {
-      if (archivedRows.some((archivedRow) => projectMatchesClientRow(project, archivedRow))) continue;
+      // A project linked to a card (clientId) belongs to that card, whatever its client details say now —
+      // that link is what keeps a changed phone/email from splitting the project off into a duplicate.
+      const linkedId = String(project.clientId || "").trim();
+      if (linkedId ? archivedRows.some((row) => row.id === linkedId) : archivedRows.some((archivedRow) => projectMatchesClientRow(project, archivedRow))) continue;
       const derived = buildCompanyClientRowFromProject(project);
-      const matchId = findMatchingClientIdInMap(merged, project) || derived.id;
+      const matchId = (linkedId && merged.has(linkedId) ? linkedId : "") || findMatchingClientIdInMap(merged, project) || derived.id;
       merged.set(matchId, mergeCompanyClientRows(merged.get(matchId), { ...derived, id: matchId }));
     }
   } catch {
@@ -3298,7 +3305,8 @@ export async function fetchCompanyClientById(
     const merged = new Map<string, CompanyClientRow>();
     for (const project of projects) {
       const derived = buildCompanyClientRowFromProject(project);
-      const matchId = findMatchingClientIdInMap(merged, project) || derived.id;
+      const linkedId = String(project.clientId || "").trim();
+      const matchId = (linkedId && merged.has(linkedId) ? linkedId : "") || findMatchingClientIdInMap(merged, project) || derived.id;
       merged.set(matchId, mergeCompanyClientRows(merged.get(matchId), { ...derived, id: matchId }));
     }
     const row = merged.get(id) ?? null;
@@ -3306,6 +3314,52 @@ export async function fetchCompanyClientById(
   } catch {
     return null;
   }
+}
+
+// The contact card a project's client details correspond to, as the given viewer would find it on the
+// Contacts page — or null when that viewer has no card for this client there (none saved, archived, or
+// saved but not visible to them). Mirrors fetchCompanyClients' rules: the project's linked clientId or
+// the same email -> phone -> name(+address) match, archived cards hidden, and a card is visible to
+// anyone with "view all", its own creators/assignees, or this project's own creator/assignee (the
+// Contacts page folds each project's people into the matching card). With no saved card at all, the
+// Contacts page still lists one derived from the project for that project's creator/assignee, so
+// that counts too (as an uncategorised card under the project-derived id). Read failures throw, so a
+// caller can tell "no card" apart from "couldn't check".
+// `persisted` is false for that project-derived card (no saved doc yet, so nothing to link or update).
+export async function findCompanyClientForProject(
+  companyId: string,
+  project: Project,
+  filter?: CompanyClientViewerFilter,
+): Promise<{ contact: CompanyClientRow; persisted: boolean } | null> {
+  const cid = String(companyId || "").trim();
+  if (!db || !cid) return null;
+  if (!normalizeClientEmail(project.clientEmail) && !normalizeClientPhone(project.clientPhone) && !String(project.customer || "").trim()) {
+    return null;
+  }
+  const viewerUid = String(filter?.viewerUid || "").trim();
+  const viewerOnProject =
+    Boolean(viewerUid) &&
+    (String(project.createdByUid || "").trim() === viewerUid || String(project.assignedToUid || "").trim() === viewerUid);
+  const snap = await getDocs(collection(db, "companies", cid, "clients"));
+  const linkedId = String(project.clientId || "").trim();
+  const matches = snap.docs
+    .filter((docSnap) => docSnap.id !== "__meta")
+    .map((docSnap) => buildCompanyClientRowFromDoc(cid, docSnap.id, (docSnap.data() ?? {}) as Record<string, unknown>))
+    .filter((row) => (linkedId && row.id === linkedId) || projectMatchesClientRow(project, row));
+  const linked = matches.find((row) => row.id === linkedId);
+  // A linked project only ever belongs to its own card — field look-alikes don't count.
+  const candidates = linked ? [linked] : matches;
+  if (candidates.some((row) => row.archived)) return null;
+  if (!candidates.length) {
+    return filter?.includeAll || viewerOnProject ? { contact: buildCompanyClientRowFromProject(project), persisted: false } : null;
+  }
+  // Twin docs for the same person can exist (see findMatchingCompanyClientRowsByFields); the category
+  // may only be saved on one of them.
+  const best = { ...candidates[0] };
+  best.category = best.category || candidates.find((row) => row.category)?.category || "";
+  return filter?.includeAll || viewerOnProject || candidates.some((row) => canViewerAccessCompanyClientRow(row, filter))
+    ? { contact: best, persisted: true }
+    : null;
 }
 
 export type ManualCompanyClientInput = {
@@ -3629,7 +3683,8 @@ export async function upsertCompanyClientProfileOnProjectCreate(input: {
     cutlist: { rows: [] },
   };
 
-  return syncCompanyClientProfileFromProjectInternal(projectLike, { syncOnly: true });
+  // Not syncOnly: also links the new project to its card (project.clientId).
+  return syncCompanyClientProfileFromProjectInternal(projectLike, { syncOnly: false });
 }
 
 export type LeadImageAnnotation = {

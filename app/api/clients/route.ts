@@ -430,10 +430,13 @@ export async function GET(request: NextRequest) {
     jobsSnap.docs.forEach((docSnap) => {
       const data = (docSnap.data() ?? {}) as Record<string, unknown>;
       const projectInput = { ...data, id: toStr(data.id) || docSnap.id };
-      if (matchesArchivedIdentity(projectInput)) return;
+      // A project linked to a card (clientId) belongs to that card whatever its client details say now —
+      // that link keeps a changed phone/email from splitting it off into a duplicate contact.
+      const linkedId = toStr(data.clientId);
+      if (linkedId ? archivedRows.some((row) => row.id === linkedId) : matchesArchivedIdentity(projectInput)) return;
       const candidate = buildClientFromProject(companyId, projectInput);
       if (!candidate.name && !candidate.email && !candidate.phone) return;
-      const matchId = findMatchingClientIdInMap(merged, projectInput) || candidate.id;
+      const matchId = (linkedId && merged.has(linkedId) ? linkedId : "") || (linkedId ? "" : findMatchingClientIdInMap(merged, projectInput)) || candidate.id;
       merged.set(matchId, mergeClientRows(merged.get(matchId), { ...candidate, id: matchId }));
     });
   } catch {
@@ -442,6 +445,7 @@ export async function GET(request: NextRequest) {
 
   activeClientRows.forEach((row) => {
     const matchId =
+      (merged.has(row.id) ? row.id : "") ||
       findMatchingClientIdInMap(merged, {
         id: row.lastProjectId,
         customer: row.name,
@@ -515,12 +519,14 @@ export async function POST(request: NextRequest) {
       {
         id: clientId,
         companyId,
-        name: customer || current?.name || "",
-        email: clientEmailNormalized || current?.email || "",
-        emailNormalized: clientEmailNormalized || normalizeEmail(current?.email || ""),
-        phone: clientPhone || current?.phone || "",
-        address: clientAddress || current?.address || "",
-        notes: toStr(body.notes) || current?.notes || "",
+        // An existing card keeps its own details — the project only fills in what the card is missing.
+        // Differences are reported back (below) so the app can ask before changing the card.
+        name: current?.name || customer,
+        email: current?.email || clientEmailNormalized,
+        emailNormalized: normalizeEmail(current?.email || "") || clientEmailNormalized,
+        phone: current?.phone || clientPhone,
+        address: current?.address || clientAddress,
+        notes: current?.notes || toStr(body.notes),
         createdAt: existing?.createdAt ?? FieldValue.serverTimestamp(),
         createdAtIso: current?.createdAtIso || toStr(body.createdAtIso) || nowIso,
         updatedAt: FieldValue.serverTimestamp(),
@@ -536,7 +542,21 @@ export async function POST(request: NextRequest) {
       },
       { merge: true },
     );
-    return NextResponse.json({ ok: true, clientId });
+    // Link the project to its card so later client-detail edits stay attached to this card.
+    try {
+      await adminDb.collection("companies").doc(companyId).collection("jobs").doc(projectId).update({ clientId });
+    } catch {
+      // The project doc may live elsewhere (legacy) — the app links it on next open instead.
+    }
+    const differences = current
+      ? [
+          { field: "name", card: current.name, project: customer },
+          { field: "email", card: current.email, project: clientEmail },
+          { field: "phone", card: current.phone, project: clientPhone },
+          { field: "address", card: current.address, project: clientAddress },
+        ].filter((row) => row.card && row.project && (row.field === "email" ? normalizeEmail(row.card) !== normalizeEmail(row.project) : row.card !== row.project))
+      : [];
+    return NextResponse.json({ ok: true, clientId, matchedExisting: Boolean(current), differences });
   } catch {
     return NextResponse.json({ ok: false, error: "client-save-failed" }, { status: 500 });
   }
