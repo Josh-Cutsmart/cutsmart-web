@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { CalendarManifestReload } from "./manifest-reload";
 
 // The Calendar page links its own web app manifest (start_url /calendar), so "Add to Home Screen" from
 // here makes a "Calendar" icon that opens straight onto the calendar, separate from the main CutSmart one.
@@ -17,5 +18,10 @@ export const metadata: Metadata = {
 };
 
 export default function CalendarLayout({ children }: { children: React.ReactNode }) {
-  return children;
+  return (
+    <>
+      <CalendarManifestReload />
+      {children}
+    </>
+  );
 }
