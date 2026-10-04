@@ -10,6 +10,10 @@ export const metadata: Metadata = {
     statusBarStyle: "default",
     title: "Calendar",
   },
+  // iOS only reads the apple-touch-icon (not the manifest's icons) for the home screen picture.
+  icons: {
+    apple: "/calendar-apple-touch-icon.png",
+  },
 };
 
 export default function CalendarLayout({ children }: { children: React.ReactNode }) {

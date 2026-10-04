@@ -8,8 +8,20 @@ import { saveUserProfilePatchDetailed } from "@/lib/firestore-data";
 import { resolveCompanyIdForUid } from "@/lib/membership";
 import { useAuth } from "@/lib/auth-context";
 import { retryAsync, withTimeout } from "@/lib/load-retry";
+import { AFTER_LOGIN_PATH_KEY } from "@/components/protected-route";
 
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
+
+// After signing in: back to the page they were sent here from (see ProtectedRoute), else the dashboard.
+function takeAfterLoginPath(): string {
+  try {
+    const path = window.sessionStorage.getItem(AFTER_LOGIN_PATH_KEY) || "";
+    window.sessionStorage.removeItem(AFTER_LOGIN_PATH_KEY);
+    return path.startsWith("/") && !path.startsWith("//") ? path : "/dashboard";
+  } catch {
+    return "/dashboard";
+  }
+}
 const DEFAULT_REGISTER_USER_COLOR = "#2F6BFF";
 const REMEMBER_DEVICE_STORAGE_KEY = "cutsmart_web_remember_device";
 
@@ -113,7 +125,7 @@ export default function HomePage() {
       } else {
         signInDemo("owner");
       }
-      router.push("/dashboard");
+      router.push(takeAfterLoginPath());
     } catch {
       setError("Could not sign in. Check email and password.");
     } finally {
@@ -264,7 +276,7 @@ export default function HomePage() {
           if (typeof window !== "undefined") {
             window.localStorage.setItem(ACTIVE_COMPANY_STORAGE_KEY, companyId);
           }
-          router.replace("/dashboard");
+          router.replace(takeAfterLoginPath());
           return;
         }
         router.replace("/company-onboarding");
@@ -272,7 +284,7 @@ export default function HomePage() {
         // A network/Firestore hiccup here used to leave "Opening your workspace..." on screen
         // forever, since nothing ever called router.replace — sending them to the dashboard
         // anyway (it does its own retried company resolution) beats an infinite loading screen.
-        if (!cancelled) router.replace("/dashboard");
+        if (!cancelled) router.replace(takeAfterLoginPath());
       }
     };
     void routeRememberedUser();

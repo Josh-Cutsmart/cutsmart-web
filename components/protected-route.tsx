@@ -4,12 +4,22 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
 
+// Where a signed-out visitor was headed, so signing in takes them back there (read by the login page).
+// e.g. a home-screen "Calendar" icon opening /calendar in a fresh, signed-out web app.
+export const AFTER_LOGIN_PATH_KEY = "cutsmart_after_login_path";
+
 export function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, isLoading } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
     if (!isLoading && !user) {
+      try {
+        const path = `${window.location.pathname}${window.location.search}`;
+        if (path !== "/") window.sessionStorage.setItem(AFTER_LOGIN_PATH_KEY, path);
+      } catch {
+        // storage unavailable — they'll land on the dashboard instead
+      }
       router.replace("/");
     }
   }, [isLoading, router, user]);
