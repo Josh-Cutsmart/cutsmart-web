@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, Building2, CheckCircle2, ChevronDown, CircleDollarSign, CircleHelp, ClipboardList, Clock3, DatabaseBackup, Download, GripVertical, HardHat, Layers3, LayoutDashboard, Link2, Loader2, Package2, Plus, RotateCcw, Search, Settings, Upload, Users, Wrench, X } from "lucide-react";
 import { deleteObject, getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
@@ -33,7 +33,7 @@ import { type SpecsGrid, createEmptyGrid, normalizeSpecsGrid } from "@/lib/specs
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { GlassDropdown, type GlassDropdownOption } from "@/components/glass-dropdown";
 import { DragGhostLayer, useDragGhost } from "@/lib/use-drag-ghost";
-import { newCalendarId, normalizeCalendarCategories, normalizeCalendarWorkdays, type CalendarCategory } from "@/lib/calendar-data";
+import { newCalendarId, normalizeCalendarCategories, normalizeCalendarWorkdays, type CalendarAccessLevel, type CalendarCategory } from "@/lib/calendar-data";
 import {
   CURRENCY_OPTIONS,
   DATE_FORMAT_OPTIONS,
@@ -254,7 +254,6 @@ const desktopPermissionKeys = [
   "company.updates",
   "dashboard.complete.bonus",
   "calendar.view",
-  "calendar.edit",
 ];
 
 // The role pop-up lists permissions in these groups (any key not matched lands in "Other").
@@ -280,8 +279,7 @@ function groupPermissionKeys(keys: string[]): Array<{ label: string; keys: strin
 }
 
 const permissionLabels: Record<string, string> = {
-  "calendar.view": "calendar.view - View Calendar",
-  "calendar.edit": "calendar.edit - Add / Edit / Delete Calendar Events",
+  "calendar.view": "calendar.view - Access Calendar Tab (who can edit / view each category is set in Company Settings > Calendar)",
   "company.*": "company.* - Full Company Access",
   "company.dashboard.view": "company.dashboard.view - View Dashboard",
   "clients.view": "clients.view - Access Contacts Tab (Own Created / Assigned Contacts)",
@@ -1523,6 +1521,11 @@ export default function CompanySettingsPage() {
   const [contactCategoryDragIndex, setContactCategoryDragIndex] = useState<number | null>(null);
   const [calendarCategories, setCalendarCategories] = useState<CalendarCategory[]>([]);
   const [calendarCategoryDragIndex, setCalendarCategoryDragIndex] = useState<number | null>(null);
+  // Company Settings > Calendar > a category's "who can see / edit it" pop-up.
+  const [calendarAccessIndex, setCalendarAccessIndex] = useState<number | null>(null);
+  const [calendarAccessOrigin, setCalendarAccessOrigin] = useState<GlassModalOrigin>(null);
+  const calendarAccessPanelRef = useRef<HTMLDivElement | null>(null);
+  const calendarAccessOriginElRef = useRef<HTMLElement | null>(null);
   const [calendarWorkdays, setCalendarWorkdays] = useState<number[]>([1, 2, 3, 4, 5]);
   const [contractors, setContractors] = useState<string[]>([]);
   const [roles, setRoles] = useState<RoleRow[]>([]);
@@ -2689,6 +2692,36 @@ export default function CompanySettingsPage() {
     undefined,
     quoteTemplateResetConfirmOriginElRef,
   );
+  const shouldRenderCalendarAccessModal = useGlassModalPopOrigin(
+    calendarAccessIndex !== null,
+    calendarAccessOrigin,
+    calendarAccessPanelRef,
+    undefined,
+    calendarAccessOriginElRef,
+  );
+  const activeCalendarCategory = calendarAccessIndex !== null ? calendarCategories[calendarAccessIndex] ?? null : null;
+  // What a non-admin role gets on a calendar category when nothing has been set for it: View.
+  const DEFAULT_CALENDAR_LEVEL: CalendarAccessLevel = "view";
+  const calendarLevelFor = (category: CalendarCategory, role: RoleRow): CalendarAccessLevel =>
+    category.access?.[normalizeRoleKey(role.id || role.name)] ?? DEFAULT_CALENDAR_LEVEL;
+  const setCalendarLevel = (role: RoleRow, level: CalendarAccessLevel) => {
+    const key = normalizeRoleKey(role.id || role.name);
+    setCalendarCategories((prev) =>
+      prev.map((cat, i) => {
+        if (i !== calendarAccessIndex) return cat;
+        const access = { ...(cat.access ?? {}) };
+        // The default (View) is stored as "no override".
+        if (level === DEFAULT_CALENDAR_LEVEL) delete access[key];
+        else access[key] = level;
+        return { ...cat, access };
+      }),
+    );
+  };
+  const openCalendarAccess = (idx: number, e: ReactMouseEvent<HTMLElement>) => {
+    calendarAccessOriginElRef.current = e.currentTarget;
+    setCalendarAccessOrigin(captureGlassModalOrigin(e));
+    setCalendarAccessIndex(idx);
+  };
   const zapierWebhookBaseUrl = appOrigin ? `${appOrigin}/api/leads` : "";
   const existingZapierWebhookSecret = useMemo(() => {
     const integrations =
@@ -3073,7 +3106,12 @@ export default function CompanySettingsPage() {
         .filter(Boolean),
       calendarWorkdays,
       calendarCategories: calendarCategories
-        .map((row) => ({ id: toStr(row.id) || newCalendarId("cat"), name: toStr(row.name), color: toStr(row.color, "#7D99B3") }))
+        .map((row) => ({
+          id: toStr(row.id) || newCalendarId("cat"),
+          name: toStr(row.name),
+          color: toStr(row.color, "#7D99B3"),
+          ...(row.access && Object.keys(row.access).length ? { access: row.access } : {}),
+        }))
         .filter((row) => row.name),
       contactCategories: contactCategories
         .map((row) => {
@@ -5952,15 +5990,20 @@ export default function CompanySettingsPage() {
                   <Panel
                     title="Calendar categories"
                     icon={CalendarDays}
-                    description="Every event on the Calendar tab belongs to one of these — its colour shows on the calendar and each can be shown or hidden there. Drag to set the order."
+                    description="Every event on the Calendar tab belongs to one of these — its colour shows on the calendar and each can be shown or hidden there. Click a category to choose which roles can edit, view or not see it. Drag to set the order."
                   >
                     <div className="space-y-1.5">
                       {calendarCategories.map((row, idx) => (
                         <div
                           key={row.id || `calendar_category_${idx}`}
                           id={`settings_calendar_category_${idx}`}
-                          className={listRowClass}
+                          className={`${listRowClass} cursor-pointer`}
                           style={{ opacity: calendarCategoryDragIndex === idx ? 0.45 : 1 }}
+                          onClick={(e) => {
+                            // Ignore controls, and clicks bubbling from portalled pop-overs (e.g. the colour picker).
+                            if (!e.currentTarget.contains(e.target as Node) || (e.target as HTMLElement).closest("input, button")) return;
+                            openCalendarAccess(idx, e);
+                          }}
                           onDragOver={(e) => {
                             e.preventDefault();
                             e.dataTransfer.dropEffect = "move";
@@ -6003,6 +6046,19 @@ export default function CompanySettingsPage() {
                           />
                           <button
                             type="button"
+                            onClick={(e) => openCalendarAccess(idx, e)}
+                            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-[12px] font-medium transition hover:brightness-95"
+                            style={{ borderColor: "var(--glass-border)", color: "var(--text-main)", backgroundColor: "color-mix(in srgb, var(--panel-bg) 55%, transparent)" }}
+                            title="Choose which roles can see and edit this category"
+                          >
+                            <Shield size={13} style={{ color: "var(--text-muted)" }} />
+                            <span className="hidden sm:inline">Access</span>
+                            {row.access && Object.keys(row.access).length ? (
+                              <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: "var(--brand)" }} title="Custom access set" />
+                            ) : null}
+                          </button>
+                          <button
+                            type="button"
                             onClick={() => setCalendarCategories((prev) => prev.filter((_, i) => i !== idx))}
                             className={dangerIconButtonClass}
                             title="Remove — its events stay, shown as uncategorised"
@@ -6020,6 +6076,69 @@ export default function CompanySettingsPage() {
                       </button>
                     </div>
                   </Panel>
+                  {shouldRenderCalendarAccessModal && activeCalendarCategory ? (
+                    <div className="fixed inset-0 z-[1750] flex items-center justify-center px-4 py-4">
+                      <button type="button" aria-label="Close category access" onClick={() => setCalendarAccessIndex(null)} className="glass-modal-backdrop absolute inset-0" />
+                      <div ref={calendarAccessPanelRef} role="dialog" className="glass-modal-panel relative z-[1751] flex max-h-[calc(100svh-32px)] w-full max-w-[560px] flex-col overflow-hidden">
+                        <div className="glass-modal-header flex items-center gap-2.5 px-4 py-3">
+                          <span className="h-3.5 w-3.5 shrink-0 rounded-full" style={{ backgroundColor: activeCalendarCategory.color || "#7D99B3" }} />
+                          <p className="min-w-0 flex-1 truncate text-[15px] font-semibold" style={{ color: "var(--text-main)" }}>
+                            {activeCalendarCategory.name || "Untitled category"} access
+                          </p>
+                          <button type="button" onClick={() => setCalendarAccessIndex(null)} className={dangerIconButtonClass} aria-label="Close">
+                            <X size={16} />
+                          </button>
+                        </div>
+                        <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto px-4 py-3">
+                          <p className="pb-1 text-[12.5px]" style={{ color: "var(--text-muted)" }}>
+                            <b className="font-medium" style={{ color: "var(--text-main)" }}>Edit</b> can add, move and delete events in this category.{" "}
+                            <b className="font-medium" style={{ color: "var(--text-main)" }}>View</b> can only open them.{" "}
+                            <b className="font-medium" style={{ color: "var(--text-main)" }}>No access</b> doesn&apos;t see them at all.
+                          </p>
+                          {roles.map((role) => {
+                            const roleKey = normalizeRoleKey(role.id || role.name);
+                            const alwaysEdit = roleKey === "owner" || roleKey === "admin";
+                            const level = alwaysEdit ? "edit" : calendarLevelFor(activeCalendarCategory, role);
+                            const noCalendar = !alwaysEdit && !hasPermissionKey(role.permissions, "calendar.view");
+                            return (
+                              <div key={role.id || role.name} className={`${listRowClass} flex-wrap`}>
+                                <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: role.color || "#7D99B3" }} />
+                                <div className="min-w-0 flex-1">
+                                  <p className="truncate text-[13.5px] font-medium" style={{ color: "var(--text-main)" }}>{toStr(role.name, "Untitled Role")}</p>
+                                  {noCalendar && level !== "none" ? (
+                                    <p className="text-[11.5px]" style={{ color: "var(--text-muted)" }}>Needs the Calendar permission to open the Calendar tab</p>
+                                  ) : null}
+                                </div>
+                                {alwaysEdit ? (
+                                  <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-medium" style={{ backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}>
+                                    <Lock size={12} /> Always edit
+                                  </span>
+                                ) : (
+                                  <Segmented<CalendarAccessLevel>
+                                    size="sm"
+                                    tone="brand"
+                                    value={level}
+                                    disabled={!canEditCompanySettings}
+                                    options={[
+                                      { value: "edit", label: "Edit" },
+                                      { value: "view", label: "View" },
+                                      { value: "none", label: "No access" },
+                                    ]}
+                                    onChange={(next) => setCalendarLevel(role, next)}
+                                  />
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div className="flex items-center justify-end gap-2 border-t px-4 py-3" style={{ borderColor: "var(--glass-border)" }}>
+                          <button type="button" onClick={() => setCalendarAccessIndex(null)} className={primaryButtonClass} style={primaryButtonStyle}>
+                            Done
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               )}
 

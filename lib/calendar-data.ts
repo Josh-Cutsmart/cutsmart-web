@@ -9,7 +9,14 @@
 import { collection, deleteDoc, doc, onSnapshot, query, setDoc, where } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 
-export type CalendarCategory = { id: string; name: string; color: string };
+// Per-category access, keyed by normalized role id (normalizeRoleKey). A role with no entry gets View;
+// owners and admins can always edit everything.
+export type CalendarAccessLevel = "edit" | "view" | "none";
+export type CalendarCategory = { id: string; name: string; color: string; access?: Record<string, CalendarAccessLevel> };
+
+export function isCalendarAccessLevel(value: unknown): value is CalendarAccessLevel {
+  return value === "edit" || value === "view" || value === "none";
+}
 
 export type CalendarEvent = {
   id: string;
@@ -58,7 +65,13 @@ export function normalizeCalendarCategories(raw: unknown): CalendarCategory[] {
       let id = String(row.id ?? "").trim() || name.toLowerCase().replace(/[^a-z0-9]+/g, "_");
       while (id && seen.has(id)) id = `${id}_2`;
       if (id) seen.add(id);
-      return { id, name, color: String(row.color ?? "").trim() || "#7D99B3" };
+      const access: Record<string, CalendarAccessLevel> = {};
+      if (row.access && typeof row.access === "object") {
+        for (const [roleKey, level] of Object.entries(row.access as Record<string, unknown>)) {
+          if (roleKey && isCalendarAccessLevel(level)) access[roleKey] = level;
+        }
+      }
+      return { id, name, color: String(row.color ?? "").trim() || "#7D99B3", ...(Object.keys(access).length ? { access } : {}) };
     })
     .filter((row) => row.id && row.name);
 }

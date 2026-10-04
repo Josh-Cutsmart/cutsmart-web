@@ -1,72 +1,74 @@
-Version: v0.4.7
+Version: v0.4.8
 
 whatsNew: [
+<u><b>Calendar</b></u>
+<ul>
+<li>New: a <b>Calendar</b> tab — a shared company calendar with Month, Week, Day and List views</li>
+<li>Click a day or time to add an event with a title, category, all-day or start/end times, location, notes and an optional linked project</li>
+<li>Drag events to move them, and drag the bottom edge of an event in Week/Day view to change its length</li>
+<li>Events that run over several days show as one continuous bar, and keep their full length while you drag them</li>
+<li>Every day in Month view is the same height and fills with as many events as fit, with a <b>+count</b> pill next to the date for the rest</li>
+<li>Events are listed top to bottom in the same order as the categories in Company Settings</li>
+<li>Clicking an event opens a view of just the event — coloured in its category — with an <b>Edit</b> button for people who can change it</li>
+<li>Each event shows who added it, with their emblem, in the bottom bar</li>
+<li>Show or hide categories from the filter list</li>
+<li>Days that aren't workdays are shown crossed out</li>
+<li>Desktop: Previous and Next slide to the next month (up/down) or the next week, day or list (left/right)</li>
+<li>Mobile: the calendar runs edge to edge in every view</li>
+<li>Mobile: swipe up and down to move between months — it locks onto each month, the next one is already loaded, and the greyed days either side fade over instead of showing twice</li>
+<li>Mobile: swiping in the calendar no longer opens the pull-down menu or the side drawers</li>
+<li>Mobile: the event pop-up no longer has a Close button, since the X is in the top corner</li>
+</ul>
+
+<u><b>Calendar Settings</b></u>
+<ul>
+<li>New: a <b>Calendar</b> tab in Company Settings</li>
+<li>Add, rename, colour and drag to reorder calendar categories</li>
+<li>Choose your <b>Workdays</b></li>
+<li>Click a category to choose, for each role, whether they can <b>Edit</b>, <b>View</b> or have <b>No access</b> to it — View is the default, and Owners and Admins can always edit</li>
+<li>New <b>Access Calendar Tab</b> permission for roles (staff get it by default)</li>
+</ul>
+
+<u><b>Company Settings</b></u>
+<ul>
+<li>Company Settings has been fully redesigned with the glass look — new dropdowns, fields, switches and pop-ups throughout</li>
+<li>Dragging rows to reorder them now lifts them the same way kanban cards do</li>
+<li><b>Currency</b>, <b>Measurement unit</b> and <b>Date format</b> now apply across the whole app — prices, lengths and dates</li>
+<li>Contact Categories and Recently Deleted have moved to the Dashboard tab</li>
+<li>Contact categories, sheet thicknesses and board finishes can now be dragged to reorder</li>
+<li>Board colour memory now shows a simple count in its pill</li>
+<li>Autoclash uses a three-way toggle and now has an <b>Off</b> option</li>
+<li>Bigger company logo and a round theme colour picker</li>
+<li>Smaller gap between the settings sidebar and the main sidebar</li>
+<li>Removed the time zone setting, the Quote Helpers card and the "Moved from Company" badges</li>
+</ul>
+
 <u><b>Contacts</b></u>
 <ul>
-<li>The <b>Clients</b> page is now <b>Contacts</b> — in the sidebar, the mobile nav and the staff permission labels — since it's no longer only for clients</li>
-<li>New: <b>Add Contact</b> lets you add your own contacts (name, email, phone, address, notes and a category). If the email, phone number or name matches someone already in your contacts — including people who came in through a project — it links to that same contact instead of creating a duplicate. A contact is visible to whoever created it, whoever it's assigned to, and anyone with the "view all" contacts permission</li>
-<li>New: <b>Contact Categories</b> in Company Settings → Company — Clients, Contractor and Supplier to start with, and you can add your own, rename them and give each one a colour. They save themselves a moment after you change them, so there's no Save button to remember</li>
-<li>Each contact now has an initials emblem in their category's colour beside their name in the list, and the list can be filtered by category from a new glass dropdown at the top (with a colour dot beside each category)</li>
-<li>Tapping a contact no longer opens a popup — the whole list slides away to reveal that contact's own page, and the Back button, your browser's Back or Escape slides you back. Refreshing keeps you on the contact, and coming back from one of their projects returns you to them</li>
-<li>Contact page on desktop: a glass banner across the top with their name in large text and a soft glow of their category colour, with <b>Edit</b> in the top right</li>
-<li>Contact page on mobile: a large initials badge glowing in their category colour. As you scroll it shrinks down into a pinned bar — the badge slides to the left, the name is revealed beside it and Edit shrinks to just a pencil. The colour carries down the whole page, and the containers are frosted glass that picks it up</li>
-<li>The category pill under the name is now a dropdown — tap it, in or out of Edit mode, to change the contact's category. The colour fades from the old category into the new one, and the change saves straight away (if a save ever fails it's rolled back and you're told)</li>
-<li>Mobile: <b>Call</b>, <b>Text</b> and <b>Email</b> buttons sit under the badge. If a contact has more than one number or email (for example different people on different projects) a glass menu asks which one — the person's name on the left, the number or email on the right</li>
-<li>Mobile: Phone, Email, Address and Notes each sit in their own container, with a call button on Phone, an email button on Email and a maps button on Address that opens your phone's default maps app</li>
-<li>Details now read as plain text until you press <b>Edit</b> (the button becomes <b>Done</b>), though Notes can always be typed into. While editing on mobile, Name and Category appear (they're otherwise already in the header), the cards that can't be edited step aside, and the boxes match the glass look of their containers</li>
-<li>New: <b>Archive</b> a contact — a big red button at the bottom of the contact, shown while editing — to remove them from the main list. They're kept rather than deleted, and adding someone who matches an archived contact brings them back</li>
-<li>Fixed: archiving a contact, or editing their details or category, did nothing for contacts that came from projects (including ones whose project is in Recently Deleted) — it now works for every contact</li>
-<li>Contacts now has a proper dark mode — the page used to stay white</li>
-<li>The contact page lists their Active Projects and Completed Projects, and tapping a project opens it</li>
-<li>Mobile: a small A–Z strip floats down the right edge of the list — slide a finger along it to jump straight to a letter</li>
-<li>Mobile: the top bar of the list is tidier — a + button, the category filter in the middle and a search that expands in place, with the search icon staying put when it opens</li>
+<li>Desktop: contacts now open in a panel that slides out from the right, with the same layout as mobile</li>
+<li>Desktop: clicking anywhere off the panel closes it, and clicking another contact switches to them</li>
+<li>Desktop: the Phone, Email, Address and Notes boxes in the panel are now full width</li>
+<li>Projects are now linked to their contact card, so changing a phone number or email no longer creates a duplicate contact</li>
+<li>When a project's client details differ from their contact card, you're asked whether to update the card</li>
+<li>Fixed contact card colours not updating, plus swipe back, hold to archive and the Edit button animation on mobile</li>
 </ul>
 
-<u><b>Machining & Nesting</b></u>
+<u><b>Projects</b></u>
 <ul>
-<li>New: the <b>Nesting Settings</b> tab in Company Settings is now <b>Machining</b> — a list of your physical machines (CNC, Table Saw, Edge Bander or Other) instead of one set of nesting numbers. Click <b>+ Add Machine</b>, pick a type, and it's named for you and opens straight into its own settings window; click any machine to reopen it, or the red X to delete it</li>
-<li>Each machine's window has Name, Model, Serial Number and Notes, a Maintenance Contact (name, phone, email) and a Servicing History log where you add dated entries of what was done. CNCs and Table Saws have their own Kerf, Margin and Minimum Piece Size; Edge Banders have their own edge tape rules (extra meters, excess per end and rounding)</li>
-<li>Mark one machine of each type as the <b>Default</b> — the first one you add of a type is made the default automatically. The first time a company opens Machining it's pre-filled with a CNC and an Edge Bander carrying over your existing nesting and edge banding numbers, so nothing starts blank</li>
-<li>The Edgebanding panel has moved out of the Production tab and into each Edge Bander's window, and edge tape totals in a project now follow your default Edge Bander. Sheet Height and Width are gone from the old nesting panel — sheet sizes come from each board's own entry in Materials & Board Types</li>
-<li>New: the Nesting view has a <b>Machine type</b> picker (a button in the full-screen top bar and in the info row above the sheets) listing your CNCs and Table Saws. Picking one switches nesting to that machine's kerf, margin and minimum piece size and updates the sheet counts in Board Settings. A CNC packs pieces tighter, tucking smaller pieces into leftover gaps, while a Table Saw keeps every cut a full straight line across the sheet</li>
-<li>Each project remembers the machine you picked on that device, starting on the default (or the first in the list). The picker only appears once at least one CNC or Table Saw exists — until then nesting keeps using the old company-wide settings</li>
+<li>Client Details now match the app's theme, without the contact category or its colour</li>
+<li>Phone, email and address in Client Details are now in black text</li>
+<li><b>Create Contact</b> opens a glass pop-up where you can fill in every field, including the category</li>
 </ul>
 
-<u><b>Quote & Specifications</b></u>
+<u><b>Dashboard & Leads</b></u>
 <ul>
-<li>New: the Quote and Specifications template builders have a <b>Split Line</b> toolbar button that drops a red "Bottom-mount split (page 1)" line into the sheet — everything below it lands flush with the bottom of printed page 1. Drag it between groups to move it, and "Remove Split Line" clears it. This replaces the old per-group "Anchor to bottom of first page" checkbox, and the builder's preview now shows the same bottom-pinned spacing a project's sheet does</li>
-<li>Importing from Quote now leaves out any Quote group that's been toggled off (hidden from print), instead of pulling its text into Specifications anyway</li>
-<li>Cells set to the "Default" font now render in Arial/Helvetica with the same line spacing as the PDF — in the builder, the project sheet and the Client Portal — instead of the app's own UI font, which looked (and wrapped) differently on Windows than on Mac/iPhone</li>
-<li>Fixed: a row could get stuck permanently too tall (for example a blank spacer row after its text was measured at the wrong moment) — rows now shrink back to fit once every cell confirms it needs less room</li>
-<li>Fixed: text and cell fill sometimes not lining up with a group's border while the Signature font was still loading — every cell now re-measures itself once fonts have loaded, including locked cells</li>
-<li>Fixed: if a project's Quote or Specifications sheet failed to load, the page sat on "Setting up this project's..." forever — it now shows a "Couldn't load" message with a <b>Try again</b> button</li>
-<li>Deleting a version from Version History now lets the confirmation shrink back into that row first, and only then removes the row, instead of pulling the row out from under the animation</li>
-</ul>
-
-<u><b>Production & Design</b></u>
-<ul>
-<li>Save & Back from Initial Measure and the Production Cutlist now only pops open the "what changed" summary if something in that cutlist was actually changed during the visit, instead of every time you leave</li>
-<li>The Order title bar, the activity strip and part-type header bar in Initial Measure and the Production Cutlist, and the CNC and Nesting title bars now use the same frosted-glass look as the rest of the app instead of a flat or solid white background</li>
-</ul>
-
-<u><b>Mobile</b></u>
-<ul>
-<li>Holding down a cell inside a linked Quote zone now opens an <b>Import from Quote</b> menu (same style as the Mark for Confirmation hold menu), replacing the floating Import button that used to hover over the sheet on phones</li>
-<li>The hold menus are larger and easier to tap, pop away when dismissed, and no longer show the text-selection magnifier, highlighted text or keyboard under your finger while you hold</li>
-<li>Selected cells now have a small drag handle on each edge so you can stretch a selection across more rows and columns with your finger, and holding a cell inside an already-highlighted range acts on the whole range instead of just that one cell</li>
-<li>Panning around a zoomed-in Quote or Specifications sheet with one finger no longer also opens the Version History or Sections drawer, or triggers the pull-down-to-switch-dashboard gesture; the Back button on those views also no longer risks popping open the side nav with a slightly sideways tap</li>
-<li>Improved the Quote/Specifications sheet preview on iPhone: a small gap between the formatting toolbar and the sheet, a grey backdrop that fills the whole screen down to the Actions bar, pinch-zoom and pan across the full height on a short page, no more flashing as the browser's address bar collapses, and tapping a cell no longer scrolls the preview to somewhere else</li>
-<li>Improved several iPhone-only alignment glitches on the sheet (and the Client Portal view of it): gaps between a tall merged cell's outline and its text, an oversized blank line between paragraphs, wrapped text spilling below a cell's border, and rows with merged cells rendering taller than set</li>
-<li>Holding down a version in Version History to delete it now keeps its confirmation open until you tap Cancel or Delete, instead of it vanishing when you lift your finger</li>
-<li>The buttons in the Actions sheet now slide up with a fade and a small bounce, staggered one after another, and sit slightly further apart so they never touch while moving</li>
-<li>The Colour and Edging suggestion dropdowns in Board Settings now follow the text box when the on-screen keyboard opens</li>
-<li>Fixed text on iPhone sometimes being drawn larger than designed (iOS auto-inflating font sizes), so it now matches desktop</li>
-<li>Changelog: tapping a version bar now pops its popup out of — and shrinks it back into — the whole bar, not just the version number inside it</li>
+<li>Mobile: swiping sideways between board columns works again from anywhere in a column</li>
+<li>Mobile: holding a dragged card at the edge of the screen scrolls the board to the next column</li>
 </ul>
 
 <u><b>App-Wide</b></u>
 <ul>
-<li>Fixed the small bounce on the button or tab a popup shrinks back into getting cut off at the edge of its container (for example the floating bottom bar) — it now wobbles freely</li>
-<li>New glass dropdown menus (the same frosted style as the dashboard's mobile filter) with colour dots, working from the keyboard and following the light and dark themes</li>
+<li>Fixed a second copy of the side menu sliding in when swiping it closed on iPhone</li>
+<li>The logo in the side menu now loads straight away instead of popping in</li>
 </ul>
 ]

@@ -1359,7 +1359,7 @@ export function AppShell({
     );
   }, [normalizedEffectivePermissions, roleForUi]);
 
-  // Calendar: role permission calendar.view (or calendar.edit, which implies seeing it).
+  // Calendar: role permission calendar.view (calendar.edit is dropped, but old roles carrying it still get in).
   const canAccessCalendar = useMemo(() => {
     const role = roleForUi;
     if (role === "owner" || role === "admin") return true;

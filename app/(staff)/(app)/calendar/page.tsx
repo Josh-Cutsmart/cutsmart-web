@@ -4,7 +4,8 @@
 // click a day (or a time in week/day view) to add an event; drag events to move them, drag an
 // event's bottom edge in week/day view to change its length. Events sync live between everyone
 // (lib/calendar-data.ts). Categories (with colours) are managed in Company Settings > Calendar and can
-// be shown/hidden here per person. Who can see / edit is the role's calendar.view / calendar.edit.
+// be shown/hidden here per person. Opening the tab needs calendar.view; who can edit / view / not see each
+// category is set per role on the category (Company Settings > Calendar).
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
@@ -13,6 +14,7 @@ import { CalendarDays, ChevronLeft, ChevronRight, Clock, ExternalLink, Filter, F
 import { useAuth } from "@/lib/auth-context";
 import { fetchCompanyDoc, fetchCompanyMembers, fetchProjects } from "@/lib/firestore-data";
 import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
+import { normalizeRoleKey } from "@/lib/company-roles";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { DragGhostLayer, useDragGhost } from "@/lib/use-drag-ghost";
 import { activeDate, useCompanyFormats } from "@/lib/company-formats";
@@ -24,6 +26,7 @@ import {
   DEFAULT_CALENDAR_WORKDAYS,
   saveCalendarEvent,
   subscribeCalendarEvents,
+  type CalendarAccessLevel,
   type CalendarCategory,
   type CalendarEvent,
 } from "@/lib/calendar-data";
@@ -108,6 +111,22 @@ function textOn(hex: string) {
   return lum > 0.68 ? "#0F172A" : "#FFFFFF";
 }
 // The visible range for a view (end exclusive).
+// The phone's month scroller: one continuous run of weeks covering the previous, current and next month
+// (each week appears once, so the days either side of a month never show twice). `starts` are the row
+// indexes of the week holding each month's 1st — the snap points, with 6 rows showing at a time.
+function mobileMonthWeeks(cursor: Date): { weeks: Date[]; starts: [number, number, number]; months: [Date, Date, Date] } {
+  const cur = startOfMonth(cursor);
+  const prev = startOfMonth(cursor);
+  prev.setMonth(prev.getMonth() - 1);
+  const next = startOfMonth(cursor);
+  next.setMonth(next.getMonth() + 1);
+  const first = startOfWeek(prev);
+  const rowOf = (m: Date) => Math.round((startOfWeek(m).getTime() - first.getTime()) / (7 * DAY_MS));
+  const starts: [number, number, number] = [0, rowOf(cur), rowOf(next)];
+  const weeks = Array.from({ length: starts[2] + 6 }, (_, i) => addDays(first, i * 7));
+  return { weeks, starts, months: [prev, cur, next] };
+}
+
 function viewRange(view: CalendarView, cursor: Date): { from: Date; to: Date } {
   if (view === "month") {
     // The month plus the ones either side, so swiping to the next/previous month (mobile) shows its
@@ -165,31 +184,58 @@ function isBarEvent(e: CalendarEvent) {
   return e.allDay || startOfDay(e.startMs).getTime() !== startOfDay(e.endMs - 1).getTime();
 }
 type BarSlot = { event: CalendarEvent; startCol: number; endCol: number; lane: number; contBefore: boolean; contAfter: boolean };
-// Lays the bar events of one row of `cols` days (starting rowStart) into stacked lanes.
-function layoutBars(rowStart: Date, cols: number, evs: CalendarEvent[]): { bars: BarSlot[]; lanes: number } {
+// Lays the events of one row of `cols` days (starting rowStart) into stacked lanes, top to bottom in
+// category order (rank = the category's position in Company Settings). Each event takes the highest lane
+// free across all its days, so on any one day an event never sits above one from an earlier category.
+// withSingleDay: also lay out single-day timed events (month view); otherwise just the bar events.
+function layoutBars(
+  rowStart: Date,
+  cols: number,
+  evs: CalendarEvent[],
+  rank: (e: CalendarEvent) => number,
+  withSingleDay = false,
+): { bars: BarSlot[]; lanes: number } {
   const rowStartMs = startOfDay(rowStart).getTime();
   const col = (ms: number) => Math.round((startOfDay(ms).getTime() - rowStartMs) / DAY_MS);
   const items = evs
-    .filter(isBarEvent)
+    .filter((e) => withSingleDay || isBarEvent(e))
     .map((event) => {
       const first = col(event.startMs);
-      const last = col(event.endMs - 1);
+      const last = isBarEvent(event) ? col(event.endMs - 1) : first;
       return { event, first, last, startCol: Math.max(0, first), endCol: Math.min(cols - 1, last) };
     })
     .filter((it) => it.endCol >= 0 && it.startCol <= cols - 1)
-    .sort((a, b) => a.startCol - b.startCol || b.endCol - b.startCol - (a.endCol - a.startCol) || a.event.startMs - b.event.startMs);
-  const laneEnds: number[] = [];
+    .sort(
+      (a, b) =>
+        rank(a.event) - rank(b.event) ||
+        a.startCol - b.startCol ||
+        Number(isBarEvent(b.event)) - Number(isBarEvent(a.event)) ||
+        b.endCol - b.startCol - (a.endCol - a.startCol) ||
+        a.event.startMs - b.event.startMs,
+    );
+  const taken: boolean[][] = [];
   const bars: BarSlot[] = items.map((it) => {
-    let lane = laneEnds.findIndex((end) => end < it.startCol);
-    if (lane < 0) lane = laneEnds.length;
-    laneEnds[lane] = it.endCol;
+    let lane = 0;
+    const free = (l: number) => {
+      for (let c = it.startCol; c <= it.endCol; c++) if (taken[l]?.[c]) return false;
+      return true;
+    };
+    while (!free(lane)) lane++;
+    taken[lane] = taken[lane] ?? [];
+    for (let c = it.startCol; c <= it.endCol; c++) taken[lane][c] = true;
     return { event: it.event, startCol: it.startCol, endCol: it.endCol, lane, contBefore: it.first < 0, contAfter: it.last > cols - 1 };
   });
-  return { bars, lanes: laneEnds.length };
+  return { bars, lanes: taken.length };
 }
 // One event "slot" in a month day: an 18px event plus a 2px gap.
 const BAR_H = 20;
 const PREVIEW_SUFFIX = "__preview";
+
+// The next half-hour mark from now — where "New event" starts.
+function nextHalfHourMs(): number {
+  const now = Date.now();
+  return now - (now % (30 * 60000)) + 30 * 60000;
+}
 
 // e.g. "Monday 6 Oct 2026 · 9:00am – 10:30am", "Mon 6 Oct – Wed 8 Oct 2026 · All day".
 function eventWhenText(e: CalendarEvent, fmtDate: (d: Date) => string): { primary: string; secondary: string } {
@@ -297,8 +343,10 @@ export default function CalendarPage() {
   const access = useCompanyAccess();
   useCompanyFormats();
   const companyId = access.companyId;
-  const canEdit = access.status === "ready" && (isOwnerOrAdmin(access.role) || hasPermissionKey(access.permissionKeys, "calendar.edit"));
-  const canView = access.status === "ready" && (canEdit || hasPermissionKey(access.permissionKeys, "calendar.view"));
+  // calendar.edit is a dropped permission; old roles that still carry it can open the tab.
+  const canView =
+    access.status === "ready" &&
+    (isOwnerOrAdmin(access.role) || hasPermissionKey(access.permissionKeys, "calendar.view") || hasPermissionKey(access.permissionKeys, "calendar.edit"));
 
   const [view, setView] = useState<CalendarView>("month");
   const [cursor, setCursor] = useState<Date>(() => startOfDay(new Date()));
@@ -391,15 +439,36 @@ export default function CalendarPage() {
 
   const categoryById = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
   const categoryOf = useCallback((e: CalendarEvent) => categoryById.get(e.categoryId) ?? UNCATEGORISED, [categoryById]);
+  // Per-category access (Company Settings > Calendar > a category > Access). Owners/admins always edit;
+  // otherwise the category's setting for this role, or View when it hasn't been set.
+  const isAdmin = access.status === "ready" && isOwnerOrAdmin(access.role);
+  const roleKey = normalizeRoleKey(access.roleId || access.role);
+  const levelOf = useCallback(
+    (categoryId: string): CalendarAccessLevel => {
+      if (isAdmin) return "edit";
+      const category = categoryById.get(categoryId);
+      if (category) return category.access?.[roleKey] ?? (canView ? "view" : "none");
+      // Category deleted since: only owners/admins (handled above) can change these.
+      return canView ? "view" : "none";
+    },
+    [canView, categoryById, isAdmin, roleKey],
+  );
+  const canEditEvent = (event: { categoryId: string }) => levelOf(event.categoryId) === "edit";
+  const editableCategories = categories.filter((cat) => levelOf(cat.id) === "edit");
+  // Can add events at all: there's a category they can edit (or no categories, with the edit permission).
+  const canCreate = isAdmin || editableCategories.length > 0;
+  // Events run top to bottom in the order the categories are listed in Company Settings > Calendar.
+  const categoryRank = useMemo(() => new Map(categories.map((c, i) => [c.id, i])), [categories]);
+  const rankOf = useCallback((e: CalendarEvent) => categoryRank.get(e.categoryId) ?? categories.length, [categories.length, categoryRank]);
   // Live preview while dragging in week/day view.
   const [dragPreview, setDragPreview] = useState<{ id: string; startMs: number; endMs: number } | null>(null);
   const visibleEvents = useMemo(
     () =>
       events
-        .filter((e) => !hidden.has(categoryOf(e).id))
+        .filter((e) => !hidden.has(categoryOf(e).id) && levelOf(e.categoryId) !== "none")
         .map((e) => (dragPreview && dragPreview.id === e.id ? { ...e, startMs: dragPreview.startMs, endMs: dragPreview.endMs } : e))
-        .sort((a, b) => Number(b.allDay) - Number(a.allDay) || a.startMs - b.startMs || b.endMs - a.endMs),
-    [categoryOf, dragPreview, events, hidden],
+        .sort((a, b) => rankOf(a) - rankOf(b) || Number(b.allDay) - Number(a.allDay) || a.startMs - b.startMs || b.endMs - a.endMs),
+    [categoryOf, dragPreview, events, hidden, levelOf, rankOf],
   );
 
   // ---------------------------------------------------------------- event pop-up
@@ -417,7 +486,7 @@ export default function CalendarPage() {
   const [eventMode, setEventMode] = useState<"view" | "edit">("edit");
 
   const openNew = (startMs: number, allDay: boolean, e?: ReactMouseEvent<HTMLElement> | ReactPointerEvent<HTMLElement>) => {
-    if (!canEdit) return;
+    if (!canCreate) return;
     const endMs = allDay ? startMs : startMs + 60 * 60 * 1000;
     setModalOrigin(e ? captureGlassModalOrigin(e as ReactMouseEvent<HTMLElement>) : null);
     setModalError("");
@@ -428,7 +497,7 @@ export default function CalendarPage() {
       id: newCalendarId("evt"),
       isNew: true,
       title: "",
-      categoryId: categories.find((c) => !hidden.has(c.id))?.id ?? categories[0]?.id ?? "",
+      categoryId: editableCategories.find((c) => !hidden.has(c.id))?.id ?? editableCategories[0]?.id ?? "",
       allDay,
       startDate: toDateInput(startMs),
       startTime: toTimeInput(startMs),
@@ -456,7 +525,7 @@ export default function CalendarPage() {
   };
   const closeModal = () => setDraft(null);
   const submitDraft = async () => {
-    if (!draft || !companyId || !canEdit) return;
+    if (!draft || !companyId || !canEditEvent(draft)) return;
     const event = eventFromDraft(draft);
     if (!event) {
       setModalError("Check the dates and times.");
@@ -473,7 +542,7 @@ export default function CalendarPage() {
     closeModal();
   };
   const removeDraft = async () => {
-    if (!draft || !companyId || !canEdit) return;
+    if (!draft || !companyId || !canEditEvent(draft)) return;
     if (!confirmDelete) {
       setConfirmDelete(true);
       return;
@@ -498,14 +567,62 @@ export default function CalendarPage() {
 
   // Moving an event to new times (drag in any view).
   const moveEvent = async (event: CalendarEvent, startMs: number, endMs: number) => {
-    if (!companyId || !canEdit) return;
+    if (!companyId || !canEditEvent(event)) return;
     setEvents((prev) => prev.map((e) => (e.id === event.id ? { ...e, startMs, endMs } : e)));
     const result = await saveCalendarEvent(companyId, { ...event, startMs, endMs });
     if (!result.ok) setLoadError("Couldn't move that event — try again.");
   };
 
   // ---------------------------------------------------------------- navigation
+  // Desktop: Previous / Next slide the view — month up/down, week/day/list left/right. The outgoing view
+  // is a static copy of the current DOM that slides out while the new one slides in (see the effect below).
+  const viewWrapRef = useRef<HTMLDivElement | null>(null);
+  const pendingSlideRef = useRef<{ ghost: HTMLElement; axis: "x" | "y"; dir: -1 | 1 } | null>(null);
+  const beginSlide = (dir: -1 | 1) => {
+    const wrap = viewWrapRef.current;
+    if (!wrap || window.matchMedia("(max-width: 767px), (prefers-reduced-motion: reduce)").matches) return;
+    wrap.querySelectorAll("[data-cal-slide-ghost]").forEach((el) => el.remove());
+    const live = wrap.firstElementChild as HTMLElement | null;
+    if (!live) return;
+    const ghost = live.cloneNode(true) as HTMLElement;
+    // Keep inner scroll positions (e.g. the week grid scrolled to the morning).
+    const from = live.querySelectorAll<HTMLElement>("*");
+    const to = ghost.querySelectorAll<HTMLElement>("*");
+    from.forEach((el, i) => {
+      if (el.scrollTop > 0 && to[i]) to[i].dataset.calScrollTop = String(el.scrollTop);
+    });
+    ghost.dataset.calSlideGhost = "true";
+    ghost.setAttribute("aria-hidden", "true");
+    ghost.removeAttribute("id");
+    Object.assign(ghost.style, { position: "absolute", top: "0", left: "0", width: `${live.offsetWidth}px`, height: `${live.offsetHeight}px`, pointerEvents: "none" });
+    wrap.appendChild(ghost);
+    ghost.querySelectorAll<HTMLElement>("[data-cal-scroll-top]").forEach((el) => (el.scrollTop = Number(el.dataset.calScrollTop)));
+    pendingSlideRef.current = { ghost, axis: view === "month" ? "y" : "x", dir };
+  };
+  useLayoutEffect(() => {
+    const slide = pendingSlideRef.current;
+    if (!slide) return;
+    pendingSlideRef.current = null;
+    const wrap = viewWrapRef.current;
+    const live = wrap?.firstElementChild as HTMLElement | null;
+    if (!wrap || !live || live === slide.ghost) {
+      slide.ghost.remove();
+      return;
+    }
+    const dist = (slide.axis === "y" ? wrap.clientHeight : wrap.clientWidth) + 18;
+    const move = (v: number) => (slide.axis === "y" ? `translateY(${v}px)` : `translateX(${v}px)`);
+    const timing = { duration: 420, easing: "cubic-bezier(0.22, 0.8, 0.24, 1)" };
+    wrap.style.overflow = "hidden";
+    live.animate([{ transform: move(dist * slide.dir) }, { transform: move(0) }], timing);
+    const out = slide.ghost.animate([{ transform: move(0) }, { transform: move(-dist * slide.dir) }], { ...timing, fill: "forwards" });
+    out.onfinish = () => {
+      slide.ghost.remove();
+      if (!wrap.querySelector("[data-cal-slide-ghost]")) wrap.style.overflow = "";
+    };
+  }, [cursor]);
+
   const step = (dir: -1 | 1) => {
+    beginSlide(dir);
     setCursor((prev) => {
       if (view === "month") {
         const x = startOfMonth(prev);
@@ -600,23 +717,28 @@ export default function CalendarPage() {
   };
 
   // A single-day timed event in a month cell: coloured dot, time, title.
-  const renderChip = (event: CalendarEvent, day: Date) => {
+  // `place` positions it in a week row's lanes overlay (month view); it then passes drops to its day.
+  const renderChip = (event: CalendarEvent, day: Date, place?: CSSProperties) => {
     const cat = categoryOf(event);
     const chipId = `cal_chip_${event.id}_${startOfDay(day).getTime()}`;
+    const drop = dayDropProps(startOfDay(day).getTime());
     return (
       <button
         key={chipId}
         id={chipId}
         type="button"
-        draggable={canEdit}
+        draggable={canEditEvent(event)}
         onDragStart={(e) => beginDayDrag(e, event, chipId, event.startMs)}
         onDragEnd={endDayDrag}
+        onDragOver={place ? drop.onDragOver : undefined}
+        onDrop={place ? drop.onDrop : undefined}
         onClick={(e) => {
           e.stopPropagation();
           openExisting(event, e);
         }}
-        className="flex h-[18px] w-full min-w-0 shrink-0 items-center gap-1.5 truncate rounded-[6px] px-1.5 text-left text-[10.5px] font-normal transition hover:bg-[color-mix(in_srgb,var(--text-main)_6%,transparent)]"
+        className={`flex h-[18px] min-w-0 shrink-0 items-center gap-1.5 truncate rounded-[6px] px-1.5 text-left text-[10.5px] font-normal transition hover:bg-[color-mix(in_srgb,var(--text-main)_6%,transparent)] ${place ? "pointer-events-auto absolute" : "w-full"}`}
         style={{
+          ...place,
           color: "var(--text-main)",
           opacity: monthDragId === event.id ? 0.35 : 1,
           pointerEvents: event.id.endsWith(PREVIEW_SUFFIX) ? "none" : undefined,
@@ -637,6 +759,14 @@ export default function CalendarPage() {
     bars
       .filter((b) => b.lane < maxLanes)
       .map((b) => {
+        if (!isBarEvent(b.event)) {
+          return renderChip(b.event, addDays(rowStart, b.startCol), {
+            top: b.lane * BAR_H,
+            left: `calc(${(b.startCol / cols) * 100}% + 2px)`,
+            width: `calc(${(1 / cols) * 100}% - 4px)`,
+            zIndex: b.event.id.endsWith(PREVIEW_SUFFIX) ? 5 : undefined,
+          });
+        }
         const cat = categoryOf(b.event);
         const barId = `cal_bar_${b.event.id}_${startOfDay(rowStart).getTime()}`;
         const span = b.endCol - b.startCol + 1;
@@ -645,7 +775,7 @@ export default function CalendarPage() {
             key={barId}
             id={barId}
             type="button"
-            draggable={canEdit}
+            draggable={canEditEvent(b.event)}
             onDragStart={(e) => {
               // Which day of the bar was grabbed: from the pointer's position across the row.
               const row = (e.currentTarget as HTMLElement).parentElement?.getBoundingClientRect();
@@ -704,94 +834,87 @@ export default function CalendarPage() {
   const DAY_HEADER_PX = 30;
   const slotsPerDay = Math.max(1, Math.floor((monthRowsHeight / 6 - DAY_HEADER_PX - 2) / BAR_H));
 
-  const monthGrid = (monthDate: Date) => {
-    const firstWeek = startOfWeek(startOfMonth(monthDate));
-    const weeks = Array.from({ length: 6 }, (_, w) => addDays(firstWeek, w * 7));
-    const month = monthDate.getMonth();
+  // One week of the month view. `month` is the month being shown — days outside it are greyed (they fade
+  // as that changes). `place` sizes/snaps the row when it's in the phone's continuous week scroller.
+  const weekRow = (weekStart: Date, month: number, place?: { className?: string; style?: CSSProperties }) => {
     const S = slotsPerDay;
+    const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
+    // Every event (bars and single-day chips) in category-ordered lanes.
+    const { bars, lanes } = layoutBars(weekStart, 7, dayLayoutEvents, rankOf, true);
+    // Lanes shown in this row — every slot can hold an event, since the "+N" count sits up in the
+    // day's header rather than taking a slot.
+    const L = Math.min(lanes, S);
     return (
-      <div className="grid h-full grid-rows-6">
-        {weeks.map((weekStart) => {
-          const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
-          const { bars, lanes } = layoutBars(weekStart, 7, dayLayoutEvents);
-          const lanesCovering = (col: number, limit: number) =>
-            Math.max(0, ...bars.filter((b) => b.lane < limit && b.startCol <= col && b.endCol >= col).map((b) => b.lane + 1));
-          const chipsFor = (d: Date) => dayLayoutEvents.filter((e) => !isBarEvent(e) && overlapsDay(e, d));
-          // Bar lanes shown in this row — every slot can hold an event, since the "+N" count sits up in the
-          // day's header rather than taking a slot.
-          const L = Math.min(lanes, S);
+      <div
+        key={weekStart.getTime()}
+        className={`relative grid min-h-0 grid-cols-7 overflow-hidden border-b ${place ? place.className ?? "" : "last:border-b-0"}`}
+        style={{ borderColor: "var(--glass-border)", ...place?.style }}
+      >
+        {days.map((dd, col) => {
+          const dayMs = dd.getTime();
+          const isToday = sameDay(dd, today);
+          const inMonth = dd.getMonth() === month;
+          const more = bars.filter((b) => b.lane >= L && b.startCol <= col && b.endCol >= col).length;
           return (
-            <div key={weekStart.getTime()} className="relative grid min-h-0 grid-cols-7 overflow-hidden border-b last:border-b-0" style={{ borderColor: "var(--glass-border)" }}>
-              {days.map((dd, col) => {
-                const dayMs = dd.getTime();
-                const isToday = sameDay(dd, today);
-                const inMonth = dd.getMonth() === month;
-                const lanesHere = lanesCovering(col, L);
-                const hiddenBars = bars.filter((b) => b.lane >= L && b.startCol <= col && b.endCol >= col).length;
-                const chips = chipsFor(dd);
-                const room = Math.max(0, S - lanesHere);
-                const shownChips = chips.slice(0, room);
-                const more = chips.length - shownChips.length + hiddenBars;
-                return (
-                  <div
-                    key={dayMs}
-                    onClick={(e) => openNew(dayMs, true, e)}
-                    {...dayDropProps(dayMs)}
-                    className={`group relative flex min-h-0 min-w-0 flex-col gap-0.5 overflow-hidden border-r p-1 transition-colors [&:nth-child(7)]:border-r-0 ${canEdit ? "cursor-pointer hover:bg-[color-mix(in_srgb,var(--text-main)_3%,transparent)]" : ""}`}
-                    style={{
-                      borderColor: "var(--glass-border)",
-                      backgroundColor: monthDropDay === dayMs ? "var(--brand-soft)" : inMonth ? undefined : "color-mix(in srgb, var(--text-main) 2.5%, transparent)",
-                      backgroundImage: isOffDay(dd) && monthDropDay !== dayMs ? offDayHatch : undefined,
+            <div
+              key={dayMs}
+              onClick={(e) => openNew(dayMs, true, e)}
+              {...dayDropProps(dayMs)}
+              className={`group relative flex min-h-0 min-w-0 flex-col gap-0.5 overflow-hidden border-r p-1 transition-colors duration-300 [&:nth-child(7)]:border-r-0 ${canCreate ? "cursor-pointer hover:bg-[color-mix(in_srgb,var(--text-main)_3%,transparent)]" : ""}`}
+              style={{
+                borderColor: "var(--glass-border)",
+                backgroundColor: monthDropDay === dayMs ? "var(--brand-soft)" : inMonth ? undefined : "color-mix(in srgb, var(--text-main) 2.5%, transparent)",
+                backgroundImage: isOffDay(dd) && monthDropDay !== dayMs ? offDayHatch : undefined,
+              }}
+            >
+              <div className="flex h-6 shrink-0 items-center justify-between px-0.5">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setCursor(startOfDay(dd));
+                    changeView("day");
+                  }}
+                  className="inline-flex h-6 min-w-6 items-center justify-center rounded-full px-1 text-[12px] font-semibold transition duration-300 hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)]"
+                  style={isToday ? { backgroundImage: "var(--brand-gradient)", color: "#fff" } : { color: inMonth ? "var(--text-main)" : "var(--text-muted)" }}
+                  title="Open this day"
+                >
+                  {dd.getDate()}
+                </button>
+                {more > 0 ? (
+                  // Events that don't fit: the count, in a pill at the right of the day's header. Opens the day.
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setCursor(startOfDay(dd));
+                      changeView("day");
                     }}
+                    className="inline-flex h-[18px] shrink-0 items-center rounded-full px-1.5 text-[10.5px] font-semibold transition hover:brightness-95"
+                    style={{ backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+                    title={`${more} more event${more === 1 ? "" : "s"} — open this day`}
                   >
-                    <div className="flex h-6 shrink-0 items-center justify-between px-0.5">
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setCursor(startOfDay(dd));
-                          changeView("day");
-                        }}
-                        className="inline-flex h-6 min-w-6 items-center justify-center rounded-full px-1 text-[12px] font-semibold transition hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)]"
-                        style={isToday ? { backgroundImage: "var(--brand-gradient)", color: "#fff" } : { color: inMonth ? "var(--text-main)" : "var(--text-muted)" }}
-                        title="Open this day"
-                      >
-                        {dd.getDate()}
-                      </button>
-                      {more > 0 ? (
-                        // Events that don't fit: the count, in a pill at the right of the day's header. Opens the day.
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setCursor(startOfDay(dd));
-                            changeView("day");
-                          }}
-                          className="inline-flex h-[18px] shrink-0 items-center rounded-full px-1.5 text-[10.5px] font-semibold transition hover:brightness-95"
-                          style={{ backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
-                          title={`${more} more event${more === 1 ? "" : "s"} — open this day`}
-                        >
-                          +{more}
-                        </button>
-                      ) : canEdit ? (
-                        <Plus size={13} className="opacity-0 transition group-hover:opacity-60" style={{ color: "var(--text-muted)" }} />
-                      ) : null}
-                    </div>
-                    {/* Room for the bars on this day (drawn across the week below), then the timed events. */}
-                    {lanesHere > 0 ? <div className="shrink-0" style={{ height: lanesHere * BAR_H - 2 }} /> : null}
-                    {shownChips.map((e) => renderChip(e, dd))}
-                  </div>
-                );
-              })}
-              {/* The week's continuous bars, positioned under the day numbers. */}
-              <div className="pointer-events-none absolute inset-x-0" style={{ top: DAY_HEADER_PX, height: L * BAR_H }}>
-                {renderBars(bars, weekStart, 7, L)}
+                    +{more}
+                  </button>
+                ) : canCreate ? (
+                  <Plus size={13} className="opacity-0 transition group-hover:opacity-60" style={{ color: "var(--text-muted)" }} />
+                ) : null}
               </div>
             </div>
           );
         })}
+        {/* The week's events (continuous bars and single-day chips), positioned under the day numbers. */}
+        <div className="pointer-events-none absolute inset-x-0" style={{ top: DAY_HEADER_PX, height: L * BAR_H }}>
+          {renderBars(bars, weekStart, 7, L)}
+        </div>
       </div>
     );
+  };
+
+  const monthGrid = (monthDate: Date) => {
+    const firstWeek = startOfWeek(startOfMonth(monthDate));
+    const weeks = Array.from({ length: 6 }, (_, w) => addDays(firstWeek, w * 7));
+    return <div className="grid h-full grid-rows-6">{weeks.map((weekStart) => weekRow(weekStart, monthDate.getMonth()))}</div>;
   };
 
   // ---- Mobile: swipe up/down between months. Three months are rendered stacked (previous, current,
@@ -808,18 +931,30 @@ export default function CalendarPage() {
   }, []);
   const monthScrollerRef = useRef<HTMLDivElement | null>(null);
   const monthSettleTimerRef = useRef<number | null>(null);
-  const centreMonthScroller = useCallback(() => {
-    const el = monthScrollerRef.current;
-    if (el) el.scrollTop = el.clientHeight;
-  }, []);
+  // Which of the three months (0 prev, 1 current, 2 next) the scroller is nearest to while swiping, so
+  // the greyed days fade over to the month coming into view.
+  const [liveMonthIdx, setLiveMonthIdx] = useState(1);
+  // Nearest month snap point to the scroller's position.
+  const nearestMonthIdx = (el: HTMLDivElement) => {
+    const rowH = el.clientHeight / 6;
+    const { starts } = mobileMonthWeeks(cursor);
+    let best = 0;
+    starts.forEach((row, i) => {
+      if (Math.abs(el.scrollTop - row * rowH) < Math.abs(el.scrollTop - starts[best] * rowH)) best = i;
+    });
+    return best;
+  };
   useLayoutEffect(() => {
-    if (view === "month" && isMobile) centreMonthScroller();
-  }, [centreMonthScroller, cursor, isMobile, monthRowsHeight, view]);
+    if (view !== "month" || !isMobile) return;
+    const el = monthScrollerRef.current;
+    if (el) el.scrollTop = (mobileMonthWeeks(cursor).starts[1] * el.clientHeight) / 6;
+  }, [cursor, isMobile, monthRowsHeight, view]);
   const settleMonthScroller = () => {
     const el = monthScrollerRef.current;
     if (!el || !el.clientHeight) return;
-    const idx = Math.round(el.scrollTop / el.clientHeight);
+    const idx = nearestMonthIdx(el);
     if (idx === 1) return;
+    setLiveMonthIdx(1);
     setCursor((prev) => {
       const next = startOfMonth(prev);
       next.setMonth(next.getMonth() + (idx === 0 ? -1 : 1));
@@ -827,6 +962,11 @@ export default function CalendarPage() {
     });
   };
   const onMonthScroll = () => {
+    const el = monthScrollerRef.current;
+    if (el && el.clientHeight) {
+      const idx = nearestMonthIdx(el);
+      if (idx !== liveMonthIdx) setLiveMonthIdx(idx);
+    }
     if (monthSettleTimerRef.current) window.clearTimeout(monthSettleTimerRef.current);
     monthSettleTimerRef.current = window.setTimeout(settleMonthScroller, 110);
   };
@@ -841,6 +981,10 @@ export default function CalendarPage() {
     return () => el.removeEventListener("scrollend", onEnd);
   });
 
+  // Phones: views run edge to edge (no floating card), like the month view. Desktop: the glass card.
+  const viewShell = isMobile
+    ? { className: "-mx-3 border-y", style: { borderColor: "var(--glass-border)", backgroundColor: "var(--glass-bg-strong)" } as CSSProperties }
+    : { className: "rounded-[20px] border", style: cardStyle };
   const weekdayHeader = (
     <div className="grid shrink-0 grid-cols-7 border-b" style={{ borderColor: "var(--glass-border)" }}>
       {Array.from({ length: 7 }, (_, i) => addDays(startOfWeek(cursor), i)).map((day) => (
@@ -853,10 +997,8 @@ export default function CalendarPage() {
 
   const monthView = () => {
     if (isMobile) {
-      const prev = startOfMonth(cursor);
-      prev.setMonth(prev.getMonth() - 1);
-      const next = startOfMonth(cursor);
-      next.setMonth(next.getMonth() + 1);
+      const { weeks, starts, months } = mobileMonthWeeks(cursor);
+      const shownMonth = months[liveMonthIdx].getMonth();
       // Edge to edge on a phone: no floating card, it spans the full width.
       return (
         <div className="-mx-3 flex flex-col border-y" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-bg-strong)" }}>
@@ -870,11 +1012,12 @@ export default function CalendarPage() {
             className="snap-y snap-mandatory overflow-y-auto overscroll-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
             style={{ height: "calc(100svh - 168px - env(safe-area-inset-bottom, 0px))" }}
           >
-            {[prev, startOfMonth(cursor), next].map((m) => (
-              <div key={m.getTime()} className="h-full snap-start [scroll-snap-stop:always]">
-                {monthGrid(m)}
-              </div>
-            ))}
+            {weeks.map((weekStart, i) =>
+              weekRow(weekStart, shownMonth, {
+                className: starts.includes(i) ? "snap-start [scroll-snap-stop:always]" : "",
+                style: { height: "calc(100% / 6)" },
+              }),
+            )}
           </div>
         </div>
       );
@@ -906,7 +1049,7 @@ export default function CalendarPage() {
 
   const onEventPointerDown = (e: ReactPointerEvent<HTMLElement>, event: CalendarEvent, mode: "move" | "resize") => {
     e.stopPropagation();
-    if (!canEdit || e.button !== 0) return;
+    if (!canEditEvent(event) || e.button !== 0) return;
     const cols = columnsRef.current;
     const colCount = view === "week" ? 7 : 1;
     pointerDragRef.current = {
@@ -958,10 +1101,10 @@ export default function CalendarPage() {
     const days = Array.from({ length: dayCount }, (_, i) => addDays(range.from, i));
     const gridCols = { gridTemplateColumns: `repeat(${dayCount}, minmax(0, 1fr))` };
     return (
-      <div className="flex min-h-0 flex-col overflow-hidden rounded-[20px] border" style={cardStyle}>
+      <div className={`flex min-h-0 flex-col overflow-hidden ${viewShell.className}`} style={viewShell.style}>
         {/* Day headers, then the all-day row (all-day and multi-day events as continuous bars). */}
         {(() => {
-          const { bars, lanes } = layoutBars(range.from, dayCount, dayLayoutEvents);
+          const { bars, lanes } = layoutBars(range.from, dayCount, dayLayoutEvents, rankOf);
           return (
             <div className="border-b" style={{ borderColor: "var(--glass-border)" }}>
               <div className="flex">
@@ -1000,13 +1143,13 @@ export default function CalendarPage() {
                       key={d.getTime()}
                       onClick={(e) => openNew(d.getTime(), true, e)}
                       {...dayDropProps(d.getTime())}
-                      className={`border-l first:border-l-0 ${canEdit ? "cursor-pointer hover:bg-[color-mix(in_srgb,var(--text-main)_3%,transparent)]" : ""}`}
+                      className={`border-l first:border-l-0 ${canCreate ? "cursor-pointer hover:bg-[color-mix(in_srgb,var(--text-main)_3%,transparent)]" : ""}`}
                       style={{
                         borderColor: "var(--glass-border)",
                         backgroundColor: monthDropDay === d.getTime() ? "var(--brand-soft)" : undefined,
                         backgroundImage: isOffDay(d) && monthDropDay !== d.getTime() ? offDayHatch : undefined,
                       }}
-                      title={canEdit ? "Add an all-day event" : undefined}
+                      title={canCreate ? "Add an all-day event" : undefined}
                     />
                   ))}
                   <div className="pointer-events-none absolute inset-x-0" style={{ top: 3, height: lanes * BAR_H }}>
@@ -1040,7 +1183,7 @@ export default function CalendarPage() {
                 return (
                   <div
                     key={dayStart}
-                    className={`relative border-l first:border-l-0 ${canEdit ? "cursor-pointer" : ""}`}
+                    className={`relative border-l first:border-l-0 ${canCreate ? "cursor-pointer" : ""}`}
                     style={{
                       borderColor: "var(--glass-border)",
                       backgroundImage: [
@@ -1076,12 +1219,12 @@ export default function CalendarPage() {
                             // Editors open the event from pointer-up (so a drag doesn't also open it);
                             // view-only users just click.
                             e.stopPropagation();
-                            if (!canEdit) openExisting(event, e);
+                            if (!canEditEvent(event)) openExisting(event, e);
                           }}
                           onKeyDown={(e) => {
                             if (e.key === "Enter") openExisting(event);
                           }}
-                          className={`absolute z-[2] overflow-hidden rounded-[8px] px-1.5 py-1 text-left text-[11.5px] leading-tight shadow-[0_2px_8px_rgba(15,23,42,0.12)] ${canEdit ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"}`}
+                          className={`absolute z-[2] overflow-hidden rounded-[8px] px-1.5 py-1 text-left text-[11.5px] leading-tight shadow-[0_2px_8px_rgba(15,23,42,0.12)] ${canEditEvent(event) ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"}`}
                           style={{
                             top,
                             height,
@@ -1101,7 +1244,7 @@ export default function CalendarPage() {
                             </p>
                           ) : null}
                           {height > 46 && event.location ? <p className="truncate opacity-80">{event.location}</p> : null}
-                          {canEdit ? (
+                          {canEditEvent(event) ? (
                             <span
                               onPointerDown={(e) => onEventPointerDown(e, event, "resize")}
                               className="absolute inset-x-0 bottom-0 h-2 cursor-ns-resize"
@@ -1128,7 +1271,7 @@ export default function CalendarPage() {
       .map((d) => ({ day: d, items: visibleEvents.filter((e) => overlapsDay(e, d)) }))
       .filter((g) => g.items.length);
     return (
-      <div className="overflow-hidden rounded-[20px] border" style={cardStyle}>
+      <div className={`overflow-hidden ${viewShell.className}`} style={viewShell.style}>
         {groups.length === 0 ? (
           <p className="px-5 py-10 text-center text-[13px]" style={{ color: "var(--text-muted)" }}>
             No events in the next {LIST_DAYS} days.
@@ -1174,9 +1317,10 @@ export default function CalendarPage() {
 
   // ---------------------------------------------------------------- category filter
   const allCategories = useMemo(() => {
-    const hasUncategorised = events.some((e) => !categoryById.has(e.categoryId));
-    return hasUncategorised ? [...categories, UNCATEGORISED] : categories;
-  }, [categories, categoryById, events]);
+    const hasUncategorised = events.some((e) => !categoryById.has(e.categoryId) && levelOf(e.categoryId) !== "none");
+    const seen = categories.filter((cat) => levelOf(cat.id) !== "none");
+    return hasUncategorised ? [...seen, UNCATEGORISED] : seen;
+  }, [categories, categoryById, events, levelOf]);
   const categoryFilter = (
     <div className="grid gap-0.5">
       {allCategories.map((c) => {
@@ -1226,27 +1370,30 @@ export default function CalendarPage() {
     })
     .slice(0, 8);
   const d = draft ?? renderedDraft;
-  const readOnly = !canEdit;
+  const readOnly = !d || !canEditEvent(d);
   const draftCategory = d ? categoryById.get(d.categoryId) ?? UNCATEGORISED : UNCATEGORISED;
   // Existing events open read-only first (and always, for people who can't edit).
   const viewingEvent = Boolean(d && !d.isNew && (eventMode === "view" || readOnly));
   const viewEvent = d && viewingEvent ? eventFromDraft(d) : null;
   // "Added by <name>" with the person's emblem — in the bottom bar on desktop, in the body on phones.
-  const addedBy = (className: string) =>
+  // compact: just the emblem on phones (the edit form's bottom bar is busy there).
+  const addedBy = (className: string, compact = false) =>
     d ? (
-      <p className={`flex items-center gap-2 text-[12.5px] font-medium ${className}`} style={{ color: "var(--text-main)" }}>
+      <p className={`flex items-center gap-2 text-[12.5px] font-medium ${className}`} style={{ color: "var(--text-main)" }} title={`Added by ${d.createdByName}`}>
         <span
           className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white"
           style={{ backgroundColor: (d.createdByUid === user?.uid ? String(user?.userColor || "") : "") || memberColorByUid[d.createdByUid] || "#7D99B3" }}
         >
           {d.createdByName.trim().split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]?.toUpperCase() ?? "").join("") || "?"}
         </span>
-        Added by {d.createdByName}
+        <span className={`min-w-0 truncate ${compact ? "hidden md:inline" : ""}`}>Added by {d.createdByName}</span>
       </p>
     ) : null;
 
   return (
     <div
+      // Swipes here are the calendar's own (months, drags): never the app's pull-down menu or side drawers.
+      data-app-gesture-exempt="true"
       className="flex flex-col"
       style={{ marginLeft: "calc(-1 * max(12px, env(safe-area-inset-left)))", marginRight: "calc(-1 * max(12px, env(safe-area-inset-right)))" }}
     >
@@ -1257,8 +1404,8 @@ export default function CalendarPage() {
             <CalendarDays size={18} strokeWidth={2.1} />
             Calendar
           </div>
-          {canEdit ? (
-            <button type="button" onClick={(e) => openNew(Date.now() - (Date.now() % (30 * 60000)) + 30 * 60000, false, e)} className={primaryButtonClass} style={primaryButtonStyle}>
+          {canCreate ? (
+            <button type="button" onClick={(e) => openNew(nextHalfHourMs(), false, e)} className={primaryButtonClass} style={primaryButtonStyle}>
               <Plus size={15} /> New event
             </button>
           ) : null}
@@ -1295,10 +1442,10 @@ export default function CalendarPage() {
               ]}
               onChange={changeView}
             />
-            {canEdit ? (
+            {canCreate ? (
               <button
                 type="button"
-                onClick={(e) => openNew(Date.now() - (Date.now() % (30 * 60000)) + 30 * 60000, false, e)}
+                onClick={(e) => openNew(nextHalfHourMs(), false, e)}
                 className={`${primaryButtonClass} lg:hidden`}
                 style={primaryButtonStyle}
                 aria-label="New event"
@@ -1316,14 +1463,16 @@ export default function CalendarPage() {
             <p className="rounded-[12px] px-3 py-2 text-[12.5px] font-medium" style={{ backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}>{loadError}</p>
           ) : null}
 
-          {view === "month" ? monthView() : view === "list" ? listView() : timeGrid()}
+          <div ref={viewWrapRef} className="relative">
+            {view === "month" ? monthView() : view === "list" ? listView() : timeGrid()}
+          </div>
         </main>
       </div>
 
       {/* Event pop-up */}
       {shouldRenderModal && d && typeof document !== "undefined"
         ? createPortal(
-            <div className="fixed inset-0 z-[1700] flex items-center justify-center px-4 py-4">
+            <div data-app-gesture-exempt="true" className="fixed inset-0 z-[1700] flex items-center justify-center px-4 py-4">
               <button type="button" aria-label="Close" onClick={closeModal} className="glass-modal-backdrop absolute inset-0" />
               <div
                 ref={modalPanelRef}
@@ -1416,12 +1565,12 @@ export default function CalendarPage() {
                           <p className="mt-0.5 whitespace-pre-wrap text-[14px]" style={{ color: "var(--text-main)" }}>{viewEvent.notes}</p>
                         </div>
                       ) : null}
-                      {d.createdByName ? addedBy("pt-1 md:hidden") : null}
                     </div>
                     <div className="flex items-center justify-end gap-2 border-t px-4 py-3" style={{ borderColor: "var(--glass-border)" }}>
-                      {d.createdByName ? addedBy("mr-auto hidden md:flex") : null}
-                      <button type="button" onClick={closeModal} className={secondaryButtonClass}>Close</button>
-                      {canEdit ? (
+                      {d.createdByName ? addedBy("mr-auto min-w-0") : <span className="mr-auto" />}
+                      {/* Phones already have the X in the top-right corner. */}
+                      <button type="button" onClick={closeModal} className={`${secondaryButtonClass} hidden md:inline-flex`}>Close</button>
+                      {!readOnly ? (
                         <button
                           type="button"
                           onClick={() => setEventMode("edit")}
@@ -1466,8 +1615,10 @@ export default function CalendarPage() {
                         <GlassDropdown
                           value={d.categoryId}
                           options={[
-                            ...categories.map((c) => ({ value: c.id, label: c.name, color: c.color })),
-                            ...(categoryById.has(d.categoryId) ? [] : [{ value: d.categoryId, label: UNCATEGORISED.name, color: UNCATEGORISED.color }]),
+                            ...editableCategories.map((c) => ({ value: c.id, label: c.name, color: c.color })),
+                            ...(editableCategories.some((c) => c.id === d.categoryId)
+                              ? []
+                              : [{ value: d.categoryId, label: (categoryById.get(d.categoryId) ?? UNCATEGORISED).name, color: (categoryById.get(d.categoryId) ?? UNCATEGORISED).color }]),
                           ]}
                           onChange={(next) => setDraft((prev) => (prev ? { ...prev, categoryId: next } : prev))}
                           ariaLabel="Category"
@@ -1617,13 +1768,12 @@ export default function CalendarPage() {
                         className={`${glassFieldClass} h-auto py-2`}
                       />
                     </label>
-                    {!d.isNew && d.createdByName ? addedBy("pt-1 md:hidden") : null}
                     {modalError ? (
                       <p className="text-[12px] font-medium" style={{ color: "var(--danger-strong)" }}>{modalError}</p>
                     ) : null}
                   </div>
                   <div className="flex items-center gap-2 border-t px-4 py-3" style={{ borderColor: "var(--glass-border)" }}>
-                    {!d.isNew && d.createdByName ? addedBy("hidden md:flex") : null}
+                    {!d.isNew && d.createdByName ? addedBy("min-w-0", true) : null}
                     {!d.isNew && !readOnly ? (
                       <button
                         type="button"

@@ -41,6 +41,10 @@ export function normalizeRoles(raw: unknown): RoleRow[] {
           permissions.flatMap((permission) => {
             const clean = toStr(permission);
             if (!clean) return [];
+            // calendar.edit was dropped (editing is set per calendar category now); it implied seeing the calendar.
+            if (clean === "calendar.edit") {
+              return ["calendar.view"];
+            }
             if (clean === "leads.*") {
               return ["leads.view", "leads.view.others"];
             }
