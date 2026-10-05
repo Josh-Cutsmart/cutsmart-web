@@ -18,6 +18,7 @@ import {
   type SpecsCell,
   type SpecsCellStyle,
   type SpecsGrid,
+  type SpecsRowGroup,
 } from "@/lib/specs-grid-types";
 
 export type SpecsGridClientViewProps = {
@@ -81,12 +82,35 @@ export default function SpecsGridClientView({ grid, locked, onAnswer, answeringK
   const mockPageMarginPx = Math.round(SPECS_PAGE_MARGIN_MM * MM_TO_PX);
   const mockPageHeightPx = Math.round(SPECS_PAGE_SIZES[grid.pageSize].heightMm * MM_TO_PX);
 
-  // anchorFirstPageBottom (see its own comment on SpecsRowGroup) is PDF/print only — removed from
-  // here for the same reason it was removed from specs-grid-editor.tsx's own project-sheet view
-  // (this component deliberately mirrors that one pixel-for-pixel, see this function's own comment
-  // above): it has no on-screen meaning since neither view paginates, and inflating rowPrefixSums
-  // plus a real blank spacer <tr> made row fill/text/borders drift from a group's real content.
-  const borderSegments = computeBorderSegments(grid, colPrefixSums, rowPrefixSums, rowPrefixSums, hiddenRowIndexes);
+  // The bottom-mount split (anchorFirstPageBottom — see its own comment on SpecsRowGroup): the same
+  // on-screen shift specs-grid-editor.tsx's project-sheet view applies, so the client sees the
+  // groups below the split sitting flush with the bottom of page 1, exactly like staff do and like
+  // the printed PDF. Mirrors the editor's computation line for line: the earliest visible anchored
+  // group, a spacer that fills page 1's usable height (only if page 1 isn't already full), every row
+  // from there shifted down by it, and the row ending right above the split keeping its own natural
+  // bottom edge for the border overlay.
+  let anchorSpacerPx = 0;
+  let anchorSpacerBeforeRowIdx = -1;
+  let rowBottomEdgeSums = rowPrefixSums;
+  const splitAnchorGroup = expandedGroups
+    .filter((g) => g.anchorFirstPageBottom && !g.hidden)
+    .reduce<SpecsRowGroup | undefined>((earliest, g) => (!earliest || g.startRow < earliest.startRow ? g : earliest), undefined);
+  if (splitAnchorGroup) {
+    const anchorStartRow = splitAnchorGroup.startRow;
+    const usableHeightPx = mockPageHeightPx - mockPageMarginPx * 2;
+    const heightBeforeAnchorPx = rowPrefixSums[anchorStartRow] ?? 0;
+    const heightFromAnchorPx = (rowPrefixSums[rowPrefixSums.length - 1] ?? 0) - heightBeforeAnchorPx;
+    const requiredSpacerPx = usableHeightPx - heightBeforeAnchorPx - heightFromAnchorPx;
+    if (requiredSpacerPx > 0.5) {
+      const naturalAnchorTop = rowPrefixSums[anchorStartRow];
+      for (let i = anchorStartRow; i < rowPrefixSums.length; i += 1) rowPrefixSums[i] += requiredSpacerPx;
+      rowBottomEdgeSums = rowPrefixSums.slice();
+      rowBottomEdgeSums[anchorStartRow] = naturalAnchorTop;
+      anchorSpacerPx = requiredSpacerPx;
+      anchorSpacerBeforeRowIdx = anchorStartRow;
+    }
+  }
+  const borderSegments = computeBorderSegments(grid, colPrefixSums, rowPrefixSums, rowBottomEdgeSums, hiddenRowIndexes);
   const tableRenderedHeightPx = (rowPrefixSums[rowPrefixSums.length - 1] ?? 0) + mockPageMarginPx * 2;
   // Shared with app/client/hub/[shareId]/page.tsx (see that function's own comment) so the
   // "Submit"/"Accept" bars above/below this component are sized to match this page's own width
@@ -115,6 +139,12 @@ export default function SpecsGridClientView({ grid, locked, onAnswer, answeringK
                 if (hiddenRowIndexes.has(rowIdx)) return null;
                 return (
                 <Fragment key={row.id}>
+                  {rowIdx === anchorSpacerBeforeRowIdx ? (
+                    // The real table-flow gap matching the rowPrefixSums shift above (same as the editor).
+                    <tr aria-hidden="true">
+                      <td colSpan={grid.columnWidths.length} style={{ height: anchorSpacerPx, padding: 0, border: "none", background: "transparent" }} />
+                    </tr>
+                  ) : null}
                   <tr style={{ height: safeRowHeights[rowIdx] }}>
                     {row.cells.map((cell, colIdx) => {
                       if (cell === null) return null;
@@ -202,7 +232,8 @@ export default function SpecsGridClientView({ grid, locked, onAnswer, answeringK
                                   // matches lib/specs-grid-pdf.ts's own SPECS_PDF_LINE_HEIGHT_FACTOR.
                                   lineHeight: 1.15,
                                   textAlign: style.align ?? "left",
-                                  color: style.textColor ?? "var(--text-main)",
+                                  // Printed paper: black text on the white page in both themes.
+                                  color: style.textColor ?? "#111111",
                                 }}
                               >
                                 {getCellRuns(cell).map((run, runIdx) => (

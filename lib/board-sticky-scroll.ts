@@ -47,7 +47,14 @@ export function useBoardStickyRef(
       // would add a render cycle between "scroll crossed the threshold" and "the column can
       // actually be scrolled", long enough to eat the rest of a trackpad gesture. A plain style
       // write lands on the very next paint.
+      //
+      // Only written when it flips (it used to be rewritten on every list, every scroll frame);
+      // listsScrollable is reset to null whenever the board's contents change, so freshly rendered
+      // lists get it too.
+      let listsScrollable: boolean | null = null;
       const setCardListsScrollable = (scrollable: boolean) => {
+        if (listsScrollable === scrollable) return;
+        listsScrollable = scrollable;
         el.querySelectorAll<HTMLElement>(".glass-scroll.flex-1").forEach((list) => {
           list.style.overflowY = scrollable ? "auto" : "hidden";
           // touch-action stays at the browser default in both states. It used to flip to "pan-y"
@@ -73,6 +80,19 @@ export function useBoardStickyRef(
       const getColumns = (): HTMLElement[] => Array.from(el.querySelectorAll<HTMLElement>("[data-board-column]"));
       let cachedFullHeight = 0;
       let cachedFullHeightKey = "";
+      // The panel's sticky offset and whether <main> is the scroller only change with the layout (a
+      // resize, or the board's contents changing) — read once then, not on every scroll frame (each
+      // is a computed-style read). See check() for what they mean.
+      let layout: { stuckTop: number; mainScrolls: boolean } | null = null;
+      const readLayout = () => {
+        if (!layout) {
+          layout = {
+            stuckTop: Number.parseFloat(getComputedStyle(el).top) || 0,
+            mainScrolls: Boolean(mainEl) && getComputedStyle(mainEl as HTMLElement).overflowY !== "visible",
+          };
+        }
+        return layout;
+      };
       const check = () => {
         raf = 0;
         // Each column's card list has a fixed, viewport-relative height from the moment it
@@ -87,13 +107,12 @@ export function useBoardStickyRef(
           cachedFullHeightKey = "";
           return;
         }
-        const stuckTop = Number.parseFloat(getComputedStyle(el).top) || 0;
         // getBoundingClientRect() is always viewport-relative, but the sticky `top` offset is
         // relative to whichever element is actually scrolling — on mobile that's `<main>` itself
         // (already offset ~48px below the fixed tab bar), on desktop it's the document (offset 0).
         // Comparing rect.top straight to the CSS top value only works for the latter, so add back
         // the scrollport's own offset when main is the one doing the scrolling.
-        const mainScrolls = Boolean(mainEl) && getComputedStyle(mainEl as HTMLElement).overflowY !== "visible";
+        const { stuckTop, mainScrolls } = readLayout();
         const containerTop = mainScrolls ? (mainEl as HTMLElement).getBoundingClientRect().top : 0;
         const rect = el.getBoundingClientRect();
         // A discrete wheel/trackpad tick resolves its scroll target ONCE, based on what's
@@ -148,9 +167,13 @@ export function useBoardStickyRef(
         if (raf) return;
         raf = window.requestAnimationFrame(check);
       };
+      const onResize = () => {
+        layout = null;
+        onScroll();
+      };
       check();
       window.addEventListener("scroll", onScroll, { passive: true });
-      window.addEventListener("resize", onScroll);
+      window.addEventListener("resize", onResize);
       mainEl?.addEventListener("scroll", onScroll, { passive: true });
       // Columns load asynchronously, so the very first `check()` call above can land before any
       // column has actually rendered — `getColumns()` finds nothing yet, so nothing gets sized,
@@ -163,17 +186,22 @@ export function useBoardStickyRef(
       // rapid-fire scroll events, but mutations here are infrequent, and a backgrounded tab can
       // leave a pending rAF callback waiting on the browser (which pauses rAF, not
       // MutationObserver, for hidden tabs) — no reason to route through it.
-      const observer = new MutationObserver(() => check());
+      const observer = new MutationObserver(() => {
+        layout = null;
+        listsScrollable = null;
+        check();
+      });
       observer.observe(el, { childList: true, subtree: true });
       const detachArrowKeyScroll = shouldAttachArrowKeyScroll ? attachBoardArrowKeyScroll(el) : null;
       cleanupRef.current = () => {
         if (raf) window.cancelAnimationFrame(raf);
         window.removeEventListener("scroll", onScroll);
-        window.removeEventListener("resize", onScroll);
+        window.removeEventListener("resize", onResize);
         mainEl?.removeEventListener("scroll", onScroll);
         observer.disconnect();
         detachArrowKeyScroll?.();
         getColumns().forEach((col) => { col.style.height = ""; });
+        listsScrollable = null;
         setCardListsScrollable(false);
       };
     },

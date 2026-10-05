@@ -7,7 +7,7 @@ import { auth, hasFirebaseConfig } from "@/lib/firebase";
 import { saveUserProfilePatchDetailed } from "@/lib/firestore-data";
 import { resolveCompanyIdForUid } from "@/lib/membership";
 import { useAuth } from "@/lib/auth-context";
-import { retryAsync, withTimeout } from "@/lib/load-retry";
+import { hedgedAsync } from "@/lib/load-retry";
 import { AFTER_LOGIN_PATH_KEY } from "@/components/protected-route";
 
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
@@ -262,14 +262,9 @@ export default function HomePage() {
         const resolvedCompanyId = String(user.companyId || "").trim();
         const companyId =
           resolvedCompanyId ||
-          (await retryAsync(
-            () =>
-              withTimeout(
-                resolveCompanyIdForUid(String(user.uid || "").trim(), preferredCompanyId ? [preferredCompanyId] : []),
-                6000,
-                "Company lookup timed out",
-              ),
-            { attempts: 2, delayMs: 350 },
+          (await hedgedAsync(
+            () => resolveCompanyIdForUid(String(user.uid || "").trim(), preferredCompanyId ? [preferredCompanyId] : []),
+            { delayMs: 350, message: "Company lookup timed out" },
           ));
         if (cancelled) return;
         if (companyId) {
@@ -302,13 +297,16 @@ export default function HomePage() {
       <div
         className="flex min-h-screen items-center justify-center"
         style={{
-          backgroundImage: "url('/bg.png')",
+          // The panel-bg layer multiplies over the photo: white (light) leaves it untouched, the dark
+          // panel colour (dark mode) dims it so the themed text/fields below stay readable.
+          backgroundImage: "linear-gradient(var(--panel-bg), var(--panel-bg)), url('/bg.png')",
+          backgroundBlendMode: "multiply",
           backgroundSize: "cover",
           backgroundPosition: "center",
           backgroundRepeat: "no-repeat",
         }}
       >
-        <div className="rounded-[18px] border border-[rgba(255,255,255,0.45)] bg-[rgba(255,255,255,0.58)] px-8 py-6 text-center shadow-[0_18px_50px_rgba(15,23,42,0.10)] backdrop-blur-[10px]">
+        <div className="rounded-[18px] border border-[color-mix(in_srgb,var(--panel-bg)_45%,transparent)] bg-[color-mix(in_srgb,var(--panel-bg)_58%,transparent)] px-8 py-6 text-center shadow-[0_18px_50px_rgba(15,23,42,0.10)] backdrop-blur-[10px]">
           <p className="text-[12px] font-bold uppercase tracking-[1.2px] text-[#6B7280]">
             CutSmart Web
           </p>
@@ -316,7 +314,7 @@ export default function HomePage() {
             {user?.uid ? "Opening your workspace..." : "Checking saved sign-in..."}
           </p>
           <div
-            className="mx-auto mt-4 h-9 w-9 animate-spin rounded-full border-[3px] border-[rgba(15,23,42,0.12)] border-t-[#2F6BFF]"
+            className="mx-auto mt-4 h-9 w-9 animate-spin rounded-full border-[3px] border-[color-mix(in_srgb,var(--text-main)_12%,transparent)] border-t-[#2F6BFF]"
             role="status"
             aria-label="Loading"
           />
@@ -329,7 +327,8 @@ export default function HomePage() {
     <div
       className="relative flex min-h-screen flex-row overflow-hidden"
       style={{
-        backgroundImage: "url('/bg.png')",
+        backgroundImage: "linear-gradient(var(--panel-bg), var(--panel-bg)), url('/bg.png')",
+        backgroundBlendMode: "multiply",
         backgroundSize: "cover",
         backgroundPosition: "center",
         backgroundRepeat: "no-repeat",
@@ -344,7 +343,7 @@ export default function HomePage() {
           setHoveredSide(null);
           setLockedPreview(null);
         }}
-        className="group relative z-10 flex min-h-screen shrink-0 overflow-hidden border-r border-[rgba(215,222,232,0.55)] hover:bg-[rgba(47,107,255,0.50)]"
+        className="group relative z-10 flex min-h-screen shrink-0 overflow-hidden border-r border-[color-mix(in_srgb,var(--panel-border)_55%,transparent)] hover:bg-[rgba(47,107,255,0.50)]"
         style={{
           backgroundColor: "rgba(47,107,255,0.30)",
           flex: `0 0 ${loginBasis}`,
@@ -354,7 +353,7 @@ export default function HomePage() {
         <div className="absolute inset-0 z-20 flex items-center justify-center px-8">
           {!loginFormMounted ? (
             <span
-              className="whitespace-nowrap text-center uppercase text-[#000000] transition-all"
+              className="whitespace-nowrap text-center uppercase text-[var(--text-main)] transition-all"
               style={{
                 fontSize: "clamp(26px, 3.2vw, 46px)",
                 lineHeight: 0.95,
@@ -379,7 +378,7 @@ export default function HomePage() {
               style={{ width: "min(550px, calc(100vw - 120px))" }}
             >
               <p
-                className="whitespace-nowrap text-center uppercase text-[#000000] transition-all"
+                className="whitespace-nowrap text-center uppercase text-[var(--text-main)] transition-all"
                 style={{
                   fontSize: "clamp(26px, 3.2vw, 46px)",
                   lineHeight: 0.95,
@@ -433,7 +432,7 @@ export default function HomePage() {
                   />
                   <span>Stay logged in on this device</span>
                 </label>
-                {error && <p className="text-[12px] font-semibold text-[#D32F2F]">{error}</p>}
+                {error && <p className="text-[12px] font-semibold text-[var(--danger)]">{error}</p>}
                 <div className="grid grid-cols-1 gap-2 pt-1">
                   <button
                     type="submit"
@@ -465,9 +464,9 @@ export default function HomePage() {
           setHoveredSide(null);
           setLockedPreview(null);
         }}
-        className="group relative z-10 flex min-h-screen shrink-0 items-center justify-center overflow-hidden hover:bg-[rgba(255,255,255,0.50)]"
+        className="group relative z-10 flex min-h-screen shrink-0 items-center justify-center overflow-hidden hover:bg-[color-mix(in_srgb,var(--panel-bg)_50%,transparent)]"
         style={{
-          backgroundColor: "rgba(255,255,255,0.42)",
+          backgroundColor: "color-mix(in srgb, var(--panel-bg) 42%, transparent)",
           flex: `0 0 ${registerBasis}`,
           transition: "flex-basis 900ms cubic-bezier(0.22,1,0.36,1), background-color 300ms ease, opacity 220ms ease",
         }}
@@ -475,7 +474,7 @@ export default function HomePage() {
         <div className="absolute inset-0 z-20 flex items-center justify-center px-8">
           {!registerFormMounted ? (
             <span
-              className="text-center uppercase text-[#000000] transition-all"
+              className="text-center uppercase text-[var(--text-main)] transition-all"
               style={{
                 fontSize: "clamp(26px, 3.2vw, 46px)",
                 lineHeight: 0.95,
@@ -500,7 +499,7 @@ export default function HomePage() {
               style={{ width: "min(550px, calc(100vw - 120px))" }}
             >
               <p
-                className="text-center uppercase text-[#000000] transition-all"
+                className="text-center uppercase text-[var(--text-main)] transition-all"
                 style={{
                   fontSize: "clamp(26px, 3.2vw, 46px)",
                   lineHeight: 0.95,
@@ -563,7 +562,7 @@ export default function HomePage() {
                   required={hasFirebaseConfig}
                   className="h-[50px] w-full min-w-0 rounded-[12px] border border-[#D7DEE8] bg-white px-5 text-[15px] text-[#12151A] outline-none focus:border-[#7EB0FF]"
                 />
-                {registerError && <p className="text-[12px] font-semibold text-[#D32F2F]">{registerError}</p>}
+                {registerError && <p className="text-[12px] font-semibold text-[var(--danger)]">{registerError}</p>}
                 <div className="grid grid-cols-1 gap-2 pt-1">
                   <button
                     type="submit"

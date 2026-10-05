@@ -22,7 +22,6 @@ import {
   fetchAllProjectStatsContributions,
   type CompanyStatsDoc,
 } from "@/lib/firestore-data";
-import { readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
 import { retryAsync } from "@/lib/load-retry";
 
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
@@ -62,7 +61,6 @@ function formatWrappedNumber(value: number): string {
 
 export default function CompanyWrappedPage() {
   const { user } = useAuth();
-  const [themeMode, setThemeMode] = useState<ThemeMode>("light");
   const [companyId, setCompanyId] = useState("");
   const [year, setYear] = useState(() => new Date().getFullYear());
   const [availableYears, setAvailableYears] = useState<number[]>([]);
@@ -70,17 +68,6 @@ export default function CompanyWrappedPage() {
   const [nestingTotals, setNestingTotals] = useState({ sheets: 0, edgeTapeMeters: 0, lacquerSqm: 0 });
   const [jobsCompleteCount, setJobsCompleteCount] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
-
-  useEffect(() => {
-    setThemeMode(readThemeMode());
-    if (typeof window === "undefined") return;
-    const onThemeUpdated = (event: Event) => {
-      const detail = (event as CustomEvent<{ mode?: ThemeMode }>).detail;
-      setThemeMode(detail?.mode === "dark" ? "dark" : "light");
-    };
-    window.addEventListener(THEME_MODE_UPDATED_EVENT, onThemeUpdated as EventListener);
-    return () => window.removeEventListener(THEME_MODE_UPDATED_EVENT, onThemeUpdated as EventListener);
-  }, []);
 
   useEffect(() => {
     const storedCompanyId =
@@ -134,26 +121,17 @@ export default function CompanyWrappedPage() {
     };
   }, [companyId, year, user?.uid, user?.companyId]);
 
-  const isDarkMode = themeMode === "dark";
-  const palette = isDarkMode
-    ? {
-        pageBg: "#0f0f0f",
-        panelBg: "#212121",
-        panelMuted: "#272727",
-        border: "#3f3f46",
-        text: "#f1f1f1",
-        textMuted: "#aaaaaa",
-        textSoft: "#c9d1d9",
-      }
-    : {
-        pageBg: "#ffffff",
-        panelBg: "#ffffff",
-        panelMuted: "#F5F7FA",
-        border: "#D7DEE8",
-        text: "#111827",
-        textMuted: "#64748B",
-        textSoft: "#475467",
-      };
+  // Theme tokens (set per theme by globals.css), so the page follows dark mode with no first-paint flash.
+  const palette = {
+    panelBg: "var(--panel-bg)",
+    // A faint tint of the text colour over the panel: ~#F6F6F6 in light, ~#292929 in dark.
+    panelMuted: "color-mix(in srgb, var(--text-main) 4%, var(--panel-bg))",
+    border: "var(--panel-border)",
+    text: "var(--text-main)",
+    textMuted: "var(--text-muted)",
+    // Between main and muted text: ~#404041 in light, ~#CDCDCD in dark.
+    textSoft: "color-mix(in srgb, var(--text-main) 50%, var(--text-muted))",
+  };
 
   const statTiles = useMemo(
     () => [

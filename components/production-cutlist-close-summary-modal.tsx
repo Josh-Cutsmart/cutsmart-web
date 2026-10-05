@@ -82,7 +82,7 @@ export function ProductionCutlistCloseSummaryModal({
       />
       <div ref={panelRef} className="glass-modal-panel relative flex max-h-[85vh] w-full max-w-[480px] flex-col overflow-hidden">
         <div className="glass-modal-header flex h-[50px] shrink-0 items-center justify-between px-4">
-          <p className="text-[15px] font-bold uppercase tracking-[1px]" style={{ color: "#000000" }}>
+          <p className="text-[15px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
             Production Cutlist Summary
           </p>
           <button
@@ -103,12 +103,12 @@ export function ProductionCutlistCloseSummaryModal({
         </div>
         <div className="glass-scroll min-h-0 flex-1 space-y-4 overflow-y-auto p-4 sm:p-5">
           {displayPartTypes.length === 0 ? (
-            <p className="text-[13px]" style={{ color: "#000000" }}>
+            <p className="text-[13px]" style={{ color: "var(--text-main)" }}>
               No parts were entered into this cutlist.
             </p>
           ) : (
             <div>
-              <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "#000000" }}>
+              <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-main)" }}>
                 Parts Added {totalParts ? `(${totalParts} total)` : ""}
               </p>
               <div className="overflow-hidden rounded-[10px] border" style={{ borderColor: "var(--glass-border)" }}>
@@ -131,9 +131,9 @@ export function ProductionCutlistCloseSummaryModal({
                       roomPartTypeCounts &&
                       rooms.map((room) => (
                         <tr key={room} className="border-b" style={{ borderColor: "var(--glass-border)" }}>
-                          <td className="px-2 py-1.5 text-left text-[11px] font-bold" style={{ color: "#000000" }}>{room}</td>
+                          <td className="px-2 py-1.5 text-left text-[11px] font-bold" style={{ color: "var(--text-main)" }}>{room}</td>
                           {displayPartTypes.map((partType) => (
-                            <td key={partType} className="px-2 py-1.5" style={{ color: "#000000" }}>
+                            <td key={partType} className="px-2 py-1.5" style={{ color: "var(--text-main)" }}>
                               {roomPartTypeCounts.get(room)?.get(partType) ?? 0}
                             </td>
                           ))}
@@ -141,10 +141,10 @@ export function ProductionCutlistCloseSummaryModal({
                       ))}
                     <tr>
                       {showRoomGroups && (
-                        <td className="px-2 py-2 text-left text-[11px] font-bold" style={{ color: "#000000" }}>Total</td>
+                        <td className="px-2 py-2 text-left text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Total</td>
                       )}
                       {displayPartTypes.map((partType) => (
-                        <td key={partType} className="px-2 py-2 text-[14px] font-extrabold" style={{ color: "#000000" }}>
+                        <td key={partType} className="px-2 py-2 text-[14px] font-extrabold" style={{ color: "var(--text-main)" }}>
                           {currentCountByType.get(partType) ?? 0}
                         </td>
                       ))}
@@ -174,23 +174,23 @@ export function ProductionCutlistCloseSummaryModal({
 
           {sheetCounts.length > 0 && (
             <div>
-              <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "#000000" }}>
+              <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-main)" }}>
                 Sheet Counts
               </p>
               <table className="w-full text-[12px]">
                 <thead>
                   <tr className="border-b" style={{ borderColor: "var(--glass-border)" }}>
-                    <th className="px-2 py-1.5 text-left" style={{ color: "#000000" }}>Product</th>
-                    <th className="px-2 py-1.5 text-left" style={{ color: "#000000" }}>Sheet Size</th>
-                    <th className="px-2 py-1.5 text-center" style={{ color: "#000000" }}>Count</th>
+                    <th className="px-2 py-1.5 text-left" style={{ color: "var(--text-main)" }}>Product</th>
+                    <th className="px-2 py-1.5 text-left" style={{ color: "var(--text-main)" }}>Sheet Size</th>
+                    <th className="px-2 py-1.5 text-center" style={{ color: "var(--text-main)" }}>Count</th>
                   </tr>
                 </thead>
                 <tbody>
                   {sheetCounts.map((entry) => (
                     <tr key={`${entry.productName}__${entry.sheetSize}`} className="border-b last:border-none" style={{ borderColor: "var(--glass-border)" }}>
-                      <td className="px-2 py-1.5" style={{ color: "#000000" }}>{entry.productName}</td>
-                      <td className="px-2 py-1.5" style={{ color: "#000000" }}>{entry.sheetSize}</td>
-                      <td className="px-2 py-1.5 text-center font-semibold" style={{ color: "#000000" }}>{entry.sheetCount}</td>
+                      <td className="px-2 py-1.5" style={{ color: "var(--text-main)" }}>{entry.productName}</td>
+                      <td className="px-2 py-1.5" style={{ color: "var(--text-main)" }}>{entry.sheetSize}</td>
+                      <td className="px-2 py-1.5 text-center font-semibold" style={{ color: "var(--text-main)" }}>{entry.sheetCount}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -199,13 +199,13 @@ export function ProductionCutlistCloseSummaryModal({
           )}
 
           <div>
-            <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "#000000" }}>
+            <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-main)" }}>
               Missing From Production
             </p>
             {missing.length === 0 ? (
               <div
                 className="rounded-[10px] border px-3 py-2.5 text-[13px] font-semibold"
-                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "#027A48" }}
+                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--success-strong)" }}
               >
                 Every part from Initial Measure is included.
               </div>

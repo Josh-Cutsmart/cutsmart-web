@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getDoc } from "firebase/firestore";
 import type { Project } from "@/lib/types";
 import {
@@ -45,7 +45,17 @@ export function useProjectCutlistRaw(
   });
   const [retryTick, setRetryTick] = useState(0);
 
+  // Re-fetch only for a different project (id/company) — not on every change to the project object,
+  // which the project page makes on every save (it used to re-download all of this each time). Saves
+  // here update this hook's own state directly; the latest project object is read when it does run.
+  const latestProjectRef = useRef(project);
   useEffect(() => {
+    latestProjectRef.current = project;
+  }, [project]);
+  const projectKey = project?.id ? `${project.companyId ?? ""}::${project.id}` : "";
+
+  useEffect(() => {
+    const project = latestProjectRef.current;
     let cancelled = false;
 
     const run = async () => {
@@ -98,7 +108,7 @@ export function useProjectCutlistRaw(
     return () => {
       cancelled = true;
     };
-  }, [project, kind, enabled, retryTick]);
+  }, [projectKey, kind, enabled, retryTick]);
 
   const retry = useCallback(() => setRetryTick((tick) => tick + 1), []);
   const setRawRowsOptimistic = useCallback((rows: unknown[]) => {

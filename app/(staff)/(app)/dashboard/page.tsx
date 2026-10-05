@@ -26,8 +26,10 @@ import { readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/t
 import { DASHBOARD_STAT_CARDS_UPDATED_EVENT, readDashboardStatCardsEnabled } from "@/lib/ui-preferences";
 import type { Project } from "@/lib/types";
 import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
-import { retryAsync, withTimeout } from "@/lib/load-retry";
-import { captureGlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
+import { hedgedAsync } from "@/lib/load-retry";
+import { readLastKnown, saveLastKnown } from "@/lib/last-known";
+import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
+import { iconRemoveButtonClass } from "@/components/settings-ui";
 import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 type SubStageRow = { name: string; color: string; isDefault?: boolean };
@@ -319,6 +321,17 @@ function assignedDisplayName(project: Project) {
   return value.toLowerCase() === "unassigned" ? "" : value;
 }
 
+// What the dashboard showed last time on this device, for one company (see lib/last-known.ts).
+type DashboardSnapshot = {
+  projects: Project[];
+  colors: Record<string, string>;
+  statusRows: StatusRow[];
+  legendRows: DashboardLegendRow[];
+  members: CompanyMemberOption[];
+  roleRows: RoleRow[];
+  themeColor: string;
+};
+
 export default function DashboardPage() {
   // Re-render when the company's date format changes.
   useCompanyFormats();
@@ -473,23 +486,24 @@ export default function DashboardPage() {
   } | null>(null);
   const openingProjectTimerRef = useRef<number | null>(null);
   const [showCompletedProjectsModal, setShowCompletedProjectsModal] = useState(false);
-  const [completedProjectsModalExpanded, setCompletedProjectsModalExpanded] = useState(false);
+  const [completedModalOrigin, setCompletedModalOrigin] = useState<GlassModalOrigin>(null);
+  const completedModalPanelRef = useRef<HTMLDivElement | null>(null);
   const [completedMonthFrom, setCompletedMonthFrom] = useState("");
   const [completedMonthTo, setCompletedMonthTo] = useState("");
-  const [completedCardRect, setCompletedCardRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const [completedDateUpdatingProjectId, setCompletedDateUpdatingProjectId] = useState("");
   const [completedLegendUpdatingProjectId, setCompletedLegendUpdatingProjectId] = useState("");
   const [activeCompletedLegendId, setActiveCompletedLegendId] = useState("");
   const completedCardRef = useRef<HTMLDivElement | null>(null);
-  const completedModalTimerRef = useRef<number | null>(null);
   const completedDateInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const completedProjectsScrollRef = useRef<HTMLDivElement | null>(null);
   const [showStaffModal, setShowStaffModal] = useState(false);
-  const [staffModalExpanded, setStaffModalExpanded] = useState(false);
-  const [staffCardRect, setStaffCardRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const [staffModalOrigin, setStaffModalOrigin] = useState<GlassModalOrigin>(null);
+  const staffModalPanelRef = useRef<HTMLDivElement | null>(null);
   const staffCardRef = useRef<HTMLDivElement | null>(null);
-  const staffModalTimerRef = useRef<number | null>(null);
   const staffMembersScrollRef = useRef<HTMLDivElement | null>(null);
+  // The Completed / Staff pop-ups pop out of (and back into) their stat cards, like every other pop-up.
+  const shouldRenderCompletedModal = useGlassModalPopOrigin(showCompletedProjectsModal, completedModalOrigin, completedModalPanelRef, undefined, completedCardRef);
+  const shouldRenderStaffModal = useGlassModalPopOrigin(showStaffModal, staffModalOrigin, staffModalPanelRef, undefined, staffCardRef);
   const access = useCompanyAccess();
   useEffect(() => {
     if (typeof window === "undefined" || !user?.uid) return;
@@ -686,50 +700,61 @@ export default function DashboardPage() {
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
+      const uid = String(user?.uid || "").trim();
+      const storedCompanyId =
+        typeof window !== "undefined"
+          ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim()
+          : "";
+      // What this dashboard showed last time on this device: shown straight away, then replaced by the
+      // fresh load below once it finishes — only if anything changed, so an unchanged list doesn't
+      // redraw. If the fresh load fails, the last-known list stays up instead of an empty dashboard.
+      const snapshotCompanyId = storedCompanyId || String(user?.companyId || "").trim();
+      const snapshot =
+        uid && snapshotCompanyId ? readLastKnown<DashboardSnapshot>(`dashboard:${snapshotCompanyId}`, uid) : null;
+      const shownSnapshot = snapshot && Array.isArray(snapshot.projects) ? JSON.stringify(snapshot) : "";
+      const applySnapshot = (next: DashboardSnapshot) => {
+        setAllProjects(next.projects);
+        setCreatorColorByUid(next.colors);
+        setStatusRows(next.statusRows);
+        setStatusRowsLoaded(true);
+        setDashboardLegendRows(next.legendRows);
+        setCompanyMembers(next.members);
+        setRoleRows(next.roleRows);
+        if (next.themeColor) setCompanyThemeColor(next.themeColor);
+      };
       if (!cancelled) {
-        setIsLoading(true);
-        setStatusRowsLoaded(false);
+        if (snapshot && shownSnapshot) {
+          applySnapshot(snapshot);
+          setIsLoading(false);
+        } else {
+          setIsLoading(true);
+          setStatusRowsLoaded(false);
+        }
       }
       try {
-        const storedCompanyId =
-          typeof window !== "undefined"
-            ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim()
-            : "";
         const preferredCompanyIds = [storedCompanyId, String(user?.companyId || "").trim()].filter(Boolean);
-        // withTimeout must wrap EACH individual attempt, inside retryAsync — not wrap the whole
-        // retryAsync call from outside. A hung (never settling, not merely slow) Firestore call
-        // makes that difference the entire point: retryAsync only advances to the next attempt
-        // once the current one SETTLES, so an outer withTimeout can only ever kill the whole
-        // sequence after its one deadline, and retryAsync never gets a real second attempt at all
-        // — confirmed live via a real cold-mobile trace: membership resolved correctly in 0.56s,
-        // then this call sat completely silent for exactly 15.002s (the old outer timeout's bound
-        // to the millisecond) before failing, meaning the underlying call hung and no retry ever
-        // actually happened. lib/load-retry.ts's own comment on withTimeout documents exactly
-        // this failure mode.
-        const items = await retryAsync(
-          () =>
-            withTimeout(
-              fetchProjects(user?.uid, preferredCompanyIds, { lightweight: true }),
-              7000,
-              "Projects load timed out",
-            ),
-          {
-            attempts: 2,
-            delayMs: 350,
-            // Retry a first-attempt empty result unconditionally now, not just when
-            // preferredCompanyIds was non-empty — a genuinely fresh device/session (nothing
-            // cached in localStorage yet, membership resolution itself still succeeded) is
-            // exactly the case most likely to hit a cold-start hiccup in fetchProjects' own
-            // company-lookup fallback chain, and it deserves the same one extra chance a
-            // returning user with a cached company hint already got.
-            shouldRetryResult: (value, attempt) =>
-              attempt === 1 &&
-              Array.isArray(value) &&
-              value.length === 0,
-          },
-        );
+        // The company doc + member list (status columns, legend, staff, roles) for the company already
+        // known load at the same time as the projects, instead of after them.
+        const loadCompanyBundle = (cid: string) =>
+          hedgedAsync(() => Promise.all([fetchCompanyDoc(cid), fetchCompanyMembers(cid)]), {
+            hedgeAfterMs: 7000,
+            message: "Company data load timed out",
+          });
+        const earlyCompanyId = storedCompanyId || String(user?.companyId || "").trim();
+        const earlyCompanyBundle = earlyCompanyId ? loadCompanyBundle(earlyCompanyId).catch(() => null) : null;
+        // A slow attempt keeps going: after 7s a second one starts alongside it and whichever answers
+        // first wins (see hedgedAsync) — this used to throw the slow attempt away at 7s and start over.
+        const items = await hedgedAsync(() => fetchProjects(user?.uid, preferredCompanyIds, { lightweight: true }), {
+          hedgeAfterMs: 7000,
+          delayMs: 350,
+          message: "Projects load timed out",
+          // A first-attempt empty result gets one more try — a fresh device/session is exactly the case
+          // most likely to hit a cold-start hiccup in fetchProjects' own company-lookup fallback chain.
+          shouldRetryResult: (value, attempt) => attempt === 1 && Array.isArray(value) && value.length === 0,
+        });
         if (cancelled) return;
-        setAllProjects(items);
+        // Without a last-known list on screen, show the projects now rather than after the rest below.
+        if (!shownSnapshot) setAllProjects(items);
         const fallbackCompanyId = String(items[0]?.companyId || "").trim();
         // Used below purely for the SEPARATE company-doc/members/status-rows fetch (stat cards,
         // staff list, status columns) — this used to fall back only to a project's own companyId,
@@ -747,49 +772,35 @@ export default function DashboardPage() {
         // The user-color lookup and the company doc/members lookup are both derived from `items`
         // alone (not from each other's results), so they were an avoidable extra sequential round
         // trip — run them concurrently instead.
-        // Same withTimeout-inside-retryAsync composition as the projects fetch above, and for the
-        // identical reason — see that call's own comment.
-        const userColorMapPromise = retryAsync(
-          () =>
-            withTimeout(
-              fetchUserColorMapByUids([...creatorUids, ...assignedUids], companyId),
-              7000,
-              "User color lookup timed out",
-            ),
-          { attempts: 2, delayMs: 250 },
+        // Same slow-attempt handling as the projects load above.
+        const userColorMapPromise = hedgedAsync(
+          () => fetchUserColorMapByUids([...creatorUids, ...assignedUids], companyId),
+          { hedgeAfterMs: 7000, message: "User color lookup timed out" },
         );
         const companyDataPromise = companyId
-          ? retryAsync(
-              () =>
-                withTimeout(
-                  Promise.all([fetchCompanyDoc(companyId), fetchCompanyMembers(companyId)]),
-                  7000,
-                  "Company data load timed out",
-                ),
-              { attempts: 2, delayMs: 250 },
-            )
+          ? companyId === earlyCompanyId && earlyCompanyBundle
+            ? earlyCompanyBundle.then((bundle) => bundle ?? loadCompanyBundle(companyId))
+            : loadCompanyBundle(companyId)
           : null;
         const [userColorMap, companyBundle] = await Promise.all([userColorMapPromise, companyDataPromise]);
         if (cancelled) return;
-        setCreatorColorByUid(userColorMap);
-        if (companyId && companyBundle) {
-          const [companyDoc, members] = companyBundle;
-          setStatusRows(normalizeStatuses((companyDoc as Record<string, unknown> | null)?.projectStatuses));
-          setStatusRowsLoaded(true);
-          setDashboardLegendRows(normalizeDashboardLegend((companyDoc as Record<string, unknown> | null)?.dashboardCompleteLegend));
-          setCompanyMembers(members);
-          setRoleRows(normalizeRoleRows((companyDoc as Record<string, unknown> | null)?.roles));
-          const themeColor = String((companyDoc as Record<string, unknown> | null)?.themeColor ?? "").trim();
-          if (themeColor) setCompanyThemeColor(themeColor);
-        } else {
-          setStatusRows(normalizeStatuses(undefined));
-          setStatusRowsLoaded(true);
-          setDashboardLegendRows([]);
-          setCompanyMembers([]);
-          setRoleRows([]);
-        }
+        const bundle = companyId && companyBundle ? companyBundle : null;
+        const companyDoc = bundle ? (bundle[0] as Record<string, unknown> | null) : null;
+        const fresh: DashboardSnapshot = {
+          projects: items,
+          colors: userColorMap,
+          statusRows: normalizeStatuses(companyDoc?.projectStatuses),
+          legendRows: bundle ? normalizeDashboardLegend(companyDoc?.dashboardCompleteLegend) : [],
+          members: bundle ? bundle[1] : [],
+          roleRows: bundle ? normalizeRoleRows(companyDoc?.roles) : [],
+          themeColor: String(companyDoc?.themeColor ?? "").trim(),
+        };
+        if (uid && companyId) saveLastKnown(`dashboard:${companyId}`, uid, fresh);
+        if (JSON.stringify(fresh) !== shownSnapshot) applySnapshot(fresh);
       } catch {
         if (cancelled) return;
+        // Keep the last-known dashboard up rather than emptying it.
+        if (shownSnapshot) return;
         setAllProjects([]);
         setCreatorColorByUid({});
         setStatusRows(normalizeStatuses(undefined));
@@ -1158,12 +1169,6 @@ export default function DashboardPage() {
 
   useEffect(() => {
     return () => {
-      if (completedModalTimerRef.current != null) {
-        window.clearTimeout(completedModalTimerRef.current);
-      }
-      if (staffModalTimerRef.current != null) {
-        window.clearTimeout(staffModalTimerRef.current);
-      }
       if (openingProjectTimerRef.current != null) {
         window.clearTimeout(openingProjectTimerRef.current);
       }
@@ -1571,10 +1576,10 @@ export default function DashboardPage() {
   }) => {
     const glassColumnBg = hexToRgba(options.color, 0.85);
     const glassColumnBorder = "rgba(255,255,255,0.3)";
+    // No backdrop blur: the columns only ever sit over the plain page background, where a blur changes
+    // nothing you can see — but the browser re-blurs every column on every frame of a board scroll.
     const glassColumnSurface: React.CSSProperties = {
       backgroundColor: glassColumnBg,
-      backdropFilter: "blur(20px) saturate(180%)",
-      WebkitBackdropFilter: "blur(20px) saturate(180%)",
     };
     const glassColumnShadow = options.isDragOver
       ? "0 0 0 3px rgba(255,255,255,0.85), inset 0 1px 0 rgba(255,255,255,0.7)"
@@ -1668,10 +1673,9 @@ export default function DashboardPage() {
     onExpand: () => void;
   }) => {
     const glassColumnBorder = "rgba(255,255,255,0.3)";
+    // No backdrop blur — same reason as renderBoardColumn's.
     const glassColumnSurface: React.CSSProperties = {
       backgroundColor: hexToRgba(options.color, 0.85),
-      backdropFilter: "blur(20px) saturate(180%)",
-      WebkitBackdropFilter: "blur(20px) saturate(180%)",
     };
     const glassColumnShadow = options.isDragOver
       ? "0 0 0 3px rgba(255,255,255,0.85), inset 0 1px 0 rgba(255,255,255,0.7)"
@@ -1901,15 +1905,14 @@ export default function DashboardPage() {
             className="flex h-full w-full flex-col overflow-hidden rounded-[16px] border"
             style={{
               borderColor: "rgba(255,255,255,0.3)",
-              backgroundImage: "linear-gradient(135deg, rgba(255,255,255,0.3) 0%, rgba(255,255,255,0.06) 35%, rgba(255,255,255,0) 62%)",
+              backgroundImage: "linear-gradient(135deg, color-mix(in srgb, var(--glass-highlight) 60%, transparent) 0%, color-mix(in srgb, var(--glass-highlight) 12%, transparent) 35%, rgba(255,255,255,0) 62%)",
+              // No backdrop blur — same reason as renderBoardColumn's.
               backgroundColor: "var(--glass-bg-strong)",
-              backdropFilter: "blur(20px) saturate(180%)",
-              WebkitBackdropFilter: "blur(20px) saturate(180%)",
             }}
           >
             <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2.5" style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelMuted }}>
               <p className="truncate text-[15px] font-semibold" style={{ color: dashboardPalette.text }}>Other</p>
-              <span className="shrink-0 rounded-full px-2 py-[1px] text-[10px] font-bold text-white" style={{ backgroundColor: dashboardPalette.textMuted }}>
+              <span className="shrink-0 rounded-full px-2 py-[1px] text-[10px] font-bold" style={{ backgroundColor: dashboardPalette.textMuted, color: dashboardPalette.panelBg }}>
                 {dashboardStatusBoardColumns.otherProjects.length}
               </span>
             </div>
@@ -2082,81 +2085,20 @@ export default function DashboardPage() {
     return Array.from(groups.entries()).sort((a, b) => monthSortValue(b[0]) - monthSortValue(a[0]));
   }, [filteredCompletedProjects]);
 
-  const onOpenCompletedProjectsModal = () => {
-    if (completedModalTimerRef.current != null) {
-      window.clearTimeout(completedModalTimerRef.current);
-      completedModalTimerRef.current = null;
-    }
-    if (typeof window !== "undefined") {
-      const rect = completedCardRef.current?.getBoundingClientRect();
-      if (rect) {
-        setCompletedCardRect({
-          left: rect.left,
-          top: rect.top,
-          width: rect.width,
-          height: rect.height,
-        });
-      } else {
-        setCompletedCardRect({
-          left: Math.max(16, window.innerWidth / 2 - 140),
-          top: Math.max(16, window.innerHeight / 2 - 70),
-          width: 280,
-          height: 140,
-        });
-      }
-    }
+  // Opened from the Completed / Staff stat cards; the pop-up grows out of the card (keyboard opens too).
+  const onOpenCompletedProjectsModal = (e?: ReactMouseEvent<HTMLElement>) => {
+    setCompletedModalOrigin(e ? captureGlassModalOrigin(e) : null);
     setShowCompletedProjectsModal(true);
-    setCompletedProjectsModalExpanded(false);
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => setCompletedProjectsModalExpanded(true));
-    });
   };
 
-  const onCloseCompletedProjectsModal = () => {
-    setCompletedProjectsModalExpanded(false);
-    completedModalTimerRef.current = window.setTimeout(() => {
-      setShowCompletedProjectsModal(false);
-      completedModalTimerRef.current = null;
-    }, 420);
-  };
+  const onCloseCompletedProjectsModal = () => setShowCompletedProjectsModal(false);
 
-  const onOpenStaffModal = () => {
-    if (staffModalTimerRef.current != null) {
-      window.clearTimeout(staffModalTimerRef.current);
-      staffModalTimerRef.current = null;
-    }
-    if (typeof window !== "undefined") {
-      const rect = staffCardRef.current?.getBoundingClientRect();
-      if (rect) {
-        setStaffCardRect({
-          left: rect.left,
-          top: rect.top,
-          width: rect.width,
-          height: rect.height,
-        });
-      } else {
-        setStaffCardRect({
-          left: Math.max(16, window.innerWidth / 2 - 140),
-          top: Math.max(16, window.innerHeight / 2 - 70),
-          width: 280,
-          height: 140,
-        });
-      }
-    }
+  const onOpenStaffModal = (e?: ReactMouseEvent<HTMLElement>) => {
+    setStaffModalOrigin(e ? captureGlassModalOrigin(e) : null);
     setShowStaffModal(true);
-    setStaffModalExpanded(false);
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => setStaffModalExpanded(true));
-    });
   };
 
-  const onCloseStaffModal = () => {
-    setStaffModalExpanded(false);
-    staffModalTimerRef.current = window.setTimeout(() => {
-      setShowStaffModal(false);
-      staffModalTimerRef.current = null;
-    }, 420);
-  };
+  const onCloseStaffModal = () => setShowStaffModal(false);
 
   const onSelectCompletedProjectDate = async (project: Project, nextDateValue: string) => {
     const nextIso = dateInputValueToCompletedIso(nextDateValue);
@@ -2224,273 +2166,204 @@ export default function DashboardPage() {
   };
 
   const completedProjectsModal =
-    showCompletedProjectsModal && typeof document !== "undefined"
+    shouldRenderCompletedModal && typeof document !== "undefined"
       ? createPortal(
+          // The same pop-up as everywhere else: glass backdrop, and the panel grows out of the card that
+          // opened it (useGlassModalPopOrigin) and shrinks back into it on close.
           <div className="fixed inset-0 z-[1600] flex items-center justify-center px-4 py-4">
-            <button
-              type="button"
-              aria-label="Close completed projects backdrop"
-              onClick={onCloseCompletedProjectsModal}
-              className="absolute inset-0 bg-[rgba(15,23,42,0.45)] backdrop-blur-[2px] transition-opacity duration-[420ms]"
-              style={{ opacity: completedProjectsModalExpanded ? 1 : 0 }}
-            />
-            {(() => {
-              const targetWidth = Math.min(920, window.innerWidth - 32);
-              const targetHeight = Math.min(window.innerHeight * 0.86, 760);
-              const targetLeft = Math.max(16, (window.innerWidth - targetWidth) / 2);
-              const targetTop = Math.max(16, (window.innerHeight - targetHeight) / 2);
-              const startRect = completedCardRect ?? {
-                left: targetLeft,
-                top: targetTop,
-                width: targetWidth,
-                height: targetHeight,
-              };
-              const shellRect = completedProjectsModalExpanded
-                ? { left: targetLeft, top: targetTop, width: targetWidth, height: targetHeight }
-                : startRect;
-              return (
-                <div
-                  className="pointer-events-none fixed z-[1601]"
-                  style={{
-                    left: shellRect.left,
-                    top: shellRect.top,
-                    width: shellRect.width,
-                    height: shellRect.height,
-                    transition: "left 420ms cubic-bezier(0.22, 1, 0.36, 1), top 420ms cubic-bezier(0.22, 1, 0.36, 1), width 420ms cubic-bezier(0.22, 1, 0.36, 1), height 420ms cubic-bezier(0.22, 1, 0.36, 1), transform 420ms cubic-bezier(0.22, 1, 0.36, 1)",
-                    transformStyle: "preserve-3d",
-                    transform: `perspective(1800px) rotateX(${completedProjectsModalExpanded ? 180 : 0}deg)`,
-                  }}
-                >
+            <button type="button" aria-label="Close completed projects backdrop" onClick={onCloseCompletedProjectsModal} className="glass-modal-backdrop absolute inset-0" />
+            <div
+              ref={completedModalPanelRef}
+              data-completed-projects-modal="true"
+              className="glass-modal-panel relative z-[1601] flex h-[min(760px,86svh)] w-full max-w-[920px] flex-col overflow-hidden"
+            >
+              <div className="glass-modal-header flex h-[56px] shrink-0 items-center justify-between px-5">
+                <div className="flex items-center gap-2.5">
                   <div
-                    className="absolute inset-0 rounded-[18px] border px-4 py-3"
-                    style={{
-                      backfaceVisibility: "hidden",
-                      WebkitBackfaceVisibility: "hidden",
-                      borderColor: "var(--glass-border)",
-                      backgroundColor: "var(--glass-bg-strong)",
-                      backdropFilter: "blur(20px) saturate(180%)",
-                      WebkitBackdropFilter: "blur(20px) saturate(180%)",
-                      boxShadow: "var(--shadow-glass)",
-                    }}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-full text-white"
+                    style={{ backgroundImage: "linear-gradient(135deg, #6BC79A 0%, #2E8C5C 100%)" }}
                   >
-                    <div className="mb-2 flex items-center gap-2">
-                      <div
-                        className="inline-flex h-[30px] w-[30px] items-center justify-center rounded-full text-white"
-                        style={{ backgroundImage: "linear-gradient(135deg, #6BC79A 0%, #2E8C5C 100%)" }}
-                      >
-                        <CheckCircle2 size={16} strokeWidth={2.4} />
-                      </div>
-                      <p className="text-[14px] font-semibold sm:text-[16px] lg:text-[17px]" style={{ color: dashboardPalette.textSoft }}>Completed</p>
-                    </div>
-                    <p className="text-[34px] font-medium leading-none sm:text-[40px] lg:text-[46px]" style={{ color: dashboardPalette.text }}>{stats.completed}</p>
-                    {stats.weekly.completed > 0 && (
-                      <p className="pt-1 text-[13px] font-bold" style={{ color: "#2A7A3B" }}>
-                        + {stats.weekly.completed} this week
-                      </p>
-                    )}
+                    <CheckCircle2 size={14} strokeWidth={2.6} />
                   </div>
-                  <div
-                    data-completed-projects-modal="true"
-                    className="glass-modal-panel absolute inset-0 flex flex-col overflow-hidden"
-                    style={{
-                      backfaceVisibility: "hidden",
-                      WebkitBackfaceVisibility: "hidden",
-                      transform: "rotateX(180deg)",
-                      opacity: completedProjectsModalExpanded ? 1 : 0,
-                      pointerEvents: completedProjectsModalExpanded ? "auto" : "none",
-                      transition: "opacity 180ms ease",
-                    }}
+                  <p className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>Completed Projects</p>
+                  <span
+                    className="rounded-full border px-2 py-[2px] text-[11px] font-bold"
+                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
                   >
-                    <div className="glass-modal-header flex h-[56px] shrink-0 items-center justify-between px-5">
-                      <div className="flex items-center gap-2.5">
-                        <div
-                          className="inline-flex h-7 w-7 items-center justify-center rounded-full text-white"
-                          style={{ backgroundImage: "linear-gradient(135deg, #6BC79A 0%, #2E8C5C 100%)" }}
+                    {filteredCompletedProjects.length}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={onCloseCompletedProjectsModal}
+                  className={iconRemoveButtonClass}
+                  aria-label="Close"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+              <div
+                className="flex flex-wrap items-center gap-3 border-b px-5 py-3"
+                style={{ borderColor: "var(--glass-border)" }}
+              >
+                {dashboardLegendRows.length > 0 ? (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>Status</span>
+                    {dashboardLegendRows.map((item) => {
+                      const isActive = activeCompletedLegendId === item.id;
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => setActiveCompletedLegendId((prev) => (prev === item.id ? "" : item.id))}
+                          className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition hover:brightness-95"
+                          style={{
+                            borderColor: isActive ? "var(--brand-strong)" : "var(--glass-border)",
+                            backgroundColor: isActive ? "var(--brand-soft)" : "var(--panel-muted)",
+                            color: "var(--text-main)",
+                            boxShadow: isActive ? "0 0 0 1px var(--brand)" : "none",
+                          }}
+                          title={item.name || "Completed color"}
                         >
-                          <CheckCircle2 size={14} strokeWidth={2.6} />
-                        </div>
-                        <p className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>Completed Projects</p>
-                        <span
-                          className="rounded-full border px-2 py-[2px] text-[11px] font-bold"
-                          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
-                        >
-                          {filteredCompletedProjects.length}
-                        </span>
-                      </div>
+                          <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: item.color }} />
+                          {item.name || "Status"}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+                <div className="ml-auto flex flex-wrap items-center gap-1.5">
+                  {completedDatePresets.map((preset) => {
+                    const isActive = completedMonthFrom === preset.from && completedMonthTo === preset.to;
+                    return (
                       <button
+                        key={preset.id}
                         type="button"
-                        onClick={onCloseCompletedProjectsModal}
-                        className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border hover:brightness-95"
-                        style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+                        onClick={() => {
+                          setCompletedMonthFrom(preset.from);
+                          setCompletedMonthTo(preset.to);
+                        }}
+                        className="inline-flex h-8 items-center rounded-full border px-3 text-[12px] font-semibold transition hover:brightness-95"
+                        style={
+                          isActive
+                            ? { backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)", color: "#fff" }
+                            : { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }
+                        }
                       >
-                        <X size={16} />
+                        {preset.label}
                       </button>
-                    </div>
-                    <div
-                      className="flex flex-wrap items-center gap-3 border-b px-5 py-3"
-                      style={{ borderColor: "var(--glass-border)" }}
-                    >
-                      {dashboardLegendRows.length > 0 ? (
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>Status</span>
-                          {dashboardLegendRows.map((item) => {
-                            const isActive = activeCompletedLegendId === item.id;
+                    );
+                  })}
+                </div>
+              </div>
+              <div ref={completedProjectsScrollRef} className="glass-scroll hide-native-scrollbar min-h-0 flex-1 overflow-auto px-5 py-4">
+                {!completedProjectsByMonth.length ? (
+                  <div
+                    className="flex flex-col items-center gap-2 rounded-[14px] border border-dashed px-4 py-10 text-center"
+                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}
+                  >
+                    <CheckCircle2 size={22} style={{ color: "var(--text-muted)" }} />
+                    <p className="text-[13px] font-semibold" style={{ color: "var(--text-muted)" }}>No completed projects yet.</p>
+                  </div>
+                ) : (
+                  <div>
+                    {completedProjectsByMonth.map(([monthKey, rows]) => (
+                      <div key={`completed_month_${monthKey}`}>
+                        <div
+                          className="sticky top-0 z-10 -mx-5 flex items-center justify-between border-b px-5 py-2"
+                          style={{
+                            borderColor: "var(--glass-border)",
+                            backgroundColor: "var(--glass-modal-bg)",
+                            backdropFilter: "blur(12px) saturate(220%)",
+                            WebkitBackdropFilter: "blur(12px) saturate(220%)",
+                          }}
+                        >
+                          <p className="text-[13px] font-bold uppercase tracking-[0.5px]" style={{ color: "var(--text-main)" }}>{monthLabelFromKey(monthKey)}</p>
+                          <span
+                            className="inline-flex rounded-full border px-2.5 py-[2px] text-[11px] font-bold"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
+                          >
+                            {rows.length}
+                          </span>
+                        </div>
+                        <div className="py-1">
+                          {rows.map(({ project, completedIso }, index) => {
+                            const rawProject = project as unknown as Record<string, unknown>;
+                            const legendId = String(rawProject.dashboardCompleteStatusId ?? "").trim();
+                            const legendMatch = dashboardLegendRows.find((row) => row.id === legendId);
+                            const rowFillColor = legendMatch?.color || "";
+                            const rowHasFill = Boolean(rowFillColor);
+                            const rowTextColor = rowHasFill ? rowTextColorForFill(rowFillColor) : "var(--text-main)";
+                            const rowDateColor = rowHasFill ? rowTextColor : "var(--text-muted)";
+                            const isDateUpdating = completedDateUpdatingProjectId === project.id;
+                            const isLegendUpdating = completedLegendUpdatingProjectId === project.id;
+                            const canApplyLegend = Boolean(activeCompletedLegendId) && !isDateUpdating && !isLegendUpdating;
                             return (
-                              <button
-                                key={item.id}
-                                type="button"
-                                onClick={() => setActiveCompletedLegendId((prev) => (prev === item.id ? "" : item.id))}
-                                className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition hover:brightness-95"
-                                style={{
-                                  borderColor: isActive ? "var(--brand-strong)" : "var(--glass-border)",
-                                  backgroundColor: isActive ? "var(--brand-soft)" : "var(--panel-muted)",
-                                  color: "var(--text-main)",
-                                  boxShadow: isActive ? "0 0 0 1px var(--brand)" : "none",
+                              <div
+                                key={`completed_project_${project.id}`}
+                                className="relative flex items-center justify-between gap-3 rounded-[10px] px-3 py-2.5 transition hover:brightness-95"
+                                onClick={() => {
+                                  if (!canApplyLegend) return;
+                                  void onApplyCompletedProjectLegend(project);
                                 }}
-                                title={item.name || "Completed color"}
+                                style={{
+                                  borderTop: !rowHasFill && index > 0 ? "1px solid var(--glass-border)" : "1px solid transparent",
+                                  marginTop: index > 0 ? 1 : 0,
+                                  backgroundColor: rowFillColor || "transparent",
+                                  cursor: canApplyLegend ? "pointer" : "default",
+                                }}
                               >
-                                <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: item.color }} />
-                                {item.name || "Status"}
-                              </button>
+                                <div className="min-w-0 flex-1">
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      onCloseCompletedProjectsModal();
+                                      void openProjectInDashboard(project.id, project.name);
+                                    }}
+                                    className="inline-flex max-w-full text-left transition hover:opacity-80"
+                                  >
+                                    <span className="block truncate pr-3 text-[13px] font-bold" style={{ color: rowTextColor }}>
+                                      {project.name || "Untitled"}
+                                    </span>
+                                  </button>
+                                </div>
+                                <div className="relative flex shrink-0 items-center gap-1.5">
+                                  <CalendarDays size={13} style={{ color: rowDateColor, opacity: 0.7 }} />
+                                  <input
+                                    type="date"
+                                    ref={(node) => {
+                                      completedDateInputRefs.current[project.id] = node;
+                                    }}
+                                    value={isoToDateInputValue(completedIso)}
+                                    onChange={(event) => void onSelectCompletedProjectDate(project, event.currentTarget.value)}
+                                    tabIndex={-1}
+                                    aria-hidden="true"
+                                    className="pointer-events-none absolute h-0 w-0 opacity-0"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      openCompletedDatePicker(project.id);
+                                    }}
+                                    disabled={isDateUpdating}
+                                    className="text-[12px] font-bold transition hover:opacity-80 disabled:cursor-wait"
+                                    style={{ color: rowDateColor }}
+                                  >
+                                    {dashboardDateOnly(completedIso)}
+                                  </button>
+                                </div>
+                              </div>
                             );
                           })}
                         </div>
-                      ) : null}
-                      <div className="ml-auto flex flex-wrap items-center gap-1.5">
-                        {completedDatePresets.map((preset) => {
-                          const isActive = completedMonthFrom === preset.from && completedMonthTo === preset.to;
-                          return (
-                            <button
-                              key={preset.id}
-                              type="button"
-                              onClick={() => {
-                                setCompletedMonthFrom(preset.from);
-                                setCompletedMonthTo(preset.to);
-                              }}
-                              className="inline-flex h-8 items-center rounded-full border px-3 text-[12px] font-semibold transition hover:brightness-95"
-                              style={
-                                isActive
-                                  ? { backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)", color: "#fff" }
-                                  : { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }
-                              }
-                            >
-                              {preset.label}
-                            </button>
-                          );
-                        })}
                       </div>
-                    </div>
-                    <div ref={completedProjectsScrollRef} className="glass-scroll hide-native-scrollbar min-h-0 flex-1 overflow-auto px-5 py-4">
-                      {!completedProjectsByMonth.length ? (
-                        <div
-                          className="flex flex-col items-center gap-2 rounded-[14px] border border-dashed px-4 py-10 text-center"
-                          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}
-                        >
-                          <CheckCircle2 size={22} style={{ color: "var(--text-muted)" }} />
-                          <p className="text-[13px] font-semibold" style={{ color: "var(--text-muted)" }}>No completed projects yet.</p>
-                        </div>
-                      ) : (
-                        <div>
-                          {completedProjectsByMonth.map(([monthKey, rows]) => (
-                            <div key={`completed_month_${monthKey}`}>
-                              <div
-                                className="sticky top-0 z-10 -mx-5 flex items-center justify-between border-b px-5 py-2"
-                                style={{
-                                  borderColor: "var(--glass-border)",
-                                  backgroundColor: "var(--glass-modal-bg)",
-                                  backdropFilter: "blur(12px) saturate(220%)",
-                                  WebkitBackdropFilter: "blur(12px) saturate(220%)",
-                                }}
-                              >
-                                <p className="text-[13px] font-bold uppercase tracking-[0.5px]" style={{ color: "var(--text-main)" }}>{monthLabelFromKey(monthKey)}</p>
-                                <span
-                                  className="inline-flex rounded-full border px-2.5 py-[2px] text-[11px] font-bold"
-                                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
-                                >
-                                  {rows.length}
-                                </span>
-                              </div>
-                              <div className="py-1">
-                                {rows.map(({ project, completedIso }, index) => {
-                                  const rawProject = project as unknown as Record<string, unknown>;
-                                  const legendId = String(rawProject.dashboardCompleteStatusId ?? "").trim();
-                                  const legendMatch = dashboardLegendRows.find((row) => row.id === legendId);
-                                  const rowFillColor = legendMatch?.color || "";
-                                  const rowHasFill = Boolean(rowFillColor);
-                                  const rowTextColor = rowHasFill ? rowTextColorForFill(rowFillColor) : "var(--text-main)";
-                                  const rowDateColor = rowHasFill ? rowTextColor : "var(--text-muted)";
-                                  const isDateUpdating = completedDateUpdatingProjectId === project.id;
-                                  const isLegendUpdating = completedLegendUpdatingProjectId === project.id;
-                                  const canApplyLegend = Boolean(activeCompletedLegendId) && !isDateUpdating && !isLegendUpdating;
-                                  return (
-                                    <div
-                                      key={`completed_project_${project.id}`}
-                                      className="relative flex items-center justify-between gap-3 rounded-[10px] px-3 py-2.5 transition hover:brightness-95"
-                                      onClick={() => {
-                                        if (!canApplyLegend) return;
-                                        void onApplyCompletedProjectLegend(project);
-                                      }}
-                                      style={{
-                                        borderTop: !rowHasFill && index > 0 ? "1px solid var(--glass-border)" : "1px solid transparent",
-                                        marginTop: index > 0 ? 1 : 0,
-                                        backgroundColor: rowFillColor || "transparent",
-                                        cursor: canApplyLegend ? "pointer" : "default",
-                                      }}
-                                    >
-                                      <div className="min-w-0 flex-1">
-                                        <button
-                                          type="button"
-                                          onClick={(event) => {
-                                            event.stopPropagation();
-                                            onCloseCompletedProjectsModal();
-                                            void openProjectInDashboard(project.id, project.name);
-                                          }}
-                                          className="inline-flex max-w-full text-left transition hover:opacity-80"
-                                        >
-                                          <span className="block truncate pr-3 text-[13px] font-bold" style={{ color: rowTextColor }}>
-                                            {project.name || "Untitled"}
-                                          </span>
-                                        </button>
-                                      </div>
-                                      <div className="relative flex shrink-0 items-center gap-1.5">
-                                        <CalendarDays size={13} style={{ color: rowDateColor, opacity: 0.7 }} />
-                                        <input
-                                          type="date"
-                                          ref={(node) => {
-                                            completedDateInputRefs.current[project.id] = node;
-                                          }}
-                                          value={isoToDateInputValue(completedIso)}
-                                          onChange={(event) => void onSelectCompletedProjectDate(project, event.currentTarget.value)}
-                                          tabIndex={-1}
-                                          aria-hidden="true"
-                                          className="pointer-events-none absolute h-0 w-0 opacity-0"
-                                        />
-                                        <button
-                                          type="button"
-                                          onClick={(event) => {
-                                            event.stopPropagation();
-                                            openCompletedDatePicker(project.id);
-                                          }}
-                                          disabled={isDateUpdating}
-                                          className="text-[12px] font-bold transition hover:opacity-80 disabled:cursor-wait"
-                                          style={{ color: rowDateColor }}
-                                        >
-                                          {dashboardDateOnly(completedIso)}
-                                        </button>
-                                      </div>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
+                    ))}
                   </div>
-                </div>
-              );
-            })()}
+                )}
+              </div>
+            </div>
           </div>,
           document.body,
         )
@@ -2532,190 +2405,121 @@ export default function DashboardPage() {
   }, [companyMembers, roleRows]);
 
   const staffModal =
-    showStaffModal && typeof document !== "undefined"
+    shouldRenderStaffModal && typeof document !== "undefined"
       ? createPortal(
+          // The same pop-up as everywhere else: glass backdrop, and the panel grows out of the card that
+          // opened it (useGlassModalPopOrigin) and shrinks back into it on close.
           <div className="fixed inset-0 z-[1600] flex items-center justify-center px-4 py-4">
-            <button
-              type="button"
-              aria-label="Close staff backdrop"
-              onClick={onCloseStaffModal}
-              className="absolute inset-0 bg-[rgba(15,23,42,0.45)] backdrop-blur-[2px] transition-opacity duration-[420ms]"
-              style={{ opacity: staffModalExpanded ? 1 : 0 }}
-            />
-            {(() => {
-              const targetWidth = Math.min(860, window.innerWidth - 32);
-              const targetHeight = Math.min(window.innerHeight * 0.82, 720);
-              const targetLeft = Math.max(16, (window.innerWidth - targetWidth) / 2);
-              const targetTop = Math.max(16, (window.innerHeight - targetHeight) / 2);
-              const startRect = staffCardRect ?? {
-                left: targetLeft,
-                top: targetTop,
-                width: targetWidth,
-                height: targetHeight,
-              };
-              const shellRect = staffModalExpanded
-                ? { left: targetLeft, top: targetTop, width: targetWidth, height: targetHeight }
-                : startRect;
-              return (
-                <div
-                  className="pointer-events-none fixed z-[1601]"
-                  style={{
-                    left: shellRect.left,
-                    top: shellRect.top,
-                    width: shellRect.width,
-                    height: shellRect.height,
-                    transition: "left 420ms cubic-bezier(0.22, 1, 0.36, 1), top 420ms cubic-bezier(0.22, 1, 0.36, 1), width 420ms cubic-bezier(0.22, 1, 0.36, 1), height 420ms cubic-bezier(0.22, 1, 0.36, 1), transform 420ms cubic-bezier(0.22, 1, 0.36, 1)",
-                    transformStyle: "preserve-3d",
-                    transform: `perspective(1800px) rotateX(${staffModalExpanded ? 180 : 0}deg)`,
-                  }}
-                >
+            <button type="button" aria-label="Close staff backdrop" onClick={onCloseStaffModal} className="glass-modal-backdrop absolute inset-0" />
+            <div
+              ref={staffModalPanelRef}
+              data-staff-modal="true"
+              className="glass-modal-panel relative z-[1601] flex h-[min(760px,86svh)] w-full max-w-[920px] flex-col overflow-hidden"
+            >
+              <div className="glass-modal-header flex h-[56px] shrink-0 items-center justify-between px-5">
+                <div className="flex items-center gap-2.5">
                   <div
-                    className="absolute inset-0 rounded-[18px] border px-4 py-3"
-                    style={{
-                      backfaceVisibility: "hidden",
-                      WebkitBackfaceVisibility: "hidden",
-                      borderColor: "var(--glass-border)",
-                      backgroundColor: "var(--glass-bg-strong)",
-                      backdropFilter: "blur(20px) saturate(180%)",
-                      WebkitBackdropFilter: "blur(20px) saturate(180%)",
-                      boxShadow: "var(--shadow-glass)",
-                    }}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-full text-white"
+                    style={{ backgroundImage: "linear-gradient(135deg, #A796F0 0%, #6E56D9 100%)" }}
                   >
-                    <div className="mb-2 flex items-center gap-2">
-                      <div
-                        className="inline-flex h-[30px] w-[30px] items-center justify-center rounded-full text-white"
-                        style={{ backgroundImage: "linear-gradient(135deg, #A796F0 0%, #6E56D9 100%)" }}
-                      >
-                        <Users2 size={16} strokeWidth={2.4} />
-                      </div>
-                      <p className="text-[14px] font-semibold sm:text-[16px] lg:text-[17px]" style={{ color: dashboardPalette.textSoft }}>Staff Members</p>
-                    </div>
-                    <p className="text-[34px] font-medium leading-none sm:text-[40px] lg:text-[46px]" style={{ color: dashboardPalette.text }}>{stats.staff}</p>
-                    {stats.weekly.staff > 0 && (
-                      <p className="pt-1 text-[13px] font-bold" style={{ color: "#2A7A3B" }}>
-                        + {stats.weekly.staff} this week
-                      </p>
-                    )}
+                    <Users2 size={14} strokeWidth={2.6} />
                   </div>
-                  <div
-                    data-staff-modal="true"
-                    className="glass-modal-panel absolute inset-0 flex flex-col overflow-hidden"
-                    style={{
-                      backfaceVisibility: "hidden",
-                      WebkitBackfaceVisibility: "hidden",
-                      transform: "rotateX(180deg)",
-                      opacity: staffModalExpanded ? 1 : 0,
-                      pointerEvents: staffModalExpanded ? "auto" : "none",
-                      transition: "opacity 180ms ease",
-                    }}
+                  <p className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>Staff Members</p>
+                  <span
+                    className="rounded-full border px-2 py-[2px] text-[11px] font-bold"
+                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
                   >
-                    <div className="glass-modal-header flex h-[56px] shrink-0 items-center justify-between px-5">
-                      <div className="flex items-center gap-2.5">
-                        <div
-                          className="inline-flex h-7 w-7 items-center justify-center rounded-full text-white"
-                          style={{ backgroundImage: "linear-gradient(135deg, #A796F0 0%, #6E56D9 100%)" }}
-                        >
-                          <Users2 size={14} strokeWidth={2.6} />
-                        </div>
-                        <p className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>Staff Members</p>
-                        <span
-                          className="rounded-full border px-2 py-[2px] text-[11px] font-bold"
-                          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
-                        >
-                          {companyMembers.length}
-                        </span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={onCloseStaffModal}
-                        className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border hover:brightness-95"
-                        style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
-                      >
-                        <X size={16} />
-                      </button>
-                    </div>
-                    <div ref={staffMembersScrollRef} className="glass-scroll hide-native-scrollbar min-h-0 flex-1 overflow-auto px-5 py-2">
-                      {!companyMembers.length ? (
-                        <div
-                          className="flex flex-col items-center gap-2 rounded-[14px] border border-dashed px-4 py-10 text-center"
-                          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}
-                        >
-                          <Users2 size={22} style={{ color: "var(--text-muted)" }} />
-                          <p className="text-[13px] font-semibold" style={{ color: "var(--text-muted)" }}>No staff members found.</p>
-                        </div>
-                      ) : (
-                        <div>
-                          {staffMembersByRole.map(([roleKey, members]) => {
-                            const roleColor = roleColorById.get(roleKey) || "#7D99B3";
-                            const roleLabel = roleNameById.get(roleKey) || roleLabelFromKey(roleKey);
-                            return (
-                              <div key={`staff_role_${roleKey}`}>
-                                <div
-                                  className="sticky top-0 z-10 -mx-5 flex items-center gap-2 border-b px-5 py-2"
-                                  style={{
-                                    borderColor: "var(--glass-border)",
-                                    backgroundColor: "var(--glass-modal-bg)",
-                                    backdropFilter: "blur(12px) saturate(220%)",
-                                    WebkitBackdropFilter: "blur(12px) saturate(220%)",
-                                  }}
-                                >
-                                  <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: roleColor }} />
-                                  <p className="text-[13px] font-bold uppercase tracking-[0.5px]" style={{ color: "var(--text-main)" }}>{roleLabel}</p>
-                                  <span
-                                    className="inline-flex rounded-full border px-2.5 py-[2px] text-[11px] font-bold"
-                                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
-                                  >
-                                    {members.length}
-                                  </span>
-                                </div>
-                                <div className="py-1">
-                                  {members.map((member, index) => {
-                                    const avatarColor = String(member.badgeColor || member.userColor || companyThemeColor).trim() || companyThemeColor;
-                                    return (
-                                      <div
-                                        key={`staff_member_${member.uid}`}
-                                        className="flex items-center gap-3 rounded-[10px] px-3 py-2.5 transition hover:brightness-95"
-                                        style={{ borderTop: index > 0 ? "1px solid var(--glass-border)" : "1px solid transparent" }}
-                                      >
-                                        <span
-                                          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[12px] font-bold text-white"
-                                          style={{ backgroundColor: avatarColor }}
-                                        >
-                                          {initials(member.displayName || member.email || member.uid)}
-                                        </span>
-                                        <div className="min-w-0 flex-1">
-                                          <p className="truncate text-[13px] font-bold" style={{ color: "var(--text-main)" }}>
-                                            {member.displayName || member.email || member.uid}
-                                          </p>
-                                          {member.email ? (
-                                            <p className="truncate text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>
-                                              {member.email}
-                                            </p>
-                                          ) : null}
-                                        </div>
-                                        <button
-                                          type="button"
-                                          disabled
-                                          className="inline-flex h-8 shrink-0 items-center justify-center rounded-[8px] border px-3 text-[12px] font-bold opacity-60"
-                                          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
-                                          title="Coming soon"
-                                        >
-                                          View
-                                        </button>
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  </div>
+                    {companyMembers.length}
+                  </span>
                 </div>
-              );
-            })()}
+                <button
+                  type="button"
+                  onClick={onCloseStaffModal}
+                  className={iconRemoveButtonClass}
+                  aria-label="Close"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+              <div ref={staffMembersScrollRef} className="glass-scroll hide-native-scrollbar min-h-0 flex-1 overflow-auto px-5 py-2">
+                {!companyMembers.length ? (
+                  <div
+                    className="flex flex-col items-center gap-2 rounded-[14px] border border-dashed px-4 py-10 text-center"
+                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}
+                  >
+                    <Users2 size={22} style={{ color: "var(--text-muted)" }} />
+                    <p className="text-[13px] font-semibold" style={{ color: "var(--text-muted)" }}>No staff members found.</p>
+                  </div>
+                ) : (
+                  <div>
+                    {staffMembersByRole.map(([roleKey, members]) => {
+                      const roleColor = roleColorById.get(roleKey) || "#7D99B3";
+                      const roleLabel = roleNameById.get(roleKey) || roleLabelFromKey(roleKey);
+                      return (
+                        <div key={`staff_role_${roleKey}`}>
+                          <div
+                            className="sticky top-0 z-10 -mx-5 flex items-center gap-2 border-b px-5 py-2"
+                            style={{
+                              borderColor: "var(--glass-border)",
+                              backgroundColor: "var(--glass-modal-bg)",
+                              backdropFilter: "blur(12px) saturate(220%)",
+                              WebkitBackdropFilter: "blur(12px) saturate(220%)",
+                            }}
+                          >
+                            <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: roleColor }} />
+                            <p className="text-[13px] font-bold uppercase tracking-[0.5px]" style={{ color: "var(--text-main)" }}>{roleLabel}</p>
+                            <span
+                              className="inline-flex rounded-full border px-2.5 py-[2px] text-[11px] font-bold"
+                              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
+                            >
+                              {members.length}
+                            </span>
+                          </div>
+                          <div className="py-1">
+                            {members.map((member, index) => {
+                              const avatarColor = String(member.badgeColor || member.userColor || companyThemeColor).trim() || companyThemeColor;
+                              return (
+                                <div
+                                  key={`staff_member_${member.uid}`}
+                                  className="flex items-center gap-3 rounded-[10px] px-3 py-2.5 transition hover:brightness-95"
+                                  style={{ borderTop: index > 0 ? "1px solid var(--glass-border)" : "1px solid transparent" }}
+                                >
+                                  <span
+                                    className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[12px] font-bold text-white"
+                                    style={{ backgroundColor: avatarColor }}
+                                  >
+                                    {initials(member.displayName || member.email || member.uid)}
+                                  </span>
+                                  <div className="min-w-0 flex-1">
+                                    <p className="truncate text-[13px] font-bold" style={{ color: "var(--text-main)" }}>
+                                      {member.displayName || member.email || member.uid}
+                                    </p>
+                                    {member.email ? (
+                                      <p className="truncate text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>
+                                        {member.email}
+                                      </p>
+                                    ) : null}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    disabled
+                                    className="inline-flex h-8 shrink-0 items-center justify-center rounded-[8px] border px-3 text-[12px] font-bold opacity-60"
+                                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
+                                    title="Coming soon"
+                                  >
+                                    View
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>,
           document.body,
         )
@@ -2851,9 +2655,9 @@ export default function DashboardPage() {
                     }`}
                     style={{
                       borderColor: "var(--glass-border)",
+                      // No backdrop blur: the stat cards sit over the plain page background (a blur
+                      // shows nothing there) and it was redone on every frame of a page scroll.
                       backgroundColor: "var(--glass-bg-strong)",
-                      backdropFilter: "blur(20px) saturate(180%)",
-                      WebkitBackdropFilter: "blur(20px) saturate(180%)",
                       boxShadow: "var(--shadow-glass)",
                       willChange: "transform",
                     }}
@@ -2870,7 +2674,7 @@ export default function DashboardPage() {
                     </div>
                     <p className="hidden text-[32px] font-semibold leading-none sm:block sm:text-[38px] lg:text-[42px]" style={{ color: dashboardPalette.text }}>{value}</p>
                     {stats.weekly[card.key] > 0 && (
-                      <p className="hidden pt-1 text-[13px] font-bold sm:block" style={{ color: "#2A7A3B" }}>
+                      <p className="hidden pt-1 text-[13px] font-bold sm:block" style={{ color: isDarkMode ? "var(--success)" : "#2A7A3B" }}>
                         + {stats.weekly[card.key]} this week
                       </p>
                     )}
@@ -2886,7 +2690,7 @@ export default function DashboardPage() {
               viewport, since the toolbar's own height would always sit above them inside the
               stuck panel. */}
           <div
-            className={`relative z-10 -mx-3 border-t px-[10px] pb-3 md:-mx-4 lg:-mx-5 ${dashboardStatCardsEnabled ? "pt-[19px]" : "pt-0"} ${dashboardViewMode === "board" ? "border-b" : ""}`}
+            className={`relative z-10 -mx-3 border-t px-[10px] pb-3 md:-mx-4 lg:-mx-5 ${dashboardStatCardsEnabled ? "pt-3" : "pt-0"} ${dashboardViewMode === "board" ? "border-b" : ""}`}
             style={{
               borderColor: "var(--glass-border)",
               backgroundColor: dashboardPalette.panelMuted,
@@ -3164,7 +2968,7 @@ export default function DashboardPage() {
                               });
                               setStatusMenuProjectId(project.id);
                             }}
-                            className="inline-flex h-7 w-[118px] shrink-0 items-center justify-center rounded-[10px] px-3 text-[11px] font-bold"
+                            className="inline-flex h-7 w-[118px] shrink-0 items-center justify-center rounded-[10px] px-3 text-[11px] font-normal"
                             style={projectStatusPillStyle(project.statusLabel || "New")}
                             aria-disabled={statusUpdatingProjectId === project.id || !canEditProjectFromDashboard(project)}
                             aria-label="Project status"
@@ -3356,7 +3160,14 @@ export default function DashboardPage() {
           // backgrounds/borders/hover states, which span its full width) touches the sidebar on
           // the left and the true viewport edge on the right — unlike the board columns above,
           // which stay padded to match their own gap from the filter bar.
-          <div ref={dashboardListTableWrapperCallbackRef} className="hidden lg:-mx-5 lg:block">
+          <div
+            ref={dashboardListTableWrapperCallbackRef}
+            className="hidden lg:-mx-5 lg:block"
+            // Dark mode: the list sits on a glass panel (rows are see-through over it). Light mode is
+            // unchanged. No backdrop blur: the panel is over the plain page background, where a blur
+            // shows nothing, and the browser redid it across the whole list on every frame of a scroll.
+            style={isDarkMode ? { backgroundColor: "var(--glass-bg)" } : undefined}
+          >
                 <table
                   className="w-full table-fixed text-[12px]"
                   style={{ minWidth: hideTagsColumnInList ? listTableFullMinWidthPx - LIST_TABLE_TAGS_COLUMN_WIDTH_PX : listTableFullMinWidthPx }}
@@ -3377,7 +3188,8 @@ export default function DashboardPage() {
                         ? isDarkMode
                           ? "rgba(10,10,12,0.4)"
                           : "rgba(238,241,248,0.4)"
-                        : dashboardPalette.panelMuted,
+                        : // Same colour as the toolbar strip above (search bar, view toggles).
+                          dashboardPalette.panelMuted,
                       backdropFilter: isProjectsHeaderStuck ? "blur(12px) saturate(220%)" : "none",
                       WebkitBackdropFilter: isProjectsHeaderStuck ? "blur(12px) saturate(220%)" : "none",
                       transition: "background-color 280ms ease, backdrop-filter 280ms ease",
@@ -3430,7 +3242,7 @@ export default function DashboardPage() {
 
                   {showProjectsLoadingState && (
                     <tr>
-                      <td className="py-3" style={{ color: dashboardPalette.textMuted, backgroundColor: dashboardPalette.panelBg }} colSpan={hideTagsColumnInList ? 5 : 6}>
+                      <td className="py-3" style={{ color: dashboardPalette.textMuted, backgroundColor: isDarkMode ? "transparent" : dashboardPalette.panelBg }} colSpan={hideTagsColumnInList ? 5 : 6}>
                         <div className="flex min-h-[60vh] items-center justify-center gap-2">
                           Loading projects...
                           <div
@@ -3444,7 +3256,7 @@ export default function DashboardPage() {
                   )}
                   {!showProjectsLoadingState && filtered.length === 0 && (
                     <tr>
-                      <td className="py-10 text-center" style={{ backgroundColor: dashboardPalette.panelBg }} colSpan={hideTagsColumnInList ? 5 : 6}>
+                      <td className="py-10 text-center" style={{ backgroundColor: isDarkMode ? "transparent" : dashboardPalette.panelBg }} colSpan={hideTagsColumnInList ? 5 : 6}>
                         <div className="flex flex-col items-center gap-3">
                           <p className="text-[14px] font-bold" style={{ color: dashboardPalette.textSoft }}>No Projects Yet</p>
                           <button
@@ -3460,13 +3272,22 @@ export default function DashboardPage() {
                   )}
 
                   {visibleProjects.map((project) => {
-                    const rowBg = hoveredProjectId === project.id ? dashboardPalette.rowHover : dashboardPalette.panelBg;
+                    // Dark mode: see-through glass rows, brighter on hover.
+                    // Light mode: unchanged (white, light blue-grey on hover).
+                    const isRowHovered = hoveredProjectId === project.id;
+                    const rowBg = isDarkMode
+                      ? isRowHovered
+                        ? "rgba(255, 255, 255, 0.09)"
+                        : "transparent"
+                      : isRowHovered
+                        ? dashboardPalette.rowHover
+                        : dashboardPalette.panelBg;
                     return (
                     <tr
                       key={project.id}
                       className="cursor-pointer border-b transition-colors"
                       style={{
-                        borderBottomColor: dashboardPalette.border,
+                        borderBottomColor: isDarkMode ? "var(--glass-border)" : dashboardPalette.border,
                         opacity: openingProjectAnim?.id === project.id ? 0 : 1,
                         transition: "opacity 200ms ease",
                       }}
@@ -3554,7 +3375,7 @@ export default function DashboardPage() {
                               });
                               setStatusMenuProjectId(project.id);
                             }}
-                            className="inline-flex items-center justify-center rounded-[10px] px-3 py-2 text-[12px] font-bold"
+                            className="inline-flex items-center justify-center rounded-[10px] px-3 py-2 text-[12px] font-normal"
                             style={{ ...projectStatusPillStyle(project.statusLabel || "New"), width: listStatusPillWidthPx, marginRight: 10 }}
                             aria-disabled={statusUpdatingProjectId === project.id || !canEditProjectFromDashboard(project)}
                             aria-label="Project status"

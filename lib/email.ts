@@ -8,12 +8,33 @@ export type SendVerificationEmailInput = {
 
 export type SendVerificationEmailResult = { ok: true } | { ok: false; error: string };
 
+// A setting as entered in the host's dashboard, without the stray spaces, line breaks or wrapping quote
+// marks that easily come along when pasting it in.
+function readEnvValue(value: string | undefined): string {
+  return String(value || "").trim().replace(/^(["'])(.*)\1$/, "$2").trim();
+}
+
+// The sender for Resend, which rejects anything but "address" or "Name <address>". The address is picked
+// out of whatever the setting holds, so a pasting slip (quote marks, the setting's own name in front, an
+// invisible character) can't stop the emails going; it's sent as "CutSmart <address>" unless the setting
+// gives its own name. "" when there's no address in it at all.
+function senderFromEnv(value: string | undefined): string {
+  const raw = readEnvValue(value);
+  const address = raw.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/)?.[0] ?? "";
+  if (!address) {
+    if (raw) console.error("[email] RESEND_FROM_EMAIL doesn't contain an email address:", JSON.stringify(raw));
+    return "";
+  }
+  const name = raw.match(/^\s*([A-Za-z0-9][^<>="'@]*?)\s*</)?.[1]?.trim() || "CutSmart";
+  return `${name} <${address}>`;
+}
+
 export async function sendVerificationEmail({
   to,
   code,
 }: SendVerificationEmailInput): Promise<SendVerificationEmailResult> {
-  const apiKey = process.env.RESEND_API_KEY || "";
-  const from = process.env.RESEND_FROM_EMAIL || "";
+  const apiKey = readEnvValue(process.env.RESEND_API_KEY);
+  const from = senderFromEnv(process.env.RESEND_FROM_EMAIL);
   if (!apiKey || !from) {
     return { ok: false, error: "missing-resend-config" };
   }
@@ -49,8 +70,8 @@ export async function sendSpecsConfirmationEmail({
   projectName,
   link,
 }: SendSpecsConfirmationEmailInput): Promise<SendVerificationEmailResult> {
-  const apiKey = process.env.RESEND_API_KEY || "";
-  const from = process.env.RESEND_FROM_EMAIL || "";
+  const apiKey = readEnvValue(process.env.RESEND_API_KEY);
+  const from = senderFromEnv(process.env.RESEND_FROM_EMAIL);
   if (!apiKey || !from) {
     return { ok: false, error: "missing-resend-config" };
   }

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
+import { requireCompanyMember } from "@/lib/api-company-access";
 
 function toStr(value: unknown) {
   return String(value ?? "").trim();
@@ -181,6 +182,10 @@ export async function GET(request: NextRequest) {
   );
   if (!companyId) {
     return NextResponse.json({ ok: false, error: "missing-company-id" }, { status: 400 });
+  }
+  // Leads are personal data: only a signed-in member of this company may read them.
+  if (!(await requireCompanyMember(request, companyId))) {
+    return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   }
 
   try {
@@ -384,6 +389,11 @@ export async function PATCH(request: NextRequest) {
       },
       { status: 400 },
     );
+  }
+  // Changing a lead needs a signed-in member of this company (the app is the only caller; Zapier's own
+  // POST/DELETE use the company's webhook secret instead).
+  if (!(await requireCompanyMember(request, companyId))) {
+    return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   }
 
   try {

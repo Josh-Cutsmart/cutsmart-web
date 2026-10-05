@@ -1,5 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import { DocumentScrollbar } from "@/components/glass-scrollbar-thumb";
+import { ScrollLockWatcher } from "@/components/scroll-lock-watcher";
 
 export const metadata: Metadata = {
   title: "CutSmart Web",
@@ -181,6 +183,9 @@ export default function RootLayout({
             app/(staff)/layout.tsx instead, scoped to just the staff-facing routes (login, company
             onboarding, and everything under (app)) — see that file's own comment for why. */}
         {children}
+        {/* The page's own scrollbar, as the glass thumb (below the title bars) — every route. */}
+        <DocumentScrollbar />
+        <ScrollLockWatcher />
       </body>
     </html>
   );

@@ -48,8 +48,8 @@ export function VerifyEmailGate() {
       <div
         className="w-[min(440px,96vw)] rounded-[18px] border p-6 backdrop-blur-[10px]"
         style={{
-          borderColor: "rgba(255,255,255,0.45)",
-          backgroundColor: "rgba(255,255,255,0.58)",
+          borderColor: "var(--glass-highlight)",
+          backgroundColor: "color-mix(in srgb, var(--panel-bg) 58%, transparent)",
           boxShadow: "0 18px 50px rgba(15,23,42,0.10)",
         }}
       >
@@ -88,7 +88,7 @@ export function VerifyEmailGate() {
               inputMode="numeric"
               className="h-12 w-full rounded-[10px] border border-[#D8DEE8] bg-white/80 px-4 text-center text-[18px] font-bold tracking-[6px] text-[#0F172A] outline-none"
             />
-            {error ? <p className="text-[12px] font-semibold text-[#B42318]">{error}</p> : null}
+            {error ? <p className="text-[12px] font-semibold text-[var(--danger-strong)]">{error}</p> : null}
             <button
               type="button"
               disabled={busy || code.trim().length !== 6}
@@ -101,14 +101,14 @@ export function VerifyEmailGate() {
               type="button"
               disabled={busy || resendCooldown > 0}
               onClick={() => void onSend()}
-              className="h-11 w-full rounded-[10px] border border-[#D8DEE8] bg-white/60 text-[13px] font-bold text-[#334155] hover:brightness-95 disabled:opacity-55"
+              className="h-11 w-full rounded-[10px] border border-[#D8DEE8] bg-[color-mix(in_srgb,var(--panel-bg)_60%,transparent)] text-[13px] font-bold text-[#334155] hover:brightness-95 disabled:opacity-55"
             >
               {resendCooldown > 0 ? `Resend Code (${resendCooldown}s)` : "Resend Code"}
             </button>
           </div>
         ) : (
           <div className="mt-6 space-y-3">
-            {error ? <p className="text-[12px] font-semibold text-[#B42318]">{error}</p> : null}
+            {error ? <p className="text-[12px] font-semibold text-[var(--danger-strong)]">{error}</p> : null}
             <button
               type="button"
               disabled={busy}

@@ -2,13 +2,18 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth-context";
-import { retryAsync, withTimeout } from "@/lib/load-retry";
+import { hedgedAsync } from "@/lib/load-retry";
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
+import { invalidateCompanyCache, invalidateUserCache } from "@/lib/firestore-cache";
+import { clearLastKnown, readLastKnown, saveLastKnown } from "@/lib/last-known";
 
 // Same key app-shell/dashboard/etc use to resolve "which company is active" (see
 // lib/auth-context.tsx's own copy of this same literal for the full history/reasoning).
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
-const ACCESS_LOAD_ATTEMPT_TIMEOUT_MS = 6000;
+// A slow lookup isn't thrown away and restarted — a second attempt starts alongside it after
+// ACCESS_LOAD_HEDGE_MS (see hedgedAsync), and it gives up after ACCESS_LOAD_TIMEOUT_MS.
+const ACCESS_LOAD_HEDGE_MS = 6000;
+const ACCESS_LOAD_TIMEOUT_MS = 20000;
 const ACCESS_LOAD_ATTEMPTS = 2;
 
 export type CompanyAccessStatus = "loading" | "ready" | "error";
@@ -53,6 +58,12 @@ interface CachedAccess {
 const accessCache = new Map<string, CachedAccess>();
 
 export function invalidateCompanyAccessCache(params?: { uid?: string; companyId?: string }): void {
+  // The shared document cache under it (lib/firestore-cache.ts) too, so the re-check reads fresh data.
+  invalidateCompanyCache(params?.companyId);
+  if (params?.uid) invalidateUserCache(params.uid);
+  // And the access saved on the device, so pages wait for the re-check instead of briefly showing the
+  // old role/permissions.
+  clearLastKnown("access:");
   if (!params || (!params.uid && !params.companyId)) {
     accessCache.clear();
     return;
@@ -156,7 +167,8 @@ export function useCompanyAccess(...scopedCompanyIdArg: [string | null | undefin
         return;
       }
 
-      const cacheKey = scopedCompanyId ? `${user.uid}::${scopedCompanyId}` : user.uid;
+      const uid = user.uid;
+      const cacheKey = scopedCompanyId ? `${uid}::${scopedCompanyId}` : uid;
       const cached = accessCache.get(cacheKey);
       if (cached && retryTick === 0) {
         if (!cancelled) {
@@ -165,28 +177,42 @@ export function useCompanyAccess(...scopedCompanyIdArg: [string | null | undefin
         return;
       }
 
+      const storedCompanyId =
+        !scopedCompanyId && typeof window !== "undefined"
+          ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim()
+          : "";
+      const knownCompanyId = scopedCompanyId || storedCompanyId || String(user.companyId || "").trim();
+      // The access last checked on this device for this same company: shown straight away (pages don't
+      // wait on the lookup below), then checked again — re-rendering only if it changed. Not used when
+      // retrying after an error.
+      const savedName = `access:${cacheKey}`;
+      const saved = retryTick === 0 && knownCompanyId ? readLastKnown<CachedAccess>(savedName, uid) : null;
+      const shown = saved && saved.uid === uid && saved.companyId === knownCompanyId ? saved : null;
       if (!cancelled) {
-        setState((prev) => ({ ...prev, status: "loading", error: null }));
+        if (shown) {
+          setState({ status: "ready", ...shown, error: null });
+        } else {
+          setState((prev) => ({ ...prev, status: "loading", error: null }));
+        }
       }
+      const settle = (result: CachedAccess) => {
+        accessCache.set(cacheKey, result);
+        saveLastKnown(savedName, uid, result);
+        if (shown && JSON.stringify(shown) === JSON.stringify(result)) return;
+        setState({ status: "ready", ...result, error: null });
+      };
 
       try {
-        let companyId = scopedCompanyId;
+        let companyId = knownCompanyId;
 
-        if (!companyId) {
-          const storedCompanyId =
-            typeof window !== "undefined"
-              ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim()
-              : "";
-          const directCompanyId = String(user.companyId || "").trim();
-          companyId = storedCompanyId || directCompanyId;
-
-          if (!companyId) {
-            const membership = await retryAsync(
-              () => withTimeout(fetchPrimaryMembership(user.uid), ACCESS_LOAD_ATTEMPT_TIMEOUT_MS, "Membership lookup timed out"),
-              { attempts: ACCESS_LOAD_ATTEMPTS, delayMs: 250 },
-            );
-            companyId = String(membership?.companyId || "").trim();
-          }
+        if (!companyId && !scopedCompanyId) {
+          const membership = await hedgedAsync(() => fetchPrimaryMembership(uid), {
+            attempts: ACCESS_LOAD_ATTEMPTS,
+            hedgeAfterMs: ACCESS_LOAD_HEDGE_MS,
+            timeoutMs: ACCESS_LOAD_TIMEOUT_MS,
+            message: "Membership lookup timed out",
+          });
+          companyId = String(membership?.companyId || "").trim();
 
           if (!companyId) {
             if (cancelled) return;
@@ -196,36 +222,36 @@ export function useCompanyAccess(...scopedCompanyIdArg: [string | null | undefin
             if (membershipStatus === "error") {
               setState({ status: "error", companyId: "", role: "", roleId: undefined, permissionKeys: [], error: new Error("Could not resolve a company for this account") });
             } else {
-              const result: CachedAccess = {
-                uid: user.uid,
+              settle({
+                uid,
                 companyId: "",
                 role: String(user.role || "").trim().toLowerCase(),
                 roleId: undefined,
                 permissionKeys: Array.isArray(user.permissions) ? user.permissions : [],
-              };
-              accessCache.set(cacheKey, result);
-              setState({ status: "ready", ...result, error: null });
+              });
             }
             return;
           }
         }
 
-        const access = await retryAsync(
-          () => withTimeout(fetchCompanyAccess(companyId, user.uid), ACCESS_LOAD_ATTEMPT_TIMEOUT_MS, "Company access lookup timed out"),
-          { attempts: ACCESS_LOAD_ATTEMPTS, delayMs: 250 },
-        );
+        const access = await hedgedAsync(() => fetchCompanyAccess(companyId, uid), {
+          attempts: ACCESS_LOAD_ATTEMPTS,
+          hedgeAfterMs: ACCESS_LOAD_HEDGE_MS,
+          timeoutMs: ACCESS_LOAD_TIMEOUT_MS,
+          message: "Company access lookup timed out",
+        });
         if (cancelled) return;
-        const result: CachedAccess = {
-          uid: user.uid,
+        settle({
+          uid,
           companyId,
           role: String(access?.role || user.role || "").trim().toLowerCase(),
           roleId: access?.roleId || undefined,
           permissionKeys: access?.permissionKeys ?? (Array.isArray(user.permissions) ? user.permissions : []),
-        };
-        accessCache.set(cacheKey, result);
-        setState({ status: "ready", ...result, error: null });
+        });
       } catch (error) {
         if (cancelled) return;
+        // Already showing the last-known access — keep it rather than replacing it with an error.
+        if (shown) return;
         setState({ status: "error", companyId: "", role: "", roleId: undefined, permissionKeys: [], error });
       }
     };

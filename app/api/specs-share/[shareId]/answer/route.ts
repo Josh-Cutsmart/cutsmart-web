@@ -102,13 +102,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         tx.update(target.ref, { grid: nextGridSanitized });
       } else {
         // Legacy link (created before versionId existed) — same dotted-path update this route
-        // always used against the live project doc. Also mirrors into
-        // projectSettings.sales.specificationsGrid since the internal editor's own
-        // extractSalesPayloadFromProject (app/(app)/projects/[projectId]/page.tsx) reads
-        // projectSettings.sales BEFORE the plain `sales` field.
+        // always used against the live project doc. Only the top-level `sales` copy: it's the one
+        // the app reads (see withoutLegacyCopies in lib/firestore-data.ts).
         tx.update(target.ref, {
           "sales.specificationsGrid": nextGridSanitized,
-          "projectSettings.sales.specificationsGrid": nextGridSanitized,
         });
       }
       return { ok: true } as const;

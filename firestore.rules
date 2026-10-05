@@ -248,32 +248,47 @@ service cloud.firestore {
       }
     }
 
-    // Optional legacy top-level projects fallback
+    // Optional legacy top-level projects fallback. Only members of the project's own company (or
+    // whoever created it) can read or change one — it used to be any signed-in account, i.e. anyone
+    // who registered could read every company's projects here. Looking up a project that isn't here
+    // is still allowed (the app checks this location before the company's own jobs), and reading the
+    // whole collection unfiltered is refused.
+    function canUseLegacyProject(data) {
+      return signedIn() &&
+        (isCompanyMember(data.get("companyId", "")) || data.get("createdByUid", "") == request.auth.uid);
+    }
+    function canUseLegacyProjectChild(projectId) {
+      return signedIn() &&
+        exists(/databases/$(database)/documents/projects/$(projectId)) &&
+        canUseLegacyProject(get(/databases/$(database)/documents/projects/$(projectId)).data);
+    }
     match /projects/{projectId} {
-      allow read, write: if signedIn();
+      allow read: if signedIn() && (resource == null || canUseLegacyProject(resource.data));
+      allow create: if canUseLegacyProject(request.resource.data);
+      allow update, delete: if canUseLegacyProject(resource.data);
 
       // Same version-history subcollections as companies/{companyId}/jobs/{jobId} above, for
-      // projects still stored in this legacy top-level location.
+      // projects still stored in this legacy top-level location — same access as the project.
       match /quoteGridVersions/{versionId} {
-        allow read, write: if signedIn();
+        allow read, write: if canUseLegacyProjectChild(projectId);
       }
       match /specificationsVersions/{versionId} {
-        allow read, write: if signedIn();
+        allow read, write: if canUseLegacyProjectChild(projectId);
       }
       match /productComparisons/{comparisonId} {
-        allow read, write: if signedIn();
+        allow read, write: if canUseLegacyProjectChild(projectId);
       }
       match /cutlistData/{kind} {
-        allow read, write: if signedIn();
+        allow read, write: if canUseLegacyProjectChild(projectId);
       }
       match /checklists/{checklistId} {
-        allow read, write: if signedIn();
+        allow read, write: if canUseLegacyProjectChild(projectId);
       }
       match /salesGrids/{kind} {
-        allow read, write: if signedIn();
+        allow read, write: if canUseLegacyProjectChild(projectId);
       }
       match /projectMedia/{kind} {
-        allow read, write: if signedIn();
+        allow read, write: if canUseLegacyProjectChild(projectId);
       }
     }
   }

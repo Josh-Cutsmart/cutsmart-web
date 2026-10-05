@@ -1,10 +1,10 @@
+import { cachedValue, invalidateCompanyCache, invalidateUserCache, readCompanyDocCached, readUserDocCached } from "@/lib/firestore-cache";
 import {
   collection,
   collectionGroup,
   deleteDoc,
   deleteField,
   doc,
-  documentId,
   type DocumentReference,
   getDoc,
   getDocs,
@@ -153,9 +153,9 @@ export function parseCutlistRows(data: Record<string, unknown>): unknown[] {
   return Array.isArray(container.rows) ? (container.rows as unknown[]) : [];
 }
 
-// Mirrors the project page's own extractSalesPayloadFromProject candidate-priority logic
-// (projectSettings.sales → sales → projectSettings.salesJson → salesJson, each optionally a
-// JSON string) but reads directly off a raw Firestore document instead of an already-normalized
+// Reads a field of the project's sales data (sales → projectSettings.sales → salesJson →
+// projectSettings.salesJson, each optionally a JSON string) directly off a raw Firestore document
+// instead of an already-normalized
 // Project object — used by the lazy sales-grid/initial-measure-cutlist subcollection hooks' own
 // legacy fallback, since normalizeProject no longer parses these fields into `project` at all.
 export function extractLegacySalesFieldFromRawDoc(data: Record<string, unknown>, key: string): unknown {
@@ -172,7 +172,8 @@ export function extractLegacySalesFieldFromRawDoc(data: Record<string, unknown>,
     return null;
   };
   const projectSettings = asObject(data.projectSettings) ?? {};
-  const candidates: unknown[] = [projectSettings.sales, data.sales, projectSettings.salesJson, data.salesJson];
+  // The top-level `sales` first — it's the copy that's kept up to date (see withoutLegacyCopies).
+  const candidates: unknown[] = [data.sales, projectSettings.sales, data.salesJson, projectSettings.salesJson];
   for (const candidate of candidates) {
     const parsed = asObject(candidate);
     if (parsed && key in parsed) return parsed[key];
@@ -304,7 +305,7 @@ function normalizeProject(id: string, data: Record<string, unknown>, options?: {
         // ignore invalid legacy string payload
       }
     }
-    if (salesPayload && !("sales" in settings)) {
+    if (salesPayload) {
       // quoteGrid/specificationsGrid/initialCutlist moved to their own subcollections (see
       // fetchSalesGridData/saveSalesGridData and cutlistData's "initialMeasure" kind) — the
       // heaviest fields in this blob, stripped here so they're never parsed/held in memory on a
@@ -312,7 +313,10 @@ function normalizeProject(id: string, data: Record<string, unknown>, options?: {
       // quoteGridLastClosedVersion is deliberately NOT included here — it stays embedded (small,
       // not an ever-growing array, and tightly coupled to the Quote grid's own staleness-
       // detection logic in a way that isn't worth the risk of extracting in this pass).
-      const trimmedSales = { ...salesPayload };
+      // The top-level `sales` is the one copy kept up to date (see withoutLegacyCopies), so its values
+      // win over a `projectSettings.sales` left behind by older saves (merged, so nothing that's only
+      // in the older copy is lost).
+      const trimmedSales = { ...(asRecord(settings.sales) ?? {}), ...salesPayload };
       delete trimmedSales.quoteGrid;
       delete trimmedSales.specificationsGrid;
       delete trimmedSales.initialCutlist;
@@ -454,6 +458,7 @@ async function syncCompanyProjectTagUsage(companyId: string): Promise<void> {
       (a, b) => b.count - a.count || a.value.localeCompare(b.value),
     );
 
+    invalidateCompanyCache(cid);
     await updateDoc(doc(db, "companies", cid), {
       projectTagUsage: {
         tags: sorted.map((row) => ({ value: row.value, count: row.count })),
@@ -528,6 +533,7 @@ async function patchCompanyTagUsageByDelta(
       (a, b) => b.count - a.count || a.value.localeCompare(b.value),
     );
 
+    invalidateCompanyCache(cid);
     await updateDoc(companyRef, {
       projectTagUsage: {
         tags: tags.map((row) => ({ value: row.value, count: row.count })),
@@ -669,51 +675,20 @@ async function fetchCompanyIdsForUser(uid: string): Promise<string[]> {
   if (!db || !uid) {
     return [];
   }
-  const database = db;
-
-  // Two independent lookups, run concurrently. A "uid stored as a field" collectionGroup query
-  // and a collectionGroup("members") query used to live here too — both always threw a silently-
-  // swallowed permission-denied (Firestore can only allow a collection-group query when it can
-  // statically prove every possible match satisfies the security rules, which requires
-  // constraining by document id the way the query below does; a data-field filter can't be proven
-  // safe, and there's no rule for a "members" collection at all) — pure wasted round trips.
-  const [byDocIdIds, profileFallbackIds] = await Promise.all([
-    // Primary desktop-compatible path: memberships doc id == uid.
-    (async () => {
-      try {
-        const byDocId = await getDocs(
-          query(collectionGroup(database, "memberships"), where(documentId(), "==", uid), limit(100)),
-        );
-        return byDocId.docs.map((docSnap) => docSnap.ref.parent.parent?.id).filter((id): id is string => Boolean(id));
-      } catch {
-        return [];
-      }
-    })(),
-    // Profile fallback: users/{uid}.companyId / activeCompanyId
-    (async () => {
-      try {
-        const userSnap = await getDoc(doc(database, "users", uid));
-        if (!userSnap.exists()) return [];
-        const data = (userSnap.data() ?? {}) as Record<string, unknown>;
-        const nestedCompany =
-          typeof data.company === "object" && data.company !== null
-            ? (data.company as Record<string, unknown>)
-            : null;
-        const companyId = String(
-          data.companyId ??
-            data.activeCompanyId ??
-            nestedCompany?.id ??
-            nestedCompany?.companyId ??
-            "",
-        ).trim();
-        return companyId ? [companyId] : [];
-      } catch {
-        return [];
-      }
-    })(),
-  ]);
-
-  return Array.from(new Set([...byDocIdIds, ...profileFallbackIds]));
+  // The user's own profile (users/{uid}.companyId / activeCompanyId), through the shared cache — the
+  // same read sign-in already made. A collectionGroup("memberships") documentId() == uid query used to
+  // run alongside it, but the Firestore SDK always rejects that (a collection-group documentId filter
+  // needs a full document path), so it never found anything.
+  try {
+    const data = await readUserDocCached(uid);
+    if (!data) return [];
+    const nestedCompany =
+      typeof data.company === "object" && data.company !== null ? (data.company as Record<string, unknown>) : null;
+    const companyId = String(data.companyId ?? data.activeCompanyId ?? nestedCompany?.id ?? nestedCompany?.companyId ?? "").trim();
+    return companyId ? [companyId] : [];
+  } catch {
+    return [];
+  }
 }
 
 async function fetchProjectsFromCompanyJobs(
@@ -732,7 +707,7 @@ async function fetchProjectsFromCompanyJobs(
   const database = db;
 
   const companyIds = companyIdsAlreadyResolved
-    ? (preferredCompanyIds ?? []).map((v) => String(v || "").trim()).filter(Boolean)
+    ? Array.from(new Set((preferredCompanyIds ?? []).map((v) => String(v || "").trim()).filter(Boolean)))
     : Array.from(
         new Set([
           ...(await fetchCompanyIdsForUser(uid)),
@@ -749,14 +724,15 @@ async function fetchProjectsFromCompanyJobs(
   const perCompanyResults = await Promise.all(
     companyIds.map(async (companyId) => {
       try {
-        const [companySnap, companyAccess, jobsSnap] = await Promise.all([
-          getDoc(doc(database, "companies", companyId)),
+        const [companyDocData, companyAccess, jobsSnap] = await Promise.all([
+          fetchCompanyDoc(companyId),
           fetchCompanyAccess(companyId, uid),
           getDocs(collection(database, "companies", companyId, "jobs")),
         ]);
-        const companyData = companySnap.exists() ? ((companySnap.data() ?? {}) as Record<string, unknown>) : {};
+        const companyData = companyDocData ?? {};
         const displayNameOverridesByUid = normalizeCompanyStaffDisplayNameOverrides(companyData.staffDisplayNamesByUid);
         const rows: Project[] = [];
+        const cleanups: Array<{ ref: DocumentReference; patch: Record<string, unknown> }> = [];
         for (const item of jobsSnap.docs) {
           const data = (item.data() ?? {}) as Record<string, unknown>;
           if (Boolean(data.isDeleted) !== Boolean(includeDeleted)) {
@@ -767,7 +743,10 @@ async function fetchProjectsFromCompanyJobs(
             continue;
           }
           rows.push(normalized);
+          const cleanupPatch = legacyCopiesCleanupPatch(data);
+          if (cleanupPatch) cleanups.push({ ref: item.ref, patch: cleanupPatch });
         }
+        cleanUpLegacyProjectCopies(cleanups);
         return rows;
       } catch {
         return [];
@@ -890,52 +869,71 @@ export async function fetchProjects(
       const topLevelDocs = snaps.flatMap((snap) => snap.docs);
       if (!topLevelDocs.length) return [];
       const rows = topLevelDocs.map((item) => normalizeProject(item.id, item.data() as Record<string, unknown>, { lightweight }));
-      const companyDocCache = new Map<string, Record<string, unknown> | null>();
-      const companyAccessCache = new Map<string, CompanyAccessInfo | null>();
-      const filtered = await Promise.all(
-        rows.map(async (row) => {
+      // Each company's doc and the user's access to it, fetched ONCE per company up front — this used
+      // to look them up per project, and since every project started at the same moment none of them
+      // found the others' results, so N projects meant N company-doc reads and N access checks.
+      const rowCompanyIds = Array.from(new Set(rows.map((row) => String(row.companyId || "").trim()).filter(Boolean)));
+      const perCompany = new Map(
+        await Promise.all(
+          rowCompanyIds.map(async (companyId) => {
+            const [companyDoc, companyAccess] = await Promise.all([
+              fetchCompanyDoc(companyId),
+              userId ? fetchCompanyAccess(companyId, userId) : Promise.resolve(null),
+            ]);
+            return [companyId, { companyDoc, companyAccess }] as const;
+          }),
+        ),
+      );
+      return rows
+        .map((row) => {
           const companyId = String(row.companyId || "").trim();
           if (!companyId) return row;
-          if (!companyDocCache.has(companyId)) {
-            companyDocCache.set(companyId, await fetchCompanyDoc(companyId));
-          }
-          if (!companyAccessCache.has(companyId)) {
-            companyAccessCache.set(companyId, userId ? await fetchCompanyAccess(companyId, userId) : null);
-          }
-          const displayNameOverridesByUid = normalizeCompanyStaffDisplayNameOverrides(
-            (companyDocCache.get(companyId) as Record<string, unknown> | null)?.staffDisplayNamesByUid,
-          );
+          const info = perCompany.get(companyId);
+          const displayNameOverridesByUid = normalizeCompanyStaffDisplayNameOverrides(info?.companyDoc?.staffDisplayNamesByUid);
           const normalized = applyCompanyStaffDisplayNameOverridesToProject(row, displayNameOverridesByUid);
-          if (!canUserViewProject(normalized, userId, companyAccessCache.get(companyId) ?? null)) {
-            return null;
-          }
-          return normalized;
-        }),
-      );
-      return filtered.filter(Boolean) as Project[];
+          return canUserViewProject(normalized, userId, info?.companyAccess ?? null) ? normalized : null;
+        })
+        .filter(Boolean) as Project[];
+    };
+    // Company jobs are where projects live; the top-level `projects` collection is a legacy location
+    // that's normally empty. Both are loaded at once (this used to wait for the legacy query first).
+    // Where a project is in both, the company job wins.
+    const mergeJobsFirst = (jobs: Project[], legacyTop: Project[]) => {
+      const seen = new Set<string>();
+      return [...jobs, ...legacyTop].filter((project) => {
+        if (seen.has(project.id)) return false;
+        seen.add(project.id);
+        return true;
+      });
+    };
+    const loadFor = async (companyIds: string[]) => {
+      const [jobs, legacyTop] = await Promise.all([
+        fetchProjectsFromCompanyJobs(userId, false, companyIds, lightweight, true),
+        runScopedProjectsQuery(companyIds).catch(() => [] as Project[]),
+      ]);
+      return mergeJobsFirst(jobs, legacyTop);
     };
 
-    const preferredIds = (preferredCompanyIds ?? []).map((v) => String(v || "").trim()).filter(Boolean);
-    const fastResult = await runScopedProjectsQuery(preferredIds);
-    if (fastResult.length > 0) {
-      return fastResult;
+    // De-duplicated: callers often pass the same company twice (the saved company and the profile's).
+    const preferredIds = Array.from(new Set((preferredCompanyIds ?? []).map((v) => String(v || "").trim()).filter(Boolean)));
+    // The user's own company (from their profile — already read at sign-in, so normally instant from
+    // the shared cache) is looked up at the same time as the preferred companies load.
+    const resolvedIdsPromise = userId ? fetchCompanyIdsForUser(userId) : Promise.resolve([] as string[]);
+    if (preferredIds.length) {
+      const fast = await loadFor(preferredIds);
+      if (fast.length > 0) {
+        return fast;
+      }
     }
-    // Fast path came up empty (nothing cached yet, or the cached id was stale/wrong) — only now
-    // pay for the slower 4-way membership lookup, merged with whatever the fast path already had.
-    const resolvedIds = Array.from(new Set([...preferredIds, ...(await fetchCompanyIdsForUser(userId))]));
-    if (resolvedIds.length && resolvedIds.some((id) => !preferredIds.includes(id))) {
-      const slowResult = await runScopedProjectsQuery(resolvedIds);
-      if (slowResult.length > 0) {
-        return slowResult;
+    const extraIds = (await resolvedIdsPromise).filter((id) => !preferredIds.includes(id));
+    if (extraIds.length) {
+      const slow = await loadFor(extraIds);
+      if (slow.length > 0) {
+        return slow;
       }
     }
   } catch {
-    // continue into company/jobs fallback
-  }
-
-  const nested = await fetchProjectsFromCompanyJobs(String(uid ?? ""), false, preferredCompanyIds, lightweight);
-  if (nested.length > 0) {
-    return nested;
+    // continue into the legacy fallbacks
   }
 
   const legacy = await fetchProjectsFromLegacyUserPaths(String(uid ?? ""));
@@ -957,28 +955,30 @@ export async function fetchProjectById(
   const database = db;
 
   const userId = String(uid ?? "").trim();
-  const companyIds = Array.from(
-    new Set([
-      ...((preferredCompanyIds ?? []).map((v) => String(v || "").trim()).filter(Boolean)),
-      ...(userId ? await fetchCompanyIdsForUser(userId) : []),
-    ]),
-  );
+  const preferredIds = Array.from(new Set((preferredCompanyIds ?? []).map((v) => String(v || "").trim()).filter(Boolean)));
+  // The user's own company (from their profile, normally already in the shared cache) is looked up
+  // alongside — not before — checking the companies the caller already knows.
+  const resolvedIdsPromise = userId ? fetchCompanyIdsForUser(userId) : Promise.resolve([] as string[]);
 
   // Prefer company-scoped jobs first (source of truth for web/desktop parity). Each candidate
-  // company is just a guess at where this project lives — checked concurrently instead of one at
-  // a time, so a user who belongs to several companies doesn't pay N sequential round trips to
-  // find the one company that actually has this project.
-  const directHits = await Promise.all(
-    companyIds.map(async (companyId) => {
-      try {
-        const direct = await getDoc(doc(database, "companies", companyId, "jobs", projectId));
-        return direct.exists() ? { companyId, data: direct.data() as Record<string, unknown> } : null;
-      } catch {
-        return null;
-      }
-    }),
-  );
-  const directHit = directHits.find((hit): hit is { companyId: string; data: Record<string, unknown> } => hit !== null);
+  // company is just a guess at where this project lives — checked concurrently.
+  const findDirectHit = async (ids: string[]) => {
+    const hits = await Promise.all(
+      ids.map(async (companyId) => {
+        try {
+          const direct = await getDoc(doc(database, "companies", companyId, "jobs", projectId));
+          return direct.exists() ? { companyId, data: direct.data() as Record<string, unknown> } : null;
+        } catch {
+          return null;
+        }
+      }),
+    );
+    return hits.find((hit): hit is { companyId: string; data: Record<string, unknown> } => hit !== null) ?? null;
+  };
+  let directHit = preferredIds.length ? await findDirectHit(preferredIds) : null;
+  const extraIds = directHit ? [] : (await resolvedIdsPromise).filter((id) => !preferredIds.includes(id));
+  if (!directHit && extraIds.length) directHit = await findDirectHit(extraIds);
+  const companyIds = [...preferredIds, ...extraIds];
   if (directHit) {
     const [companyDoc, companyAccess] = await Promise.all([
       fetchCompanyDoc(directHit.companyId),
@@ -1044,44 +1044,64 @@ export async function fetchDeletedProjects(uid?: string, preferredCompanyIds?: s
     }
   };
 
-  try {
-    const topLevel = await getDocs(collection(db, "projects"));
-    if (!topLevel.empty) {
-      const companyAccessCache = new Map<string, CompanyAccessInfo | null>();
-      const topDeleted = await Promise.all(
-        topLevel.docs
-          .filter((item) => {
-            const data = (item.data() ?? {}) as Record<string, unknown>;
-            return Boolean(data.isDeleted);
-          })
-          .map(async (item) => {
-            const normalized = normalizeProject(item.id, item.data() as Record<string, unknown>);
-            const companyId = String(normalized.companyId || "").trim();
-            if (!companyId) return normalized;
-            if (!companyAccessCache.has(companyId)) {
-              companyAccessCache.set(companyId, userId ? await fetchCompanyAccess(companyId, userId) : null);
-            }
-            const companyDoc = await fetchCompanyDoc(companyId);
-            const displayNameOverridesByUid = normalizeCompanyStaffDisplayNameOverrides(
-              (companyDoc as Record<string, unknown> | null)?.staffDisplayNamesByUid,
-            );
-            const project = applyCompanyStaffDisplayNameOverridesToProject(normalized, displayNameOverridesByUid);
-            if (!canUserViewProject(project, userId, companyAccessCache.get(companyId) ?? null)) {
-              return null;
-            }
-            return project;
-          }),
+  const database = db;
+  const companyIds = Array.from(
+    new Set([
+      ...(preferredCompanyIds ?? []).map((v) => String(v || "").trim()).filter(Boolean),
+      ...(userId ? await fetchCompanyIdsForUser(userId) : []),
+    ]),
+  );
+
+  // The legacy top-level location, scoped to the user's companies (this used to read the WHOLE
+  // collection — every company's projects — on every visit), the company jobs and the older per-user
+  // paths, all at once.
+  const legacyTopLevel = async (): Promise<Project[]> => {
+    if (!companyIds.length) return [];
+    try {
+      const snaps = await Promise.all(
+        Array.from({ length: Math.ceil(companyIds.length / 30) }, (_, i) =>
+          getDocs(query(collection(database, "projects"), where("companyId", "in", companyIds.slice(i * 30, i * 30 + 30)))),
+        ),
       );
-      upsert(topDeleted.filter(Boolean) as Project[]);
+      const rows = snaps
+        .flatMap((snap) => snap.docs)
+        .filter((item) => Boolean(((item.data() ?? {}) as Record<string, unknown>).isDeleted))
+        .map((item) => normalizeProject(item.id, item.data() as Record<string, unknown>));
+      const rowCompanyIds = Array.from(new Set(rows.map((row) => String(row.companyId || "").trim()).filter(Boolean)));
+      const perCompany = new Map(
+        await Promise.all(
+          rowCompanyIds.map(async (companyId) => {
+            const [companyDoc, companyAccess] = await Promise.all([
+              fetchCompanyDoc(companyId),
+              userId ? fetchCompanyAccess(companyId, userId) : Promise.resolve(null),
+            ]);
+            return [companyId, { companyDoc, companyAccess }] as const;
+          }),
+        ),
+      );
+      return rows
+        .map((row) => {
+          const companyId = String(row.companyId || "").trim();
+          if (!companyId) return row;
+          const info = perCompany.get(companyId);
+          const project = applyCompanyStaffDisplayNameOverridesToProject(
+            row,
+            normalizeCompanyStaffDisplayNameOverrides(info?.companyDoc?.staffDisplayNamesByUid),
+          );
+          return canUserViewProject(project, userId, info?.companyAccess ?? null) ? project : null;
+        })
+        .filter(Boolean) as Project[];
+    } catch {
+      return [];
     }
-  } catch {
-    // continue into nested company/jobs fallback
-  }
-
-  const nested = await fetchProjectsFromCompanyJobs(String(uid ?? ""), true, preferredCompanyIds);
+  };
+  const [topDeleted, nested, legacy] = await Promise.all([
+    legacyTopLevel(),
+    fetchProjectsFromCompanyJobs(String(uid ?? ""), true, companyIds, undefined, true),
+    fetchProjectsFromLegacyUserPaths(String(uid ?? ""), true),
+  ]);
+  upsert(topDeleted);
   upsert(nested);
-
-  const legacy = await fetchProjectsFromLegacyUserPaths(String(uid ?? ""), true);
   upsert(legacy);
 
   return Array.from(merged.values()).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
@@ -1725,14 +1745,20 @@ export async function permanentlyDeleteProject(project: Project): Promise<boolea
   return false;
 }
 
-export async function purgeExpiredDeletedProjects(uid?: string, preferredCompanyIds?: string[]): Promise<void> {
+// Permanently deletes the deleted projects past their company's retention period. Pass the deleted
+// list if it's already loaded (saves loading it again). Returns the ids it deleted.
+export async function purgeExpiredDeletedProjects(
+  uid?: string,
+  preferredCompanyIds?: string[],
+  alreadyLoaded?: Project[],
+): Promise<string[]> {
   if (!db) {
-    return;
+    return [];
   }
 
-  const rows = await fetchDeletedProjects(uid, preferredCompanyIds);
+  const rows = alreadyLoaded ?? (await fetchDeletedProjects(uid, preferredCompanyIds));
   if (!rows.length) {
-    return;
+    return [];
   }
 
   const companyIds = Array.from(new Set(rows.map((row) => String(row.companyId || "").trim()).filter(Boolean)));
@@ -1747,6 +1773,7 @@ export async function purgeExpiredDeletedProjects(uid?: string, preferredCompany
   );
 
   const nowMs = Date.now();
+  const purged: string[] = [];
   for (const project of rows) {
     const deletedAtIso = String(project.deletedAt || project.updatedAt || project.createdAt || "").trim();
     if (!deletedAtIso) {
@@ -1760,8 +1787,10 @@ export async function purgeExpiredDeletedProjects(uid?: string, preferredCompany
     const expiresAtMs = deletedAtMs + retentionDays * 24 * 60 * 60 * 1000;
     if (nowMs >= expiresAtMs) {
       await permanentlyDeleteProject(project);
+      purged.push(project.id);
     }
   }
+  return purged;
 }
 
 // The one place that resolves a project's REAL Firestore document reference — `project.id` is a
@@ -1822,6 +1851,96 @@ export async function grantTempProductionAccess(
   }
 }
 
+// The project's sales data is stored once, as its top-level `sales` field. Saves used to write it four
+// times — `sales`, a `salesJson` text copy, `projectSettings.sales`, and again inside a
+// `projectSettingsJson` text copy of the settings (the text copies were for the old desktop app) — so
+// every project carried it four times over, and the dashboard downloads every project in full. Any save
+// that writes sales or settings now drops the copies (deleting them from the stored project too), and
+// cleanUpLegacyProjectCopies clears them from older projects.
+function withoutLegacyCopies(patch: Record<string, unknown>): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...patch };
+  const settings = next.projectSettings;
+  if (settings && typeof settings === "object" && !Array.isArray(settings) && "sales" in settings) {
+    const rest = { ...(settings as Record<string, unknown>) };
+    delete rest.sales;
+    next.projectSettings = rest;
+  }
+  if ("projectSettings" in next || "projectSettingsJson" in next) {
+    next.projectSettingsJson = deleteField();
+  }
+  if ("sales" in next || "salesJson" in next) {
+    next.salesJson = deleteField();
+    // (A whole `projectSettings` written in the same save already leaves its `sales` out — and
+    // Firestore won't take a field and one of its own sub-fields in the same update.)
+    if (!("projectSettings" in next)) next["projectSettings.sales"] = deleteField();
+  }
+  return next;
+}
+
+// What a stored project needs written to drop the old copies (see withoutLegacyCopies), or null if it
+// has none. Anything that only exists as a copy is kept: moved to `sales` / `projectSettings` first.
+function legacyCopiesCleanupPatch(data: Record<string, unknown>): Record<string, unknown> | null {
+  const settings = asRecord(data.projectSettings);
+  const hasSalesJson = "salesJson" in data;
+  const hasSettingsJson = "projectSettingsJson" in data;
+  const hasNestedSales = Boolean(settings && "sales" in settings);
+  const salesIsText = typeof data.sales === "string";
+  if (!hasSalesJson && !hasSettingsJson && !hasNestedSales && !salesIsText) return null;
+
+  const parseObject = (value: unknown): Record<string, unknown> | null => {
+    if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+    if (typeof value === "string" && value.trim()) {
+      try {
+        const parsed = JSON.parse(value);
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  };
+  const settingsFromText = parseObject(data.projectSettingsJson);
+  const patch: Record<string, unknown> = {};
+  if (!asRecord(data.sales)) {
+    const sales =
+      parseObject(data.sales) ?? parseObject(data.salesJson) ?? parseObject(settings?.sales) ?? parseObject(settingsFromText?.sales);
+    if (sales) patch.sales = sales;
+  }
+  if ((!settings || !Object.keys(settings).length) && settingsFromText) {
+    const restored = { ...settingsFromText };
+    delete restored.sales;
+    patch.projectSettings = restored;
+  }
+  if (hasSalesJson) patch.salesJson = deleteField();
+  if (hasSettingsJson) patch.projectSettingsJson = deleteField();
+  if (hasNestedSales && !("projectSettings" in patch)) patch["projectSettings.sales"] = deleteField();
+  return Object.keys(patch).length ? patch : null;
+}
+
+// Clears the old copies from projects that still have them, quietly in the background after a project
+// list loads. Each project only ever needs it once (a cleaned project has nothing left to clear, so later
+// loads skip it). Leaves updatedAt alone, so cleaned projects don't jump to the top of "recently updated".
+const legacyCleanupAttempted = new Set<string>();
+function cleanUpLegacyProjectCopies(items: Array<{ ref: DocumentReference; patch: Record<string, unknown> }>) {
+  const pending = items.filter((item) => !legacyCleanupAttempted.has(item.ref.path));
+  if (!pending.length || typeof window === "undefined") return;
+  pending.forEach((item) => legacyCleanupAttempted.add(item.ref.path));
+  window.setTimeout(() => {
+    void (async () => {
+      // A few at a time, so it never competes with what the user is doing.
+      for (let i = 0; i < pending.length; i += 3) {
+        await Promise.all(
+          pending.slice(i, i + 3).map((item) =>
+            updateDoc(item.ref, item.patch).catch((error) => {
+              console.warn("[cleanUpLegacyProjectCopies] write failed:", item.ref.path, error);
+            }),
+          ),
+        );
+      }
+    })();
+  }, 5000);
+}
+
 export async function updateProjectPatch(
   project: Project,
   patch: Record<string, unknown>,
@@ -1831,7 +1950,7 @@ export async function updateProjectPatch(
   }
 
   const nextPatch: Record<string, unknown> = {
-    ...patch,
+    ...withoutLegacyCopies(patch),
     updatedAtIso: new Date().toISOString(),
   };
 
@@ -2367,14 +2486,26 @@ export async function fetchCompanyMembers(companyId: string): Promise<CompanyMem
   if (!db || !cid) {
     return [];
   }
+  // Shared for a minute (lib/firestore-cache.ts) — the calendar, dashboard, project page and app shell
+  // all load the member list; each caller gets its own copies of the rows.
+  try {
+    const members = await cachedValue(`members:${cid}`, () => loadCompanyMembers(cid));
+    return members.map((member) => ({ ...member }));
+  } catch {
+    return [];
+  }
+}
+
+async function loadCompanyMembers(cid: string): Promise<CompanyMemberOption[]> {
+  if (!db) return [];
   const firestore = db;
 
   try {
-    const [companySnap, snap] = await Promise.all([
-      getDoc(doc(firestore, "companies", cid)),
+    const [companyDocData, snap] = await Promise.all([
+      fetchCompanyDoc(cid),
       getDocs(collection(firestore, "companies", cid, "memberships")),
     ]);
-    const companyData = companySnap.exists() ? ((companySnap.data() ?? {}) as Record<string, unknown>) : {};
+    const companyData = companyDocData ?? {};
     const displayNameOverridesByUid = normalizeCompanyStaffDisplayNameOverrides(companyData.staffDisplayNamesByUid);
     const roleOverridesByUid = normalizeCompanyStaffRoleOverrides(companyData.staffRoleIdsByUid);
     const out: CompanyMemberOption[] = [];
@@ -2421,14 +2552,17 @@ export async function fetchCompanyMembers(companyId: string): Promise<CompanyMem
     // genuinely redundant fetchUserColorMapByUids pass that used to run after this loop — it only
     // ever re-derived a color already sitting right here in `out` from the bulk membership read
     // above, or re-did this exact same users/{uid} fallback a second time.
+    // Only the signed-in user's own profile can be read (every other member's read is refused by the
+    // rules — those reads used to be attempted anyway, one per member, all failing), and that one
+    // comes from the shared cache sign-in already filled.
+    const selfUid = String(auth?.currentUser?.uid || "").trim();
     await Promise.all(
       out.map(async (member) => {
         const uid = String(member.uid || "").trim();
-        if (!uid) return;
+        if (!uid || uid !== selfUid) return;
         try {
-          const userSnap = await getDoc(doc(firestore, "users", uid));
-          if (!userSnap.exists()) return;
-          const userData = (userSnap.data() ?? {}) as Record<string, unknown>;
+          const userData = await readUserDocCached(uid);
+          if (!userData) return;
           const profileDisplayName = String(userData.displayName ?? userData.name ?? "").trim();
           const profileEmail = String(userData.email ?? "").trim();
           const profileMobile = String(userData.mobile ?? userData.phone ?? "").trim();
@@ -2480,6 +2614,7 @@ export async function saveCompanyMemberDisplayName(
 
   try {
     await setDoc(doc(db, "companies", cid), patch, { merge: true });
+    invalidateCompanyCache(cid);
     return { ok: true };
   } catch (error) {
     const message =
@@ -2516,6 +2651,7 @@ export async function saveCompanyMemberRole(
 
   try {
     await setDoc(doc(db, "companies", cid), patch, { merge: true });
+    invalidateCompanyCache(cid);
     return { ok: true };
   } catch (error) {
     const message =
@@ -2574,12 +2710,11 @@ export async function fetchCompanyDoc(companyId: string): Promise<Record<string,
   if (!db || !cid) {
     return null;
   }
+  // Through the shared short-lived cache (lib/firestore-cache.ts) — nearly every page and the app
+  // shell read this on load. A shallow copy each time, so no caller can change another's copy.
   try {
-    const snap = await getDoc(doc(db, "companies", cid));
-    if (!snap.exists()) {
-      return null;
-    }
-    return (snap.data() ?? {}) as Record<string, unknown>;
+    const data = await readCompanyDocCached(cid);
+    return data ? { ...data } : null;
   } catch {
     return null;
   }
@@ -3340,13 +3475,25 @@ export async function findCompanyClientForProject(
   const viewerOnProject =
     Boolean(viewerUid) &&
     (String(project.createdByUid || "").trim() === viewerUid || String(project.assignedToUid || "").trim() === viewerUid);
-  const snap = await getDocs(collection(db, "companies", cid, "clients"));
   const linkedId = String(project.clientId || "").trim();
-  const matches = snap.docs
-    .filter((docSnap) => docSnap.id !== "__meta")
-    .map((docSnap) => buildCompanyClientRowFromDoc(cid, docSnap.id, (docSnap.data() ?? {}) as Record<string, unknown>))
-    .filter((row) => (linkedId && row.id === linkedId) || projectMatchesClientRow(project, row));
-  const linked = matches.find((row) => row.id === linkedId);
+  // A project already linked to its card only ever uses that card (below), so read just that one —
+  // reading every contact is only needed to match an unlinked project by its client details.
+  let linked: CompanyClientRow | undefined;
+  let matches: CompanyClientRow[] = [];
+  if (linkedId && linkedId !== "__meta") {
+    const linkedSnap = await getDoc(doc(db, "companies", cid, "clients", linkedId));
+    if (linkedSnap.exists()) {
+      linked = buildCompanyClientRowFromDoc(cid, linkedSnap.id, (linkedSnap.data() ?? {}) as Record<string, unknown>);
+    }
+  }
+  if (!linked) {
+    const snap = await getDocs(collection(db, "companies", cid, "clients"));
+    matches = snap.docs
+      .filter((docSnap) => docSnap.id !== "__meta")
+      .map((docSnap) => buildCompanyClientRowFromDoc(cid, docSnap.id, (docSnap.data() ?? {}) as Record<string, unknown>))
+      .filter((row) => (linkedId && row.id === linkedId) || projectMatchesClientRow(project, row));
+    linked = matches.find((row) => row.id === linkedId);
+  }
   // A linked project only ever belongs to its own card — field look-alikes don't count.
   const candidates = linked ? [linked] : matches;
   if (candidates.some((row) => row.archived)) return null;
@@ -3986,6 +4133,7 @@ export async function saveCompanyDocPatchDetailed(
     // way JSON.stringify already silently does, as a blanket safety net beneath each field's own
     // normalization.
     const sanitizedPatch = JSON.parse(JSON.stringify(patch)) as Record<string, unknown>;
+    invalidateCompanyCache(cid);
     await setDoc(
       doc(db, "companies", cid),
       {
@@ -4416,6 +4564,7 @@ export async function saveUserProfilePatchDetailed(
 
   try {
     await setDoc(doc(db, "users", userId), fullPatch, { merge: true });
+    invalidateUserCache(userId);
     userWriteOk = true;
   } catch {
     lastError = "users-write-failed";
@@ -4772,68 +4921,32 @@ export async function fetchUserColorMapByUids(
   const out: Record<string, string> = {};
   const cleanUids = Array.from(new Set((uids || []).map((uid) => String(uid || "").trim()).filter(Boolean)));
   if (!db || !cleanUids.length) return out;
-  const firestore = db;
   const cid = String(companyId || "").trim();
 
+  // From the company's member list (shared/cached — see fetchCompanyMembers), which already carries
+  // each member's colour (userColor first: badgeColor on a membership doc can't be updated through
+  // the normal profile save, so it can be stale). This used to do one or two reads per person instead.
   if (cid) {
-    await Promise.all(
-      cleanUids.map(async (uid) => {
-        try {
-          let membership: Record<string, unknown> | null = null;
-          const membershipSnap = await getDoc(doc(firestore, "companies", cid, "memberships", uid));
-          if (membershipSnap.exists()) {
-            membership = (membershipSnap.data() ?? {}) as Record<string, unknown>;
-          } else {
-            const membershipQuery = await getDocs(
-              query(
-                collection(firestore, "companies", cid, "memberships"),
-                where("uid", "==", uid),
-                limit(1),
-              ),
-            );
-            if (!membershipQuery.empty) {
-              membership = (membershipQuery.docs[0]?.data() ?? {}) as Record<string, unknown>;
-            }
-          }
-          if (!membership) return;
-          // userColor first, not badgeColor: the membership doc's Firestore rule
-          // (onlyUserColorFieldsOnUpdate) only ever allows userColor to be updated on this
-          // subcollection — badgeColor can't be written here through the normal profile-save flow,
-          // so once it's set it's frozen forever. Checking it first meant a changed color would
-          // save correctly (to userColor) but the frozen badgeColor kept winning on every re-read —
-          // "changes live, reverts on reload."
-          const color = String(
-            membership.userColor ??
-              membership.badgeColor ??
-              membership.avatarColor ??
-              membership.color ??
-              membership.colour ??
-              "",
-          ).trim();
-          if (color) out[uid] = color;
-        } catch {
-          // ignore missing membership docs
-        }
-      }),
-    );
+    const members = await fetchCompanyMembers(cid);
+    const byUid = new Map(members.map((member) => [member.uid, member]));
+    for (const uid of cleanUids) {
+      const color = String(byUid.get(uid)?.userColor ?? byUid.get(uid)?.badgeColor ?? "").trim();
+      if (color) out[uid] = color;
+    }
   }
 
-  await Promise.all(
-    cleanUids.map(async (uid) => {
-      if (out[uid]) return;
-      try {
-        const snap = await getDoc(doc(firestore, "users", uid));
-        if (!snap.exists()) return;
-        const data = (snap.data() ?? {}) as Record<string, unknown>;
-        const color = String(
-          data.userColor ?? data.badgeColor ?? data.avatarColor ?? data.color ?? data.colour ?? "",
-        ).trim();
-        if (color) out[uid] = color;
-      } catch {
-        // ignore missing user docs
-      }
-    }),
-  );
+  // Anyone still without a colour: only the signed-in user's own profile can be read (the rules refuse
+  // everyone else's), so that's the only fallback worth asking for.
+  const selfUid = String(auth?.currentUser?.uid || "").trim();
+  if (selfUid && cleanUids.includes(selfUid) && !out[selfUid]) {
+    try {
+      const data = await readUserDocCached(selfUid);
+      const color = String(data?.userColor ?? data?.badgeColor ?? data?.avatarColor ?? data?.color ?? data?.colour ?? "").trim();
+      if (color) out[selfUid] = color;
+    } catch {
+      // ignore
+    }
+  }
 
   return out;
 }

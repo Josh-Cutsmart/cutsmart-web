@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, Building2, CheckCircle2, ChevronDown, CircleDollarSign, CircleHelp, ClipboardList, Clock3, DatabaseBackup, Download, GripVertical, HardHat, Layers3, LayoutDashboard, Link2, Loader2, Package2, Plus, RotateCcw, Search, Settings, Upload, Users, Wrench, X } from "lucide-react";
 import { deleteObject, getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { useAuth } from "@/lib/auth-context";
+import { authorizedFetch } from "@/lib/api-fetch";
 import { useAppTabs } from "@/lib/app-tabs-context";
 import {
   addUserNotification,
@@ -28,12 +29,21 @@ import { invalidateCompanyRoleOverridesCache } from "@/lib/membership";
 import { type RoleRow, normalizeRoles, normalizeRoleKey } from "@/lib/company-roles";
 import { QUOTE_TEMPLATE_PLACEHOLDERS } from "@/lib/quote-template-placeholders";
 import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
-import SpecsGridEditor from "@/components/specs-grid-editor";
+import SpecsGridEditor from "@/components/specs-grid-editor-lazy";
 import { type SpecsGrid, createEmptyGrid, normalizeSpecsGrid } from "@/lib/specs-grid-types";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { GlassDropdown, type GlassDropdownOption } from "@/components/glass-dropdown";
 import { DragGhostLayer, useDragGhost } from "@/lib/use-drag-ghost";
-import { newCalendarId, normalizeCalendarCategories, normalizeCalendarWorkdays, type CalendarAccessLevel, type CalendarCategory } from "@/lib/calendar-data";
+import {
+  CALENDAR_RETENTION_OPTIONS,
+  newCalendarId,
+  normalizeCalendarCategories,
+  normalizeCalendarRetention,
+  normalizeCalendarWorkdays,
+  type CalendarAccessLevel,
+  type CalendarCategory,
+  type CalendarRetention,
+} from "@/lib/calendar-data";
 import {
   CURRENCY_OPTIONS,
   DATE_FORMAT_OPTIONS,
@@ -1527,6 +1537,9 @@ export default function CompanySettingsPage() {
   const calendarAccessPanelRef = useRef<HTMLDivElement | null>(null);
   const calendarAccessOriginElRef = useRef<HTMLElement | null>(null);
   const [calendarWorkdays, setCalendarWorkdays] = useState<number[]>([1, 2, 3, 4, 5]);
+  const [calendarRetention, setCalendarRetention] = useState<CalendarRetention>("never");
+  // Whether "Show on client portal" starts on when a project is linked to an event.
+  const [calendarShowToClientDefault, setCalendarShowToClientDefault] = useState(false);
   const [contractors, setContractors] = useState<string[]>([]);
   const [roles, setRoles] = useState<RoleRow[]>([]);
   // Fed to both the Specs and Quote grid builders' group-editor modal ("Allow Editable By") — the
@@ -1658,6 +1671,9 @@ export default function CompanySettingsPage() {
   const zapierRegenerateConfirmTimerRef = useRef<number | null>(null);
   const [availableLeadFields, setAvailableLeadFields] = useState<Array<{ key: string; label: string }>>([]);
   const [leadFieldsLoading, setLeadFieldsLoading] = useState(false);
+  // Which company's lead fields have been loaded (see the effect that loads them). Until they have,
+  // saving keeps the stored field layout as it is — merging against an empty list wiped it.
+  const [leadFieldsLoadedFor, setLeadFieldsLoadedFor] = useState("");
   const [leadFieldDragIndex, setLeadFieldDragIndex] = useState<number | null>(null);
   const [leadFieldDragOverIndex, setLeadFieldDragOverIndex] = useState<number | null>(null);
   const [backupTemplate, setBackupTemplate] = useState<BackupTemplateSettings>({
@@ -1758,15 +1774,10 @@ export default function CompanySettingsPage() {
       addCandidate(user.companyId);
       addCandidate(process.env.NEXT_PUBLIC_DEFAULT_COMPANY_ID);
       addCandidate("cmp_mykm_91647c");
-
-      try {
-        const projects = await fetchProjects(user.uid, undefined, { lightweight: true });
-        for (const project of projects) {
-          addCandidate(project.companyId);
-        }
-      } catch {
-        // ignore project-based fallback errors
-      }
+      // The company's member list loads alongside its doc (both come from the shared cache when
+      // another page already loaded them) rather than after it.
+      const expectedCompanyId = String(user.companyId || "").trim();
+      const earlyMembers = expectedCompanyId ? fetchCompanyMembers(expectedCompanyId).catch(() => null) : null;
 
       // Everything from here down used to have no try/catch at all — any single rejection (a
       // network/Firestore hiccup on any of the reads below) meant setIsLoading(false) at the end
@@ -1775,21 +1786,38 @@ export default function CompanySettingsPage() {
       // likely to hit a transient blip — means a rejection now just falls through to `finally`
       // instead of hanging.
       try {
-        let selectedCompanyId = "";
-        let doc: Record<string, unknown> | null = null;
-        for (const companyId of candidateIds) {
-          // Try each candidate until we find a readable company doc.
-          const hit = await retryAsync(() => fetchCompanyDoc(companyId), { attempts: 2, delayMs: 300 });
-          if (hit) {
-            selectedCompanyId = companyId;
-            doc = hit;
-            break;
+        const tried = new Set<string>();
+        const tryCandidates = async (): Promise<{ id: string; data: Record<string, unknown> } | null> => {
+          for (const companyId of candidateIds) {
+            if (tried.has(companyId)) continue;
+            tried.add(companyId);
+            // Try each candidate until we find a readable company doc.
+            const hit = await retryAsync(() => fetchCompanyDoc(companyId), { attempts: 2, delayMs: 300 });
+            if (hit) return { id: companyId, data: hit };
           }
+          return null;
+        };
+        let found = await tryCandidates();
+        // Only if none of those is readable: the companies of the user's projects. (This used to load
+        // every project up front on every visit, just to collect company ids nearly always known already.)
+        if (!found) {
+          try {
+            const projects = await fetchProjects(user.uid, undefined, { lightweight: true });
+            for (const project of projects) {
+              addCandidate(project.companyId);
+            }
+          } catch {
+            // ignore project-based fallback errors
+          }
+          found = await tryCandidates();
         }
+        const selectedCompanyId = found?.id ?? "";
+        const doc: Record<string, unknown> | null = found?.data ?? null;
 
         setActiveCompanyId(selectedCompanyId);
         const members = selectedCompanyId
-          ? await retryAsync(() => fetchCompanyMembers(selectedCompanyId), { attempts: 2, delayMs: 300 })
+          ? (selectedCompanyId === expectedCompanyId ? await earlyMembers : null) ??
+            (await retryAsync(() => fetchCompanyMembers(selectedCompanyId), { attempts: 2, delayMs: 300 }))
           : [];
         setCompany(doc);
         setStaff(members);
@@ -1819,6 +1847,8 @@ export default function CompanySettingsPage() {
         setContactCategories(normalizeContactCategories((doc as Record<string, unknown>).contactCategories));
         setCalendarCategories(normalizeCalendarCategories((doc as Record<string, unknown>).calendarCategories));
         setCalendarWorkdays(normalizeCalendarWorkdays((doc as Record<string, unknown>).calendarWorkdays));
+        setCalendarRetention(normalizeCalendarRetention((doc as Record<string, unknown>).calendarEventRetention));
+        setCalendarShowToClientDefault((doc as Record<string, unknown>).calendarShowToClientDefault === true);
         setContractors(normalizeStringList(doc.contractors, []));
         setRoles(normalizeRoles(doc.roles));
         setItemCategories(normalizeItemCategories(doc.itemCategories));
@@ -2742,20 +2772,21 @@ export default function CompanySettingsPage() {
     });
     return `${zapierWebhookBaseUrl}?${params.toString()}`;
   }, [activeCompanyId, zapierLeads.webhookSecret, zapierWebhookBaseUrl]);
+  const leadFieldLayoutForSave = (): LeadFieldLayoutRow[] =>
+    leadFieldsLoadedFor === activeCompanyId ? mergedLeadFieldLayout : zapierLeads.fieldLayout;
   const mergedLeadFieldLayout = useMemo(
     () => mergeLeadFieldLayout(availableLeadFields, zapierLeads.fieldLayout),
     [availableLeadFields, zapierLeads.fieldLayout],
   );
 
+  // The lead fields come from the company's leads (up to 500), so they're only loaded once the
+  // Integrations section is opened — not every time Company Settings opens.
   useEffect(() => {
+    if (active !== "integrations" || !activeCompanyId || leadFieldsLoadedFor === activeCompanyId) return;
     const run = async () => {
-      if (!activeCompanyId) {
-        setAvailableLeadFields([]);
-        return;
-      }
       setLeadFieldsLoading(true);
       try {
-        const response = await fetch(`/api/leads?companyId=${encodeURIComponent(activeCompanyId)}`, {
+        const response = await authorizedFetch(`/api/leads?companyId=${encodeURIComponent(activeCompanyId)}`, {
           method: "GET",
           cache: "no-store",
         });
@@ -2775,6 +2806,7 @@ export default function CompanySettingsPage() {
           }
         }
         setAvailableLeadFields(nextFields);
+        setLeadFieldsLoadedFor(activeCompanyId);
       } catch {
         setAvailableLeadFields([]);
       } finally {
@@ -2782,7 +2814,7 @@ export default function CompanySettingsPage() {
       }
     };
     void run();
-  }, [activeCompanyId]);
+  }, [active, activeCompanyId, leadFieldsLoadedFor]);
 
   const downloadBackupSnapshot = () => {
     const snapshot = {
@@ -3105,6 +3137,8 @@ export default function CompanySettingsPage() {
         })
         .filter(Boolean),
       calendarWorkdays,
+      calendarEventRetention: calendarRetention,
+      calendarShowToClientDefault,
       calendarCategories: calendarCategories
         .map((row) => ({
           id: toStr(row.id) || newCalendarId("cat"),
@@ -3245,7 +3279,7 @@ export default function CompanySettingsPage() {
         zapierLeads: {
           enabled: Boolean(zapierLeads.enabled),
           webhookSecret: toStr(zapierLeads.webhookSecret, existingZapierWebhookSecret),
-          fieldLayout: mergedLeadFieldLayout.map((row, idx) => ({
+          fieldLayout: leadFieldLayoutForSave().map((row, idx) => ({
             key: row.key,
             label: row.label,
             showInRow: Boolean(row.showInRow),
@@ -3328,7 +3362,7 @@ export default function CompanySettingsPage() {
             zapierLeads: {
               enabled: Boolean(zapierLeads.enabled),
               webhookSecret: toStr(zapierLeads.webhookSecret, existingZapierWebhookSecret),
-              fieldLayout: mergedLeadFieldLayout.map((row, idx) => ({
+              fieldLayout: leadFieldLayoutForSave().map((row, idx) => ({
                 key: row.key,
                 label: row.label,
                 showInRow: Boolean(row.showInRow),
@@ -3698,6 +3732,8 @@ export default function CompanySettingsPage() {
     dashboardLegend,
     calendarCategories,
     calendarWorkdays,
+    calendarRetention,
+    calendarShowToClientDefault,
     projectTagUsage,
     boardThicknesses,
     boardFinishes,
@@ -3963,7 +3999,36 @@ export default function CompanySettingsPage() {
                     <FieldRow label="Company name" hint="Shown on quotes, specs sheets and in the sidebar.">
                       <input value={form.name} onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))} className={`${fieldInputClass} max-w-[380px]`} />
                     </FieldRow>
-                    <FieldRow label="Company logo" hint="A PNG or SVG with a transparent background looks best. Shown in the sidebar and on documents." align="start">
+                    <FieldRow
+                      label="Company logo"
+                      align="start"
+                      hint={
+                        <>
+                          A PNG or SVG with a transparent background looks best. Shown in the sidebar and on documents.
+                          {/* Replace / Remove sit under this text, not over the logo. */}
+                          {form.logoPath ? (
+                            <span className="mt-2.5 flex flex-wrap gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => logoFileInputRef.current?.click()}
+                                disabled={isUploadingLogo || isLoading || !activeCompanyId}
+                                className={smallButtonClass}
+                              >
+                                <Upload size={14} /> {isUploadingLogo ? "Uploading..." : "Replace"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setForm((prev) => ({ ...prev, logoPath: "" }))}
+                                disabled={isUploadingLogo || !canEditCompanySettings}
+                                className={smallButtonClass}
+                              >
+                                <Trash2 size={14} /> Remove
+                              </button>
+                            </span>
+                          ) : null}
+                        </>
+                      }
+                    >
                       <input
                         ref={logoFileInputRef}
                         type="file"
@@ -3992,26 +4057,6 @@ export default function CompanySettingsPage() {
                             {isUploadingLogo ? "Uploading..." : "Upload your logo"}
                           </button>
                         )}
-                        {form.logoPath ? (
-                          <div className="absolute bottom-2.5 right-2.5 flex gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => logoFileInputRef.current?.click()}
-                              disabled={isUploadingLogo || isLoading || !activeCompanyId}
-                              className={smallButtonClass}
-                            >
-                              <Upload size={14} /> {isUploadingLogo ? "Uploading..." : "Replace"}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setForm((prev) => ({ ...prev, logoPath: "" }))}
-                              disabled={isUploadingLogo || !canEditCompanySettings}
-                              className={smallButtonClass}
-                            >
-                              <Trash2 size={14} /> Remove
-                            </button>
-                          </div>
-                        ) : null}
                       </div>
                     </FieldRow>
                     <FieldRow label="Theme colour" hint="Used for buttons, highlights and the default colour of new items.">
@@ -4036,7 +4081,7 @@ export default function CompanySettingsPage() {
                         ariaLabel="Currency"
                         disabled={!canEditCompanySettings}
                         menuMinWidth={260}
-                        triggerClassName={`${fieldInputClass} max-w-[300px] justify-between`}
+                        triggerClassName={`${fieldInputClass} max-w-[240px] justify-between`}
                       />
                       <span className="inline-flex items-center gap-1.5 rounded-[10px] px-2.5 py-1.5 text-[12px] font-semibold" style={{ backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}>
                         <Eye size={14} /> {formatMoney(12450.5, normalizeCurrencyCode(form.defaultCurrency))}
@@ -4064,7 +4109,7 @@ export default function CompanySettingsPage() {
                         ariaLabel="Date format"
                         disabled={!canEditCompanySettings}
                         menuMinWidth={260}
-                        triggerClassName={`${fieldInputClass} max-w-[300px] justify-between`}
+                        triggerClassName={`${fieldInputClass} max-w-[240px] justify-between`}
                       />
                       <span className="inline-flex items-center gap-1.5 rounded-[10px] px-2.5 py-1.5 text-[12px] font-semibold" style={{ backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}>
                         <CalendarDays size={14} /> {formatDate(new Date(), normalizeDateFormat(form.dateFormat))}
@@ -5954,39 +5999,72 @@ export default function CompanySettingsPage() {
 
               {active === "calendar" && (
                 <div className="grid gap-[18px] xl:grid-cols-2">
-                  <Panel title="Workdays" icon={CalendarDays} description="The days your business works. The rest are shown crossed out on the calendar (you can still add events to them).">
-                    <div className="flex flex-wrap gap-1.5">
-                      {([1, 2, 3, 4, 5, 6, 0] as const).map((dow) => {
-                        const on = calendarWorkdays.includes(dow);
-                        const label = new Intl.DateTimeFormat(undefined, { weekday: "short" }).format(new Date(2024, 0, 7 + dow));
-                        return (
-                          <button
-                            key={dow}
-                            type="button"
-                            aria-pressed={on}
-                            disabled={!canEditCompanySettings}
-                            onClick={() =>
-                              setCalendarWorkdays((prev) => (prev.includes(dow) ? prev.filter((v) => v !== dow) : [...prev, dow].sort()))
-                            }
-                            className="inline-flex h-9 min-w-[52px] items-center justify-center rounded-full border px-3 text-[13px] font-semibold transition disabled:opacity-60"
-                            style={
-                              on
-                                ? { backgroundImage: "var(--brand-gradient)", color: "#fff", borderColor: "transparent" }
-                                : {
-                                    borderColor: "var(--glass-border)",
-                                    color: "var(--text-muted)",
-                                    textDecoration: "line-through",
-                                    backgroundImage:
-                                      "repeating-linear-gradient(135deg, color-mix(in srgb, var(--text-main) 7%, transparent) 0 2px, transparent 2px 7px)",
-                                  }
-                            }
-                          >
-                            {label}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </Panel>
+                  {/* Settings column: client portal, old events, workdays. Categories sit in the other column. */}
+                  <div className="grid content-start gap-[18px]">
+                    <Panel
+                      title="Client portal"
+                      icon={Eye}
+                      description="Events linked to a project can show on that project's client portal, in a Schedule tab. Each event has its own switch — this sets whether it starts on or off."
+                    >
+                      <FieldRow label="Show linked events to the client by default">
+                        <GlassSwitch
+                          checked={calendarShowToClientDefault}
+                          ariaLabel="Show linked events to the client by default"
+                          disabled={!canEditCompanySettings}
+                          onChange={(on) => setCalendarShowToClientDefault(on)}
+                        />
+                      </FieldRow>
+                    </Panel>
+                    <Panel
+                      title="Old events"
+                      icon={Archive}
+                      description="Events that finished longer ago than this are archived automatically — they're kept, but no longer shown on the calendar."
+                    >
+                      <FieldRow label="Archive events after">
+                        <GlassDropdown
+                          value={calendarRetention}
+                          options={CALENDAR_RETENTION_OPTIONS}
+                          onChange={(next) => setCalendarRetention(normalizeCalendarRetention(next))}
+                          ariaLabel="Archive events after"
+                          disabled={!canEditCompanySettings}
+                          triggerClassName={`${fieldInputClass} max-w-[220px] justify-between`}
+                        />
+                      </FieldRow>
+                    </Panel>
+                    <Panel title="Workdays" icon={CalendarDays} description="The days your business works. The rest are shown crossed out on the calendar (you can still add events to them).">
+                      <div className="flex flex-wrap gap-1.5">
+                        {([1, 2, 3, 4, 5, 6, 0] as const).map((dow) => {
+                          const on = calendarWorkdays.includes(dow);
+                          const label = new Intl.DateTimeFormat(undefined, { weekday: "short" }).format(new Date(2024, 0, 7 + dow));
+                          return (
+                            <button
+                              key={dow}
+                              type="button"
+                              aria-pressed={on}
+                              disabled={!canEditCompanySettings}
+                              onClick={() =>
+                                setCalendarWorkdays((prev) => (prev.includes(dow) ? prev.filter((v) => v !== dow) : [...prev, dow].sort()))
+                              }
+                              className="inline-flex h-9 min-w-[52px] items-center justify-center rounded-full border px-3 text-[13px] font-semibold transition disabled:opacity-60"
+                              style={
+                                on
+                                  ? { backgroundImage: "var(--brand-gradient)", color: "#fff", borderColor: "transparent" }
+                                  : {
+                                      borderColor: "var(--glass-border)",
+                                      color: "var(--text-muted)",
+                                      textDecoration: "line-through",
+                                      backgroundImage:
+                                        "repeating-linear-gradient(135deg, color-mix(in srgb, var(--text-main) 7%, transparent) 0 2px, transparent 2px 7px)",
+                                    }
+                              }
+                            >
+                              {label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </Panel>
+                  </div>
                   <Panel
                     title="Calendar categories"
                     icon={CalendarDays}

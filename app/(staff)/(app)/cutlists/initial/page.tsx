@@ -40,8 +40,8 @@ export default function InitialCutlistPage() {
           <CardTitle>{project?.name ?? "No project found"}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          {isLoading && <p className="text-sm text-slate-500">Loading cutlist...</p>}
-          <p className="text-sm text-slate-600">
+          {isLoading && <p className="text-sm text-[var(--text-muted)]">Loading cutlist...</p>}
+          <p className="text-sm text-[var(--text-muted)]">
             Revision {cutlist?.revision ?? "-"} generated {cutlist?.generatedAt ?? "-"}
           </p>
           <div className="overflow-auto">

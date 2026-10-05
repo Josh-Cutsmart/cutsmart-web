@@ -57,5 +57,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   // doc — see lib/specs-share.ts's SpecsShareLinkDoc comment for why.
   const confirmationSubmittedAt = shareDoc.submittedAt || null;
   const confirmationSubmittedByName = shareDoc.submittedByName || null;
-  return NextResponse.json({ ok: true, grid, projectName, assignedContact, confirmationSubmittedAt, confirmationSubmittedByName });
+  // Which send this is — the portal compares it with what the client last saw to flag the tab as new.
+  const sentVersion = String(shareDoc.versionId || shareDoc.lastSentAt || "");
+  return NextResponse.json({ ok: true, grid, projectName, assignedContact, confirmationSubmittedAt, confirmationSubmittedByName, sentVersion });
 }

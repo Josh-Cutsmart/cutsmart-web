@@ -19,11 +19,75 @@ import { createPortal } from "react-dom";
 // document.body and measures the container's own on-screen position, so it works whether that
 // container is a full-viewport page or a small modal's own scroll box).
 //
+// Vertical tracks start below whatever fixed/sticky title bars are stacked over the top of the
+// container (see titleBarsBottom), so the thumb never runs underneath a title bar. Passing the
+// document element (<html>) as scrollRef tracks the page's own scroll against the viewport.
+//
 // Usage (horizontal): pass orientation="horizontal". Instead of matching the anchor's own top/height
 // (vertical mode's behavior, meant to sit flush against a sticky header), the track pins its `top`
 // to whichever is smaller — the anchor's own bottom edge, or the viewport's — so the thumb stays
 // reachable even when the scroll container's natural bottom edge (where its native scrollbar would
 // render) is currently scrolled below the viewport.
+// Bars that can sit over the top of a scroll area: the app's tab bar and the fullscreen views' fixed top
+// bars (data-app-top-bar / -content), sticky glass title bars (.glass-page-header), or anything marked
+// data-title-bar="true".
+const TITLE_BAR_SELECTOR = '[data-app-top-bar="true"], [data-app-top-bar-content="true"], .glass-page-header, [data-title-bar="true"]';
+
+// How far down from `top` the stack of title bars over the column [left, right] reaches — where a
+// vertical track should start so it never runs underneath them. Bars count when they're chained down
+// from `top` (each touching the one above) and are pinned (fixed or sticky) — a header that scrolls
+// with the content isn't over the track, and one further down the page doesn't touch the top. A
+// header row explicitly marked data-title-bar="true" counts even though it scrolls: it's part of a
+// header stack (e.g. project details' Created/Modified row between its sticky name bar and tab bar),
+// so the track stays below the whole stack rather than starting in the middle of it.
+//
+// Finding the bars (a whole-document search plus each one's computed style) is the expensive part, and it
+// used to run for every scrollbar on every scroll frame. The list is now shared by all scrollbars and
+// rebuilt at most every TITLE_BARS_TTL_MS (or straight away after a resize); each frame only re-reads the
+// listed bars' positions, which is cheap.
+const TITLE_BARS_TTL_MS = 500;
+let titleBarsCache: { at: number; bars: HTMLElement[] } | null = null;
+
+function invalidateTitleBars() {
+  titleBarsCache = null;
+}
+
+function titleBarCandidates(): HTMLElement[] {
+  const now = performance.now();
+  if (titleBarsCache && now - titleBarsCache.at < TITLE_BARS_TTL_MS) return titleBarsCache.bars;
+  const bars: HTMLElement[] = [];
+  document.querySelectorAll<HTMLElement>(TITLE_BAR_SELECTOR).forEach((bar) => {
+    const style = getComputedStyle(bar);
+    const pinned = style.position === "fixed" || style.position === "sticky";
+    if ((!pinned && bar.dataset.titleBar !== "true") || style.visibility === "hidden" || style.display === "none") return;
+    bars.push(bar);
+  });
+  titleBarsCache = { at: now, bars };
+  return bars;
+}
+
+function titleBarsBottom(top: number, bottom: number, left: number, right: number): number {
+  const rects: DOMRect[] = [];
+  for (const bar of titleBarCandidates()) {
+    if (!bar.isConnected) continue;
+    const r = bar.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0 || r.right < left || r.left > right) continue;
+    rects.push(r);
+  }
+  rects.sort((a, b) => a.top - b.top);
+  let edge = top;
+  for (const r of rects) if (r.top <= edge + 1 && r.bottom > edge) edge = r.bottom;
+  return Math.min(edge, bottom);
+}
+
+// The page's own scrollbar (the document — desktop pages, the client portal), as the same glass thumb,
+// starting below the title bars. app/globals.css hides the native one on <html>. Rendered once, in the
+// root layout.
+export function DocumentScrollbar() {
+  const documentRef = useRef<HTMLElement | null>(typeof document !== "undefined" ? document.documentElement : null);
+  return <GlassScrollbarThumb scrollRef={documentRef} />;
+}
+
 export function GlassScrollbarThumb({
   scrollRef,
   anchorRef,
@@ -74,7 +138,12 @@ export function GlassScrollbarThumb({
   // `top: window.innerHeight - ...` sidesteps devicePixelRatio/zoom sub-pixel rounding entirely for
   // the common (not-yet-docked) case, rather than trying to round a JS value to match it.
   const [track, setTrack] = useState<{ left: number; top: number | null; bottom: number | null; width: number; height: number } | null>(null);
-  const [thumb, setThumb] = useState<{ offset: number; length: number } | null>(null);
+  // The thumb's length, or null when there's nothing to scroll. Its position along the track changes on
+  // every scroll frame, so that's written straight onto the thumb element (thumbElRef, as a transform)
+  // rather than kept in React state — which re-rendered this component on every frame of a scroll.
+  const [thumbLength, setThumbLength] = useState<number | null>(null);
+  const thumbElRef = useRef<HTMLDivElement | null>(null);
+  const thumbOffsetRef = useRef(0);
   const draggingRef = useRef<{
     start: number;
     startScroll: number;
@@ -102,15 +171,21 @@ export function GlassScrollbarThumb({
         return next;
       });
     };
-    const setThumbIfChanged = (next: typeof thumb) => {
-      setThumb((prev) => {
-        if (prev === next) return prev;
-        if (prev && next && prev.offset === next.offset && prev.length === next.length) return prev;
-        return next;
-      });
+    const setThumbIfChanged = (next: { offset: number; length: number } | null) => {
+      if (next) {
+        thumbOffsetRef.current = next.offset;
+        const node = thumbElRef.current;
+        if (node) node.style.transform = isHorizontal ? `translateX(${next.offset}px)` : `translateY(${next.offset}px)`;
+      }
+      const length = next ? next.length : null;
+      setThumbLength((prev) => (prev === length ? prev : length));
     };
     const update = () => {
-      const anchorBox = anchorEl.getBoundingClientRect();
+      // The document scrolls against the viewport, not its own (scrolled, page-tall) box.
+      const anchorBox =
+        el === document.documentElement
+          ? { left: 0, top: 0, right: el.clientWidth, bottom: el.clientHeight, width: el.clientWidth, height: el.clientHeight }
+          : anchorEl.getBoundingClientRect();
       if (isHorizontal) {
         // Whether the anchor's own real bottom edge is currently within the viewport decides HOW
         // the track is positioned, not just WHERE:
@@ -148,20 +223,24 @@ export function GlassScrollbarThumb({
         setThumbIfChanged({ offset: scrollRatio * maxThumbOffset, length: thumbLength });
         return;
       }
+      const trackLeft = side === "left" ? anchorBox.left + insetPx : anchorBox.right - insetPx - thumbWidthPx;
+      // Starts below any title bars over the container's top edge.
+      const trackTop = titleBarsBottom(anchorBox.top, anchorBox.bottom, trackLeft, trackLeft + thumbWidthPx);
+      const trackHeight = Math.max(0, anchorBox.bottom - trackTop);
       setTrackIfChanged({
-        left: side === "left" ? anchorBox.left + insetPx : anchorBox.right - insetPx - thumbWidthPx,
-        top: anchorBox.top,
+        left: trackLeft,
+        top: trackTop,
         bottom: null,
         width: thumbWidthPx,
-        height: anchorBox.height,
+        height: trackHeight,
       });
-      if (el.scrollHeight <= el.clientHeight + 1) {
+      if (el.scrollHeight <= el.clientHeight + 1 || trackHeight < 32) {
         setThumbIfChanged(null);
         return;
       }
       const ratio = el.clientHeight / el.scrollHeight;
-      const thumbHeight = Math.max(24, anchorBox.height * ratio);
-      const maxThumbTop = anchorBox.height - thumbHeight;
+      const thumbHeight = Math.max(24, trackHeight * ratio);
+      const maxThumbTop = trackHeight - thumbHeight;
       const scrollableDist = el.scrollHeight - el.clientHeight;
       const scrollRatio = scrollableDist > 0 ? el.scrollTop / scrollableDist : 0;
       setThumbIfChanged({ offset: scrollRatio * maxThumbTop, length: thumbHeight });
@@ -182,10 +261,15 @@ export function GlassScrollbarThumb({
         update();
       });
     };
-    el.addEventListener("scroll", scheduleUpdate);
+    // A resize or a layout change can add, remove or move title bars — look for them again.
+    const scheduleRelayout = () => {
+      invalidateTitleBars();
+      scheduleUpdate();
+    };
+    el.addEventListener("scroll", scheduleUpdate, { passive: true });
     window.addEventListener("scroll", scheduleUpdate, { passive: true });
-    window.addEventListener("resize", scheduleUpdate);
-    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(scheduleUpdate) : null;
+    window.addEventListener("resize", scheduleRelayout);
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(scheduleRelayout) : null;
     ro?.observe(anchorEl);
     if (anchorEl !== el) ro?.observe(el);
     // Horizontal mode's track position depends on the anchor's own bottom edge relative to the
@@ -195,7 +279,7 @@ export function GlassScrollbarThumb({
     return () => {
       el.removeEventListener("scroll", scheduleUpdate);
       window.removeEventListener("scroll", scheduleUpdate);
-      window.removeEventListener("resize", scheduleUpdate);
+      window.removeEventListener("resize", scheduleRelayout);
       ro?.disconnect();
       if (rafId !== null) cancelAnimationFrame(rafId);
     };
@@ -223,7 +307,7 @@ export function GlassScrollbarThumb({
     };
   }, [scrollRef, isHorizontal]);
 
-  if (!track || !thumb || typeof document === "undefined") return null;
+  if (!track || thumbLength === null || typeof document === "undefined") return null;
 
   return createPortal(
     <div
@@ -237,6 +321,13 @@ export function GlassScrollbarThumb({
       }}
     >
       <div
+        ref={(node) => {
+          thumbElRef.current = node;
+          // Put a freshly shown thumb where the last update said it belongs.
+          if (node) {
+            node.style.transform = isHorizontal ? `translateX(${thumbOffsetRef.current}px)` : `translateY(${thumbOffsetRef.current}px)`;
+          }
+        }}
         onPointerDown={(event) => {
           const el = scrollRef.current;
           const anchorEl = anchorRef?.current ?? el;
@@ -253,12 +344,13 @@ export function GlassScrollbarThumb({
             };
             return;
           }
+          // The track's own height (it starts below the title bars), same as update() used.
           const ratio = el.clientHeight / el.scrollHeight;
-          const thumbHeight = Math.max(24, box.height * ratio);
+          const thumbHeight = Math.max(24, track.height * ratio);
           draggingRef.current = {
             start: event.clientY,
             startScroll: el.scrollTop,
-            maxThumbOffset: box.height - thumbHeight,
+            maxThumbOffset: track.height - thumbHeight,
             scrollableDist: el.scrollHeight - el.clientHeight,
           };
         }}
@@ -271,8 +363,8 @@ export function GlassScrollbarThumb({
         // also select-dragging whatever text sat under the pointer's path.
         style={
           isHorizontal
-            ? { top: 0, left: thumb.offset, width: thumb.length, height: thumbWidthPx, backgroundColor: "var(--custom-scrollbar-thumb)", cursor: "grab" }
-            : { left: 0, top: thumb.offset, height: thumb.length, width: thumbWidthPx, backgroundColor: "var(--custom-scrollbar-thumb)", cursor: "grab" }
+            ? { top: 0, left: 0, width: thumbLength, height: thumbWidthPx, backgroundColor: "var(--custom-scrollbar-thumb)", cursor: "grab" }
+            : { left: 0, top: 0, height: thumbLength, width: thumbWidthPx, backgroundColor: "var(--custom-scrollbar-thumb)", cursor: "grab" }
         }
         onMouseEnter={(event) => {
           event.currentTarget.style.backgroundColor = "var(--custom-scrollbar-thumb-hover)";

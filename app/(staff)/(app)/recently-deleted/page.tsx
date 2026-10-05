@@ -6,6 +6,7 @@ import { createPortal } from "react-dom";
 import { Check, ChevronRight, RotateCcw, Search, Trash2, X } from "lucide-react";
 import { useAppTabs } from "@/lib/app-tabs-context";
 import { useAuth } from "@/lib/auth-context";
+import { authorizedFetch } from "@/lib/api-fetch";
 import { fetchCompanyAccess } from "@/lib/membership";
 import { hasPermissionKey, isOwnerOrAdmin } from "@/lib/use-company-access";
 import {
@@ -236,7 +237,7 @@ async function fetchArchivedLeadsFromApi(companyId: string): Promise<CompanyLead
   const cid = String(companyId || "").trim();
   if (!cid) return [];
   try {
-    const response = await fetch(`/api/leads?companyId=${encodeURIComponent(cid)}`, {
+    const response = await authorizedFetch(`/api/leads?companyId=${encodeURIComponent(cid)}`, {
       method: "GET",
       cache: "no-store",
     });
@@ -393,16 +394,39 @@ export default function RecentlyDeletedPage() {
       typeof window !== "undefined" ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim() : "";
     const directCompanyId = String(user?.companyId || "").trim();
     const preferredCompanyIds = Array.from(new Set([storedCompanyId, directCompanyId].filter(Boolean)));
-    await retryAsync(() => purgeExpiredDeletedProjects(user?.uid, preferredCompanyIds), { attempts: 2, delayMs: 300 });
+    // Everything for the company already known (deleted leads, access, company doc) loads at the same
+    // time as the deleted projects, instead of one after another.
+    const knownCompanyId = storedCompanyId || directCompanyId;
+    const accessFor = (companyId: string) =>
+      companyId && user?.uid
+        ? retryAsync(() => fetchCompanyAccess(companyId, user.uid), { attempts: 2, delayMs: 300 }).catch(() => null)
+        : Promise.resolve(null);
+    const leadsFor = (companyId: string) =>
+      companyId ? retryAsync(() => fetchArchivedLeadsFromApi(companyId), { attempts: 2, delayMs: 300 }).catch(() => []) : Promise.resolve([]);
+    const earlyAccess = accessFor(knownCompanyId);
+    const earlyLeads = leadsFor(knownCompanyId);
     const rows = await retryAsync(() => fetchDeletedProjects(user?.uid, preferredCompanyIds), { attempts: 2, delayMs: 300 });
     setDeletedProjects(rows);
+    // Expired items are cleared in the background (it used to hold the whole page until done), using
+    // the list just loaded; whatever it removes drops off the list when it finishes.
+    void purgeExpiredDeletedProjects(user?.uid, preferredCompanyIds, rows)
+      .then((purgedIds) => {
+        if (purgedIds.length) {
+          const gone = new Set(purgedIds);
+          setDeletedProjects((current) => current.filter((row) => !gone.has(row.id)));
+        }
+      })
+      .catch(() => {});
     const companyIds = Array.from(new Set(rows.map((row) => String(row.companyId || "").trim()).filter(Boolean)));
     const selectedCompanyId = storedCompanyId || companyIds[0] || "";
     const creatorUids = rows.map((row) => String(row.createdByUid || "").trim()).filter(Boolean);
-    const userColorMap = await fetchUserColorMapByUids(creatorUids, selectedCompanyId);
+    const [userColorMap, access, leads] = await Promise.all([
+      fetchUserColorMapByUids(creatorUids, selectedCompanyId),
+      selectedCompanyId === knownCompanyId ? earlyAccess : accessFor(selectedCompanyId),
+      selectedCompanyId === knownCompanyId ? earlyLeads : leadsFor(selectedCompanyId),
+    ]);
     setCreatorColorByUid(userColorMap);
     if (selectedCompanyId && user?.uid) {
-      const access = await retryAsync(() => fetchCompanyAccess(selectedCompanyId, user.uid), { attempts: 2, delayMs: 300 });
       // Matches leads.tsx's own semantics for the same permission (was previously a bespoke
       // inline check that only recognized the literal "company.*"/"leads.*" wildcards and never
       // the actual "leads.view"/"leads.view.others" keys those wildcards are supposed to grant).
@@ -414,12 +438,7 @@ export default function RecentlyDeletedPage() {
     } else {
       setCanAccessDeletedLeads(false);
     }
-    if (selectedCompanyId) {
-      const leads = await retryAsync(() => fetchArchivedLeadsFromApi(selectedCompanyId), { attempts: 2, delayMs: 300 });
-      setDeletedLeads(leads);
-    } else {
-      setDeletedLeads([]);
-    }
+    setDeletedLeads(selectedCompanyId ? leads : []);
     if (selectedCompanyId) {
       const selectedCompanyDoc = await retryAsync(() => fetchCompanyDoc(selectedCompanyId), { attempts: 2, delayMs: 300 });
       const selectedDoc = (selectedCompanyDoc as Record<string, unknown> | null) ?? null;

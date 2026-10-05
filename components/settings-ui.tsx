@@ -88,7 +88,7 @@ export function SettingsCard({
             {badge ? (
               <span
                 className="rounded-full px-2 py-0.5 text-[10.5px] font-bold"
-                style={{ backgroundColor: "color-mix(in srgb, #7c6cf0 16%, transparent)", color: "#6b5ce0" }}
+                style={{ backgroundColor: "color-mix(in srgb, #7c6cf0 16%, transparent)", color: "color-mix(in srgb, var(--accent-purple) 85%, var(--text-main))" }}
               >
                 {badge}
               </span>
@@ -173,8 +173,11 @@ export function GlassSwitch({
       }}
     >
       <span
-        className="absolute left-[3px] top-[3px] rounded-full bg-white shadow-[0_2px_6px_rgba(0,0,0,0.22)]"
+        className="absolute left-[3px] top-[3px] rounded-full shadow-[0_2px_6px_rgba(0,0,0,0.22)]"
         style={{
+          // Inline, not the bg-white class: globals.css repaints .bg-white as the dark panel colour in
+          // dark mode, which would turn the knob into a dark dot on the dark off-track.
+          backgroundColor: "#FFFFFF",
           width: knob,
           height: knob,
           transform: checked ? `translateX(${w - knob - 6}px)` : "translateX(0)",
@@ -231,7 +234,9 @@ export function Segmented<T extends string>({
           style={{
             left: thumb.left,
             width: thumb.width,
-            backgroundColor: tone === "brand" ? undefined : "var(--panel-bg)",
+            // White in light mode (white mixed with white); in dark, a step lighter than the panel so the
+            // thumb doesn't vanish into the track.
+            backgroundColor: tone === "brand" ? undefined : "color-mix(in srgb, var(--panel-bg) 85%, #ffffff)",
             backgroundImage: tone === "brand" ? "var(--brand-gradient)" : undefined,
             transition: "left 250ms cubic-bezier(0.32,0.72,0,1), width 250ms cubic-bezier(0.32,0.72,0,1)",
           }}
@@ -280,7 +285,20 @@ function ColorPopover({
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
+  const customInputRef = useRef<HTMLInputElement | null>(null);
   const [hexDraft, setHexDraft] = useState(HEX_RE.test(value) ? value.toUpperCase() : "");
+  // The custom colour (the browser's own colour chooser): React's onChange is really the native
+  // "input" event, which fires on every move while you drag around the chooser — picking (and so
+  // closing this pop-over, which unmounts the input and shuts the chooser) on that made it vanish the
+  // moment you clicked in it. The colour is only picked on the native "change" event instead, which
+  // fires once, when you're done with the chooser; while dragging, only the hex field below follows.
+  useEffect(() => {
+    const el = customInputRef.current;
+    if (!el) return;
+    const onCommit = () => onPick(el.value.toUpperCase());
+    el.addEventListener("change", onCommit);
+    return () => el.removeEventListener("change", onCommit);
+  }, [onPick]);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
   useLayoutEffect(() => {
     const el = ref.current;
@@ -344,8 +362,9 @@ function ColorPopover({
         <input
           type="color"
           aria-label="Custom colour"
-          value={HEX_RE.test(value) ? value : "#2F6BFF"}
-          onChange={(e) => onPick(e.target.value.toUpperCase())}
+          ref={customInputRef}
+          defaultValue={HEX_RE.test(value) ? value : "#2F6BFF"}
+          onChange={(e) => setHexDraft(e.target.value.toUpperCase())}
           className="h-8 w-10 shrink-0 cursor-pointer rounded-[8px] border-0 bg-transparent p-0"
         />
         <input

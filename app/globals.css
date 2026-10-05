@@ -144,14 +144,24 @@ body {
   min-height: 100svh;
   overflow-x: hidden;
   overscroll-behavior-y: none;
+  background: var(--bg-app);
+  font-family: "SF Pro Text", "SF Pro Display", "Segoe UI", "Trebuchet MS", "Tahoma", sans-serif;
+  color: var(--text-main);
+}
+
+/* The soft colour washes behind every page. They sit on their own fixed layer, which is painted once and
+ * stays put while the page scrolls — as a `background-attachment: fixed` body background (how they used
+ * to be drawn) the browser repainted all three large gradients on every frame of every scroll. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
   background:
     radial-gradient(1600px circle at 10% 25%, var(--bg-wash-1), transparent 65%),
     radial-gradient(1400px circle at 95% 15%, var(--bg-wash-2), transparent 60%),
-    radial-gradient(1500px circle at 25% 100%, var(--bg-wash-3), transparent 60%),
-    var(--bg-app);
-  background-attachment: fixed;
-  font-family: "SF Pro Text", "SF Pro Display", "Segoe UI", "Trebuchet MS", "Tahoma", sans-serif;
-  color: var(--text-main);
+    radial-gradient(1500px circle at 25% 100%, var(--bg-wash-3), transparent 60%);
 }
 
 h1,
@@ -262,30 +272,6 @@ body.new-project-open .project-image-nav-arrow {
   height: 0;
 }
 
-.changelog-content-scroll {
-  overflow-y: scroll !important;
-  scrollbar-gutter: stable;
-  -ms-overflow-style: auto;
-  scrollbar-width: auto !important;
-  scrollbar-color: #5b6577 #d5dde8 !important;
-}
-
-.changelog-content-scroll::-webkit-scrollbar {
-  display: block !important;
-  width: 14px !important;
-  height: 14px !important;
-}
-
-.changelog-content-scroll::-webkit-scrollbar-track {
-  background: #d5dde8 !important;
-}
-
-.changelog-content-scroll::-webkit-scrollbar-thumb {
-  background: #5b6577 !important;
-  border: 2px solid #d5dde8 !important;
-  border-radius: 999px !important;
-}
-
 body[data-theme="dark"] {
   color: var(--text-main);
 }
@@ -384,6 +370,34 @@ body[data-theme="dark"].cs-app input.bg-transparent:not([type="color"]):not([typ
 body[data-theme="dark"].cs-app textarea.bg-transparent {
   background: transparent !important;
   color: #f1f1f1 !important;
+}
+
+/* A transparent input that deliberately takes its text colour from a coloured surface it sits on
+   (e.g. Company Settings > Hardware's brand-name field on the brand's own colour) — keep that
+   colour instead of the forced light grey above, which is unreadable on a light brand colour. */
+body[data-theme="dark"].cs-app input.bg-transparent:is([style*="color: inherit"], [style*="color:inherit"]):not([type="color"]):not([type="checkbox"]):not([type="radio"]) {
+  color: inherit !important;
+}
+
+/* Hover text colours written as arbitrary dark hexes (hover:text-[#…]) aren't covered by the plain
+   text-[#…] overrides above, so they'd turn dark-on-dark on hover. */
+body[data-theme="dark"].cs-app .hover\:text-\[\#334155\]:hover,
+body[data-theme="dark"].cs-app .hover\:text-\[\#0F172A\]:hover,
+body[data-theme="dark"].cs-app .hover\:text-\[\#111827\]:hover {
+  color: var(--text-main) !important;
+}
+
+body[data-theme="dark"].cs-app .hover\:bg-\[\#EEF2F7\]:hover,
+body[data-theme="dark"].cs-app .hover\:bg-\[\#F8FAFC\]:hover {
+  background-color: var(--panel-muted) !important;
+}
+
+/* Wrapped's year picker is a translucent white pill on the blue hero in both themes — not the
+   blanket dark grey input box. */
+body[data-theme="dark"].cs-app select.bg-white\/15 {
+  background: rgba(255, 255, 255, 0.15) !important;
+  border-color: rgba(255, 255, 255, 0.3) !important;
+  color: #fff !important;
 }
 
 /* A field deliberately shown as plain text (e.g. a contact's read-only profile fields until "Edit" is
@@ -494,6 +508,47 @@ body[data-theme="dark"].cs-app .notes-rich li {
   to {
     opacity: 1;
   }
+}
+
+/* Calendar month view (app/(staff)/(app)/calendar/page.tsx): days outside the month in view are greyed.
+   The scroller carries which of its three months is in view as data-live (0/1/2), set straight from the
+   scroll position rather than by a React re-render (which made scrolling stutter); each day carries which
+   month it belongs to as data-mi. The day's own transition fades the change. */
+.cal-month-scroller[data-live="0"] .cal-day:not([data-mi="0"]),
+.cal-month-scroller[data-live="1"] .cal-day:not([data-mi="1"]),
+.cal-month-scroller[data-live="2"] .cal-day:not([data-mi="2"]) {
+  --cal-day-bg: color-mix(in srgb, var(--text-main) 2.5%, transparent);
+  --cal-day-num: var(--text-muted);
+}
+
+/* While any pop-up is open, the page behind it can't scroll. components/scroll-lock-watcher.tsx puts
+ * .cs-scroll-locked on <html> while one is open (it lists what counts as a pop-up). Covers every scroller the page
+ * uses: the document itself (desktop), <main> (app-shell.tsx's mobile scroller) and a fullscreen
+ * view's own data-app-scroll-root (Quote/Specifications). overflow:hidden keeps the current scroll
+ * position, so closing the pop-up leaves the page exactly where it was. The pop-up's own panels are
+ * position:fixed, so their internal scrolling is unaffected. */
+html.cs-scroll-locked,
+html.cs-scroll-locked body {
+  overflow: hidden !important;
+}
+/* <main> only scrolls on phones/tablets (app-shell.tsx's isDesktopViewport = min-width 1024px); on
+ * desktop it's overflow:visible and the document scrolls. Locking it there too would turn its
+ * overflow-x:visible into auto (a hidden/visible pair isn't allowed) and give wide pages like the
+ * dashboard a horizontal scrollbar while a pop-up is open. */
+@media (max-width: 1023.98px) {
+  html.cs-scroll-locked main {
+    overflow-y: hidden !important;
+    overscroll-behavior: none;
+  }
+}
+html.cs-scroll-locked [data-app-scroll-root="true"] {
+  overflow-y: hidden !important;
+  overscroll-behavior: none;
+}
+/* Scrolling inside a pop-up stops at its own ends instead of carrying on to whatever's behind. */
+.glass-modal-panel,
+.glass-modal-panel * {
+  overscroll-behavior: contain;
 }
 
 /* Sidebar labels/text that only mount once the sidebar has finished expanding (app-shell.tsx's
@@ -937,49 +992,47 @@ body[data-theme="dark"] .glass-nav-arrow {
    the glass look. Also applied to .glass-modal-panel and everything inside it
    by default, so any popup/modal box gets this scrollbar automatically
    without needing to add .glass-scroll by hand on its scrolling child. */
-.glass-scroll,
-.glass-modal-panel {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(15, 23, 42, 0.22) transparent;
+/* Every scrollbar in the app looks like components/glass-scrollbar-thumb.tsx's glass thumb: a 6px
+   rounded thumb (--custom-scrollbar-thumb), no track, inset 2px from the edge — not just .glass-scroll
+   and pop-ups any more. Chromium/Safari draw it from the ::-webkit-scrollbar rules below; they're
+   ignored on any element that sets the standard scrollbar-width/scrollbar-color (Chrome 121+), so
+   those standard properties are only given to browsers without ::-webkit-scrollbar (Firefox). */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
 }
 
-.glass-scroll::-webkit-scrollbar,
-.glass-modal-panel ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-.glass-scroll::-webkit-scrollbar-track,
-.glass-modal-panel ::-webkit-scrollbar-track {
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
   background: transparent;
 }
 
-.glass-scroll::-webkit-scrollbar-thumb,
-.glass-modal-panel ::-webkit-scrollbar-thumb {
-  background-color: rgba(15, 23, 42, 0.22);
+*::-webkit-scrollbar-thumb {
+  background-color: var(--custom-scrollbar-thumb);
   border-radius: 999px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 
-.glass-scroll::-webkit-scrollbar-thumb:hover,
-.glass-modal-panel ::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(15, 23, 42, 0.38);
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--custom-scrollbar-thumb-hover);
 }
 
-body[data-theme="dark"] .glass-scroll,
-body[data-theme="dark"] .glass-modal-panel {
-  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--custom-scrollbar-thumb) transparent;
+  }
 }
 
-body[data-theme="dark"] .glass-scroll::-webkit-scrollbar-thumb,
-body[data-theme="dark"] .glass-modal-panel ::-webkit-scrollbar-thumb {
-  background-color: rgba(255, 255, 255, 0.22);
+/* The page's own (document) scrollbar is drawn by <DocumentScrollbar /> (app/layout.tsx) instead, so it
+   can start below the title bars rather than running up underneath them. */
+html {
+  scrollbar-width: none;
 }
 
-body[data-theme="dark"] .glass-scroll::-webkit-scrollbar-thumb:hover,
-body[data-theme="dark"] .glass-modal-panel ::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(255, 255, 255, 0.38);
+html::-webkit-scrollbar {
+  display: none;
 }
 
 /* A board/lead column's card list toggles between overflow-hidden and
@@ -1069,17 +1122,6 @@ body[data-theme="dark"] .row-glow--brand {
   display: none;
 }
 
-/* Toggled on <body> for the duration of any pointer-down-to-up gesture app-wide (see AppShell's
-   own pointerdown/pointerup listener) so dragging something — a kanban card, a custom scrollbar
-   thumb, a click-drag scroll — never leaves a trail of accidentally-highlighted text behind it as
-   a side effect of the browser's default text-selection behavior. Removed the instant the pointer
-   lifts, so ordinary click-and-drag text selection is unaffected outside of an active gesture. */
-.no-drag-text-select,
-.no-drag-text-select * {
-  user-select: none !important;
-  -webkit-user-select: none !important;
-}
-
 /* Left sidebar's own width, published by AppShell (see its --sidebar-width-px effect) as the
    user drags/collapses it — these two rules are how that one number reaches the other two
    pieces of layout that depend on it without being part of AppShell's own component tree: the
@@ -1101,11 +1143,16 @@ body[data-theme="dark"] .row-glow--brand {
    fallback for any of those where that inheritance doesn't carry through to the caret, which
    otherwise blinks invisibly over a light box in dark mode (or a dark box in light mode) even
    though the typed text itself displays fine. */
+/* currentColor, not the theme's text colour: the caret is always the colour of the text being typed in
+   that field, and that text colour is already the one chosen to read on that field's own background.
+   So it's dark on the white Quote/Specifications sheet and on any light box, light on a dark box, and
+   follows a coloured surface's own text colour too, in both themes. (var(--text-main) made it
+   near-white everywhere in dark mode, vanishing on the white sheet.) */
 input,
 textarea,
 [contenteditable="true"],
 [contenteditable=""] {
-  caret-color: var(--text-main);
+  caret-color: currentColor;
 }
 
 /* "Ring" wobble for a bell icon on click — a quick swing that settles back to rest, like the

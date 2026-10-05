@@ -87,8 +87,8 @@ function applyOriginArrival(panel: HTMLElement, el: HTMLElement, dx: number, dy:
   const nx = dx / distance;
   const ny = dy / distance;
   const BOUNCE_DURATION_MS = 460;
-  // The bounce below overshoots past the origin element's own resting transform (scale 1.02,
-  // translated up to 10px) — an origin button living inside a tightly-fitted overflow:hidden
+  // The bounce below overshoots past the origin element's own resting transform (scale 1.01,
+  // translated up to 6px) — an origin button living inside a tightly-fitted overflow:hidden
   // container (e.g. a bottom action bar sized exactly to its collapsed/expanded content, like
   // FloatingBarSlot in the project page) clips that overshoot at the container's own edge, which
   // reads as the bounce getting visibly cut off mid-motion rather than wobbling freely. Walking up
@@ -135,9 +135,10 @@ function applyOriginArrival(panel: HTMLElement, el: HTMLElement, dx: number, dy:
   el.animate(
     [
       { transform: "translate(0px, 0px) scale(1, 1)" },
-      { transform: `translate(${nx * 10}px, ${ny * 10}px) scale(0.965, 0.965)`, offset: 0.24 },
-      { transform: `translate(${-nx * 4}px, ${-ny * 4}px) scale(1.02, 1.02)`, offset: 0.52 },
-      { transform: `translate(${nx * 1.6}px, ${ny * 1.6}px) scale(0.99, 0.99)`, offset: 0.78 },
+      // Kept subtle: a small nudge and a little settle, not a big wobble.
+      { transform: `translate(${nx * 6}px, ${ny * 6}px) scale(0.98, 0.98)`, offset: 0.26 },
+      { transform: `translate(${-nx * 2}px, ${-ny * 2}px) scale(1.01, 1.01)`, offset: 0.56 },
+      { transform: `translate(${nx * 0.6}px, ${ny * 0.6}px) scale(0.997, 0.997)`, offset: 0.8 },
       { transform: "translate(0px, 0px) scale(1, 1)" },
     ],
     { duration: BOUNCE_DURATION_MS, easing: "ease-in-out" },

@@ -34,13 +34,13 @@ export default function ProductionCutlistPage() {
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-[30px] font-medium text-[#1A1D23]">Production Cutlist</h1>
+        <h1 className="text-[30px] font-medium text-[var(--text-main)]">Production Cutlist</h1>
         <Badge variant="info">Complex workflow</Badge>
       </div>
 
       {!allowed ? (
         <Card>
-          <CardContent className="pt-5 text-sm text-[#B42318]">
+          <CardContent className="pt-5 text-sm text-[var(--danger-strong)]">
             You do not have permission to edit production cutlists with your current role.
           </CardContent>
         </Card>
@@ -50,7 +50,7 @@ export default function ProductionCutlistPage() {
             <CardHeader>
               <CardTitle>Current revision</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-2 text-sm text-slate-700">
+            <CardContent className="space-y-2 text-sm text-[var(--text-main)]">
               {isLoading && <p>Loading production cutlist...</p>}
               {project && <p>Project: {project.name}</p>}
               <p>Revision: {production?.revision ?? "-"}</p>
@@ -63,7 +63,7 @@ export default function ProductionCutlistPage() {
             <CardHeader>
               <CardTitle>Build queue</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-3 text-sm text-slate-700">
+            <CardContent className="space-y-3 text-sm text-[var(--text-main)]">
               <p>Step 1: Validate part dimensions against machine constraints.</p>
               <p>Step 2: Confirm material availability in inventory.</p>
               <p>Step 3: Lock revision and publish to production floor tablets.</p>

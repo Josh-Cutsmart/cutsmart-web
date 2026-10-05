@@ -55,7 +55,10 @@ export function useAccountVerification(onVerified?: () => void) {
         if (data.error === "cooldown" && data.retryAfterSeconds) {
           startCooldown(data.retryAfterSeconds);
         } else {
-          setError(data.error || "Could not send verification code.");
+          // The server's reason (e.g. "missing-resend-config" when the email service isn't set up on
+          // the host) is for us, not the person signing up — logged, with a plain message shown.
+          console.warn("[verification] send failed:", data.error);
+          setError("We couldn't send your code just now. Please try again in a moment.");
         }
         return;
       }

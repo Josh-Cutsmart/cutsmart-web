@@ -19,6 +19,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Archive, Check, ChevronLeft, Mail, MapPin, MessageSquare, Pencil, Phone, Plus, Search, Users, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
+import { authorizedFetch } from "@/lib/api-fetch";
 import {
   createOrAttachManualCompanyClient,
   fetchCompanyClientById,
@@ -304,25 +305,13 @@ function ClientsPageInner() {
     let cancelled = false;
     const load = async () => {
       setLoading(true);
-      try {
-        const companyDoc = await retryAsync(() => fetchCompanyDoc(activeCompanyId), { attempts: 2, delayMs: 250 });
-        if (cancelled) return;
-        setCompanyName(String(companyDoc?.companyName ?? companyDoc?.name ?? "Company").trim() || "Company");
-        // Only fall back to the starter categories when the company doc was actually read and has none
-        // saved; if it couldn't be read, show none rather than categories the company may not have.
-        setContactCategories(
-          companyDoc ? normalizeContactCategoriesForDisplay((companyDoc as Record<string, unknown>).contactCategories) : [],
-        );
-        if (!canAccessClients) {
-          setClients([]);
-          setClientDetailsById({});
-          return;
-        }
+      // The contacts list starts loading straight away, alongside the company doc (it doesn't need it).
+      const loadClients = async (): Promise<CompanyClientRow[]> => {
         let companyClients: CompanyClientRow[] = [];
         try {
           companyClients = await retryAsync(
             async () => {
-              const response = await fetch(
+              const response = await authorizedFetch(
                 `/api/clients?companyId=${encodeURIComponent(activeCompanyId)}&mode=summary&viewerUid=${encodeURIComponent(String(user?.uid || ""))}&scope=${canViewAllClients ? "all" : "mine"}`,
                 {
                   method: "GET",
@@ -350,6 +339,24 @@ function ClientsPageInner() {
             { attempts: 2, delayMs: 300 },
           );
         }
+        return companyClients;
+      };
+      const clientsLoad = canAccessClients ? loadClients().catch(() => [] as CompanyClientRow[]) : null;
+      try {
+        const companyDoc = await retryAsync(() => fetchCompanyDoc(activeCompanyId), { attempts: 2, delayMs: 250 });
+        if (cancelled) return;
+        setCompanyName(String(companyDoc?.companyName ?? companyDoc?.name ?? "Company").trim() || "Company");
+        // Only fall back to the starter categories when the company doc was actually read and has none
+        // saved; if it couldn't be read, show none rather than categories the company may not have.
+        setContactCategories(
+          companyDoc ? normalizeContactCategoriesForDisplay((companyDoc as Record<string, unknown>).contactCategories) : [],
+        );
+        if (!canAccessClients || !clientsLoad) {
+          setClients([]);
+          setClientDetailsById({});
+          return;
+        }
+        const companyClients = await clientsLoad;
         if (cancelled) return;
         setClients(companyClients);
         setClientDetailsById(
@@ -481,7 +488,7 @@ function ClientsPageInner() {
       setDetailLoadingClientId(activeClientId);
       let detail: CompanyClientRow | null = null;
       try {
-        const response = await fetch(
+        const response = await authorizedFetch(
           `/api/clients?companyId=${encodeURIComponent(activeCompanyId)}&mode=detail&clientId=${encodeURIComponent(activeClientId)}&viewerUid=${encodeURIComponent(String(user?.uid || ""))}&scope=${canViewAllClients ? "all" : "mine"}`,
           {
             method: "GET",

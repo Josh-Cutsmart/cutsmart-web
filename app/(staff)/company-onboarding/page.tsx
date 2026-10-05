@@ -18,6 +18,7 @@ import {
 import { ProtectedRoute } from "@/components/protected-route";
 import { VerifyEmailGate } from "@/components/verify-email-gate";
 import { useAuth } from "@/lib/auth-context";
+import { invalidateCompanyCache, invalidateUserCache } from "@/lib/firestore-cache";
 import { db, hasFirebaseConfig } from "@/lib/firebase";
 
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
@@ -416,6 +417,9 @@ export default function CompanyOnboardingPage() {
         { merge: true },
       );
 
+      // Fresh reads next time: the user, their company and membership just changed.
+      invalidateUserCache(user.uid);
+      invalidateCompanyCache();
       await setDoc(doc(db, "users", user.uid), {
         email: user.email || "",
         displayName: ownerName,
@@ -474,6 +478,9 @@ export default function CompanyOnboardingPage() {
         updatedAtIso: new Date().toISOString(),
       }, { merge: true });
 
+      // Fresh reads next time: the user, their company and membership just changed.
+      invalidateUserCache(user.uid);
+      invalidateCompanyCache();
       await setDoc(doc(db, "users", user.uid), {
         email: user.email || "",
         displayName: memberName,
@@ -594,7 +601,10 @@ export default function CompanyOnboardingPage() {
       <div
         className="relative min-h-screen overflow-hidden"
         style={{
-          backgroundImage: "url('/bg.png')",
+          // The panel-bg layer multiplies over the photo: white (light) leaves it untouched, the dark
+          // panel colour (dark mode) dims it so the themed text/fields below stay readable.
+          backgroundImage: "linear-gradient(var(--panel-bg), var(--panel-bg)), url('/bg.png')",
+          backgroundBlendMode: "multiply",
           backgroundSize: "cover",
           backgroundPosition: "center",
           backgroundRepeat: "no-repeat",
@@ -636,7 +646,7 @@ export default function CompanyOnboardingPage() {
               setHoveredChoice(null);
               setLockedPreview(null);
             }}
-            className="group relative z-10 flex min-h-screen shrink-0 items-center justify-center overflow-hidden border-r border-[rgba(215,222,232,0.55)] hover:bg-[rgba(47,107,255,0.50)]"
+            className="group relative z-10 flex min-h-screen shrink-0 items-center justify-center overflow-hidden border-r border-[color-mix(in_srgb,var(--panel-border)_55%,transparent)] hover:bg-[rgba(47,107,255,0.50)]"
             style={{
               backgroundColor: "rgba(47,107,255,0.30)",
               flex: `0 0 ${createBasis}`,
@@ -647,7 +657,7 @@ export default function CompanyOnboardingPage() {
             <div className="absolute inset-0 z-20 flex items-center justify-center px-8">
               {!createFormMounted ? (
                 <span
-                  className="text-center uppercase text-[#000000] transition-all"
+                  className="text-center uppercase text-[var(--text-main)] transition-all"
                   style={{
                     fontSize: "clamp(26px, 3.2vw, 46px)",
                     lineHeight: 1.02,
@@ -683,7 +693,7 @@ export default function CompanyOnboardingPage() {
                   style={{ width: "min(550px, calc(100vw - 120px))" }}
                 >
                   <p
-                    className="mx-auto w-full whitespace-normal text-center uppercase text-[#000000] transition-all"
+                    className="mx-auto w-full whitespace-normal text-center uppercase text-[var(--text-main)] transition-all"
                     style={{
                       fontSize: "clamp(26px, 3.2vw, 46px)",
                       lineHeight: 1.02,
@@ -750,7 +760,7 @@ export default function CompanyOnboardingPage() {
                       placeholder="Confirm Company Code / Password"
                       className="h-[50px] rounded-[12px] border border-[#D7DEE8] bg-white px-4 text-[14px] text-[#12151A] outline-none focus:border-[#7EB0FF]"
                     />
-                    {error && <p className="text-[12px] font-semibold text-[#B42318]">{error}</p>}
+                    {error && <p className="text-[12px] font-semibold text-[var(--danger-strong)]">{error}</p>}
                     <button
                       type="submit"
                       disabled={isSaving}
@@ -779,9 +789,9 @@ export default function CompanyOnboardingPage() {
               setHoveredChoice(null);
               setLockedPreview(null);
             }}
-            className="group relative z-10 flex min-h-screen shrink-0 items-center justify-center overflow-hidden hover:bg-[rgba(255,255,255,0.50)]"
+            className="group relative z-10 flex min-h-screen shrink-0 items-center justify-center overflow-hidden hover:bg-[color-mix(in_srgb,var(--panel-bg)_50%,transparent)]"
             style={{
-              backgroundColor: "rgba(255,255,255,0.42)",
+              backgroundColor: "color-mix(in srgb, var(--panel-bg) 42%, transparent)",
               flex: `0 0 ${joinBasis}`,
               transition: "flex-basis 900ms cubic-bezier(0.22,1,0.36,1), background-color 300ms ease",
             }}
@@ -789,7 +799,7 @@ export default function CompanyOnboardingPage() {
               <div className="absolute inset-0 z-20 flex items-center justify-center px-8">
               {!joinFormMounted ? (
                 <span
-                    className="text-center uppercase text-[#000000] transition-all"
+                    className="text-center uppercase text-[var(--text-main)] transition-all"
                   style={{
                     fontSize: "clamp(26px, 3.2vw, 46px)",
                     lineHeight: 1.02,
@@ -825,7 +835,7 @@ export default function CompanyOnboardingPage() {
                   style={{ width: "min(550px, calc(100vw - 120px))" }}
                 >
                   <p
-                    className="mx-auto w-full whitespace-normal text-center uppercase text-[#000000] transition-all"
+                    className="mx-auto w-full whitespace-normal text-center uppercase text-[var(--text-main)] transition-all"
                     style={{
                       fontSize: "clamp(26px, 3.2vw, 46px)",
                       lineHeight: 1.02,
@@ -878,7 +888,7 @@ export default function CompanyOnboardingPage() {
                                 }
                                 void onDeclineInvite(invite);
                               }}
-                              className="h-8 min-w-[88px] rounded-[9px] border border-[#E5AEB3] bg-[#FDECEC] px-3 text-[12px] font-bold text-[#B42318] disabled:opacity-60"
+                              className="h-8 min-w-[88px] rounded-[9px] border border-[var(--danger-border)] bg-[var(--danger-soft)] px-3 text-[12px] font-bold text-[var(--danger-strong)] disabled:opacity-60"
                             >
                               {declineConfirm ? "Confirm" : "Decline"}
                             </button>
@@ -901,7 +911,7 @@ export default function CompanyOnboardingPage() {
                       );
                     })}
                     {!invites.length && inviteLoadError && (
-                      <p className="text-[11px] font-semibold text-[#B42318]">{inviteLoadError}</p>
+                      <p className="text-[11px] font-semibold text-[var(--danger-strong)]">{inviteLoadError}</p>
                     )}
                     <div className="relative">
                       <input
@@ -920,7 +930,7 @@ export default function CompanyOnboardingPage() {
                         {showJoinCode ? "HIDE" : "SHOW"}
                       </button>
                     </div>
-                    {error && <p className="text-[12px] font-semibold text-[#B42318]">{error}</p>}
+                    {error && <p className="text-[12px] font-semibold text-[var(--danger-strong)]">{error}</p>}
                     <button
                       type="submit"
                       disabled={isSaving}

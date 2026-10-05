@@ -2,15 +2,17 @@
 
 import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { useParams, useSearchParams } from "next/navigation";
-import { ArrowLeft, ClipboardList, DollarSign as QuoteIcon, Printer, Download, User, AtSign, Phone } from "lucide-react";
+import { ArrowLeft, CalendarDays, ClipboardList, DollarSign as QuoteIcon, Printer, Download, User, AtSign, Phone } from "lucide-react";
+import ClientScheduleView from "@/components/client-schedule-view";
+import type { ClientScheduleEvent } from "@/lib/calendar-data";
 import SpecsGridClientView from "@/components/specs-grid-client-view";
 import { computeSpecsPageBoxWidthPx, type SpecsCell, type SpecsGrid } from "@/lib/specs-grid-types";
 import { buildSpecsGridPdfBlob, openPdfBlobInPrintWindow } from "@/lib/specs-grid-pdf";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
-import { useKeyboardInsetPx } from "@/lib/use-keyboard-inset";
+import { usePublishKeyboardInsetVars } from "@/lib/use-keyboard-inset";
 
 type Phase = "loading" | "ready" | "load-error";
-type Tab = "specs" | "quote";
+type Tab = "specs" | "quote" | "schedule";
 
 const ERROR_MESSAGES: Record<string, string> = {
   "not-found": "This link isn't valid. Please check the email again.",
@@ -19,6 +21,31 @@ const ERROR_MESSAGES: Record<string, string> = {
   "no-quote": "There's no quote on this project yet.",
   "missing-name": "Please enter your name to accept.",
 };
+
+// What the client had seen the last time they opened this link, on this device — the basis for the
+// red "new" dots on the tabs. specs/quote: the sent version they last looked at; schedule: the event
+// ids they've seen.
+type SeenState = { specs?: string; quote?: string; schedule?: string[] };
+const seenKey = (shareId: string) => `cutsmart_portal_seen_${shareId}`;
+function readSeen(shareId: string): SeenState | null {
+  try {
+    const raw = window.localStorage.getItem(seenKey(shareId));
+    return raw ? (JSON.parse(raw) as SeenState) : null;
+  } catch {
+    return null;
+  }
+}
+function writeSeen(shareId: string, state: SeenState) {
+  try {
+    window.localStorage.setItem(seenKey(shareId), JSON.stringify(state));
+  } catch {
+    // storage unavailable — the dots just won't remember
+  }
+}
+
+function RedDot() {
+  return <span aria-label="New" className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: "#DC2626" }} />;
+}
 
 function errorMessageFor(error: string | undefined): string {
   if (!error) return "Something went wrong. Please try again.";
@@ -95,11 +122,7 @@ export default function ClientSpecsSharePage() {
   // reads (see app/globals.css) to keep itself centered above the keyboard instead of the full
   // screen. This page sits outside AppShell (a public, no-login route), so it needs its own copy
   // of the same one-line wiring rather than inheriting AppShell's.
-  const keyboardInset = useKeyboardInsetPx();
-  useEffect(() => {
-    document.documentElement.style.setProperty("--keyboard-inset-px", `${keyboardInset.insetPx}px`);
-    document.documentElement.style.setProperty("--keyboard-offset-top-px", `${keyboardInset.offsetTopPx}px`);
-  }, [keyboardInset]);
+  usePublishKeyboardInsetVars();
 
   const [phase, setPhase] = useState<Phase>("loading");
   const [loadError, setLoadError] = useState("");
@@ -113,7 +136,7 @@ export default function ClientSpecsSharePage() {
   // Sliding blue underline behind the tab bar's active tab — measured off the actual rendered
   // buttons (their labels aren't equal width) rather than an assumed fraction, so it lines up
   // exactly and slides between them on click instead of just snapping to the new tab.
-  const tabButtonRefs = useRef<Record<Tab, HTMLButtonElement | null>>({ specs: null, quote: null });
+  const tabButtonRefs = useRef<Record<Tab, HTMLButtonElement | null>>({ specs: null, quote: null, schedule: null });
   const [tabIndicatorRect, setTabIndicatorRect] = useState<{ left: number; width: number } | null>(null);
   useLayoutEffect(() => {
     const el = tabButtonRefs.current[activeTab];
@@ -132,6 +155,25 @@ export default function ClientSpecsSharePage() {
   const [confirmationSubmittedAt, setConfirmationSubmittedAt] = useState<string | null>(null);
   const [confirmationSubmittedByName, setConfirmationSubmittedByName] = useState<string | null>(null);
   const [answeringKey, setAnsweringKey] = useState<string | null>(null);
+
+  // Schedule tab: the project's calendar events staff chose to show the client. The tab only exists
+  // when there's at least one.
+  const [scheduleEvents, setScheduleEvents] = useState<ClientScheduleEvent[]>([]);
+  const scheduleAvailable = scheduleEvents.length > 0;
+  // Tabs with something new since the client's last visit (red dot), and the schedule events that are new.
+  const [unseenTabs, setUnseenTabs] = useState<Set<Tab>>(new Set());
+  const [newEventIds, setNewEventIds] = useState<Set<string>>(new Set());
+  // What's on the link right now — saved as "seen" for each tab once the client opens it.
+  const currentSeenRef = useRef<SeenState>({});
+  const selectTab = (tab: Tab) => {
+    setActiveTab(tab);
+    setUnseenTabs((prev) => {
+      if (!prev.has(tab)) return prev;
+      const next = new Set(prev);
+      next.delete(tab);
+      return next;
+    });
+  };
 
   const [quoteAvailable, setQuoteAvailable] = useState(false);
   const [quoteGrid, setQuoteGrid] = useState<SpecsGrid | null>(null);
@@ -170,7 +212,7 @@ export default function ClientSpecsSharePage() {
     const load = async () => {
       setPhase("loading");
       try {
-        const [specsData, quoteData] = await Promise.all([
+        const [specsData, quoteData, scheduleData] = await Promise.all([
           fetch(`/api/specs-share/${shareId}/grid`)
             .then((res) => res.json())
             .catch(() => ({})) as Promise<{
@@ -181,6 +223,7 @@ export default function ClientSpecsSharePage() {
               assignedContact?: { name: string; email: string; mobile: string } | null;
               confirmationSubmittedAt?: string | null;
               confirmationSubmittedByName?: string | null;
+              sentVersion?: string;
             }>,
           fetch(`/api/specs-share/${shareId}/quote-grid`)
             .then((res) => res.json())
@@ -192,7 +235,11 @@ export default function ClientSpecsSharePage() {
               assignedContact?: { name: string; email: string; mobile: string } | null;
               quoteAcceptedAt?: string | null;
               quoteAcceptedByName?: string | null;
+              sentVersion?: string;
             }>,
+          fetch(`/api/specs-share/${shareId}/schedule`)
+            .then((res) => res.json())
+            .catch(() => ({})) as Promise<{ ok?: boolean; events?: ClientScheduleEvent[] }>,
         ]);
 
         let anyAvailable = false;
@@ -222,10 +269,37 @@ export default function ClientSpecsSharePage() {
           sharedError = quoteData.error;
         }
 
+        if (scheduleData.ok && Array.isArray(scheduleData.events) && scheduleData.events.length) {
+          setScheduleEvents(scheduleData.events);
+          anyAvailable = true;
+        }
+
         if (!anyAvailable) {
           setLoadError(errorMessageFor(sharedError));
           setPhase("load-error");
           return;
+        }
+
+        // Red dots: compare what's here now with what this device saw last time. A first visit just
+        // records the baseline (nothing is "new" yet); a tab that wasn't there before counts as new.
+        const current: SeenState = {
+          specs: specsData.ok && specsData.grid ? specsData.sentVersion || "sent" : undefined,
+          quote: quoteData.ok && quoteData.grid ? quoteData.sentVersion || "sent" : undefined,
+          schedule: scheduleData.ok && Array.isArray(scheduleData.events) ? scheduleData.events.map((e) => e.id) : [],
+        };
+        currentSeenRef.current = current;
+        const seen = readSeen(shareId);
+        if (!seen) {
+          writeSeen(shareId, current);
+        } else {
+          const unseen = new Set<Tab>();
+          if (current.specs && seen.specs !== current.specs) unseen.add("specs");
+          if (current.quote && seen.quote !== current.quote) unseen.add("quote");
+          const seenIds = new Set(seen.schedule ?? []);
+          const fresh = (current.schedule ?? []).filter((id) => !seenIds.has(id));
+          if (fresh.length) unseen.add("schedule");
+          setUnseenTabs(unseen);
+          setNewEventIds(new Set(fresh));
         }
         setPhase("ready");
       } catch {
@@ -241,12 +315,27 @@ export default function ClientSpecsSharePage() {
   useEffect(() => {
     if (phase !== "ready") return;
     if (quoteAvailable && (!specsAvailable || !quoteAcceptedAt)) {
-      setActiveTab("quote");
+      selectTab("quote");
     } else if (specsAvailable) {
-      setActiveTab("specs");
+      selectTab("specs");
+    } else if (scheduleAvailable) {
+      selectTab("schedule");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase, specsAvailable, quoteAvailable]);
+  }, [phase, specsAvailable, quoteAvailable, scheduleAvailable]);
+
+  // Opening a tab marks what's on it as seen (for the next visit's dots). The schedule's "new" markers
+  // on individual events stay for the rest of this visit.
+  useEffect(() => {
+    if (phase !== "ready") return;
+    const seen = readSeen(shareId) ?? {};
+    const current = currentSeenRef.current;
+    if (activeTab === "schedule") {
+      writeSeen(shareId, { ...seen, schedule: Array.from(new Set([...(seen.schedule ?? []), ...(current.schedule ?? [])])) });
+    } else if (current[activeTab]) {
+      writeSeen(shareId, { ...seen, [activeTab]: current[activeTab] });
+    }
+  }, [activeTab, phase, shareId]);
 
   // Replaces just one cell in a grid, leaving every other row/cell object untouched — used for
   // both the optimistic update and its revert, so neither one can ever clobber a change some
@@ -399,7 +488,8 @@ export default function ClientSpecsSharePage() {
   const hasConfirmableCells = Boolean(grid?.rows.some((r) => r.cells.some((c) => c?.confirmable)));
   const locked = Boolean(confirmationSubmittedAt);
   const quoteLocked = Boolean(quoteAcceptedAt);
-  const showTabs = specsAvailable && quoteAvailable;
+  const tabCount = Number(specsAvailable) + Number(quoteAvailable) + Number(scheduleAvailable);
+  const showTabs = tabCount > 1;
   // The LARGER of the two sheets' own natural widths — computed from BOTH grids (not just whichever
   // tab is active), so switching between Specifications and Quote never visibly resizes the page.
   // Passed straight through to SpecsGridClientView's own boxWidthPx below, which only ever widens a
@@ -469,41 +559,62 @@ export default function ClientSpecsSharePage() {
                     }}
                   />
                 ) : null}
+                {quoteAvailable ? (
                 <button
                   type="button"
                   ref={(el) => {
                     tabButtonRefs.current.quote = el;
                   }}
-                  onClick={() => setActiveTab("quote")}
+                  onClick={() => selectTab("quote")}
                   className="flex h-full items-center gap-1.5 px-4 text-[12px] font-bold uppercase tracking-[0.5px]"
                   style={{ color: activeTab === "quote" ? "#2F6BFF" : "#000000" }}
                 >
                   <QuoteIcon size={13} />
                   Quote
+                  {unseenTabs.has("quote") && activeTab !== "quote" ? <RedDot /> : null}
                 </button>
+                ) : null}
+                {specsAvailable ? (
                 <button
                   type="button"
                   ref={(el) => {
                     tabButtonRefs.current.specs = el;
                   }}
-                  onClick={() => setActiveTab("specs")}
+                  onClick={() => selectTab("specs")}
                   className="flex h-full items-center gap-1.5 px-4 text-[12px] font-bold uppercase tracking-[0.5px]"
                   style={{ color: activeTab === "specs" ? "#2F6BFF" : "#000000" }}
                 >
                   <ClipboardList size={13} />
                   Specifications
+                  {unseenTabs.has("specs") && activeTab !== "specs" ? <RedDot /> : null}
                 </button>
+                ) : null}
+                {scheduleAvailable ? (
+                  <button
+                    type="button"
+                    ref={(el) => {
+                      tabButtonRefs.current.schedule = el;
+                    }}
+                    onClick={() => selectTab("schedule")}
+                    className="flex h-full items-center gap-1.5 px-4 text-[12px] font-bold uppercase tracking-[0.5px]"
+                    style={{ color: activeTab === "schedule" ? "#2F6BFF" : "#000000" }}
+                  >
+                    <CalendarDays size={13} />
+                    Schedule
+                    {unseenTabs.has("schedule") && activeTab !== "schedule" ? <RedDot /> : null}
+                  </button>
+                ) : null}
               </>
             ) : (
               <div className="flex h-full items-center gap-2 text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "#000000" }}>
-                {activeTab === "quote" ? <QuoteIcon size={14} /> : <ClipboardList size={14} />}
-                <span>{activeTab === "quote" ? "Quote" : "Specifications"}</span>
+                {activeTab === "quote" ? <QuoteIcon size={14} /> : activeTab === "schedule" ? <CalendarDays size={14} /> : <ClipboardList size={14} />}
+                <span>{activeTab === "quote" ? "Quote" : activeTab === "schedule" ? "Schedule" : "Specifications"}</span>
               </div>
             )}
           </div>
 
           <div className="flex min-w-0 items-center justify-end gap-2">
-            {(activeTab === "quote" ? quoteGrid : grid) ? (
+            {activeTab !== "schedule" && (activeTab === "quote" ? quoteGrid : grid) ? (
               <>
                 <button
                   type="button"
@@ -627,6 +738,8 @@ export default function ClientSpecsSharePage() {
                     ) : null}
                   </>
                 ) : null}
+
+                {activeTab === "schedule" && scheduleAvailable ? <ClientScheduleView events={scheduleEvents} newEventIds={newEventIds} /> : null}
 
                 {activeTab === "quote" && quoteAvailable && quoteGrid ? (
                   <>

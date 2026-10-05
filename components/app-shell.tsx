@@ -28,6 +28,7 @@ import {
   X,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
+import { authorizedFetch } from "@/lib/api-fetch";
 import { useAppTabs } from "@/lib/app-tabs-context";
 import { MOBILE_TOP_BAR_UPDATED_EVENT, readMobileTopBarEnabled, readSidebarResizeLockEnabled, SIDEBAR_RESIZE_LOCK_UPDATED_EVENT } from "@/lib/ui-preferences";
 // Side-effect only — registers the `beforeinstallprompt` listener as early as possible (this
@@ -62,10 +63,11 @@ import {
 } from "@/lib/new-project-bridge";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { useSwipeToClose } from "@/lib/use-swipe-to-close";
-import { useKeyboardInsetPx } from "@/lib/use-keyboard-inset";
+import { usePublishKeyboardInsetVars } from "@/lib/use-keyboard-inset";
 import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
 import { SidebarUserSettingsPanel } from "@/components/sidebar-user-settings-panel";
 import { VerifyAccountModal } from "@/components/verify-account-modal";
+import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const COMPANY_BRANDING_CACHE_KEY_PREFIX = "cutsmart_company_branding_";
 const COMPANY_ACCESS_CACHE_KEY_PREFIX = "cutsmart_company_access_";
@@ -403,18 +405,17 @@ export function AppShell({
   // App-wide: dragging (kanban cards, custom scrollbars, resize handles, click-drag-scrolling a
   // panel, etc.) shouldn't ever leave a trail of accidentally-highlighted text behind it — a
   // side effect of the browser's own default text-selection behavior kicking in on any mouse/touch
-  // move while the button is down, regardless of what's actually being dragged. Toggling a
-  // body-level class for the duration of each pointer-down-to-up gesture (see .no-drag-text-select
-  // in globals.css) disables selection app-wide for that gesture without permanently disabling it.
+  // move while the button is down, regardless of what's actually being dragged. When a selection
+  // tries to start during a press that began on a drag source, it's cancelled (selectstart).
   //
-  // Only actually toggled when the gesture STARTS on a real drag source, though — isDragSource
-  // below. The original version toggled it on literally every pointerdown anywhere on the page
-  // (excluding text inputs), which is exactly backwards for the "normal click-and-drag text
-  // selection still works" half of the intent above: a plain text-selection drag is ALSO a
-  // pointerdown-to-pointerup gesture over ordinary content, so it was ALSO getting
-  // user-select:none applied to it the instant the mouse went down — before the drag that would
-  // have created the selection even started — silently breaking ordinary text highlighting
-  // everywhere in the app, not just during an actual scrollbar/card/handle drag.
+  // Only for presses that START on a real drag source, though — isDragSource below — so ordinary
+  // click-and-drag text selection over normal content still works everywhere else.
+  //
+  // This used to put a class on <body> for every press on a drag source (and work out "is this a
+  // drag source" — up to 25 computed-style reads — on every single press anywhere). The class
+  // restyled the whole page on the way down and again on the way up, which made clicks on tabs,
+  // cards and scrollbars hitch. Now nothing changes on the page, and the check only runs when a
+  // selection actually tries to start.
   //
   // isDragSource recognizes a drag source via signals this codebase's own drag interactions
   // already carry, rather than requiring every one of them to be individually re-tagged: the
@@ -438,32 +439,39 @@ export function AppShell({
       }
       return false;
     };
+    // Where the current press started (null while no button is down), and whether that's a drag
+    // source — worked out the first time a selection tries to start during the press.
+    let pressTarget: EventTarget | null = null;
+    let pressIsDrag: boolean | null = null;
     const onPointerDown = (e: PointerEvent) => {
-      if (isTextEditable(e.target) || !isDragSource(e.target)) return;
-      document.body.classList.add("no-drag-text-select");
+      pressTarget = e.target;
+      pressIsDrag = null;
     };
     const onPointerUp = () => {
-      document.body.classList.remove("no-drag-text-select");
+      pressTarget = null;
+      pressIsDrag = null;
+    };
+    const onSelectStart = (e: Event) => {
+      if (!pressTarget || isTextEditable(pressTarget)) return;
+      if (pressIsDrag === null) pressIsDrag = isDragSource(pressTarget);
+      if (pressIsDrag) e.preventDefault();
     };
     document.addEventListener("pointerdown", onPointerDown, true);
+    document.addEventListener("selectstart", onSelectStart, true);
     window.addEventListener("pointerup", onPointerUp, true);
     window.addEventListener("pointercancel", onPointerUp, true);
     return () => {
       document.removeEventListener("pointerdown", onPointerDown, true);
+      document.removeEventListener("selectstart", onSelectStart, true);
       window.removeEventListener("pointerup", onPointerUp, true);
       window.removeEventListener("pointercancel", onPointerUp, true);
-      document.body.classList.remove("no-drag-text-select");
     };
   }, []);
   // Publishes the on-screen keyboard's current height as a CSS variable every .glass-modal-panel
   // reads (see app/globals.css) to keep itself centered above the keyboard instead of the full
   // screen — mounted once here (AppShell wraps every staff page) rather than per-modal, since
   // every modal already shares that one class.
-  const keyboardInset = useKeyboardInsetPx();
-  useEffect(() => {
-    document.documentElement.style.setProperty("--keyboard-inset-px", `${keyboardInset.insetPx}px`);
-    document.documentElement.style.setProperty("--keyboard-offset-top-px", `${keyboardInset.offsetTopPx}px`);
-  }, [keyboardInset]);
+  usePublishKeyboardInsetVars();
   const [projectName, setProjectName] = useState("");
   const [clientFirstName, setClientFirstName] = useState("");
   const [clientLastName, setClientLastName] = useState("");
@@ -688,6 +696,12 @@ export function AppShell({
   }, [companyLogoPath]);
   const [companyDisplayName, setCompanyDisplayName] = useState("");
   const [isZapierLeadsEnabled, setIsZapierLeadsEnabled] = useState(false);
+  // Latest value for the access effect below, which only stores it alongside the cached access — as a
+  // dependency it made that whole effect (membership, company doc, access check) run twice per load.
+  const isZapierLeadsEnabledRef = useRef(false);
+  useEffect(() => {
+    isZapierLeadsEnabledRef.current = isZapierLeadsEnabled;
+  }, [isZapierLeadsEnabled]);
   const [companyTagSuggestions, setCompanyTagSuggestions] = useState<string[]>([]);
   const [defaultProjectStatus, setDefaultProjectStatus] = useState("New");
   const [defaultQuoteExtras, setDefaultQuoteExtras] = useState<string[]>([]);
@@ -1800,9 +1814,12 @@ export function AppShell({
         setShowUpdateNotice(false);
       }
     };
-    void loadUpdateNotes();
+    // Not urgent (the "what's new" notice, changelog sync and per-version cleanup are ~5 requests one
+    // after another) — wait until the page itself has had a few seconds to load.
+    const startTimer = window.setTimeout(() => void loadUpdateNotes(), 3000);
     return () => {
       cancelled = true;
+      window.clearTimeout(startTimer);
     };
   }, [user?.uid, user?.companyId]);
 
@@ -1895,14 +1912,14 @@ export function AppShell({
       writeCompanyAccessCache(cacheKey, {
         role: nextRole,
         permissionKeys: nextPermissions,
-        isZapierLeadsEnabled,
+        isZapierLeadsEnabled: isZapierLeadsEnabledRef.current,
       });
     };
     void loadCompanyAccess();
     return () => {
       cancelled = true;
     };
-  }, [isZapierLeadsEnabled, user?.companyId, user?.permissions, user?.role, user?.uid]);
+  }, [user?.companyId, user?.permissions, user?.role, user?.uid]);
 
   useEffect(() => {
     const openNewProject = (e: Event) => {
@@ -2100,7 +2117,10 @@ export function AppShell({
       }
       const containerRect = container.getBoundingClientRect();
       const elRect = el.getBoundingClientRect();
-      setNavHighlightRect({ top: elRect.top - containerRect.top + container.scrollTop, height: elRect.height });
+      const next = { top: elRect.top - containerRect.top + container.scrollTop, height: elRect.height };
+      // Unchanged (nearly every window resize, and iOS toolbar show/hide) → keep the same object, so
+      // the whole app shell doesn't re-render for nothing.
+      setNavHighlightRect((prev) => (prev && prev.top === next.top && prev.height === next.height ? prev : next));
     };
     measure();
     if (typeof window === "undefined") return;
@@ -2704,9 +2724,7 @@ export function AppShell({
         cutlist: { rows: [] },
         cutlistJson: { rows: [] },
         projectSettings,
-        projectSettingsJson: JSON.stringify(projectSettings),
         sales,
-        salesJson: JSON.stringify(sales),
         // "Notifications as Creator" (User Settings) — off by default (see
         // lib/project-notify.ts's isProjectNotifySubscribed), only written here at all when the
         // creator has opted in, so a project's stored overrides stay empty/absent for everyone
@@ -2718,7 +2736,7 @@ export function AppShell({
         ...(prefilledLeadCustomFields.length > 0 ? { leadCustomFields: prefilledLeadCustomFields } : {}),
       });
         try {
-          const clientCreateResult = await fetch("/api/clients", {
+          const clientCreateResult = await authorizedFetch("/api/clients", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -3513,8 +3531,8 @@ export function AppShell({
           ref={mainScrollRef}
           className={
             chromeHidden
-              ? "min-h-0 min-w-0 overscroll-y-contain"
-              : "min-h-0 min-w-0 overscroll-y-contain px-3 py-3 md:px-4 md:py-4 lg:px-5 lg:py-4"
+              ? "min-h-0 min-w-0 overscroll-y-contain hide-native-scrollbar"
+              : "min-h-0 min-w-0 overscroll-y-contain hide-native-scrollbar px-3 py-3 md:px-4 md:py-4 lg:px-5 lg:py-4"
           }
           onTouchStart={onMainTouchStart}
           onTouchMove={onMainTouchMove}
@@ -3571,6 +3589,10 @@ export function AppShell({
               any page-specific plumbing here beyond the fillMainViewport flag. */}
           <div className={effectiveHideSidebar ? "" : "app-content-sidebar-margin"} style={{ height: "100%" }}>{children}</div>
         </main>
+        {/* Phones/tablets: <main> is the page's scroller (desktop scrolls the document — see
+            <DocumentScrollbar /> in app/layout.tsx) — the same glass thumb, starting below the title
+            bars. Fullscreen views (chromeHidden) and Quote/Specs (ownsMobileScroll) bring their own. */}
+        {!isDesktopViewport && !chromeHidden && !ownsMobileScroll ? <GlassScrollbarThumb scrollRef={mainScrollRef} /> : null}
       </div>
       {showUpdateNotice && (
         <div
@@ -3940,7 +3962,7 @@ export function AppShell({
                                     src="/edit.png"
                                     alt="Name image"
                                     className="object-contain"
-                                    style={{ width: 12, height: 12, opacity: 0.8 }}
+                                    style={{ width: 12, height: 12, opacity: 0.8, filter: isDarkMode ? "invert(1)" : undefined }}
                                     onError={(e) => {
                                       e.currentTarget.style.display = "none";
                                     }}
@@ -4041,7 +4063,7 @@ export function AppShell({
                                     src="/edit.png"
                                     alt="Name image"
                                     className="object-contain"
-                                    style={{ width: 12, height: 12, opacity: 0.8 }}
+                                    style={{ width: 12, height: 12, opacity: 0.8, filter: isDarkMode ? "invert(1)" : undefined }}
                                     onError={(e) => {
                                       e.currentTarget.style.display = "none";
                                     }}
@@ -4150,7 +4172,7 @@ export function AppShell({
                 className="absolute inset-0 z-30 flex items-center justify-center p-4"
                 onClick={closePreviewAnimated}
                 style={{
-                  backgroundColor: "rgba(255,255,255,0.88)",
+                  backgroundColor: "color-mix(in srgb, var(--panel-bg) 88%, transparent)",
                   opacity: previewBackdropOpacity,
                   transition: "opacity 260ms ease",
                 }}

@@ -20,7 +20,8 @@ import {
   type User,
 } from "firebase/auth";
 import { auth, hasFirebaseConfig } from "@/lib/firebase";
-import { retryAsync, withTimeout } from "@/lib/load-retry";
+import { hedgedAsync } from "@/lib/load-retry";
+import { clearLastKnown, readLastKnown, saveLastKnown } from "@/lib/last-known";
 import { fetchPrimaryMembership, fetchUserProfileSummary } from "@/lib/membership";
 import type { AppUser, UserRole } from "@/lib/types";
 
@@ -57,16 +58,18 @@ const REMEMBER_DEVICE_STORAGE_KEY = "cutsmart_web_remember_device";
 // logout is what stops one account's state from bleeding into a different account/company signed
 // in afterward on the same browser.
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
-// A cold, first-time connection (fresh browser, no cached Firestore/Auth state) is measurably
-// slower and more failure-prone than a warm reload — bound how long a single membership/profile
-// fetch attempt is allowed to hang, and retry a bounded number of times, so a stalled network call
-// can never leave the loading screen stuck forever AND a merely-slow-but-fine connection gets a
-// real second chance instead of one shot before permanently degrading to an "error" status. Total
-// worst case (~12s) matches the old single-timeout budget, but a real success on a well-formed
-// account now typically lands in well under a second — membership resolution is a single indexed
-// query these days, not up to 4 sequential ones (see lib/membership.ts's own comments).
-const MEMBERSHIP_LOAD_ATTEMPT_TIMEOUT_MS = 6000;
+// The account lookup after sign-in. A slow attempt isn't thrown away: after MEMBERSHIP_LOAD_HEDGE_MS a
+// second one starts alongside it and whichever answers first wins (see hedgedAsync), and the whole
+// thing gives up after MEMBERSHIP_LOAD_TIMEOUT_MS so a call that never answers can't leave the loading
+// screen stuck. It used to allow 6s per attempt, then throw the attempt away and start again from
+// scratch — a load needing 7s took 13s. When this device has the account from a previous visit (see
+// LAST_ACCOUNT_KEY below), none of this holds the app up at all: that's shown straight away and this
+// lookup refreshes it in the background.
+const MEMBERSHIP_LOAD_HEDGE_MS = 6000;
+const MEMBERSHIP_LOAD_TIMEOUT_MS = 20000;
 const MEMBERSHIP_LOAD_ATTEMPTS = 2;
+// lib/last-known.ts entry for the signed-in account as last loaded on this device.
+const LAST_ACCOUNT_KEY = "account";
 // Same "cold connection can hang forever" concern as MEMBERSHIP_LOAD_TIMEOUT_MS above, but for the
 // auth *subscription* itself — onAuthStateChanged does its own internal IndexedDB-backed
 // auth-state restore before ever invoking its callback, and on a cold tab/flaky first connection
@@ -104,6 +107,42 @@ function fromFirebaseUser(
     verified,
     notifyAsCreator,
   };
+}
+
+// What's saved on the device for the account (everything else comes from the Firebase user itself).
+type SavedAccount = {
+  role: UserRole;
+  companyId?: string;
+  displayName: string;
+  userColor?: string;
+  mobile?: string;
+  verified?: boolean;
+  notifyAsCreator?: boolean;
+  permissions: string[];
+};
+
+function userFromAccount(user: User, account: SavedAccount): AppUser {
+  return {
+    ...fromFirebaseUser(
+      user,
+      account.role,
+      account.companyId,
+      account.displayName,
+      account.userColor,
+      account.mobile,
+      account.verified,
+      account.notifyAsCreator,
+    ),
+    permissions: Array.isArray(account.permissions) ? account.permissions : [],
+  };
+}
+
+// Keeps the saved account in step with a change made in the app (colour, name…), so the next visit
+// doesn't briefly show the old value.
+function patchSavedAccount(uid: string | undefined, patch: Partial<SavedAccount>) {
+  const userId = String(uid || "").trim();
+  const saved = readLastKnown<SavedAccount>(LAST_ACCOUNT_KEY, userId);
+  if (saved) saveLastKnown(LAST_ACCOUNT_KEY, userId, { ...saved, ...patch });
 }
 
 function fallbackNameFromEmail(email: string): string {
@@ -152,10 +191,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // The most recent Firebase user handed to us by onAuthStateChanged, kept for retryMembershipLoad
   // to re-run against without needing its own subscription.
   const currentFirebaseUserRef = useRef<User | null>(null);
+  // The account currently shown (uid + its saved details), so an identical refresh doesn't hand every
+  // page a new user object — that re-ran their loads.
+  const shownAccountRef = useRef("");
 
   const loadMembership = useCallback(async (firebaseUser: User | null) => {
     if (!firebaseUser) {
       if (!activeRef.current) return;
+      shownAccountRef.current = "";
       setUser(null);
       setIsLoading(false);
       setIsDemoMode(false);
@@ -163,22 +206,38 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    setMembershipStatus("loading");
+    const showAccount = (account: SavedAccount) => {
+      const key = `${firebaseUser.uid}|${JSON.stringify(account)}`;
+      if (shownAccountRef.current === key) return;
+      shownAccountRef.current = key;
+      setUser(userFromAccount(firebaseUser, account));
+    };
+    // The account as last loaded on this device: shown straight away instead of waiting on the lookup
+    // below, which then refreshes it (re-rendering only if something actually changed).
+    const saved = readLastKnown<SavedAccount>(LAST_ACCOUNT_KEY, firebaseUser.uid);
+    if (saved) {
+      showAccount(saved);
+      setMembershipStatus("ready");
+      setIsLoading(false);
+      setIsDemoMode(false);
+    } else {
+      setMembershipStatus("loading");
+    }
+
     try {
-      // Retries a bounded number of times before giving up — see MEMBERSHIP_LOAD_ATTEMPT_TIMEOUT_MS's
-      // own comment for why this replaces a single Promise.race: a merely-slow (not broken)
-      // connection now gets a real second attempt instead of one shot before permanently degrading.
-      const [membership, profile] = await retryAsync(
+      const [membership, profile] = await hedgedAsync(
         () =>
-          withTimeout(
-            Promise.all([
-              fetchPrimaryMembership(firebaseUser.uid),
-              fetchUserProfileSummary(firebaseUser.uid),
-            ]),
-            MEMBERSHIP_LOAD_ATTEMPT_TIMEOUT_MS,
-            "Membership load timed out",
-          ),
-        { attempts: MEMBERSHIP_LOAD_ATTEMPTS, delayMs: 300 },
+          Promise.all([
+            fetchPrimaryMembership(firebaseUser.uid),
+            fetchUserProfileSummary(firebaseUser.uid),
+          ]),
+        {
+          attempts: MEMBERSHIP_LOAD_ATTEMPTS,
+          hedgeAfterMs: MEMBERSHIP_LOAD_HEDGE_MS,
+          timeoutMs: MEMBERSHIP_LOAD_TIMEOUT_MS,
+          delayMs: 300,
+          message: "Membership load timed out",
+        },
       );
       if (!activeRef.current) {
         return;
@@ -189,24 +248,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         firebaseUser.displayName ||
         fallbackNameFromEmail(firebaseUser.email ?? profile?.email ?? "");
 
-      setUser(
-        {
-          ...fromFirebaseUser(
-            firebaseUser,
-            membership?.role ?? "staff",
-            membership?.companyId || profile?.companyId,
-            resolvedName,
-            profile?.userColor,
-            profile?.mobile,
-            Boolean(profile?.verified),
-            Boolean(profile?.notifyAsCreator),
-          ),
-          permissions: membership?.permissionKeys ?? [],
-        },
-      );
+      const account: SavedAccount = {
+        role: membership?.role ?? "staff",
+        companyId: membership?.companyId || profile?.companyId,
+        displayName: resolvedName,
+        userColor: profile?.userColor,
+        mobile: profile?.mobile,
+        verified: Boolean(profile?.verified),
+        notifyAsCreator: Boolean(profile?.notifyAsCreator),
+        permissions: membership?.permissionKeys ?? [],
+      };
+      saveLastKnown(LAST_ACCOUNT_KEY, firebaseUser.uid, account);
+      showAccount(account);
       setMembershipStatus("ready");
     } catch {
       if (!activeRef.current) return;
+      // Already showing the last-known account: keep it (it's refreshed again on the next load)
+      // rather than dropping to the bare fallback below.
+      if (saved) return;
       // A genuine, repeated failure (not just one slow attempt — see the retry above) must never
       // be treated as "this account has no company/permissions" or "confirmed unverified." Build
       // the minimal identity the Firebase user alone can support — companyId undefined,
@@ -214,6 +273,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // unverified") — and mark membershipStatus "error" so every consumer (dashboard, project
       // page, verification gate) can render a distinct "couldn't load your account — retry" state
       // instead of silently treating this as a real, final, empty-permissions user.
+      shownAccountRef.current = "";
       setUser({
         ...fromFirebaseUser(firebaseUser, "staff", undefined, undefined, undefined, undefined, undefined),
         permissions: [],
@@ -306,6 +366,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           // explicit logout (browser closed, session expired) — a fresh sign-in should never
           // inherit whichever company was last active on this browser.
           window.localStorage.removeItem(ACTIVE_COMPANY_STORAGE_KEY);
+          clearLastKnown();
         }
         await setPersistence(auth, rememberOnDevice ? browserLocalPersistence : browserSessionPersistence);
         await signInWithEmailAndPassword(auth, email, password);
@@ -321,6 +382,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       logout: async () => {
         if (typeof window !== "undefined") {
           window.localStorage.removeItem(ACTIVE_COMPANY_STORAGE_KEY);
+          // Nothing of this account's is left saved on the device.
+          clearLastKnown();
         }
         if (auth && hasFirebaseConfig) {
           await signOut(auth);
@@ -332,12 +395,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(createDemoUser("owner"));
       },
       setUserColorLocal: (color) => {
+        patchSavedAccount(user?.uid, { userColor: String(color || "").trim() || undefined });
         setUser((prev) => {
           if (!prev) return prev;
           return { ...prev, userColor: String(color || "").trim() || undefined };
         });
       },
       setUserProfileLocal: (patch) => {
+        const savedPatch: Partial<SavedAccount> = {};
+        if (Object.prototype.hasOwnProperty.call(patch, "displayName") && String(patch.displayName ?? "").trim()) {
+          savedPatch.displayName = String(patch.displayName ?? "").trim();
+        }
+        if (Object.prototype.hasOwnProperty.call(patch, "mobile")) {
+          savedPatch.mobile = String(patch.mobile ?? "").trim() || undefined;
+        }
+        if (Object.prototype.hasOwnProperty.call(patch, "userColor")) {
+          savedPatch.userColor = String(patch.userColor ?? "").trim() || undefined;
+        }
+        if (Object.prototype.hasOwnProperty.call(patch, "notifyAsCreator")) {
+          savedPatch.notifyAsCreator = Boolean(patch.notifyAsCreator);
+        }
+        patchSavedAccount(user?.uid, savedPatch);
         setUser((prev) => {
           if (!prev) return prev;
           const next = { ...prev };
@@ -357,6 +435,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         });
       },
       setUserVerifiedLocal: (verified) => {
+        patchSavedAccount(user?.uid, { verified });
         setUser((prev) => (prev ? { ...prev, verified } : prev));
       },
     }),

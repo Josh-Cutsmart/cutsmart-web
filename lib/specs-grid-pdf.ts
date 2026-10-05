@@ -1,8 +1,7 @@
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import { toPng } from "html-to-image";
-import { getDownloadURL, ref as storageRef } from "firebase/storage";
-import { storage } from "@/lib/firebase";
+import { blobToDataUrl, resolveProjectImageDataUrl, resolveProjectImageUrl } from "@/lib/project-image-data";
 import {
   type SpecsGrid,
   type SpecsCellStyle,
@@ -23,14 +22,6 @@ import {
 // here is a pure function of a SpecsGrid (plus, for images, a Storage/HTTP fetch) with no dependency
 // on component state, which is what made this extraction possible without touching behavior.
 
-export async function blobToDataUrl(blob: Blob): Promise<string> {
-  return await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ""));
-    reader.onerror = () => reject(reader.error ?? new Error("Failed to read blob."));
-    reader.readAsDataURL(blob);
-  });
-}
 
 // jsPDF only ships helvetica/times/courier without embedding an actual font file, and its font
 // embedder (jsPDF.API.TTFFont) only understands TrueType-outline (glyf/loca) fonts — not the CFF/
@@ -195,43 +186,13 @@ async function renderSpecsCellRunsToDataUrl(
   }
 }
 
-export async function resolveProjectImageUrl(raw: string): Promise<string> {
-  const value = String(raw || "").trim();
-  if (!value) return "";
-  if (/^https?:\/\//i.test(value)) return value;
-  const storageClient = storage;
-  if (!storageClient) return "";
-  const normalized = value.replace(/^\/+/, "");
-  try {
-    return await getDownloadURL(storageRef(storageClient, normalized));
-  } catch {
-    try {
-      return await getDownloadURL(storageRef(storageClient, value));
-    } catch {
-      return "";
-    }
-  }
-}
-
-export async function resolveProjectImageDataUrl(raw: string): Promise<string> {
-  const resolvedUrl =
-    (await resolveProjectImageUrl(raw)) ||
-    (/^https?:\/\//i.test(String(raw || "").trim()) ? String(raw || "").trim() : "");
-  if (!resolvedUrl) return "";
-  try {
-    const response = await fetch(resolvedUrl, { mode: "cors", credentials: "omit", cache: "force-cache" });
-    if (!response.ok) return resolvedUrl;
-    const imageBlob = await response.blob();
-    return await blobToDataUrl(imageBlob);
-  } catch {
-    return resolvedUrl;
-  }
-}
 
 // Reads the grid's own columnWidths/row heights/cell text/style directly — no style-pool
 // indirection, no hidden rows/columns, no Excel-style "text spills into the next empty cell"
 // simulation to fight (cells just wrap normally like a plain table). Much simpler than the old
 // Univer-based version, since this data model is entirely ours end-to-end.
+export { blobToDataUrl, resolveProjectImageDataUrl, resolveProjectImageUrl };
+
 export async function buildSpecsGridPdfBlob(rawGrid: SpecsGrid): Promise<Blob | null> {
   // Older projects (and anything a company's 100-row default template still carries) can have a
   // stored sheet full of unused blank rows from before empty rows were pruned at clone time — strip

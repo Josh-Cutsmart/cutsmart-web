@@ -357,14 +357,24 @@ export function GlobalAppTabsBar() {
       return;
     }
     let cancelled = false;
+    let lastSignature = "";
     const load = async () => {
+      // A hidden tab doesn't need fresh notifications; it catches up on the next poll after it's shown.
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       const rows = await fetchUserNotifications(uid, activeCompanyId);
-      if (!cancelled) setNotifRows(rows);
+      if (cancelled) return;
+      // Only update (and so re-render the top bar) when something actually changed.
+      const signature = JSON.stringify(rows);
+      if (signature === lastSignature) return;
+      lastSignature = signature;
+      setNotifRows(rows);
     };
-    void load();
+    // The first load waits a moment, so it doesn't compete with the page's own data on open.
+    const firstLoadTimer = window.setTimeout(() => void load(), 2000);
     const intervalId = window.setInterval(() => void load(), NOTIF_POLL_INTERVAL_MS);
     return () => {
       cancelled = true;
+      window.clearTimeout(firstLoadTimer);
       window.clearInterval(intervalId);
     };
   }, [activeCompanyId, user?.uid]);

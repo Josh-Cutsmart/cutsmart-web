@@ -47,7 +47,6 @@ export async function POST(request: NextRequest) {
   const projectSnap = await projectRef.get();
   const projectData = (projectSnap.data() ?? {}) as Record<string, unknown>;
   const sales = (projectData.sales ?? {}) as Record<string, unknown>;
-  const projectSettings = (projectData.projectSettings ?? {}) as Record<string, unknown>;
   const quoteGridVersionsRaw = Array.isArray(sales.quoteGridVersions) ? sales.quoteGridVersions : [];
   const specificationsVersionsRaw = Array.isArray(sales.specificationsVersions) ? sales.specificationsVersions : [];
 
@@ -82,22 +81,15 @@ export async function POST(request: NextRequest) {
     migratedSpecificationsVersions += 1;
   }
 
-  // Then shrink the project doc itself — dotted-path field deletion on all four `sales` mirror
-  // locations, plus rebuilding the two JSON-string mirrors from the now-stripped objects (a literal
-  // `delete` here, not FieldValue.delete(), since these are plain in-memory objects being
-  // re-serialized, not a Firestore update payload).
-  const strippedSales = { ...sales };
-  delete strippedSales.quoteGridVersions;
-  delete strippedSales.specificationsVersions;
-  const strippedProjectSettings = { ...projectSettings, sales: strippedSales };
-
+  // Then shrink the project doc itself — dotted-path field deletion from `sales`, and the old copies
+  // of it (`projectSettings.sales` and the two JSON-string mirrors) removed outright: the top-level
+  // `sales` is the only copy kept now (see withoutLegacyCopies in lib/firestore-data.ts).
   await projectRef.update({
     "sales.quoteGridVersions": FieldValue.delete(),
     "sales.specificationsVersions": FieldValue.delete(),
-    "projectSettings.sales.quoteGridVersions": FieldValue.delete(),
-    "projectSettings.sales.specificationsVersions": FieldValue.delete(),
-    salesJson: JSON.stringify(strippedSales),
-    projectSettingsJson: JSON.stringify(strippedProjectSettings),
+    "projectSettings.sales": FieldValue.delete(),
+    salesJson: FieldValue.delete(),
+    projectSettingsJson: FieldValue.delete(),
   });
 
   return NextResponse.json({

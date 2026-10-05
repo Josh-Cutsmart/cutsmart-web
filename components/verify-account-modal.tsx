@@ -48,7 +48,7 @@ export function VerifyAccountModal({
       />
       <div ref={panelRef} className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
         <div className="glass-modal-header flex items-center justify-between gap-2 px-5 py-4">
-          <p className="flex items-center gap-1.5 text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "#000000" }}>
+          <p className="flex items-center gap-1.5 text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
             <MailCheck size={15} />
             Verify Account
           </p>
@@ -56,14 +56,14 @@ export function VerifyAccountModal({
             type="button"
             onClick={onClose}
             className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] hover:brightness-95"
-            style={{ color: "#000000" }}
+            style={{ color: "var(--text-main)" }}
             aria-label="Close"
           >
             <X size={16} />
           </button>
         </div>
         <div className="space-y-3 px-5 py-4">
-          <p className="text-[12px]" style={{ color: "#000000" }}>
+          <p className="text-[12px]" style={{ color: "var(--text-main)" }}>
             Enter the code emailed to you to unlock editing anywhere in the app.
           </p>
           <div className="flex flex-wrap items-center gap-2">

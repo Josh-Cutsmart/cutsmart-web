@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
+import { apiHasPermission, requireCompanyMember } from "@/lib/api-company-access";
 
 function toStr(value: unknown) {
   return String(value ?? "").trim();
@@ -366,11 +367,19 @@ export async function GET(request: NextRequest) {
   const companyId = toStr(url.searchParams.get("companyId"));
   const mode = toStr(url.searchParams.get("mode")).toLowerCase();
   const clientId = toStr(url.searchParams.get("clientId"));
-  const viewerUid = toStr(url.searchParams.get("viewerUid"));
-  const includeAll = toStr(url.searchParams.get("scope")).toLowerCase() === "all";
   if (!companyId) {
     return NextResponse.json({ ok: false, error: "missing-company-id" }, { status: 400 });
   }
+  // Contacts are personal data: only a signed-in member of this company may read them. Who's asking
+  // and whether they may see every contact come from their sign-in and role — never from the query
+  // string (the old viewerUid/scope params are ignored apart from scope=all as a request that's only
+  // honoured with the "view all contacts" permission).
+  const access = await requireCompanyMember(request, companyId);
+  if (!access) {
+    return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  }
+  const viewerUid = access.uid;
+  const includeAll = toStr(url.searchParams.get("scope")).toLowerCase() === "all" && apiHasPermission(access, "clients.view.all");
 
   if (mode === "detail") {
     if (!clientId) {
@@ -484,6 +493,10 @@ export async function POST(request: NextRequest) {
   const clientAddress = toStr(body.clientAddress);
   if (!companyId || !projectId || (!customer && !clientEmail && !clientPhone)) {
     return NextResponse.json({ ok: false, error: "missing-client-create-fields" }, { status: 400 });
+  }
+  // Creating/updating a contact (and linking a project to it) needs a signed-in member of this company.
+  if (!(await requireCompanyMember(request, companyId))) {
+    return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   }
 
   const directClientId = buildClientId({

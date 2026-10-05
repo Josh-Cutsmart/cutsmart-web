@@ -23,7 +23,7 @@ export function Tabs({ value, onChange, items }: TabsProps) {
             item.disabled && "cursor-not-allowed opacity-55",
             value === item.value
               ? "border border-[var(--panel-border)] bg-white text-[var(--text-main)] shadow-sm"
-              : "text-[#64748B] hover:text-[#334155]",
+              : "text-[#64748B] hover:text-[var(--text-main)]",
           )}
         >
           {item.label}

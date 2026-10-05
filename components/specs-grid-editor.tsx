@@ -3410,11 +3410,9 @@ export default function SpecsGridEditor({
         // its own natural width; any floating bubble the host page renders alongside it sits OVER
         // this canvas rather than narrowing it, so a small window doesn't fight the sheet for width.
         style={{
-          // #eef1f8: this token's own light-mode value, copied verbatim rather than referencing
-          // var(--bg-app) directly (this canvas is hardcoded/theme-independent on purpose — it
-          // represents a physical sheet's own surrounding mat, not page chrome) — the two used to
-          // be a few shades apart, which read as a visible seam wherever they met.
-          backgroundColor: "#eef1f8",
+          // The app background (#eef1f8 in light), so the surround follows the theme — in dark mode
+          // only the white page itself stays white. Same value as the page around it, so no seam.
+          backgroundColor: "var(--bg-app)",
           // Added on top of the base 24px (p-6 above) rather than replacing it, so the host's
           // floating action bar gets its own reserved room INSIDE this grey canvas — its background
           // — instead of the host page reserving that space itself further down, past this canvas's
@@ -5591,7 +5589,7 @@ function SpecsCellTextArea({
           // browser default `normal`.
           lineHeight: 1.15,
           textAlign: style.align ?? "left",
-          color: dimmed ? style.textColor ?? "var(--text-main)" : style.textColor ?? "#000000",
+          color: dimmed ? style.textColor ?? "#111111" : style.textColor ?? "#000000",
           // "not-allowed" (a permissions-style cross) only reads correctly for the role-based lock —
           // a blank cell outside any group isn't being denied permission, it's just structurally
           // uninteractive, so it gets the plain pointer/default cursor instead (readOnlyReason is
@@ -5673,7 +5671,7 @@ function SpecsCellTextArea({
         // what the PDF already assumes.
         lineHeight: 1.15,
         textAlign: style.align ?? "left",
-        color: style.textColor ?? "var(--text-main)",
+        color: style.textColor ?? "#111111",
       }}
     />
   );

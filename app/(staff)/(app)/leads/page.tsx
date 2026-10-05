@@ -7,6 +7,7 @@ import { ChevronsLeftRight, ChevronsRightLeft, ChevronUp, ImagePlus, Inbox, Kanb
 import { FullscreenImageViewerShell } from "@/components/fullscreen-image-viewer-shell";
 import { useBoardStickyRef } from "@/lib/board-sticky-scroll";
 import { useAuth } from "@/lib/auth-context";
+import { authorizedFetch } from "@/lib/api-fetch";
 import { fetchCompanyDoc, fetchCompanyMembers, fetchUserColorMapByUids, type CompanyLeadRow, type CompanyMemberOption } from "@/lib/firestore-data";
 import { storage } from "@/lib/firebase";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
@@ -922,6 +923,11 @@ export default function LeadsPage() {
     };
   }, []);
 
+  // What's on screen now, so a refresh that brings nothing new can skip re-rendering the page.
+  const shownLeadsRef = useRef(leads);
+  useEffect(() => {
+    shownLeadsRef.current = leads;
+  }, [leads]);
   const loadLeads = useCallback(async (companyId: string, canViewOtherLeadsOverride?: boolean) => {
     const cid = String(companyId || "").trim();
     if (!cid) {
@@ -936,7 +942,7 @@ export default function LeadsPage() {
     try {
       const response = await retryAsync(
         () =>
-          fetch(`/api/leads?companyId=${encodeURIComponent(cid)}&mode=summary`, {
+          authorizedFetch(`/api/leads?companyId=${encodeURIComponent(cid)}&mode=summary`, {
             method: "GET",
             cache: "no-store",
           }),
@@ -953,6 +959,7 @@ export default function LeadsPage() {
         ? currentSampleLeads
         : currentSampleLeads.filter((lead) => String(lead.assignedToUid || "").trim() === currentUserUid);
       const nextLeads = [...visibleSampleLeads, ...visibleLeads];
+      if (JSON.stringify(nextLeads) === JSON.stringify(shownLeadsRef.current)) return;
       setLeads(nextLeads);
       setLeadDetailsById((current) => {
         const nextIds = new Set(nextLeads.map((lead) => String(lead.id || "").trim()).filter(Boolean));
@@ -989,6 +996,11 @@ export default function LeadsPage() {
     }
     let cancelled = false;
     const run = async () => {
+      const leadsLoad = canAccessLeads
+        ? loadLeads(activeCompanyId, canViewOtherLeads).catch(() => {
+            if (!cancelled) setLeads([]);
+          })
+        : null;
       try {
         const [companyDoc, userColorMap] = await retryAsync(
           () =>
@@ -1013,7 +1025,7 @@ export default function LeadsPage() {
           setLeads([]);
           return;
         }
-        await loadLeads(activeCompanyId, canViewOtherLeads);
+        await leadsLoad;
       } catch {
         if (!cancelled) {
           setLeads([]);
@@ -1069,7 +1081,7 @@ export default function LeadsPage() {
       }
       setDetailLoadingLeadId(id);
       try {
-        const response = await fetch(
+        const response = await authorizedFetch(
           `/api/leads?companyId=${encodeURIComponent(activeCompanyId)}&mode=detail&leadId=${encodeURIComponent(id)}`,
           {
             method: "GET",
@@ -1097,8 +1109,9 @@ export default function LeadsPage() {
   useEffect(() => {
     if (access.status !== "ready" || !canAccessLeads || !activeCompanyId) return;
     const intervalId = window.setInterval(() => {
+      if (document.visibilityState === "hidden") return;
       void loadLeads(activeCompanyId);
-    }, 4000);
+    }, 10000);
     return () => window.clearInterval(intervalId);
   }, [access.status, activeCompanyId, canAccessLeads, loadLeads]);
 
@@ -1773,7 +1786,7 @@ export default function LeadsPage() {
         syncLeadImagesInState(lead, normalized);
         return true;
       }
-      const response = await fetch("/api/leads", {
+      const response = await authorizedFetch("/api/leads", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1800,7 +1813,7 @@ export default function LeadsPage() {
     if (isTemporarySampleLead(lead)) {
       didArchive = true;
     } else {
-      const response = await fetch("/api/leads", {
+      const response = await authorizedFetch("/api/leads", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1859,7 +1872,7 @@ export default function LeadsPage() {
       return;
     }
     setStatusUpdatingLeadId(lead.id);
-    const response = await fetch("/api/leads", {
+    const response = await authorizedFetch("/api/leads", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -2045,7 +2058,7 @@ export default function LeadsPage() {
         persistSampleLeads(cid, sampleLeadsRef.current[cid]);
         didArchive = true;
       } else {
-        const response = await fetch("/api/leads", {
+        const response = await authorizedFetch("/api/leads", {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -2156,7 +2169,7 @@ export default function LeadsPage() {
       closeAssignLeadModal();
       return;
     }
-    const response = await fetch("/api/leads", {
+    const response = await authorizedFetch("/api/leads", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -3645,8 +3658,8 @@ export default function LeadsPage() {
                       >
                         <p className="truncate text-[15px] font-semibold" style={{ color: "var(--text-main)" }}>Other</p>
                         <span
-                          className="shrink-0 rounded-full px-2 py-[1px] text-[10px] font-bold text-white"
-                          style={{ backgroundColor: "var(--text-muted)" }}
+                          className="shrink-0 rounded-full px-2 py-[1px] text-[10px] font-bold"
+                          style={{ backgroundColor: "var(--text-muted)", color: "var(--panel-bg)" }}
                         >
                           {leadStatusBoardColumns.otherLeads.length}
                         </span>
@@ -3885,7 +3898,7 @@ export default function LeadsPage() {
                     />
                   </button>
                   {!!leadImagesError && (
-                    <p className="mt-3 text-[12px] font-semibold text-[#B42318]">{leadImagesError}</p>
+                    <p className="mt-3 text-[12px] font-semibold" style={{ color: "var(--danger-strong)" }}>{leadImagesError}</p>
                   )}
                   <div className="mt-5">
                     {leadImageItems.length > 0 ? (
@@ -4381,7 +4394,7 @@ export default function LeadsPage() {
                           width: 34,
                           height: 34,
                           transform: "translateX(-3px)",
-                          backgroundColor: "#334155",
+                          backgroundColor: themeMode === "dark" ? "var(--text-main)" : "#334155",
                           WebkitMaskImage: "url('/angle-left.png')",
                           WebkitMaskRepeat: "no-repeat",
                           WebkitMaskPosition: "center",
@@ -5063,7 +5076,7 @@ export default function LeadsPage() {
                           width: 34,
                           height: 34,
                           transform: "translateX(3px)",
-                          backgroundColor: "#334155",
+                          backgroundColor: themeMode === "dark" ? "var(--text-main)" : "#334155",
                           WebkitMaskImage: "url('/angle-right.png')",
                           WebkitMaskRepeat: "no-repeat",
                           WebkitMaskPosition: "center",
@@ -5094,7 +5107,7 @@ export default function LeadsPage() {
                       style={{
                         width: 102,
                         height: 78,
-                        borderColor: idx === leadImagePreviewIndex ? companyThemeColor : "#D7DEE8",
+                        borderColor: idx === leadImagePreviewIndex ? companyThemeColor : "var(--panel-border)",
                         boxShadow: idx === leadImagePreviewIndex ? `0 0 0 2px ${companyThemeColor}22` : "none",
                       }}
                     >

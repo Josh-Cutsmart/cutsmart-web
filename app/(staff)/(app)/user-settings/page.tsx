@@ -17,7 +17,7 @@ import {
   saveUserProfilePatchDetailed,
 } from "@/lib/firestore-data";
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
-import { retryAsync, withTimeout } from "@/lib/load-retry";
+import { hedgedAsync } from "@/lib/load-retry";
 import { readThemeMode, saveThemeMode, type ThemeMode } from "@/lib/theme-mode";
 import {
   readDashboardStatCardsEnabled,
@@ -61,8 +61,8 @@ function SettingsToggleSwitch({
       }}
     >
       <span
-        className="inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform"
-        style={{ transform: checked ? "translateX(18px)" : "translateX(2px)" }}
+        className="inline-block h-3.5 w-3.5 rounded-full shadow transition-transform"
+        style={{ backgroundColor: "#FFFFFF", transform: checked ? "translateX(18px)" : "translateX(2px)" }}
       />
     </button>
   );
@@ -225,7 +225,7 @@ export default function UserSettingsPage() {
       const directCompanyId = String(user?.companyId || "").trim();
       const fallbackMembership =
         !directCompanyId && user?.uid
-          ? await retryAsync(() => withTimeout(fetchPrimaryMembership(user.uid!), 6000, "Membership lookup timed out"), { attempts: 2, delayMs: 250 }).catch(() => null)
+          ? await hedgedAsync(() => fetchPrimaryMembership(user.uid!), { message: "Membership lookup timed out" }).catch(() => null)
           : null;
       const membershipCompanyId = String(fallbackMembership?.companyId || "").trim();
 
@@ -236,7 +236,16 @@ export default function UserSettingsPage() {
       if (process.env.NEXT_PUBLIC_DEFAULT_COMPANY_ID) candidateIds.add(String(process.env.NEXT_PUBLIC_DEFAULT_COMPANY_ID).trim());
       candidateIds.add("cmp_mykm_91647c");
 
-      if (user?.uid) {
+      if (/^#[0-9A-Fa-f]{6}$/.test(storedThemeColor)) {
+        setCompanyColor(storedThemeColor);
+      }
+
+      let resolvedId = "";
+      let resolvedRoles: unknown[] = [];
+      // The known company ids first; only if none is readable, the companies of the user's projects
+      // (this used to load every project up front on every visit, just to collect ids).
+      let candidateList = Array.from(candidateIds);
+      if (user?.uid && !(await Promise.all(candidateList.map((cid) => fetchCompanyDoc(cid)))).some(Boolean)) {
         try {
           const projects = await fetchProjects(user.uid, undefined, { lightweight: true });
           for (const project of projects) {
@@ -246,15 +255,9 @@ export default function UserSettingsPage() {
         } catch {
           // ignore project fallback errors
         }
+        candidateList = Array.from(candidateIds);
       }
-
-      if (/^#[0-9A-Fa-f]{6}$/.test(storedThemeColor)) {
-        setCompanyColor(storedThemeColor);
-      }
-
-      let resolvedId = "";
-      let resolvedRoles: unknown[] = [];
-      for (const cid of candidateIds) {
+      for (const cid of candidateList) {
         if (!cid) continue;
         const doc = await fetchCompanyDoc(cid);
         if (!doc) continue;
@@ -277,10 +280,9 @@ export default function UserSettingsPage() {
 
       if (resolvedId && user?.uid) {
         try {
-          const access = await retryAsync(
-            () => withTimeout(fetchCompanyAccess(resolvedId, user.uid!), 6000, "Company access lookup timed out"),
-            { attempts: 2, delayMs: 250 },
-          );
+          const access = await hedgedAsync(() => fetchCompanyAccess(resolvedId, user.uid!), {
+            message: "Company access lookup timed out",
+          });
           const roleKey = normalizeRoleKey(access?.roleId || access?.role || user?.role);
           let label = "";
           let color = "";
@@ -577,7 +579,7 @@ export default function UserSettingsPage() {
       .join("") || "CU";
   const profileDirty = profileSnapshot !== lastSavedSnapshotRef.current;
   const saveStatusLabel = isSaving ? "Saving..." : profileDirty ? "Unsaved changes" : saveMsg || "Saved";
-  const saveStatusTone = isSaving ? "#8ab4f8" : profileDirty ? "#B54708" : "#027A48";
+  const saveStatusTone = isSaving ? "#8ab4f8" : profileDirty ? (isDarkMode ? "#FDB022" : "#B54708") : "var(--success-strong)";
 
   const glassCardStyle = {
     borderColor: "var(--glass-border)",

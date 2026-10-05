@@ -128,9 +128,18 @@ export function SidebarUserSettingsPanel({
       if (process.env.NEXT_PUBLIC_DEFAULT_COMPANY_ID) candidateIds.add(String(process.env.NEXT_PUBLIC_DEFAULT_COMPANY_ID).trim());
       candidateIds.add("cmp_mykm_91647c");
 
-      if (user?.uid) {
+      if (/^#[0-9A-Fa-f]{6}$/.test(storedThemeColor)) {
+        setCompanyColor(storedThemeColor);
+      }
+
+      let resolvedId = "";
+      let resolvedRoles: unknown[] = [];
+      // The known company ids first; only if none is readable, the companies of the user's projects
+      // (this used to load every project up front on every visit, just to collect ids).
+      let candidateList = Array.from(candidateIds);
+      if (user?.uid && !(await Promise.all(candidateList.map((cid) => fetchCompanyDoc(cid)))).some(Boolean)) {
         try {
-          const projects = await fetchProjects(user.uid);
+          const projects = await fetchProjects(user.uid, undefined, { lightweight: true });
           for (const project of projects) {
             const cid = String(project.companyId || "").trim();
             if (cid) candidateIds.add(cid);
@@ -138,15 +147,9 @@ export function SidebarUserSettingsPanel({
         } catch {
           // ignore project fallback errors
         }
+        candidateList = Array.from(candidateIds);
       }
-
-      if (/^#[0-9A-Fa-f]{6}$/.test(storedThemeColor)) {
-        setCompanyColor(storedThemeColor);
-      }
-
-      let resolvedId = "";
-      let resolvedRoles: unknown[] = [];
-      for (const cid of candidateIds) {
+      for (const cid of candidateList) {
         if (!cid) continue;
         const doc = await fetchCompanyDoc(cid);
         if (!doc) continue;
@@ -491,7 +494,7 @@ export function SidebarUserSettingsPanel({
             {user?.verified ? (
               <span
                 className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.6px]"
-                style={{ backgroundColor: "#E7F6EC", color: "#1E7A34" }}
+                style={{ backgroundColor: "var(--success-soft)", color: "var(--success-strong)" }}
               >
                 <Check size={9} strokeWidth={3} />
                 Verified

@@ -6,7 +6,7 @@
 // to local midnight of the day after its last day (end is exclusive), so a one-day all-day event is
 // exactly 24h long and multi-day spans are easy to lay out.
 
-import { collection, deleteDoc, doc, onSnapshot, query, setDoc, where } from "firebase/firestore";
+import { collection, deleteDoc, doc, getDocs, onSnapshot, query, setDoc, where, writeBatch } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 
 // Per-category access, keyed by normalized role id (normalizeRoleKey). A role with no entry gets View;
@@ -32,6 +32,20 @@ export type CalendarEvent = {
   createdByUid: string;
   createdByName: string;
   updatedAtIso: string;
+  // With a linked project: shown on that project's client portal (Schedule tab).
+  showToClient: boolean;
+};
+
+// What the client portal's Schedule tab gets for one event (app/api/specs-share/[shareId]/schedule) —
+// never the location, notes or who added it.
+export type ClientScheduleEvent = {
+  id: string;
+  title: string;
+  allDay: boolean;
+  startMs: number;
+  endMs: number;
+  categoryName: string;
+  color: string;
 };
 
 export const DEFAULT_CALENDAR_CATEGORIES: CalendarCategory[] = [
@@ -52,6 +66,34 @@ export const DEFAULT_CALENDAR_WORKDAYS = [1, 2, 3, 4, 5];
 export function normalizeCalendarWorkdays(raw: unknown): number[] {
   if (!Array.isArray(raw)) return DEFAULT_CALENDAR_WORKDAYS;
   return Array.from(new Set(raw.map((v) => Number(v)).filter((v) => Number.isInteger(v) && v >= 0 && v <= 6))).sort();
+}
+
+// Company Settings > Calendar > "Archive events after": events that ended longer ago than this are
+// archived (kept in the database, no longer shown on the calendar).
+export type CalendarRetention = "never" | "1w" | "1m" | "3m" | "6m" | "1y" | "2y";
+export const CALENDAR_RETENTION_OPTIONS: Array<{ value: CalendarRetention; label: string }> = [
+  { value: "never", label: "Never" },
+  { value: "1w", label: "1 week" },
+  { value: "1m", label: "1 month" },
+  { value: "3m", label: "3 months" },
+  { value: "6m", label: "6 months" },
+  { value: "1y", label: "1 year" },
+  { value: "2y", label: "2 years" },
+];
+export function normalizeCalendarRetention(raw: unknown): CalendarRetention {
+  return CALENDAR_RETENTION_OPTIONS.some((o) => o.value === raw) ? (raw as CalendarRetention) : "never";
+}
+// The cut-off (epoch ms) for a retention setting: events that ended before it are archived. 0 = never.
+export function calendarRetentionCutoffMs(retention: CalendarRetention, now = Date.now()): number {
+  if (retention === "never") return 0;
+  const d = new Date(now);
+  if (retention === "1w") d.setDate(d.getDate() - 7);
+  else if (retention === "1m") d.setMonth(d.getMonth() - 1);
+  else if (retention === "3m") d.setMonth(d.getMonth() - 3);
+  else if (retention === "6m") d.setMonth(d.getMonth() - 6);
+  else if (retention === "1y") d.setFullYear(d.getFullYear() - 1);
+  else d.setFullYear(d.getFullYear() - 2);
+  return d.getTime();
 }
 
 export function normalizeCalendarCategories(raw: unknown): CalendarCategory[] {
@@ -80,6 +122,8 @@ function toEvent(id: string, data: Record<string, unknown>): CalendarEvent | nul
   const startMs = Number(data.startMs);
   const endMs = Number(data.endMs);
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return null;
+  // Archived (see archiveOldCalendarEvents): kept, but no longer on the calendar.
+  if (data.archived === true) return null;
   return {
     id,
     title: String(data.title ?? "").trim(),
@@ -94,6 +138,7 @@ function toEvent(id: string, data: Record<string, unknown>): CalendarEvent | nul
     createdByUid: String(data.createdByUid ?? "").trim(),
     createdByName: String(data.createdByName ?? "").trim(),
     updatedAtIso: String(data.updatedAtIso ?? ""),
+    showToClient: data.showToClient === true,
   };
 }
 
@@ -139,6 +184,40 @@ export async function saveCalendarEvent(companyId: string, event: CalendarEvent)
     return { ok: true };
   } catch (error) {
     return { ok: false, error: String((error as { code?: string })?.code || "save-failed") };
+  }
+}
+
+// Marks every not-yet-archived event that ended before cutoffMs as archived. Safe to run repeatedly,
+// but it reads every past event, so it's only run once a day per company per device (the calendar
+// already hides anything past the cut-off immediately, so nothing waits on it).
+const ARCHIVE_LAST_RUN_KEY = "cutsmart_calendar_archive_last_run_";
+const ARCHIVE_RUN_EVERY_MS = 24 * 60 * 60 * 1000;
+export async function archiveOldCalendarEvents(companyId: string, cutoffMs: number): Promise<number> {
+  const cid = String(companyId || "").trim();
+  if (!db || !cid || !cutoffMs) return 0;
+  try {
+    const last = Number(window.localStorage.getItem(`${ARCHIVE_LAST_RUN_KEY}${cid}`) || 0);
+    if (Date.now() - last < ARCHIVE_RUN_EVERY_MS) return 0;
+    window.localStorage.setItem(`${ARCHIVE_LAST_RUN_KEY}${cid}`, String(Date.now()));
+  } catch {
+    // storage unavailable — just run it
+  }
+  const database = db;
+  try {
+    const snap = await getDocs(query(collection(database, "companies", cid, "calendarEvents"), where("startMs", "<", cutoffMs)));
+    const stale = snap.docs.filter((d) => {
+      const data = d.data() ?? {};
+      return data.archived !== true && Number(data.endMs) <= cutoffMs;
+    });
+    const archivedAtIso = new Date().toISOString();
+    for (let i = 0; i < stale.length; i += 400) {
+      const batch = writeBatch(database);
+      stale.slice(i, i + 400).forEach((d) => batch.update(d.ref, { archived: true, archivedAtIso }));
+      await batch.commit();
+    }
+    return stale.length;
+  } catch {
+    return 0;
   }
 }
 

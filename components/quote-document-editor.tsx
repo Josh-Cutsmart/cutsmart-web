@@ -310,7 +310,7 @@ export function QuoteDocumentEditor({
             : embeddedCardSquare
               ? "rounded-none border border-[#D7DEE8] bg-white"
               : "rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.08)]"
-          : "rounded-[18px] border border-[#D7DEE8] bg-[#EEF3FA] shadow-[0_18px_36px_rgba(15,23,42,0.08)]")
+          : "rounded-[18px] border border-[#D7DEE8] bg-[var(--bg-app)] shadow-[0_18px_36px_rgba(15,23,42,0.08)]")
       }
       style={
         fillHeight
@@ -325,25 +325,45 @@ export function QuoteDocumentEditor({
         }
         .cutsmart-quote-document-shell .ck.ck-toolbar {
           border: none;
-          border-bottom: 1px solid #d7dee8;
+          border-bottom: 1px solid var(--panel-border);
           border-radius: 18px 18px 0 0;
-          background: #ffffff;
+          background: var(--panel-bg);
           padding: 10px 12px;
         }
         .cutsmart-quote-document-shell[data-mode="embedded"] .ck.ck-toolbar {
-          border: 1px solid #d7dee8;
+          border: 1px solid var(--panel-border);
           border-radius: 14px;
           padding: 8px;
           box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
-          background: rgba(255, 255, 255, 0.98);
+          background: color-mix(in srgb, var(--panel-bg) 98%, transparent);
           backdrop-filter: blur(10px);
         }
         .cutsmart-quote-document-shell[data-toolbar-glass="true"] .ck.ck-toolbar {
-          background: rgba(248, 250, 252, 0.35) !important;
+          background: color-mix(in srgb, var(--panel-muted) 35%, transparent) !important;
           backdrop-filter: blur(6px) !important;
           -webkit-backdrop-filter: blur(6px) !important;
-          border-color: #dce3ec !important;
+          border-color: var(--panel-border) !important;
           box-shadow: none !important;
+        }
+        /* Dark mode: CKEditor's own UI colours (toolbar, buttons, dropdown panels) default to a light
+           theme via its --ck-color-* variables — remapped to the app's theme tokens here. Also scoped
+           to the toolbar wrapper, which can be portaled outside the shell (toolbarHost). */
+        body[data-theme="dark"] .cutsmart-quote-document-shell,
+        body[data-theme="dark"] .cutsmart-quote-document-toolbar {
+          --ck-color-base-background: var(--panel-bg);
+          --ck-color-base-foreground: var(--panel-muted);
+          --ck-color-base-border: var(--panel-border);
+          --ck-color-text: var(--text-main);
+          --ck-color-toolbar-background: var(--panel-bg);
+          --ck-color-toolbar-border: var(--panel-border);
+          --ck-color-button-default-hover-background: color-mix(in srgb, var(--text-main) 10%, transparent);
+          --ck-color-button-default-active-background: color-mix(in srgb, var(--text-main) 14%, transparent);
+          --ck-color-button-on-background: var(--brand-soft);
+          --ck-color-button-on-hover-background: var(--brand-soft);
+          --ck-color-button-on-active-background: var(--brand-soft);
+          --ck-color-button-on-color: var(--brand-strong);
+          --ck-color-dropdown-panel-background: var(--panel-bg);
+          --ck-color-dropdown-panel-border: var(--panel-border);
         }
         .cutsmart-quote-document-shell .ck.ck-toolbar .ck-toolbar__items {
           flex-wrap: wrap;
@@ -446,7 +466,7 @@ export function QuoteDocumentEditor({
         .cutsmart-quote-document-shell[data-mode="embedded"][data-toolbar-placement="inline"] .ck.ck-toolbar {
           position: static;
           max-width: none;
-          border: 1px solid #d7dee8;
+          border: 1px solid var(--panel-border);
           border-radius: 12px;
           box-shadow: none;
           backdrop-filter: none;
