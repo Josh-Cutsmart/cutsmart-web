@@ -1,74 +1,70 @@
-Version: v0.4.8
+Version: v0.4.9
 
 whatsNew: [
 <u><b>Calendar</b></u>
 <ul>
-<li>New: a <b>Calendar</b> tab — a shared company calendar with Month, Week, Day and List views</li>
-<li>Click a day or time to add an event with a title, category, all-day or start/end times, location, notes and an optional linked project</li>
-<li>Drag events to move them, and drag the bottom edge of an event in Week/Day view to change its length</li>
-<li>Events that run over several days show as one continuous bar, and keep their full length while you drag them</li>
-<li>Every day in Month view is the same height and fills with as many events as fit, with a <b>+count</b> pill next to the date for the rest</li>
-<li>Events are listed top to bottom in the same order as the categories in Company Settings</li>
-<li>Clicking an event opens a view of just the event — coloured in its category — with an <b>Edit</b> button for people who can change it</li>
-<li>Each event shows who added it, with their emblem, in the bottom bar</li>
-<li>Show or hide categories from the filter list</li>
-<li>Days that aren't workdays are shown crossed out</li>
-<li>Desktop: Previous and Next slide to the next month (up/down) or the next week, day or list (left/right)</li>
-<li>Mobile: the calendar runs edge to edge in every view</li>
-<li>Mobile: swipe up and down to move between months — it locks onto each month, the next one is already loaded, and the greyed days either side fade over instead of showing twice</li>
-<li>Mobile: swiping in the calendar no longer opens the pull-down menu or the side drawers</li>
-<li>Mobile: the event pop-up no longer has a Close button, since the X is in the top corner</li>
+<li>New: a <b>Year</b> view — every month of the year in rows, scrolling through the year</li>
+<li>Desktop: scroll the mouse wheel in Month view to move to the next or previous month — smoothly, one month at a time, with no doubled weeks</li>
+<li>Day view: the time columns now line up with the all-day events above them</li>
+<li>Even spacing around the calendar on every side</li>
+<li>Event pop-up: a smaller date box, the <b>All day</b> switch next to Starts (the times hide when it's on), and <b>Link project</b> above the times</li>
+<li>Event pop-up: the cursor goes straight to the event name</li>
+<li>Events linked to a project you can't access hide their location, notes and project, and can't be edited</li>
+<li>iPhone: save the Calendar to your home screen with its own icon — it opens straight to the calendar</li>
 </ul>
 
 <u><b>Calendar Settings</b></u>
 <ul>
-<li>New: a <b>Calendar</b> tab in Company Settings</li>
-<li>Add, rename, colour and drag to reorder calendar categories</li>
-<li>Choose your <b>Workdays</b></li>
-<li>Click a category to choose, for each role, whether they can <b>Edit</b>, <b>View</b> or have <b>No access</b> to it — View is the default, and Owners and Admins can always edit</li>
-<li>New <b>Access Calendar Tab</b> permission for roles (staff get it by default)</li>
+<li>New: <b>Archive events after</b> — old events are archived automatically after the time you choose (kept, but no longer shown)</li>
+<li>New: choose whether events linked to a project show on the client portal by default</li>
+<li>Client portal, Old events and Workdays now sit in one column</li>
+</ul>
+
+<u><b>Client Portal</b></u>
+<ul>
+<li>New: a <b>Schedule</b> tab listing the project's events you've chosen to share</li>
+<li>Each event has a <b>Show on client portal</b> switch, including in the event's project row</li>
+<li>A red dot shows on Schedule, Quote and Specifications when something's new since the client's last visit</li>
+<li>Specifications groups set to the bottom of the page now sit at the bottom</li>
+</ul>
+
+<u><b>Dark Mode</b></u>
+<ul>
+<li>Dark mode reworked across every page of the app</li>
+<li>Quote and Specifications: only the sheet itself stays white</li>
+<li>The typing cursor now matches the text colour in both light and dark mode</li>
+<li>Remedials and notes text is now light in dark mode</li>
+<li>Dashboard project rows are glass in dark mode</li>
+</ul>
+
+<u><b>Dashboard</b></u>
+<ul>
+<li>The Completed and Staff pop-ups now match the rest of the app's pop-ups</li>
+<li>The header bar now matches the search bar's colour, with even spacing around the search bar and filters</li>
+<li>Kanban: the sub-status <b>Back</b> button slides away in list view and comes back when you return to the board</li>
 </ul>
 
 <u><b>Company Settings</b></u>
 <ul>
-<li>Company Settings has been fully redesigned with the glass look — new dropdowns, fields, switches and pop-ups throughout</li>
-<li>Dragging rows to reorder them now lifts them the same way kanban cards do</li>
-<li><b>Currency</b>, <b>Measurement unit</b> and <b>Date format</b> now apply across the whole app — prices, lengths and dates</li>
-<li>Contact Categories and Recently Deleted have moved to the Dashboard tab</li>
-<li>Contact categories, sheet thicknesses and board finishes can now be dragged to reorder</li>
-<li>Board colour memory now shows a simple count in its pill</li>
-<li>Autoclash uses a three-way toggle and now has an <b>Off</b> option</li>
-<li>Bigger company logo and a round theme colour picker</li>
-<li>Smaller gap between the settings sidebar and the main sidebar</li>
-<li>Removed the time zone setting, the Quote Helpers card and the "Moved from Company" badges</li>
-</ul>
-
-<u><b>Contacts</b></u>
-<ul>
-<li>Desktop: contacts now open in a panel that slides out from the right, with the same layout as mobile</li>
-<li>Desktop: clicking anywhere off the panel closes it, and clicking another contact switches to them</li>
-<li>Desktop: the Phone, Email, Address and Notes boxes in the panel are now full width</li>
-<li>Projects are now linked to their contact card, so changing a phone number or email no longer creates a duplicate contact</li>
-<li>When a project's client details differ from their contact card, you're asked whether to update the card</li>
-<li>Fixed contact card colours not updating, plus swipe back, hold to archive and the Edit button animation on mobile</li>
+<li>The company logo's Replace and Remove buttons now sit under the text</li>
+<li>Narrower Currency and Date format dropdowns</li>
+<li>Fixed the Zapier lead field layout sometimes resetting when saving</li>
 </ul>
 
 <u><b>Projects</b></u>
 <ul>
-<li>Client Details now match the app's theme, without the contact category or its colour</li>
-<li>Phone, email and address in Client Details are now in black text</li>
-<li><b>Create Contact</b> opens a glass pop-up where you can fill in every field, including the category</li>
-</ul>
-
-<u><b>Dashboard & Leads</b></u>
-<ul>
-<li>Mobile: swiping sideways between board columns works again from anywhere in a column</li>
-<li>Mobile: holding a dragged card at the edge of the screen scrolls the board to the next column</li>
+<li>Project status pills no longer use bold text</li>
+<li>Project details: the scrollbar now starts below the header</li>
 </ul>
 
 <u><b>App-Wide</b></u>
 <ul>
-<li>Fixed a second copy of the side menu sliding in when swiping it closed on iPhone</li>
-<li>The logo in the side menu now loads straight away instead of popping in</li>
+<li>App-wide optimization rework</li>
+<li>Pop-ups: the page behind no longer scrolls, and buttons bounce less when a pop-up closes</li>
+<li>All scrollbars now use the glass style and stay below the title bars</li>
+<li>Colour pickers: you can now drag to pick a colour</li>
+<li>Security improvements</li>
+<li>Sign-up: fixed verification code emails, with a clearer message if one can't be sent</li>
+<li>New accounts no longer see the "What's new" pop-up for the version they joined on</li>
 </ul>
 ]

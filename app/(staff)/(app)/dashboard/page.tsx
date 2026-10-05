@@ -369,6 +369,8 @@ export default function DashboardPage() {
   // Remembered per-user (localStorage, same mechanism as dashboardViewMode/collapsedColumns below)
   // so a refresh reopens the same sub-board instead of dropping back to the main board.
   const [openSubBoardColumnName, setOpenSubBoardColumnName] = useState("");
+  // The sub-status stays open while the list view is shown, but its back button only belongs on the board.
+  const showSubBoardBackButton = Boolean(openSubBoardColumnName) && dashboardViewMode === "board";
   const [draggingSubStageProjectId, setDraggingSubStageProjectId] = useState("");
   const [dragOverSubStageColumn, setDragOverSubStageColumn] = useState("");
   // Per-sub-column collapse state, mirroring collapsedProjectStatusColumns for the main board —
@@ -2708,19 +2710,21 @@ export default function DashboardPage() {
                     open reveals the button left-to-right (slides in) and pushes every sibling
                     after it — including the search bar, and the icon inside it, which moves as
                     one piece with the bar since it's positioned relative to the bar's own box. */}
+                {/* Only in board view: switching to the list slides it away, and coming back to the board
+                    (the sub-status is still open there) slides it back in. */}
                 <div
                   className="shrink-0 overflow-hidden transition-[width,margin-right] duration-250 ease-out"
                   style={{
-                    width: openSubBoardColumnName ? 36 : 0,
-                    marginRight: openSubBoardColumnName ? 8 : -8,
+                    width: showSubBoardBackButton ? 36 : 0,
+                    marginRight: showSubBoardBackButton ? 8 : -8,
                   }}
                 >
                   <button
                     type="button"
                     onClick={onCloseSubBoard}
                     aria-label={`Back to board${openSubBoardColumnName ? ` (leave ${openSubBoardColumnName})` : ""}`}
-                    aria-hidden={!openSubBoardColumnName}
-                    tabIndex={openSubBoardColumnName ? 0 : -1}
+                    aria-hidden={!showSubBoardBackButton}
+                    tabIndex={showSubBoardBackButton ? 0 : -1}
                     title="Back"
                     className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] border"
                     style={{

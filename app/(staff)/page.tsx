@@ -9,6 +9,7 @@ import { resolveCompanyIdForUid } from "@/lib/membership";
 import { useAuth } from "@/lib/auth-context";
 import { hedgedAsync } from "@/lib/load-retry";
 import { AFTER_LOGIN_PATH_KEY } from "@/components/protected-route";
+import { parseUpdateNotesText } from "@/lib/update-notes-utils";
 
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 
@@ -141,6 +142,13 @@ export default function HomePage() {
       return;
     }
     setIsRegisterSubmitting(true);
+    // The app's current version (public/update-notes.txt), fetched while the account is being created.
+    // A new account starts with it already marked as seen: the "What's new" pop-up (see AppShell) is for
+    // people who used the app before an update, so new users only get it from the next update on.
+    const currentVersionPromise = fetch("/update-notes.txt", { cache: "no-store" })
+      .then((res) => (res.ok ? res.text() : ""))
+      .then((raw) => parseUpdateNotesText(raw).version.trim())
+      .catch(() => "");
     try {
       if (hasFirebaseConfig && auth) {
         const created = await createUserWithEmailAndPassword(auth, registerEmail, registerPassword);
@@ -150,11 +158,13 @@ export default function HomePage() {
             .split("@")[0]
             ?.replace(/[._-]+/g, " ")
             .trim();
+          const currentVersion = await currentVersionPromise;
           await saveUserProfilePatchDetailed(uid, "", {
             email: String(registerEmail || "").trim(),
             mobile: String(registerMobile || "").trim(),
             userColor: DEFAULT_REGISTER_USER_COLOR,
             displayName: fallbackName || "CutSmart User",
+            ...(currentVersion ? { updateNoticeSeenVersions: [currentVersion] } : {}),
           });
           // No verification-code send here — every post-registration destination (company
           // onboarding, or the (app) group) is now gated by VerifyEmailGate, which sends the

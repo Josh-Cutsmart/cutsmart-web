@@ -365,6 +365,13 @@ export function QuoteDocumentEditor({
           --ck-color-dropdown-panel-background: var(--panel-bg);
           --ck-color-dropdown-panel-border: var(--panel-border);
         }
+        /* Dark mode: CKEditor draws its text black by default (--ck-content-font-color), which vanished
+           on the app's dark surfaces (remedials, notes, contractor notes…) — there it takes the
+           surrounding text colour instead. Not the Quote sheet's own text blocks (card-square), which
+           sit on the white page in both themes and keep their dark text. */
+        body[data-theme="dark"] .cutsmart-quote-document-shell[data-mode="embedded"]:not([data-embedded-card-square="true"]) .ck.ck-content {
+          color: inherit;
+        }
         .cutsmart-quote-document-shell .ck.ck-toolbar .ck-toolbar__items {
           flex-wrap: wrap;
         }
