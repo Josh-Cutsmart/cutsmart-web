@@ -63,7 +63,7 @@ export function withBoardDropPreview<T extends { id: string }, N>(
 }
 
 // How a column's cards are ordered. "custom" is the order people drag them into (the default); the
-// others are each user's own choice, per column (the column's cog > Organize) or for the whole board
+// others are each user's own choice, per column (the sort button on the column) or for the whole board
 // (the toolbar's Sort button, which overrides every column while it's set). See
 // components/board-sort-menu.tsx.
 export type BoardSortMode = "custom" | "oldest" | "newest" | "az" | "za";

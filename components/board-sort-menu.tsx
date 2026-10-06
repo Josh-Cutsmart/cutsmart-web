@@ -2,12 +2,12 @@
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import { ArrowUpDown, Check, ChevronRight, Settings } from "lucide-react";
+import { ArrowUpDown, Check } from "lucide-react";
 import { swallowNextClick } from "@/lib/swallow-dismiss-click";
 import { BOARD_SORT_LABELS, BOARD_SORT_MODES, type BoardSortMode } from "@/lib/board-drop-order";
 
-// The Kanban boards' (Leads, Dashboard) sort menus: a cog on each column (cog > Organize > the
-// sort choices, for that column) and a Sort button in the toolbar (the same choices, for the whole
+// The Kanban boards' (Leads, Dashboard) sort menus: a sort button on each column (the sort choices,
+// for that column) and a Sort button in the toolbar (the same choices, for the whole
 // board — overriding every column while it's set). Both are each user's own setting.
 
 const MENU_WIDTH = 190;
@@ -92,9 +92,9 @@ function SortOptionRows({
   );
 }
 
-// The cog left of a column's title: Organize > Custom order / Oldest – Newest / Newest – Oldest /
-// A – Z / Z – A, for this column. `overriddenBy` is the board-wide sort when one is set (the
-// column's own choice is kept, and applies again once the board sort is back to "Per column").
+// The sort button left of a column's title: Custom order / Oldest – Newest / Newest – Oldest / A – Z /
+// Z – A, for this column. `overriddenBy` is the board-wide sort when one is set (the column's own
+// choice is kept, and applies again once the board sort is back to "Per column").
 export function BoardColumnSortMenu({
   columnName,
   value,
@@ -111,30 +111,9 @@ export function BoardColumnSortMenu({
   buttonStyle?: CSSProperties;
 }) {
   const [menuPos, setMenuPos] = useState<MenuPos | null>(null);
-  const [subMenuPos, setSubMenuPos] = useState<MenuPos | null>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
-  const subMenuRef = useRef<HTMLDivElement | null>(null);
-  const close = () => {
-    setMenuPos(null);
-    setSubMenuPos(null);
-  };
-  useCloseOnOutsidePress(Boolean(menuPos), [buttonRef, menuRef, subMenuRef], close);
-
-  const toggleOrganize = () => {
-    if (subMenuPos) {
-      setSubMenuPos(null);
-      return;
-    }
-    const rect = menuRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    // Beside the menu (whichever side has room), or under it on a narrow screen.
-    const rightLeft = rect.right + 4;
-    const leftLeft = rect.left - MENU_WIDTH - 4;
-    if (rightLeft + MENU_WIDTH <= window.innerWidth - 8) setSubMenuPos({ left: rightLeft, top: rect.top });
-    else if (leftLeft >= 8) setSubMenuPos({ left: leftLeft, top: rect.top });
-    else setSubMenuPos({ left: rect.left, top: rect.bottom + 4 });
-  };
+  useCloseOnOutsidePress(Boolean(menuPos), [buttonRef, menuRef], () => setMenuPos(null));
   const isSorted = value !== "custom";
 
   return (
@@ -144,55 +123,34 @@ export function BoardColumnSortMenu({
         type="button"
         onClick={(e) => {
           e.stopPropagation();
-          if (menuPos) {
-            close();
-            return;
-          }
-          setMenuPos(menuPosUnder(e.currentTarget));
+          if (menuPos) setMenuPos(null);
+          else setMenuPos(menuPosUnder(e.currentTarget));
         }}
         className={buttonClassName ?? "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition hover:brightness-95"}
         style={buttonStyle}
-        title={`${columnName} settings`}
-        aria-label={`${columnName} settings`}
+        title={isSorted ? `${columnName}: ${BOARD_SORT_LABELS[value]}` : `Sort ${columnName}`}
+        aria-label={`Sort ${columnName}`}
       >
-        <Settings size={13} />
+        <ArrowUpDown size={13} />
       </button>
       {menuPos && typeof document !== "undefined"
         ? createPortal(
-            <>
-              <div ref={menuRef} className={MENU_CLASS} style={{ ...MENU_STYLE, left: menuPos.left, top: menuPos.top, width: MENU_WIDTH }}>
-                <button
-                  type="button"
-                  onClick={toggleOrganize}
-                  className="flex h-9 w-full items-center justify-between gap-2 px-3 text-left text-[12px] font-semibold transition-colors hover:bg-[var(--panel-muted)]"
-                  style={{ color: "var(--text-main)", backgroundColor: subMenuPos ? "var(--panel-muted)" : undefined }}
-                >
-                  <span className="truncate">Organize</span>
-                  <span className="inline-flex shrink-0 items-center gap-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
-                    {isSorted ? BOARD_SORT_LABELS[value] : null}
-                    <ChevronRight size={13} />
-                  </span>
-                </button>
-              </div>
-              {subMenuPos ? (
-                <div ref={subMenuRef} className={MENU_CLASS} style={{ ...MENU_STYLE, left: subMenuPos.left, top: subMenuPos.top, width: MENU_WIDTH }}>
-                  {overriddenBy && overriddenBy !== "custom" ? (
-                    <p className="border-b px-3 py-2 text-[11px] leading-snug" style={{ borderColor: "var(--glass-border)", color: "var(--text-muted)" }}>
-                      The whole board is sorted {BOARD_SORT_LABELS[overriddenBy]} — this column&apos;s choice applies once that&apos;s back to Per column.
-                    </p>
-                  ) : null}
-                  <SortOptionRows
-                    options={BOARD_SORT_MODES}
-                    value={value}
-                    labelFor={(mode) => BOARD_SORT_LABELS[mode]}
-                    onPick={(mode) => {
-                      onChange(mode);
-                      close();
-                    }}
-                  />
-                </div>
+            <div ref={menuRef} className={MENU_CLASS} style={{ ...MENU_STYLE, left: menuPos.left, top: menuPos.top, width: MENU_WIDTH }}>
+              {overriddenBy && overriddenBy !== "custom" ? (
+                <p className="border-b px-3 py-2 text-[11px] leading-snug" style={{ borderColor: "var(--glass-border)", color: "var(--text-muted)" }}>
+                  The whole board is sorted {BOARD_SORT_LABELS[overriddenBy]} — this column&apos;s choice applies once that&apos;s back to Per column.
+                </p>
               ) : null}
-            </>,
+              <SortOptionRows
+                options={BOARD_SORT_MODES}
+                value={value}
+                labelFor={(mode) => BOARD_SORT_LABELS[mode]}
+                onPick={(mode) => {
+                  onChange(mode);
+                  setMenuPos(null);
+                }}
+              />
+            </div>,
             document.body,
           )
         : null}

@@ -388,7 +388,7 @@ export default function DashboardPage() {
   // The column and spot (among its other cards) a dragged project would land in — shows its preview.
   const [projectDropPreview, setProjectDropPreview] = useState<{ column: string; index: number } | null>(null);
   const [subStageDropPreview, setSubStageDropPreview] = useState<{ column: string; index: number } | null>(null);
-  // This user's own sort choices: per column (the column's cog > Organize), and for the whole board
+  // This user's own sort choices: per column (the sort button on the column), and for the whole board
   // (the toolbar's Sort — overrides every column while it's set). "custom" = the dragged order.
   const [projectColumnSorts, setProjectColumnSorts] = useState<Record<string, BoardSortMode>>({});
   const [projectBoardSort, setProjectBoardSort] = useState<BoardSortMode>("custom");
@@ -1856,7 +1856,7 @@ export default function DashboardPage() {
   // both get the exact same collapse affordance/styling from one place.
   const renderColumnHeaderBar = (options: {
     left: React.ReactNode;
-    // The column's sort cog, left of its title (main board columns).
+    // The column's sort button, left of its title (main board columns).
     sortControl?: React.ReactNode;
     count: number;
     badgeBg: string;
@@ -3182,9 +3182,12 @@ export default function DashboardPage() {
                 ? // Bleeds past <main>'s own px (same -mx values as the filter bar above) so the
                   // board columns wrapper's own side padding re-insets from the TRUE edge —
                   // without this, <main>'s padding and the columns' own side padding stacked,
-                  // doubling the gap instead of matching it. Top stays its own pt-[10px] (the gap
-                  // from the filter bar) — deliberately NOT matched to the (bigger) side padding.
-                  "sticky top-0 flex h-[calc(100svh-48px)] min-h-[280px] flex-col overflow-hidden pt-[10px] -mx-3 md:-mx-4 lg:top-[48px] lg:-mx-5 lg:h-[calc(100svh-48px)] lg:min-h-[320px]"
+                  // doubling the gap instead of matching it. The 10px gap from the filter bar is
+                  // split: pt-[2px] here and pt-2 inside the board's scroller below — that one
+                  // clips its contents, so the columns need room inside it for the white ring/glow
+                  // they light up with while a project is dragged over them (it was cut off along
+                  // their tops). Deliberately NOT matched to the (bigger) side padding.
+                  "sticky top-0 flex h-[calc(100svh-48px)] min-h-[280px] flex-col overflow-hidden pt-[2px] -mx-3 md:-mx-4 lg:top-[48px] lg:-mx-5 lg:h-[calc(100svh-48px)] lg:min-h-[320px]"
                 : ""
             }`}
             style={{
@@ -3393,7 +3396,7 @@ export default function DashboardPage() {
           <div
             ref={boardScrollContainerCallbackRef}
             data-horizontal-swipe-scroll="true"
-            className="glass-scroll hide-native-scrollbar grid snap-x snap-mandatory overflow-x-auto overflow-y-hidden px-[10px] pb-[10px] sm:snap-none lg:px-4"
+            className="glass-scroll hide-native-scrollbar grid snap-x snap-mandatory overflow-x-auto overflow-y-hidden px-[10px] pb-[10px] pt-2 sm:snap-none lg:px-4"
             style={{ flex: "1 1 auto", minHeight: 0, gridTemplateRows: "1fr" }}
           >
             {/* Main board vs. sub-board: both grid-stacked onto the SAME cell (gridArea: "1 / 1")

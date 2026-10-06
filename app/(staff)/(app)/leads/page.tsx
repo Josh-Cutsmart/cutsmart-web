@@ -670,7 +670,7 @@ export default function LeadsPage() {
   // Drops still saving, by lead: the 10-second refresh keeps them where they were dropped meanwhile.
   const pendingLeadMovesRef = useRef(new Map<string, Partial<CompanyLeadRow>>());
   const [collapsedStatusColumns, setCollapsedStatusColumns] = useState<Record<string, boolean>>({});
-  // This user's own sort choices: per column (the column's cog > Organize), and for the whole board
+  // This user's own sort choices: per column (the sort button on the column), and for the whole board
   // (the toolbar's Sort — overrides every column while it's set). "custom" = the dragged order.
   const [leadColumnSorts, setLeadColumnSorts] = useState<Record<string, BoardSortMode>>({});
   const [leadBoardSort, setLeadBoardSort] = useState<BoardSortMode>("custom");
