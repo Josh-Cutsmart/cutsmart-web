@@ -1382,6 +1382,16 @@ function parseJsonObjects(value: string): Array<Record<string, unknown>> {
   }
 }
 
+// Hardware item names are kept exactly as typed while editing (so spaces can be typed), and tidied
+// when saved.
+function trimHardwareItemNames(items: unknown[]): unknown[] {
+  return items.map((item) =>
+    item && typeof item === "object" && typeof (item as Record<string, unknown>).name === "string"
+      ? { ...(item as Record<string, unknown>), name: String((item as Record<string, unknown>).name).trim() }
+      : item,
+  );
+}
+
 function stringifyJsonObjects(items: Array<Record<string, unknown>>): string {
   return JSON.stringify(items);
 }
@@ -1722,6 +1732,12 @@ export default function CompanySettingsPage() {
   const [drawerDragHardwareIndex, setDrawerDragHardwareIndex] = useState<number | null>(null);
   const [drawerDragIndex, setDrawerDragIndex] = useState<number | null>(null);
   const [drawerDragOverIndex, setDrawerDragOverIndex] = useState<number | null>(null);
+  const [hingeDrag, setHingeDrag] = useState<{ hardwareIndex: number; hingeIndex: number } | null>(null);
+  // Set once a dragged hinge has actually moved, so a drop that misses a row (e.g. in the grid's gap)
+  // still saves the new order.
+  const hingeDragMovedRef = useRef(false);
+  const [otherDrag, setOtherDrag] = useState<{ hardwareIndex: number; otherIndex: number } | null>(null);
+  const otherDragMovedRef = useRef(false);
   const [nesting, setNesting] = useState({ sheetHeight: "2440", sheetWidth: "1220", kerf: "5", margin: "10", minPieceSize: "100" });
   const [cutlistProduction, setCutlistProduction] = useState<string[]>([]);
   const [cutlistInitial, setCutlistInitial] = useState<string[]>([]);
@@ -3443,9 +3459,9 @@ export default function CompanySettingsPage() {
             name,
             color: toStr(row.color, "#7D99B3"),
             default: Boolean(row.default),
-            drawers: parseJsonList(row.drawersJson),
-            hinges: parseJsonList(row.hingesJson),
-            other: parseJsonList(row.otherJson),
+            drawers: trimHardwareItemNames(parseJsonList(row.drawersJson)),
+            hinges: trimHardwareItemNames(parseJsonList(row.hingesJson)),
+            other: trimHardwareItemNames(parseJsonList(row.otherJson)),
             order: idx,
           };
         })
@@ -7574,7 +7590,7 @@ export default function CompanySettingsPage() {
                                         <ChevronDown size={15} style={{ transform: isExpanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 200ms ease" }} />
                                       </button>
                                       <input
-                                        value={readDrawerName(drawer)}
+                                        value={String(drawer.name ?? "")}
                                         onChange={(e) =>
                                           updateHardwareJsonList(idx, "drawersJson", (items) =>
                                             items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "name", e.target.value) : v)),
@@ -7875,7 +7891,53 @@ export default function CompanySettingsPage() {
                           <div className="space-y-2">
                             <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 xl:grid-cols-4">
                               {parseJsonObjects(row.hingesJson).map((hinge, hingeIdx) => (
-                                <div key={hingeIdx} className={listRowClass}>
+                                <div
+                                  key={hingeIdx}
+                                  id={`settings_hinge_${idx}_${hingeIdx}`}
+                                  className={listRowClass}
+                                  style={{ opacity: hingeDrag?.hardwareIndex === idx && hingeDrag.hingeIndex === hingeIdx ? 0.45 : 1 }}
+                                  onDragOver={(e) => {
+                                    e.preventDefault();
+                                    e.dataTransfer.dropEffect = "move";
+                                  }}
+                                  onDragEnter={(e) => {
+                                    e.preventDefault();
+                                    if (!hingeDrag || hingeDrag.hardwareIndex !== idx || hingeDrag.hingeIndex === hingeIdx) return;
+                                    const fromIndex = hingeDrag.hingeIndex;
+                                    updateHardwareJsonList(idx, "hingesJson", (items) => moveRowTo(items, fromIndex, hingeIdx));
+                                    setHingeDrag({ hardwareIndex: idx, hingeIndex: hingeIdx });
+                                    hingeDragMovedRef.current = true;
+                                  }}
+                                  onDrop={(e) => {
+                                    e.preventDefault();
+                                    setHingeDrag(null);
+                                    hingeDragMovedRef.current = false;
+                                    endRowDrag();
+                                    triggerAutosaveAfterRowDrop();
+                                  }}
+                                >
+                                  <button
+                                    type="button"
+                                    draggable
+                                    onDragStart={(e) => {
+                                      setHingeDrag({ hardwareIndex: idx, hingeIndex: hingeIdx });
+                                      hingeDragMovedRef.current = false;
+                                      e.dataTransfer.setData("text/plain", `hinge_${idx}_${hingeIdx}`);
+                                      startRowDrag(e, `settings_hinge_${idx}_${hingeIdx}`, toStr(hinge.name) || "Hinge", row.color);
+                                    }}
+                                    onDragEnd={() => {
+                                      setHingeDrag(null);
+                                      endRowDrag();
+                                      if (hingeDragMovedRef.current) {
+                                        hingeDragMovedRef.current = false;
+                                        triggerAutosaveAfterRowDrop();
+                                      }
+                                    }}
+                                    className={gripClass}
+                                    title="Drag to reorder"
+                                  >
+                                    <GripVertical size={15} />
+                                  </button>
                                   <button
                                     type="button"
                                     onClick={() => updateHardwareJsonList(idx, "hingesJson", (items) => items.filter((_, i) => i !== hingeIdx))}
@@ -7884,7 +7946,7 @@ export default function CompanySettingsPage() {
                                     <X size={15} />
                                   </button>
                                   <input
-                                    value={toStr(hinge.name)}
+                                    value={String(hinge.name ?? "")}
                                     onChange={(e) =>
                                       updateHardwareJsonList(idx, "hingesJson", (items) =>
                                         items.map((v, i) => (i === hingeIdx ? { ...v, name: e.target.value } : v)),
@@ -7915,7 +7977,53 @@ export default function CompanySettingsPage() {
                           <div className="space-y-2">
                             <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 xl:grid-cols-4">
                               {parseJsonObjects(row.otherJson).map((other, otherIdx) => (
-                                <div key={otherIdx} className={listRowClass}>
+                                <div
+                                  key={otherIdx}
+                                  id={`settings_other_${idx}_${otherIdx}`}
+                                  className={listRowClass}
+                                  style={{ opacity: otherDrag?.hardwareIndex === idx && otherDrag.otherIndex === otherIdx ? 0.45 : 1 }}
+                                  onDragOver={(e) => {
+                                    e.preventDefault();
+                                    e.dataTransfer.dropEffect = "move";
+                                  }}
+                                  onDragEnter={(e) => {
+                                    e.preventDefault();
+                                    if (!otherDrag || otherDrag.hardwareIndex !== idx || otherDrag.otherIndex === otherIdx) return;
+                                    const fromIndex = otherDrag.otherIndex;
+                                    updateHardwareJsonList(idx, "otherJson", (items) => moveRowTo(items, fromIndex, otherIdx));
+                                    setOtherDrag({ hardwareIndex: idx, otherIndex: otherIdx });
+                                    otherDragMovedRef.current = true;
+                                  }}
+                                  onDrop={(e) => {
+                                    e.preventDefault();
+                                    setOtherDrag(null);
+                                    otherDragMovedRef.current = false;
+                                    endRowDrag();
+                                    triggerAutosaveAfterRowDrop();
+                                  }}
+                                >
+                                  <button
+                                    type="button"
+                                    draggable
+                                    onDragStart={(e) => {
+                                      setOtherDrag({ hardwareIndex: idx, otherIndex: otherIdx });
+                                      otherDragMovedRef.current = false;
+                                      e.dataTransfer.setData("text/plain", `other_${idx}_${otherIdx}`);
+                                      startRowDrag(e, `settings_other_${idx}_${otherIdx}`, toStr(other.name) || "Other", row.color);
+                                    }}
+                                    onDragEnd={() => {
+                                      setOtherDrag(null);
+                                      endRowDrag();
+                                      if (otherDragMovedRef.current) {
+                                        otherDragMovedRef.current = false;
+                                        triggerAutosaveAfterRowDrop();
+                                      }
+                                    }}
+                                    className={gripClass}
+                                    title="Drag to reorder"
+                                  >
+                                    <GripVertical size={15} />
+                                  </button>
                                   <button
                                     type="button"
                                     onClick={() => updateHardwareJsonList(idx, "otherJson", (items) => items.filter((_, i) => i !== otherIdx))}
@@ -7924,7 +8032,7 @@ export default function CompanySettingsPage() {
                                     <X size={15} />
                                   </button>
                                   <input
-                                    value={toStr(other.name)}
+                                    value={String(other.name ?? "")}
                                     onChange={(e) =>
                                       updateHardwareJsonList(idx, "otherJson", (items) =>
                                         items.map((v, i) => (i === otherIdx ? { ...v, name: e.target.value } : v)),

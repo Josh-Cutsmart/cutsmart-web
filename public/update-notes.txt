@@ -23,6 +23,7 @@ whatsNew: [
 
 <u><b>Projects</b></u>
 <ul>
+<li>Redesigned Production <b>Order</b> page — your hardware brand (in its own colour) with <b>Drawers</b>, <b>Hinges</b> and <b>Other</b> picked from Company Settings → Hardware, a separate <b>Misc</b> list for anything else, and Boards To Order</li>
 <li>New <b>Lacquer</b> column (m²) next to Edge Tape in the Design tab's Product container — faces plus clashed edges, for Lacquer (1 side) and (2 side) products</li>
 <li>Company Wrapped's lacquer total uses the same calculation</li>
 <li>New <b>Client Portal</b> button in the Design tab once something has been shared with the client</li>
@@ -47,12 +48,15 @@ whatsNew: [
 <li>Removing a staff member lets you choose what to hand over to someone else — projects, contacts, leads and calendar events — and nothing is deleted</li>
 <li>Contacts the person receiving them already has (same email, phone or name) aren't handed over twice</li>
 <li>Deleting a tag now asks for confirmation</li>
+<li>Hardware: drag Hinges and Other items to reorder them, like Drawers</li>
+<li>Hardware: Drawer, Hinge and Other names can have spaces in them again</li>
 <li>Mobile: every section fits the screen, and the settings tabs scroll sideways</li>
 </ul>
 
 <u><b>Client Portal</b></u>
 <ul>
 <li>The whole client portal now works on phones</li>
+<li>Desktop: the Client Portal button opens it in a normal browser tab again, not a separate window</li>
 <li>The Quote and Specifications sheets fit the screen, with pinch to zoom</li>
 <li>An easy list of the Yes / No questions above the Specifications sheet on phones</li>
 </ul>

@@ -536,7 +536,7 @@ type HardwareDrawerType = {
   hardwareLengths: number[];
   spaceRequirement: number | null;
 };
-type HardwareTypeRow = { name: string; isDefault: boolean; drawers: HardwareDrawerType[]; hinges: string[]; other: string[] };
+type HardwareTypeRow = { name: string; color: string; isDefault: boolean; drawers: HardwareDrawerType[]; hinges: string[]; other: string[] };
 type SheetSizeOption = { h: string; w: string; isDefault: boolean };
 type BoardEdgingMemoryRow = { value: string; count: number };
 type BoardColourMemoryRow = { value: string; count: number; edgings?: BoardEdgingMemoryRow[] };
@@ -959,15 +959,20 @@ function toStr(value: unknown, fallback = "") {
 }
 
 // Opens the client hub link as an ordinary new TAB — shared by the Quote and Specs "Client Portal"
-// buttons. Not window.open(url, "_blank", "noopener,noreferrer"): passing ANY features string as
-// the third argument (even one that's really just security flags, not sizing) is what makes
-// browsers open it as a separate, chromeless popup WINDOW instead of a tab (same root cause as the
-// print popup's own earlier fix). A plain <a target="_blank" rel="noopener noreferrer"> click gets
-// the same noopener/noreferrer protection via the rel attribute instead — but it has to actually be
-// attached to the document first: a detached anchor's programmatic .click() isn't reliably treated
-// the same as a genuine user click by every browser for target="_blank" specifically, and can fall
-// back to the same popup-style handling this is meant to avoid. Removed right after, same as the
-// existing file-download helpers elsewhere in this file that already follow this exact pattern.
+// buttons and the Design tab's own. Not window.open(url, "_blank", "noopener,noreferrer"): passing
+// ANY features string as the third argument (even one that's really just security flags, not
+// sizing) is what makes browsers open it as a separate, chromeless popup WINDOW instead of a tab
+// (same root cause as the print popup's own earlier fix). The anchor has to actually be attached to
+// the document first: a detached anchor's programmatic .click() isn't reliably treated the same as
+// a genuine user click by every browser for target="_blank" specifically. Removed right after, same
+// as the existing file-download helpers elsewhere in this file that already follow this pattern.
+//
+// rel="opener" (not "noopener noreferrer"): if CutSmart has ever been installed as an app on the
+// computer (the main app, or the Calendar app — both cover the whole site), desktop Chrome
+// "captures" a new tab that has no opener and opens it in the installed app's own standalone window
+// instead. A tab that keeps its opener isn't captured, so it stays an ordinary browser tab. (Every
+// target="_blank" link is noopener by default now, hence spelling "opener" out.) The portal is this
+// same site's own page, so there's nothing to protect from the opener link.
 function openClientHubInNewTab(projectId: string) {
   const a = document.createElement("a");
   // ?staffPreview=1 marks this specific link as a STAFF-opened preview — never present on the
@@ -978,7 +983,7 @@ function openClientHubInNewTab(projectId: string) {
   // whether to show a staff-only "exit" button back to the app, hidden from real clients.
   a.href = `${window.location.origin}/client/hub/${projectId}?staffPreview=1`;
   a.target = "_blank";
-  a.rel = "noopener noreferrer";
+  a.rel = "opener";
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -4063,6 +4068,7 @@ function normalizeHardwareRows(raw: unknown): HardwareTypeRow[] {
         .filter(Boolean);
       return {
         name,
+        color: toStr(item.color),
         isDefault: Boolean(item.default),
         drawers: normalizeDrawerTypes(item.drawers),
         hinges,
@@ -8099,6 +8105,9 @@ export default function ProjectDetailsPage() {
   const orderMiscDraftByCategoryRef = useRef(orderMiscDraftByCategory);
   const [orderHingeRowsByCategory, setOrderHingeRowsByCategory] = useState<Record<string, OrderHingeRow[]>>({});
   const orderHingeRowsByCategoryRef = useRef(orderHingeRowsByCategory);
+  const [orderOtherRowsByCategory, setOrderOtherRowsByCategory] = useState<Record<string, OrderHingeRow[]>>({});
+  const orderOtherRowsByCategoryRef = useRef(orderOtherRowsByCategory);
+  const [hoveredOrderDeleteRowId, setHoveredOrderDeleteRowId] = useState("");
   const projectImagesInputRef = useRef<HTMLInputElement | null>(null);
   const projectFilesInputRef = useRef<HTMLInputElement | null>(null);
   const projectImageViewerCommentsScrollRef = useRef<HTMLDivElement | null>(null);
@@ -16178,8 +16187,8 @@ export default function ProjectDetailsPage() {
           if (!lineValue || typeof lineValue !== "object" || Array.isArray(lineValue)) continue;
           const lineObj = lineValue as Record<string, unknown>;
           categoryRows[String(lineKey || "").trim().toLowerCase()] = {
-            name: toStr(lineObj.name),
-            notes: toStr(lineObj.notes),
+            name: String(lineObj.name ?? ""),
+            notes: String(lineObj.notes ?? ""),
             qty: toStr(lineObj.qty),
             deleted: Boolean(lineObj.deleted),
           };
@@ -16206,6 +16215,24 @@ export default function ProjectDetailsPage() {
       }
     }
     setOrderHingeRowsByCategory(hingeRowsByCategory);
+    const otherRowsRaw = raw.orderOtherRowsByCategory;
+    const otherRowsByCategory: Record<string, OrderHingeRow[]> = {};
+    if (otherRowsRaw && typeof otherRowsRaw === "object" && !Array.isArray(otherRowsRaw)) {
+      for (const [categoryKey, categoryValue] of Object.entries(otherRowsRaw as Record<string, unknown>)) {
+        if (!Array.isArray(categoryValue)) continue;
+        otherRowsByCategory[String(categoryKey || "").trim().toLowerCase()] = categoryValue
+          .filter((row) => row && typeof row === "object")
+          .map((row) => {
+            const item = row as Record<string, unknown>;
+            return {
+              id: toStr(item.id) || `ord_other_${Math.random().toString(36).slice(2, 8)}`,
+              name: toStr(item.name),
+              qty: toStr(item.qty),
+            };
+          });
+      }
+    }
+    setOrderOtherRowsByCategory(otherRowsByCategory);
   }, [project?.id, boardThicknessOptions, boardFinishOptions, sheetSizeOptions, hardwareRows]);
   useEffect(() => {
     orderMiscDraftByCategoryRef.current = orderMiscDraftByCategory;
@@ -16213,6 +16240,9 @@ export default function ProjectDetailsPage() {
   useEffect(() => {
     orderHingeRowsByCategoryRef.current = orderHingeRowsByCategory;
   }, [orderHingeRowsByCategory]);
+  useEffect(() => {
+    orderOtherRowsByCategoryRef.current = orderOtherRowsByCategory;
+  }, [orderOtherRowsByCategory]);
 
   useEffect(() => {
     return () => {
@@ -18171,12 +18201,21 @@ export default function ProjectDetailsPage() {
     return ok;
   };
 
+  // The Order page's three lists (Hinges, Other, Misc) each save the whole projectSettings map —
+  // so every one of those saves carries the latest copy of all three (from their refs), and two
+  // quick edits in different lists can't undo each other's save.
+  const orderSettingsWithLatestLists = (currentSettings: Record<string, unknown>): Record<string, unknown> => ({
+    ...currentSettings,
+    orderMiscDraftByCategory: orderMiscDraftByCategoryRef.current,
+    orderHingeRowsByCategory: orderHingeRowsByCategoryRef.current,
+    orderOtherRowsByCategory: orderOtherRowsByCategoryRef.current,
+  });
   const persistOrderMiscDraft = async (nextByCategory: Record<string, Record<string, OrderMiscDraftRow>>) => {
     if (!project) return false;
     const beforeByCategory = orderMiscDraftByCategory;
     const currentSettings = (project.projectSettings ?? {}) as Record<string, unknown>;
     const nextSettings: Record<string, unknown> = {
-      ...currentSettings,
+      ...orderSettingsWithLatestLists(currentSettings),
       orderMiscDraftByCategory: nextByCategory,
     };
     const ok = await updateProjectPatch(project, {
@@ -18215,7 +18254,7 @@ export default function ProjectDetailsPage() {
     const beforeByCategory = orderHingeRowsByCategory;
     const currentSettings = (project.projectSettings ?? {}) as Record<string, unknown>;
     const nextSettings: Record<string, unknown> = {
-      ...currentSettings,
+      ...orderSettingsWithLatestLists(currentSettings),
       orderHingeRowsByCategory: nextByCategory,
     };
     const ok = await updateProjectPatch(project, {
@@ -18268,6 +18307,40 @@ export default function ProjectDetailsPage() {
         for (const [key, { display, delta }] of hingeQtyDeltaByName) {
           if (!delta) continue;
           void bumpCompanyStatLeaderboard(project.companyId, "hingeUsage", "hingeUsageDisplay", key, display, delta);
+        }
+      }
+    }
+    return ok;
+  };
+
+  const persistOrderOtherDraft = async (nextByCategory: Record<string, OrderHingeRow[]>) => {
+    if (!project) return false;
+    const beforeByCategory = orderOtherRowsByCategory;
+    const currentSettings = (project.projectSettings ?? {}) as Record<string, unknown>;
+    const nextSettings: Record<string, unknown> = {
+      ...orderSettingsWithLatestLists(currentSettings),
+      orderOtherRowsByCategory: nextByCategory,
+    };
+    const ok = await updateProjectPatch(project, {
+      projectSettings: nextSettings,
+      projectSettingsJson: JSON.stringify(nextSettings),
+    });
+    if (ok) {
+      setProject({ ...project, projectSettings: nextSettings });
+      const categoryKeys = new Set([...Object.keys(beforeByCategory), ...Object.keys(nextByCategory)]);
+      for (const category of categoryKeys) {
+        const beforeById = new Map((beforeByCategory[category] ?? []).map((row) => [row.id, row]));
+        const nextById = new Map((nextByCategory[category] ?? []).map((row) => [row.id, row]));
+        for (const [id, row] of nextById) {
+          const prevRow = beforeById.get(id);
+          if (!prevRow) {
+            if (row.name || row.qty) logProjectChange(`Order Other (${category}) — Added: ${row.name || id}${row.qty ? ` x${row.qty}` : ""}`);
+          } else if (String(prevRow.qty || "") !== String(row.qty || "") || String(prevRow.name || "") !== String(row.name || "")) {
+            logProjectChange(`Order Other (${category} — ${row.name || prevRow.name || id}) — Qty: ${prevRow.qty || "-"} → ${row.qty || "-"}`);
+          }
+        }
+        for (const [id, prevRow] of beforeById) {
+          if (!nextById.has(id) && (prevRow.name || prevRow.qty)) logProjectChange(`Order Other (${category}) — Removed: ${prevRow.name || id}`);
         }
       }
     }
@@ -24578,22 +24651,78 @@ export default function ProjectDetailsPage() {
   // Button + dropdown menu for picking the nesting machine (replaces a plain <select> so it can
   // match the app's other top-bar menu buttons, e.g. CNC's own Export button/menu).
   const [nestingMachineMenuOpen, setNestingMachineMenuOpen] = useState(false);
+  const [nestingMachineMenuPos, setNestingMachineMenuPos] = useState<{ left: number; top: number; width: number } | null>(null);
   const nestingMachineMenuRef = useRef<HTMLDivElement | null>(null);
+  const nestingMachineMenuPanelRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!nestingMachineMenuOpen) return;
     const onDocPointerDown = (event: PointerEvent) => {
       const target = event.target as Node | null;
       if (!target) return;
-      if (nestingMachineMenuRef.current?.contains(target)) return;
+      if (nestingMachineMenuRef.current?.contains(target) || nestingMachineMenuPanelRef.current?.contains(target)) return;
       setNestingMachineMenuOpen(false);
       // That press only closes the menu — it doesn't also act on what it landed on.
       swallowNextClick();
     };
+    const onResize = () => setNestingMachineMenuOpen(false);
     document.addEventListener("pointerdown", onDocPointerDown);
+    window.addEventListener("resize", onResize);
     return () => {
       document.removeEventListener("pointerdown", onDocPointerDown);
+      window.removeEventListener("resize", onResize);
     };
   }, [nestingMachineMenuOpen]);
+  // The menu is portalled to <body> (fixed, just under its button) so it sits over everything —
+  // inside the Nesting top bar it was capped by the bar's own layer, and the band under the bar
+  // painted over it. Styled like the CNC Cutlist window's Export menu.
+  const toggleNestingMachineMenu = (button: HTMLElement) => {
+    if (nestingMachineMenuOpen) {
+      setNestingMachineMenuOpen(false);
+      return;
+    }
+    const rect = button.getBoundingClientRect();
+    const width = Math.max(130, Math.round(rect.width));
+    setNestingMachineMenuPos({ left: Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8)), top: rect.bottom + 6, width });
+    setNestingMachineMenuOpen(true);
+  };
+  const nestingMachineMenuPortal =
+    nestingMachineMenuOpen && nestingMachineMenuPos && typeof document !== "undefined"
+      ? createPortal(
+          <div
+            ref={nestingMachineMenuPanelRef}
+            className="fixed z-[2147483647] overflow-hidden rounded-[10px] border shadow-[0_12px_30px_rgba(15,23,42,0.14)]"
+            style={{
+              left: nestingMachineMenuPos.left,
+              top: nestingMachineMenuPos.top,
+              width: nestingMachineMenuPos.width,
+              borderColor: "var(--glass-border)",
+              backgroundColor: "var(--glass-modal-bg)",
+              backdropFilter: "blur(16px) saturate(200%)",
+              WebkitBackdropFilter: "blur(16px) saturate(200%)",
+            }}
+          >
+            {nestingEligibleMachines.map((m, index) => (
+              <button
+                key={m.id}
+                type="button"
+                onClick={() => {
+                  setSelectedNestingMachineIdRaw(m.id);
+                  setNestingMachineMenuOpen(false);
+                }}
+                // The machine in use is just shown in blue text.
+                className={`flex h-9 w-full items-center px-3 text-left text-[12px] font-semibold transition-colors hover:bg-[var(--panel-muted)] ${index > 0 ? "border-t" : ""}`}
+                style={{
+                  borderColor: "var(--glass-border)",
+                  color: m.id === selectedNestingMachineId ? "var(--brand-strong)" : "var(--text-main)",
+                }}
+              >
+                <span className="truncate">{m.name}</span>
+              </button>
+            ))}
+          </div>,
+          document.body,
+        )
+      : null;
 
   const nestingSettings = useMemo(() => {
     // sheetHeight/sheetWidth here are ONLY ever the fallback parseBoardSize falls back to when a
@@ -31891,59 +32020,38 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   const orderSelectedHardwareRow = hardwareRows.find(
     (row) => row.name.toLowerCase() === orderSelectedHardwareCategoryKey,
   );
+  // The project's hardware brand (Production > Hardware), themed in its Company Settings colour.
+  const orderHardwareName = String(orderSelectedHardwareRow?.name || productionForm.hardware.hardwareCategory || "").trim();
+  const orderHardwareColor = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(String(orderSelectedHardwareRow?.color || "").trim())
+    ? String(orderSelectedHardwareRow?.color).trim()
+    : "#7D99B3";
   const orderHingeOptions = orderSelectedHardwareRow?.hinges ?? [];
+  const orderOtherOptions = orderSelectedHardwareRow?.other ?? [];
   const orderHingeRows = orderHingeRowsByCategory[orderSelectedHardwareCategoryKey] ?? [];
+  const orderOtherRows = orderOtherRowsByCategory[orderSelectedHardwareCategoryKey] ?? [];
+  const orderHingeQtyTotal = orderHingeRows.reduce((sum, row) => sum + (Number(row.qty) || 0), 0);
+  const orderOtherQtyTotal = orderOtherRows.reduce((sum, row) => sum + (Number(row.qty) || 0), 0);
   const orderMiscDraftForCategory = orderMiscDraftByCategory[orderSelectedHardwareCategoryKey] ?? {};
+  // Misc is typed in by hand. (It used to list the hardware's Other items automatically too — those
+  // have their own list now; any an older project actually filled in still show here, named.)
   const orderMiscLines = (() => {
     type Line = { key: string; name: string; notes: string; qty: string };
-    const names = orderSelectedHardwareRow?.other ?? [];
+    const otherNameByKey = new Map(orderOtherOptions.map((name) => [name.trim().toLowerCase(), name.trim()]));
     const out: Line[] = [];
-    const seen = new Set<string>();
-    for (const raw of names) {
-      const fallbackName = String(raw || "").trim();
-      if (!fallbackName) continue;
-      const key = fallbackName.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const draft = orderMiscDraftForCategory[key];
-      if (draft?.deleted) continue;
-      out.push({
-        key,
-        name: String(draft?.name || "").trim(),
-        notes: String(draft?.notes || "").trim(),
-        qty: String(draft?.qty || "").trim(),
-      });
-    }
     for (const [keyRaw, draft] of Object.entries(orderMiscDraftForCategory)) {
       const key = String(keyRaw || "").trim().toLowerCase();
-      if (!key || seen.has(key)) continue;
-      if (draft?.deleted) continue;
-      seen.add(key);
-      out.push({
-        key,
-        name: String(draft?.name || "").trim(),
-        notes: String(draft?.notes || "").trim(),
-        qty: String(draft?.qty || "").trim(),
-      });
+      if (!key || !draft || draft.deleted) continue;
+      const name = String(draft.name ?? "");
+      const notes = String(draft.notes ?? "");
+      const qty = String(draft.qty ?? "").trim();
+      const isManual = key.startsWith("misc_custom_");
+      if (!isManual && !name.trim() && !notes.trim() && !qty) continue;
+      out.push({ key, name: name || (isManual ? "" : otherNameByKey.get(key) ?? keyRaw), notes, qty });
     }
-    return out.sort((a, b) => a.name.localeCompare(b.name));
+    // Keys sort in the order lines were added (misc_custom_<time>), and never move while typing.
+    return out.sort((a, b) => a.key.localeCompare(b.key));
   })();
-  const onAddOrderHingeRow = () => {
-    setOrderHingeRowsByCategory((prev) => {
-      const current = prev[orderSelectedHardwareCategoryKey] ?? [];
-      return {
-        ...prev,
-        [orderSelectedHardwareCategoryKey]: [
-          ...current,
-          {
-            id: `ord_hinge_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
-            name: "",
-            qty: "",
-          },
-        ],
-      };
-    });
-  };
+  const orderMiscQtyTotal = orderMiscLines.reduce((sum, line) => sum + (Number(line.qty) || 0), 0);
 
   const startInitialCellEdit = (row: CutlistRow, key: CutlistEditableField) => {
     if (key === "grain") {
@@ -32265,38 +32373,34 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     if (order == null) return { display: "none" };
     return { order: order * 10 + offset };
   };
-  const onUpdateOrderHingeRow = (rowId: string, patch: Partial<OrderHingeRow>) => {
-    setOrderHingeRowsByCategory((prev) => {
-      const current = prev[orderSelectedHardwareCategoryKey] ?? [];
-      return {
-        ...prev,
-        [orderSelectedHardwareCategoryKey]: current.map((row) => (row.id === rowId ? { ...row, ...patch } : row)),
-      };
-    });
+  type OrderLineKind = "hinges" | "other";
+  const updateOrderLineRows = (kind: OrderLineKind, update: (rows: OrderHingeRow[]) => OrderHingeRow[], save: boolean) => {
+    const ref = kind === "hinges" ? orderHingeRowsByCategoryRef : orderOtherRowsByCategoryRef;
+    const prev = ref.current;
+    const next = { ...prev, [orderSelectedHardwareCategoryKey]: update(prev[orderSelectedHardwareCategoryKey] ?? []) };
+    ref.current = next;
+    if (kind === "hinges") {
+      setOrderHingeRowsByCategory(next);
+      if (save) void persistOrderHingeDraft(next);
+    } else {
+      setOrderOtherRowsByCategory(next);
+      if (save) void persistOrderOtherDraft(next);
+    }
   };
-  const onOrderHingeTypeChange = async (rowId: string, value: string) => {
-    const prev = orderHingeRowsByCategoryRef.current;
-    const current = prev[orderSelectedHardwareCategoryKey] ?? [];
-    const nextRows = current.map((row) => (row.id === rowId ? { ...row, name: value } : row));
-    const next = {
-      ...prev,
-      [orderSelectedHardwareCategoryKey]: nextRows,
-    };
-    orderHingeRowsByCategoryRef.current = next;
-    setOrderHingeRowsByCategory(next);
-    await persistOrderHingeDraft(next);
+  // A new line saves once something is picked or a quantity is entered.
+  const onAddOrderLineRow = (kind: OrderLineKind) => {
+    const id = `${kind === "hinges" ? "ord_hinge" : "ord_other"}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    updateOrderLineRows(kind, (rows) => [...rows, { id, name: "", qty: "" }], false);
   };
-  const onOrderHingeQtyBlur = async (rowId: string, value: string) => {
-    const prev = orderHingeRowsByCategoryRef.current;
-    const current = prev[orderSelectedHardwareCategoryKey] ?? [];
-    const nextRows = current.map((row) => (row.id === rowId ? { ...row, qty: value } : row));
-    const next = {
-      ...prev,
-      [orderSelectedHardwareCategoryKey]: nextRows,
-    };
-    orderHingeRowsByCategoryRef.current = next;
-    setOrderHingeRowsByCategory(next);
-    await persistOrderHingeDraft(next);
+  const onOrderLineNameChange = (kind: OrderLineKind, rowId: string, value: string) => {
+    updateOrderLineRows(kind, (rows) => rows.map((row) => (row.id === rowId ? { ...row, name: value } : row)), true);
+  };
+  const onOrderLineQtyChange = (kind: OrderLineKind, rowId: string, value: string, save: boolean) => {
+    updateOrderLineRows(kind, (rows) => rows.map((row) => (row.id === rowId ? { ...row, qty: value } : row)), save);
+  };
+  const onDeleteOrderLineRow = (kind: OrderLineKind, rowId: string) => {
+    setHoveredOrderDeleteRowId((prev) => (prev === rowId ? "" : prev));
+    updateOrderLineRows(kind, (rows) => rows.filter((row) => row.id !== rowId), true);
   };
   const onOrderMiscDraftChange = (lineKey: string, patch: Partial<OrderMiscDraftRow>) => {
     const categoryKey = orderSelectedHardwareCategoryKey;
@@ -32340,6 +32444,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     await persistOrderMiscDraft(next);
   };
   const onDeleteOrderMiscRow = async (lineKey: string) => {
+    setHoveredOrderDeleteRowId((prev) => (prev === lineKey ? "" : prev));
     const categoryKey = orderSelectedHardwareCategoryKey;
     const prev = orderMiscDraftByCategoryRef.current;
     const categoryRows = { ...(prev[categoryKey] ?? {}) };
@@ -32352,18 +32457,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     orderMiscDraftByCategoryRef.current = next;
     setOrderMiscDraftByCategory(next);
     await persistOrderMiscDraft(next);
-  };
-  const onDeleteOrderHingeRow = async (rowId: string) => {
-    const prev = orderHingeRowsByCategoryRef.current;
-    const current = prev[orderSelectedHardwareCategoryKey] ?? [];
-    const nextRows = current.filter((row) => row.id !== rowId);
-    const next = {
-      ...prev,
-      [orderSelectedHardwareCategoryKey]: nextRows,
-    };
-    orderHingeRowsByCategoryRef.current = next;
-    setOrderHingeRowsByCategory(next);
-    await persistOrderHingeDraft(next);
   };
   const onSaveAndBackFromCutlist = async () => {
     // See saveAndBackFromInitialMeasure's own identical comment — only show the close summary when
@@ -35422,6 +35515,139 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       : null;
 
   if (isOrderFullscreen) {
+    // Glass containers like the rest of Production. The hardware container is themed in its brand's
+    // own colour (Company Settings > Hardware); Misc and Boards stay neutral.
+    const orderGlassSectionStyle: React.CSSProperties = {
+      borderColor: "var(--glass-border)",
+      backgroundColor: "var(--glass-bg-strong)",
+      backdropFilter: "blur(20px) saturate(180%)",
+      WebkitBackdropFilter: "blur(20px) saturate(180%)",
+      boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
+    };
+    const orderHwTint = (percent: number) => `color-mix(in srgb, ${orderHardwareColor} ${percent}%, transparent)`;
+    const orderHwOnColor = isLightHex(orderHardwareColor) ? "#0F172A" : "#FFFFFF";
+    const orderHardwareSectionStyle: React.CSSProperties = {
+      ...orderGlassSectionStyle,
+      borderColor: `color-mix(in srgb, ${orderHardwareColor} 45%, var(--glass-border))`,
+      backgroundImage: `linear-gradient(180deg, ${orderHwTint(9)} 0%, transparent 65%)`,
+    };
+    const orderInputStyle: React.CSSProperties = { borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" };
+    const orderReadRowStyle: React.CSSProperties = { borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted, color: "var(--text-main)" };
+    const orderNeutralPillStyle: React.CSSProperties = { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: projectPalette.textSoft };
+    const orderHwPillStyle: React.CSSProperties = { borderColor: orderHwTint(45), backgroundColor: orderHwTint(16), color: "var(--text-main)" };
+    const orderEmptyNote = (text: string) => (
+      <p className="rounded-[10px] border border-dashed px-3 py-3 text-center text-[12px]" style={{ borderColor: projectPalette.border, color: projectPalette.textMuted }}>
+        {text}
+      </p>
+    );
+    const orderDeleteButton = (rowId: string, onDelete: () => void) => (
+      <button
+        type="button"
+        disabled={productionReadOnly}
+        onClick={onDelete}
+        onMouseEnter={() => setHoveredOrderDeleteRowId(rowId)}
+        onMouseLeave={() => setHoveredOrderDeleteRowId((prev) => (prev === rowId ? "" : prev))}
+        className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border text-white hover:brightness-95 disabled:opacity-55"
+        style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
+        title="Remove"
+        aria-label="Remove"
+      >
+        <X size={13} strokeWidth={2.8} />
+      </button>
+    );
+    const orderAddButton = (label: string, onAdd: () => void, themed: boolean) => (
+      <button
+        type="button"
+        disabled={productionReadOnly}
+        onClick={onAdd}
+        className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[9px] border hover:brightness-95 disabled:opacity-55"
+        style={
+          themed
+            ? { backgroundColor: orderHardwareColor, borderColor: `color-mix(in srgb, ${orderHardwareColor} 80%, #000000)`, color: orderHwOnColor }
+            : { backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)", color: "#FFFFFF" }
+        }
+        title={label}
+        aria-label={label}
+      >
+        <Plus size={15} strokeWidth={2.6} />
+      </button>
+    );
+    // One of the hardware container's three parts (Drawers / Hinges / Other).
+    const orderHardwarePart = (opts: { title: string; badge?: string; qtyTotal: number; addLabel?: string; onAdd?: () => void; first?: boolean; children: React.ReactNode }) => (
+      <div className={`space-y-2 px-3 py-3 ${opts.first ? "" : "border-t"}`} style={opts.first ? undefined : { borderColor: orderHwTint(28) }}>
+        <div className="flex min-h-7 items-center justify-between gap-2">
+          <div className="inline-flex min-w-0 items-center gap-2">
+            <span className="h-4 w-[3px] shrink-0 rounded-full" style={{ backgroundColor: orderHardwareColor }} />
+            <p className="shrink-0 text-[12px] font-bold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
+              {opts.title}
+            </p>
+            {opts.badge ? (
+              <span className="min-w-0 truncate rounded-[999px] border px-2 py-[1px] text-[11px] font-semibold" style={orderNeutralPillStyle}>
+                {opts.badge}
+              </span>
+            ) : null}
+          </div>
+          <div className="inline-flex shrink-0 items-center gap-2">
+            <span className="rounded-[999px] border px-2 py-[1px] text-[11px] font-bold" style={orderHwPillStyle}>
+              {opts.qtyTotal} Qty
+            </span>
+            {opts.onAdd && opts.addLabel ? orderAddButton(opts.addLabel, opts.onAdd, true) : null}
+          </div>
+        </div>
+        {opts.children}
+      </div>
+    );
+    // Hinges / Other lines: a pick from this project's hardware brand, and a quantity.
+    const orderLineGrid = "28px minmax(0,1fr) 72px";
+    const orderLineList = (kind: OrderLineKind, rows: OrderHingeRow[], options: string[], itemLabel: string, emptyText: string) =>
+      rows.length === 0 ? (
+        orderEmptyNote(emptyText)
+      ) : (
+        <div className="space-y-1.5">
+          <div className="grid items-center gap-2 text-[11px] font-bold" style={{ color: projectPalette.textMuted, gridTemplateColumns: orderLineGrid }}>
+            <p />
+            <p>{itemLabel}</p>
+            <p className="text-center">Qty</p>
+          </div>
+          {rows.map((line) => {
+            const lineOptions = line.name && !options.includes(line.name) ? [line.name, ...options] : options;
+            return (
+              <div key={line.id} className="row-glow-anchor grid items-center gap-2" style={{ gridTemplateColumns: orderLineGrid }}>
+                <div className="row-glow" data-active={hoveredOrderDeleteRowId === line.id} />
+                {orderDeleteButton(line.id, () => onDeleteOrderLineRow(kind, line.id))}
+                <GlassSelectDropdown
+                  fullWidth
+                  disabled={productionReadOnly || !lineOptions.length}
+                  value={line.name}
+                  options={lineOptions}
+                  getLabel={(value) => value || `Select ${itemLabel.toLowerCase()}`}
+                  onChange={(next) => onOrderLineNameChange(kind, line.id, next)}
+                  className="h-8 rounded-[8px] border px-2 text-[12px]"
+                  style={{ ...orderInputStyle, color: line.name ? "var(--text-main)" : projectPalette.textMuted }}
+                />
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  disabled={productionReadOnly}
+                  value={line.qty}
+                  placeholder="0"
+                  onChange={(e) => onOrderLineQtyChange(kind, line.id, e.target.value.replace(/\D+/g, ""), false)}
+                  onBlur={(e) => onOrderLineQtyChange(kind, line.id, e.target.value.replace(/\D+/g, ""), true)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") e.currentTarget.blur();
+                  }}
+                  className="h-8 w-full rounded-[8px] border px-2 text-center text-[12px] font-semibold outline-none"
+                  style={orderInputStyle}
+                />
+              </div>
+            );
+          })}
+        </div>
+      );
+    const orderHardwareLabel = orderHardwareName || "this hardware";
+    const orderDrawerType = String(productionForm.hardware.newDrawerType || "").trim();
+    const orderMiscGrid = isCompactProjectViewport ? "28px minmax(0,1fr) 64px" : "28px minmax(0,1fr) minmax(0,1.3fr) 72px";
+    const orderBoardGrid = isCompactProjectViewport ? "minmax(0,1fr) 56px" : "minmax(0,1.6fr) minmax(0,1fr) minmax(0,0.8fr) minmax(0,0.8fr) 64px";
     return (
       <ProtectedRoute>
         <div className="flex h-[100svh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
@@ -35473,277 +35699,234 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <button
                 type="button"
                 onClick={() => void onSaveAndBackFromOrder()}
-                className="inline-flex h-9 items-center gap-2 rounded-[10px] border border-[#C8DAFF] bg-[#EAF1FF] px-3 text-[12px] font-bold text-[#24589A] hover:bg-[#DFE9FF]"
+                className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95"
+                style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
               >
                 <ArrowLeft size={14} />
                 Save & Back
               </button>
             )}
           </div>
-          <div className="min-h-0 flex-1 overflow-auto p-3 md:p-4" style={{ paddingTop: 56 }}>
-            <div className="flex h-full min-h-[calc(100svh-120px)] flex-col gap-3">
-              <div className="grid min-h-0 flex-1 gap-3">
-                <div className="grid min-h-0 gap-3 xl:grid-cols-3">
-                  <section className="flex h-[420px] min-h-0 flex-col overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
-                    <div className="flex h-[46px] items-center justify-between border-b border-[#DCE3EC] bg-[#F8FAFC] px-4">
-                      <p className="text-[13px] font-medium uppercase tracking-[1px] text-[#12345B]">Drawers</p>
-                      <div className="inline-flex items-center gap-2">
-                        <span className="rounded-[999px] border border-[#D6DEE9] bg-[#EEF2F7] px-2 py-[1px] text-[11px] font-bold text-[#3A506F]">
-                          {orderDrawerGroupedRows.length} Groups
-                        </span>
-                        <span className="rounded-[999px] border border-[#D6DEE9] bg-[#EEF2F7] px-2 py-[1px] text-[11px] font-bold text-[#3A506F]">
-                          {orderDrawerQtyTotal} Qty
-                        </span>
-                      </div>
+          <div className="min-h-0 flex-1 overflow-auto px-3 pb-8 md:px-4" style={{ paddingTop: 72 }}>
+            <div className="mx-auto grid w-full max-w-[1500px] items-start gap-4 xl:grid-cols-2">
+              <div className="grid min-w-0 gap-4">
+                <section className="min-w-0 overflow-visible rounded-[18px] border" style={orderHardwareSectionStyle}>
+                  <div
+                    className="flex h-[50px] items-center justify-between gap-3 rounded-t-[18px] border-b px-4"
+                    style={{ borderColor: orderHwTint(35), backgroundColor: orderHwTint(20) }}
+                  >
+                    <div className="inline-flex min-w-0 items-center gap-2.5">
+                      <span
+                        className="h-3 w-3 shrink-0 rounded-full"
+                        style={{ backgroundColor: orderHardwareColor, boxShadow: `0 0 0 3px ${orderHwTint(25)}` }}
+                      />
+                      <p className="truncate text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                        {orderHardwareName || "Hardware"}
+                      </p>
                     </div>
-                    <div className="min-h-0 flex-1 overflow-auto">
-                      {orderDrawerGroupedRows.length === 0 ? (
-                        <p className="px-3 py-6 text-center text-[12px] font-semibold text-[#64748B]">No drawer rows.</p>
-                      ) : (
-                        <table className="w-full text-left text-[12px]">
-                          <thead className="text-[#0F172A]" style={{ backgroundColor: "var(--panel-muted)" }}>
-                            <tr>
-                              <th className="px-3 py-2">Hardware</th>
-                              <th className="px-2 py-2">Drawer Type</th>
-                              <th className="px-2 py-2 text-center">Length</th>
-                              <th className="px-2 py-2 text-center">Back Height</th>
-                              <th className="px-2 py-2 text-center">Qty</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {orderDrawerGroupedRows.map((group, idx) => (
-                              <tr key={`order_drawer_row_${group.key}`} className={`${idx % 2 ? "bg-[#F8FAFD]" : "bg-white"} border-t border-[#E4E7EE]`}>
-                                <td className="px-3 py-[7px] font-semibold text-[#1F2937]">{group.hardware || "-"}</td>
-                                <td className="px-2 py-[7px] font-semibold text-[#1F2937]">{group.drawerType || "-"}</td>
-                                <td className="px-2 py-[7px] text-center text-[#334155]">{group.hardwareLength || "-"}</td>
-                                <td className="px-2 py-[7px] text-center text-[#334155]">{group.backHeight || "-"}</td>
-                                <td className="px-2 py-[7px] text-center font-bold text-[#0F172A]">{group.total}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      )}
-                    </div>
-                  </section>
-
-                  <section className="flex h-[420px] min-h-0 flex-col overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
-                    <div className="flex h-[46px] items-center justify-between border-b border-[#DCE3EC] bg-[#F8FAFC] px-4">
-                      <p className="text-[13px] font-medium uppercase tracking-[1px] text-[#12345B]">Hinges</p>
-                      <div className="inline-flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={onAddOrderHingeRow}
-                          className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] border border-[#A9DDBF] bg-[#EAF8F0] text-[16px] font-bold leading-none text-[#1F8A4C] hover:bg-[#DDF2E7]"
-                          title="Add hinge row"
-                        >
-                          <img
-                            src="/plus.png"
-                            alt="Add hinge row"
-                            className="block object-contain"
-                            style={{ width: 17, height: 17, filter: "invert(38%) sepia(31%) saturate(1592%) hue-rotate(101deg) brightness(94%) contrast(80%)" }}
-                            onError={(e) => {
-                              e.currentTarget.style.display = "none";
-                            }}
-                          />
-                        </button>
-                      </div>
-                    </div>
-                    <div className="min-h-0 flex-1 overflow-auto">
-                      {orderHingeRows.length === 0 ? (
-                        <p className="px-3 py-6 text-center text-[12px] font-semibold text-[#64748B]">No hinge rows.</p>
-                      ) : (
-                        <table className="w-full text-left text-[12px]">
-                          <thead className="text-[#0F172A]" style={{ backgroundColor: "var(--panel-muted)" }}>
-                            <tr>
-                              <th className="w-[38px] px-0 py-2 text-center"></th>
-                              <th className="px-3 py-2">Hinge Type</th>
-                              <th className="px-2 py-2 text-center">Qty</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {orderHingeRows.map((line, idx) => (
-                              <tr key={`order_hw_${line.id}`} className={`${idx % 2 ? "bg-[#F8FAFD]" : "bg-white"} border-t border-[#E4E7EE]`}>
-                                <td className="w-[38px] px-0 py-[7px] text-center align-middle">
-                                  <button
-                                    type="button"
-                                    onClick={() => void onDeleteOrderHingeRow(line.id)}
-                                    className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[11px] font-bold text-[#C62828] disabled:opacity-55"
-                                    title="Delete row"
-                                  >
-                                    <X size={15} className="mx-auto" strokeWidth={2.8} />
-                                  </button>
-                                </td>
-                                <td className="px-3 py-[7px]">
-                                  <GlassSelectDropdown
-                                    value={line.name}
-                                    options={["", ...orderHingeOptions]}
-                                    onChange={(next) => void onOrderHingeTypeChange(line.id, next)}
-                                    fullWidth
-                                    className="h-7 rounded-[8px] border border-[#CBD5E1] bg-white px-2 text-[12px] font-semibold text-[#1F2937]"
-                                  />
-                                </td>
-                                <td className="px-2 py-[7px] text-center">
-                                  <input
-                                    type="text"
-                                    inputMode="numeric"
-                                    value={line.qty ?? ""}
-                                    onChange={(e) => onUpdateOrderHingeRow(line.id, { qty: e.target.value.replace(/\D+/g, "") })}
-                                    onBlur={(e) => void onOrderHingeQtyBlur(line.id, e.target.value.replace(/\D+/g, ""))}
-                                    className="h-7 w-[68px] rounded-[8px] border border-[#CBD5E1] bg-white px-2 text-center text-[12px] font-bold text-[#0F172A] outline-none focus:border-[#93C5FD]"
-                                  />
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      )}
-                    </div>
-                  </section>
-
-                  <section className="flex h-[420px] min-h-0 flex-col overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
-                    <div className="flex h-[46px] items-center justify-between border-b border-[#DCE3EC] bg-[#F8FAFC] px-4">
-                      <p className="text-[13px] font-medium uppercase tracking-[1px] text-[#12345B]">Misc.</p>
-                      <div className="inline-flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => void onAddOrderMiscRow()}
-                          className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] border border-[#A9DDBF] bg-[#EAF8F0] hover:bg-[#DDF2E7]"
-                          title="Add misc row"
-                        >
-                          <img
-                            src="/plus.png"
-                            alt="Add misc row"
-                            className="block object-contain"
-                            style={{ width: 17, height: 17, filter: "invert(38%) sepia(31%) saturate(1592%) hue-rotate(101deg) brightness(94%) contrast(80%)" }}
-                            onError={(e) => {
-                              e.currentTarget.style.display = "none";
-                            }}
-                          />
-                        </button>
-                      </div>
-                    </div>
-                    <div className="min-h-0 flex-1 overflow-auto">
-                      {orderMiscLines.length === 0 ? (
-                        <p className="px-3 py-6 text-center text-[12px] font-semibold text-[#64748B]">No misc rows.</p>
-                      ) : (
-                        <table className="w-full table-fixed text-left text-[12px]">
-                          <colgroup>
-                            <col style={{ width: "38px" }} />
-                            <col />
-                            <col style={{ width: "50%" }} />
-                            <col style={{ width: "84px" }} />
-                          </colgroup>
-                          <thead className="text-[#0F172A]" style={{ backgroundColor: "var(--panel-muted)" }}>
-                            <tr>
-                              <th className="px-0 py-2 text-center"></th>
-                              <th className="px-3 py-2">Misc Item</th>
-                              <th className="px-2 py-2">Notes</th>
-                              <th className="px-2 py-2 text-center">Qty</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {orderMiscLines.map((line, idx) => (
-                              <tr key={`order_misc_${line.key}`} className={`${idx % 2 ? "bg-[#F8FAFD]" : "bg-white"} border-t border-[#E4E7EE]`}>
-                                <td className="w-[38px] px-0 py-[7px] text-center align-middle">
-                                  <button
-                                    type="button"
-                                    onClick={() => void onDeleteOrderMiscRow(line.key)}
-                                    className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[11px] font-bold text-[#C62828] disabled:opacity-55"
-                                    title="Delete row"
-                                  >
-                                    <X size={15} className="mx-auto" strokeWidth={2.8} />
-                                  </button>
-                                </td>
-                                <td className="px-3 py-[7px]">
-                                  <input
-                                    type="text"
-                                    value={line.name ?? ""}
-                                    onChange={(e) => onOrderMiscDraftChange(line.key, { name: e.target.value })}
-                                    onBlur={(e) => void onOrderMiscDraftBlur(line.key, { name: e.target.value })}
-                                    className="h-7 w-full rounded-[8px] border border-[#CBD5E1] bg-white px-2 text-[12px] font-semibold text-[#1F2937] outline-none focus:border-[#93C5FD]"
-                                  />
-                                </td>
-                                <td className="px-2 py-[7px]">
-                                  <input
-                                    type="text"
-                                    value={line.notes ?? ""}
-                                    onChange={(e) => onOrderMiscDraftChange(line.key, { notes: e.target.value })}
-                                    onBlur={(e) => void onOrderMiscDraftBlur(line.key, { notes: e.target.value })}
-                                    className="h-7 w-full rounded-[8px] border border-[#CBD5E1] bg-white px-2 text-[12px] text-[#1F2937] outline-none focus:border-[#93C5FD]"
-                                  />
-                                </td>
-                                <td className="px-2 py-[7px] text-center">
-                                  <input
-                                    type="text"
-                                    inputMode="numeric"
-                                    value={line.qty ?? ""}
-                                    onChange={(e) => onOrderMiscDraftChange(line.key, { qty: e.target.value.replace(/\D+/g, "") })}
-                                    onBlur={(e) => void onOrderMiscDraftBlur(line.key, { qty: e.target.value.replace(/\D+/g, "") })}
-                                    className="h-7 w-[68px] rounded-[8px] border border-[#CBD5E1] bg-white px-2 text-center text-[12px] font-bold text-[#0F172A] outline-none focus:border-[#93C5FD]"
-                                  />
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      )}
-                    </div>
-                  </section>
-                </div>
-
-                <section className="min-h-0 overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
-                  <div className="flex h-[46px] items-center justify-between border-b border-[#DCE3EC] bg-[#F8FAFC] px-4">
-                    <p className="text-[13px] font-medium uppercase tracking-[1px] text-[#12345B]">Boards To Order</p>
-                    <div className="inline-flex items-center gap-2">
-                      <span className="rounded-[999px] border border-[#D6DEE9] bg-[#EEF2F7] px-2 py-[1px] text-[11px] font-bold text-[#3A506F]">
-                        {orderBoardSummary.length} Rows
-                      </span>
-                      <span className="rounded-[999px] border border-[#D6DEE9] bg-[#EEF2F7] px-2 py-[1px] text-[11px] font-bold text-[#3A506F]">
-                        {formatPartCount(cutlistRows.length)}
-                      </span>
-                      <span className="rounded-[999px] border border-[#D6DEE9] bg-[#EEF2F7] px-2 py-[1px] text-[11px] font-bold text-[#3A506F]">
-                        {orderTotalSheetsRequired} Sheets
-                      </span>
-                    </div>
+                    <span className="shrink-0 text-[11px] font-bold uppercase tracking-[0.8px]" style={{ color: projectPalette.textMuted }}>
+                      Hardware
+                    </span>
                   </div>
-                  <div className="max-h-[calc(100svh-180px)] overflow-auto">
-                    <table className="w-full text-left text-[12px]">
-                      <thead className="text-[#0F172A]" style={{ backgroundColor: "var(--panel-muted)" }}>
-                        <tr>
-                          <th className="px-3 py-2">Board</th>
-                          <th className="px-2 py-2 text-center">Size</th>
-                          <th className="px-2 py-2 text-center">Thickness</th>
-                          <th className="px-2 py-2 text-center">Finish</th>
-                          <th className="px-2 py-2 text-center">Sheets</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {orderBoardSummary.map((row, idx) => (
-                          <tr key={`order_board_full_${row.id}`} className={`${idx % 2 ? "bg-[#F8FAFD]" : "bg-white"} border-t border-[#E4E7EE]`}>
-                            <td className="px-3 py-[7px] font-semibold text-[#1F2937]">{row.boardLabel}</td>
-                            <td className="px-2 py-[7px] text-center text-[#334155]">{row.boardSize}</td>
-                            <td className="px-2 py-[7px] text-center text-[#334155]">{row.thickness}</td>
-                            <td className="px-2 py-[7px] text-center text-[#334155]">{row.finish}</td>
-                            <td className="px-2 py-[7px] text-center">
-                              <span className="inline-flex min-w-[28px] justify-center rounded-[8px] border border-[#D6DEE9] bg-[#EEF2F7] px-2 py-[1px] font-bold text-[#2F4E68]">
-                                {row.sheetsRequired}
-                              </span>
-                            </td>
-                          </tr>
-                        ))}
-                        {orderBoardSummary.length === 0 && (
-                          <tr>
-                            <td colSpan={5} className="px-3 py-8 text-center text-[12px] font-semibold text-[#64748B]">
-                              No board order data yet.
-                            </td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
+
+                  {orderHardwarePart({
+                    title: "Drawers",
+                    badge: orderDrawerType || undefined,
+                    qtyTotal: orderDrawerQtyTotal,
+                    first: true,
+                    children:
+                      orderDrawerGroupedRows.length === 0 ? (
+                        orderEmptyNote("No drawers in the cutlist yet.")
+                      ) : (
+                        <div className="space-y-1.5">
+                          <div className="grid items-center gap-2 px-3 text-[11px] font-bold" style={{ color: projectPalette.textMuted, gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr) 56px" }}>
+                            <p>Length</p>
+                            <p>Back Height</p>
+                            <p className="text-center">Qty</p>
+                          </div>
+                          {orderDrawerGroupedRows.map((group) => (
+                            <div
+                              key={`order_drawer_row_${group.key}`}
+                              className="grid min-h-9 items-center gap-2 rounded-[10px] border px-3 py-1.5 text-[12px]"
+                              style={{ ...orderReadRowStyle, gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr) 56px" }}
+                            >
+                              <p className="truncate font-medium">{group.hardwareLength || "-"}</p>
+                              <p className="truncate">{group.backHeight || "-"}</p>
+                              <p className="text-center">
+                                <span className="inline-flex min-w-[32px] justify-center rounded-[8px] border px-2 py-[1px] font-bold" style={orderHwPillStyle}>
+                                  {group.total}
+                                </span>
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      ),
+                  })}
+
+                  {orderHardwarePart({
+                    title: "Hinges",
+                    qtyTotal: orderHingeQtyTotal,
+                    addLabel: "Add hinge",
+                    onAdd: () => onAddOrderLineRow("hinges"),
+                    children: orderLineList(
+                      "hinges",
+                      orderHingeRows,
+                      orderHingeOptions,
+                      "Hinge",
+                      orderHingeOptions.length
+                        ? "No hinges added yet."
+                        : `No hinges set up for ${orderHardwareLabel} yet — add them in Company Settings → Hardware.`,
+                    ),
+                  })}
+
+                  {orderHardwarePart({
+                    title: "Other",
+                    qtyTotal: orderOtherQtyTotal,
+                    addLabel: "Add other item",
+                    onAdd: () => onAddOrderLineRow("other"),
+                    children: orderLineList(
+                      "other",
+                      orderOtherRows,
+                      orderOtherOptions,
+                      "Item",
+                      orderOtherOptions.length
+                        ? "Nothing added yet."
+                        : `No other items set up for ${orderHardwareLabel} yet — add them in Company Settings → Hardware.`,
+                    ),
+                  })}
                 </section>
 
+                <section className="min-w-0 overflow-visible rounded-[18px] border" style={orderGlassSectionStyle}>
+                  <div className="flex h-[50px] items-center justify-between gap-3 rounded-t-[18px] border-b px-4" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
+                    <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Misc</p>
+                    <div className="inline-flex items-center gap-2">
+                      <span className="rounded-[999px] border px-2 py-[1px] text-[11px] font-bold" style={orderNeutralPillStyle}>
+                        {orderMiscQtyTotal} Qty
+                      </span>
+                      {orderAddButton("Add misc item", () => void onAddOrderMiscRow(), false)}
+                    </div>
+                  </div>
+                  <div className="p-3">
+                    {orderMiscLines.length === 0 ? (
+                      orderEmptyNote("Anything else to order — add it here.")
+                    ) : (
+                      <div className="space-y-1.5">
+                        <div className="grid items-center gap-2 text-[11px] font-bold" style={{ color: projectPalette.textMuted, gridTemplateColumns: orderMiscGrid }}>
+                          <p />
+                          <p>Item</p>
+                          {isCompactProjectViewport ? null : <p>Notes</p>}
+                          <p className="text-center">Qty</p>
+                        </div>
+                        {orderMiscLines.map((line) => (
+                          <div key={`order_misc_${line.key}`} className="row-glow-anchor grid items-center gap-2" style={{ gridTemplateColumns: orderMiscGrid }}>
+                            <div className="row-glow" data-active={hoveredOrderDeleteRowId === line.key} />
+                            {orderDeleteButton(line.key, () => void onDeleteOrderMiscRow(line.key))}
+                            <input
+                              type="text"
+                              disabled={productionReadOnly}
+                              value={line.name}
+                              placeholder="Item"
+                              onChange={(e) => onOrderMiscDraftChange(line.key, { name: e.target.value })}
+                              onBlur={(e) => void onOrderMiscDraftBlur(line.key, { name: e.target.value })}
+                              className="h-8 w-full min-w-0 rounded-[8px] border px-2 text-[12px] font-medium outline-none"
+                              style={orderInputStyle}
+                            />
+                            <input
+                              type="text"
+                              disabled={productionReadOnly}
+                              value={line.notes}
+                              placeholder="Notes"
+                              onChange={(e) => onOrderMiscDraftChange(line.key, { notes: e.target.value })}
+                              onBlur={(e) => void onOrderMiscDraftBlur(line.key, { notes: e.target.value })}
+                              className="h-8 w-full min-w-0 rounded-[8px] border px-2 text-[12px] outline-none"
+                              // On a phone, the notes sit on their own line under the item and its qty.
+                              style={isCompactProjectViewport ? { ...orderInputStyle, order: 1, gridColumn: "2 / 4" } : orderInputStyle}
+                            />
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              disabled={productionReadOnly}
+                              value={line.qty}
+                              placeholder="0"
+                              onChange={(e) => onOrderMiscDraftChange(line.key, { qty: e.target.value.replace(/\D+/g, "") })}
+                              onBlur={(e) => void onOrderMiscDraftBlur(line.key, { qty: e.target.value.replace(/\D+/g, "") })}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") e.currentTarget.blur();
+                              }}
+                              className="h-8 w-full rounded-[8px] border px-2 text-center text-[12px] font-semibold outline-none"
+                              style={orderInputStyle}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </section>
               </div>
+
+              <section className="min-w-0 overflow-hidden rounded-[18px] border" style={orderGlassSectionStyle}>
+                <div className="flex h-[50px] items-center justify-between gap-3 rounded-t-[18px] border-b px-4" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
+                  <p className="truncate text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Boards To Order</p>
+                  <div className="inline-flex shrink-0 items-center gap-2">
+                    {isCompactProjectViewport ? null : (
+                      <span className="rounded-[999px] border px-2 py-[1px] text-[11px] font-bold" style={orderNeutralPillStyle}>
+                        {formatPartCount(cutlistRows.length)}
+                      </span>
+                    )}
+                    <span className="rounded-[999px] border px-2 py-[1px] text-[11px] font-bold" style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}>
+                      {orderTotalSheetsRequired} Sheets
+                    </span>
+                  </div>
+                </div>
+                <div className="p-3">
+                  {orderBoardSummary.length === 0 ? (
+                    orderEmptyNote("No boards to order yet.")
+                  ) : (
+                    <div className="space-y-1.5">
+                      {isCompactProjectViewport ? null : (
+                        <div className="grid items-center gap-2 px-3 text-[11px] font-bold" style={{ color: projectPalette.textMuted, gridTemplateColumns: orderBoardGrid }}>
+                          <p>Board</p>
+                          <p className="text-center">Size</p>
+                          <p className="text-center">Thickness</p>
+                          <p className="text-center">Finish</p>
+                          <p className="text-center">Sheets</p>
+                        </div>
+                      )}
+                      {orderBoardSummary.map((row) => (
+                        <div
+                          key={`order_board_full_${row.id}`}
+                          className="grid min-h-9 items-center gap-2 rounded-[10px] border px-3 py-1.5 text-[12px]"
+                          style={{ ...orderReadRowStyle, gridTemplateColumns: orderBoardGrid }}
+                        >
+                          {isCompactProjectViewport ? (
+                            <div className="min-w-0">
+                              <p className="truncate font-medium">{row.boardLabel}</p>
+                              <p className="truncate text-[11px]" style={{ color: projectPalette.textMuted }}>
+                                {[row.boardSize, row.thickness, row.finish].filter((part) => part && part !== "-").join(" · ") || "-"}
+                              </p>
+                            </div>
+                          ) : (
+                            <>
+                              <p className="truncate font-medium">{row.boardLabel}</p>
+                              <p className="truncate text-center">{row.boardSize}</p>
+                              <p className="truncate text-center">{row.thickness}</p>
+                              <p className="truncate text-center">{row.finish}</p>
+                            </>
+                          )}
+                          <p className="text-center">
+                            <span
+                              className="inline-flex min-w-[32px] justify-center rounded-[8px] border px-2 py-[1px] font-bold"
+                              style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+                            >
+                              {row.sheetsRequired}
+                            </span>
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </section>
             </div>
           </div>
           {cutlistFieldWarningBubblesPortal}
@@ -43046,7 +43229,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         void onExportCncXlsxOld();
                         setCncExportMenuOpen(false);
                       }}
-                      className="flex h-9 w-full items-center px-3 text-left text-[12px] font-semibold hover:brightness-95"
+                      className="flex h-9 w-full items-center px-3 text-left text-[12px] font-semibold transition-colors hover:bg-[var(--panel-muted)]"
                       style={{ color: "var(--text-main)" }}
                     >
                       Old
@@ -43057,7 +43240,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         onExportCncXlsx();
                         setCncExportMenuOpen(false);
                       }}
-                      className="flex h-9 w-full items-center border-t px-3 text-left text-[12px] font-semibold hover:brightness-95"
+                      className="flex h-9 w-full items-center border-t px-3 text-left text-[12px] font-semibold transition-colors hover:bg-[var(--panel-muted)]"
                       style={{ borderColor: "var(--glass-border)", color: "var(--text-main)" }}
                     >
                       .xlsx
@@ -43068,7 +43251,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         onExportCncPdf();
                         setCncExportMenuOpen(false);
                       }}
-                      className="flex h-9 w-full items-center border-t px-3 text-left text-[12px] font-semibold hover:brightness-95"
+                      className="flex h-9 w-full items-center border-t px-3 text-left text-[12px] font-semibold transition-colors hover:bg-[var(--panel-muted)]"
                       style={{ borderColor: "var(--glass-border)", color: "var(--text-main)" }}
                     >
                       .pdf
@@ -44722,7 +44905,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               )}
             </div>
           </div>
-          <div className="min-h-0 flex-1 overflow-auto p-3 sm:p-4 md:p-5" style={{ paddingTop: 56 }}>
+          {/* Top padding = the 56px bar + the same gap as the sides, so the containers sit as far
+              below the bar as they do from the bottom of the screen (desktop's three columns fill
+              the screen minus 96px: 56 bar + 20 + 20). */}
+          <div className="min-h-0 flex-1 overflow-auto px-3 pb-3 pt-[68px] sm:px-4 sm:pb-4 sm:pt-[72px] md:px-5 md:pb-5 md:pt-[76px]">
             {salesItemsBoardContent}
           </div>
         </div>
@@ -48711,48 +48897,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 <div className="relative" ref={nestingMachineMenuRef}>
                   <button
                     type="button"
-                    onClick={() => setNestingMachineMenuOpen((prev) => !prev)}
+                    onClick={(e) => toggleNestingMachineMenu(e.currentTarget)}
                     title="Which machine this job is being cut on — changes the sheet size/kerf/margin and how pieces get packed below"
-                    className="inline-flex h-8 max-w-[120px] items-center justify-between gap-1 rounded-[8px] border px-2 text-[12px] font-bold lg:h-9 lg:max-w-[180px] lg:gap-2 lg:px-3"
-                    style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, color: projectPalette.text }}
+                    className="inline-flex h-9 min-w-0 max-w-[130px] items-center justify-between gap-1 rounded-[8px] border px-2 text-[12px] font-bold hover:brightness-95 lg:w-auto lg:min-w-[130px] lg:max-w-[200px] lg:gap-2 lg:px-3"
+                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                   >
                     <span className="truncate">{selectedNestingMachine?.name ?? "Machine"}</span>
-                    <ChevronDown size={13} className="shrink-0" />
+                    <ChevronDown size={14} className="shrink-0" />
                   </button>
-                  {nestingMachineMenuOpen && (
-                    <div
-                      className="absolute left-0 top-[42px] z-[120] w-[180px] overflow-hidden rounded-[10px] border shadow-[0_12px_30px_rgba(15,23,42,0.14)]"
-                      style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-modal-bg)", backdropFilter: "blur(16px) saturate(200%)", WebkitBackdropFilter: "blur(16px) saturate(200%)" }}
-                    >
-                      <p
-                        className="px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-[0.5px]"
-                        style={{ color: "var(--text-muted)" }}
-                      >
-                        Machine type
-                      </p>
-                      {nestingEligibleMachines.map((m) => (
-                        <button
-                          key={m.id}
-                          type="button"
-                          onClick={() => {
-                            setSelectedNestingMachineIdRaw(m.id);
-                            setNestingMachineMenuOpen(false);
-                          }}
-                          className="flex h-9 w-full items-center justify-between gap-2 border-t px-3 text-left text-[12px] font-semibold hover:brightness-95"
-                          style={{
-                            borderColor: "var(--glass-border)",
-                            color: m.id === selectedNestingMachineId ? "var(--brand-strong)" : "var(--text-main)",
-                            backgroundColor: m.id === selectedNestingMachineId ? "var(--brand-soft)" : "transparent",
-                          }}
-                        >
-                          <span className="truncate">{m.name}</span>
-                          <span className="shrink-0 text-[10px] font-bold uppercase" style={{ color: "var(--text-muted)" }}>
-                            {m.type === "cnc" ? "CNC" : "Table Saw"}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
+                  {nestingMachineMenuPortal}
                 </div>
               ) : null}
               <button
@@ -53787,7 +53940,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               <div className="relative" ref={nestingMachineMenuRef}>
                                 <button
                                   type="button"
-                                  onClick={() => setNestingMachineMenuOpen((prev) => !prev)}
+                                  onClick={(e) => toggleNestingMachineMenu(e.currentTarget)}
                                   title="Which machine this job is being cut on — changes the sheet size/kerf/margin and how pieces get packed below"
                                   className="inline-flex h-7 max-w-[160px] items-center justify-between gap-1 rounded-[6px] border px-2 text-[12px] font-bold"
                                   style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
@@ -53795,40 +53948,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   <span className="truncate">{selectedNestingMachine?.name ?? "Machine"}</span>
                                   <ChevronDown size={13} className="shrink-0" />
                                 </button>
-                                {nestingMachineMenuOpen && (
-                                  <div
-                                    className="absolute left-0 top-[34px] z-[120] w-[180px] overflow-hidden rounded-[10px] border shadow-[0_12px_30px_rgba(15,23,42,0.14)]"
-                                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-modal-bg)", backdropFilter: "blur(16px) saturate(200%)", WebkitBackdropFilter: "blur(16px) saturate(200%)" }}
-                                  >
-                                    <p
-                                      className="px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-[0.5px]"
-                                      style={{ color: "var(--text-muted)" }}
-                                    >
-                                      Machine type
-                                    </p>
-                                    {nestingEligibleMachines.map((m) => (
-                                      <button
-                                        key={m.id}
-                                        type="button"
-                                        onClick={() => {
-                                          setSelectedNestingMachineIdRaw(m.id);
-                                          setNestingMachineMenuOpen(false);
-                                        }}
-                                        className="flex h-9 w-full items-center justify-between gap-2 border-t px-3 text-left text-[12px] font-semibold hover:brightness-95"
-                                        style={{
-                                          borderColor: "var(--glass-border)",
-                                          color: m.id === selectedNestingMachineId ? "var(--brand-strong)" : "var(--text-main)",
-                                          backgroundColor: m.id === selectedNestingMachineId ? "var(--brand-soft)" : "transparent",
-                                        }}
-                                      >
-                                        <span className="truncate">{m.name}</span>
-                                        <span className="shrink-0 text-[10px] font-bold uppercase" style={{ color: "var(--text-muted)" }}>
-                                          {m.type === "cnc" ? "CNC" : "Table Saw"}
-                                        </span>
-                                      </button>
-                                    ))}
-                                  </div>
-                                )}
+                                {nestingMachineMenuPortal}
                               </div>
                             ) : null}
                             <span>Sheet H: {activeLength(formatMm(nestingSettings.sheetHeight))}</span>
