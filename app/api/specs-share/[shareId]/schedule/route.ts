@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
-import { type SpecsShareLinkDoc } from "@/lib/specs-share";
+import { isShareLinkInactiveAdmin, SHARE_LINK_INACTIVE_ERROR, type SpecsShareLinkDoc } from "@/lib/specs-share";
 import type { ClientScheduleEvent } from "@/lib/calendar-data";
 
 // The client portal's Schedule tab: calendar events linked to this hub link's project that staff
@@ -22,6 +22,10 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
   const projectId = String(shareDoc.projectId || "").trim();
   if (!companyId || !projectId) {
     return NextResponse.json({ ok: true, events: [] });
+  }
+  // A finished project's link stops working (archived, or past the company's archive delay).
+  if (await isShareLinkInactiveAdmin(adminDb, shareDoc)) {
+    return NextResponse.json({ ok: false, error: SHARE_LINK_INACTIVE_ERROR }, { status: 410 });
   }
 
   const companyRef = adminDb.collection("companies").doc(companyId);

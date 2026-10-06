@@ -4,11 +4,13 @@ import { activeDate, activeDateTime, useCompanyFormats } from "@/lib/company-for
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { useRouter } from "next/navigation";
 import { createPortal } from "react-dom";
-import { Activity, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, ChevronsLeftRight, ChevronsRightLeft, FolderKanban, Kanban, ListFilter, RefreshCw, Rows3, Search, Users2, X } from "lucide-react";
+import { Activity, Archive, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, ChevronsLeftRight, ChevronsRightLeft, FolderKanban, Kanban, ListFilter, RefreshCw, Rows3, Search, Users2, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
 import { attachBoardArrowKeyScroll } from "@/lib/board-arrow-key-scroll";
+import { attachBoardDragScroll } from "@/lib/board-drag-scroll";
 import { useBoardStickyRef } from "@/lib/board-sticky-scroll";
+import { swallowNextClick } from "@/lib/swallow-dismiss-click";
 import { useDragGhost, DragGhostLayer } from "@/lib/use-drag-ghost";
 import { useAppTabs } from "@/lib/app-tabs-context";
 import {
@@ -31,9 +33,12 @@ import { readLastKnown, saveLastKnown } from "@/lib/last-known";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { iconRemoveButtonClass } from "@/components/settings-ui";
 import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
+import { completedStatusMatcher, isProjectArchived, PROJECTS_ARCHIVED_EVENT, type ProjectsArchivedDetail } from "@/lib/project-archive";
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 type SubStageRow = { name: string; color: string; isDefault?: boolean };
-type StatusRow = { name: string; color: string; subStages?: SubStageRow[] };
+// isComplete: Company Settings' "Completed" toggle — left undefined when the company hasn't set it, so
+// completedStatusMatcher can fall back to the old name-based rule.
+type StatusRow = { name: string; color: string; subStages?: SubStageRow[]; isComplete?: boolean };
 type RoleRow = { id: string; name: string; color: string };
 
 const statCards = [
@@ -55,13 +60,6 @@ function normalizeRoleKey(value: unknown): string {
     .trim()
     .toLowerCase()
     .replace(/\s+/g, "_");
-}
-
-function isCompletedStatus(status: string) {
-  const token = String(status || "")
-    .toLowerCase()
-    .replace(/[^a-z]/g, "");
-  return token === "done" || token.startsWith("complete");
 }
 
 function lightenHexColor(hex: string, amount: number): string {
@@ -152,6 +150,7 @@ function normalizeStatuses(raw: unknown): StatusRow[] {
         name: String(row.name ?? "").trim(),
         color: String(row.color ?? "").trim() || "#64748B",
         subStages,
+        ...(typeof row.isComplete === "boolean" ? { isComplete: row.isComplete } : {}),
       };
     })
     .filter((row) => row.name);
@@ -459,11 +458,22 @@ export default function DashboardPage() {
   // then never re-fire once it actually mounts, permanently missing the attachment. A callback ref
   // runs exactly when this specific node mounts/unmounts, sidestepping that race entirely — the
   // same reasoning boardStickyRef itself is built on.
-  const boardArrowKeyCleanupRef = useRef<(() => void) | null>(null);
+  //
+  // Click-and-drag scrolling (desktop mouse only) rides on the same callback ref for the same
+  // reason — see lib/board-drag-scroll.ts. It's one container for both the main board and the
+  // sub-board, so both get it.
+  const boardScrollContainerCleanupRef = useRef<(() => void) | null>(null);
   const boardScrollContainerCallbackRef = useCallback((el: HTMLDivElement | null) => {
     boardScrollContainerRef.current = el;
-    boardArrowKeyCleanupRef.current?.();
-    boardArrowKeyCleanupRef.current = el ? attachBoardArrowKeyScroll(el) : null;
+    boardScrollContainerCleanupRef.current?.();
+    boardScrollContainerCleanupRef.current = null;
+    if (!el) return;
+    const detachArrowKeyScroll = attachBoardArrowKeyScroll(el);
+    const detachDragScroll = attachBoardDragScroll(el);
+    boardScrollContainerCleanupRef.current = () => {
+      detachArrowKeyScroll();
+      detachDragScroll();
+    };
   }, []);
   const projectBoardDragGhost = useDragGhost();
   const [statusRows, setStatusRows] = useState<StatusRow[]>(normalizeStatuses(undefined));
@@ -746,7 +756,8 @@ export default function DashboardPage() {
         const earlyCompanyBundle = earlyCompanyId ? loadCompanyBundle(earlyCompanyId).catch(() => null) : null;
         // A slow attempt keeps going: after 7s a second one starts alongside it and whichever answers
         // first wins (see hedgedAsync) — this used to throw the slow attempt away at 7s and start over.
-        const items = await hedgedAsync(() => fetchProjects(user?.uid, preferredCompanyIds, { lightweight: true }), {
+        // Archived projects too — only the Completed Projects pop-up shows them (see liveProjects).
+        const items = await hedgedAsync(() => fetchProjects(user?.uid, preferredCompanyIds, { lightweight: true, archived: "include" }), {
           hedgeAfterMs: 7000,
           delayMs: 350,
           message: "Projects load timed out",
@@ -849,6 +860,28 @@ export default function DashboardPage() {
     };
   }, []);
 
+  // These were just archived — by the background archiver (app shell → archiveDueCompletedProjects), by
+  // being completed under "Archive completed projects after: Instantly" (including a drop into the
+  // completed column right here), or by hand from a project page. Mark them here too, so they leave the
+  // list and board without a reload.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onProjectsArchived = (event: Event) => {
+      const detail = (event as CustomEvent<ProjectsArchivedDetail>).detail;
+      const ids = new Set(detail?.projectIds ?? []);
+      if (!ids.size) return;
+      setAllProjects((prev) =>
+        prev.map((row) =>
+          ids.has(row.id) ? (Object.assign({}, row, { isArchived: true, archivedAtIso: detail.archivedAtIso }) as Project) : row,
+        ),
+      );
+    };
+    window.addEventListener(PROJECTS_ARCHIVED_EVENT, onProjectsArchived as EventListener);
+    return () => {
+      window.removeEventListener(PROJECTS_ARCHIVED_EVENT, onProjectsArchived as EventListener);
+    };
+  }, []);
+
   const openNewProjectModal = (e?: React.MouseEvent<HTMLElement>) => {
     const origin = e ? captureGlassModalOrigin(e) : null;
     window.dispatchEvent(new CustomEvent("cutsmart:new-project", { detail: { origin } }));
@@ -861,6 +894,10 @@ export default function DashboardPage() {
     }
     return map;
   }, [statusRows]);
+
+  // Which statuses count as completed: Company Settings' "Completed" toggle, or the old name-based
+  // rule for a company that hasn't set it (lib/project-archive.ts).
+  const isCompletedStatus = useMemo(() => completedStatusMatcher(statusRows), [statusRows]);
 
   const statusOptions = useMemo(() => {
     const options = statusRows.map((row) => row.name).filter(Boolean);
@@ -983,12 +1020,24 @@ export default function DashboardPage() {
     const destinationStatusRow = statusRows.find((row) => row.name.trim().toLowerCase() === nextStatus.trim().toLowerCase());
     const nextSubStageId = destinationStatusRow?.subStages?.find((sub) => sub.isDefault)?.name ?? "";
     setStatusUpdatingProjectId(project.id);
+    // Same completion date updateProjectStatus stores (kept between completed statuses, stamped on
+    // entering one), so the Completed Projects pop-up has the right date straight away.
+    const nowIso = new Date().toISOString();
+    const nextCompletedAtIso = isCompletedStatus(nextStatus)
+      ? (isCompletedStatus(previousStatus) && String(project.completedAtIso || "").trim()) || nowIso
+      : "";
     // Optimistic: drop the card straight into its new column instead of waiting on the write to
     // resolve first — the round-trip is what made a drop feel like it "took a while" to land.
     setAllProjects((prev) =>
       prev.map((row) =>
         row.id === project.id
-          ? ({ ...row, statusLabel: nextStatus, dashboardSubStageId: nextSubStageId, updatedAt: new Date().toISOString() } as Project)
+          ? ({
+              ...row,
+              statusLabel: nextStatus,
+              dashboardSubStageId: nextSubStageId,
+              updatedAt: nowIso,
+              completedAtIso: nextCompletedAtIso || undefined,
+            } as Project)
           : row,
       ),
     );
@@ -999,7 +1048,9 @@ export default function DashboardPage() {
       // Persist failed — put it back where it actually is.
       setAllProjects((prev) =>
         prev.map((row) =>
-          row.id === project.id ? ({ ...row, statusLabel: previousStatus, dashboardSubStageId: previousSubStageId } as Project) : row,
+          row.id === project.id
+            ? ({ ...row, statusLabel: previousStatus, dashboardSubStageId: previousSubStageId, completedAtIso: project.completedAtIso } as Project)
+            : row,
         ),
       );
     } else if (previousStatus !== nextStatus) {
@@ -1084,19 +1135,24 @@ export default function DashboardPage() {
       setStatusMenuPos(null);
     };
 
-    const onPointerDown = (event: MouseEvent) => {
+    // A press outside the menu only closes it — the click that press goes on to produce is swallowed,
+    // so it can't also open the project row underneath, or open another project's status menu. Only
+    // the open menu's OWN pill is let through: its onClick is what toggles the menu shut.
+    const onPointerDown = (event: PointerEvent) => {
       const target = event.target as HTMLElement | null;
       if (!target) return;
       if (target.closest("[data-status-menu='true']")) return;
-      if (target.closest("[data-status-trigger='true']")) return;
+      const trigger = target.closest<HTMLElement>("[data-status-trigger='true']");
+      if (trigger && trigger.dataset.statusTriggerProjectId === statusMenuProjectId) return;
       closeMenu();
+      swallowNextClick();
     };
 
-    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("pointerdown", onPointerDown);
     window.addEventListener("resize", closeMenu);
     window.addEventListener("scroll", closeMenu, true);
     return () => {
-      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("resize", closeMenu);
       window.removeEventListener("scroll", closeMenu, true);
     };
@@ -1110,19 +1166,22 @@ export default function DashboardPage() {
       setMobileQuickFilterPos(null);
     };
 
-    const onPointerDown = (event: MouseEvent) => {
+    // Same as the status menu above: a press outside only closes the menu (its click is swallowed so
+    // it can't also open the project card underneath); the trigger itself toggles it shut on click.
+    const onPointerDown = (event: PointerEvent) => {
       const target = event.target as HTMLElement | null;
       if (!target) return;
       if (target.closest("[data-quick-filter-menu='true']")) return;
       if (target.closest("[data-quick-filter-trigger='true']")) return;
       closeMenu();
+      swallowNextClick();
     };
 
-    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("pointerdown", onPointerDown);
     window.addEventListener("resize", closeMenu);
     window.addEventListener("scroll", closeMenu, true);
     return () => {
-      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("resize", closeMenu);
       window.removeEventListener("scroll", closeMenu, true);
     };
@@ -1177,12 +1236,16 @@ export default function DashboardPage() {
     };
   }, []);
 
+  // What the list, board and stat cards show — archived projects (see the Archived page) are only
+  // kept here for the Completed Projects pop-up's history.
+  const liveProjects = useMemo(() => allProjects.filter((project) => !isProjectArchived(project)), [allProjects]);
+
   const filtered = useMemo(() => {
     // Board view has no Active/Completed filter pills of its own (its columns already separate
     // complete from active by status) — quickFilter only applies in list view, otherwise
     // switching views could silently hide an entire column with no visible way to bring it back.
     const applyQuickFilter = dashboardViewMode !== "board";
-    let rows = allProjects.filter((project) => {
+    let rows = liveProjects.filter((project) => {
       const statusLabel = String(project.statusLabel || "New");
 
       if (applyQuickFilter && quickFilter === "active" && isCompletedStatus(statusLabel)) {
@@ -1206,7 +1269,7 @@ export default function DashboardPage() {
     const openRows = rows.filter((r) => !isCompletedStatus(r.statusLabel));
     const completeRows = rows.filter((r) => isCompletedStatus(r.statusLabel));
     return [...openRows, ...completeRows];
-  }, [allProjects, dashboardViewMode, quickFilter, search]);
+  }, [dashboardViewMode, isCompletedStatus, liveProjects, quickFilter, search]);
   const showProjectsLoadingState = isLoading && filtered.length === 0;
 
   // Reset how many rows are revealed whenever the filtered result set changes
@@ -1966,9 +2029,9 @@ export default function DashboardPage() {
   }, [filtered.length, pageSize, visibleCount]);
 
   const stats = useMemo(() => {
-    const total = allProjects.length;
-    const active = allProjects.filter((p) => !isCompletedStatus(p.statusLabel)).length;
-    const completed = allProjects.filter((p) => isCompletedStatus(p.statusLabel)).length;
+    const total = liveProjects.length;
+    const active = liveProjects.filter((p) => !isCompletedStatus(p.statusLabel)).length;
+    const completed = liveProjects.filter((p) => isCompletedStatus(p.statusLabel)).length;
     const staff = companyMembers.length;
 
     const now = new Date();
@@ -1985,11 +2048,11 @@ export default function DashboardPage() {
       return Number.isFinite(ms) && ms >= weekStartMs;
     };
 
-    const totalThisWeek = allProjects.filter((p) => wasCreatedThisWeek(p.createdAt)).length;
-    const activeThisWeek = allProjects.filter(
+    const totalThisWeek = liveProjects.filter((p) => wasCreatedThisWeek(p.createdAt)).length;
+    const activeThisWeek = liveProjects.filter(
       (p) => !isCompletedStatus(p.statusLabel) && wasCreatedThisWeek(p.createdAt),
     ).length;
-    const completedThisWeek = allProjects.filter((p) => {
+    const completedThisWeek = liveProjects.filter((p) => {
       if (!isCompletedStatus(p.statusLabel)) return false;
       const updatedMs = new Date(String(p.updatedAt || "")).getTime();
       return Number.isFinite(updatedMs) && updatedMs >= weekStartMs;
@@ -2013,8 +2076,10 @@ export default function DashboardPage() {
         staff: staffThisWeek,
       },
     };
-  }, [allProjects, companyMembers]);
+  }, [companyMembers, isCompletedStatus, liveProjects]);
 
+  // The history in the Completed Projects pop-up, archived projects included (they're still completed
+  // jobs — archiving only tidies them off the board).
   const completedProjects = useMemo(() => {
     return allProjects
       .filter((project) => isCompletedStatus(project.statusLabel))
@@ -2024,7 +2089,7 @@ export default function DashboardPage() {
         monthKey: monthKeyFromIso(completedProjectIso(project)),
       }))
       .sort((a, b) => String(b.completedIso).localeCompare(String(a.completedIso)));
-  }, [allProjects]);
+  }, [allProjects, isCompletedStatus]);
 
   const completedMonthOptions = useMemo(() => {
     return Array.from(new Set(completedProjects.map((row) => row.monthKey).filter(Boolean))).sort(
@@ -2315,7 +2380,7 @@ export default function DashboardPage() {
                                   cursor: canApplyLegend ? "pointer" : "default",
                                 }}
                               >
-                                <div className="min-w-0 flex-1">
+                                <div className="flex min-w-0 flex-1 items-center gap-1">
                                   <button
                                     type="button"
                                     onClick={(event) => {
@@ -2323,12 +2388,22 @@ export default function DashboardPage() {
                                       onCloseCompletedProjectsModal();
                                       void openProjectInDashboard(project.id, project.name);
                                     }}
-                                    className="inline-flex max-w-full text-left transition hover:opacity-80"
+                                    className="inline-flex min-w-0 max-w-full text-left transition hover:opacity-80"
                                   >
                                     <span className="block truncate pr-3 text-[13px] font-bold" style={{ color: rowTextColor }}>
                                       {project.name || "Untitled"}
                                     </span>
                                   </button>
+                                  {isProjectArchived(project) ? (
+                                    <span
+                                      className="inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-[1px] text-[10.5px] font-medium"
+                                      style={{ color: rowDateColor, borderColor: "color-mix(in srgb, currentColor 35%, transparent)" }}
+                                      title="Archived — see the Archive"
+                                    >
+                                      <Archive size={11} />
+                                      Archived
+                                    </span>
+                                  ) : null}
                                 </div>
                                 <div className="relative flex shrink-0 items-center gap-1.5">
                                   <CalendarDays size={13} style={{ color: rowDateColor, opacity: 0.7 }} />
@@ -2741,7 +2816,7 @@ export default function DashboardPage() {
                     it has to stay this element's own containing block or it detaches and pins
                     itself to the outer toolbar row instead, no longer tracking the bar as it
                     shifts (e.g. when the sub-board back button pushes it over). */}
-                <div className="peer relative order-1 w-[92px] shrink-0 flex-none transition-[flex-grow,width] duration-200 focus-within:w-auto focus-within:flex-1 sm:order-none sm:w-auto sm:min-w-[260px] sm:max-w-[360px] sm:flex-none sm:focus-within:flex-none">
+                <div className="peer relative order-1 w-[92px] min-w-[92px] shrink-0 flex-none transition-[flex-grow,width] duration-200 focus-within:w-auto focus-within:flex-1 sm:order-none sm:w-auto sm:min-w-[260px] sm:max-w-[360px] sm:flex-none sm:focus-within:flex-none">
                   <Search
                     size={14}
                     className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2"
@@ -2943,6 +3018,7 @@ export default function DashboardPage() {
                           <p className="line-clamp-2 text-[16px] font-bold" style={{ color: dashboardPalette.text }}>{project.name}</p>
                           <button
                             data-status-trigger="true"
+                            data-status-trigger-project-id={project.id}
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
@@ -3348,6 +3424,7 @@ export default function DashboardPage() {
                       <td className="relative py-[6px] text-right" style={{ width: listStatusColumnWidthPx, backgroundColor: rowBg }}>
                           <button
                             data-status-trigger="true"
+                            data-status-trigger-project-id={project.id}
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();

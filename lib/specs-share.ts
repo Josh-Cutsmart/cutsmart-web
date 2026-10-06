@@ -1,4 +1,5 @@
 import type { Firestore, DocumentReference } from "firebase-admin/firestore";
+import { isClientPortalClosedForProject, isProjectArchived } from "@/lib/project-archive";
 
 // One small doc doubles as a "client hub": a single link a client can be sent, that independently
 // grows a Specs tab and/or a Quote tab as staff sends each one (see sendSpecsToClient/
@@ -134,6 +135,35 @@ export async function getProjectDocRefAdmin(
     .limit(1)
     .get();
   return jobsSnap.empty ? null : jobsSnap.docs[0].ref;
+}
+
+// Returned by every public route once a hub link has stopped working because its project is finished
+// (see isShareLinkInactiveAdmin) — the portal shows its "no longer active" message for it.
+export const SHARE_LINK_INACTIVE_ERROR = "link-inactive";
+
+// Whether this hub link has stopped working: its project has been archived (automatically or by hand —
+// an old soft-deleted one counts too), or has sat in a completed status for longer than the company's
+// "Archive completed projects after" setting (or been completed at all, under "Instantly"). Worked out from the
+// company doc and the project doc on every request (lib/project-archive.ts), so access ends on time even
+// if nobody has opened the app since to actually archive the project. Pass the project's data when the
+// route has already read it. A project that can't be found isn't treated as inactive here — each route
+// already answers that case itself.
+export async function isShareLinkInactiveAdmin(
+  adminDb: Firestore,
+  shareDoc: Pick<SpecsShareLinkDoc, "projectId" | "companyId">,
+  projectData?: Record<string, unknown>,
+): Promise<boolean> {
+  const companyId = String(shareDoc.companyId || "").trim();
+  let data = projectData;
+  if (!data) {
+    const ref = await getProjectDocRefAdmin(adminDb, shareDoc.projectId, companyId);
+    if (!ref) return false;
+    data = ((await ref.get()).data() ?? {}) as Record<string, unknown>;
+  }
+  if (isProjectArchived(data)) return true;
+  if (!companyId) return false;
+  const companyData = ((await adminDb.collection("companies").doc(companyId).get()).data() ?? {}) as Record<string, unknown>;
+  return isClientPortalClosedForProject(data, companyData);
 }
 
 // Where a share link's grid actually lives — the version subcollection document it was created

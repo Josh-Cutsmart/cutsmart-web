@@ -534,9 +534,11 @@ html.cs-scroll-locked body {
 /* <main> only scrolls on phones/tablets (app-shell.tsx's isDesktopViewport = min-width 1024px); on
  * desktop it's overflow:visible and the document scrolls. Locking it there too would turn its
  * overflow-x:visible into auto (a hidden/visible pair isn't allowed) and give wide pages like the
- * dashboard a horizontal scrollbar while a pop-up is open. */
+ * dashboard a horizontal scrollbar while a pop-up is open. Only the app shell's own <main> — a page's
+ * own inner <main> would start clipping the same way (it cut the edges off the calendar behind its
+ * event pop-up). */
 @media (max-width: 1023.98px) {
-  html.cs-scroll-locked main {
+  html.cs-scroll-locked [data-app-main-push="true"] > main {
     overflow-y: hidden !important;
     overscroll-behavior: none;
   }
@@ -549,6 +551,18 @@ html.cs-scroll-locked [data-app-scroll-root="true"] {
 .glass-modal-panel,
 .glass-modal-panel * {
   overscroll-behavior: contain;
+}
+/* Pop-up and drawer backdrops reach below the bottom of the layout viewport by the keyboard's height
+   (the vars are from lib/use-keyboard-inset.ts, 0px while it's closed). While the keyboard is up, iOS
+   can scroll what's on screen down past that bottom edge to reveal the tapped field, and a
+   position: fixed backdrop stops at it — so the unblurred page used to show through behind the
+   keyboard. The transparent bottom border of the same size keeps the backdrop's content box (which some
+   pop-ups centre their panel in) exactly where it was, while its background and blur still cover the
+   border; it's part of the backdrop, so a tap there would still close the pop-up. */
+.glass-modal-backdrop,
+[data-swipe-backdrop="true"] {
+  bottom: calc(-1 * (var(--keyboard-inset-px, 0px) + var(--keyboard-offset-top-px, 0px)));
+  border-bottom: calc(var(--keyboard-inset-px, 0px) + var(--keyboard-offset-top-px, 0px)) solid transparent;
 }
 
 /* Sidebar labels/text that only mount once the sidebar has finished expanding (app-shell.tsx's
@@ -832,23 +846,35 @@ html.cs-scroll-locked [data-app-scroll-root="true"] {
   backdrop-filter: blur(12px) saturate(220%);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55), var(--shadow-glass), 0 24px 60px rgba(15, 23, 42, 0.25);
   color: var(--text-main);
-  /* Mobile keyboard-avoidance: --keyboard-inset-px is set globally (see useKeyboardInsetPx's call
-     sites) to how many px of the bottom of the screen the on-screen keyboard currently covers, 0
-     when it's closed. Every modal wrapper here centers its panel with flex `items-center` across
-     the full viewport height — shrinking the panel's own box from the bottom by that amount shifts
-     where it lands when centered, so it settles in the visible region above the keyboard instead
-     of the keyboard-obscured full screen. A no-op (0px) everywhere the keyboard isn't open. */
-  margin-bottom: var(--keyboard-inset-px, 0px);
-  /* --keyboard-offset-top-px (also from useKeyboardInsetPx) counters an iOS-specific quirk: tapping
-     a field inside this panel makes Safari nudge the page's own scroll to bring that field into
-     view, but this panel's OUTER wrapper is `position: fixed` (anchored to the layout viewport,
-     which that nudge never moves — only the visual viewport shifts). Left alone, that means the
-     field the keyboard just opened for ends up visible while the popup around it doesn't move to
-     match, so the two drift apart. Shifting this panel up by the same amount keeps the whole popup
-     moving as one piece with whatever field is focused inside it, instead of just that field. A
-     no-op (0px) everywhere this quirk doesn't happen, including every non-iOS browser. */
-  transform: translateY(calc(-1 * var(--keyboard-offset-top-px, 0px)));
+  /* Mobile keyboard-avoidance. lib/use-keyboard-inset.ts (mounted in app-shell.tsx and the client hub)
+     publishes these on <html>; both are 0px while the on-screen keyboard is closed — and always on
+     desktop — so this is a no-op then.
+     What's visible above the keyboard is the visual viewport: its top sits --keyboard-offset-top-px
+     below the layout viewport's top (iOS scrolls it down to reveal the field that was tapped) and its
+     bottom --keyboard-inset-px above the layout viewport's bottom. Every pop-up wrapper is
+     position: fixed — laid out against the full layout viewport — and lines its panel up in it
+     (centred, or at the top/bottom). Taking inset + offset off the bottom as margin makes it line the
+     panel up within just the visible height instead, and the transform then moves it down by the
+     offset, onto the visible area itself. (A fixed element shows up offset px HIGHER on screen than
+     where it's laid out — not compensating, or compensating upwards, is what carried pop-ups off the
+     top of the screen when a field was tapped.) */
+  margin-bottom: calc(var(--keyboard-inset-px, 0px) + var(--keyboard-offset-top-px, 0px));
+  transform: translateY(var(--keyboard-offset-top-px, 0px));
   transition: margin-bottom 160ms ease, transform 160ms ease;
+}
+
+/* While the keyboard is up (data-keyboard-open, from lib/use-keyboard-inset.ts), no pop-up is taller
+   than the visible area above it, less a small gap and any status bar / notch area the page is drawn
+   under (env(safe-area-inset-top), 0 where there's none). Whatever doesn't fit scrolls inside the
+   panel — one with its own scrolling body just shrinks that body. The same safe-area amount is added to
+   the offset above so the panel sits below that area. !important because a few panels set their own
+   max-height inline (e.g. the calendar's event pop-up); the attribute only
+   exists while the keyboard is up, so each panel's own sizing is untouched the rest of the time. */
+html[data-keyboard-open="true"] .glass-modal-panel {
+  max-height: calc(var(--visual-viewport-height-px, 100dvh) - env(safe-area-inset-top, 0px) - 24px) !important;
+  overflow-y: auto;
+  margin-bottom: calc(var(--keyboard-inset-px, 0px) + var(--keyboard-offset-top-px, 0px) + env(safe-area-inset-top, 0px));
+  transform: translateY(calc(var(--keyboard-offset-top-px, 0px) + env(safe-area-inset-top, 0px)));
 }
 
 body[data-theme="dark"] .glass-modal-panel {

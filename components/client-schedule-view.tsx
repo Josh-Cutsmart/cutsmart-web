@@ -64,7 +64,8 @@ export default function ClientScheduleView({ events, newEventIds }: { events: Cl
             <span className="h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: e.color }} />
             <span className="min-w-0 flex-1">
               <span className="flex items-center gap-1.5 text-[13.5px]" style={{ color: "#0F172A" }}>
-                <span className="truncate">{e.title}</span>
+                {/* Wraps instead of cutting off on a phone, where there's only room for a word or two. */}
+                <span className="truncate max-lg:whitespace-normal max-lg:break-words">{e.title}</span>
                 {newEventIds?.has(e.id) ? (
                   <span className="inline-flex shrink-0 items-center gap-1 text-[10.5px] font-bold uppercase tracking-[0.5px]" style={{ color: "#DC2626" }}>
                     <span className="h-2 w-2 rounded-full" style={{ backgroundColor: "#DC2626" }} />
@@ -73,7 +74,7 @@ export default function ClientScheduleView({ events, newEventIds }: { events: Cl
                 ) : null}
               </span>
               {e.categoryName ? (
-                <span className="block truncate text-[11.5px]" style={{ color: "#64748B" }}>{e.categoryName}</span>
+                <span className="block truncate text-[11.5px] max-lg:whitespace-normal max-lg:break-words" style={{ color: "#64748B" }}>{e.categoryName}</span>
               ) : null}
             </span>
           </div>

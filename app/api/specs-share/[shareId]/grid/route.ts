@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
-import { getProjectDocRefAdmin, getSpecsShareGridTarget, resolveAssignedContactAdmin, type SpecsShareLinkDoc } from "@/lib/specs-share";
+import {
+  getProjectDocRefAdmin,
+  getSpecsShareGridTarget,
+  isShareLinkInactiveAdmin,
+  resolveAssignedContactAdmin,
+  SHARE_LINK_INACTIVE_ERROR,
+  type SpecsShareLinkDoc,
+} from "@/lib/specs-share";
 import { normalizeSpecsGrid } from "@/lib/specs-grid-types";
 
 // No access code — the link itself (this shareId) is the only secret, per the user's explicit
@@ -33,6 +40,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   }
   const projectSnap = await projectRef.get();
   const projectData = (projectSnap.data() ?? {}) as Record<string, unknown>;
+  // A finished project's link stops working (archived, or past the company's archive delay).
+  if (await isShareLinkInactiveAdmin(adminDb, shareDoc, projectData)) {
+    return NextResponse.json({ ok: false, error: SHARE_LINK_INACTIVE_ERROR }, { status: 410 });
+  }
 
   // The share link is bound to a specific specificationsVersions snapshot (the exact grid that
   // existed when "Send to Client" was clicked) — never the live project doc, so further staff

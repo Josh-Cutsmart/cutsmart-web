@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { Check, X } from "lucide-react";
 import {
   getCellRuns,
@@ -37,7 +37,227 @@ export type SpecsGridClientViewProps = {
   // Specifications and Quote tabs render as the same-size sheet regardless of which one has wider
   // columns, instead of visibly resizing when a client switches tabs.
   boxWidthPx?: number;
+  // Phones/tablets (the hub page sets this below lg). The page is sized in real mm, far wider than a
+  // phone, so instead of running off the right edge it's scaled down to fit the available width,
+  // with pinch-to-zoom and a one-finger pan once zoomed in — the same approach as the staff editor's
+  // own fitToViewportOnMobile (specs-grid-editor.tsx), kept self-contained here. Off, the sheet
+  // renders exactly as before (1:1, scrolling sideways if it has to).
+  fitToWidth?: boolean;
 };
+
+type SheetView = { zoom: number; x: number; y: number };
+const REST_VIEW: SheetView = { zoom: 1, x: 0, y: 0 };
+const MAX_SHEET_ZOOM = 4;
+// How far a finger can drift and still count as a tap (e.g. on a Yes/No button) rather than a pan.
+const TAP_SLOP_PX = 8;
+
+type SheetGeometry = { viewportWidthPx: number; fitScale: number; boxWidthPx: number; pageHeightPx: number };
+
+// Where mx-auto lays the page box inside the viewport at rest: flush left once it's been scaled to
+// fill the width, centred when it was already narrower than the viewport (fitScale 1, e.g. a tablet).
+function restLeftPx(g: SheetGeometry): number {
+  return Math.max(0, (g.viewportWidthPx - g.boxWidthPx * g.fitScale) / 2);
+}
+
+// Keeps a zoomed-in page covering the viewport: it can slide to reveal any edge but never past one
+// into blank space, and a page still narrower than the viewport once zoomed stays centred. The
+// viewport is exactly as tall as the page at rest, so vertically it always covers. Back at 1x (or
+// below) it snaps to rest.
+function clampSheetView(next: SheetView, g: SheetGeometry): SheetView {
+  const zoom = Math.min(MAX_SHEET_ZOOM, next.zoom);
+  if (zoom <= 1) return REST_VIEW;
+  const restLeft = restLeftPx(g);
+  const widthPx = g.boxWidthPx * g.fitScale * zoom;
+  const x =
+    widthPx <= g.viewportWidthPx
+      ? (g.viewportWidthPx - widthPx) / 2 - restLeft
+      : Math.max(g.viewportWidthPx - widthPx - restLeft, Math.min(-restLeft, next.x));
+  const restHeightPx = g.pageHeightPx * g.fitScale;
+  const y = Math.max(restHeightPx - restHeightPx * zoom, Math.min(0, next.y));
+  return { zoom, x, y };
+}
+
+// Translate first, in screen px, then scale from the page's own top-left corner.
+function sheetTransform(view: SheetView, fitScale: number): string {
+  return `translate(${view.x}px, ${view.y}px) scale(${fitScale * view.zoom})`;
+}
+
+// fitToWidth's scale-to-fit plus pinch/pan. The fit scale comes from the viewport's own measured
+// width (a ResizeObserver, so rotating the phone refits). The gesture runs on native touch listeners
+// rather than React's: React registers touchmove as passive, which can't stop the page scrolling
+// underneath a pinch or a zoomed-in pan. While a finger is down the transform is written straight to
+// the page box (no re-render of the whole table per frame) and committed to state when it lifts.
+// Taps are left alone — a tap on a Yes/No button still clicks it, which is exactly what zooming in
+// is for — but a drag or pinch that happens to end over one doesn't.
+function useSheetFitZoom(enabled: boolean, boxWidthPx: number, calculatedHeightPx: number, marginPx: number) {
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const pageBoxRef = useRef<HTMLDivElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const [viewportWidthPx, setViewportWidthPx] = useState(0);
+  // The table's real rendered height, in case a real device lays a row out taller than the stored
+  // heights say (same safety net as the editor's measuredPageBoxHeightPx) — the page box and its
+  // clipping viewport then grow with it instead of cutting the bottom of the sheet off.
+  const [measuredHeightPx, setMeasuredHeightPx] = useState(0);
+  const [view, setView] = useState<SheetView>(REST_VIEW);
+  const pageHeightPx = Math.max(calculatedHeightPx, measuredHeightPx);
+  const fitScale = enabled && viewportWidthPx > 0 ? Math.min(1, viewportWidthPx / boxWidthPx) : 1;
+
+  // What the touch listeners below read mid-gesture, kept current from the latest render.
+  const geometryRef = useRef<SheetGeometry>({ viewportWidthPx, fitScale, boxWidthPx, pageHeightPx });
+  const viewRef = useRef<SheetView>(REST_VIEW);
+  useEffect(() => {
+    geometryRef.current = { viewportWidthPx, fitScale, boxWidthPx, pageHeightPx };
+  }, [viewportWidthPx, fitScale, boxWidthPx, pageHeightPx]);
+
+  useEffect(() => {
+    if (!enabled || typeof ResizeObserver === "undefined") return;
+    const viewport = viewportRef.current;
+    const content = contentRef.current;
+    if (!viewport || !content) return;
+    let lastWidthPx = -1;
+    const observer = new ResizeObserver(() => {
+      const widthPx = viewport.clientWidth;
+      if (widthPx !== lastWidthPx) {
+        // A new width means a new fit scale, which any current zoom/pan was relative to — start over.
+        lastWidthPx = widthPx;
+        setViewportWidthPx(widthPx);
+        viewRef.current = REST_VIEW;
+        setView(REST_VIEW);
+      }
+      // The content wrapper sits inside the page's margin, so add both margins back.
+      setMeasuredHeightPx(content.offsetHeight + marginPx * 2);
+    });
+    observer.observe(viewport);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [enabled, marginPx]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    const viewport = viewportRef.current;
+    const pageBox = pageBoxRef.current;
+    if (!viewport || !pageBox) return;
+    const gesture = {
+      mode: "none" as "none" | "pinch" | "pan",
+      startView: REST_VIEW,
+      startDistancePx: 1,
+      startCenterX: 0,
+      startCenterY: 0,
+      startX: 0,
+      startY: 0,
+      lastX: 0,
+      lastY: 0,
+      moved: false,
+    };
+    let swallowClick = false;
+    let swallowTimer = 0;
+    const show = (next: SheetView) => {
+      viewRef.current = next;
+      pageBox.style.transform = sheetTransform(next, geometryRef.current.fitScale);
+      viewport.style.touchAction = next.zoom > 1 ? "none" : "pan-y";
+    };
+    // At 1x a single finger is left to the browser (touch-action: pan-y scrolls the page as normal);
+    // once zoomed in it pans the sheet instead.
+    const beginOneFinger = (touch: Touch) => {
+      gesture.mode = viewRef.current.zoom > 1 ? "pan" : "none";
+      gesture.lastX = touch.clientX;
+      gesture.lastY = touch.clientY;
+    };
+    const onTouchStart = (event: TouchEvent) => {
+      swallowClick = false;
+      if (event.touches.length >= 2) {
+        const rect = viewport.getBoundingClientRect();
+        const [a, b] = [event.touches[0], event.touches[1]];
+        gesture.mode = "pinch";
+        gesture.moved = true;
+        gesture.startView = viewRef.current;
+        gesture.startDistancePx = Math.max(1, Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY));
+        gesture.startCenterX = (a.clientX + b.clientX) / 2 - rect.left;
+        gesture.startCenterY = (a.clientY + b.clientY) / 2 - rect.top;
+        return;
+      }
+      gesture.moved = false;
+      gesture.startX = event.touches[0].clientX;
+      gesture.startY = event.touches[0].clientY;
+      beginOneFinger(event.touches[0]);
+    };
+    const onTouchMove = (event: TouchEvent) => {
+      const geometry = geometryRef.current;
+      if (gesture.mode === "pinch" && event.touches.length >= 2) {
+        const rect = viewport.getBoundingClientRect();
+        const [a, b] = [event.touches[0], event.touches[1]];
+        const start = gesture.startView;
+        const zoom = Math.max(1, Math.min(MAX_SHEET_ZOOM, (start.zoom * Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY)) / gesture.startDistancePx));
+        const restLeft = restLeftPx(geometry);
+        // Whatever point of the page was under the fingers when the pinch began (in unscaled page
+        // px) stays under their midpoint as it zooms and moves.
+        const startScale = geometry.fitScale * start.zoom;
+        const pageX = (gesture.startCenterX - restLeft - start.x) / startScale;
+        const pageY = (gesture.startCenterY - start.y) / startScale;
+        const scale = geometry.fitScale * zoom;
+        const centerX = (a.clientX + b.clientX) / 2 - rect.left;
+        const centerY = (a.clientY + b.clientY) / 2 - rect.top;
+        show(clampSheetView({ zoom, x: centerX - restLeft - pageX * scale, y: centerY - pageY * scale }, geometry));
+        if (event.cancelable) event.preventDefault();
+        return;
+      }
+      if (event.touches.length !== 1) return;
+      const touch = event.touches[0];
+      if (!gesture.moved && Math.hypot(touch.clientX - gesture.startX, touch.clientY - gesture.startY) > TAP_SLOP_PX) gesture.moved = true;
+      if (gesture.mode !== "pan") return;
+      const current = viewRef.current;
+      const wantedY = current.y + (touch.clientY - gesture.lastY);
+      const next = clampSheetView({ zoom: current.zoom, x: current.x + (touch.clientX - gesture.lastX), y: wantedY }, geometry);
+      gesture.lastX = touch.clientX;
+      gesture.lastY = touch.clientY;
+      show(next);
+      // Past the sheet's own top/bottom edge, the rest of the drag scrolls the page — otherwise a
+      // zoomed-in sheet taller than the screen would have parts you couldn't reach without zooming
+      // back out first.
+      const leftoverY = wantedY - next.y;
+      if (leftoverY) window.scrollBy(0, -leftoverY);
+      if (event.cancelable) event.preventDefault();
+    };
+    const onTouchEnd = (event: TouchEvent) => {
+      if (event.touches.length === 1) {
+        // One finger lifted off a pinch: carry straight on as a pan with the one still down.
+        beginOneFinger(event.touches[0]);
+        return;
+      }
+      if (event.touches.length > 0) return;
+      if (gesture.moved) {
+        swallowClick = true;
+        window.clearTimeout(swallowTimer);
+        swallowTimer = window.setTimeout(() => {
+          swallowClick = false;
+        }, 500);
+      }
+      gesture.mode = "none";
+      setView(viewRef.current);
+    };
+    const onClickCapture = (event: MouseEvent) => {
+      if (!swallowClick) return;
+      swallowClick = false;
+      event.stopPropagation();
+      event.preventDefault();
+    };
+    viewport.addEventListener("touchstart", onTouchStart, { passive: true });
+    viewport.addEventListener("touchmove", onTouchMove, { passive: false });
+    viewport.addEventListener("touchend", onTouchEnd);
+    viewport.addEventListener("touchcancel", onTouchEnd);
+    viewport.addEventListener("click", onClickCapture, true);
+    return () => {
+      viewport.removeEventListener("touchstart", onTouchStart);
+      viewport.removeEventListener("touchmove", onTouchMove);
+      viewport.removeEventListener("touchend", onTouchEnd);
+      viewport.removeEventListener("touchcancel", onTouchEnd);
+      viewport.removeEventListener("click", onClickCapture, true);
+      window.clearTimeout(swallowTimer);
+    };
+  }, [enabled]);
+
+  return { viewportRef, pageBoxRef, contentRef, viewportWidthPx, fitScale, pageHeightPx, view };
+}
 
 // Reuses the same align/verticalAlign fields text cells use — matches
 // components/specs-grid-editor.tsx's own imageObjectPositionFor exactly, so an image cell frames
@@ -60,7 +280,7 @@ function imageObjectPositionFor(style: SpecsCellStyle): string {
 // blanket 1px gridline on every cell, which the real sheet never draws), same cell padding/font
 // fallbacks, and the same hidden-row-group filtering — so what the client sees is the same document
 // staff see, not a differently-scaled approximation of it.
-export default function SpecsGridClientView({ grid, locked, onAnswer, answeringKey, boxWidthPx }: SpecsGridClientViewProps) {
+export default function SpecsGridClientView({ grid, locked, onAnswer, answeringKey, boxWidthPx, fitToWidth = false }: SpecsGridClientViewProps) {
   const expandedGroups = getExpandedRowGroups(grid);
   const hiddenRowIndexes = new Set<number>();
   for (const g of expandedGroups) {
@@ -120,14 +340,53 @@ export default function SpecsGridClientView({ grid, locked, onAnswer, answeringK
   // Same "only ever grows past the paper size, never shrinks below it" rule as the editor's own mock
   // page — a visual reference for how this prints, not a hard crop.
   const mockPageBoxHeightPx = Math.max(mockPageHeightPx, tableRenderedHeightPx);
+  const { viewportRef, pageBoxRef, contentRef, viewportWidthPx, fitScale, pageHeightPx, view } = useSheetFitZoom(
+    fitToWidth,
+    mockPageBoxWidthPx,
+    mockPageBoxHeightPx,
+    mockPageMarginPx,
+  );
 
   return (
-    <div className="overflow-x-auto">
+    <div
+      ref={viewportRef}
+      className={fitToWidth ? "overflow-hidden" : "overflow-x-auto"}
+      style={
+        fitToWidth
+          ? {
+              // Exactly the scaled page's height, so the sheet takes up just its own space in the
+              // page flow. Zero until the first width measurement lands, rather than flashing one
+              // frame of the full-size page first.
+              height: viewportWidthPx > 0 ? pageHeightPx * fitScale : 0,
+              touchAction: view.zoom > 1 ? "none" : "pan-y",
+            }
+          : undefined
+      }
+    >
       <div
+        ref={pageBoxRef}
         className="relative mx-auto"
-        style={{ width: mockPageBoxWidthPx, minHeight: mockPageBoxHeightPx, backgroundColor: "#ffffff", boxShadow: "0 1px 4px rgba(16, 24, 40, 0.15)" }}
+        style={{
+          width: mockPageBoxWidthPx,
+          minHeight: mockPageBoxHeightPx,
+          backgroundColor: "#ffffff",
+          boxShadow: "0 1px 4px rgba(16, 24, 40, 0.15)",
+          ...(fitToWidth
+            ? {
+                // An explicit height: the content wrapper below is position:absolute, so it never
+                // grows this box on its own.
+                height: pageHeightPx,
+                transform: sheetTransform(view, fitScale),
+                transformOrigin: "top left",
+                // At rest, the same single-bitmap scaling the staff editor uses so borders and text
+                // can't drift apart at a fractional scale. Dropped once zoomed in, so the browser
+                // redraws the sheet sharp at the new size instead of blowing up the small bitmap.
+                ...(view.zoom > 1 ? {} : { willChange: "transform", WebkitBackfaceVisibility: "hidden" as const }),
+              }
+            : {}),
+        }}
       >
-        <div className="relative" style={{ position: "absolute", left: mockPageMarginPx, top: mockPageMarginPx }}>
+        <div ref={contentRef} className="relative" style={{ position: "absolute", left: mockPageMarginPx, top: mockPageMarginPx }}>
           <table style={{ tableLayout: "fixed", borderCollapse: "separate", borderSpacing: 0, width: tableTotalWidthPx }}>
             <colgroup>
               {safeColumnWidths.map((w, idx) => (

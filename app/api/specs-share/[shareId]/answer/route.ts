@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
-import { getProjectDocRefAdmin, getSpecsShareGridTarget, type SpecsShareLinkDoc } from "@/lib/specs-share";
+import {
+  getProjectDocRefAdmin,
+  getSpecsShareGridTarget,
+  isShareLinkInactiveAdmin,
+  SHARE_LINK_INACTIVE_ERROR,
+  type SpecsShareLinkDoc,
+} from "@/lib/specs-share";
 import { normalizeSpecsGrid, type SpecsCell } from "@/lib/specs-grid-types";
 
 // No access code — the link itself (this shareId) is the only secret, per the user's explicit
@@ -28,6 +34,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ ok: false, error: "not-found" }, { status: 404 });
   }
   const shareDoc = shareSnap.data() as SpecsShareLinkDoc;
+
+  // A finished project's link stops working (archived, or past the company's archive delay) — this
+  // also stops a portal page left open from before from still saving answers.
+  if (await isShareLinkInactiveAdmin(adminDb, shareDoc)) {
+    return NextResponse.json({ ok: false, error: SHARE_LINK_INACTIVE_ERROR }, { status: 410 });
+  }
 
   // The sheet-wide lock, checked before anything else — once submitted, no further answer changes
   // are accepted regardless of which cell or how the code was obtained. Lives on this small,

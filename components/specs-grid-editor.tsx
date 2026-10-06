@@ -103,6 +103,7 @@ import {
   MAX_BORDER_WIDTH_PX,
 } from "@/lib/specs-grid-types";
 import { SpecsCellColorPopover, type SpecsColorPopoverAnchorRect } from "@/components/specs-cell-color-popover";
+import { swallowNextClick } from "@/lib/swallow-dismiss-click";
 
 export type SpecsGridEditorProps = {
   value: SpecsGrid;
@@ -691,13 +692,11 @@ function useMobileCellLongPressMenu(setSelection: (sel: SpecsGridSelection) => v
     const onPointerDown = (e: Event) => {
       if (menuRef.current?.contains(e.target as Node)) return;
       closeMenu();
+      // That press only closes the menu — it doesn't also act on whatever it landed on.
+      swallowNextClick();
     };
-    document.addEventListener("mousedown", onPointerDown);
-    document.addEventListener("touchstart", onPointerDown);
-    return () => {
-      document.removeEventListener("mousedown", onPointerDown);
-      document.removeEventListener("touchstart", onPointerDown);
-    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [menu, menuClosing]);
 
   // Single exit path for an in-progress press, used by every one of makeHandlers' own handlers
@@ -1123,12 +1122,13 @@ export default function SpecsGridEditor({
 
   useEffect(() => {
     if (!headerContextMenu) return;
-    const onPointerDown = (e: MouseEvent) => {
+    const onPointerDown = (e: PointerEvent) => {
       if (headerContextMenuRef.current?.contains(e.target as Node)) return;
       setHeaderContextMenu(null);
+      swallowNextClick();
     };
-    document.addEventListener("mousedown", onPointerDown);
-    return () => document.removeEventListener("mousedown", onPointerDown);
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [headerContextMenu]);
 
   // Horizontal/vertical alignment are each collapsed into a single toolbar button that shows only
@@ -1138,12 +1138,13 @@ export default function SpecsGridEditor({
   const alignDropdownRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!alignDropdown) return;
-    const onPointerDown = (e: MouseEvent) => {
+    const onPointerDown = (e: PointerEvent) => {
       if (alignDropdownRef.current?.contains(e.target as Node)) return;
       setAlignDropdown(null);
+      swallowNextClick();
     };
-    document.addEventListener("mousedown", onPointerDown);
-    return () => document.removeEventListener("mousedown", onPointerDown);
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [alignDropdown]);
 
   // The old separate T/R/B/L toggles + border-color swatch + width field are now all reachable from
@@ -1154,14 +1155,15 @@ export default function SpecsGridEditor({
   const borderPopoverRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!borderPopoverAnchorRect) return;
-    const onPointerDown = (e: MouseEvent) => {
+    const onPointerDown = (e: PointerEvent) => {
       const target = e.target as HTMLElement;
       if (borderPopoverRef.current?.contains(target)) return;
       if (target.closest('[data-specs-color-popover="true"]')) return;
       setBorderPopoverAnchorRect(null);
+      swallowNextClick();
     };
-    document.addEventListener("mousedown", onPointerDown);
-    return () => document.removeEventListener("mousedown", onPointerDown);
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [borderPopoverAnchorRect]);
 
   const applyHeaderResize = (axis: "row" | "col", index: number, valuePx: number) => {

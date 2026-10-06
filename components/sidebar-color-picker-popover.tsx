@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { swallowNextClick } from "@/lib/swallow-dismiss-click";
 
 export const PRESET_SWATCHES = [
   "#000000",
@@ -59,13 +60,15 @@ export function SidebarColorPickerPopover({
 
   useEffect(() => {
     if (!isOpen || typeof document === "undefined") return;
-    const onPointerDown = (event: MouseEvent) => {
+    const onPointerDown = (event: PointerEvent) => {
       const targetNode = event.target as Node;
       if (popoverRef.current?.contains(targetNode)) return;
       onClose();
+      // That press only closes the popover — it doesn't also act on whatever it landed on.
+      swallowNextClick();
     };
-    document.addEventListener("mousedown", onPointerDown);
-    return () => document.removeEventListener("mousedown", onPointerDown);
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [isOpen, onClose]);
 
   if (!isOpen || !anchorRect || typeof document === "undefined") return null;

@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import {
+  fetchCompanyDoc,
   fetchProjects,
   fetchCompanyStatsDoc,
   fetchCompanyStatsYears,
@@ -23,15 +24,9 @@ import {
   type CompanyStatsDoc,
 } from "@/lib/firestore-data";
 import { retryAsync } from "@/lib/load-retry";
+import { completedStatusMatcher } from "@/lib/project-archive";
 
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
-
-// Mirrors dashboard/page.tsx's own local isCompletedStatus() so "Jobs complete this year" agrees
-// with the "Completed" count staff already see on the Dashboard for the same underlying projects.
-function isCompletedStatus(status: string) {
-  const token = String(status || "").toLowerCase().replace(/[^a-z]/g, "");
-  return token === "done" || token.startsWith("complete");
-}
 
 const EMPTY_STATS: CompanyStatsDoc = {
   year: new Date().getFullYear(),
@@ -82,14 +77,20 @@ export default function CompanyWrappedPage() {
       setIsLoading(true);
       try {
         const preferredCompanyIds = [companyId, String(user?.companyId || "").trim()].filter(Boolean);
-        const [statsDoc, years, projects, contributions] = await Promise.all([
+        const [statsDoc, years, projects, contributions, companyDoc] = await Promise.all([
           retryAsync(() => fetchCompanyStatsDoc(companyId, year), { attempts: 2, delayMs: 250 }),
           retryAsync(() => fetchCompanyStatsYears(companyId), { attempts: 2, delayMs: 250 }),
-          retryAsync(() => fetchProjects(user?.uid, preferredCompanyIds, { lightweight: true }), { attempts: 2, delayMs: 350 }),
+          // Archived projects too — finished jobs get archived after a while, and they still count here.
+          retryAsync(() => fetchProjects(user?.uid, preferredCompanyIds, { lightweight: true, archived: "include" }), {
+            attempts: 2,
+            delayMs: 350,
+          }),
           // Sheets used / edge tape used / lacquer m² aren't a single running total — each project
           // reports its own current value, summed here live (same shape as "Jobs complete this
           // year" below), since a client-side delta can double-count across tabs/reseeds.
           retryAsync(() => fetchAllProjectStatsContributions(companyId, year), { attempts: 2, delayMs: 250 }),
+          // Its project statuses say which count as completed (the "Completed" switch in Company Settings).
+          fetchCompanyDoc(companyId).catch(() => null),
         ]);
         if (cancelled) return;
         setStats(statsDoc ?? { ...EMPTY_STATS, year });
@@ -104,6 +105,7 @@ export default function CompanyWrappedPage() {
             { sheets: 0, edgeTapeMeters: 0, lacquerSqm: 0 },
           ),
         );
+        const isCompletedStatus = completedStatusMatcher((companyDoc as Record<string, unknown> | null)?.projectStatuses);
         const completeThisYear = projects.filter(
           (project) =>
             isCompletedStatus(project.statusLabel) &&

@@ -22,6 +22,7 @@ import {
 } from "@/lib/update-notes-utils";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { retryAsync } from "@/lib/load-retry";
+import { swallowNextClick } from "@/lib/swallow-dismiss-click";
 import { useAppTabs } from "@/lib/app-tabs-context";
 type ReportDeviceType = "desktop" | "tablet" | "mobile";
 const HEADER_HEIGHT = 56;
@@ -155,15 +156,17 @@ function PerPageDropdown({
 
   useEffect(() => {
     if (!open) return;
-    const onDocDown = (e: MouseEvent) => {
+    const onDocDown = (e: PointerEvent) => {
       const target = e.target as Node | null;
       if (!target) return;
       if (triggerRef.current?.contains(target)) return;
       if ((target as HTMLElement).closest?.('[data-per-page-menu="true"]')) return;
       setOpen(false);
+      // That press only closes the menu — it doesn't also act on whatever it landed on.
+      swallowNextClick();
     };
-    document.addEventListener("mousedown", onDocDown);
-    return () => document.removeEventListener("mousedown", onDocDown);
+    document.addEventListener("pointerdown", onDocDown);
+    return () => document.removeEventListener("pointerdown", onDocDown);
   }, [open]);
 
   return (
@@ -245,7 +248,7 @@ export default function ChangelogPage() {
   // This page's own sticky header used a negative top margin on its ancestor to cancel <main>'s
   // default top padding, which reproducibly froze the header at its unshifted (i.e. under the
   // fixed global top bar) position on load instead of the intended flush-below-it start — the
-  // exact bug already diagnosed and fixed for project details/company settings/recently deleted
+  // exact bug already diagnosed and fixed for project details/company settings/archived
   // (see those pages' own comments). Opting out of <main>'s own top padding here directly, the
   // same way, fixes it without a negative margin.
   useEffect(() => {

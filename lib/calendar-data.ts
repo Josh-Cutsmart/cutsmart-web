@@ -67,6 +67,12 @@ export function normalizeCalendarWorkdays(raw: unknown): number[] {
   if (!Array.isArray(raw)) return DEFAULT_CALENDAR_WORKDAYS;
   return Array.from(new Set(raw.map((v) => Number(v)).filter((v) => Number.isInteger(v) && v >= 0 && v <= 6))).sort();
 }
+// Company Settings > Calendar > show non-work days (company doc field calendarShowNonWorkdays). On by
+// default; when off, the month and week views leave those days out altogether (the year view still shows
+// them, crossed out).
+export function normalizeCalendarShowNonWorkdays(raw: unknown): boolean {
+  return raw !== false;
+}
 
 // Company Settings > Calendar > "Archive events after": events that ended longer ago than this are
 // archived (kept in the database, no longer shown on the calendar).

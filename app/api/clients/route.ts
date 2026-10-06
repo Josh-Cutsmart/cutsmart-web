@@ -121,6 +121,12 @@ type ClientRow = {
   notes: string;
   category: string;
   archived: boolean;
+  // When it was archived (contacts archived before this was stored have none).
+  archivedAtIso?: string;
+  // Permanently deleted from the Archived page: the doc is kept as a tombstone so the same person
+  // doesn't just reappear from their projects. Never returned; see tombstoneHidesProject.
+  deleted?: boolean;
+  deletedAtIso?: string;
   createdAtIso: string;
   updatedAtIso: string;
   firstProjectAtIso: string;
@@ -131,6 +137,16 @@ type ClientRow = {
   assignedToUids: string[];
   history: ClientHistoryRow[];
 };
+
+// A permanently deleted contact (tombstone) hides that person's projects from before it was deleted,
+// like an archived contact does. A project created afterwards is a returning client and shows again
+// (as a fresh contact). Same rule as clientTombstoneHidesProject in lib/firestore-data.ts.
+function tombstoneHidesProject(row: ClientRow, project: Record<string, unknown>): boolean {
+  if (!row.deleted) return false;
+  const deletedMs = Date.parse(toStr(row.deletedAtIso));
+  const createdMs = Date.parse(toIsoString(project.createdAtIso ?? project.createdAt, ""));
+  return !Number.isFinite(deletedMs) || !Number.isFinite(createdMs) || createdMs <= deletedMs;
+}
 
 function normalizeUidList(values: unknown): string[] {
   if (!Array.isArray(values)) return [];
@@ -251,12 +267,14 @@ function findMatchingClientIdInMap(merged: Map<string, ClientRow>, project: Reco
   return null;
 }
 
+// Used for a project being created now, so a permanently deleted contact never matches — the person is
+// back, and gets a fresh card.
 async function findExistingClientRow(companyId: string, project: Record<string, unknown>): Promise<ClientRow | null> {
   const snap = await adminDb!.collection("companies").doc(companyId).collection("clients").get();
   for (const docSnap of snap.docs) {
     if (docSnap.id === "__meta") continue;
     const row = buildClientFromDoc(companyId, docSnap.id, (docSnap.data() ?? {}) as Record<string, unknown>);
-    if (projectMatchesClient(project, row)) {
+    if (!row.deleted && projectMatchesClient(project, row)) {
       return row;
     }
   }
@@ -329,6 +347,9 @@ function buildClientFromDoc(companyId: string, id: string, data: Record<string, 
     notes: toStr(data.notes),
     category: toStr(data.category),
     archived: Boolean(data.archived),
+    archivedAtIso: toIsoString(data.archivedAtIso, ""),
+    deleted: data.deleted === true,
+    deletedAtIso: toIsoString(data.deletedAtIso, ""),
     createdAtIso: toIsoString(data.createdAtIso ?? data.createdAt, ""),
     updatedAtIso: toIsoString(data.updatedAtIso ?? data.updatedAt, ""),
     firstProjectAtIso: toIsoString(data.firstProjectAtIso ?? data.firstProjectAt, ""),
@@ -367,6 +388,8 @@ export async function GET(request: NextRequest) {
   const companyId = toStr(url.searchParams.get("companyId"));
   const mode = toStr(url.searchParams.get("mode")).toLowerCase();
   const clientId = toStr(url.searchParams.get("clientId"));
+  // archived=only: the viewer's archived contacts instead (the Archived page).
+  const archivedOnly = toStr(url.searchParams.get("archived")).toLowerCase() === "only";
   if (!companyId) {
     return NextResponse.json({ ok: false, error: "missing-company-id" }, { status: 400 });
   }
@@ -389,7 +412,7 @@ export async function GET(request: NextRequest) {
       const clientSnap = await adminDb.collection("companies").doc(companyId).collection("clients").doc(clientId).get();
       if (clientSnap.exists) {
         const client = buildClientFromDoc(companyId, clientSnap.id, (clientSnap.data() ?? {}) as Record<string, unknown>);
-        if (!canViewerAccessClientRow(client, viewerUid, includeAll)) {
+        if (client.deleted || !canViewerAccessClientRow(client, viewerUid, includeAll)) {
           return NextResponse.json({ ok: false, error: "client-not-found" }, { status: 404 });
         }
         return NextResponse.json({ ok: true, client });
@@ -418,22 +441,33 @@ export async function GET(request: NextRequest) {
   // slightly differently than this pass does — checking identity against archivedRows BEFORE a
   // project candidate is ever added to `merged` makes the exclusion correct regardless of whether
   // the two passes' own matching happens to land on the same map key.
+  // Permanently deleted ones (tombstones) are never listed, archived or not, and hide their projects the
+  // same way — only the projects from before they were deleted (see tombstoneHidesProject).
   const archivedRows: ClientRow[] = [];
+  const tombstoneRows: ClientRow[] = [];
   const activeClientRows: ClientRow[] = [];
   try {
     const clientsSnap = await adminDb.collection("companies").doc(companyId).collection("clients").get();
     clientsSnap.docs.forEach((docSnap) => {
       if (docSnap.id === "__meta") return;
       const row = buildClientFromDoc(companyId, docSnap.id, (docSnap.data() ?? {}) as Record<string, unknown>);
-      (row.archived ? archivedRows : activeClientRows).push(row);
+      (row.deleted ? tombstoneRows : row.archived ? archivedRows : activeClientRows).push(row);
     });
   } catch {
     // best-effort persisted load
   }
-  const matchesArchivedIdentity = (input: Record<string, unknown>) =>
-    archivedRows.some((archivedRow) => projectMatchesClient(input, archivedRow));
+  // The archived card a project belongs to (by its link, or else by matching identity), if any.
+  const archivedRowFor = (input: Record<string, unknown>, linkedId: string) =>
+    linkedId ? archivedRows.find((row) => row.id === linkedId) : archivedRows.find((archivedRow) => projectMatchesClient(input, archivedRow));
+  const hiddenByTombstone = (input: Record<string, unknown>, linkedId: string) =>
+    linkedId
+      ? tombstoneRows.some((row) => row.id === linkedId)
+      : tombstoneRows.some((row) => tombstoneHidesProject(row, input) && projectMatchesClient(input, row));
 
   const merged = new Map<string, ClientRow>();
+  // The people on an archived contact's projects can see it on the Archived page, the same way they'd
+  // see it in Contacts (an archived card's own doc may not list all of them).
+  const archivedViewerUids = new Map<string, { createdByUids: string[]; assignedToUids: string[] }>();
   try {
     const jobsSnap = await adminDb.collection("companies").doc(companyId).collection("jobs").get();
     jobsSnap.docs.forEach((docSnap) => {
@@ -442,7 +476,16 @@ export async function GET(request: NextRequest) {
       // A project linked to a card (clientId) belongs to that card whatever its client details say now —
       // that link keeps a changed phone/email from splitting it off into a duplicate contact.
       const linkedId = toStr(data.clientId);
-      if (linkedId ? archivedRows.some((row) => row.id === linkedId) : matchesArchivedIdentity(projectInput)) return;
+      if (hiddenByTombstone(projectInput, linkedId)) return;
+      const archivedOwner = archivedRowFor(projectInput, linkedId);
+      if (archivedOwner) {
+        const uids = archivedViewerUids.get(archivedOwner.id) ?? { createdByUids: [], assignedToUids: [] };
+        archivedViewerUids.set(archivedOwner.id, {
+          createdByUids: mergeUidLists(uids.createdByUids, [toStr(data.createdByUid)]),
+          assignedToUids: mergeUidLists(uids.assignedToUids, [toStr(data.assignedToUid)]),
+        });
+        return;
+      }
       const candidate = buildClientFromProject(companyId, projectInput);
       if (!candidate.name && !candidate.email && !candidate.phone) return;
       const matchId = (linkedId && merged.has(linkedId) ? linkedId : "") || (linkedId ? "" : findMatchingClientIdInMap(merged, projectInput)) || candidate.id;
@@ -450,6 +493,40 @@ export async function GET(request: NextRequest) {
     });
   } catch {
     // keep going so persisted client rows can still load
+  }
+
+  if (archivedOnly) {
+    // One row per person: twin docs for the same person (archiving writes all of them) are merged the
+    // same way the Contacts list merges active ones. Filed by when it was archived — or, archived before
+    // that was stored, when it was last updated.
+    const archivedMerged = new Map<string, ClientRow>();
+    archivedRows.forEach((row) => {
+      const extra = archivedViewerUids.get(row.id);
+      const withViewers = extra
+        ? {
+            ...row,
+            createdByUids: mergeUidLists(row.createdByUids, extra.createdByUids),
+            assignedToUids: mergeUidLists(row.assignedToUids, extra.assignedToUids),
+          }
+        : row;
+      const matchId =
+        findMatchingClientIdInMap(archivedMerged, {
+          id: row.lastProjectId,
+          customer: row.name,
+          clientEmail: row.email,
+          clientPhone: row.phone,
+          clientAddress: row.address,
+        }) || row.id;
+      const previous = archivedMerged.get(matchId);
+      const next = mergeClientRows(previous, { ...withViewers, id: matchId });
+      next.archivedAtIso = pickLaterIso(previous?.archivedAtIso, withViewers.archivedAtIso);
+      archivedMerged.set(matchId, next);
+    });
+    const archived = Array.from(archivedMerged.values())
+      .filter((client) => canViewerAccessClientRow(client, viewerUid, includeAll))
+      .map((client) => ({ ...toSummaryClientRow(client), archivedAtIso: client.archivedAtIso || client.updatedAtIso }))
+      .sort((a, b) => toStr(b.archivedAtIso).localeCompare(toStr(a.archivedAtIso)));
+    return NextResponse.json({ ok: true, clients: archived });
   }
 
   activeClientRows.forEach((row) => {
@@ -506,8 +583,14 @@ export async function POST(request: NextRequest) {
 
   try {
     await ensureClientsSection(companyId);
-    const matchedRow = directClientId ? null : await findExistingClientRow(companyId, body);
-    const clientId = directClientId || matchedRow?.id || createClientUid();
+    // A card that was deleted permanently isn't reused, even when asked for by id — the person gets a
+    // fresh one.
+    const directSnap = directClientId
+      ? await adminDb.collection("companies").doc(companyId).collection("clients").doc(directClientId).get()
+      : null;
+    const usableDirectId = directSnap && (directSnap.data() ?? {}).deleted === true ? "" : directClientId;
+    const matchedRow = usableDirectId ? null : await findExistingClientRow(companyId, body);
+    const clientId = usableDirectId || matchedRow?.id || createClientUid();
     const clientRef = adminDb.collection("companies").doc(companyId).collection("clients").doc(clientId);
     const existingSnap = await clientRef.get();
     const existing = existingSnap.exists ? ((existingSnap.data() ?? {}) as Record<string, unknown>) : null;

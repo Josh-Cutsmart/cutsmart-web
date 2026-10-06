@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
-import { requireCompanyMember } from "@/lib/api-company-access";
+import { apiHasPermission, requireCompanyMember } from "@/lib/api-company-access";
 
 function toStr(value: unknown) {
   return String(value ?? "").trim();
@@ -180,6 +180,9 @@ export async function GET(request: NextRequest) {
     url.searchParams.get("leadId"),
     url.searchParams.get("leadID"),
   );
+  // archived=only: just the archived leads (isDeleted — a lead's archive flag), for the Archived page.
+  // Read on their own rather than picked out of the newest 500, so older archived leads still show.
+  const archivedOnly = pickFirstNonEmpty(url.searchParams.get("archived")).toLowerCase() === "only";
   if (!companyId) {
     return NextResponse.json({ ok: false, error: "missing-company-id" }, { status: 400 });
   }
@@ -199,6 +202,20 @@ export async function GET(request: NextRequest) {
       }
       const data = (docSnap.data() ?? {}) as Record<string, unknown>;
       return NextResponse.json({ ok: true, lead: buildLeadResponse(companyId, docSnap.id, data, "detail") });
+    }
+    if (archivedOnly) {
+      // Equality only (no orderBy), so it needs no composite index; sorted newest-archived first here.
+      const archivedSnap = await adminDb
+        .collection("companies")
+        .doc(companyId)
+        .collection("leads")
+        .where("isDeleted", "==", true)
+        .limit(2000)
+        .get();
+      const leads = archivedSnap.docs
+        .map((docSnap) => buildLeadResponse(companyId, docSnap.id, (docSnap.data() ?? {}) as Record<string, unknown>, "summary"))
+        .sort((a, b) => (b.deletedAtIso || b.updatedAtIso).localeCompare(a.deletedAtIso || a.updatedAtIso));
+      return NextResponse.json({ ok: true, leads });
     }
     const snap = await adminDb
       .collection("companies")
@@ -445,6 +462,45 @@ export async function PATCH(request: NextRequest) {
   }
 }
 
+// Permanently deletes archived leads — the Archived page's "Delete permanently" (one or many). Only a
+// signed-in member who can work with leads (owner/admin, leads.view or leads.view.others — the same
+// access the Archived page's Leads tab needs), only leads that are already archived, and without
+// leads.view.others only the ones assigned to them (the only ones they can see). Returns which were
+// deleted; anything else is skipped.
+async function deleteArchivedLeadsAsMember(request: NextRequest, companyId: string, leadIds: string[]) {
+  const access = await requireCompanyMember(request, companyId);
+  if (!access) {
+    return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  }
+  if (!apiHasPermission(access, "leads.view") && !apiHasPermission(access, "leads.view.others")) {
+    return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
+  }
+  const seesOthers = apiHasPermission(access, "leads.view.others");
+  const ids = Array.from(new Set(leadIds.map((id) => toStr(id)).filter(Boolean))).slice(0, 500);
+  if (!ids.length) {
+    return NextResponse.json({ ok: false, error: "missing-lead-id" }, { status: 400 });
+  }
+  try {
+    const leadsRef = adminDb!.collection("companies").doc(companyId).collection("leads");
+    const snaps = await adminDb!.getAll(...ids.map((id) => leadsRef.doc(id)));
+    const deletable = snaps.filter((snap) => {
+      if (!snap.exists) return false;
+      const data = (snap.data() ?? {}) as Record<string, unknown>;
+      if (data.isDeleted !== true) return false;
+      return seesOthers || toStr(data.assignedToUid) === access.uid;
+    });
+    const batch = adminDb!.batch();
+    deletable.forEach((snap) => batch.delete(snap.ref));
+    if (deletable.length > 0) {
+      await batch.commit();
+    }
+    const deleted = deletable.map((snap) => snap.id);
+    return NextResponse.json({ ok: true, deleted, skipped: ids.filter((id) => !deleted.includes(id)) });
+  } catch {
+    return NextResponse.json({ ok: false, error: "lead-delete-failed" }, { status: 500 });
+  }
+}
+
 export async function DELETE(request: NextRequest) {
   if (!adminDb || !hasFirebaseAdminConfig) {
     return NextResponse.json({ ok: false, error: "missing-firebase-admin-config" }, { status: 500 });
@@ -460,6 +516,14 @@ export async function DELETE(request: NextRequest) {
     url.searchParams.get("companyID"),
     request.headers.get("x-company-id"),
   );
+  // The app's own permanent delete (signed-in member, list of lead ids). Everything below is Zapier's
+  // sample-lead clean-up, which uses the company's webhook secret instead.
+  if (Array.isArray(body.leadIds)) {
+    if (!companyId) {
+      return NextResponse.json({ ok: false, error: "missing-company-id" }, { status: 400 });
+    }
+    return deleteArchivedLeadsAsMember(request, companyId, body.leadIds.map((id) => toStr(id)));
+  }
   const token = pickFirstNonEmpty(
     url.searchParams.get("token"),
     request.headers.get("x-zapier-secret"),

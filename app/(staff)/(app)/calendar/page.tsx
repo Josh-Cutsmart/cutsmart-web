@@ -13,11 +13,14 @@ import Link from "next/link";
 import { CalendarDays, ChevronLeft, ChevronRight, Clock, ExternalLink, Filter, FolderKanban, Lock, MapPin, Pencil, Plus, Search, Trash2, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { fetchCompanyDoc, fetchCompanyMembers, fetchProjects } from "@/lib/firestore-data";
+import { isProjectArchived } from "@/lib/project-archive";
 import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
 import { normalizeRoleKey } from "@/lib/company-roles";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { DragGhostLayer, useDragGhost } from "@/lib/use-drag-ghost";
 import { activeDate, useCompanyFormats } from "@/lib/company-formats";
+import { useAppTabs } from "@/lib/app-tabs-context";
+import { useCalendarAppMode } from "@/lib/calendar-app-mode";
 import {
   deleteCalendarEvent,
   newCalendarId,
@@ -25,6 +28,7 @@ import {
   calendarRetentionCutoffMs,
   normalizeCalendarCategories,
   normalizeCalendarRetention,
+  normalizeCalendarShowNonWorkdays,
   normalizeCalendarWorkdays,
   DEFAULT_CALENDAR_WORKDAYS,
   saveCalendarEvent,
@@ -206,23 +210,37 @@ type BarSlot = { event: CalendarEvent; startCol: number; endCol: number; lane: n
 // category order (rank = the category's position in Company Settings). Each event takes the highest lane
 // free across all its days, so on any one day an event never sits above one from an earlier category.
 // withSingleDay: also lay out single-day timed events (month view); otherwise just the bar events.
+// dayCols: which day (days after rowStart) each column is, when some days are left out (Company Settings >
+// Calendar, non-work days hidden); otherwise column n is rowStart + n. An event across a left-out day draws
+// straight across the gap; one only on left-out days isn't shown.
 function layoutBars(
   rowStart: Date,
   cols: number,
   evs: CalendarEvent[],
   rank: (e: CalendarEvent) => number,
   withSingleDay = false,
+  dayCols?: number[],
 ): { bars: BarSlot[]; lanes: number } {
   const rowStartMs = startOfDay(rowStart).getTime();
-  const col = (ms: number) => Math.round((startOfDay(ms).getTime() - rowStartMs) / DAY_MS);
+  const dayOf = (ms: number) => Math.round((startOfDay(ms).getTime() - rowStartMs) / DAY_MS);
+  const shown = dayCols ?? Array.from({ length: cols }, (_, i) => i);
   const items = evs
     .filter((e) => withSingleDay || isBarEvent(e))
     .map((event) => {
-      const first = col(event.startMs);
-      const last = isBarEvent(event) ? col(event.endMs - 1) : first;
-      return { event, first, last, startCol: Math.max(0, first), endCol: Math.min(cols - 1, last) };
+      const first = dayOf(event.startMs);
+      const last = isBarEvent(event) ? dayOf(event.endMs - 1) : first;
+      // The first and last columns showing a day the event covers.
+      const startCol = shown.findIndex((day) => day >= first);
+      let endCol = -1;
+      for (let c = shown.length - 1; c >= 0; c--) {
+        if (shown[c] <= last) {
+          endCol = c;
+          break;
+        }
+      }
+      return { event, first, last, startCol, endCol };
     })
-    .filter((it) => it.endCol >= 0 && it.startCol <= cols - 1)
+    .filter((it) => it.startCol >= 0 && it.endCol >= it.startCol)
     .sort(
       (a, b) =>
         rank(a.event) - rank(b.event) ||
@@ -241,10 +259,14 @@ function layoutBars(
     while (!free(lane)) lane++;
     taken[lane] = taken[lane] ?? [];
     for (let c = it.startCol; c <= it.endCol; c++) taken[lane][c] = true;
-    return { event: it.event, startCol: it.startCol, endCol: it.endCol, lane, contBefore: it.first < 0, contAfter: it.last > cols - 1 };
+    // Square ends where the event carries on past the first/last day shown (before/after this row, or
+    // into a left-out day).
+    return { event: it.event, startCol: it.startCol, endCol: it.endCol, lane, contBefore: it.first < shown[it.startCol], contAfter: it.last > shown[it.endCol] };
   });
   return { bars, lanes: taken.length };
 }
+// Every day of a Monday-start week, as offsets from the Monday (0 = Monday … 6 = Sunday).
+const ALL_WEEK_COLS = [0, 1, 2, 3, 4, 5, 6];
 // One event "slot" in a month day: an 18px event plus a 2px gap.
 const BAR_H = 20;
 const PREVIEW_SUFFIX = "__preview";
@@ -360,6 +382,38 @@ const cardStyle: CSSProperties = {
   boxShadow: "inset 0 1px 0 var(--glass-highlight), var(--shadow-glass)",
 };
 
+// The event pop-up is themed by the event's category: a wash of its colour over the glass. The colour is a
+// registered custom property, so it can be animated — picking another category fades the wash over to the
+// new colour instead of snapping. Browsers without CSS.registerProperty just switch straight to it.
+const POPUP_TINT_VAR = "--cal-popup-tint";
+let popupTintRegistered = false;
+function registerPopupTint() {
+  if (popupTintRegistered || typeof CSS === "undefined" || typeof CSS.registerProperty !== "function") return;
+  popupTintRegistered = true;
+  try {
+    CSS.registerProperty({ name: POPUP_TINT_VAR, syntax: "<color>", inherits: false, initialValue: "transparent" });
+  } catch {
+    // already registered (e.g. after a hot reload)
+  }
+}
+// color "" = no category yet: no wash.
+function popupTintStyle(color: string): CSSProperties {
+  const tint = `var(${POPUP_TINT_VAR})`;
+  return {
+    [POPUP_TINT_VAR]: color || "transparent",
+    transition: `${POPUP_TINT_VAR} 360ms ease`,
+    backgroundImage: [
+      `radial-gradient(120% 70% at 0% 0%, color-mix(in srgb, ${tint} 30%, transparent), transparent 70%)`,
+      `radial-gradient(90% 60% at 100% 100%, color-mix(in srgb, ${tint} 14%, transparent), transparent 70%)`,
+      `linear-gradient(to bottom, color-mix(in srgb, ${tint} 10%, transparent), color-mix(in srgb, ${tint} 5%, transparent))`,
+    ].join(", "),
+  } as CSSProperties;
+}
+// The pop-up's main button (Edit / Save / Add event) in the category's colour.
+function categoryButtonStyle(color: string): CSSProperties {
+  return { backgroundColor: color, color: textOn(color), boxShadow: `0 6px 16px color-mix(in srgb, ${color} 35%, transparent)` };
+}
+
 export default function CalendarPage() {
   const { user } = useAuth();
   const access = useCompanyAccess();
@@ -370,11 +424,26 @@ export default function CalendarPage() {
     access.status === "ready" &&
     (isOwnerOrAdmin(access.role) || hasPermissionKey(access.permissionKeys, "calendar.view") || hasPermissionKey(access.permissionKeys, "calendar.edit"));
 
+  // Opened from the Calendar's own home-screen icon: just the calendar, without the app around it (no
+  // sidebars, tab bar, pull-down menu or side drawers — AppShell drops them all while chromeHidden is on).
+  // Not while access says this person can't see the calendar, so they aren't left on a dead end.
+  const calendarApp = useCalendarAppMode();
+  const chromeless = calendarApp && (access.status === "loading" || canView);
+  const { setChromeHidden } = useAppTabs();
+  // Before paint, so the tab bar and sidebar don't flash up for a frame as the app opens.
+  useLayoutEffect(() => {
+    if (!chromeless) return;
+    setChromeHidden(true);
+    return () => setChromeHidden(false);
+  }, [chromeless, setChromeHidden]);
+
   const [view, setView] = useState<CalendarView>("month");
   const [cursor, setCursor] = useState<Date>(() => startOfDay(new Date()));
   const [categories, setCategories] = useState<CalendarCategory[]>([]);
   // Company Settings > Calendar > Workdays. Other days are drawn hatched ("crossed out").
   const [workdays, setWorkdays] = useState<number[]>(DEFAULT_CALENDAR_WORKDAYS);
+  // Company Settings > Calendar: when off, the month and week views leave the non-work days out.
+  const [showNonWorkdays, setShowNonWorkdays] = useState(true);
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [loadError, setLoadError] = useState("");
@@ -432,6 +501,7 @@ export default function CalendarPage() {
       if (cancelled) return;
       setCategories(normalizeCalendarCategories((docData as Record<string, unknown> | null)?.calendarCategories));
       setWorkdays(normalizeCalendarWorkdays((docData as Record<string, unknown> | null)?.calendarWorkdays));
+      setShowNonWorkdays(normalizeCalendarShowNonWorkdays((docData as Record<string, unknown> | null)?.calendarShowNonWorkdays));
       const cutoff = calendarRetentionCutoffMs(normalizeCalendarRetention((docData as Record<string, unknown> | null)?.calendarEventRetention));
       setArchiveCutoffMs(cutoff);
       setShowToClientDefault((docData as Record<string, unknown> | null)?.calendarShowToClientDefault === true);
@@ -444,7 +514,9 @@ export default function CalendarPage() {
       setMemberColorByUid(map);
     });
     if (user?.uid) {
-      void fetchProjects(user.uid, [companyId], { lightweight: true }).then((rows) => {
+      // Archived projects too: events already linked to one keep their details (see restrictedIds) —
+      // they're just not offered in the project picker any more.
+      void fetchProjects(user.uid, [companyId], { lightweight: true, archived: "include" }).then((rows) => {
         if (cancelled) return;
         setProjects(rows.filter((p) => !p.deletedAt && (!p.companyId || p.companyId === companyId)));
         setProjectsLoaded(true);
@@ -533,6 +605,8 @@ export default function CalendarPage() {
   const focusedDraftIdRef = useRef("");
   // Clicking an event opens it read-only ("view"); Edit switches the same pop-up to the form.
   const [eventMode, setEventMode] = useState<"view" | "edit">("edit");
+  // Lets the pop-up's category wash fade between colours (popupTintStyle).
+  useEffect(() => registerPopupTint(), []);
 
   const openNew = (startMs: number, allDay: boolean, e?: ReactMouseEvent<HTMLElement> | ReactPointerEvent<HTMLElement>) => {
     if (!canCreate) return;
@@ -640,6 +714,15 @@ export default function CalendarPage() {
     }
   };
 
+  // The days of the week the month and week views show as columns (offsets from Monday). All seven, unless
+  // non-work days are switched off in Company Settings > Calendar (and there's at least one workday).
+  const weekCols = useMemo(() => {
+    if (showNonWorkdays) return ALL_WEEK_COLS;
+    const cols = ALL_WEEK_COLS.filter((i) => workdays.includes((i + 1) % 7));
+    return cols.length ? cols : ALL_WEEK_COLS;
+  }, [showNonWorkdays, workdays]);
+  const isLeftOutDay = (day: Date) => !weekCols.includes((day.getDay() + 6) % 7);
+
   // ---------------------------------------------------------------- navigation
   // Desktop: Previous / Next slide the view — month up/down, week/day/list left/right. The outgoing view
   // is a static copy of the current DOM that slides out while the new one slides in (see the effect below).
@@ -721,7 +804,12 @@ export default function CalendarPage() {
         return x;
       }
       if (view === "week") return addDays(prev, 7 * dir);
-      if (view === "day") return addDays(prev, dir);
+      if (view === "day") {
+        // Skips the non-work days when the calendar leaves them out.
+        let next = addDays(prev, dir);
+        for (let i = 0; i < 6 && isLeftOutDay(next); i++) next = addDays(next, dir);
+        return next;
+      }
       return addDays(prev, LIST_DAYS * dir);
     });
   };
@@ -733,8 +821,9 @@ export default function CalendarPage() {
     }
     if (view === "month") return monthYear(cursor);
     if (view === "week") {
+      // The first and last days shown (Mon – Fri when the weekend is left out).
       const s = startOfWeek(cursor);
-      return `${activeDate(s)} – ${activeDate(addDays(s, 6))}`;
+      return `${activeDate(addDays(s, weekCols[0]))} – ${activeDate(addDays(s, weekCols[weekCols.length - 1]))}`;
     }
     if (view === "day") return `${new Intl.DateTimeFormat(undefined, { weekday: "long" }).format(cursor)} ${activeDate(cursor)}`;
     return `${activeDate(range.from)} – ${activeDate(addDays(range.to, -1))}`;
@@ -805,11 +894,12 @@ export default function CalendarPage() {
     },
   });
 
-  const dayUnderPointer = (e: ReactDragEvent<HTMLElement>, rowStart: Date, cols: number) => {
+  // dayCols: the day each column is, when some days are left out (see layoutBars).
+  const dayUnderPointer = (e: ReactDragEvent<HTMLElement>, rowStart: Date, cols: number, dayCols?: number[]) => {
     const row = (e.currentTarget as HTMLElement).parentElement?.getBoundingClientRect();
     const colWidth = row ? row.width / cols : 1;
     const col = row ? Math.min(cols - 1, Math.max(0, Math.floor((e.clientX - row.left) / colWidth))) : 0;
-    return addDays(rowStart, col).getTime();
+    return addDays(rowStart, dayCols ? dayCols[col] : col).getTime();
   };
 
   // A single-day timed event in a month cell: coloured dot, time, title.
@@ -850,13 +940,13 @@ export default function CalendarPage() {
   };
 
   // One continuous bar per event across the days it covers in a row of `cols` days. Square ends mark
-  // where it carries on into the previous / next row.
-  const renderBars = (bars: BarSlot[], rowStart: Date, cols: number, maxLanes: number) =>
+  // where it carries on into the previous / next row. dayCols as for layoutBars.
+  const renderBars = (bars: BarSlot[], rowStart: Date, cols: number, maxLanes: number, dayCols?: number[]) =>
     bars
       .filter((b) => b.lane < maxLanes)
       .map((b) => {
         if (!isBarEvent(b.event)) {
-          return renderChip(b.event, addDays(rowStart, b.startCol), {
+          return renderChip(b.event, addDays(rowStart, dayCols ? dayCols[b.startCol] : b.startCol), {
             top: b.lane * BAR_H,
             left: `calc(${(b.startCol / cols) * 100}% + 2px)`,
             width: `calc(${(1 / cols) * 100}% - 4px)`,
@@ -877,12 +967,12 @@ export default function CalendarPage() {
               const row = (e.currentTarget as HTMLElement).parentElement?.getBoundingClientRect();
               const colWidth = row ? row.width / cols : 1;
               const grabCol = row ? Math.min(cols - 1, Math.max(0, Math.floor((e.clientX - row.left) / colWidth))) : b.startCol;
-              beginDayDrag(e, b.event, barId, addDays(rowStart, grabCol).getTime());
+              beginDayDrag(e, b.event, barId, addDays(rowStart, dayCols ? dayCols[grabCol] : grabCol).getTime());
             }}
             onDragEnd={endDayDrag}
             // A bar covers the day cells under it, so it passes drops on to the day under the pointer.
-            onDragOver={(e) => dayDropProps(dayUnderPointer(e, rowStart, cols)).onDragOver(e)}
-            onDrop={(e) => dayDropProps(dayUnderPointer(e, rowStart, cols)).onDrop(e)}
+            onDragOver={(e) => dayDropProps(dayUnderPointer(e, rowStart, cols, dayCols)).onDragOver(e)}
+            onDrop={(e) => dayDropProps(dayUnderPointer(e, rowStart, cols, dayCols)).onDrop(e)}
             onClick={(e) => {
               e.stopPropagation();
               openExisting(b.event, e);
@@ -936,17 +1026,19 @@ export default function CalendarPage() {
   // it's in (data-mi); app/globals.css greys the days that aren't in the month in view (data-live).
   const weekRow = (weekStart: Date, windowMonths: Date[], place?: { className?: string; style?: CSSProperties }) => {
     const S = slotsPerDay;
-    const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
+    // The week's days, less any left-out non-work days (weekCols).
+    const cols = weekCols.length;
+    const days = weekCols.map((i) => addDays(weekStart, i));
     // Every event (bars and single-day chips) in category-ordered lanes.
-    const { bars, lanes } = layoutBars(weekStart, 7, dayLayoutEvents, rankOf, true);
+    const { bars, lanes } = layoutBars(weekStart, cols, dayLayoutEvents, rankOf, true, weekCols);
     // Lanes shown in this row — every slot can hold an event, since the "+N" count sits up in the
     // day's header rather than taking a slot.
     const L = Math.min(lanes, S);
     return (
       <div
         key={weekStart.getTime()}
-        className={`relative grid min-h-0 grid-cols-7 overflow-hidden border-b ${place ? place.className ?? "" : "last:border-b-0"}`}
-        style={{ borderColor: "var(--glass-border)", ...place?.style }}
+        className={`relative grid min-h-0 overflow-hidden border-b ${place ? place.className ?? "" : "last:border-b-0"}`}
+        style={{ borderColor: "var(--glass-border)", gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`, ...place?.style }}
       >
         {days.map((dd, col) => {
           const dayMs = dd.getTime();
@@ -959,7 +1051,7 @@ export default function CalendarPage() {
               data-mi={monthIdx}
               onClick={(e) => openNew(dayMs, true, e)}
               {...dayDropProps(dayMs)}
-              className={`cal-day group relative flex min-h-0 min-w-0 flex-col gap-0.5 overflow-hidden border-r p-1 transition-colors duration-300 [&:nth-child(7)]:border-r-0 ${canCreate ? "cursor-pointer hover:bg-[color-mix(in_srgb,var(--text-main)_3%,transparent)]" : ""}`}
+              className={`cal-day group relative flex min-h-0 min-w-0 flex-col gap-0.5 overflow-hidden p-1 transition-colors duration-300 ${col === cols - 1 ? "" : "border-r"} ${canCreate ? "cursor-pointer hover:bg-[color-mix(in_srgb,var(--text-main)_3%,transparent)]" : ""}`}
               style={{
                 borderColor: "var(--glass-border)",
                 backgroundColor: monthDropDay === dayMs ? "var(--brand-soft)" : "var(--cal-day-bg, transparent)",
@@ -1004,7 +1096,7 @@ export default function CalendarPage() {
         })}
         {/* The week's events (continuous bars and single-day chips), positioned under the day numbers. */}
         <div className="pointer-events-none absolute inset-x-0" style={{ top: DAY_HEADER_PX, height: L * BAR_H }}>
-          {renderBars(bars, weekStart, 7, L)}
+          {renderBars(bars, weekStart, cols, L, weekCols)}
         </div>
       </div>
     );
@@ -1022,22 +1114,6 @@ export default function CalendarPage() {
     query.addEventListener("change", sync);
     return () => query.removeEventListener("change", sync);
   }, []);
-  // The visible part of the screen on phones (window.visualViewport), for the event pop-up.
-  const [visibleBox, setVisibleBox] = useState<{ top: number; height: number } | null>(null);
-  const popupOpen = Boolean(draft);
-  useEffect(() => {
-    const vv = window.visualViewport;
-    if (!popupOpen || !isMobile || !vv) return;
-    const sync = () => setVisibleBox({ top: vv.offsetTop, height: vv.height });
-    const frame = requestAnimationFrame(sync);
-    vv.addEventListener("resize", sync);
-    vv.addEventListener("scroll", sync);
-    return () => {
-      cancelAnimationFrame(frame);
-      vv.removeEventListener("resize", sync);
-      vv.removeEventListener("scroll", sync);
-    };
-  }, [isMobile, popupOpen]);
   const monthScrollerRef = useRef<HTMLDivElement | null>(null);
   const monthSettleTimerRef = useRef<number | null>(null);
   // Which of the three months (0 prev, 1 current, 2 next) the scroller is nearest to, so the greyed days
@@ -1173,8 +1249,8 @@ export default function CalendarPage() {
     ? { className: "-mx-3 border-y", style: { borderColor: "var(--glass-border)", backgroundColor: "var(--glass-bg-strong)" } as CSSProperties }
     : { className: "rounded-[20px] border", style: cardStyle };
   const weekdayHeader = (
-    <div className="grid shrink-0 grid-cols-7 border-b" style={{ borderColor: "var(--glass-border)" }}>
-      {Array.from({ length: 7 }, (_, i) => addDays(startOfWeek(cursor), i)).map((day) => (
+    <div className="grid shrink-0 border-b" style={{ borderColor: "var(--glass-border)", gridTemplateColumns: `repeat(${weekCols.length}, minmax(0, 1fr))` }}>
+      {weekCols.map((i) => addDays(startOfWeek(cursor), i)).map((day) => (
         <div key={day.getTime()} className="px-2 py-2 text-center text-[11px] font-semibold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
           {weekdayShort(day)}
         </div>
@@ -1206,17 +1282,19 @@ export default function CalendarPage() {
       </div>
     );
     if (isMobile) {
+      // Fills the rest of the screen under the toolbar (however many lines it wraps to), so all six weeks
+      // fit — the page around it is laid out for that while the month view is on (see fillMonth).
       return (
-        <div className="-mx-3 flex flex-col border-y" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-bg-strong)" }}>
+        <div className="-mx-3 flex min-h-0 flex-1 flex-col border-y" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-bg-strong)" }}>
           {weekdayHeader}
-          {scroller("", { height: "calc(100svh - 144px - env(safe-area-inset-bottom, 0px))" })}
+          {scroller("min-h-0 flex-1")}
         </div>
       );
     }
     return (
       <div className="flex flex-col overflow-hidden rounded-[20px] border lg:min-h-0 lg:flex-1" style={cardStyle}>
         {weekdayHeader}
-        {scroller("h-[max(540px,calc(100svh-168px))] lg:h-auto lg:min-h-0 lg:flex-1")}
+        {scroller(chromeless ? "h-[max(540px,calc(100svh-120px))] lg:h-auto lg:min-h-0 lg:flex-1" : "h-[max(540px,calc(100svh-168px))] lg:h-auto lg:min-h-0 lg:flex-1")}
       </div>
     );
   };
@@ -1233,6 +1311,8 @@ export default function CalendarPage() {
     x: number;
     y: number;
     colWidth: number;
+    // Week view: the column the event starts in (-1 if it isn't one of the columns shown).
+    col: number;
     moved: boolean;
   } | null>(null);
 
@@ -1240,13 +1320,14 @@ export default function CalendarPage() {
     e.stopPropagation();
     if (!canEditEvent(event) || e.button !== 0) return;
     const cols = columnsRef.current;
-    const colCount = view === "week" ? 7 : 1;
+    const colCount = view === "week" ? weekCols.length : 1;
     pointerDragRef.current = {
       event,
       mode,
       x: e.clientX,
       y: e.clientY,
       colWidth: cols ? cols.getBoundingClientRect().width / colCount : 1,
+      col: weekCols.indexOf(Math.round((startOfDay(event.startMs).getTime() - range.from.getTime()) / DAY_MS)),
       moved: false,
     };
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
@@ -1259,7 +1340,12 @@ export default function CalendarPage() {
     if (!drag.moved && Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
     drag.moved = true;
     const minutes = Math.round(((dy / HOUR_PX) * 60) / SNAP_MIN) * SNAP_MIN;
-    const days = view === "week" ? Math.round(dx / drag.colWidth) : 0;
+    let days = view === "week" ? Math.round(dx / drag.colWidth) : 0;
+    // With non-work days left out, columns aren't consecutive days: move by columns, within the week.
+    if (view === "week" && weekCols.length < 7 && drag.col >= 0) {
+      const to = Math.min(weekCols.length - 1, Math.max(0, drag.col + days));
+      days = weekCols[to] - weekCols[drag.col];
+    }
     const { event } = drag;
     if (drag.mode === "move") {
       const delta = minutes * 60000 + days * DAY_MS;
@@ -1286,14 +1372,16 @@ export default function CalendarPage() {
   };
 
   const timeGrid = () => {
-    const dayCount = view === "week" ? 7 : 1;
-    const days = Array.from({ length: dayCount }, (_, i) => addDays(range.from, i));
+    // Week: the days in weekCols (non-work days may be left out); day: just the one.
+    const dayCols = view === "week" ? weekCols : undefined;
+    const days = dayCols ? dayCols.map((i) => addDays(range.from, i)) : [range.from];
+    const dayCount = days.length;
     const gridCols = { gridTemplateColumns: `repeat(${dayCount}, minmax(0, 1fr))` };
     return (
       <div className={`flex min-h-0 flex-col overflow-hidden lg:flex-1 ${viewShell.className}`} style={viewShell.style}>
         {/* Day headers, then the all-day row (all-day and multi-day events as continuous bars). */}
         {(() => {
-          const { bars, lanes } = layoutBars(range.from, dayCount, dayLayoutEvents, rankOf);
+          const { bars, lanes } = layoutBars(range.from, dayCount, dayLayoutEvents, rankOf, false, dayCols);
           return (
             <div className="border-b" style={{ borderColor: "var(--glass-border)" }}>
               <div className="flex">
@@ -1342,7 +1430,7 @@ export default function CalendarPage() {
                     />
                   ))}
                   <div className="pointer-events-none absolute inset-x-0" style={{ top: 3, height: lanes * BAR_H }}>
-                    {renderBars(bars, range.from, dayCount, 99)}
+                    {renderBars(bars, range.from, dayCount, 99, dayCols)}
                   </div>
                 </div>
               </div>
@@ -1352,8 +1440,16 @@ export default function CalendarPage() {
         {/* Hours */}
         {/* The floating glass scrollbar, not a native one: a native scrollbar takes width here but not in
             the date/all-day rows above, which pushed the hour columns out of line with them. */}
-        <GlassScrollbarThumb scrollRef={gridScrollRef} refreshKey={view} />
-        <div ref={gridScrollRef} className="hide-native-scrollbar relative max-h-[calc(100svh-222px)] min-h-0 flex-1 overflow-y-auto lg:max-h-none">
+        {/* The thumb is portaled outside this page's markup (so outside data-app-gesture-exempt): dragging it
+            down would otherwise also pull down the app's top menu. React passes its touches up through here. */}
+        <div className="contents" onTouchStart={(e) => e.stopPropagation()}>
+          <GlassScrollbarThumb scrollRef={gridScrollRef} refreshKey={view} />
+        </div>
+        <div
+          ref={gridScrollRef}
+          // The calendar app (no 48px tab bar over it) has that much more room.
+          className={`hide-native-scrollbar relative min-h-0 flex-1 overflow-y-auto lg:max-h-none ${chromeless ? "max-h-[calc(100svh-174px)]" : "max-h-[calc(100svh-222px)]"}`}
+        >
           <div className="flex" style={{ height: HOUR_PX * 24 }}>
             <div className="relative w-14 shrink-0">
               {Array.from({ length: 24 }, (_, h) => (
@@ -1521,7 +1617,12 @@ export default function CalendarPage() {
       <div
         ref={yearScrollerRef}
         onScroll={onYearScroll}
-        className={`overflow-auto overscroll-contain h-[calc(100svh-144px-env(safe-area-inset-bottom,0px))] md:h-[max(540px,calc(100svh-168px))] lg:h-auto lg:min-h-0 lg:flex-1 ${viewShell.className}`}
+        className={`overflow-auto overscroll-contain lg:h-auto lg:min-h-0 lg:flex-1 ${
+          // The calendar app (no 48px tab bar over it) has that much more room.
+          chromeless
+            ? "h-[calc(100svh-96px-env(safe-area-inset-bottom,0px))] md:h-[max(540px,calc(100svh-120px))]"
+            : "h-[calc(100svh-144px-env(safe-area-inset-bottom,0px))] md:h-[max(540px,calc(100svh-168px))]"
+        } ${viewShell.className}`}
         style={viewShell.style}
       >
         <div className="min-w-[760px]">
@@ -1754,6 +1855,7 @@ export default function CalendarPage() {
 
   const filteredProjects = projects
     .filter((p) => {
+      if (isProjectArchived(p)) return false;
       const q = projectQuery.trim().toLowerCase();
       if (!q) return true;
       return [p.name, p.customer, p.clientAddress].join(" ").toLowerCase().includes(q);
@@ -1765,6 +1867,12 @@ export default function CalendarPage() {
   // Existing events open read-only first (and always, for people who can't edit).
   const viewingEvent = Boolean(d && !d.isNew && (eventMode === "view" || readOnly));
   const viewEvent = d && viewingEvent ? eventFromDraft(d) : null;
+  // The pop-up is themed by the event's category — viewing or editing it, and a new event by the category
+  // chosen for it ("" = it has none: the plain pop-up).
+  const themeColor = d ? (d.isNew ? categoryById.get(d.categoryId)?.color ?? "" : draftCategory.color) : "";
+  // Phones, month view: the page is laid out to exactly fill the screen, so the month's six weeks fit
+  // under the toolbar with 20px clear at the bottom (where the phone's rounded corners cut in).
+  const fillMonth = isMobile && view === "month";
   // "Added by <name>" with the person's emblem — in the bottom bar on desktop, in the body on phones.
   // compact: just the emblem on phones (the edit form's bottom bar is busy there).
   const addedBy = (className: string, compact = false) =>
@@ -1786,13 +1894,41 @@ export default function CalendarPage() {
       data-app-gesture-exempt="true"
       // Cancels app-shell's own <main> padding (12px / safe area at the sides, set inline there; 12px/16px
       // on top; 12px at the bottom on phones only), so the 12px gap below is the only gap on every side.
-      className="-mt-3 flex flex-col md:-mt-4 max-lg:-mb-3"
-      style={{ marginLeft: "calc(-1 * max(12px, env(safe-area-inset-left)))", marginRight: "calc(-1 * max(12px, env(safe-area-inset-right)))" }}
+      // The calendar app (chromeless): <main> has no padding then, so there's nothing to cancel — just keep
+      // clear of the notch / rounded corners, and cover all of <main> so every touch on it is the
+      // calendar's (never the app's pull-down menu).
+      className={chromeless ? "flex min-h-full flex-col" : "-mt-3 flex flex-col md:-mt-4 max-lg:-mb-3"}
+      style={
+        chromeless
+          ? {
+              paddingTop: "env(safe-area-inset-top, 0px)",
+              paddingLeft: "env(safe-area-inset-left, 0px)",
+              paddingRight: "env(safe-area-inset-right, 0px)",
+              height: fillMonth ? "100%" : undefined,
+            }
+          : {
+              marginLeft: "calc(-1 * max(12px, env(safe-area-inset-left)))",
+              marginRight: "calc(-1 * max(12px, env(safe-area-inset-right)))",
+              // fillMonth: exactly <main>'s height — its 12px top padding and its bottom padding (12px, or the
+              // home-indicator area) taken back.
+              ...(fillMonth
+                ? {
+                    height: "calc(100% + 12px + max(12px, env(safe-area-inset-bottom)))",
+                    marginBottom: "calc(-1 * max(12px, env(safe-area-inset-bottom)))",
+                  }
+                : {}),
+            }
+      }
     >
-      {/* Desktop: exactly fills the space under the 48px top bar (min 640px on a very short window). */}
-      <div className="grid w-full gap-3 p-3 lg:h-[max(640px,calc(100dvh-48px))] lg:grid-cols-[240px_minmax(0,1fr)]">
+      {/* Desktop: exactly fills the space under the 48px top bar (min 640px on a very short window); the
+          calendar app has no top bar. Phones in month view: fills the screen, 20px clear at the bottom. */}
+      <div
+        className={`grid w-full gap-3 lg:grid-cols-[240px_minmax(0,1fr)] ${fillMonth ? "min-h-0 flex-1 grid-rows-[minmax(0,1fr)] px-3 pb-5 pt-3" : "p-3"} ${
+          chromeless ? "lg:h-[max(640px,100dvh)]" : "lg:h-[max(640px,calc(100dvh-48px))]"
+        }`}
+      >
         {/* Sidebar: categories to show/hide (desktop). */}
-        <aside className="hidden h-fit flex-col gap-3 rounded-[20px] border p-3.5 lg:sticky lg:top-[60px] lg:flex" style={cardStyle}>
+        <aside className={`hidden h-fit flex-col gap-3 rounded-[20px] border p-3.5 lg:sticky lg:flex ${chromeless ? "lg:top-3" : "lg:top-[60px]"}`} style={cardStyle}>
           <div className="flex items-center gap-2 px-1.5 text-[18px] font-bold" style={{ color: "var(--text-main)" }}>
             <CalendarDays size={18} strokeWidth={2.1} />
             Calendar
@@ -1806,7 +1942,11 @@ export default function CalendarPage() {
           {categoryFilter}
         </aside>
 
-        <main className="flex min-w-0 flex-col gap-3 lg:min-h-0">
+        {/* A <div>, not a <main>: app/globals.css locks every <main> (overflow-y hidden) while a pop-up is
+            open on phones, which on this one also made it clip sideways — cutting 12px off each edge of the
+            edge-to-edge views (the bar that showed behind the event pop-up's blur). App-shell's own <main>
+            is the page's main. */}
+        <div className={`flex min-w-0 flex-col gap-3 lg:min-h-0 ${fillMonth ? "min-h-0" : ""}`}>
           {/* Toolbar */}
           <div className="flex flex-wrap items-center gap-2 rounded-[20px] border px-3 py-2.5" style={cardStyle}>
             <button type="button" onClick={() => setCursor(startOfDay(new Date()))} className={smallButtonClass}>
@@ -1857,10 +1997,10 @@ export default function CalendarPage() {
             <p className="rounded-[12px] px-3 py-2 text-[12.5px] font-medium" style={{ backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}>{loadError}</p>
           ) : null}
 
-          <div ref={viewWrapRef} className="relative lg:flex lg:min-h-0 lg:flex-1 lg:flex-col">
+          <div ref={viewWrapRef} className={`relative lg:flex lg:min-h-0 lg:flex-1 lg:flex-col ${fillMonth ? "flex min-h-0 flex-1 flex-col" : ""}`}>
             {view === "year" ? yearView() : view === "month" ? monthView() : view === "list" ? listView() : timeGrid()}
           </div>
-        </main>
+        </div>
       </div>
 
       {/* Event pop-up */}
@@ -1868,28 +2008,21 @@ export default function CalendarPage() {
         ? createPortal(
             <div
               data-app-gesture-exempt="true"
-              className="fixed inset-0 z-[1700] flex items-start justify-center px-3 py-3 md:items-center md:px-4 md:py-4"
-              // Phones: track the visible area (it shrinks when the keyboard opens) so the pop-up stays on
-              // screen from its top, instead of the page scrolling it away.
-              style={isMobile && visibleBox ? { top: visibleBox.top, height: visibleBox.height, bottom: "auto" } : undefined}
+              // Phones: a new event focuses its title straight away, so the keyboard comes up at once — that
+              // pop-up sits at the top, clear of it. Viewing or editing an event (nothing focused) opens
+              // centred. Moving and sizing it to the visible area once the keyboard is up is
+              // .glass-modal-panel's job (app/globals.css), the same as every other pop-up — in either spot.
+              className={`fixed inset-0 z-[1700] flex justify-center px-3 py-3 md:items-center md:px-4 md:py-4 ${d.isNew ? "items-start" : "items-center"}`}
             >
               <button type="button" aria-label="Close" onClick={closeModal} className="glass-modal-backdrop absolute inset-0" />
               <div
                 ref={modalPanelRef}
                 className="glass-modal-panel relative z-[1701] flex max-h-full w-full max-w-[560px] flex-col overflow-hidden md:max-h-[calc(100svh-32px)]"
-                style={
-                  viewingEvent
-                    ? {
-                        // Themed by the event's category: a wash of its colour over the glass.
-                        backgroundImage: [
-                          `radial-gradient(120% 70% at 0% 0%, color-mix(in srgb, ${draftCategory.color} 30%, transparent), transparent 70%)`,
-                          `radial-gradient(90% 60% at 100% 100%, color-mix(in srgb, ${draftCategory.color} 14%, transparent), transparent 70%)`,
-                          `linear-gradient(to bottom, color-mix(in srgb, ${draftCategory.color} 10%, transparent), color-mix(in srgb, ${draftCategory.color} 5%, transparent))`,
-                        ].join(", "),
-                      }
-                    : undefined
-                }
               >
+                {/* Themed by the event's category: a wash of its colour over the glass, behind everything
+                    in the pop-up (the panel is its own stacking context). Fades between colours as the
+                    category is changed. */}
+                <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10" style={popupTintStyle(themeColor)} />
                 {viewingEvent && viewEvent ? (
                   <>
                     <div className="relative px-5 pb-4 pt-5">
@@ -1994,7 +2127,7 @@ export default function CalendarPage() {
                           type="button"
                           onClick={() => setEventMode("edit")}
                           className={primaryButtonClass}
-                          style={{ backgroundColor: draftCategory.color, color: textOn(draftCategory.color), boxShadow: `0 6px 16px color-mix(in srgb, ${draftCategory.color} 35%, transparent)` }}
+                          style={categoryButtonStyle(draftCategory.color)}
                         >
                           <Pencil size={14} /> Edit
                         </button>
@@ -2004,7 +2137,7 @@ export default function CalendarPage() {
                 ) : (
                 <>
                 <div className="glass-modal-header flex items-center gap-2.5 px-4 py-3">
-                  <span className="h-3.5 w-3.5 shrink-0 rounded-full" style={{ backgroundColor: draftCategory.color }} />
+                  <span className="h-3.5 w-3.5 shrink-0 rounded-full transition-colors" style={{ backgroundColor: draftCategory.color }} />
                   <p className="flex-1 truncate text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
                     {d.isNew ? "New event" : readOnly ? "Event" : "Edit event"}
                   </p>
@@ -2057,7 +2190,7 @@ export default function CalendarPage() {
                       Project
                       {d.projectId ? (
                         <div className="flex items-center gap-2 rounded-[11px] border px-3 py-2" style={{ borderColor: "var(--glass-border)", backgroundColor: "color-mix(in srgb, var(--panel-bg) 55%, transparent)" }}>
-                          <FolderKanban size={15} style={{ color: "var(--brand-strong)" }} />
+                          <FolderKanban size={15} className="transition-colors" style={{ color: themeColor || "var(--brand-strong)" }} />
                           <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{d.projectName || "Linked project"}</span>
                           <Link href={`/projects/${d.projectId}`} className="inline-flex items-center gap-1 text-[12px] font-semibold" style={{ color: "var(--brand-strong)" }}>
                             Open <ExternalLink size={13} />
@@ -2240,7 +2373,7 @@ export default function CalendarPage() {
                       </button>
                     ) : null}
                     {!readOnly ? (
-                      <button type="submit" disabled={saving} className={primaryButtonClass} style={primaryButtonStyle}>
+                      <button type="submit" disabled={saving} className={primaryButtonClass} style={themeColor ? categoryButtonStyle(themeColor) : primaryButtonStyle}>
                         {saving ? "Saving..." : d.isNew ? "Add event" : "Save"}
                       </button>
                     ) : null}

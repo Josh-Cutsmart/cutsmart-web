@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
-import { getProjectDocRefAdmin, getQuoteShareGridTarget, type SpecsShareLinkDoc } from "@/lib/specs-share";
+import {
+  getProjectDocRefAdmin,
+  getQuoteShareGridTarget,
+  isShareLinkInactiveAdmin,
+  SHARE_LINK_INACTIVE_ERROR,
+  type SpecsShareLinkDoc,
+} from "@/lib/specs-share";
 import { normalizeSpecsGrid } from "@/lib/specs-grid-types";
 import { projectNotifySubscriberUids } from "@/lib/project-notify";
 
@@ -28,6 +34,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ ok: false, error: "not-found" }, { status: 404 });
   }
   const shareDoc = shareSnap.data() as SpecsShareLinkDoc;
+
+  // A finished project's link stops working (archived, or past the company's archive delay) — this
+  // also stops a portal page left open from before from still accepting.
+  if (await isShareLinkInactiveAdmin(adminDb, shareDoc)) {
+    return NextResponse.json({ ok: false, error: SHARE_LINK_INACTIVE_ERROR }, { status: 410 });
+  }
 
   // Idempotent — a returning visit that's already accepted just confirms the existing state
   // rather than erroring, since the client page may call this again if its own local state was

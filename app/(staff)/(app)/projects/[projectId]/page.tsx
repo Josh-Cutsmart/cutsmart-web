@@ -16,6 +16,7 @@ import { InitialMeasureCloseSummaryModal } from "@/components/initial-measure-cl
 import { ProductionCutlistCloseSummaryModal } from "@/components/production-cutlist-close-summary-modal";
 import { ProductionUnlockCountdown } from "@/components/production-unlock-countdown";
 import { ProtectedRoute } from "@/components/protected-route";
+import { isAnyPopupOpen } from "@/components/scroll-lock-watcher";
 import { QuoteDocumentEditor } from "@/components/quote-document-editor";
 import { LengthField } from "@/components/settings-ui";
 import { activeDate, activeDateTime, activeLength, activeMoney, activeUnit, activeUnitLabel, useCompanyFormats } from "@/lib/company-formats";
@@ -29,6 +30,9 @@ import {
   type GlassModalOrigin,
 } from "@/lib/use-glass-modal-pop-origin";
 import { useSwipeToClose } from "@/lib/use-swipe-to-close";
+import { swallowNextClick } from "@/lib/swallow-dismiss-click";
+import { RestoreDialog, restoreStatusOptionsFrom } from "@/components/restore-dialog";
+import { useKeepAnchoredPopoverAboveKeyboard } from "@/lib/use-keep-anchored-popover-above-keyboard";
 import { useMobileFloatingActionSheet } from "@/lib/use-mobile-floating-action-sheet";
 import { useLongPress } from "@/lib/use-long-press";
 import { useDragGhost, DragGhostLayer } from "@/lib/use-drag-ghost";
@@ -65,7 +69,7 @@ import {
   syncCompanyClientProfileFromProject,
   createOrAttachManualCompanyClient,
   findCompanyClientForProject,
-  softDeleteProject,
+  archiveProject,
   saveCutlistData,
   saveProjectChecklist,
   deleteProjectChecklist,
@@ -75,6 +79,7 @@ import {
   updateGridVersionGrid,
   updateProductComparison,
   updateProjectPatch,
+  restoreArchivedProject,
   updateProjectStatus,
   updateProjectTags,
 } from "@/lib/firestore-data";
@@ -95,6 +100,8 @@ import type { ChecklistTemplate, Cutlist, Project, ProjectChange, ProjectCheckli
 import { storage, auth } from "@/lib/firebase";
 import { blobToDataUrl, resolveProjectImageDataUrl, resolveProjectImageUrl } from "@/lib/project-image-data";
 import { summarizeCutlistRowsByPartType, type CutlistDraftRow, type CutlistRow, type DoorModeValue, type ProductComparison } from "@/lib/cutlist-types";
+import { formatLacquerSqm, lacquerPieceAreaMm2, lacquerSidesForProductType, mm2ToM2, type LacquerSides } from "@/lib/lacquer-area";
+import { isProjectArchived, projectArchivedAtIso, PROJECTS_ARCHIVED_EVENT, type ProjectsArchivedDetail } from "@/lib/project-archive";
 
 // jsPDF, jspdf-autotable and lib/specs-grid-pdf (which pulls in html-to-image too) are only needed
 // to print/export, so they're fetched on first use instead of shipping in this page's initial
@@ -2435,6 +2442,37 @@ const GLASS_DROPDOWN_MENU_STYLE: React.CSSProperties = {
   boxShadow: "inset 0 0 0 999px color-mix(in srgb, var(--panel-bg) 22%, transparent), var(--shadow-glass)",
 };
 
+// .glass-modal-panel's look (app/globals.css), for a picker that's pinned to the button that opened it
+// rather than centred on screen. That class also lifts a centred pop-up clear of the on-screen keyboard
+// and caps its height while the keyboard is up — which would pull a pinned picker away from its button
+// (and clip one that's meant to spill over its own edge) — so these take just the look instead.
+function anchoredGlassPanelStyle(isDarkMode: boolean): React.CSSProperties {
+  return {
+    borderRadius: 20,
+    border: "1px solid var(--glass-border)",
+    background: "var(--glass-modal-bg)",
+    WebkitBackdropFilter: "blur(12px) saturate(220%)",
+    backdropFilter: "blur(12px) saturate(220%)",
+    boxShadow: isDarkMode
+      ? "inset 0 1px 0 rgba(255, 255, 255, 0.07), var(--shadow-glass), 0 24px 60px rgba(0, 0, 0, 0.45)"
+      : "inset 0 1px 0 rgba(255, 255, 255, 0.55), var(--shadow-glass), 0 24px 60px rgba(15, 23, 42, 0.25)",
+    color: "var(--text-main)",
+    overscrollBehavior: "contain",
+  };
+}
+
+// Focuses a pop-up's text box the moment it mounts, without the browser also scrolling toward it.
+// These pop-ups grow out of the button that opened them, so at that instant the box is still a tiny
+// copy of itself sitting over that button — often low on the screen, right where the keyboard is about
+// to open — and a plain autoFocus could send the page (on iPhone, the whole visible area) scrolling
+// toward that spot. The finished pop-up is already centred in the space above the keyboard
+// (.glass-modal-panel in app/globals.css), so nothing needs scrolling. Module-level so it stays one
+// stable function: React calls a ref callback again whenever its identity changes, which would re-focus
+// the box on every render.
+function focusOnMountWithoutScrolling(el: HTMLInputElement | null) {
+  el?.focus({ preventScroll: true });
+}
+
 function formatDoorFrontHeightValue(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return "";
   const rounded = Math.floor(value * 10) / 10;
@@ -4402,7 +4440,10 @@ function DrawerHeightDropdown({
   useEffect(() => {
     if (!open) return;
     refreshMenuRect();
-    const onDocDown = (e: MouseEvent) => {
+    // pointerdown (not mousedown) + swallowNextClick: a press outside closes the menu the moment it
+    // lands, and that press then ONLY closes it — it doesn't also act on whatever it landed on (a
+    // cell, a row's button). Same rule as every other dropdown in this file.
+    const onDocDown = (e: PointerEvent) => {
       const target = e.target as Node | null;
       if (!target) return;
       const inHost = Boolean(hostRef.current?.contains(target));
@@ -4410,14 +4451,15 @@ function DrawerHeightDropdown({
       if (!inHost && !inMenu) {
         setOpen(false);
         onOpenChange?.(false);
+        swallowNextClick();
       }
     };
     const onWin = () => refreshMenuRect();
-    document.addEventListener("mousedown", onDocDown);
+    document.addEventListener("pointerdown", onDocDown);
     window.addEventListener("resize", onWin);
     window.addEventListener("scroll", onWin, true);
     return () => {
-      document.removeEventListener("mousedown", onDocDown);
+      document.removeEventListener("pointerdown", onDocDown);
       window.removeEventListener("resize", onWin);
       window.removeEventListener("scroll", onWin, true);
     };
@@ -4751,7 +4793,8 @@ function CompactPlainDropdown({
   useEffect(() => {
     if (!open) return;
     refreshRect();
-    const onDocDown = (e: MouseEvent) => {
+    // Outside press only closes — see DrawerHeightDropdown's own comment.
+    const onDocDown = (e: PointerEvent) => {
       const target = e.target as Node | null;
       if (!target) return;
       const inHost = Boolean(hostRef.current?.contains(target));
@@ -4759,14 +4802,15 @@ function CompactPlainDropdown({
       if (!inHost && !inMenu) {
         setOpen(false);
         onBlur?.();
+        swallowNextClick();
       }
     };
     const onWin = () => refreshRect();
-    document.addEventListener("mousedown", onDocDown);
+    document.addEventListener("pointerdown", onDocDown);
     window.addEventListener("resize", onWin);
     window.addEventListener("scroll", onWin, true);
     return () => {
-      document.removeEventListener("mousedown", onDocDown);
+      document.removeEventListener("pointerdown", onDocDown);
       window.removeEventListener("resize", onWin);
       window.removeEventListener("scroll", onWin, true);
     };
@@ -4962,7 +5006,8 @@ function BoardPillDropdown({
   useEffect(() => {
     if (!open) return;
     refreshRect();
-    const onDocDown = (e: MouseEvent) => {
+    // Outside press only closes — see DrawerHeightDropdown's own comment.
+    const onDocDown = (e: PointerEvent) => {
       const target = e.target as Node | null;
       if (!target) return;
       const inHost = Boolean(hostRef.current?.contains(target));
@@ -4970,14 +5015,15 @@ function BoardPillDropdown({
       if (!inHost && !inMenu) {
         setOpen(false);
         onBlur?.();
+        swallowNextClick();
       }
     };
     const onWin = () => refreshRect();
-    document.addEventListener("mousedown", onDocDown);
+    document.addEventListener("pointerdown", onDocDown);
     window.addEventListener("resize", onWin);
     window.addEventListener("scroll", onWin, true);
     return () => {
-      document.removeEventListener("mousedown", onDocDown);
+      document.removeEventListener("pointerdown", onDocDown);
       window.removeEventListener("resize", onWin);
       window.removeEventListener("scroll", onWin, true);
     };
@@ -5187,19 +5233,23 @@ function GlassSelectDropdown({ value, options, onChange, className, style, disab
   useEffect(() => {
     if (!open) return;
     refreshRect();
-    const onDocDown = (e: MouseEvent) => {
+    // Outside press only closes — see DrawerHeightDropdown's own comment.
+    const onDocDown = (e: PointerEvent) => {
       const target = e.target as Node | null;
       if (!target) return;
       const inHost = Boolean(hostRef.current?.contains(target));
       const inMenu = Boolean(menuRef.current?.contains(target));
-      if (!inHost && !inMenu) setOpen(false);
+      if (!inHost && !inMenu) {
+        setOpen(false);
+        swallowNextClick();
+      }
     };
     const onWin = () => refreshRect();
-    document.addEventListener("mousedown", onDocDown);
+    document.addEventListener("pointerdown", onDocDown);
     window.addEventListener("resize", onWin);
     window.addEventListener("scroll", onWin, true);
     return () => {
-      document.removeEventListener("mousedown", onDocDown);
+      document.removeEventListener("pointerdown", onDocDown);
       window.removeEventListener("resize", onWin);
       window.removeEventListener("scroll", onWin, true);
     };
@@ -5358,21 +5408,23 @@ function PartNameSuggestionInput({
   useEffect(() => {
     if (!open) return;
     refreshRect();
-    const onDocDown = (e: MouseEvent) => {
+    // Outside press only closes the suggestions — see DrawerHeightDropdown's own comment.
+    const onDocDown = (e: PointerEvent) => {
       const target = e.target as Node | null;
       if (!target) return;
       const inHost = Boolean(hostRef.current?.contains(target));
       const inMenu = Boolean(menuRef.current?.contains(target));
       if (!inHost && !inMenu) {
         setOpen(false);
+        swallowNextClick();
       }
     };
     const onWin = () => refreshRect();
-    document.addEventListener("mousedown", onDocDown);
+    document.addEventListener("pointerdown", onDocDown);
     window.addEventListener("resize", onWin);
     window.addEventListener("scroll", onWin, true);
     return () => {
-      document.removeEventListener("mousedown", onDocDown);
+      document.removeEventListener("pointerdown", onDocDown);
       window.removeEventListener("resize", onWin);
       window.removeEventListener("scroll", onWin, true);
     };
@@ -5788,6 +5840,7 @@ export default function ProjectDetailsPage() {
   const {
     registerScopeTabs,
     suppressScope,
+    restoreScope,
     tabs: globalWorkspaceTabs,
     setChromeHidden,
     setOwnsMobileScroll,
@@ -6272,23 +6325,28 @@ export default function ProjectDetailsPage() {
   const quoteDownloadMenuRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!quoteDownloadMenuAnchor) return;
-    const onPointerDown = (e: MouseEvent) => {
+    // A press outside only closes the menu — it doesn't also act on what it landed on (pressing the
+    // Download button itself again therefore just closes it, rather than closing and reopening it).
+    const onPointerDown = (e: PointerEvent) => {
       if (quoteDownloadMenuRef.current?.contains(e.target as Node)) return;
       setQuoteDownloadMenuAnchor(null);
+      swallowNextClick();
     };
-    document.addEventListener("mousedown", onPointerDown);
-    return () => document.removeEventListener("mousedown", onPointerDown);
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [quoteDownloadMenuAnchor]);
   const [specsDownloadMenuAnchor, setSpecsDownloadMenuAnchor] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const specsDownloadMenuRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!specsDownloadMenuAnchor) return;
-    const onPointerDown = (e: MouseEvent) => {
+    // Same outside-press rule as Quote's own Download menu above.
+    const onPointerDown = (e: PointerEvent) => {
       if (specsDownloadMenuRef.current?.contains(e.target as Node)) return;
       setSpecsDownloadMenuAnchor(null);
+      swallowNextClick();
     };
-    document.addEventListener("mousedown", onPointerDown);
-    return () => document.removeEventListener("mousedown", onPointerDown);
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [specsDownloadMenuAnchor]);
   // Tracks whether the Quote fullscreen view was already showing on the PREVIOUS render — lets the
   // isSalesQuoteFullscreen effect further down (near where that flag is computed) tell "freshly
@@ -6693,6 +6751,15 @@ export default function ProjectDetailsPage() {
   const [subPartTypePickerOrigin, setSubPartTypePickerOrigin] = useState<GlassModalOrigin>(null);
   const subPartTypePickerPanelRef = useRef<HTMLDivElement | null>(null);
   const subPartTypePickerModalOriginElRef = useRef<HTMLElement | null>(null);
+  // Kept clear of the on-screen keyboard (it can open with the keyboard already up from a field in
+  // the row). Called before its pop-in hook so that measures it where it'll actually sit. preferredTop
+  // matches the picker's own render (anchor.top - its 6px padding, level with the "+" button).
+  useKeepAnchoredPopoverAboveKeyboard(
+    subPartTypePickerPanelRef,
+    subPartTypePickerMainRowId && subPartTypePickerOrigin
+      ? { preferredTop: subPartTypePickerOrigin.top - 6, anchorTop: subPartTypePickerOrigin.top, gap: 4 }
+      : null,
+  );
   const shouldRenderSubPartTypePickerModal = useGlassModalPopOrigin(
     Boolean(subPartTypePickerMainRowId),
     subPartTypePickerOrigin,
@@ -6720,6 +6787,19 @@ export default function ProjectDetailsPage() {
   const [doorDrawerPickerOrigin, setDoorDrawerPickerOrigin] = useState<GlassModalOrigin>(null);
   const doorDrawerPickerPanelRef = useRef<HTMLDivElement | null>(null);
   const doorDrawerPickerModalOriginElRef = useRef<HTMLElement | null>(null);
+  // Kept clear of the on-screen keyboard its own count box opens — opened from low on the screen it
+  // used to end up underneath it. Called before its pop-in hook so that measures it where it'll
+  // actually sit. preferredTop matches the picker's own render (10px below the tapped button).
+  useKeepAnchoredPopoverAboveKeyboard(
+    doorDrawerPickerPanelRef,
+    doorDrawerPickerPartType && doorDrawerPickerOrigin
+      ? {
+          preferredTop: doorDrawerPickerOrigin.top + doorDrawerPickerOrigin.height + 10,
+          anchorTop: doorDrawerPickerOrigin.top,
+          gap: 10,
+        }
+      : null,
+  );
   const shouldRenderDoorDrawerPickerModal = useGlassModalPopOrigin(
     Boolean(doorDrawerPickerPartType),
     doorDrawerPickerOrigin,
@@ -6974,6 +7054,10 @@ export default function ProjectDetailsPage() {
   const shouldRenderDeleteProjectModal = useGlassModalPopOrigin(isDeleteProjectModalOpen, deleteProjectModalOrigin, deleteProjectModalPanelRef, undefined, deleteProjectModalOriginElRef);
   const [isDeleting, setIsDeleting] = useState(false);
   const [lockMessage, setLockMessage] = useState("");
+  const [isRestoringArchivedProject, setIsRestoringArchivedProject] = useState(false);
+  // Restore asks first, in a pop-up (components/restore-dialog.tsx) — with the status the project comes
+  // back in (its current one by default; a non-Completed one means it won't be archived again).
+  const [isRestoreArchivedConfirmOpen, setIsRestoreArchivedConfirmOpen] = useState(false);
   const [notesToolbarHost, setNotesToolbarHost] = useState<HTMLDivElement | null>(null);
   const [productionNotesToolbarHost, setProductionNotesToolbarHost] = useState<HTMLDivElement | null>(null);
   const [productionUnlockExpiryTick, setProductionUnlockExpiryTick] = useState(0);
@@ -7088,10 +7172,19 @@ export default function ProjectDetailsPage() {
   const [projectManagementChecklistTemplates, setProjectManagementChecklistTemplates] = useState<ChecklistTemplate[]>([]);
   const [isAddChecklistMenuOpen, setIsAddChecklistMenuOpen] = useState(false);
   const [isQuickAssignOpen, setIsQuickAssignOpen] = useState(false);
-  const [quickAssignRect, setQuickAssignRect] = useState<{ left: number; top: number; width: number } | null>(null);
+  // anchorTop: the Assign button's own top edge, for when the menu has to move above it (below).
+  const [quickAssignRect, setQuickAssignRect] = useState<{ left: number; top: number; width: number; anchorTop: number } | null>(null);
   const [quickAssignSearch, setQuickAssignSearch] = useState("");
   const quickAssignButtonRef = useRef<HTMLButtonElement | null>(null);
   const quickAssignMenuRef = useRef<HTMLDivElement | null>(null);
+  // The menu's search box opens the on-screen keyboard — keep the menu above it (moving it over the
+  // button if there's no room below), instead of half of it sitting underneath.
+  useKeepAnchoredPopoverAboveKeyboard(
+    quickAssignMenuRef,
+    isQuickAssignOpen && quickAssignRect
+      ? { preferredTop: quickAssignRect.top, anchorTop: quickAssignRect.anchorTop, gap: 6 }
+      : null,
+  );
   const [projectLiveTabs, setProjectLiveTabs] = useState<ProjectLiveTabRecord[]>([]);
   const [activeProjectLiveTabId, setActiveProjectLiveTabId] = useState("");
   const lastSyncedLiveTabIdRef = useRef<string>("");
@@ -7181,6 +7274,24 @@ export default function ProjectDetailsPage() {
       window.visualViewport?.removeEventListener("scroll", refreshBoardEdgingDropdownRect);
     };
   }, [activeBoardEdgingSuggestionsRowId]);
+  // The Colour/Edging suggestion lists follow the same outside-press rule as every other dropdown
+  // here: a press anywhere but the list or its own text box closes it without also acting on what it
+  // landed on. (Pressing another row's box still moves into that box — focus isn't a click.)
+  useEffect(() => {
+    if (!activeBoardColourSuggestionsRowId && !activeBoardEdgingSuggestionsRowId) return;
+    const onDocPointerDown = (event: PointerEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target) return;
+      // Nothing to close unless a list is actually showing (it's hidden while nothing matches).
+      const list = document.querySelector('[data-board-suggestions-menu="true"]');
+      if (!list || list.contains(target) || target === document.activeElement) return;
+      setActiveBoardColourSuggestionsRowId(null);
+      setActiveBoardEdgingSuggestionsRowId(null);
+      swallowNextClick();
+    };
+    document.addEventListener("pointerdown", onDocPointerDown);
+    return () => document.removeEventListener("pointerdown", onDocPointerDown);
+  }, [activeBoardColourSuggestionsRowId, activeBoardEdgingSuggestionsRowId]);
   const [, setProductionCutlist] = useState<Cutlist | null>(null);
   const [cutlistRows, setCutlistRows] = useState<CutlistRow[]>([]);
   const cutlistRowsJsonRef = useRef("");
@@ -7755,7 +7866,9 @@ export default function ProjectDetailsPage() {
   const compareMobileSwipeStartRef = useRef<{ x: number; y: number; axis: "" | "horizontal" | "vertical" } | null>(null);
   const makeCompareMobileSwipeHandlers = () => ({
     onTouchStart: (event: ReactTouchEvent<HTMLElement>) => {
-      if (!isCompactProjectViewport || isCompareListPanelOpen) {
+      // isAnyPopupOpen(): same as the Specs/Quote drawers' own swipe — a swipe that starts while a
+      // pop-up is up belongs to that pop-up, so the drawer doesn't slide open underneath it.
+      if (!isCompactProjectViewport || isCompareListPanelOpen || isAnyPopupOpen()) {
         compareMobileSwipeStartRef.current = null;
         return;
       }
@@ -7839,7 +7952,9 @@ export default function ProjectDetailsPage() {
       // start entirely rather than trying to track just one of the two points. Belt-and-braces
       // alongside the gesture-exempt check below, which is what actually stops this in the common
       // case (a pinch's very first touch already landing inside the sheet preview).
-      if (!isCompactProjectViewport || versionsOpen || extrasOpen || isSheetZoomedAwayFromEdge || event.touches.length > 1) {
+      // isAnyPopupOpen(): a swipe that starts while a pop-up is up (Save Version, Send, a picker…)
+      // belongs to that pop-up, not the page behind it — don't slide a drawer open underneath it.
+      if (!isCompactProjectViewport || versionsOpen || extrasOpen || isSheetZoomedAwayFromEdge || event.touches.length > 1 || isAnyPopupOpen()) {
         specsQuoteMobileSwipeStartRef.current = null;
         return;
       }
@@ -8007,7 +8122,6 @@ export default function ProjectDetailsPage() {
   const projectImageViewerPreviewPendingOffsetRef = useRef<{ x: number; y: number } | null>(null);
   const projectImageViewerPreviewDragRafRef = useRef<number | null>(null);
   const projectImageViewerSuppressPinClickRef = useRef(false);
-  const projectImageViewerSuppressClickAfterClusterCollapseRef = useRef(false);
   const projectImageViewerElementRef = useRef<HTMLImageElement | null>(null);
   const projectImageViewerStageRef = useRef<HTMLDivElement | null>(null);
   const projectImageThumbsRef = useRef<HTMLDivElement | null>(null);
@@ -8285,6 +8399,8 @@ export default function ProjectDetailsPage() {
   // tab (registered before project data has actually loaded) can show the real
   // project name immediately instead of flashing a generic "Project" label.
   const openNameFromSearchParams = useMemo(() => String(searchParams.get("openName") || "").trim(), [searchParams]);
+  // Opened from the Archive page — an archived project, which never gets a top-bar tab.
+  const openedFromArchive = searchParams.get("fromArchive") === "1";
 
   const effectiveRole = (companyAccess.status === "ready" ? companyAccess.role : undefined) ?? user?.role ?? "staff";
   const effectivePermissions = (companyAccess.status === "ready" ? companyAccess.permissionKeys : undefined) ?? user?.permissions ?? [];
@@ -8305,6 +8421,8 @@ export default function ProjectDetailsPage() {
   // SOME roles and theirs isn't one of them — a group with nothing set stays open to everyone, same
   // as before this feature existed.
   const canEditSpecsGroup = (group: SpecsRowGroup) => {
+    // An archived project is read-only for everyone (see the access objects further down).
+    if (isProjectArchived(project)) return false;
     if (effectiveRole === "owner" || effectiveRole === "admin") return true;
     const ids = group.editableByRoleIds;
     if (!ids || ids.length === 0) return true;
@@ -8329,9 +8447,76 @@ export default function ProjectDetailsPage() {
   settingsAccess.edit = settingsAccess.edit && isUserVerified;
   const generalAccess = { ...projectTabAccess(project, effectiveRole, "general", user?.uid, effectivePermissions) };
   generalAccess.edit = generalAccess.edit && isUserVerified;
+  // Restoring an archived project takes the same access editing it would.
+  const canRestoreArchivedProject = generalAccess.edit;
+  // An archived project can't be changed by anyone — owners and admins included — until it's restored.
+  // Switched off here the same way as the verification check above, so it reaches every section.
+  if (isProjectArchived(project)) {
+    salesAccess.edit = false;
+    productionAccess.edit = false;
+    settingsAccess.edit = false;
+    generalAccess.edit = false;
+  }
   const salesReadOnly = salesAccess.view && !salesAccess.edit;
   const productionReadOnly = productionAccess.view && !productionAccess.edit;
   const canEditStatus = generalAccess.edit;
+  // An archived project (filed away by hand, or automatically once finished — see Company Settings'
+  // archive delay) still opens from the Archive or a link; a yellow note says so, with Restore for
+  // anyone who can edit it.
+  const archivedNoteText = isProjectArchived(project)
+    ? `Archived${projectArchivedAtIso(project) ? ` on ${activeDate(projectArchivedAtIso(project))}` : ""}`
+    : "";
+  // The whole header (title bar, dates bar and tab bar) turns the same amber as the "Archived" note.
+  const archivedHeaderBackground = isProjectArchived(project)
+    ? "color-mix(in srgb, var(--accent-amber) 20%, var(--panel-bg))"
+    : undefined;
+  // A darker yellow than the header behind it, so the note still stands out on it.
+  const archivedNoteStyle: React.CSSProperties = {
+    borderColor: "color-mix(in srgb, var(--accent-amber) 80%, transparent)",
+    backgroundColor: "color-mix(in srgb, var(--accent-amber) 50%, var(--panel-bg))",
+    color: "var(--text-main)",
+  };
+  const openRestoreArchivedConfirm = () => {
+    if (project) setIsRestoreArchivedConfirmOpen(true);
+  };
+  // The status change (if one was picked) is written first: restoring last means the project ends up
+  // out of the Archive even if the new status is a Completed one.
+  const restoreThisArchivedProject = async (nextStatus: string, nextSubStage: string) => {
+    if (!project || isRestoringArchivedProject) return;
+    const previousStatus = String(project.statusLabel || "").trim();
+    const previousSubStage = String(project.dashboardSubStageId || "").trim();
+    const statusChange = nextStatus && nextStatus !== previousStatus ? nextStatus : "";
+    const subStageChanged = Boolean(nextStatus) && nextSubStage !== previousSubStage;
+    setIsRestoringArchivedProject(true);
+    if ((statusChange || subStageChanged) && !(await updateProjectStatus(project, nextStatus, nextSubStage))) {
+      setIsRestoringArchivedProject(false);
+      setLockMessage("Could not restore this project. Please try again.");
+      return;
+    }
+    const ok = await restoreArchivedProject(project);
+    setIsRestoringArchivedProject(false);
+    if (!ok) {
+      setLockMessage("Could not restore this project. Please try again.");
+      return;
+    }
+    setIsRestoreArchivedConfirmOpen(false);
+    setProject((prev) =>
+      prev
+        ? {
+            ...prev,
+            ...(statusChange ? { statusLabel: statusChange } : {}),
+            ...(statusChange || subStageChanged ? { dashboardSubStageId: nextSubStage || undefined } : {}),
+            isArchived: false,
+            archivedAtIso: "",
+            archiveRestoredAtIso: new Date().toISOString(),
+            deletedAt: "",
+          }
+        : prev,
+    );
+    if (statusChange) logProjectChange(`Status changed: ${previousStatus || "(none)"} → ${statusChange}`);
+    // Lets it register its tab in the top bar again.
+    restoreScope(`project:${project.id}`);
+  };
   const canDeleteProject = generalAccess.edit;
   const canEditTags = generalAccess.edit;
   const productionUnlockRemainingSeconds = getProductionUnlockRemainingSeconds(project, user?.uid);
@@ -8341,6 +8526,7 @@ export default function ProjectDetailsPage() {
     Math.min(168, Number(toStr(companyDoc?.productionUnlockDurationHours, "6")) || 6),
   );
   const canRequestProductionUnlock =
+    !isProjectArchived(project) &&
     productionAccess.view &&
     !hasDirectProductionEditPermission &&
     productionUnlockRemainingSeconds <= 0;
@@ -8358,6 +8544,7 @@ export default function ProjectDetailsPage() {
     .toLowerCase();
   const canManageProductionTempUnlocks = Boolean(
     user?.uid &&
+      !isProjectArchived(project) &&
       (settingsAccess.edit ||
         String(project?.createdByUid ?? "").trim() === String(user.uid).trim() ||
         String(project?.assignedToUid ?? "").trim() === String(user.uid).trim() ||
@@ -8577,6 +8764,24 @@ export default function ProjectDetailsPage() {
       ? (((companyDoc as Record<string, unknown> | null)?.salesJobTypes) as unknown[])
       : [];
     return raw.some((row) => row && typeof row === "object" && String((row as Record<string, unknown>).type ?? "").trim() === "lacquer-2");
+  }, [companyDoc]);
+  // How many faces each Sales Product gets lacquered (lowercased name → 1 or 2), from that same
+  // Type dropdown. Feeds the Design tab's per-product Lacquer column, where an Initial Measure
+  // row's board already IS the product name. Raw company doc again, for the same reason as
+  // companyLacquerIsTwoSided just above.
+  const salesProductLacquerSidesByName = useMemo(() => {
+    const raw = Array.isArray((companyDoc as Record<string, unknown> | null)?.salesJobTypes)
+      ? (((companyDoc as Record<string, unknown> | null)?.salesJobTypes) as unknown[])
+      : [];
+    const out: Record<string, LacquerSides> = {};
+    for (const row of raw) {
+      if (!row || typeof row !== "object") continue;
+      const item = row as Record<string, unknown>;
+      const name = String(item.name ?? "").trim().toLowerCase();
+      const sides = lacquerSidesForProductType(item.type);
+      if (name && sides > 0) out[name] = sides;
+    }
+    return out;
   }, [companyDoc]);
   const companySalesProductNames = useMemo(
     () => companySalesProductConfigs.map((row) => row.name),
@@ -13661,6 +13866,12 @@ export default function ProjectDetailsPage() {
   );
   useEffect(() => {
     if (isLoading || !project) return;
+    // Archived projects stay out of the top tab bar: opened from the Archive (or a link) they show
+    // as a page on their own. Restoring one (the banner's Restore) brings its tab back.
+    if (isProjectArchived(project)) {
+      suppressScope(projectAppShellTabRegistration.scopeKey);
+      return;
+    }
     // Debounced: while the project's live-tab data is still settling right after
     // load (multiple quick, individually-legitimate state updates), registering
     // every intermediate value made the tab bar visibly flicker. Only the last
@@ -13747,21 +13958,25 @@ export default function ProjectDetailsPage() {
     const refreshRect = () => {
       if (!quickAssignButtonRef.current) return;
       const r = quickAssignButtonRef.current.getBoundingClientRect();
-      setQuickAssignRect({ left: r.left, top: r.bottom + 6, width: r.width });
+      setQuickAssignRect({ left: r.left, top: r.bottom + 6, width: r.width, anchorTop: r.top });
     };
     refreshRect();
-    const onDocDown = (e: MouseEvent) => {
+    // A press outside only closes the menu — it doesn't also act on what it landed on.
+    const onDocDown = (e: PointerEvent) => {
       const target = e.target as Node | null;
       if (!target) return;
       const inButton = Boolean(quickAssignButtonRef.current?.contains(target));
       const inMenu = Boolean(quickAssignMenuRef.current?.contains(target));
-      if (!inButton && !inMenu) setIsQuickAssignOpen(false);
+      if (!inButton && !inMenu) {
+        setIsQuickAssignOpen(false);
+        swallowNextClick();
+      }
     };
-    document.addEventListener("mousedown", onDocDown);
+    document.addEventListener("pointerdown", onDocDown);
     window.addEventListener("resize", refreshRect);
     window.addEventListener("scroll", refreshRect, true);
     return () => {
-      document.removeEventListener("mousedown", onDocDown);
+      document.removeEventListener("pointerdown", onDocDown);
       window.removeEventListener("resize", refreshRect);
       window.removeEventListener("scroll", refreshRect, true);
     };
@@ -14598,7 +14813,11 @@ export default function ProjectDetailsPage() {
   }, [projectImageViewerPoppingClusterId]);
   useEffect(() => {
     if (!projectImageViewerExpandedClusterId) return;
-    const handlePointerDownOutsideClusterGroup = (event: MouseEvent) => {
+    // A press outside the fanned-out pins only folds them back up — it doesn't also act on what it
+    // landed on (drop a new pin on the photo, press a toolbar button…). swallowNextClick replaces a
+    // flag the photo's own click handler used to check, which only ever covered the photo itself and
+    // stayed set after a press anywhere else, eating the next real tap on the photo.
+    const handlePointerDownOutsideClusterGroup = (event: PointerEvent) => {
       const target = event.target;
       if (target instanceof Element && target.closest('[data-project-cluster-pin-group="true"]')) {
         return;
@@ -14610,10 +14829,10 @@ export default function ProjectDetailsPage() {
       setProjectImageViewerPoppingClusterId("");
       setProjectImageViewerEditingAnnotation(null);
       setProjectImageViewerListEditingAnnotation(null);
-      projectImageViewerSuppressClickAfterClusterCollapseRef.current = true;
+      swallowNextClick();
     };
-    document.addEventListener("mousedown", handlePointerDownOutsideClusterGroup);
-    return () => document.removeEventListener("mousedown", handlePointerDownOutsideClusterGroup);
+    document.addEventListener("pointerdown", handlePointerDownOutsideClusterGroup);
+    return () => document.removeEventListener("pointerdown", handlePointerDownOutsideClusterGroup);
   }, [projectImageViewerExpandedClusterId]);
 
   const syncProjectImageItemsInState = (
@@ -15387,10 +15606,6 @@ export default function ProjectDetailsPage() {
     if (projectImageViewerDraggingAnnotation) return;
     if (projectImageViewerSuppressImageClickRef.current) {
       projectImageViewerSuppressImageClickRef.current = false;
-      return;
-    }
-    if (projectImageViewerSuppressClickAfterClusterCollapseRef.current) {
-      projectImageViewerSuppressClickAfterClusterCollapseRef.current = false;
       return;
     }
     if (projectImageViewerActiveAnnotationId || projectImageViewerDraftAnnotation) {
@@ -16988,6 +17203,22 @@ export default function ProjectDetailsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project?.id, projectContact?.id, projectContactPersisted]);
 
+  // Completing a project under Company Settings' "Archive completed projects after: Instantly" archives
+  // it in the same write (updateProjectStatus) — show the archived banner straight away.
+  const projectIdForArchiveEvent = project?.id ?? "";
+  useEffect(() => {
+    if (!projectIdForArchiveEvent || typeof window === "undefined") return;
+    const onProjectsArchived = (event: Event) => {
+      const detail = (event as CustomEvent<ProjectsArchivedDetail>).detail;
+      if (!detail?.projectIds?.includes(projectIdForArchiveEvent)) return;
+      setProject((prev) =>
+        prev && prev.id === projectIdForArchiveEvent ? { ...prev, isArchived: true, archivedAtIso: detail.archivedAtIso } : prev,
+      );
+    };
+    window.addEventListener(PROJECTS_ARCHIVED_EVENT, onProjectsArchived as EventListener);
+    return () => window.removeEventListener(PROJECTS_ARCHIVED_EVENT, onProjectsArchived as EventListener);
+  }, [projectIdForArchiveEvent]);
+
   const onChangeStatus = async (value: string) => {
     if (!project || !value) {
       return;
@@ -17466,19 +17697,21 @@ export default function ProjectDetailsPage() {
     if (!projectStatusMenuPos) return;
 
     const closeMenu = () => setProjectStatusMenuPos(null);
-    const onPointerDown = (event: MouseEvent) => {
+    // A press outside only closes the menu — it doesn't also act on what it landed on.
+    const onPointerDown = (event: PointerEvent) => {
       const target = event.target as HTMLElement | null;
       if (!target) return;
       if (target.closest("[data-status-menu='true']")) return;
       if (target.closest("[data-status-trigger='true']")) return;
       closeMenu();
+      swallowNextClick();
     };
 
-    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("pointerdown", onPointerDown);
     window.addEventListener("resize", closeMenu);
     window.addEventListener("scroll", closeMenu, true);
     return () => {
-      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("resize", closeMenu);
       window.removeEventListener("scroll", closeMenu, true);
     };
@@ -17515,6 +17748,25 @@ export default function ProjectDetailsPage() {
     }
     setIsSavingTags(false);
   };
+
+  // The tag box's suggestion list follows the same outside-press rule as every other dropdown here: a
+  // press anywhere else closes it without also acting on what it landed on. The tag box itself and its
+  // "+" (which adds what's been typed) count as part of it, so pressing either still does its own job.
+  useEffect(() => {
+    if (!showTagSuggestions) return;
+    const onDocPointerDown = (event: PointerEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target) return;
+      // Nothing to close unless the list is actually showing (it's hidden while nothing matches).
+      const list = document.querySelector('[data-tag-suggestions="true"]');
+      if (!list || list.contains(target) || target === document.activeElement) return;
+      if (target.closest('[data-tag-add-button="true"]')) return;
+      setShowTagSuggestions(false);
+      swallowNextClick();
+    };
+    document.addEventListener("pointerdown", onDocPointerDown);
+    return () => document.removeEventListener("pointerdown", onDocPointerDown);
+  }, [showTagSuggestions]);
 
   const onAddTagValue = async (rawTag: string) => {
     const typed = String(rawTag || "").trim();
@@ -17742,19 +17994,21 @@ export default function ProjectDetailsPage() {
     setIsSavingSalesRooms(false);
   };
 
+  // The Archive button (it used to be Delete): files the project in Archived — off the Dashboard, client
+  // portal link closed — where it can be restored or deleted permanently. Nothing is deleted here.
   const onDeleteProject = async () => {
-    if (!project || isDeleting || !canDeleteProject) {
+    if (!project || isDeleting || !canDeleteProject || isProjectArchived(project)) {
       return;
     }
     if (deleteProjectNameInput.trim() !== project.name.trim()) {
       return;
     }
     setIsDeleting(true);
-    const ok = await softDeleteProject(project);
+    const ok = await archiveProject(project);
     if (ok) {
       // Clears this project's entry (and any of its open sub-tabs) from the global top tab bar
-      // immediately, rather than leaving a stale tab pointing at a project that's now in Recently
-      // Deleted — it would otherwise 404 if clicked before the tab bar's own state catches up.
+      // immediately, rather than leaving a stale tab for a project that's now in Archived (opening it
+      // again from the Archived page lets it register a tab again).
       suppressScope(`project:${project.id}`);
       router.push("/dashboard");
       return;
@@ -23842,6 +24096,9 @@ export default function ProjectDetailsPage() {
     const easing = "cubic-bezier(0.32, 0.72, 0, 1)";
     panel.style.transition = `transform ${duration}ms ${easing}`;
     panel.style.transform = isCncMobileVisibilityOpen ? "translateY(0px)" : CNC_VISIBILITY_CLOSED_TRANSFORM;
+    // See Nesting's own identical blur.
+    const active = document.activeElement;
+    if (!isCncMobileVisibilityOpen && active instanceof HTMLElement && panel.contains(active)) active.blur();
   }, [isCncMobileVisibilityOpen, isCompactProjectViewport]);
   // Locks the real page/body from scrolling while either mobile Visibility overlay is open — same
   // pattern already used for the dashboard's own modals. Without this, tapping the search field
@@ -23885,6 +24142,10 @@ export default function ProjectDetailsPage() {
       window.scrollTo(0, scrollY);
     };
   }, [isNestingMobileVisibilityOpen, isCncMobileVisibilityOpen]);
+  // Whether the current press on a mobile Visibility header (Nesting's or CNC's — only one is ever
+  // on screen) went down on the bar's own background rather than on the search box or Show All.
+  // See the headers' own onClick for why the click on its own can't tell.
+  const mobileVisibilityHeaderPressOnBarRef = useRef(false);
   // Opening is tap-only (no drag-up on the bottom bar) — see Nesting's own identical comment on
   // why: iOS's own "swipe up from the bottom edge to leave the app" gesture lives right there.
   const onCncVisibilityHeaderTouchStart = (e: ReactTouchEvent<HTMLDivElement>) => {
@@ -24325,6 +24586,8 @@ export default function ProjectDetailsPage() {
       if (!target) return;
       if (nestingMachineMenuRef.current?.contains(target)) return;
       setNestingMachineMenuOpen(false);
+      // That press only closes the menu — it doesn't also act on what it landed on.
+      swallowNextClick();
     };
     document.addEventListener("pointerdown", onDocPointerDown);
     return () => {
@@ -24824,6 +25087,10 @@ export default function ProjectDetailsPage() {
     const easing = "cubic-bezier(0.32, 0.72, 0, 1)";
     panel.style.transition = `transform ${duration}ms ${easing}`;
     panel.style.transform = isNestingMobileVisibilityOpen ? "translateY(0px)" : NESTING_VISIBILITY_CLOSED_TRANSFORM;
+    // Closing (bar tap, drag-down, leaving the view) also takes focus out of the search box, so the
+    // keyboard goes away with the card instead of staying up over a card that's sliding off-screen.
+    const active = document.activeElement;
+    if (!isNestingMobileVisibilityOpen && active instanceof HTMLElement && panel.contains(active)) active.blur();
     // isCompactProjectViewport: the panel only mounts (and this ref only populates) once the
     // viewport is compact, which can happen well after the initial isNestingMobileVisibilityOpen
     // value was set — re-running this effect on that transition is what actually applies the
@@ -25034,16 +25301,10 @@ export default function ProjectDetailsPage() {
   useEffect(() => {
     setProjectGapAllowancesDraft(effectiveProjectGapAllowances);
   }, [effectiveProjectGapAllowances]);
-  // TRUE per-board edge length actually needing tape — raw geometry only, no excess-per-end
-  // allowance, no minimum-order "add extra meters" rules, no round-to-nearest-roll. Those three
-  // all live in the Company Settings > Production > Edge Tape container (edgebandingSettings) and
-  // exist purely for practical ordering/purchasing (requiredEdgetapeByBoardRowId below still
-  // applies them, unchanged, for the Board Settings/Order displays) — Company Wrapped's "Edge Tape
-  // Used" instead wants the real, unpadded amount actually consumed, so it reads straight off this
-  // shared raw memo. `tapeRunCountByBoardKey` (qty × edge-count per taped edge) lets
-  // requiredEdgetapeByBoardRowId reconstruct the excess-inclusive total afterward without
-  // redoing the piece-explosion/token-parsing work itself.
-  const rawEdgeTapeByBoardKey = useMemo(() => {
+  // Production cutlist rows exploded into the real pieces that get cut (cabinets into sides/top/
+  // bottom/shelves, drawers into bottoms/backs, configured doors into each leaf). Shared by the
+  // Company Wrapped edge-tape and lacquer totals below so both count exactly the same pieces.
+  const productionCutPieces = useMemo(() => {
     const rowsForEdgeTape: CutlistRow[] = [];
     for (const row of effectiveCutlistRows) {
       if (isCabinetryPartType(row.partType)) {
@@ -25100,7 +25361,26 @@ export default function ProjectDetailsPage() {
       }
       rowsForEdgeTape.push(row);
     }
-
+    return rowsForEdgeTape;
+  }, [
+    effectiveCutlistRows,
+    isCabinetryPartType,
+    isDrawerPartType,
+    isDoorPartType,
+    buildCabinetryDerivedPieces,
+    buildDrawerDerivedPieces,
+    buildConfiguredDoorDerivedPieces,
+  ]);
+  // TRUE per-board edge length actually needing tape — raw geometry only, no excess-per-end
+  // allowance, no minimum-order "add extra meters" rules, no round-to-nearest-roll. Those three
+  // all live in the Company Settings > Production > Edge Tape container (edgebandingSettings) and
+  // exist purely for practical ordering/purchasing (requiredEdgetapeByBoardRowId below still
+  // applies them, unchanged, for the Board Settings/Order displays) — Company Wrapped's "Edge Tape
+  // Used" instead wants the real, unpadded amount actually consumed, so it reads straight off this
+  // shared raw memo. `tapeRunCountByBoardKey` (qty × edge-count per taped edge) lets
+  // requiredEdgetapeByBoardRowId reconstruct the excess-inclusive total afterward without
+  // redoing the piece-explosion/token-parsing work itself.
+  const rawEdgeTapeByBoardKey = useMemo(() => {
     const mmByBoardKey: Record<string, number> = {};
     const tapeRunCountByBoardKey: Record<string, number> = {};
     const parseDim = (value: unknown): number => {
@@ -25119,7 +25399,7 @@ export default function ProjectDetailsPage() {
       return { mm: dim * qty * edgeCount, runs: qty * edgeCount };
     };
 
-    for (const row of rowsForEdgeTape) {
+    for (const row of productionCutPieces) {
       const boardKey = resolveBoardKey(String(row.board || ""));
       if (!boardKey) continue;
       const qty = Math.max(0, Number.parseInt(String(row.quantity || "0"), 10) || 0);
@@ -25139,16 +25419,7 @@ export default function ProjectDetailsPage() {
       tapeRunCountByBoardKey[boardKey] = (tapeRunCountByBoardKey[boardKey] ?? 0) + leftTape.runs + rightTape.runs;
     }
     return { mmByBoardKey, tapeRunCountByBoardKey };
-  }, [
-    effectiveCutlistRows,
-    isCabinetryPartType,
-    isDrawerPartType,
-    isDoorPartType,
-    buildCabinetryDerivedPieces,
-    buildDrawerDerivedPieces,
-    buildConfiguredDoorDerivedPieces,
-    resolveBoardKey,
-  ]);
+  }, [productionCutPieces, resolveBoardKey]);
   const requiredEdgetapeByBoardRowId = useMemo(() => {
     const out: Record<string, string> = {};
     const excessPerEndMm = Math.max(
@@ -25206,16 +25477,10 @@ export default function ProjectDetailsPage() {
     rawEdgeTapeByBoardKey,
     resolveBoardKey,
   ]);
-  // Linear metres of edge tape per Sales Product, shown next to each product in the Sales tab's
-  // own "Product" checklist. Same excess-per-end/minimum-order-rules/round-to-nearest formula as
-  // requiredEdgetapeByBoardRowId just above, and the same raw-mm-then-apply-settings two-step
-  // shape — but computed from INITIAL MEASURE rows (not Production's), bucketed by Sales Product
-  // name directly (row.board on an Initial Measure row already IS the product name — no Board
-  // Settings row indirection to go through, unlike Production). Kept as its own duplicated
-  // calculation rather than a shared extraction, same reasoning as productionSheetCountsByRoom
-  // above: this is a second, independent caller of the same idea, not a reshaping of the existing,
-  // already-reviewed Production computation.
-  const initialMeasureRawEdgeTapeByProduct = useMemo(() => {
+  // Initial Measure rows exploded into the real pieces that get cut, the same way as
+  // productionCutPieces above. Shared by the Design tab's per-product Edge Tape and Lacquer
+  // figures below so both always count exactly the same pieces.
+  const initialMeasureCutPieces = useMemo(() => {
     const rowsForEdgeTape: CutlistRow[] = [];
     for (const row of initialCutlistRows) {
       if (isCabinetryPartType(row.partType)) {
@@ -25244,7 +25509,19 @@ export default function ProjectDetailsPage() {
       }
       rowsForEdgeTape.push(row);
     }
-
+    return rowsForEdgeTape;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialCutlistRows, isCabinetryPartType, isDrawerPartType, isDoorPartType, buildCabinetryDerivedPieces, buildDrawerDerivedPieces, buildConfiguredDoorDerivedPieces]);
+  // Linear metres of edge tape per Sales Product, shown next to each product in the Sales tab's
+  // own "Product" checklist. Same excess-per-end/minimum-order-rules/round-to-nearest formula as
+  // requiredEdgetapeByBoardRowId just above, and the same raw-mm-then-apply-settings two-step
+  // shape — but computed from INITIAL MEASURE rows (not Production's), bucketed by Sales Product
+  // name directly (row.board on an Initial Measure row already IS the product name — no Board
+  // Settings row indirection to go through, unlike Production). Kept as its own duplicated
+  // calculation rather than a shared extraction, same reasoning as productionSheetCountsByRoom
+  // above: this is a second, independent caller of the same idea, not a reshaping of the existing,
+  // already-reviewed Production computation.
+  const initialMeasureRawEdgeTapeByProduct = useMemo(() => {
     const mmByProduct: Record<string, number> = {};
     const tapeRunCountByProduct: Record<string, number> = {};
     const parseDim = (value: unknown): number => {
@@ -25263,7 +25540,7 @@ export default function ProjectDetailsPage() {
       return { mm: dim * qty * edgeCount, runs: qty * edgeCount };
     };
 
-    for (const row of rowsForEdgeTape) {
+    for (const row of initialMeasureCutPieces) {
       const productName = String(row.board || "").trim().toLowerCase();
       if (!productName) continue;
       const qty = Math.max(0, Number.parseInt(String(row.quantity || "0"), 10) || 0);
@@ -25283,8 +25560,7 @@ export default function ProjectDetailsPage() {
       tapeRunCountByProduct[productName] = (tapeRunCountByProduct[productName] ?? 0) + leftTape.runs + rightTape.runs;
     }
     return { mmByProduct, tapeRunCountByProduct };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialCutlistRows, isCabinetryPartType, isDrawerPartType, isDoorPartType, buildCabinetryDerivedPieces, buildDrawerDerivedPieces, buildConfiguredDoorDerivedPieces]);
+  }, [initialMeasureCutPieces]);
   const initialMeasureEdgeTapeMetersByProductName = useMemo(() => {
     const out: Record<string, string> = {};
     const excessPerEndMm = Math.max(0, Number.parseFloat(String(edgebandingSettings.excessPerEndMm || "").replace(/,/g, ".")) || 0);
@@ -25328,6 +25604,30 @@ export default function ProjectDetailsPage() {
     edgebandingSettings.roundDirection,
     edgebandingSettings.roundNearestMeters,
   ]);
+  // Square metres of lacquer per Sales Product, shown beside Edge Tape in the Design tab's Product
+  // container. Shared formula in lib/lacquer-area.ts (faces × 1 or 2, plus each clashed edge × 20mm),
+  // over exactly the pieces the Edge Tape figure counts. Only products typed "Lacquer (1 side)" or
+  // "Lacquer (2 side)" in Company Settings get a figure. The clash reads the same way as the edge
+  // tape's: a piece's own left/right fields first, else the row's combined "1L 2S" value.
+  const initialMeasureLacquerSqmByProductName = useMemo(() => {
+    const mm2ByProduct: Record<string, number> = {};
+    for (const row of initialMeasureCutPieces) {
+      const productName = String(row.board || "").trim().toLowerCase();
+      const sides = salesProductLacquerSidesByName[productName] ?? 0;
+      if (!productName || sides <= 0) continue;
+      const split = splitClashing(String(row.clashing || ""));
+      const mm2 = lacquerPieceAreaMm2({
+        dims: [row.height, row.width, row.depth],
+        clash: `${row.clashLeft || split.left} ${row.clashRight || split.right}`,
+        quantity: row.quantity,
+        sides,
+      });
+      if (mm2 > 0) mm2ByProduct[productName] = (mm2ByProduct[productName] ?? 0) + mm2;
+    }
+    const out: Record<string, string> = {};
+    for (const [productName, mm2] of Object.entries(mm2ByProduct)) out[productName] = formatLacquerSqm(mm2ToM2(mm2));
+    return out;
+  }, [initialMeasureCutPieces, salesProductLacquerSidesByName]);
   // Company Wrapped inputs — both requiredSheetCountByBoardRowId/requiredEdgetapeByBoardRowId are
   // outputs of the nesting/edgebanding simulation above (no stored per-row value to diff on save),
   // so instead of hooking a commit function, a useEffect below watches these totals for change.
@@ -25338,49 +25638,27 @@ export default function ProjectDetailsPage() {
     () => Object.values(rawEdgeTapeByBoardKey.mmByBoardKey).reduce((sum, mm) => sum + mm, 0) / 1000,
     [rawEdgeTapeByBoardKey],
   );
-  // Actual lacquer coverage in m², not a sheet count: for every Door/Panel cutlist piece cut from a
-  // Lacquer-ticked board, sum its edge area (always counted once) plus its face area (height×width,
-  // doubled only when the company's Sales > Product Type is set to "Lacquer (2 side)" on some
-  // product — see companyLacquerIsTwoSided above). Doors get all 4 edges; Panels only the 2 vertical
-  // ones (thickness×height) per the confirmed formula — neither edge term is ever doubled, only the
-  // face is. Non-manual door rows are exploded into their real per-leaf pieces first (one row can
-  // represent more than one door leaf), mirroring the same derivation requiredEdgetapeByBoardRowId
-  // already does above; manual-mode doors and all panels use their raw row dimensions directly.
+  // Company Wrapped's "Lacquer Used (m²)": the same lib/lacquer-area.ts formula as the Design
+  // tab's Lacquer column, over the same production pieces the edge-tape total above counts.
+  // Production boards aren't tied to a Sales Product, so here "lacquered" means cut from a
+  // Lacquer-ticked board, and the faces come from the company-wide companyLacquerIsTwoSided. Picking
+  // a Lacquer-ticked board clears a piece's clash (see defaultClashingForPartType), so most of these
+  // pieces count their faces only; edges are added wherever a clash value is still set.
   const totalLacquerSqmRequired = useMemo(() => {
+    const sides: LacquerSides = companyLacquerIsTwoSided ? 2 : 1;
     let totalMm2 = 0;
-    for (const row of effectiveCutlistRows) {
+    for (const row of productionCutPieces) {
       if (!boardLacquerFor(String(row.board || ""))) continue;
-      const isDoor = isDoorPartType(row.partType);
-      const isPanel = isPanelPartType(row.partType);
-      if (!isDoor && !isPanel) continue;
-      const thicknessMm = Number.parseFloat(String(boardThicknessFor(String(row.board || "").trim())).replace(/,/g, ".")) || 0;
-      const pieceAreaMm2 = (h: number, w: number) => {
-        const face = Math.max(0, h) * Math.max(0, w) * (companyLacquerIsTwoSided ? 2 : 1);
-        const edges = isDoor ? 2 * (thicknessMm * h) + 2 * (thicknessMm * w) : 2 * (thicknessMm * h);
-        return face + edges;
-      };
-      if (isDoor && normalizeDoorModeValue(row.doorMode) !== "manual") {
-        for (const piece of buildConfiguredDoorDerivedPieces(row)) {
-          const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
-          if (qty <= 0) continue;
-          totalMm2 += pieceAreaMm2(Number.parseFloat(piece.height) || 0, Number.parseFloat(piece.width) || 0) * qty;
-        }
-        continue;
-      }
-      const qty = Math.max(0, Number.parseInt(String(row.quantity || "0"), 10) || 0);
-      if (qty <= 0) continue;
-      totalMm2 += pieceAreaMm2(Number.parseFloat(row.height) || 0, Number.parseFloat(row.width) || 0) * qty;
+      const split = splitClashing(String(row.clashing || ""));
+      totalMm2 += lacquerPieceAreaMm2({
+        dims: [row.height, row.width, row.depth],
+        clash: `${row.clashLeft || split.left} ${row.clashRight || split.right}`,
+        quantity: row.quantity,
+        sides,
+      });
     }
-    return totalMm2 / 1_000_000; // mm² → m²
-  }, [
-    effectiveCutlistRows,
-    boardLacquerFor,
-    isDoorPartType,
-    isPanelPartType,
-    boardThicknessFor,
-    companyLacquerIsTwoSided,
-    buildConfiguredDoorDerivedPieces,
-  ]);
+    return mm2ToM2(totalMm2);
+  }, [productionCutPieces, boardLacquerFor, companyLacquerIsTwoSided]);
   // Same total orderTotalSheetsRequired (below, computed later from orderBoardSummary) arrives at —
   // computed independently here since this useEffect must sit above this component's early
   // "isLoading"/"!project" returns (React hooks can't be called after a conditional return), while
@@ -26413,7 +26691,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 <div className="space-y-2">
                   <p className="text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>Room Name</p>
                   <input
-                    autoFocus
+                    ref={focusOnMountWithoutScrolling}
                     value={addRoomName}
                     onChange={(e) => {
                       setAddRoomName(e.target.value);
@@ -26773,6 +27051,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       if (!target) return;
       if (cncExportMenuRef.current?.contains(target)) return;
       setCncExportMenuOpen(false);
+      // That press only closes the menu — it doesn't also act on what it landed on.
+      swallowNextClick();
     };
     document.addEventListener("pointerdown", onDocPointerDown);
     return () => {
@@ -27609,7 +27889,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     content: (
       <>
         <span>
-          Viewing {activeSpecsSheetVersion?.savedAtIso ? dashboardStyleDate(activeSpecsSheetVersion.savedAtIso) : "an older"} version —
+          Viewing {activeSpecsSheetVersion?.savedAtIso ? dashboardStyleDate(activeSpecsSheetVersion.savedAtIso) : "an older"}{" "}version —
           editing here saves to this version only
         </span>
         <button
@@ -28183,6 +28463,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   );
   useEffect(() => {
     if (!(isLoading || !project)) return;
+    if (openedFromArchive) return;
     const scopeKey = projectLoadingAppShellTabRegistration.scopeKey;
     // Don't downgrade an already-registered richer tab group (e.g. reopening a
     // project that still has its live sub-tabs registered from a previous visit)
@@ -29413,7 +29694,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </div>
               <div className="space-y-4 px-5 py-5">
                 <input
-                  autoFocus
+                  ref={focusOnMountWithoutScrolling}
                   value={itemsAddRoomName}
                   onChange={(e) => setItemsAddRoomName(e.currentTarget.value)}
                   onKeyDown={(e) => {
@@ -30669,7 +30950,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       </button>
                       {isAddChecklistMenuOpen && (
                         <>
-                          <div className="fixed inset-0 z-[2147483647]" onClick={() => setIsAddChecklistMenuOpen(false)} />
+                          {/* Closes on the press itself (not the click that follows) and only closes:
+                              it unmounts straight away, so swallowNextClick stops that same press's
+                              click from landing on whatever was underneath this catcher. */}
+                          <div
+                            className="fixed inset-0 z-[2147483647]"
+                            onPointerDown={() => {
+                              setIsAddChecklistMenuOpen(false);
+                              swallowNextClick();
+                            }}
+                          />
                           <div
                             className="absolute right-0 top-[calc(100%+6px)] z-[2147483647] w-[260px] rounded-[12px] border p-2"
                             style={{
@@ -31126,14 +31416,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           <div className="p-3 text-[12px]">
             {salesProductRows.length > 0 ? (
               <>
-                <div className="mb-2 grid grid-cols-[40px_1fr_64px] gap-2 text-[11px] font-bold" style={{ color: projectPalette.textMuted }}>
-                  <p></p><p>Product</p><p className="text-right">Edge Tape</p>
+                <div className="mb-2 grid grid-cols-[40px_1fr_64px_64px] gap-2 text-[11px] font-bold" style={{ color: projectPalette.textMuted }}>
+                  <p></p><p>Product</p><p className="text-right">Edge Tape</p><p className="text-right">Lacquer</p>
                 </div>
                 <div className="space-y-1">
                   {salesProductRows.map((row) => {
                     const edgeTapeMeters = initialMeasureEdgeTapeMetersByProductName[row.name.trim().toLowerCase()] || "";
+                    const lacquerSqm = initialMeasureLacquerSqmByProductName[row.name.trim().toLowerCase()] || "";
                     return (
-                      <div key={row.name} className="grid grid-cols-[40px_1fr_64px] items-center gap-2 border-b py-2 last:border-none" style={{ borderBottomColor: projectPalette.border }}>
+                      <div key={row.name} className="grid grid-cols-[40px_1fr_64px_64px] items-center gap-2 border-b py-2 last:border-none" style={{ borderBottomColor: projectPalette.border }}>
                         <QuoteExtraToggleSwitch
                           checked={row.selected}
                           disabled={salesReadOnly || isSavingSalesRooms}
@@ -31141,6 +31432,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         />
                         <span className="font-semibold" style={{ color: projectPalette.text }}>{row.name}</span>
                         <span className="text-right font-medium" style={{ color: "var(--text-muted)" }}>{edgeTapeMeters ? `${edgeTapeMeters}m` : ""}</span>
+                        <span className="text-right font-medium" style={{ color: "var(--text-muted)" }}>{lacquerSqm ? `${lacquerSqm}m²` : ""}</span>
                       </div>
                     );
                   })}
@@ -39687,14 +39979,23 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         <button
                           type="button"
                           aria-label="Close doors or drawers picker"
+                          // A press off the picker closes it on the spot and does nothing else
+                          // (swallowNextClick); onClick stays for keyboard users.
+                          onPointerDown={() => {
+                            closeDoorDrawerPicker();
+                            swallowNextClick();
+                          }}
                           onClick={closeDoorDrawerPicker}
                           className="absolute inset-0"
                           style={{ background: "transparent" }}
                         />
                         <div
                           ref={doorDrawerPickerPanelRef}
-                          className="glass-modal-panel absolute flex max-h-[60vh] flex-col overflow-hidden"
+                          // anchoredGlassPanelStyle, not .glass-modal-panel: stays pinned under its
+                          // button while the keyboard is up (its count box opens it).
+                          className="absolute flex max-h-[60vh] flex-col overflow-hidden"
                           style={{
+                            ...anchoredGlassPanelStyle(isDarkMode),
                             left: panelLeft,
                             top: panelTop,
                             width: panelWidth,
@@ -39702,7 +40003,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             zIndex: 2147483647,
                           }}
                         >
-                          <div className="glass-scroll min-h-0 flex-1 overflow-auto px-4 py-3">
+                          <div className="glass-scroll min-h-0 flex-1 overflow-auto overscroll-contain px-4 py-3">
                             {doorDrawerPickerStep === "drawerCount" ? (
                               <div className="space-y-2">
                                 <div className="mx-auto flex w-fit items-center gap-2">
@@ -42389,14 +42690,22 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       <button
                         type="button"
                         aria-label="Close sub part type picker backdrop"
+                        // Same as the Doors/Drawers picker's backdrop: a press off it only closes it.
+                        onPointerDown={() => {
+                          closeSubPartTypePicker();
+                          swallowNextClick();
+                        }}
                         onClick={closeSubPartTypePicker}
                         className="absolute inset-0"
                         style={{ background: "transparent" }}
                       />
                       <div
                         ref={subPartTypePickerPanelRef}
-                        className="glass-modal-panel absolute flex items-center overflow-visible"
+                        // anchoredGlassPanelStyle, not .glass-modal-panel: stays pinned beside its
+                        // button (and free to overflow) even if the keyboard is up.
+                        className="absolute flex items-center overflow-visible"
                         style={{
+                          ...anchoredGlassPanelStyle(isDarkMode),
                           left: panelLeft,
                           top: panelTop,
                           height: panelHeight,
@@ -42492,14 +42801,23 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       <button
                         type="button"
                         aria-label="Close doors or drawers picker"
+                        // A press off the picker closes it on the spot and does nothing else
+                        // (swallowNextClick); onClick stays for keyboard users.
+                        onPointerDown={() => {
+                          closeDoorDrawerPicker();
+                          swallowNextClick();
+                        }}
                         onClick={closeDoorDrawerPicker}
                         className="absolute inset-0"
                         style={{ background: "transparent" }}
                       />
                       <div
                         ref={doorDrawerPickerPanelRef}
-                        className="glass-modal-panel absolute flex max-h-[60vh] flex-col overflow-hidden"
+                        // anchoredGlassPanelStyle, not .glass-modal-panel: stays pinned under its
+                        // button while the keyboard is up (its count box opens it).
+                        className="absolute flex max-h-[60vh] flex-col overflow-hidden"
                         style={{
+                          ...anchoredGlassPanelStyle(isDarkMode),
                           left: panelLeft,
                           top: panelTop,
                           width: panelWidth,
@@ -42507,7 +42825,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           zIndex: 2147483647,
                         }}
                       >
-                        <div className="glass-scroll min-h-0 flex-1 overflow-auto px-4 py-3">
+                        <div className="glass-scroll min-h-0 flex-1 overflow-auto overscroll-contain px-4 py-3">
                           {doorDrawerPickerStep === "drawerCount" ? (
                             <div className="space-y-2">
                               <div className="mx-auto flex w-fit items-center gap-2">
@@ -43972,8 +44290,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 // this panel's own scroll bleeds into scrolling the page underneath once this
                 // panel's own scroll is exhausted — both "content behind scrolls too" and "gets
                 // stuck at the bottom" (the browser handing the gesture to the page behind).
-                className="fixed inset-x-0 top-[56px] bottom-0 z-[130] overflow-y-auto overscroll-contain bg-white"
-                style={{ transform: "translateY(100%)" }}
+                className="fixed inset-x-0 z-[130] overflow-y-auto overscroll-contain bg-white"
+                // top/bottom: see Nesting's own identical style — stays within what's visible above
+                // the keyboard while it's open.
+                style={{
+                  top: "calc(56px + var(--keyboard-offset-top-px, 0px))",
+                  bottom: "var(--keyboard-inset-px, 0px)",
+                  transform: "translateY(100%)",
+                }}
               >
                 {/* Same bar (height, blue brand gradient) as the closed-state trigger bar below —
                     it visually IS that bar, now sitting as the open panel's own header, so dragging
@@ -43984,10 +44308,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 <div
                   className="sticky top-0 z-10 flex h-[56px] items-center gap-2 border-b px-3"
                   style={{ borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)" }}
+                  onPointerDown={(e) => {
+                    mobileVisibilityHeaderPressOnBarRef.current = e.target === e.currentTarget;
+                  }}
                   onClick={(e) => {
-                    // Only closes for a tap on the header's own background — see Nesting's
-                    // identical comment for why this replaced a closest()-based exclusion check.
-                    if (e.target !== e.currentTarget) return;
+                    // Only closes for a tap that both started and ended on the header's own
+                    // background — see Nesting's identical comment for why both are checked.
+                    if (e.target !== e.currentTarget || !mobileVisibilityHeaderPressOnBarRef.current) return;
                     setIsCncMobileVisibilityOpen(false);
                   }}
                   onTouchStart={onCncVisibilityHeaderTouchStart}
@@ -43997,7 +44324,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 >
                   <div
                     data-cnc-visibility-search="true"
-                    className="peer relative z-10 w-[84px] shrink-0 flex-none transition-[flex-grow,width] duration-200 focus-within:w-auto focus-within:flex-1"
+                    // min-w-[84px]: see Nesting's own identical search box — stops it shrinking out
+                    // from under the tap that focuses it.
+                    className="peer relative z-10 w-[84px] min-w-[84px] shrink-0 flex-none transition-[flex-grow,width] duration-200 focus-within:w-auto focus-within:flex-1"
                     onClick={(e) => e.stopPropagation()}
                     onTouchStart={(e) => e.stopPropagation()}
                   >
@@ -47685,8 +48014,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     <div
                       ref={compareMobileListPanelRef}
                       {...compareMobileListSwipe.touchHandlers}
-                      className="hide-scrollbar absolute inset-y-0 left-0 z-[1] flex h-full w-full flex-col gap-2 overflow-y-auto p-3"
-                      style={{ backgroundColor: "var(--bg-app)", paddingTop: 16 }}
+                      className="hide-scrollbar absolute left-0 z-[1] flex w-full flex-col gap-2 overflow-y-auto p-3"
+                      style={{
+                        backgroundColor: "var(--bg-app)",
+                        paddingTop: 16,
+                        // Spans just what's visible above the on-screen keyboard while it's up (both
+                        // vars are 0 otherwise; see lib/use-keyboard-inset.ts) — the Comparison name
+                        // box at its top stays on screen when iOS scrolls the view to it, and the list
+                        // under it can still scroll all the way through above the keyboard.
+                        top: "var(--keyboard-offset-top-px, 0px)",
+                        bottom: "var(--keyboard-inset-px, 0px)",
+                      }}
                     >
                       <div className="mb-1 flex items-center justify-between">
                         <p className="text-[13px] font-bold uppercase tracking-[0.5px]" style={{ color: "var(--text-main)" }}>Comparisons</p>
@@ -48699,8 +49037,19 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   // both "the content behind scrolls too" and "gets stuck at the bottom, can't
                   // scroll back up" (the stuck feeling is the browser having handed the gesture to
                   // the page behind instead of this panel's own scroller).
-                  className="fixed inset-x-0 top-[56px] bottom-0 z-[130] overflow-y-auto overscroll-contain bg-white"
-                  style={{ transform: "translateY(100%)" }}
+                  className="fixed inset-x-0 z-[130] overflow-y-auto overscroll-contain bg-white"
+                  // top/bottom track what's actually visible while the on-screen keyboard is up (both
+                  // vars are 0 while it's closed; see lib/use-keyboard-inset.ts). bottom: the top of
+                  // the keyboard rather than the bottom of the screen, so while typing in the search
+                  // box the filtered list ends just above it and scrolls all the way through, instead
+                  // of its last rows sitting out of reach underneath. top: + however far iOS has
+                  // scrolled the visible area down, so the bar with the search box stays in view
+                  // rather than riding up off the top of the screen with the page.
+                  style={{
+                    top: "calc(56px + var(--keyboard-offset-top-px, 0px))",
+                    bottom: "var(--keyboard-inset-px, 0px)",
+                    transform: "translateY(100%)",
+                  }}
                 >
                   {/* Same bar (height, blue brand gradient) as the closed-state trigger bar below —
                       it visually IS that bar, now sitting as the open panel's own header, so
@@ -48712,12 +49061,20 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   <div
                     className="sticky top-0 z-10 flex h-[56px] items-center gap-2 border-b px-3"
                     style={{ borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)" }}
+                    onPointerDown={(e) => {
+                      mobileVisibilityHeaderPressOnBarRef.current = e.target === e.currentTarget;
+                    }}
                     onClick={(e) => {
                       // Only closes for a tap on the header's own background — e.target ===
                       // e.currentTarget is true only when nothing else (search box, input, Show
                       // All button) was actually hit. See onNestingVisibilityHeaderTouchStart's own
                       // comment for why this replaced a closest()-based exclusion check.
-                      if (e.target !== e.currentTarget) return;
+                      // The press has to have STARTED on the background too: a click goes to the
+                      // nearest element shared by where the press went down and where it came up,
+                      // so a tap that began on the search box but ended over the bar (the box
+                      // changing size under the finger as it took focus) arrived here looking like a
+                      // plain bar tap — and closed the card the user was trying to search in.
+                      if (e.target !== e.currentTarget || !mobileVisibilityHeaderPressOnBarRef.current) return;
                       setIsNestingMobileVisibilityOpen(false);
                     }}
                     onTouchStart={onNestingVisibilityHeaderTouchStart}
@@ -48727,7 +49084,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   >
                     <div
                       data-nesting-visibility-search="true"
-                      className="peer relative z-10 w-[84px] shrink-0 flex-none transition-[flex-grow,width] duration-200 focus-within:w-auto focus-within:flex-1"
+                      // min-w-[84px]: taking focus swaps this box to flex-1 (a zero starting size)
+                      // while its grow animates up from nothing — so for that first instant it
+                      // shrank to little more than the magnifier icon, right under the finger that
+                      // had just tapped it. The rest of that same tap then landed on the bar behind
+                      // it, which closes the card; only a tap right on the icon survived. Holding
+                      // the resting width keeps the box under the finger for the whole tap, and it
+                      // grows smoothly outward from there.
+                      className="peer relative z-10 w-[84px] min-w-[84px] shrink-0 flex-none transition-[flex-grow,width] duration-200 focus-within:w-auto focus-within:flex-1"
                       onClick={(e) => e.stopPropagation()}
                       // Stops the touch itself at the DOM level (not just via the header's own
                       // closest() check) so tapping in to type can never be read as the start of
@@ -49620,6 +49984,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               // visually bled into the space below this bar, reading as a gap even once the
               // actual layout gap was fully closed.
               boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.07)" : "rgba(255,255,255,0.55)"}`,
+              ...(archivedHeaderBackground ? { background: archivedHeaderBackground } : {}),
             }}
           >
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -49797,7 +50162,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             style={{ borderColor: "var(--glass-border)", backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
                           />
                           {showTagSuggestions && filteredTagSuggestions.length > 0 && (
-                            <div className="absolute left-0 top-[calc(100%+2px)] z-30 max-h-[220px] w-[220px] overflow-auto rounded-[10px] border p-1 shadow-[var(--shadow-md)]" style={GLASS_DROPDOWN_MENU_STYLE}>
+                            <div data-tag-suggestions="true" className="absolute left-0 top-[calc(100%+2px)] z-30 max-h-[220px] w-[220px] overflow-auto rounded-[10px] border p-1 shadow-[var(--shadow-md)]" style={GLASS_DROPDOWN_MENU_STYLE}>
                               {filteredTagSuggestions.map((tag) => (
                                 <button
                                   key={tag}
@@ -49816,6 +50181,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       )}
                       <button
                         type="button"
+                        data-tag-add-button="true"
                         onClick={() => {
                           if (!isTagInputOpen) {
                             setIsTagInputOpen(true);
@@ -49833,36 +50199,66 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   </>
                   )}
                 </div>
-                <div className="hidden shrink-0 items-center gap-2 md:flex">
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      deleteProjectModalOriginElRef.current = e.currentTarget;
-                      setDeleteProjectModalOrigin(captureGlassModalOrigin(e));
-                      setDeleteProjectNameInput("");
-                      setIsDeleteProjectModalOpen(true);
-                    }}
-                    disabled={isDeleting || !canDeleteProject}
-                    className="h-8 rounded-[10px] border px-4 text-[12px] font-bold text-white transition hover:brightness-95 disabled:opacity-60"
-                    style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
-                  >
-                    Delete
-                  </button>
+                {/* Takes the rest of the row after the tags: the archived note centred in that space, the Archive
+                    button at the far right. */}
+                <div className="hidden min-w-0 flex-1 items-center gap-2 md:flex">
+                  <div className="flex min-w-0 flex-1 justify-center">
+                  {archivedNoteText ? (
+                    <div
+                      className={`inline-flex h-9 min-w-0 max-w-[min(460px,38vw)] items-center gap-2.5 rounded-[10px] border pl-3.5 text-[14px] font-medium ${
+                        canRestoreArchivedProject ? "pr-1" : "pr-3.5"
+                      }`}
+                      style={archivedNoteStyle}
+                      title={archivedNoteText}
+                    >
+                      <span className="truncate">{archivedNoteText}</span>
+                      {canRestoreArchivedProject ? (
+                        <button
+                          type="button"
+                          disabled={isRestoringArchivedProject}
+                          onClick={openRestoreArchivedConfirm}
+                          className="h-7 shrink-0 rounded-[8px] border px-3 text-[13px] font-medium transition hover:brightness-95 disabled:opacity-60"
+                          style={{ borderColor: archivedNoteStyle.borderColor, backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                        >
+                          {isRestoringArchivedProject ? "Restoring…" : "Restore"}
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  </div>
+                  {/* Not on a project that's already archived — the note beside it offers Restore instead. */}
+                  {!isProjectArchived(project) ? (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        deleteProjectModalOriginElRef.current = e.currentTarget;
+                        setDeleteProjectModalOrigin(captureGlassModalOrigin(e));
+                        setDeleteProjectNameInput("");
+                        setIsDeleteProjectModalOpen(true);
+                      }}
+                      disabled={isDeleting || !canDeleteProject}
+                      title="Move this project to the Archive"
+                      className="h-8 shrink-0 rounded-[10px] border px-4 text-[12px] font-bold text-white transition hover:brightness-95 disabled:opacity-60"
+                      style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
+                    >
+                      Archive
+                    </button>
+                  ) : null}
                   {shouldRenderDeleteProjectModal && typeof document !== "undefined" && createPortal(
                     <div className="fixed inset-0 z-[2147483646] flex items-center justify-center px-4">
                       <button
                         type="button"
-                        aria-label="Close delete project dialog backdrop"
+                        aria-label="Close archive project dialog backdrop"
                         onClick={closeDeleteProjectModal}
                         className="glass-modal-backdrop absolute inset-0"
                       />
                       <div ref={deleteProjectModalPanelRef} className="glass-modal-panel relative z-[2147483647] w-[min(440px,96vw)] overflow-hidden">
                         <div className="glass-modal-header px-5 py-4">
-                          <p className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>Delete this project?</p>
+                          <p className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>Archive this project?</p>
                         </div>
                         <div className="px-5 py-4">
-                          <p className="text-[13px]" style={{ color: "var(--text-main)" }}>
-                            This moves <b>{project.name}</b> to Recently Deleted. It can be restored later, but it will disappear from Dashboard immediately.
+                          <p className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
+                            This moves <b>{project.name}</b> to the Archive and takes it off the Dashboard straight away. You can restore it or delete it permanently from there.
                           </p>
                           <p className="mt-3 text-[12px] font-semibold" style={{ color: "var(--text-muted)" }}>
                             Type <b style={{ color: "var(--text-main)" }}>{project.name}</b> to confirm.
@@ -49898,7 +50294,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               className="h-9 rounded-[8px] border px-4 text-[12px] font-bold text-white hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-55"
                               style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
                             >
-                              {isDeleting ? "Deleting..." : "Confirm Delete"}
+                              {isDeleting ? "Archiving..." : "Confirm Archive"}
                             </button>
                           </div>
                         </div>
@@ -49958,7 +50354,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             data-title-bar="true"
             className="-mx-4 md:-mx-5"
             style={{
-              backgroundColor: "var(--glass-modal-bg)",
+              backgroundColor: archivedHeaderBackground ?? "var(--glass-modal-bg)",
               backdropFilter: "blur(12px) saturate(220%)",
               WebkitBackdropFilter: "blur(12px) saturate(220%)",
             }}
@@ -50119,6 +50515,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               top: projectHeaderRowHeight + (isLgUpViewport ? 48 : 0),
               marginTop: 0,
               boxShadow: "var(--shadow-sm)",
+              ...(archivedHeaderBackground ? { background: archivedHeaderBackground } : {}),
             }}
           >
             <div className="px-4 md:px-5">
@@ -50218,6 +50615,39 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </div>,
               document.body,
             )}
+
+          {isRestoreArchivedConfirmOpen && project ? (
+            <RestoreDialog
+              title="Restore this project?"
+              statusOptions={restoreStatusOptionsFrom(companyDoc?.projectStatuses, statusOptions)}
+              initialStatus={String(project.statusLabel || "").trim()}
+              initialSubStage={String(project.dashboardSubStageId || "").trim()}
+              busy={isRestoringArchivedProject}
+              onCancel={() => setIsRestoreArchivedConfirmOpen(false)}
+              onConfirm={(status, subStage) => void restoreThisArchivedProject(status, subStage)}
+            />
+          ) : null}
+
+          {/* Phones: the archived note (see archivedNoteText) — on wider screens it's in the title bar. */}
+          {archivedNoteText ? (
+            <div
+              className="flex flex-wrap items-center justify-between gap-2 rounded-[10px] border px-3.5 py-2 text-[14px] font-medium md:hidden"
+              style={archivedNoteStyle}
+            >
+              <span>{archivedNoteText}</span>
+              {canRestoreArchivedProject ? (
+                <button
+                  type="button"
+                  disabled={isRestoringArchivedProject}
+                  onClick={openRestoreArchivedConfirm}
+                  className="h-9 rounded-[8px] border px-4 text-[13.5px] font-medium disabled:opacity-60"
+                  style={{ borderColor: archivedNoteStyle.borderColor, backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                >
+                  {isRestoringArchivedProject ? "Restoring…" : "Restore"}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
 
           {!!lockMessage && (
             <div className="rounded-[10px] border border-[var(--danger-border)] bg-[var(--danger-soft)] px-3 py-2 text-[12px] font-semibold text-[var(--danger-strong)]">
@@ -54012,6 +54442,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     if (!filtered.length) return null;
                                     return createPortal(
                                       <div
+                                        data-board-suggestions-menu="true"
                                         className="fixed max-h-[220px] w-[220px] overflow-auto rounded-[8px] border p-1 shadow-[0_12px_28px_rgba(15,23,42,0.14)]"
                                         style={{
                                           left: boardColourDropdownRect.left,
@@ -54111,6 +54542,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     if (!filtered.length) return null;
                                     return createPortal(
                                       <div
+                                        data-board-suggestions-menu="true"
                                         className="fixed max-h-[220px] w-[220px] overflow-auto rounded-[8px] border p-1 shadow-[0_12px_28px_rgba(15,23,42,0.14)]"
                                         style={{
                                           left: boardEdgingDropdownRect.left,
@@ -54336,6 +54768,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   if (!filtered.length) return null;
                                   return createPortal(
                                     <div
+                                      data-board-suggestions-menu="true"
                                       className="fixed max-h-[220px] overflow-auto rounded-[8px] border p-1 shadow-[0_12px_28px_rgba(15,23,42,0.14)]"
                                       style={{
                                         left: boardColourDropdownRect.left,
@@ -54447,6 +54880,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   if (!filtered.length) return null;
                                   return createPortal(
                                     <div
+                                      data-board-suggestions-menu="true"
                                       className="fixed max-h-[220px] overflow-auto rounded-[8px] border p-1 shadow-[0_12px_28px_rgba(15,23,42,0.14)]"
                                       style={{
                                         left: boardEdgingDropdownRect.left,
@@ -54587,20 +55021,22 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           {resolvedTab === "settings" && settingsAccess.view && (
             <div ref={projectTabContentRef} key={resolvedTab} className="-mx-4 -mb-4 md:-mx-5" style={{ backgroundColor: projectTabAreaBg, animation: projectTabSlideAnimation }}>
               <div className="space-y-4 px-[22px] pb-4 pt-[22px] md:px-[22px] xl:px-[22px] xl:pb-4" style={{ backgroundColor: projectTabAreaBg }}>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    deleteProjectModalOriginElRef.current = e.currentTarget;
-                    setDeleteProjectModalOrigin(captureGlassModalOrigin(e));
-                    setDeleteProjectNameInput("");
-                    setIsDeleteProjectModalOpen(true);
-                  }}
-                  disabled={isDeleting || !canDeleteProject}
-                  className="h-9 w-full rounded-[10px] border px-4 text-[15px] font-normal text-white transition hover:brightness-95 disabled:opacity-60 md:hidden"
-                  style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
-                >
-                  Delete Project
-                </button>
+                {!isProjectArchived(project) ? (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      deleteProjectModalOriginElRef.current = e.currentTarget;
+                      setDeleteProjectModalOrigin(captureGlassModalOrigin(e));
+                      setDeleteProjectNameInput("");
+                      setIsDeleteProjectModalOpen(true);
+                    }}
+                    disabled={isDeleting || !canDeleteProject}
+                    className="h-9 w-full rounded-[10px] border px-4 text-[15px] font-normal text-white transition hover:brightness-95 disabled:opacity-60 md:hidden"
+                    style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
+                  >
+                    Archive Project
+                  </button>
+                ) : null}
             <div className="grid gap-4 xl:grid-cols-2">
                 <section
                   className="overflow-hidden rounded-[18px] border"
@@ -55146,7 +55582,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   <div className="space-y-2">
                     <p className="text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>Room Name</p>
                     <input
-                      autoFocus
+                      ref={focusOnMountWithoutScrolling}
                       value={addRoomName}
                       onChange={(e) => {
                         setAddRoomName(e.target.value);

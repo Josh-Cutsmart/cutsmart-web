@@ -74,6 +74,12 @@ export interface Project {
   notes?: string;
   productionNotes?: string;
   remedials?: string;
+  // Archiving (lib/project-archive.ts): a project archived by hand, or left in a completed status past
+  // Company Settings' "Archive completed projects after", is filed in the Archived list — never deleted
+  // automatically (only by someone deleting it permanently from there).
+  isArchived?: boolean;
+  archivedAtIso?: string;
+  archiveRestoredAtIso?: string;
   contractorNotes?: Record<string, string>;
   clientFirstName?: string;
   clientLastName?: string;

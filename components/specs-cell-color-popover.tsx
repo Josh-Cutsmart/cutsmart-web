@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { PRESET_SWATCHES } from "@/components/sidebar-color-picker-popover";
+import { swallowNextClick } from "@/lib/swallow-dismiss-click";
 
 export type SpecsColorPopoverAnchorRect = { left: number; top: number; width: number; height: number };
 
@@ -54,13 +55,15 @@ export function SpecsCellColorPopover({
 
   useEffect(() => {
     if (!isOpen || typeof document === "undefined") return;
-    const onPointerDown = (event: MouseEvent) => {
+    const onPointerDown = (event: PointerEvent) => {
       const targetNode = event.target as Node;
       if (popoverRef.current?.contains(targetNode)) return;
       onClose();
+      // That press only closes the popover — it doesn't also act on whatever it landed on.
+      swallowNextClick();
     };
-    document.addEventListener("mousedown", onPointerDown);
-    return () => document.removeEventListener("mousedown", onPointerDown);
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [isOpen, onClose]);
 
   if (!isOpen || !anchorRect || typeof document === "undefined") return null;

@@ -8,6 +8,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { doc, serverTimestamp, setDoc } from "firebase/firestore";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import {
+  Archive,
   CalendarDays,
   ChevronRight,
   GripVertical,
@@ -23,7 +24,6 @@ import {
   Search,
   Settings,
   Tag,
-  Trash2,
   Users,
   X,
 } from "lucide-react";
@@ -37,6 +37,7 @@ import { MOBILE_TOP_BAR_UPDATED_EVENT, readMobileTopBarEnabled, readSidebarResiz
 import "@/lib/pwa-install";
 import {
   addUserNotification,
+  archiveDueCompletedProjects,
   cleanupCompletedReportsForNewVersion,
   fetchAppChangelogHistory,
   fetchCompanyDoc,
@@ -64,6 +65,8 @@ import {
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { useSwipeToClose } from "@/lib/use-swipe-to-close";
 import { usePublishKeyboardInsetVars } from "@/lib/use-keyboard-inset";
+import { swallowNextClick } from "@/lib/swallow-dismiss-click";
+import { isAnyPopupOpen } from "@/components/scroll-lock-watcher";
 import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
 import { SidebarUserSettingsPanel } from "@/components/sidebar-user-settings-panel";
 import { VerifyAccountModal } from "@/components/verify-account-modal";
@@ -126,11 +129,13 @@ function normalizeGapAllowancesSettings(raw: unknown): GapAllowancesSettings {
 const topNav = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/leads", label: "Leads", icon: Inbox },
-  { href: "/recently-deleted", label: "Recently Deleted", icon: Trash2 },
   { href: "/clients", label: "Contacts", icon: Users },
   { href: "/calendar", label: "Calendar", icon: CalendarDays },
   { href: "/wrapped", label: "Company Wrapped", icon: PartyPopper },
   { href: "/company-settings", label: "Company Settings", icon: Settings },
+  // Archived leads, projects and contacts — what used to be Recently Deleted (/recently-deleted now
+  // redirects here). Every Delete/Archive button in the app files things here.
+  { href: "/archived", label: "Archive", icon: Archive },
   // Last on purpose — rendered with a divider above it (see visibleTopNav.map below) to set it
   // apart from the rest of the main tabs above it.
   { href: "/changelog", label: "Changelog", icon: Search },
@@ -1016,7 +1021,11 @@ export function AppShell({
     // (the exact motion that pulls down the nav bar or swipes open the nav/notif drawers here) —
     // belt-and-braces alongside startedOnGestureExempt above, which is what actually stops this in
     // the common case of a pinch starting on a marked surface (e.g. the Quote/Specs sheet preview).
-    if (isDesktopViewport || mobileNavOpen || notifOpen || startedOnGestureExempt || event.touches.length > 1) {
+    //
+    // isAnyPopupOpen(): while a pop-up is up (anything components/scroll-lock-watcher.tsx counts — a
+    // modal, a drawer, a confirm), a drag on it belongs to the pop-up — dragging down shouldn't pull the
+    // top menu down over it, and a sideways drag shouldn't slide a drawer in under/over it.
+    if (isDesktopViewport || mobileNavOpen || notifOpen || startedOnGestureExempt || event.touches.length > 1 || isAnyPopupOpen()) {
       mainSwipeStartRef.current = null;
       pullDashboardRef.current = null;
       // Also clear a stale kind, not just the two refs above — a previous gesture that committed
@@ -1823,6 +1832,22 @@ export function AppShell({
     };
   }, [user?.uid, user?.companyId]);
 
+  // Moves the active company's finished projects into Archived once they're past Company Settings'
+  // archive delay. There's no server scheduler, so it runs from here, in the background a few seconds
+  // after load; archiveDueCompletedProjects itself limits it to once a day per company on this device
+  // and to people who can edit every project.
+  useEffect(() => {
+    const uid = String(user?.uid || "").trim();
+    if (!uid || !user?.verified || typeof window === "undefined") return;
+    const storedCompanyId = String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim();
+    const companyId = storedCompanyId || String(user?.companyId || "").trim();
+    if (!companyId) return;
+    const timer = window.setTimeout(() => {
+      void archiveDueCompletedProjects(companyId, uid).catch(() => {});
+    }, 4000);
+    return () => window.clearTimeout(timer);
+  }, [user?.companyId, user?.uid, user?.verified]);
+
   useEffect(() => {
     let cancelled = false;
     const loadCompanyAccess = async () => {
@@ -2058,6 +2083,19 @@ export function AppShell({
       }
     });
     return () => window.cancelAnimationFrame(raf);
+  }, [assigneeMenuOpen]);
+
+  // A press anywhere outside the "Assign Project To" field (its button + list) closes the list — and
+  // only closes it, without also acting on whatever the press landed on.
+  useEffect(() => {
+    if (!assigneeMenuOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (assigneeFieldRef.current?.contains(event.target as Node)) return;
+      setAssigneeMenuOpen(false);
+      swallowNextClick();
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [assigneeMenuOpen]);
 
   useEffect(() => {
@@ -2502,7 +2540,7 @@ export function AppShell({
 
   useEffect(() => {
     if (!isUserSettingsPanelOpen || typeof document === "undefined") return;
-    const onPointerDown = (event: MouseEvent) => {
+    const onPointerDown = (event: PointerEvent) => {
       const targetNode = event.target as Node;
       if (desktopAsideRef.current?.contains(targetNode)) return;
       // The mobile drawer's own sliding user-settings card is a second, separate instance of
@@ -2521,9 +2559,11 @@ export function AppShell({
       const modalEl = targetNode instanceof Element ? targetNode.closest(".glass-modal-backdrop, .glass-modal-panel") : null;
       if (modalEl) return;
       closeUserSettingsPanel();
+      // That press only closes the panel — it doesn't also act on whatever it landed on.
+      swallowNextClick();
     };
-    document.addEventListener("mousedown", onPointerDown);
-    return () => document.removeEventListener("mousedown", onPointerDown);
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [isUserSettingsPanelOpen]);
 
   useEffect(() => {
@@ -3553,6 +3593,10 @@ export function AppShell({
                   ? "calc(100dvh - 48px)" // matches this wrapper's own lg:pt-12
                   : "auto"
                 : "calc(100svh - 48px)", // mobile now reserves only the one GlobalAppTabsBar (h-12)
+            // Desktop pages grow with their content ("auto" above), so a short one (e.g. Archive) used to
+            // stop this background part-way down the screen, with the body's own background showing
+            // underneath — at least the full height below the top bar keeps it reaching the bottom.
+            minHeight: !chromeHidden && isDesktopViewport && !fillMainViewport ? "calc(100dvh - 48px)" : undefined,
             overflowX: isDesktopViewport ? "visible" : "clip",
             // ownsMobileScroll: Quote/Specifications specifically — see this flag's own comment in
             // app-tabs-context.tsx. Their own data-app-scroll-root wrapper is sized to exactly

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown } from "lucide-react";
+import { swallowNextClick } from "@/lib/swallow-dismiss-click";
 
 // Row height inside the menu (a 32px button) plus the menu's own p-1 padding and 1px border, so the
 // open-up/open-down decision and the flip-up anchoring use the menu's real size.
@@ -54,13 +55,8 @@ function useAnchoredGlassMenu(options: {
       if (menuRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
       setPosition(null);
       // The press that dismisses the menu shouldn't also act on whatever is underneath it (e.g. a modal's
-      // backdrop, which would close the whole modal and lose what was typed) — swallow its click.
-      const swallowClick = (clickEvent: Event) => {
-        clickEvent.stopPropagation();
-        clickEvent.preventDefault();
-      };
-      document.addEventListener("click", swallowClick, { capture: true, once: true });
-      window.setTimeout(() => document.removeEventListener("click", swallowClick, true), 500);
+      // backdrop, which would close the whole modal and lose what was typed).
+      swallowNextClick();
     };
     const onScroll = (event: Event) => {
       // Scrolling the menu's own list shouldn't dismiss it; scrolling anything else would leave

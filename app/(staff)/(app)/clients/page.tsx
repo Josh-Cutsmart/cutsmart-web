@@ -25,7 +25,6 @@ import {
   fetchCompanyClientById,
   fetchCompanyClients,
   fetchCompanyDoc,
-  isCompletedClientProjectStatus,
   updateCompanyClientProfile,
   type CompanyClientRow,
 } from "@/lib/firestore-data";
@@ -33,6 +32,8 @@ import { retryAsync } from "@/lib/load-retry";
 import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { useLongPress } from "@/lib/use-long-press";
+import { swallowNextClick } from "@/lib/swallow-dismiss-click";
+import { completedStatusMatcher } from "@/lib/project-archive";
 import { GlassActionMenu, GlassDropdown, type GlassActionMenuItem, type GlassDropdownOption } from "@/components/glass-dropdown";
 
 type ContactCategoryOption = { name: string; color: string };
@@ -232,6 +233,10 @@ function ClientsPageInner() {
   const [clientDetailsById, setClientDetailsById] = useState<Record<string, CompanyClientRow>>({});
   const [companyName, setCompanyName] = useState("Company");
   const [contactCategories, setContactCategories] = useState<ContactCategoryOption[]>([]);
+  // The company's project statuses — which of them count as completed (the "Completed" switch in
+  // Company Settings) splits a contact's projects into Active and Completed.
+  const [companyProjectStatuses, setCompanyProjectStatuses] = useState<unknown>(null);
+  const isCompletedProjectStatus = completedStatusMatcher(companyProjectStatuses);
   const [loading, setLoading] = useState(true);
   const [reloadTick, setReloadTick] = useState(0);
   const [detailLoadingClientId, setDetailLoadingClientId] = useState("");
@@ -281,6 +286,9 @@ function ClientsPageInner() {
   const [contactForm, setContactForm] = useState(emptyContactForm);
   const [isSavingContact, setIsSavingContact] = useState(false);
   const [addContactMessage, setAddContactMessage] = useState("");
+  // Once anything has been typed or picked, a stray tap on the backdrop no longer throws it away — only
+  // Cancel, the X or Escape close it then.
+  const addContactHasInput = Object.values(contactForm).some((value) => String(value).trim() !== "");
 
   const canViewAllClients =
     access.status === "ready" && (isOwnerOrAdmin(access.role) || hasPermissionKey(access.permissionKeys, "clients.view.all"));
@@ -346,6 +354,7 @@ function ClientsPageInner() {
         const companyDoc = await retryAsync(() => fetchCompanyDoc(activeCompanyId), { attempts: 2, delayMs: 250 });
         if (cancelled) return;
         setCompanyName(String(companyDoc?.companyName ?? companyDoc?.name ?? "Company").trim() || "Company");
+        setCompanyProjectStatuses((companyDoc as Record<string, unknown> | null)?.projectStatuses ?? null);
         // Only fall back to the starter categories when the company doc was actually read and has none
         // saved; if it couldn't be read, show none rather than categories the company may not have.
         setContactCategories(
@@ -523,6 +532,9 @@ function ClientsPageInner() {
   }, [activeClientId, activeCompanyId, canViewAllClients, clientDetailsById, loading, user?.uid]);
 
   const activeDetail = activeClientId ? clientDetailsById[activeClientId] ?? null : null;
+  // An archived contact (opened from a link, e.g. a project's Client Details) can be looked at but not
+  // changed — restore it from the Archive first.
+  const isActiveContactArchived = Boolean(activeDetail?.archived);
   const activeDetailLoading = Boolean(activeClientId) && !activeDetail && (loading || detailLoadingClientId === activeClientId);
   const activeCategoryColor = activeDetail?.category ? categoryColorByName.get(activeDetail.category) : undefined;
   const ambientColor = activeCategoryColor || NEUTRAL_AMBIENT_COLOR;
@@ -664,6 +676,18 @@ function ClientsPageInner() {
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [closeContact, isAddContactOpen, isDetailOpen]);
+
+  // Escape closes Add Contact like its Cancel / X do — whatever has been entered. An open category menu
+  // takes the Escape itself first (it stops it in the capture phase).
+  useEffect(() => {
+    if (!isAddContactOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || isSavingContact) return;
+      setIsAddContactOpen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [isAddContactOpen, isSavingContact]);
 
   useEffect(() => {
     return () => {
@@ -807,14 +831,14 @@ function ClientsPageInner() {
     const onOutside = (event: Event) => {
       if (rowMenuRef.current?.contains(event.target as Node)) return;
       closeRowMenu();
+      // That press only closes the menu — it doesn't also open the contact (or anything else) it landed on.
+      swallowNextClick();
     };
     const list = listScrollRef.current;
-    document.addEventListener("mousedown", onOutside);
-    document.addEventListener("touchstart", onOutside);
+    document.addEventListener("pointerdown", onOutside);
     list?.addEventListener("scroll", closeRowMenu, { passive: true });
     return () => {
-      document.removeEventListener("mousedown", onOutside);
-      document.removeEventListener("touchstart", onOutside);
+      document.removeEventListener("pointerdown", onOutside);
       list?.removeEventListener("scroll", closeRowMenu);
     };
   }, [closeRowMenu, rowMenu, rowMenuClosing]);
@@ -892,6 +916,7 @@ function ClientsPageInner() {
     setIsEditingProfile(false);
   }, [activeClientId]);
   const toggleEditingProfile = () => {
+    if (isActiveContactArchived) return;
     if (isEditingProfile) {
       // Flush the field being typed in — its onBlur is what saves it.
       (document.activeElement as HTMLElement | null)?.blur?.();
@@ -1523,7 +1548,23 @@ function ClientsPageInner() {
                       WebkitBackdropFilter: "blur(12px) saturate(220%)",
                     }}
                   />
-                  <div className="pointer-events-auto absolute left-3 top-3">{editButtonMobile}</div>
+                  <div className="pointer-events-auto absolute left-3 top-3">
+                    {isActiveContactArchived ? (
+                      <span
+                        className="inline-flex h-10 items-center rounded-full border px-4 text-[13px] font-medium"
+                        style={{
+                          borderColor: "color-mix(in srgb, var(--accent-amber) 55%, transparent)",
+                          backgroundColor: "color-mix(in srgb, var(--accent-amber) 20%, var(--panel-bg))",
+                          color: "var(--text-main)",
+                        }}
+                        title="Archived — restore it from the Archive to make changes"
+                      >
+                        Archived
+                      </span>
+                    ) : (
+                      editButtonMobile
+                    )}
+                  </div>
                   <div className="pointer-events-auto absolute right-3 top-3">{backButtonMobile}</div>
                   <div
                     aria-hidden
@@ -1753,8 +1794,8 @@ function ClientsPageInner() {
                       {/* Active / Completed Projects aren't editable, so on mobile they step aside while editing. */}
                       <div className={`space-y-3 ${isEditingProfile ? "hidden" : ""}`}>
                         {([
-                          { title: "Active Projects", rows: activeDetail.history.filter((h) => !isCompletedClientProjectStatus(h.statusLabel)), empty: "No active projects." },
-                          { title: "Completed Projects", rows: activeDetail.history.filter((h) => isCompletedClientProjectStatus(h.statusLabel)), empty: "No completed projects." },
+                          { title: "Active Projects", rows: activeDetail.history.filter((h) => !isCompletedProjectStatus(h.statusLabel)), empty: "No active projects." },
+                          { title: "Completed Projects", rows: activeDetail.history.filter((h) => isCompletedProjectStatus(h.statusLabel)), empty: "No completed projects." },
                         ] as const).map((section) => (
                           <div key={section.title} className="glass-card-mobile rounded-[14px] border border-[var(--glass-border)] bg-[var(--panel-bg)] p-4">
                             <p className="text-[12px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
@@ -1806,12 +1847,12 @@ function ClientsPageInner() {
                     </div>
                     {/* Archive: one big button at the very bottom of the page, only shown while editing (inline
                         display, so there's no utility-class tie to break). The first tap asks for confirmation
-                        (the label becomes "Confirm Archive"), the second archives. Coloured like the project
-                        page's Delete button (the danger gradient). */}
+                        (the label becomes "Confirm Archive"), the second archives — it moves to the Archive.
+                        Coloured like the project page's Archive button (the danger gradient). */}
                     <div className="w-full pt-4" style={{ display: isEditingProfile ? undefined : "none" }}>
                       {isConfirmingArchive ? (
                         <p className="mb-2 text-center text-[12px] font-medium" style={{ color: "var(--danger-strong)" }}>
-                          Remove this contact from the main list?
+                          Move this contact to the Archive? You can restore it or delete it permanently from there.
                         </p>
                       ) : null}
                       {archiveError ? (
@@ -1828,7 +1869,7 @@ function ClientsPageInner() {
                         }}
                         disabled={isArchiving}
                         className="flex h-12 w-full items-center justify-center rounded-[14px] border text-[16px] font-medium text-white transition hover:brightness-95 disabled:opacity-60"
-                        // Same red as the "Delete" button in the project details top bar (projects/[projectId]/page.tsx).
+                        // Same red as the "Archive" button in the project details top bar (projects/[projectId]/page.tsx).
                         style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
                       >
                         {isArchiving ? "Archiving..." : isConfirmingArchive ? "Confirm Archive" : "Archive"}
@@ -1901,7 +1942,7 @@ function ClientsPageInner() {
           <button
             type="button"
             aria-label="Close add contact"
-            onClick={() => (isSavingContact ? null : setIsAddContactOpen(false))}
+            onClick={() => (isSavingContact || addContactHasInput ? null : setIsAddContactOpen(false))}
             className="glass-modal-backdrop absolute inset-0"
           />
           <div

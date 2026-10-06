@@ -9,6 +9,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNo
 import { createPortal } from "react-dom";
 import { Check } from "lucide-react";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
+import { swallowNextClick } from "@/lib/swallow-dismiss-click";
 
 // Glass text field. cs-glass-field (globals.css) supplies the frosted fill + border, including the
 // dark-mode overrides that out-rank the blanket dark input rules.
@@ -17,9 +18,10 @@ export const glassFieldClass =
 // The same field, compact, for inside list rows/tables.
 export const glassFieldSmClass =
   "cs-glass-field h-8 w-full rounded-[9px] border px-2.5 text-[12.5px] font-medium text-[var(--text-main)] outline-none transition focus:border-[var(--brand)] disabled:opacity-60";
-// A chromeless in-row field: reads as text until hovered/focused.
+// A chromeless in-row field: reads as text until hovered/focused. Below desktop it may shrink past an
+// input's built-in ~20-character minimum width, so a list row never pushes past a phone's screen edge.
 export const rowFieldClass =
-  "h-8 w-full appearance-none rounded-[8px] border border-transparent bg-transparent px-2 text-[13px] font-medium text-[var(--text-main)] outline-none transition hover:border-[var(--glass-border)] focus:border-[var(--brand)] focus:bg-[var(--panel-bg)] disabled:opacity-60";
+  "h-8 w-full appearance-none max-lg:min-w-0 rounded-[8px] border border-transparent bg-transparent px-2 text-[13px] font-medium text-[var(--text-main)] outline-none transition hover:border-[var(--glass-border)] focus:border-[var(--brand)] focus:bg-[var(--panel-bg)] disabled:opacity-60";
 // A list row (status, category, product, ...).
 export const listRowClass =
   "flex items-center gap-2 rounded-[12px] border border-[var(--glass-border)] bg-[color-mix(in_srgb,var(--panel-bg)_55%,transparent)] px-2 py-1.5 transition";
@@ -64,7 +66,9 @@ export function SettingsCard({
   return (
     <section
       data-settings-card={title}
-      className={`glass-panel-settle-in ${allowOverflow ? "overflow-visible" : "overflow-hidden"} rounded-[20px] border ${className}`}
+      // max-lg:min-w-0: on phones/tablets a wide table or grid inside a card scrolls inside it rather
+      // than stretching the card (and the page) past the screen edge.
+      className={`glass-panel-settle-in ${allowOverflow ? "overflow-visible" : "overflow-hidden"} max-lg:min-w-0 rounded-[20px] border ${className}`}
       style={{
         borderColor: "var(--glass-border)",
         backgroundColor: "var(--glass-bg-strong)",
@@ -125,7 +129,7 @@ export function SettingRow({
   return (
     <div
       data-setting-id={id}
-      className={`grid grid-cols-1 gap-x-5 gap-y-2 border-t border-[var(--glass-border)] py-3.5 first:border-t-0 first:pt-1 sm:grid-cols-[minmax(170px,260px)_1fr] ${
+      className={`grid grid-cols-1 gap-x-5 gap-y-2 border-t border-[var(--glass-border)] py-3.5 first:border-t-0 first:pt-1 sm:max-lg:grid-cols-[minmax(170px,260px)_minmax(0,1fr)] lg:grid-cols-[minmax(170px,260px)_1fr] ${
         align === "start" ? "sm:items-start" : "sm:items-center"
       }`}
     >
@@ -303,17 +307,37 @@ function ColorPopover({
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const w = el.offsetWidth;
-    const h = el.offsetHeight;
-    const below = anchor.bottom + 8 + h <= window.innerHeight - 8;
-    setPos({
-      left: Math.max(8, Math.min(anchor.left - 8, window.innerWidth - w - 8)),
-      top: below ? anchor.bottom + 8 : Math.max(8, anchor.top - 8 - h),
-    });
+    // Kept within the part of the screen that's actually visible: on a phone, typing in the hex field
+    // opens the keyboard, which shrinks the visual viewport (not the window), so it's placed again
+    // whenever that changes rather than being left underneath the keyboard.
+    const place = () => {
+      const viewport = window.visualViewport;
+      const visibleTop = viewport ? viewport.offsetTop : 0;
+      const visibleBottom = viewport ? viewport.offsetTop + viewport.height : window.innerHeight;
+      const w = el.offsetWidth;
+      const h = el.offsetHeight;
+      const below = anchor.bottom + 8 + h <= visibleBottom - 8;
+      const top = below ? anchor.bottom + 8 : anchor.top - 8 - h;
+      setPos({
+        left: Math.max(8, Math.min(anchor.left - 8, window.innerWidth - w - 8)),
+        top: Math.max(visibleTop + 8, Math.min(top, visibleBottom - h - 8)),
+      });
+    };
+    place();
+    const viewport = window.visualViewport;
+    viewport?.addEventListener("resize", place);
+    viewport?.addEventListener("scroll", place);
+    return () => {
+      viewport?.removeEventListener("resize", place);
+      viewport?.removeEventListener("scroll", place);
+    };
   }, [anchor]);
   useEffect(() => {
     const onDown = (e: Event) => {
       if (ref.current?.contains(e.target as Node)) return;
+      // This press only closes the pop-over — it must not also act on whatever it landed on (which
+      // also stops a press on the circle that opened it from immediately reopening it).
+      swallowNextClick();
       onClose();
     };
     const onKey = (e: KeyboardEvent) => {
@@ -587,11 +611,14 @@ export function LengthField({
   showUnit = true,
   onBlur,
   style,
+  wrapperClassName = "",
 }: {
   valueMm: string;
   onChangeMm: (mm: string) => void;
   onBlur?: () => void;
   style?: React.CSSProperties;
+  // Extra classes for the outer box (e.g. a smaller width on phones — needs `!`, since the width is inline).
+  wrapperClassName?: string;
   unit: "mm" | "in";
   className?: string;
   placeholder?: string;
@@ -606,7 +633,7 @@ export function LengthField({
   };
   const [draft, setDraft] = useState<string | null>(null);
   return (
-    <span className="relative inline-flex shrink-0 items-center" style={{ width }}>
+    <span className={`relative inline-flex shrink-0 items-center ${wrapperClassName}`} style={{ width }}>
       <input
         value={draft ?? toDisplay(valueMm)}
         inputMode="decimal"

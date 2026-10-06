@@ -6,6 +6,7 @@ import { createPortal } from "react-dom";
 import { usePathname, useRouter } from "next/navigation";
 import { Bell, ChevronLeft, LayoutDashboard, Menu, X } from "lucide-react";
 import { useSwipeToClose } from "@/lib/use-swipe-to-close";
+import { swallowNextClick } from "@/lib/swallow-dismiss-click";
 import { useAppTabs, type AppWorkspaceTab } from "@/lib/app-tabs-context";
 import { applyThemeMode, readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
 import { useAuth } from "@/lib/auth-context";
@@ -207,7 +208,7 @@ export function GlobalAppTabsBar() {
   const isOnDashboardRoute = (String(pathname || "").trim() || "/") === "/dashboard";
   // Deliberately NO further fallback to "whatever tab is marked active" once the
   // above two don't resolve — a route with no tabs registered for its own scope
-  // (Company Settings, Calendar, Recently Deleted, User Settings, etc.) must show
+  // (Company Settings, Calendar, Archived, User Settings, etc.) must show
   // NO tab highlighted at all, not whatever unrelated tab was last active before
   // navigating here. That fallback used to exist and is exactly what caused a
   // previously-visited project's tab to stay lit up while sitting on a page that
@@ -325,7 +326,7 @@ export function GlobalAppTabsBar() {
 
   useEffect(() => {
     if (typeof document === "undefined") return;
-    const onPointerDown = (event: MouseEvent) => {
+    const onPointerDown = (event: PointerEvent) => {
       const targetNode = event.target as Node;
       const isInsideTopBar = appTabsMenuRef.current?.contains(targetNode);
       const isInsideDropdown = appTabsDropdownRef.current?.contains(targetNode);
@@ -342,13 +343,15 @@ export function GlobalAppTabsBar() {
       // header's close button, the backdrop tap, the swipe-to-close drag) or genuinely tapping
       // outside it, not from this desktop-oriented outside-click check.
       const isInsideMobileNotifPanel = mobileNotifPanelRef.current?.contains(targetNode);
-      if (!isInsideTopBar && !isInsideNotifDropdown && !isInsideMobileNotifPanel) {
+      if (isNotifOpen && !isInsideTopBar && !isInsideNotifDropdown && !isInsideMobileNotifPanel) {
         setIsNotifOpen(false);
+        // That press only closes notifications — it doesn't also act on whatever it landed on.
+        swallowNextClick();
       }
     };
-    document.addEventListener("mousedown", onPointerDown);
-    return () => document.removeEventListener("mousedown", onPointerDown);
-  }, []);
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [isNotifOpen, setIsNotifOpen]);
 
   useEffect(() => {
     const uid = String(user?.uid || "").trim();

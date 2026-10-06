@@ -21,6 +21,7 @@ import {
   type NewProjectPrefillPayload,
 } from "@/lib/new-project-bridge";
 import { retryAsync } from "@/lib/load-retry";
+import { swallowNextClick } from "@/lib/swallow-dismiss-click";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { useDragGhost, DragGhostLayer } from "@/lib/use-drag-ghost";
 import { clusterPins, computeSpreadPositions, findClusterContainingPin } from "@/lib/pin-clustering";
@@ -438,10 +439,11 @@ function buildLeadAddress(fields: LeadDynamicField[]): { value: string; consumed
 // produces "John Smith" as the new project's name, rather than guessing at a surname from a
 // single full-name field.
 function buildLeadProjectName(clientName: string, clientLastName: string) {
-  return [clientName, clientLastName]
-    .map((part) => String(part || "").trim())
-    .filter(Boolean)
-    .join(" ");
+  const name = String(clientName || "").trim();
+  const lastName = String(clientLastName || "").trim();
+  // A full name in the "Client Name" field may already end with the surname — don't repeat it.
+  if (name && lastName && name.toLowerCase().endsWith(lastName.toLowerCase())) return name;
+  return [name, lastName].filter(Boolean).join(" ");
 }
 
 function splitClientName(fullName: string) {
@@ -509,6 +511,14 @@ function buildLeadClientNameParts(fields: LeadDynamicField[], fieldLayout: LeadF
     lastName,
     consumedKeys: [firstNameField?.key, lastNameField?.key].filter((key): key is string => Boolean(key)),
   };
+}
+
+// The lead's name everywhere on this page — its card, drag preview, details, pop-ups and sorting:
+// "Client Name" + "Client Last Name", the same name a project created from the lead gets (it used to
+// be the "Client Name" field on its own, so a card read "John" while its project became "John Smith").
+function leadClientName(fields: LeadDynamicField[], fieldLayout: LeadFieldLayoutRow[]) {
+  const parts = buildLeadClientNameParts(fields, fieldLayout);
+  return buildLeadProjectName(parts.fullName || parts.firstName, parts.lastName);
 }
 
 function resolveLeadColumnValue(
@@ -1122,13 +1132,15 @@ export default function LeadsPage() {
 
   useEffect(() => {
     if (!cardStatusMenuLeadId) return;
-    const handleOutsideClick = (e: MouseEvent) => {
+    const handleOutsideClick = (e: PointerEvent) => {
       if (cardStatusMenuRef.current && !cardStatusMenuRef.current.contains(e.target as Node)) {
         setCardStatusMenuLeadId("");
+        // That press only closes the menu — it doesn't also open the card (or anything else) it landed on.
+        swallowNextClick();
       }
     };
-    document.addEventListener("mousedown", handleOutsideClick);
-    return () => document.removeEventListener("mousedown", handleOutsideClick);
+    document.addEventListener("pointerdown", handleOutsideClick);
+    return () => document.removeEventListener("pointerdown", handleOutsideClick);
   }, [cardStatusMenuLeadId]);
 
   useEffect(() => {
@@ -1176,7 +1188,7 @@ export default function LeadsPage() {
     const sorted = [...filtered];
       const leadLabel = (lead: CompanyLeadRow) => {
         const fields = getLeadDynamicFields(lead);
-        const derivedName = buildLeadClientNameParts(fields, mergedFieldLayout).fullName;
+        const derivedName = leadClientName(fields, mergedFieldLayout);
         const firstVisible = fields[0]?.value || "";
         return String(derivedName || firstVisible || lead.name || lead.email || lead.phone || "").trim().toLowerCase();
       };
@@ -1266,7 +1278,7 @@ export default function LeadsPage() {
   );
   const assignLeadName = useMemo(() => {
     if (!assignLead) return "Untitled Lead";
-    return buildLeadClientNameParts(getLeadDynamicFields(assignLead), mergedFieldLayout).fullName || assignLead.name || "Untitled Lead";
+    return leadClientName(getLeadDynamicFields(assignLead), mergedFieldLayout) || assignLead.name || "Untitled Lead";
   }, [assignLead, mergedFieldLayout]);
   const filteredCompanyMembers = useMemo(() => {
     const query = String(assignSearch || "").trim().toLowerCase();
@@ -1307,7 +1319,7 @@ export default function LeadsPage() {
     [leadImageCachedSrcMap],
   );
   const leadImageClientName = leadImagesLead
-    ? buildLeadClientNameParts(getLeadDynamicFields(leadImagesLead), mergedFieldLayout).fullName || leadImagesLead.name || "Untitled Lead"
+    ? leadClientName(getLeadDynamicFields(leadImagesLead), mergedFieldLayout) || leadImagesLead.name || "Untitled Lead"
     : "Untitled Lead";
   const getLeadAnnotationRenderPoint = useCallback(
     (annotation: { x: number; y: number; xPx?: number; yPx?: number }) => {
@@ -1621,7 +1633,7 @@ export default function LeadsPage() {
   // companyMembers/currentUserPinColor above are both one-time fetches (fetchCompanyMembers/
   // fetchUserColorMapByUids) with no live Firestore listener — a badge color changed elsewhere in
   // the same tab (Company Settings, the personal profile panel) only reaches this page via this
-  // event, same pattern already used by dashboard/company-settings/app-shell/recently-deleted.
+  // event, same pattern already used by dashboard/company-settings/app-shell.
   useEffect(() => {
     if (typeof window === "undefined") return;
     const onUserColorUpdated = (event: Event) => {
@@ -1897,7 +1909,7 @@ export default function LeadsPage() {
       event.dataTransfer.setDragImage(leadBoardDragGhost.transparentImageRef.current, 0, 0);
     }
     const displayName =
-      buildLeadClientNameParts(getLeadDynamicFields(lead), mergedFieldLayout).fullName ||
+      leadClientName(getLeadDynamicFields(lead), mergedFieldLayout) ||
       lead.name || lead.email || lead.phone || "Untitled Lead";
     const color = String(leadStatusPillStyle(lead.status || "New").backgroundColor || "");
     leadBoardDragGhost.spawn(event, `lead-board-name-${lead.id}`, { label: displayName, color });
@@ -1951,7 +1963,7 @@ export default function LeadsPage() {
       current.dragging = true;
       setDraggingLeadId(lead.id);
       const displayName =
-        buildLeadClientNameParts(getLeadDynamicFields(lead), mergedFieldLayout).fullName ||
+        leadClientName(getLeadDynamicFields(lead), mergedFieldLayout) ||
         lead.name || lead.email || lead.phone || "Untitled Lead";
       const color = String(leadStatusPillStyle(lead.status || "New").backgroundColor || "");
       leadBoardDragGhost.spawn({ clientX: current.lastX, clientY: current.lastY }, `lead-board-name-${lead.id}`, { label: displayName, color });
@@ -2930,7 +2942,7 @@ export default function LeadsPage() {
     const effectiveCompact = compactCardOverrides[lead.id] ?? compact;
     const leadFields = getLeadDynamicFields(lead);
     const displayName =
-      buildLeadClientNameParts(leadFields, mergedFieldLayout).fullName ||
+      leadClientName(leadFields, mergedFieldLayout) ||
       leadFields[0]?.value ||
       lead.name || lead.email || lead.phone || "Untitled Lead";
     const assignedUid = String(lead.assignedToUid || "").trim();
@@ -3137,7 +3149,7 @@ export default function LeadsPage() {
     const renderLead = leadDetailsById[lead.id] ?? lead;
     const leadFields = getLeadDynamicFields(renderLead);
     const displayName =
-      buildLeadClientNameParts(leadFields, mergedFieldLayout).fullName ||
+      leadClientName(leadFields, mergedFieldLayout) ||
       lead.name || lead.email || lead.phone || "Untitled Lead";
     const isDetailLoading = detailLoadingLeadId === lead.id && !leadDetailsById[lead.id];
     const assignedUid = String(lead.assignedToUid || "").trim();
@@ -3247,7 +3259,7 @@ export default function LeadsPage() {
               className="inline-flex h-9 items-center justify-center gap-1.5 rounded-[8px] border px-3 text-[12px] font-bold text-white hover:brightness-95"
               style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
             >
-              Delete
+              Archive
             </button>
           </div>
           <div className="glass-scroll min-h-0 flex-1 overflow-y-auto px-5 pb-5">
@@ -3831,7 +3843,7 @@ export default function LeadsPage() {
                       |
                     </span>
                     <p className="truncate text-[14px] font-medium" style={{ color: "var(--text-main)" }}>
-                      {buildLeadClientNameParts(getLeadDynamicFields(displayLeadImagesLead), mergedFieldLayout).fullName || displayLeadImagesLead.name || "Untitled Lead"}
+                      {leadClientName(getLeadDynamicFields(displayLeadImagesLead), mergedFieldLayout) || displayLeadImagesLead.name || "Untitled Lead"}
                     </p>
                   </div>
                   <button
@@ -5124,17 +5136,17 @@ export default function LeadsPage() {
           <div className="fixed inset-0 z-[245] flex items-center justify-center px-4">
             <button
               type="button"
-              aria-label="Close delete lead dialog backdrop"
+              aria-label="Close archive lead dialog backdrop"
               onClick={() => setConfirmDeleteLeadId("")}
               className="glass-modal-backdrop absolute inset-0"
             />
             <div ref={deleteConfirmModalPanelRef} className="glass-modal-panel relative w-full max-w-[420px] overflow-hidden">
               <div className="glass-modal-header px-5 py-4">
-                <h3 className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>Delete this lead?</h3>
+                <h3 className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>Archive this lead?</h3>
               </div>
               <div className="px-5 py-4">
-                <p className="text-[13px]" style={{ color: "var(--text-main)" }}>
-                  This archives the lead — it can be restored later, but it will disappear from this list.
+                <p className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
+                  Moves it to the Archive — you can restore it or delete it permanently from there.
                 </p>
                 <div className="mt-4 flex justify-end gap-2">
                   <button
@@ -5155,7 +5167,7 @@ export default function LeadsPage() {
                     className="inline-flex h-9 items-center justify-center rounded-[10px] border px-4 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-55"
                     style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
                   >
-                    {deletingLeadId === confirmDeleteLeadId ? "Deleting..." : "Confirm Delete"}
+                    {deletingLeadId === confirmDeleteLeadId ? "Archiving..." : "Archive"}
                   </button>
                 </div>
               </div>

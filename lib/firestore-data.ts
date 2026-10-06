@@ -22,6 +22,16 @@ import { auth, db, hasFirebaseConfig } from "@/lib/firebase";
 import { fetchCompanyAccess, type CompanyAccessInfo } from "@/lib/membership";
 import { mockChanges, mockCutlists, mockProjects, mockQuotes } from "@/lib/mock-data";
 import { normalizeSpecsGrid, normalizeSpecsGridVersion, type SpecsGrid, type SpecsGridVersion } from "@/lib/specs-grid-types";
+import {
+  completedStatusMatcher,
+  isPastArchiveDelay,
+  matchesArchivedFilter,
+  normalizeProjectArchiveDelay,
+  PROJECTS_ARCHIVED_EVENT,
+  withProjectArchiveFields,
+  type ArchivedFilter,
+  type ProjectsArchivedDetail,
+} from "@/lib/project-archive";
 import type { ProductComparison } from "@/lib/cutlist-types";
 import type { ChecklistTemplate, Cutlist, Project, ProjectChange, ProjectChecklist, ProjectImageItem, SalesQuote } from "@/lib/types";
 import type { UpdateChangelogEntry } from "@/lib/update-notes-utils";
@@ -369,7 +379,7 @@ function normalizeProject(id: string, data: Record<string, unknown>, options?: {
       )
     : undefined;
 
-  return {
+  const project: Project = {
     id,
     companyId: String(data.companyId ?? ""),
     clientId: String(data.clientId ?? "").trim() || undefined,
@@ -424,6 +434,9 @@ function normalizeProject(id: string, data: Record<string, unknown>, options?: {
     // useProjectChecklists.
     checklists: [],
   };
+  // isArchived/archivedAtIso/archiveRestoredAtIso (see lib/project-archive.ts) — not on the shared
+  // Project type, so they're read back through that file's helpers.
+  return withProjectArchiveFields(project, data);
 }
 
 async function syncCompanyProjectTagUsage(companyId: string): Promise<void> {
@@ -700,6 +713,8 @@ async function fetchProjectsFromCompanyJobs(
   // preferredCompanyIds itself before calling this — without this flag, that same 2-way
   // Firestore membership lookup ran a second time here for no new information.
   companyIdsAlreadyResolved?: boolean,
+  // Archived projects (lib/project-archive.ts) are left out unless asked for.
+  archived: ArchivedFilter = "exclude",
 ): Promise<Project[]> {
   if (!db || !uid) {
     return [];
@@ -735,7 +750,7 @@ async function fetchProjectsFromCompanyJobs(
         const cleanups: Array<{ ref: DocumentReference; patch: Record<string, unknown> }> = [];
         for (const item of jobsSnap.docs) {
           const data = (item.data() ?? {}) as Record<string, unknown>;
-          if (Boolean(data.isDeleted) !== Boolean(includeDeleted)) {
+          if (Boolean(data.isDeleted) !== Boolean(includeDeleted) || !matchesArchivedFilter(data, archived)) {
             continue;
           }
           const normalized = applyCompanyStaffDisplayNameOverridesToProject(normalizeJobProject(companyId, item, lightweight), displayNameOverridesByUid);
@@ -759,7 +774,7 @@ async function fetchProjectsFromCompanyJobs(
   return all;
 }
 
-async function fetchProjectsFromLegacyUserPaths(uid: string, includeDeleted = false): Promise<Project[]> {
+async function fetchProjectsFromLegacyUserPaths(uid: string, includeDeleted = false, archived: ArchivedFilter = "exclude"): Promise<Project[]> {
   if (!db || !uid) {
     return [];
   }
@@ -771,7 +786,7 @@ async function fetchProjectsFromLegacyUserPaths(uid: string, includeDeleted = fa
     const userProjects = await getDocs(collection(db, "users", uid, "projects"));
     for (const item of userProjects.docs) {
       const data = (item.data() ?? {}) as Record<string, unknown>;
-      if (Boolean(data.isDeleted) !== Boolean(includeDeleted)) {
+      if (Boolean(data.isDeleted) !== Boolean(includeDeleted) || !matchesArchivedFilter(data, archived)) {
         continue;
       }
       const id = String(data.id ?? item.id);
@@ -809,7 +824,7 @@ async function fetchProjectsFromLegacyUserPaths(uid: string, includeDeleted = fa
         );
         for (const item of nested.docs) {
           const data = (item.data() ?? {}) as Record<string, unknown>;
-          if (Boolean(data.isDeleted) !== Boolean(includeDeleted)) {
+          if (Boolean(data.isDeleted) !== Boolean(includeDeleted) || !matchesArchivedFilter(data, archived)) {
             continue;
           }
           const id = String(data.id ?? item.id);
@@ -828,13 +843,17 @@ async function fetchProjectsFromLegacyUserPaths(uid: string, includeDeleted = fa
   return all;
 }
 
+// Archived projects (lib/project-archive.ts) are left out by default — pass `archived: "only"` for
+// just those (the Archived page) or "include" for everything.
 export async function fetchProjects(
   uid?: string,
   preferredCompanyIds?: string[],
-  options?: { lightweight?: boolean },
+  options?: { lightweight?: boolean; archived?: ArchivedFilter },
 ): Promise<Project[]> {
+  const archived = options?.archived ?? "exclude";
+  const mocks = () => mockProjects.filter((project) => matchesArchivedFilter(project as unknown as Record<string, unknown>, archived));
   if (!db) {
-    return mockProjects;
+    return mocks();
   }
   const database = db;
 
@@ -866,7 +885,9 @@ export async function fetchProjects(
       const snaps = await Promise.all(
         chunks.map((chunk) => getDocs(query(collection(database, "projects"), where("companyId", "in", chunk)))),
       );
-      const topLevelDocs = snaps.flatMap((snap) => snap.docs);
+      const topLevelDocs = snaps
+        .flatMap((snap) => snap.docs)
+        .filter((item) => matchesArchivedFilter((item.data() ?? {}) as Record<string, unknown>, archived));
       if (!topLevelDocs.length) return [];
       const rows = topLevelDocs.map((item) => normalizeProject(item.id, item.data() as Record<string, unknown>, { lightweight }));
       // Each company's doc and the user's access to it, fetched ONCE per company up front — this used
@@ -908,7 +929,7 @@ export async function fetchProjects(
     };
     const loadFor = async (companyIds: string[]) => {
       const [jobs, legacyTop] = await Promise.all([
-        fetchProjectsFromCompanyJobs(userId, false, companyIds, lightweight, true),
+        fetchProjectsFromCompanyJobs(userId, false, companyIds, lightweight, true, archived),
         runScopedProjectsQuery(companyIds).catch(() => [] as Project[]),
       ]);
       return mergeJobsFirst(jobs, legacyTop);
@@ -936,12 +957,12 @@ export async function fetchProjects(
     // continue into the legacy fallbacks
   }
 
-  const legacy = await fetchProjectsFromLegacyUserPaths(String(uid ?? ""));
+  const legacy = await fetchProjectsFromLegacyUserPaths(String(uid ?? ""), false, archived);
   if (legacy.length > 0) {
     return legacy;
   }
 
-  return hasFirebaseConfig ? [] : mockProjects;
+  return hasFirebaseConfig ? [] : mocks();
 }
 
 export async function fetchProjectById(
@@ -995,8 +1016,8 @@ export async function fetchProjectById(
 
   // companyIds is already the fully-resolved set (preferredCompanyIds ∪ fetchCompanyIdsForUser),
   // computed above — tell fetchProjectsFromCompanyJobs not to re-resolve it via a second,
-  // redundant fetchCompanyIdsForUser call.
-  const nested = await fetchProjectsFromCompanyJobs(userId, false, companyIds, undefined, true);
+  // redundant fetchCompanyIdsForUser call. Archived projects included — they still open from a link.
+  const nested = await fetchProjectsFromCompanyJobs(userId, false, companyIds, undefined, true, "include");
   const nestedHit = nested.find((project) => project.id === projectId) ?? null;
   if (nestedHit) {
     return nestedHit;
@@ -1029,6 +1050,10 @@ export async function fetchProjectById(
   return null;
 }
 
+// Projects soft-deleted the old way (isDeleted — Recently Deleted, before it became part of Archived).
+// Nothing writes that flag any more; the Archived page lists these alongside the archived ones (they
+// come back marked archived, filed under their deletion date — see withProjectArchiveFields) so none
+// of them are lost, and every other project list keeps leaving them out as before.
 export async function fetchDeletedProjects(uid?: string, preferredCompanyIds?: string[]): Promise<Project[]> {
   if (!db) {
     return [];
@@ -1095,10 +1120,12 @@ export async function fetchDeletedProjects(uid?: string, preferredCompanyIds?: s
       return [];
     }
   };
+  // A project deleted after it was archived is in the fetchProjects "only" list too — the Archived
+  // page de-duplicates them.
   const [topDeleted, nested, legacy] = await Promise.all([
     legacyTopLevel(),
-    fetchProjectsFromCompanyJobs(String(uid ?? ""), true, companyIds, undefined, true),
-    fetchProjectsFromLegacyUserPaths(String(uid ?? ""), true),
+    fetchProjectsFromCompanyJobs(String(uid ?? ""), true, companyIds, undefined, true, "include"),
+    fetchProjectsFromLegacyUserPaths(String(uid ?? ""), true, "include"),
   ]);
   upsert(topDeleted);
   upsert(nested);
@@ -1477,41 +1504,86 @@ export async function updateProjectStatus(project: Project, newStatus: string, n
   }
 
   const nowIso = new Date().toISOString();
-  const completedStatus = isCompletedClientProjectStatus(newStatus);
-  const completedAtIso =
-    completedStatus
-      ? String((project as unknown as Record<string, unknown>).completedAtIso || "").trim() || nowIso
-      : "";
-  const nextProjectSnapshot: Project = {
-    ...project,
-    statusLabel: newStatus,
-    status: toProjectStatus(newStatus),
-    updatedAt: nowIso,
-    // A real status change always resets the dashboard board's sub-stage drill-down field — it's
-    // only ever meaningful against the status the project is CURRENTLY in (see lib/types.ts). The
-    // caller (dashboard/page.tsx) computes this from the destination status's OWN configured
-    // sub-stages (its first one, if any) — this function stays agnostic of that config shape.
-    dashboardSubStageId: nextSubStageId,
+  // Which statuses are "completed" is the company's own call (Company Settings > Project statuses >
+  // Completed), with the old name-based rule for a company that hasn't set it — see
+  // completedStatusMatcher in lib/project-archive.ts.
+  const companyDoc = project.companyId ? await fetchCompanyDoc(project.companyId) : null;
+  const isCompletedStatus = completedStatusMatcher(companyDoc?.projectStatuses);
+  const completedStatus = isCompletedStatus(newStatus);
+  // "Archive completed projects after: Instantly" archives it in this same write when it moves INTO the
+  // completed status (not when it's already there — e.g. a restored project being re-saved — so a
+  // restore sticks). The daily background sweep (archiveDueCompletedProjects) catches anything missed.
+  const archivesOnCompletion = normalizeProjectArchiveDelay(companyDoc?.projectArchiveAfter) === "instant";
+  let archivedNow = false;
+  // Worked out from the stored project, not the caller's copy (a page that reopened and then
+  // re-completed a project can still hold the old completedAtIso): the completion date carries over
+  // only while the project moves between completed statuses, and is stamped fresh when it enters one.
+  // It's what the archive delay counts from.
+  const statusPatchFor = (stored: Record<string, unknown>) => {
+    const storedCompletedAtIso = String(stored.completedAtIso ?? "").trim();
+    const keepsCompletedAt = completedStatus && isCompletedStatus(stored.status) && Boolean(storedCompletedAtIso);
+    const patch: Record<string, unknown> = {
+      status: newStatus,
+      updatedAtIso: nowIso,
+      completedAtIso: completedStatus ? (keepsCompletedAt ? storedCompletedAtIso : nowIso) : "",
+      dashboardSubStageId: nextSubStageId,
+    };
+    if (!keepsCompletedAt) patch.completedAt = completedStatus ? serverTimestamp() : null;
+    // Moving an archived project back out of a completed status reopens it: it leaves the Archived
+    // list, and its client portal link works again (an old soft-deleted one too). One archived by hand
+    // while it wasn't completed stays archived through status changes — only Restore brings it back.
+    if (!completedStatus && isCompletedStatus(stored.status) && (stored.isArchived === true || stored.isDeleted === true)) {
+      patch.isArchived = false;
+      patch.archivedAtIso = "";
+      if (stored.isDeleted === true) {
+        patch.isDeleted = false;
+        patch.deletedAtIso = "";
+      }
+    }
+    archivedNow = false;
+    if (archivesOnCompletion && completedStatus && !isCompletedStatus(stored.status) && stored.isArchived !== true) {
+      patch.isArchived = true;
+      patch.archivedAtIso = nowIso;
+      archivedNow = true;
+    }
+    return patch;
   };
-  (nextProjectSnapshot as unknown as Record<string, unknown>).completedAtIso = completedAtIso;
+  const announceArchived = () => {
+    if (!archivedNow || typeof window === "undefined") return;
+    window.dispatchEvent(
+      new CustomEvent<ProjectsArchivedDetail>(PROJECTS_ARCHIVED_EVENT, {
+        detail: { companyId: String(project.companyId || "").trim(), projectIds: [project.id], archivedAtIso: nowIso },
+      }),
+    );
+  };
+  const syncClientProfile = async (completedAtIso: string) => {
+    if (!normalizeClientEmail(project.clientEmail)) return;
+    const nextProjectSnapshot: Project = {
+      ...project,
+      statusLabel: newStatus,
+      status: toProjectStatus(newStatus),
+      updatedAt: nowIso,
+      completedAtIso,
+      // A real status change always resets the dashboard board's sub-stage drill-down field — it's
+      // only ever meaningful against the status the project is CURRENTLY in (see lib/types.ts). The
+      // caller (dashboard/page.tsx) computes this from the destination status's OWN configured
+      // sub-stages (its first one, if any) — this function stays agnostic of that config shape.
+      dashboardSubStageId: nextSubStageId,
+    };
+    await syncCompanyClientProfileFromProjectInternal(nextProjectSnapshot, {
+      countCompletedProject: completedStatus,
+      syncOnly: false,
+    });
+  };
 
   try {
     const topLevelRef = doc(db, "projects", project.id);
     const topLevelSnap = await getDoc(topLevelRef);
     if (topLevelSnap.exists()) {
-      await updateDoc(topLevelRef, {
-        status: newStatus,
-        updatedAtIso: nowIso,
-        completedAtIso,
-        completedAt: completedStatus ? serverTimestamp() : null,
-        dashboardSubStageId: nextSubStageId,
-      });
-      if (normalizeClientEmail(project.clientEmail)) {
-        await syncCompanyClientProfileFromProjectInternal(nextProjectSnapshot, {
-          countCompletedProject: completedStatus,
-          syncOnly: false,
-        });
-      }
+      const patch = statusPatchFor((topLevelSnap.data() ?? {}) as Record<string, unknown>);
+      await updateDoc(topLevelRef, patch);
+      announceArchived();
+      await syncClientProfile(String(patch.completedAtIso ?? ""));
       return true;
     }
   } catch {
@@ -1533,19 +1605,10 @@ export async function updateProjectStatus(project: Project, newStatus: string, n
       return false;
     }
 
-    await updateDoc(jobsSnap.docs[0].ref, {
-      status: newStatus,
-      updatedAtIso: nowIso,
-      completedAtIso,
-      completedAt: completedStatus ? serverTimestamp() : null,
-      dashboardSubStageId: nextSubStageId,
-    });
-    if (normalizeClientEmail(project.clientEmail)) {
-      await syncCompanyClientProfileFromProjectInternal(nextProjectSnapshot, {
-        countCompletedProject: completedStatus,
-        syncOnly: false,
-      });
-    }
+    const patch = statusPatchFor((jobsSnap.docs[0].data() ?? {}) as Record<string, unknown>);
+    await updateDoc(jobsSnap.docs[0].ref, patch);
+    announceArchived();
+    await syncClientProfile(String(patch.completedAtIso ?? ""));
     return true;
   } catch {
     return false;
@@ -1611,94 +1674,106 @@ export async function updateProjectTags(
   return updated;
 }
 
-export async function softDeleteProject(project: Project): Promise<boolean> {
-  if (!db || !project) {
-    return false;
-  }
-
-  const patch = {
-    isDeleted: true,
-    deletedAtIso: new Date().toISOString(),
-    updatedAtIso: new Date().toISOString(),
-  };
-
-  try {
-    const topLevelRef = doc(db, "projects", project.id);
-    const topLevelSnap = await getDoc(topLevelRef);
-    if (topLevelSnap.exists()) {
-      await updateDoc(topLevelRef, patch);
-      return true;
-    }
-  } catch {
-    // continue into nested company/jobs fallback
-  }
-
-  if (!project.companyId) {
-    return false;
-  }
-
-  try {
-    const jobsQ = query(
-      collection(db, "companies", project.companyId, "jobs"),
-      where("id", "==", project.id),
-      limit(1),
+// Archives a project by hand — what the project page's Archive button (it used to be Delete) does. It
+// leaves the Dashboard and the calendar's project picker, its client portal link closes, and it's
+// filed in the Archived list, where it can be restored or deleted permanently. Nothing deletes it
+// automatically. Tells an open dashboard straight away (PROJECTS_ARCHIVED_EVENT).
+export async function archiveProject(project: Project): Promise<boolean> {
+  const archivedAtIso = new Date().toISOString();
+  const ok = await updateProjectPatch(project, { isArchived: true, archivedAtIso });
+  if (ok && typeof window !== "undefined") {
+    window.dispatchEvent(
+      new CustomEvent<ProjectsArchivedDetail>(PROJECTS_ARCHIVED_EVENT, {
+        detail: { companyId: String(project.companyId || "").trim(), projectIds: [project.id], archivedAtIso },
+      }),
     );
-    const jobsSnap = await getDocs(jobsQ);
-    if (jobsSnap.empty) {
-      return false;
-    }
-
-    await updateDoc(jobsSnap.docs[0].ref, patch);
-    return true;
-  } catch {
-    return false;
   }
+  return ok;
 }
 
-export async function restoreDeletedProject(project: Project): Promise<boolean> {
-  if (!db || !project) {
-    return false;
-  }
-
-  const patch = {
+// Takes a project back out of the Archived list (lib/project-archive.ts). archiveRestoredAtIso restarts
+// its archive delay, so one still sitting in a completed status gets the full delay again — and its
+// client portal link works again for that long — instead of being archived straight back the next
+// time the archiver runs (under "Instantly", it stays out until it's completed again). Its completion
+// date is left as it was. Also clears the old soft-delete flag, for a project that was deleted before
+// Recently Deleted became part of Archived (see lib/project-archive.ts).
+export async function restoreArchivedProject(project: Project): Promise<boolean> {
+  return updateProjectPatch(project, {
+    isArchived: false,
+    archivedAtIso: "",
+    archiveRestoredAtIso: new Date().toISOString(),
     isDeleted: false,
     deletedAtIso: "",
-    updatedAtIso: new Date().toISOString(),
-  };
+  });
+}
 
+// Archives the company's projects that have sat in a completed status for longer than Company
+// Settings' "Archive completed projects after" (see isPastArchiveDelay). Under "Instantly" a project is
+// archived by updateProjectStatus the moment it's completed; this still catches any that weren't (e.g.
+// completed before the setting was chosen) — restored ones excepted. There's no server scheduler,
+// so the app shell runs this in the background — at most once a day per company on each device, and
+// only for someone who can edit every project (owner/admin or projects.edit.others), since it writes
+// to all of them. Nothing is deleted. The client portal doesn't wait on it: its routes check the same
+// rule themselves on every request. Returns the ids it archived.
+const PROJECT_ARCHIVE_LAST_RUN_KEY = "cutsmart_project_archive_last_run_";
+const PROJECT_ARCHIVE_RUN_EVERY_MS = 24 * 60 * 60 * 1000;
+export async function archiveDueCompletedProjects(companyId: string, uid: string): Promise<string[]> {
+  const cid = String(companyId || "").trim();
+  const userId = String(uid || "").trim();
+  if (!db || !cid || !userId || typeof window === "undefined") {
+    return [];
+  }
+  const database = db;
+  const companyDoc = await fetchCompanyDoc(cid);
+  const delay = normalizeProjectArchiveDelay(companyDoc?.projectArchiveAfter);
+  // Both checked before the once-a-day mark below, so switching the setting on (or being given the
+  // permission) takes effect on the next load rather than a day later.
+  if (!companyDoc || delay === "never") {
+    return [];
+  }
+  const access = await fetchCompanyAccess(cid, userId);
+  const role = String(access?.role || "").trim().toLowerCase();
+  if (role !== "owner" && role !== "admin" && !hasPermissionKey(access?.permissionKeys, "projects.edit.others")) {
+    return [];
+  }
+  const lastRunKey = `${PROJECT_ARCHIVE_LAST_RUN_KEY}${cid}`;
   try {
-    const topLevelRef = doc(db, "projects", project.id);
-    const topLevelSnap = await getDoc(topLevelRef);
-    if (topLevelSnap.exists()) {
-      await updateDoc(topLevelRef, patch);
-      return true;
-    }
+    const last = Number(window.localStorage.getItem(lastRunKey) || 0);
+    if (Date.now() - last < PROJECT_ARCHIVE_RUN_EVERY_MS) return [];
+    window.localStorage.setItem(lastRunKey, String(Date.now()));
   } catch {
-    // continue into nested company/jobs fallback
+    // storage unavailable — just run it
   }
-
-  if (!project.companyId) {
-    return false;
-  }
-
   try {
-    const jobsQ = query(
-      collection(db, "companies", project.companyId, "jobs"),
-      where("id", "==", project.id),
-      limit(1),
+    const isCompletedStatus = completedStatusMatcher(companyDoc.projectStatuses);
+    const nowMs = Date.now();
+    const snap = await getDocs(collection(database, "companies", cid, "jobs"));
+    const due = snap.docs.filter((item) => {
+      const data = (item.data() ?? {}) as Record<string, unknown>;
+      return data.isArchived !== true && data.isDeleted !== true && isPastArchiveDelay(data, isCompletedStatus, delay, nowMs);
+    });
+    if (!due.length) {
+      return [];
+    }
+    // updatedAt is left alone — being archived isn't an edit, and shouldn't move it up "recently updated".
+    const archivedAtIso = new Date(nowMs).toISOString();
+    for (let i = 0; i < due.length; i += 400) {
+      const batch = writeBatch(database);
+      due.slice(i, i + 400).forEach((item) => batch.update(item.ref, { isArchived: true, archivedAtIso }));
+      await batch.commit();
+    }
+    const projectIds = due.map((item) => String(((item.data() ?? {}) as Record<string, unknown>).id ?? item.id));
+    window.dispatchEvent(
+      new CustomEvent<ProjectsArchivedDetail>(PROJECTS_ARCHIVED_EVENT, { detail: { companyId: cid, projectIds, archivedAtIso } }),
     );
-    const jobsSnap = await getDocs(jobsQ);
-    if (jobsSnap.empty) {
-      return false;
-    }
-
-    await updateDoc(jobsSnap.docs[0].ref, patch);
-    return true;
+    return projectIds;
   } catch {
-    return false;
+    return [];
   }
 }
 
+// Removes a project for good — only ever from the Archived page, by someone choosing to (archived
+// projects are never deleted automatically).
 export async function permanentlyDeleteProject(project: Project): Promise<boolean> {
   if (!db || !project) {
     return false;
@@ -1743,54 +1818,6 @@ export async function permanentlyDeleteProject(project: Project): Promise<boolea
   }
 
   return false;
-}
-
-// Permanently deletes the deleted projects past their company's retention period. Pass the deleted
-// list if it's already loaded (saves loading it again). Returns the ids it deleted.
-export async function purgeExpiredDeletedProjects(
-  uid?: string,
-  preferredCompanyIds?: string[],
-  alreadyLoaded?: Project[],
-): Promise<string[]> {
-  if (!db) {
-    return [];
-  }
-
-  const rows = alreadyLoaded ?? (await fetchDeletedProjects(uid, preferredCompanyIds));
-  if (!rows.length) {
-    return [];
-  }
-
-  const companyIds = Array.from(new Set(rows.map((row) => String(row.companyId || "").trim()).filter(Boolean)));
-  const retentionByCompany: Record<string, number> = {};
-
-  await Promise.all(
-    companyIds.map(async (companyId) => {
-      const companyDoc = await fetchCompanyDoc(companyId);
-      const rawDays = Number((companyDoc as Record<string, unknown> | null)?.deletedRetentionDays ?? 90);
-      retentionByCompany[companyId] = Number.isFinite(rawDays) && rawDays > 0 ? rawDays : 90;
-    }),
-  );
-
-  const nowMs = Date.now();
-  const purged: string[] = [];
-  for (const project of rows) {
-    const deletedAtIso = String(project.deletedAt || project.updatedAt || project.createdAt || "").trim();
-    if (!deletedAtIso) {
-      continue;
-    }
-    const deletedAtMs = new Date(deletedAtIso).getTime();
-    if (!Number.isFinite(deletedAtMs)) {
-      continue;
-    }
-    const retentionDays = retentionByCompany[String(project.companyId || "").trim()] ?? 90;
-    const expiresAtMs = deletedAtMs + retentionDays * 24 * 60 * 60 * 1000;
-    if (nowMs >= expiresAtMs) {
-      await permanentlyDeleteProject(project);
-      purged.push(project.id);
-    }
-  }
-  return purged;
 }
 
 // The one place that resolves a project's REAL Firestore document reference — `project.id` is a
@@ -2662,43 +2689,115 @@ export async function saveCompanyMemberRole(
   }
 }
 
+// The company data tied to one staff member that can be handed to someone else when they're removed
+// (Company Settings > Staff > remove). What each kind covers, and what happens to it when it isn't
+// transferred, is described in app/api/company/remove-member/route.ts (TRANSFER_KINDS).
+export type MemberRemovalDataKind = "assignedProjects" | "createdProjects" | "contacts" | "leads" | "calendarEvents";
+export type MemberRemovalCounts = Record<MemberRemovalDataKind, number>;
+
+function toMemberRemovalCounts(raw: unknown): MemberRemovalCounts {
+  const row = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const num = (key: MemberRemovalDataKind) => Math.max(0, Number(row[key]) || 0);
+  return {
+    assignedProjects: num("assignedProjects"),
+    createdProjects: num("createdProjects"),
+    contacts: num("contacts"),
+    leads: num("leads"),
+    calendarEvents: num("calendarEvents"),
+  };
+}
+
+async function postRemoveMemberRequest(payload: Record<string, unknown>): Promise<{ status: number; data: Record<string, unknown> }> {
+  const idToken = await auth!.currentUser!.getIdToken();
+  const res = await fetch("/api/company/remove-member", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+    body: JSON.stringify(payload),
+  });
+  const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  return { status: res.ok && data.ok ? 200 : res.status || 500, data };
+}
+
+// How much company data is tied to a staff member, per kind — read before the remove pop-up opens so
+// it can show what there is to hand over. Same server route (and permission check) as the removal.
+export async function previewCompanyMemberRemoval(
+  companyId: string,
+  uid: string,
+): Promise<{ ok: boolean; error?: string; counts: MemberRemovalCounts | null }> {
+  const cid = String(companyId || "").trim();
+  const userId = String(uid || "").trim();
+  if (!auth?.currentUser || !cid || !userId) {
+    return { ok: false, error: "missing-firebase-company-or-user-id", counts: null };
+  }
+  try {
+    const { status, data } = await postRemoveMemberRequest({ mode: "preview", companyId: cid, uid: userId });
+    if (status !== 200) {
+      return { ok: false, error: String(data.error || `request-failed-${status}`), counts: null };
+    }
+    return { ok: true, counts: toMemberRemovalCounts(data.counts) };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "remove-member-preview-failed";
+    return { ok: false, error: message, counts: null };
+  }
+}
+
 // Removing a staff member runs server-side (app/api/company/remove-member) rather than as direct
 // client-SDK writes — firestore.rules has always had `allow delete: if false` on
 // companies/{companyId}/memberships/{uid} with no exception (the actual "who can remove staff"
 // check, lib/membership.ts's staff.remove/owner resolution, needs a search through the company
 // doc's `roles` array that Firestore rules can't express), so a direct client delete here was
 // guaranteed to fail with permission-denied for every caller, always. The route re-derives that
-// same permission server-side with the Admin SDK instead.
+// same permission server-side with the Admin SDK instead. It also does the data hand-over (projects,
+// contacts, leads — which only the server can write — and calendar events) in the same request,
+// before the membership goes, so a failure part-way never leaves a removed member's data half-moved.
 export async function removeCompanyMemberDetailed(
   companyId: string,
   uid: string,
   options?: {
     transferToUid?: string;
     transferToName?: string;
+    // Which kinds of their data go to transferToUid. Omitted = only their active projects (the old
+    // behaviour, when a transferToUid is given).
+    transfer?: Partial<Record<MemberRemovalDataKind, boolean>>;
   },
-): Promise<{ ok: boolean; error?: string; transferredProjects: number }> {
+): Promise<{
+  ok: boolean;
+  error?: string;
+  transferredProjects: number;
+  transferred?: MemberRemovalCounts;
+  unassigned?: { assignedProjects: number; leads: number };
+  // Contacts not transferred because the recipient already has a matching one (email, phone or name).
+  skippedContacts?: number;
+}> {
   const cid = String(companyId || "").trim();
   const userId = String(uid || "").trim();
   if (!auth?.currentUser || !cid || !userId) {
     return { ok: false, error: "missing-firebase-company-or-user-id", transferredProjects: 0 };
   }
   try {
-    const idToken = await auth.currentUser.getIdToken();
-    const res = await fetch("/api/company/remove-member", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
-      body: JSON.stringify({
-        companyId: cid,
-        uid: userId,
-        transferToUid: String(options?.transferToUid || "").trim(),
-        transferToName: String(options?.transferToName || "").trim(),
-      }),
+    const { status, data } = await postRemoveMemberRequest({
+      companyId: cid,
+      uid: userId,
+      transferToUid: String(options?.transferToUid || "").trim(),
+      transferToName: String(options?.transferToName || "").trim(),
+      ...(options?.transfer ? { transfer: options.transfer } : {}),
     });
-    const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; transferredProjects?: number };
-    if (!res.ok || !data.ok) {
-      return { ok: false, error: data.error || `request-failed-${res.status}`, transferredProjects: Number(data.transferredProjects || 0) };
+    if (status !== 200) {
+      return { ok: false, error: String(data.error || `request-failed-${status}`), transferredProjects: Number(data.transferredProjects || 0) };
     }
-    return { ok: true, transferredProjects: Number(data.transferredProjects || 0) };
+    // The company doc's staff maps and the memberships just changed.
+    invalidateCompanyCache(cid);
+    const unassignedRaw = data.unassigned && typeof data.unassigned === "object" ? (data.unassigned as Record<string, unknown>) : {};
+    return {
+      ok: true,
+      transferredProjects: Number(data.transferredProjects || 0),
+      transferred: toMemberRemovalCounts(data.transferred),
+      unassigned: {
+        assignedProjects: Math.max(0, Number(unassignedRaw.assignedProjects) || 0),
+        leads: Math.max(0, Number(unassignedRaw.leads) || 0),
+      },
+      skippedContacts: Math.max(0, Number(data.skippedContacts) || 0),
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : "remove-member-request-failed";
     return { ok: false, error: message, transferredProjects: 0 };
@@ -2856,6 +2955,15 @@ export type CompanyClientRow = {
   notes: string;
   category: string;
   archived: boolean;
+  // When it was archived (cleared on restore). Contacts archived before this was stored have none — the
+  // Archived page falls back to updatedAtIso for those.
+  archivedAtIso?: string;
+  // A permanently deleted contact (from the Archived page). Its doc is kept as a tombstone instead of
+  // being removed, because contacts are also derived from projects: without it the same person would
+  // reappear from their projects straight away. A tombstone is never listed anywhere (not even in
+  // Archived) and hides that person's projects from before deletedAtIso — see clientTombstoneHidesProject.
+  deleted?: boolean;
+  deletedAtIso?: string;
   createdAtIso: string;
   updatedAtIso: string;
   firstProjectAtIso: string;
@@ -2866,6 +2974,16 @@ export type CompanyClientRow = {
   assignedToUids: string[];
   history: CompanyClientProjectHistoryRow[];
 };
+
+// Whether a permanently deleted contact (tombstone) still hides a project of that person: only the
+// projects that existed when it was deleted. A project created afterwards is a returning client, who
+// gets a fresh contact card instead of staying invisible for good.
+function clientTombstoneHidesProject(row: CompanyClientRow, projectCreatedIso: string | undefined): boolean {
+  if (!row.deleted) return false;
+  const deletedMs = Date.parse(String(row.deletedAtIso || ""));
+  const createdMs = Date.parse(String(projectCreatedIso || ""));
+  return !Number.isFinite(deletedMs) || !Number.isFinite(createdMs) || createdMs <= deletedMs;
+}
 
 type CompanyClientViewerFilter = {
   viewerUid?: string;
@@ -3094,22 +3212,25 @@ function projectMatchesClientRow(project: Project, row: CompanyClientRow): boole
   return false;
 }
 
+// A permanently deleted contact (tombstone) that still covers this project wins, so the caller leaves it
+// alone; one deleted before this project existed is skipped, so a returning client gets a live card.
 async function findMatchingCompanyClientRow(companyId: string, project: Project): Promise<CompanyClientRow | null> {
   const cid = String(companyId || "").trim();
   if (!db || !cid) return null;
   try {
     const snap = await getDocs(collection(db, "companies", cid, "clients"));
-    for (const docSnap of snap.docs) {
-      if (docSnap.id === "__meta") continue;
-      const row = buildCompanyClientRowFromDoc(cid, docSnap.id, (docSnap.data() ?? {}) as Record<string, unknown>);
-      if (projectMatchesClientRow(project, row)) {
-        return row;
-      }
-    }
+    const rows = snap.docs
+      .filter((docSnap) => docSnap.id !== "__meta")
+      .map((docSnap) => buildCompanyClientRowFromDoc(cid, docSnap.id, (docSnap.data() ?? {}) as Record<string, unknown>))
+      .filter((row) => projectMatchesClientRow(project, row));
+    return (
+      rows.find((row) => clientTombstoneHidesProject(row, project.createdAt)) ??
+      rows.find((row) => !row.deleted) ??
+      null
+    );
   } catch {
     return null;
   }
-  return null;
 }
 
 function findMatchingClientIdInMap(
@@ -3157,6 +3278,9 @@ function buildCompanyClientRowFromDoc(
     notes: String(data.notes ?? "").trim(),
     category: String(data.category ?? "").trim(),
     archived: Boolean(data.archived),
+    archivedAtIso: toIsoString(data.archivedAtIso, ""),
+    deleted: data.deleted === true,
+    deletedAtIso: toIsoString(data.deletedAtIso, ""),
     createdAtIso: toIsoString(data.createdAtIso ?? data.createdAt, ""),
     updatedAtIso: toIsoString(data.updatedAtIso ?? data.updatedAt, ""),
     firstProjectAtIso: toIsoString(data.firstProjectAtIso ?? data.firstProjectAt, ""),
@@ -3268,6 +3392,11 @@ async function syncCompanyClientProfileFromProjectInternal(
       const currentRow = existing
         ? buildCompanyClientRowFromDoc(cid, clientId, existing)
         : matchedRow;
+    // This person's contact was deleted permanently and this project is one of theirs from before
+    // that — nothing to write (writing would start rebuilding the deleted card).
+    if (currentRow?.deleted) {
+      return { ok: false };
+    }
     const currentHistory = currentRow?.history.slice() ?? [];
     const currentCreatedByUids = mergeUidLists(
       currentRow?.createdByUids,
@@ -3376,15 +3505,19 @@ export async function fetchCompanyClients(companyId: string, filter?: CompanyCli
   // because the project-derived pass below independently re-matches/re-keys them slightly
   // differently than a straight row.id lookup would — this makes the exclusion correct regardless of
   // whether findMatchingClientIdInMap happens to land on the same map key as the persisted row's id.
+  // Permanently deleted contacts (tombstones) are never listed, and hide their projects the same way an
+  // archived contact does — but only the projects from before they were deleted.
   let archivedRows: CompanyClientRow[] = [];
+  let tombstoneRows: CompanyClientRow[] = [];
   try {
     const clientsSnap = await getDocs(collection(db, "companies", cid, "clients"));
     const persistedRows = clientsSnap.docs
       .map((docSnap) => buildCompanyClientRowFromDoc(cid, docSnap.id, (docSnap.data() ?? {}) as Record<string, unknown>))
       .filter((row) => row.id && row.id !== "__meta");
-    archivedRows = filter?.includeArchived ? [] : persistedRows.filter((row) => row.archived);
+    tombstoneRows = persistedRows.filter((row) => row.deleted);
+    archivedRows = filter?.includeArchived ? [] : persistedRows.filter((row) => row.archived && !row.deleted);
     for (const row of persistedRows) {
-      if (row.archived && !filter?.includeArchived) continue;
+      if (row.deleted || (row.archived && !filter?.includeArchived)) continue;
       merged.set(row.id, row);
     }
   } catch {
@@ -3398,6 +3531,13 @@ export async function fetchCompanyClients(companyId: string, filter?: CompanyCli
       // that link is what keeps a changed phone/email from splitting the project off into a duplicate.
       const linkedId = String(project.clientId || "").trim();
       if (linkedId ? archivedRows.some((row) => row.id === linkedId) : archivedRows.some((archivedRow) => projectMatchesClientRow(project, archivedRow))) continue;
+      if (
+        linkedId
+          ? tombstoneRows.some((row) => row.id === linkedId)
+          : tombstoneRows.some((row) => clientTombstoneHidesProject(row, project.createdAt) && projectMatchesClientRow(project, row))
+      ) {
+        continue;
+      }
       const derived = buildCompanyClientRowFromProject(project);
       const matchId = (linkedId && merged.has(linkedId) ? linkedId : "") || findMatchingClientIdInMap(merged, project) || derived.id;
       merged.set(matchId, mergeCompanyClientRows(merged.get(matchId), { ...derived, id: matchId }));
@@ -3434,7 +3574,7 @@ export async function fetchCompanyClientById(
     const snap = await getDoc(doc(db, "companies", cid, "clients", id));
     if (snap.exists()) {
       const row = buildCompanyClientRowFromDoc(cid, snap.id, (snap.data() ?? {}) as Record<string, unknown>);
-      return canViewerAccessCompanyClientRow(row, filter) ? row : null;
+      return !row.deleted && canViewerAccessCompanyClientRow(row, filter) ? row : null;
     }
     const projects = await collectCompanyProjectsForClients(cid);
     const merged = new Map<string, CompanyClientRow>();
@@ -3494,9 +3634,11 @@ export async function findCompanyClientForProject(
       .filter((row) => (linkedId && row.id === linkedId) || projectMatchesClientRow(project, row));
     linked = matches.find((row) => row.id === linkedId);
   }
-  // A linked project only ever belongs to its own card — field look-alikes don't count.
-  const candidates = linked ? [linked] : matches;
-  if (candidates.some((row) => row.archived)) return null;
+  // A linked project only ever belongs to its own card — field look-alikes don't count. A permanently
+  // deleted card hides the project like an archived one, unless the project is newer than the deletion
+  // (a returning client — that card simply doesn't count).
+  const candidates = (linked ? [linked] : matches).filter((row) => !row.deleted || row.id === linkedId || clientTombstoneHidesProject(row, project.createdAt));
+  if (candidates.some((row) => row.archived || row.deleted)) return null;
   if (!candidates.length) {
     return filter?.includeAll || viewerOnProject ? { contact: buildCompanyClientRowFromProject(project), persisted: false } : null;
   }
@@ -3614,8 +3756,12 @@ export async function createOrAttachManualCompanyClient(
         address: existingRow.address || address,
         notes: existingRow.notes || notes,
         category: existingRow.category || category,
-        // Deliberately adding someone who was previously archived brings them back to the main list.
+        // Deliberately adding someone who was previously archived — or deleted permanently — brings
+        // them back to the main list.
         archived: false,
+        archivedAtIso: "",
+        deleted: false,
+        deletedAtIso: "",
         updatedAt: serverTimestamp(),
         updatedAtIso: nowIso,
         createdByUids: mergeUidLists(existingRow.createdByUids, [uid]),
@@ -3623,10 +3769,14 @@ export async function createOrAttachManualCompanyClient(
       };
       await setDoc(clientRef, payload, { merge: true });
       // Archiving writes every doc that is the same person, so un-archive all of them or the archived
-      // twins would keep hiding this contact's project-derived rows.
+      // twins would keep hiding this contact's project-derived rows (same for a permanent delete).
       for (const twin of matchedRows.slice(1)) {
-        if (twin.archived) {
-          await setDoc(doc(db, "companies", cid, "clients", twin.id), { archived: false }, { merge: true });
+        if (twin.archived || twin.deleted) {
+          await setDoc(
+            doc(db, "companies", cid, "clients", twin.id),
+            { archived: false, archivedAtIso: "", deleted: false, deletedAtIso: "" },
+            { merge: true },
+          );
         }
       }
       return { ok: true, clientId, merged: true };
@@ -3683,12 +3833,15 @@ export async function updateCompanyClientProfile(
   try {
     let targets: CompanyClientRow[];
     if (contact) {
-      targets = await findMatchingCompanyClientRowsByFields(
-        cid,
-        { name: contact.name, email: contact.email || contact.emailNormalized, phone: contact.phone, address: contact.address },
-        id,
-        true,
-      );
+      // A permanently deleted twin of the same person stays as it is.
+      targets = (
+        await findMatchingCompanyClientRowsByFields(
+          cid,
+          { name: contact.name, email: contact.email || contact.emailNormalized, phone: contact.phone, address: contact.address },
+          id,
+          true,
+        )
+      ).filter((row) => !row.deleted);
     } else {
       const snap = await getDoc(doc(db, "companies", cid, "clients", id));
       targets = snap.exists()
@@ -3711,7 +3864,11 @@ export async function updateCompanyClientProfile(
     if (typeof patch.address === "string") payload.address = patch.address.trim();
     if (typeof patch.notes === "string") payload.notes = patch.notes.trim();
     if (typeof patch.category === "string") payload.category = patch.category.trim();
-    if (typeof patch.archived === "boolean") payload.archived = patch.archived;
+    if (typeof patch.archived === "boolean") {
+      payload.archived = patch.archived;
+      // The date it's filed under on the Archived page.
+      payload.archivedAtIso = patch.archived ? nowIso : "";
+    }
 
     if (targets.length > 0) {
       for (const target of targets) {
@@ -3761,6 +3918,85 @@ export async function updateCompanyClientProfile(
   } catch {
     return { ok: false };
   }
+}
+
+// The Archived page's Restore and Delete permanently for contacts, for one or many at once. Each row is
+// the archived contact as the Archived page lists it (/api/clients?archived=only); like archiving, the
+// write goes to every saved doc that is the same person (its own id plus the email -> phone ->
+// name(+address) match), all read in one go. Returns the ids of the rows it handled.
+async function writeArchivedCompanyClients(
+  companyId: string,
+  contacts: CompanyClientRow[],
+  patchFor: (nowIso: string) => Record<string, unknown>,
+  filter?: CompanyClientViewerFilter,
+): Promise<string[]> {
+  const cid = String(companyId || "").trim();
+  const database = db;
+  if (!database || !cid || !contacts.length) return [];
+  try {
+    const snap = await getDocs(collection(database, "companies", cid, "clients"));
+    const rows = snap.docs
+      .filter((docSnap) => docSnap.id !== "__meta")
+      .map((docSnap) => buildCompanyClientRowFromDoc(cid, docSnap.id, (docSnap.data() ?? {}) as Record<string, unknown>))
+      // Already-deleted docs stay as they are.
+      .filter((row) => !row.deleted);
+    const nowIso = new Date().toISOString();
+    const patch = { ...patchFor(nowIso), updatedAt: serverTimestamp(), updatedAtIso: nowIso };
+    const done: string[] = [];
+    const targetIds = new Set<string>();
+    for (const contact of contacts) {
+      if (!canViewerAccessCompanyClientRow(contact, filter)) continue;
+      const input = { name: contact.name, email: contact.email || contact.emailNormalized, phone: contact.phone, address: contact.address };
+      const targets = rows.filter((row) => row.id === contact.id || inputMatchesClientRow(input, row));
+      if (!targets.length) continue;
+      targets.forEach((row) => targetIds.add(row.id));
+      done.push(contact.id);
+    }
+    const ids = Array.from(targetIds);
+    for (let i = 0; i < ids.length; i += 400) {
+      const batch = writeBatch(database);
+      ids.slice(i, i + 400).forEach((id) => batch.set(doc(database, "companies", cid, "clients", id), patch, { merge: true }));
+      await batch.commit();
+    }
+    return done;
+  } catch {
+    return [];
+  }
+}
+
+// Back to the Contacts list.
+export async function restoreArchivedCompanyClients(
+  companyId: string,
+  contacts: CompanyClientRow[],
+  filter?: CompanyClientViewerFilter,
+): Promise<string[]> {
+  return writeArchivedCompanyClients(companyId, contacts, () => ({ archived: false, archivedAtIso: "" }), filter);
+}
+
+// Deletes contacts for good — leaving a tombstone (see CompanyClientRow.deleted), since removing the doc
+// would just let the contact come back from its projects. Everything about the contact is cleared except
+// what's needed to recognise that person's projects (name, email, phone, address). Their projects aren't
+// touched; a project for them created later starts a fresh contact card.
+export async function permanentlyDeleteCompanyClients(
+  companyId: string,
+  contacts: CompanyClientRow[],
+  filter?: CompanyClientViewerFilter,
+): Promise<string[]> {
+  return writeArchivedCompanyClients(
+    companyId,
+    contacts,
+    (nowIso) => ({
+      deleted: true,
+      deletedAtIso: nowIso,
+      archived: true,
+      notes: "",
+      category: "",
+      history: [],
+      completedProjectIds: [],
+      projectCount: 0,
+    }),
+    filter,
+  );
 }
 
 export async function syncCompanyClientProfileFromProject(

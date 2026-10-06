@@ -11,6 +11,12 @@ const OPEN_POPUP_SELECTOR =
   '.glass-modal-backdrop, [data-scroll-lock="true"], [aria-label$="backdrop"]:not([inert] *), [data-swipe-backdrop="true"]:not([inert] *)';
 const LOCKED_CLASS = "cs-scroll-locked";
 
+// Whether any pop-up is open right now (by the same definition as above) — for gestures that belong to
+// the page behind one, like AppShell's pull-down menu and drawer swipes, to stand down.
+export function isAnyPopupOpen(): boolean {
+  return typeof document !== "undefined" && document.documentElement.classList.contains(LOCKED_CLASS);
+}
+
 // Puts LOCKED_CLASS on <html> while any pop-up is open, so the page behind it can't scroll (the rules
 // are in app/globals.css). This used to be a CSS `html:has(…)` selector, which made the browser re-check
 // the whole page against it after DOM changes all over the app; now the check runs at most once a frame,

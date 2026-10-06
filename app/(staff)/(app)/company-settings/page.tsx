@@ -16,11 +16,15 @@ import {
   removeTagsFromCompanyProjects,
   removeCompanyMemberDetailed,
   fetchUserColorMapByUids,
+  previewCompanyMemberRemoval,
   saveCompanyDocPatchDetailed,
   saveCompanyMemberDisplayName,
   saveCompanyMemberRole,
   type CompanyMemberOption,
+  type MemberRemovalCounts,
+  type MemberRemovalDataKind,
 } from "@/lib/firestore-data";
+import { swallowNextClick } from "@/lib/swallow-dismiss-click";
 import { storage } from "@/lib/firebase";
 import { getFirebaseStorageQuotaExceededMessage, isFirebaseStorageQuotaExceeded } from "@/lib/firebase-storage-errors";
 import { retryAsync } from "@/lib/load-retry";
@@ -44,6 +48,12 @@ import {
   type CalendarCategory,
   type CalendarRetention,
 } from "@/lib/calendar-data";
+import {
+  completedStatusMatcher,
+  normalizeProjectArchiveDelay,
+  PROJECT_ARCHIVE_DELAY_OPTIONS,
+  type ProjectArchiveDelay,
+} from "@/lib/project-archive";
 import {
   CURRENCY_OPTIONS,
   DATE_FORMAT_OPTIONS,
@@ -88,7 +98,9 @@ type SettingsSection =
   | "hardware" | "staff" | "integrations" | "backup";
 
 type SubStageRow = { name: string; color: string; isDefault?: boolean };
-type StatusRow = { name: string; color: string; subStages?: SubStageRow[] };
+// isComplete: the "Completed" toggle — projects in this status count as finished (stats, client portal
+// closing and archiving; see lib/project-archive.ts). Project statuses only.
+type StatusRow = { name: string; color: string; subStages?: SubStageRow[]; isComplete?: boolean };
 type SheetSizeRow = { h: string; w: string; isDefault: boolean };
 type BoardEdgingMemoryRow = { value: string; count: string };
 type BoardColourMemoryRow = { value: string; count: string; edgings: BoardEdgingMemoryRow[] };
@@ -230,11 +242,69 @@ type PendingStaffRemovalState = {
   uid: string;
   displayName: string;
   roleId: string;
-  activeProjectCount: number;
+  // How much of each kind of company data is tied to them — null when it couldn't be counted.
+  counts: MemberRemovalCounts | null;
+  // Which kinds go to transferToUid. The rest keep their "not transferred" behaviour (STAFF_REMOVAL_DATA_ROWS).
+  transfer: Record<MemberRemovalDataKind, boolean>;
   transferToUid: string;
   typedName: string;
   confirmPhase: "prompt" | "type_name";
 };
+
+// The Remove Staff Member pop-up's hand-over rows: one per kind of company data tied to the person
+// being removed. `keep` is what happens when it is NOT transferred — nothing is ever deleted; the
+// server side of each is app/api/company/remove-member (TRANSFER_KINDS). `name` is the person being
+// removed, `to` the person receiving.
+const STAFF_REMOVAL_DATA_ROWS: Array<{
+  kind: MemberRemovalDataKind;
+  label: string;
+  icon: React.ComponentType<{ size?: number; strokeWidth?: number }>;
+  move: (to: string, name: string) => string;
+  keep: (name: string) => string;
+}> = [
+  {
+    kind: "assignedProjects",
+    label: "Active projects assigned to them",
+    icon: KanbanSquare,
+    move: (to) => `Reassigned to ${to}.`,
+    keep: () => "Left unassigned, for someone who can see all projects to pick up.",
+  },
+  {
+    kind: "createdProjects",
+    label: "Projects they created",
+    icon: ClipboardList,
+    move: (to, name) => `${to} becomes their creator, with the access ${name} had to them.`,
+    keep: (name) => `Stay as they are, still credited to ${name}.`,
+  },
+  {
+    kind: "contacts",
+    label: "Contacts linked to them",
+    icon: Contact,
+    move: (to, name) =>
+      `${to} takes ${name}'s place on these contacts — except any ${to} already has (same email, phone number or name), which stay as they are.`,
+    keep: (name) => `Stay in Contacts, still linked to ${name} — staff who can see all contacts still see them.`,
+  },
+  {
+    kind: "leads",
+    label: "Leads assigned to them",
+    icon: Inbox,
+    move: (to) => `Reassigned to ${to}.`,
+    keep: () => "Left unassigned, for someone who can see everyone's leads to pick up.",
+  },
+  {
+    kind: "calendarEvents",
+    label: "Calendar events they added",
+    icon: CalendarDays,
+    move: (to) => `Shown as added by ${to}.`,
+    keep: (name) => `Stay on the calendar, still showing ${name} as who added them.`,
+  },
+];
+
+// Whether anything switched on actually has data to move (and so needs someone to move it to). With
+// no counts (the preview failed) a switched-on kind is assumed to have some.
+function staffRemovalNeedsRecipient(pending: PendingStaffRemovalState): boolean {
+  return STAFF_REMOVAL_DATA_ROWS.some(({ kind }) => pending.transfer[kind] && (pending.counts ? pending.counts[kind] > 0 : true));
+}
 
 const desktopPermissionKeys = [
   "company.*",
@@ -318,17 +388,6 @@ const permissionLabels: Record<string, string> = {
   "dashboard.complete.bonus": "dashboard.complete.bonus - Bonus Completed Projects Dashboard View",
 };
 
-const deletedRetentionOptions: Array<{ label: string; days: string }> = [
-  { label: "1 day", days: "1" },
-  { label: "1 week", days: "7" },
-  { label: "2 weeks", days: "14" },
-  { label: "1 month", days: "30" },
-  { label: "2 months", days: "60" },
-  { label: "3 months", days: "90" },
-  { label: "4 months", days: "120" },
-  { label: "6 months", days: "180" },
-  { label: "1 year", days: "365" },
-];
 
 const cutlistColumnDefaults = ["Board", "Part Name", "Height", "Width", "Depth", "Quantity", "Clashing", "Information", "Grain"];
 const autoClashLeftOptions = ["1L", "2L"];
@@ -414,7 +473,7 @@ const sections: Array<{
 }> = [
   { key: "company", label: "Company", group: "General", icon: Building2, description: "Your brand and the formats used everywhere in CutSmart." },
   // Same icon as the sidebar's Dashboard item (components/app-shell.tsx topNav).
-  { key: "dashboard", label: "Dashboard", group: "General", icon: LayoutDashboard, description: "Statuses, tags, contact categories and how long deleted items are kept." },
+  { key: "dashboard", label: "Dashboard", group: "General", icon: LayoutDashboard, description: "Statuses, tags, contact categories, how long deleted items are kept and when finished projects are archived." },
   { key: "calendar", label: "Calendar", group: "General", icon: CalendarDays, description: "The categories events can belong to on the Calendar tab." },
   { key: "sales", label: "Sales", group: "Sales", icon: CircleDollarSign, description: "Lead form, quote & specs layouts, products, helpers and discounts." },
   { key: "production", label: "Production", group: "Workshop", icon: Wrench, description: "Cutlists, part types, gap allowances and production access." },
@@ -438,8 +497,10 @@ const SETTINGS_SEARCH_INDEX: Array<{ section: SettingsSection; label: string; ca
   { section: "dashboard", card: "Contact categories", label: "Contact categories" },
   { section: "dashboard", card: "Completed project legend", label: "Completed project legend" },
   { section: "dashboard", card: "Tags", label: "Tags" },
-  { section: "dashboard", card: "Recently deleted", label: "Recently deleted", keywords: "retention trash" },
+  { section: "dashboard", card: "Finished projects", label: "Archive completed projects", keywords: "archived client portal link completed instantly recently deleted trash" },
   { section: "calendar", card: "Calendar categories", label: "Calendar categories", keywords: "events sub-calendars colours teamup" },
+  { section: "calendar", card: "Workdays", label: "Workdays", keywords: "business days weekends" },
+  { section: "calendar", card: "Workdays", label: "Show non-workdays", keywords: "hide weekends month week view" },
   { section: "sales", card: "Lead form", label: "Lead form URL" },
   { section: "sales", card: "Layout builders", label: "Specs & quote layouts", keywords: "template builder" },
   { section: "sales", card: "Client confirmation", label: "Reopen for editing" },
@@ -645,19 +706,28 @@ function normalizeSubStages(raw: unknown): SubStageRow[] {
 function normalizeStatuses(raw: unknown): StatusRow[] {
   if (!Array.isArray(raw)) {
     return [
-      { name: "New", color: "#3060D0" },
-      { name: "In Production", color: "#2A7A3B" },
-      { name: "Completed", color: "#2A7A3B" },
+      { name: "New", color: "#3060D0", isComplete: false },
+      { name: "In Production", color: "#2A7A3B", isComplete: false },
+      { name: "Completed", color: "#2A7A3B", isComplete: true },
     ];
   }
+  // A company that's never set the Completed toggle starts with it showing whatever already counts
+  // as completed for them (the old name-based rule), so saving doesn't quietly change anything.
+  // Only one status can be the completed one — if more than one would be ticked (older data, or the
+  // old rule matching several names), the first in the list keeps it.
+  const isCompletedStatus = completedStatusMatcher(raw);
+  let completedTaken = false;
   const out = raw
     .filter((item) => item && typeof item === "object")
     .map((item) => {
       const row = item as Record<string, unknown>;
-      return { name: toStr(row.name), color: toStr(row.color, "#64748B"), subStages: normalizeSubStages(row.subStages) };
+      const name = toStr(row.name);
+      const isComplete = !completedTaken && Boolean(name) && isCompletedStatus(name);
+      if (isComplete) completedTaken = true;
+      return { name, color: toStr(row.color, "#64748B"), subStages: normalizeSubStages(row.subStages), isComplete };
     })
     .filter((row) => row.name);
-  return out.length ? out : [{ name: "New", color: "#3060D0" }];
+  return out.length ? out : [{ name: "New", color: "#3060D0", isComplete: false }];
 }
 
 function normalizeLeadStatuses(raw: unknown): StatusRow[] {
@@ -1476,6 +1546,21 @@ export default function CompanySettingsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const [search, setSearch] = useState("");
+  // The search results list under the rail's search box — hidden by a press anywhere else (the
+  // query stays, and focusing the box shows the results again).
+  const [searchMenuOpen, setSearchMenuOpen] = useState(false);
+  const searchBoxRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!searchMenuOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (searchBoxRef.current?.contains(event.target as Node)) return;
+      // Only closes the results — the press must not also act on whatever is under it.
+      swallowNextClick();
+      setSearchMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [searchMenuOpen]);
   const [company, setCompany] = useState<Record<string, unknown> | null>(null);
   const [activeCompanyId, setActiveCompanyId] = useState("");
   useEffect(() => {
@@ -1509,6 +1594,8 @@ export default function CompanySettingsPage() {
   const contactCategoriesPersistTimerRef = useRef<number | null>(null);
   const isSavingLatestRef = useRef(false);
   const [statuses, setStatuses] = useState<StatusRow[]>([]);
+  // Whether a status is already ticked as the completed one (Project statuses hides the others' button).
+  const hasCompletedStatus = statuses.some((row) => Boolean(row.isComplete));
   const [leadStatuses, setLeadStatuses] = useState<StatusRow[]>([]);
   const [dashboardLegend, setDashboardLegend] = useState<DashboardLegendRow[]>([]);
   const [legendDragIndex, setLegendDragIndex] = useState<number | null>(null);
@@ -1518,6 +1605,11 @@ export default function CompanySettingsPage() {
   const [leadStatusDragIndex, setLeadStatusDragIndex] = useState<number | null>(null);
   const [leadStatusDragOverIndex, setLeadStatusDragOverIndex] = useState<number | null>(null);
   const [projectTagUsage, setProjectTagUsage] = useState<TagUsageRow[]>([]);
+  // Dashboard > Tags: the tag waiting on "Delete tag?" (its row, name and how many projects use it).
+  const [pendingTagDelete, setPendingTagDelete] = useState<{ index: number; value: string; count: number } | null>(null);
+  const [tagDeleteOrigin, setTagDeleteOrigin] = useState<GlassModalOrigin>(null);
+  const tagDeletePanelRef = useRef<HTMLDivElement | null>(null);
+  const tagDeleteOriginElRef = useRef<HTMLElement | null>(null);
   const [boardColourMemory, setBoardColourMemory] = useState<BoardColourMemoryRow[]>([]);
   const [expandedBoardColourMemoryRows, setExpandedBoardColourMemoryRows] = useState<Set<string>>(new Set());
   const [boardThicknesses, setBoardThicknesses] = useState<string[]>(["16", "18"]);
@@ -1538,8 +1630,15 @@ export default function CompanySettingsPage() {
   const calendarAccessOriginElRef = useRef<HTMLElement | null>(null);
   const [calendarWorkdays, setCalendarWorkdays] = useState<number[]>([1, 2, 3, 4, 5]);
   const [calendarRetention, setCalendarRetention] = useState<CalendarRetention>("never");
+  // Dashboard > Finished projects: how long a project sits in a Completed status before it's archived
+  // and its client portal link stops working — or "instant", as soon as it's completed (company doc
+  // projectArchiveAfter).
+  const [projectArchiveAfter, setProjectArchiveAfter] = useState<ProjectArchiveDelay>("never");
   // Whether "Show on client portal" starts on when a project is linked to an event.
   const [calendarShowToClientDefault, setCalendarShowToClientDefault] = useState(false);
+  // Calendar > Workdays > "Show non-workdays". Off = the calendar's Month and Week views leave the
+  // non-workdays out (the Year view always shows every day). Saved as calendarShowNonWorkdays; on by default.
+  const [calendarShowNonWorkdays, setCalendarShowNonWorkdays] = useState(true);
   const [contractors, setContractors] = useState<string[]>([]);
   const [roles, setRoles] = useState<RoleRow[]>([]);
   // Fed to both the Specs and Quote grid builders' group-editor modal ("Allow Editable By") — the
@@ -1710,7 +1809,6 @@ export default function CompanySettingsPage() {
     measurementUnit: "mm",
     dateFormat: "DD/MM/YYYY",
     timeZone: "Pacific/Auckland",
-    deletedRetentionDays: "90",
     themeColor: "#2F6BFF",
     logoPath: "",
   });
@@ -1831,7 +1929,6 @@ export default function CompanySettingsPage() {
           measurementUnit: toStr(doc.measurementUnit, "mm"),
           dateFormat: toStr(doc.dateFormat, "DD/MM/YYYY"),
           timeZone: toStr(doc.timeZone, "Pacific/Auckland"),
-          deletedRetentionDays: toStr(doc.deletedRetentionDays, "90"),
           themeColor: toStr(doc.themeColor, "#2F6BFF"),
           logoPath: toStr(doc.logoPath),
         });
@@ -1848,7 +1945,9 @@ export default function CompanySettingsPage() {
         setCalendarCategories(normalizeCalendarCategories((doc as Record<string, unknown>).calendarCategories));
         setCalendarWorkdays(normalizeCalendarWorkdays((doc as Record<string, unknown>).calendarWorkdays));
         setCalendarRetention(normalizeCalendarRetention((doc as Record<string, unknown>).calendarEventRetention));
+        setProjectArchiveAfter(normalizeProjectArchiveDelay((doc as Record<string, unknown>).projectArchiveAfter));
         setCalendarShowToClientDefault((doc as Record<string, unknown>).calendarShowToClientDefault === true);
+        setCalendarShowNonWorkdays((doc as Record<string, unknown>).calendarShowNonWorkdays !== false);
         setContractors(normalizeStringList(doc.contractors, []));
         setRoles(normalizeRoles(doc.roles));
         setItemCategories(normalizeItemCategories(doc.itemCategories));
@@ -2012,6 +2111,8 @@ export default function CompanySettingsPage() {
       const target = event.target;
       if (!(target instanceof Node)) return;
       if (openStaffRoleMenuRef.current?.contains(target)) return;
+      // This press only closes the menu — it must not also act on whatever it landed on.
+      swallowNextClick();
       setOpenStaffRoleUid("");
     };
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -2102,6 +2203,20 @@ export default function CompanySettingsPage() {
     const perms = access.status === "ready" ? access.permissionKeys : Array.isArray(user?.permissions) ? user.permissions : [];
     return hasPermissionKey(perms, "company.settings");
   }, [access.permissionKeys, access.status, currentMemberRole, user?.permissions]);
+
+  // Phones/tablets: the section tabs are a sideways-scrolling strip — keep the selected one in view
+  // (after a search jump, a ?section= link, or tapping one half off the edge). On desktop the tabs are
+  // a column that doesn't scroll sideways, so this does nothing there.
+  const sectionNavRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const nav = sectionNavRef.current;
+    if (!nav || nav.scrollWidth <= nav.clientWidth) return;
+    const tab = nav.querySelector<HTMLElement>('[aria-current="page"]');
+    if (!tab) return;
+    const navBox = nav.getBoundingClientRect();
+    const tabBox = tab.getBoundingClientRect();
+    nav.scrollBy({ left: tabBox.left + tabBox.width / 2 - (navBox.left + navBox.width / 2), behavior: "smooth" });
+  }, [active, canAccessCompanySettings, access.status]);
 
   const staffRoleOptions = useMemo(() => {
     const merged = new Map<string, RoleRow>();
@@ -2363,19 +2478,21 @@ export default function CompanySettingsPage() {
     }
     setPreparingStaffRemovalUid(uid);
     try {
-      const projects = await fetchProjects(toStr(user?.uid), [activeCompanyId], { lightweight: true });
-      const activeProjectCount = projects.filter((project) => {
-        if (String(project.companyId || "").trim() !== activeCompanyId) return false;
-        if (String(project.assignedToUid || "").trim() !== uid) return false;
-        const status = String(project.statusLabel || project.status || "").trim().toLowerCase();
-        return status !== "complete" && status !== "completed";
-      }).length;
-      setStaffRemovalError("");
+      // Counted server-side: leads (and other staff members' data) aren't readable from here.
+      const preview = await previewCompanyMemberRemoval(activeCompanyId, uid);
+      const counts = preview.ok ? preview.counts : null;
+      const hasRecipients = staff.some((member) => toStr(member.uid) && toStr(member.uid) !== uid);
+      // Everything they have starts switched on, so nothing is left behind by accident.
+      const transfer = Object.fromEntries(
+        STAFF_REMOVAL_DATA_ROWS.map(({ kind }) => [kind, hasRecipients && (counts ? counts[kind] > 0 : true)]),
+      ) as Record<MemberRemovalDataKind, boolean>;
+      setStaffRemovalError(preview.ok ? "" : `Couldn't check what data they have (${preview.error || "unknown"}).`);
       setPendingStaffRemoval({
         uid,
         displayName: toStr(row.displayName || row.email || row.uid),
         roleId,
-        activeProjectCount,
+        counts,
+        transfer,
         transferToUid: "",
         typedName: "",
         confirmPhase: "prompt",
@@ -2391,8 +2508,8 @@ export default function CompanySettingsPage() {
       setStaffRemovalError("Owner cannot be removed from the company");
       return;
     }
-    if (pendingStaffRemoval.activeProjectCount > 0 && !toStr(pendingStaffRemoval.transferToUid)) {
-      setStaffRemovalError("Choose who to transfer active projects to");
+    if (staffRemovalNeedsRecipient(pendingStaffRemoval) && !toStr(pendingStaffRemoval.transferToUid)) {
+      setStaffRemovalError("Choose who to transfer their data to, or switch off what you don't want to transfer");
       return;
     }
     setStaffRemovalError("");
@@ -2417,14 +2534,22 @@ export default function CompanySettingsPage() {
       return;
     }
     setStaffRemovalError("");
-    const transferTarget = staff.find((member) => toStr(member.uid) === toStr(pendingStaffRemoval.transferToUid));
+    const needsRecipient = staffRemovalNeedsRecipient(pendingStaffRemoval);
+    const transferTarget = needsRecipient
+      ? staff.find((member) => toStr(member.uid) === toStr(pendingStaffRemoval.transferToUid))
+      : undefined;
+    if (needsRecipient && !transferTarget) {
+      setStaffRemovalError("Choose who to transfer their data to");
+      return;
+    }
     setRemovingStaffUid(pendingStaffRemoval.uid);
     const result = await removeCompanyMemberDetailed(activeCompanyId, pendingStaffRemoval.uid, {
-      transferToUid: pendingStaffRemoval.activeProjectCount > 0 ? toStr(transferTarget?.uid) : "",
-      transferToName:
-        pendingStaffRemoval.activeProjectCount > 0
-          ? toStr(transferTarget?.displayName || transferTarget?.email || transferTarget?.uid)
-          : "",
+      transferToUid: toStr(transferTarget?.uid),
+      transferToName: toStr(transferTarget?.displayName || transferTarget?.email || transferTarget?.uid),
+      // Every kind is sent, on or off, so the server never falls back to its older "projects only" default.
+      transfer: transferTarget
+        ? pendingStaffRemoval.transfer
+        : (Object.fromEntries(STAFF_REMOVAL_DATA_ROWS.map(({ kind }) => [kind, false])) as Record<MemberRemovalDataKind, boolean>),
     });
     setRemovingStaffUid("");
     if (!result.ok) {
@@ -2434,10 +2559,15 @@ export default function CompanySettingsPage() {
     setStaff((prev) => prev.filter((member) => toStr(member.uid) !== pendingStaffRemoval.uid));
     setOpenStaffRoleUid((current) => (current === pendingStaffRemoval.uid ? "" : current));
     setPendingStaffRemoval(null);
+    const transferredTotal = Object.values(result.transferred ?? {}).reduce((sum, n) => sum + n, 0);
+    const skippedContacts = result.skippedContacts ?? 0;
+    const skippedNote = skippedContacts
+      ? ` (${skippedContacts} contact${skippedContacts === 1 ? "" : "s"} skipped — already in their contacts)`
+      : "";
     setSaveLabel(
-      result.transferredProjects > 0
-        ? `Removed ${pendingStaffRemoval.displayName} and transferred ${result.transferredProjects} active projects`
-        : `Removed ${pendingStaffRemoval.displayName}`,
+      transferredTotal > 0
+        ? `Removed ${pendingStaffRemoval.displayName} and transferred ${transferredTotal} item${transferredTotal === 1 ? "" : "s"}${skippedNote}`
+        : `Removed ${pendingStaffRemoval.displayName}${skippedNote}`,
     );
   };
 
@@ -2687,6 +2817,13 @@ export default function CompanySettingsPage() {
       return prev.map((m) => (m.type === target.type ? { ...m, isDefaultForType: m.id === id } : m));
     });
   };
+  const shouldRenderTagDeleteModal = useGlassModalPopOrigin(
+    Boolean(pendingTagDelete),
+    tagDeleteOrigin,
+    tagDeletePanelRef,
+    undefined,
+    tagDeleteOriginElRef,
+  );
   const shouldRenderOwnerTransferModal = useGlassModalPopOrigin(
     Boolean(pendingOwnerTransfer),
     ownerTransferOrigin,
@@ -3057,13 +3194,15 @@ export default function CompanySettingsPage() {
       measurementUnit: form.measurementUnit,
       dateFormat: form.dateFormat,
       timeZone: form.timeZone,
-      deletedRetentionDays: Number(form.deletedRetentionDays || 90),
       themeColor: form.themeColor,
       logoPath: form.logoPath,
       projectStatuses: statuses.map((row, idx) => ({
         id: toStr(row.name, `status_${idx + 1}`).toLowerCase().replace(/\s+/g, "_"),
         name: toStr(row.name),
         color: toStr(row.color, "#64748B"),
+        // Saved on every row, on or off — once any row has it, only the ones switched on count as
+        // completed (see completedStatusMatcher in lib/project-archive.ts).
+        isComplete: Boolean(row.isComplete),
         subStages: (row.subStages ?? [])
           .map((sub) => ({ name: toStr(sub.name), color: toStr(sub.color, "#64748B"), isDefault: Boolean(sub.isDefault) }))
           .filter((sub) => sub.name),
@@ -3138,7 +3277,9 @@ export default function CompanySettingsPage() {
         .filter(Boolean),
       calendarWorkdays,
       calendarEventRetention: calendarRetention,
+      projectArchiveAfter,
       calendarShowToClientDefault,
+      calendarShowNonWorkdays,
       calendarCategories: calendarCategories
         .map((row) => ({
           id: toStr(row.id) || newCalendarId("cat"),
@@ -3733,7 +3874,9 @@ export default function CompanySettingsPage() {
     calendarCategories,
     calendarWorkdays,
     calendarRetention,
+    projectArchiveAfter,
     calendarShowToClientDefault,
+    calendarShowNonWorkdays,
     projectTagUsage,
     boardThicknesses,
     boardFinishes,
@@ -3805,8 +3948,11 @@ export default function CompanySettingsPage() {
         >
           {/* Not centred: on a wide screen a centred max-width left a big empty band between the app's
               sidebar and this page. The outer padding equals the gap between cards (18px) so every
-              gap on the page — sidebar edge, rail to content, card to card — is the same. */}
-          <div className="grid w-full gap-[18px] p-3 md:p-[18px] lg:grid-cols-[264px_minmax(0,1fr)]">
+              gap on the page — sidebar edge, rail to content, card to card — is the same.
+              grid-cols-1 (= minmax(0,1fr)) below desktop: an implicit grid column grows to fit its
+              widest content, which let the sideways tab strip and wide tables stretch the whole page
+              past a phone's screen edge (and so the tab strip never had anything to scroll). */}
+          <div className="grid w-full grid-cols-1 gap-[18px] p-3 md:p-[18px] lg:grid-cols-[264px_minmax(0,1fr)]">
             {/* Settings rail: title, search (jumps to any setting), the tabs grouped, and the company info card. */}
             <aside
               className="flex h-fit flex-col gap-3 rounded-[20px] border p-3.5 lg:sticky lg:top-[68px] lg:max-h-[calc(100svh-88px)]"
@@ -3822,11 +3968,15 @@ export default function CompanySettingsPage() {
                 <Settings size={18} strokeWidth={2.1} />
                 Settings
               </div>
-              <div className="relative">
+              <div ref={searchBoxRef} className="relative">
                 <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }} />
                 <input
                   value={search}
-                  onChange={(e) => setSearch(e.target.value)}
+                  onChange={(e) => {
+                    setSearch(e.target.value);
+                    setSearchMenuOpen(true);
+                  }}
+                  onFocus={() => setSearchMenuOpen(true)}
                   onKeyDown={(e) => {
                     if (e.key === "Escape") setSearch("");
                     if (e.key === "Enter" && searchResults[0]) goToSearchResult(searchResults[0]);
@@ -3834,7 +3984,7 @@ export default function CompanySettingsPage() {
                   placeholder="Search settings..."
                   className={`${glassFieldClass} pl-9`}
                 />
-                {search.trim() ? (
+                {search.trim() && searchMenuOpen ? (
                   <div
                     className="glass-bubble-pop absolute inset-x-0 top-[calc(100%+6px)] z-[60] max-h-[320px] overflow-auto rounded-[14px] border p-1.5"
                     style={{
@@ -3866,7 +4016,10 @@ export default function CompanySettingsPage() {
                   </div>
                 ) : null}
               </div>
-              <nav className="-mx-1 flex gap-1 overflow-x-auto px-1 lg:mx-0 lg:min-h-0 lg:flex-col lg:gap-0.5 lg:overflow-y-auto lg:px-0">
+              <nav
+                ref={sectionNavRef}
+                className="-mx-1 flex gap-1 overflow-x-auto overscroll-x-contain px-1 lg:mx-0 lg:min-h-0 lg:flex-col lg:gap-0.5 lg:overflow-y-auto lg:px-0"
+              >
                 {sections.map((item, idx) => {
                   const Icon = item.icon;
                   const selected = active === item.key;
@@ -3880,6 +4033,7 @@ export default function CompanySettingsPage() {
                       ) : null}
                       <button
                         type="button"
+                        aria-current={selected ? "page" : undefined}
                         onClick={() => setActive(item.key)}
                         className="inline-flex shrink-0 items-center gap-2.5 whitespace-nowrap rounded-[11px] px-2.5 py-[9px] text-left text-[13px] font-medium transition hover:bg-[color-mix(in_srgb,var(--text-main)_5%,transparent)] lg:w-full"
                         style={
@@ -3986,7 +4140,7 @@ export default function CompanySettingsPage() {
                 );
               })()}
               {active === "company" && (
-                <div className="grid gap-[18px]">
+                <div className="grid gap-[18px] max-lg:grid-cols-1">
                   {!canEditCompanySettings && (
                     <div
                       className="rounded-[14px] border px-3.5 py-2.5 text-[12.5px] font-semibold"
@@ -4120,7 +4274,7 @@ export default function CompanySettingsPage() {
               )}
 
               {active === "materials" && (
-                <div className="grid gap-[18px] xl:grid-cols-2">
+                <div className="grid gap-[18px] max-lg:grid-cols-1 xl:grid-cols-2">
                   <Panel title="Sheet thicknesses" icon={Layers3} description="Board thicknesses you can pick when building cutlists. Drag to set their order.">
                     <div className="flex flex-wrap items-center gap-1.5">
                       {boardThicknesses.map((value, idx) => (
@@ -4255,10 +4409,10 @@ export default function CompanySettingsPage() {
                   <Panel title="Sheet sizes" icon={Package2} description="Stock sheet sizes. The default is used for nesting and new products.">
                     <div className="space-y-1.5">
                       {sheetSizes.map((row, idx) => (
-                        <div key={idx} className={listRowClass}>
-                          <LengthField valueMm={row.h} onChangeMm={(mm) => setSheetSizes((prev) => prev.map((r, i) => (i === idx ? { ...r, h: mm } : r)))} unit={companyUnit} placeholder="Height" width={110} />
+                        <div key={idx} className={`${listRowClass} max-sm:flex-wrap`}>
+                          <LengthField valueMm={row.h} onChangeMm={(mm) => setSheetSizes((prev) => prev.map((r, i) => (i === idx ? { ...r, h: mm } : r)))} unit={companyUnit} placeholder="Height" width={110} wrapperClassName="max-sm:w-[76px]!" />
                           <span style={{ color: "var(--text-muted)" }}>×</span>
-                          <LengthField valueMm={row.w} onChangeMm={(mm) => setSheetSizes((prev) => prev.map((r, i) => (i === idx ? { ...r, w: mm } : r)))} unit={companyUnit} placeholder="Width" width={110} />
+                          <LengthField valueMm={row.w} onChangeMm={(mm) => setSheetSizes((prev) => prev.map((r, i) => (i === idx ? { ...r, w: mm } : r)))} unit={companyUnit} placeholder="Width" width={110} wrapperClassName="max-sm:w-[76px]!" />
                           <span className="flex-1" />
                           <button
                             type="button"
@@ -4322,7 +4476,7 @@ export default function CompanySettingsPage() {
                               </button>
                             </div>
                             {isExpanded && hasEdgings && (
-                              <div className="my-1.5 ml-8 grid gap-1 rounded-[12px] border border-dashed p-2" style={{ borderColor: "color-mix(in srgb, var(--text-main) 16%, transparent)" }}>
+                              <div className="my-1.5 ml-8 grid gap-1 rounded-[12px] border border-dashed p-2 max-sm:ml-3" style={{ borderColor: "color-mix(in srgb, var(--text-main) 16%, transparent)" }}>
                                 {row.edgings.map((edging, edgingIdx) => (
                                   <div key={`board_edging_${idx}_${edgingIdx}`} className="flex items-center gap-2 px-1 text-[12.5px]">
                                     <span className="min-w-0 flex-1 truncate" style={{ color: "var(--text-main)" }}>{edging.value}</span>
@@ -4343,7 +4497,7 @@ export default function CompanySettingsPage() {
               )}
 
                 {active === "integrations" && (
-                  <div className="grid gap-[18px] xl:grid-cols-2">
+                  <div className="grid gap-[18px] max-lg:grid-cols-1 xl:grid-cols-2">
                     <Panel
                       title="Zapier Forms"
                       description="Send submissions from any Zapier form straight into your Leads tab."
@@ -4621,7 +4775,7 @@ export default function CompanySettingsPage() {
                             <>
                               <div className="space-y-2">
                                 <FieldGroupHeading first>Machine</FieldGroupHeading>
-                                <div className="grid gap-3 sm:grid-cols-2">
+                                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                                   <StackField label="Name">
                                     <input
                                       value={activeMachine.name}
@@ -4678,7 +4832,7 @@ export default function CompanySettingsPage() {
 
                               <div className="space-y-2">
                                 <FieldGroupHeading>Maintenance Contact</FieldGroupHeading>
-                                <div className="grid gap-3 sm:grid-cols-3">
+                                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                                   <StackField label="Name">
                                     <input
                                       value={activeMachine.maintenanceContact.name}
@@ -4764,7 +4918,7 @@ export default function CompanySettingsPage() {
                                     Sheet size comes from each board&apos;s own entry in Materials &amp; Boards —
                                     only this machine&apos;s own cutting settings live here.
                                   </p>
-                                  <div className="grid gap-3 sm:grid-cols-3">
+                                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                                     {(
                                       [
                                         ["Kerf", "kerf"],
@@ -4899,14 +5053,14 @@ export default function CompanySettingsPage() {
               )}
 
               {active === "production" && (
-                <div className="grid gap-[18px] xl:grid-cols-2">
+                <div className="grid gap-[18px] max-lg:grid-cols-1 xl:grid-cols-2">
                   <Panel title="Cutlist columns" icon={Columns3} description="Which columns show in Production and Initial Measure cutlists. Drag to set their order.">
                     <div className="space-y-1.5">
                       <div className="flex items-center gap-2 px-2 pb-0.5">
                         <span className="w-6 shrink-0" />
                         <span className={`min-w-0 flex-1 ${columnHeadClass}`}>Column</span>
-                        <span className={`w-[96px] shrink-0 text-center ${columnHeadClass}`}>Production</span>
-                        <span className={`w-[110px] shrink-0 text-center ${columnHeadClass}`}>Initial measure</span>
+                        <span className={`w-[96px] shrink-0 text-center max-sm:w-[80px] ${columnHeadClass}`}>Production</span>
+                        <span className={`w-[110px] shrink-0 text-center max-sm:w-[64px] max-sm:leading-tight ${columnHeadClass}`}>Initial measure</span>
                       </div>
                       {cutlistColumnRows.map((columnName) => {
                         const prodChecked = cutlistProduction.includes(columnName);
@@ -4963,10 +5117,10 @@ export default function CompanySettingsPage() {
                               <GripVertical size={15} />
                             </button>
                             <span className="min-w-0 flex-1 truncate pl-1 text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>{columnName}</span>
-                            <span className="flex w-[96px] shrink-0 justify-center">
+                            <span className="flex w-[96px] shrink-0 justify-center max-sm:w-[80px]">
                               <GlassSwitch size="sm" checked={prodChecked} onChange={(on) => setCutlistProduction((prev) => toggleIn(prev, on))} ariaLabel={`${columnName} in Production`} />
                             </span>
-                            <span className="flex w-[110px] shrink-0 justify-center">
+                            <span className="flex w-[110px] shrink-0 justify-center max-sm:w-[64px]">
                               <GlassSwitch size="sm" checked={initialChecked} onChange={(on) => setCutlistInitial((prev) => toggleIn(prev, on))} ariaLabel={`${columnName} in Initial Measure`} />
                             </span>
                           </div>
@@ -4974,7 +5128,7 @@ export default function CompanySettingsPage() {
                       })}
                     </div>
                   </Panel>
-                  <div className="grid content-start gap-[18px]">
+                  <div className="grid content-start gap-[18px] max-lg:grid-cols-1">
                     <Panel title="Production access" icon={KeyRound} description="Temporary unlock codes for editing a production cutlist.">
                       <FieldRow label="Unlock suffix" hint="Added to the end of each generated unlock code.">
                         <input value={unlockSuffix} onChange={(e) => setUnlockSuffix(e.target.value)} className={`${fieldInputClass} max-w-[160px]`} />
@@ -5023,7 +5177,7 @@ export default function CompanySettingsPage() {
                     icon={Ruler}
                     description={`Gaps used when working out door, drawer and panel sizes. Shown in ${companyUnit === "in" ? "inches" : "millimetres"} — follows the measurement unit in Company.`}
                   >
-                    <div className="grid gap-3 xl:grid-cols-2">
+                    <div className="grid gap-3 max-lg:grid-cols-1 xl:grid-cols-2">
                       {([
                         [Archive, "Base cabinets", [
                           ["baseBelowBenchToTopOfDoorDrawer", "Below bench to top of door / drawer"],
@@ -5142,7 +5296,7 @@ export default function CompanySettingsPage() {
               )}
 
               {active === "staff" && (
-                <div className="grid gap-[18px] xl:grid-cols-[minmax(0,1fr)_340px]">
+                <div className="grid gap-[18px] max-lg:grid-cols-1 xl:grid-cols-[minmax(0,1fr)_340px]">
                   <Panel
                     title="Staff"
                     icon={Users}
@@ -5163,8 +5317,11 @@ export default function CompanySettingsPage() {
                     }
                   >
                     <div className="overflow-x-auto">
-                      <div className="min-w-[720px] space-y-1.5">
-                        <div className="grid items-center gap-2 px-2" style={{ gridTemplateColumns: "minmax(180px,1.2fr) minmax(160px,1fr) 130px 170px 32px" }}>
+                      {/* Desktop: a table. Below desktop each person is a two-line row — name, role and
+                          remove on top, email and mobile under the name — instead of a table that
+                          needed sideways scrolling. */}
+                      <div className="space-y-1.5 lg:min-w-[720px]">
+                        <div className="hidden items-center gap-2 px-2 lg:grid lg:grid-cols-[minmax(180px,1.2fr)_minmax(160px,1fr)_130px_170px_32px]">
                           <span className={columnHeadClass}>Name</span>
                           <span className={columnHeadClass}>Email</span>
                           <span className={columnHeadClass}>Mobile</span>
@@ -5189,7 +5346,10 @@ export default function CompanySettingsPage() {
                               : []),
                           ];
                           return (
-                            <div key={row.uid} className={`${listRowClass} grid`} style={{ gridTemplateColumns: "minmax(180px,1.2fr) minmax(160px,1fr) 130px 170px 32px" }}>
+                            <div
+                              key={row.uid}
+                              className={`${listRowClass} grid grid-cols-[minmax(0,1fr)_auto_32px] max-lg:gap-y-0.5 lg:grid-cols-[minmax(180px,1.2fr)_minmax(160px,1fr)_130px_170px_32px]`}
+                            >
                               <span className="flex min-w-0 items-center gap-2">
                                 <span className="inline-flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white" style={{ backgroundColor: iconColor }}>
                                   {initials || "CU"}
@@ -5208,9 +5368,9 @@ export default function CompanySettingsPage() {
                                   className={`${gridCellInputClass} font-semibold ${savingStaffNameUid === row.uid ? "opacity-60" : ""}`}
                                 />
                               </span>
-                              <span className="truncate px-1 text-[12.5px]" style={{ color: "var(--text-muted)" }}>{toStr(row.email) || "—"}</span>
-                              <span className="truncate px-1 text-[12.5px]" style={{ color: "var(--text-muted)" }}>{toStr(row.mobile) || "—"}</span>
-                              <span className="min-w-0">
+                              <span className="truncate px-1 text-[12.5px] max-lg:col-start-1 max-lg:row-start-2 max-lg:pl-[46px]" style={{ color: "var(--text-muted)" }}>{toStr(row.email) || "—"}</span>
+                              <span className="truncate px-1 text-[12.5px] max-lg:col-start-2 max-lg:col-end-4 max-lg:row-start-2 max-lg:text-right" style={{ color: "var(--text-muted)" }}>{toStr(row.mobile) || "—"}</span>
+                              <span className="min-w-0 max-lg:col-start-2 max-lg:row-start-1">
                                 <GlassDropdown
                                   value={roleKeyForRow}
                                   options={roleOptions}
@@ -5237,7 +5397,7 @@ export default function CompanySettingsPage() {
                                 type="button"
                                 onClick={(e) => {
                                   // Captured synchronously here, before openStaffRemovalDialog's own
-                                  // internal `await fetchProjects(...)` — by the time that resolves,
+                                  // internal `await previewCompanyMemberRemoval(...)` — by the time that resolves,
                                   // React may have already re-rendered this row away from under
                                   // `e.currentTarget`, per captureGlassModalOrigin's own doc comment.
                                   staffRemovalOriginElRef.current = e.currentTarget;
@@ -5246,7 +5406,7 @@ export default function CompanySettingsPage() {
                                 }}
                                 disabled={!canRemoveStaff || isOwnerRow || preparingStaffRemovalUid === row.uid || removingStaffUid === row.uid}
                                 title={isOwnerRow ? "Owner cannot be removed" : "Remove staff member"}
-                                className={dangerIconButtonClass}
+                                className={`${dangerIconButtonClass} max-lg:col-start-3 max-lg:row-start-1`}
                               >
                                 <UserMinus size={15} />
                               </button>
@@ -5370,7 +5530,7 @@ export default function CompanySettingsPage() {
                             <p className="text-[10.5px] font-bold uppercase tracking-[0.8px]" style={{ color: "var(--text-muted)" }}>Permissions</p>
                             <span className={countPillClass}>{activeRoleModal?.permissions.length ?? 0} on</span>
                           </div>
-                          <div className="grid gap-2.5 md:grid-cols-2">
+                          <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2">
                             {groupPermissionKeys(desktopPermissionKeys).map((group) => (
                               <div key={group.label} className="rounded-[14px] border px-3 py-2" style={{ borderColor: "var(--glass-border)", backgroundColor: "color-mix(in srgb, var(--panel-bg) 55%, transparent)" }}>
                                 <p className="pb-1 text-[10.5px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>{group.label}</p>
@@ -5381,7 +5541,7 @@ export default function CompanySettingsPage() {
                                     <div key={perm} className="flex items-center justify-between gap-3 border-t py-2 first:border-t-0" style={{ borderColor: "var(--glass-border)" }}>
                                       <div className="min-w-0">
                                         <p className="text-[12.5px] font-medium" style={{ color: "var(--text-main)" }}>{rest.length ? rest.join(" - ") : label}</p>
-                                        <p className="font-mono text-[10.5px]" style={{ color: "var(--text-muted)" }}>{perm}</p>
+                                        <p className="font-mono text-[10.5px] max-lg:[overflow-wrap:anywhere]" style={{ color: "var(--text-muted)" }}>{perm}</p>
                                       </div>
                                       <GlassSwitch
                                         size="sm"
@@ -5459,7 +5619,7 @@ export default function CompanySettingsPage() {
                           <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
                             <span className="font-bold" style={{ color: "var(--text-main)" }}>{pendingOwnerTransfer?.currentOwnerName}</span>
                             {" "}
-                            is changing out of the <span className="font-bold" style={{ color: "var(--text-main)" }}>Owner</span> role.
+                            is changing out of the <span className="font-bold" style={{ color: "var(--text-main)" }}>Owner</span>{" "}role.
                             Choose another staff member to become the new Owner first.
                           </p>
                           <div className="space-y-1">
@@ -5512,7 +5672,11 @@ export default function CompanySettingsPage() {
                         }}
                         className="glass-modal-backdrop absolute inset-0"
                       />
-                      <div ref={staffRemovalPanelRef} className="glass-modal-panel relative z-[1726] flex w-full max-w-[560px] flex-col overflow-hidden">
+                      <div
+                        ref={staffRemovalPanelRef}
+                        role="dialog"
+                        className="glass-modal-panel relative z-[1726] flex max-h-[calc(100svh-32px)] w-full max-w-[560px] flex-col overflow-hidden"
+                      >
                         <div className="glass-modal-header flex items-center justify-between px-4 py-3">
                           <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
                             Remove Staff Member
@@ -5530,79 +5694,143 @@ export default function CompanySettingsPage() {
                             <X size={16} />
                           </button>
                         </div>
-                        <div className="space-y-4 px-4 py-4">
-                          <div className="space-y-1">
-                            <p className="text-[16px] font-semibold" style={{ color: "var(--text-main)" }}>Are you sure?</p>
-                            <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
-                              <span className="font-bold" style={{ color: "var(--text-main)" }}>{pendingStaffRemoval?.displayName}</span>
-                              {" "}
-                              has{" "}
-                              <span className="font-bold" style={{ color: "var(--text-main)" }}>
-                                {pendingStaffRemoval?.activeProjectCount ?? 0}
-                              </span>
-                              {" "}
-                              active project{(pendingStaffRemoval?.activeProjectCount ?? 0) === 1 ? "" : "s"}.
-                            </p>
-                          </div>
-                          {(pendingStaffRemoval?.activeProjectCount ?? 0) > 0 ? (
-                            <div className="space-y-1">
-                              <p className="text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>Transfer their projects to</p>
-                              <GlassDropdown
-                                value={pendingStaffRemoval?.transferToUid ?? ""}
-                                options={[
-                                  { value: "", label: "Choose staff member" },
-                                  ...staffRemovalTransferCandidates.map((member) => ({ value: member.uid, label: toStr(member.displayName || member.email || member.uid) })),
-                                ]}
-                                onChange={(uid) =>
-                                  setPendingStaffRemoval((current) => (current ? { ...current, transferToUid: toStr(uid) } : current))
-                                }
-                                disabled={pendingStaffRemoval?.confirmPhase === "type_name" || !!removingStaffUid}
-                                ariaLabel="Transfer projects to"
-                                triggerClassName={`${fieldInputClass} justify-between`}
-                              />
-                              {!staffRemovalTransferCandidates.length ? (
-                                <p className="text-[11px] font-semibold" style={{ color: "var(--danger-strong)" }}>
-                                  There are no other staff members available to transfer these projects to.
+                        {(() => {
+                          const removalName = toStr(pendingStaffRemoval?.displayName, "this staff member");
+                          const recipient = staffRemovalTransferCandidates.find(
+                            (member) => toStr(member.uid) === toStr(pendingStaffRemoval?.transferToUid),
+                          );
+                          const recipientName = recipient ? toStr(recipient.displayName || recipient.email || recipient.uid) : "the person you choose";
+                          const locked = pendingStaffRemoval?.confirmPhase === "type_name" || !!removingStaffUid;
+                          return (
+                            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
+                              <div className="space-y-1">
+                                <p className="text-[16px] font-semibold" style={{ color: "var(--text-main)" }}>Remove {removalName}?</p>
+                                <p className="text-[12.5px] leading-[1.5]" style={{ color: "var(--text-muted)" }}>
+                                  They lose access to {toStr(company?.name, "the company")}{" "}straight away. Choose which of their data to hand
+                                  to someone else. Nothing is deleted — whatever you don&apos;t transfer stays in the company.
+                                </p>
+                              </div>
+                              <div className="space-y-1.5">
+                                <p className="text-[12px] font-medium" style={{ color: "var(--text-main)" }}>Transfer to</p>
+                                <GlassDropdown
+                                  value={pendingStaffRemoval?.transferToUid ?? ""}
+                                  options={[
+                                    { value: "", label: "Choose staff member" },
+                                    ...staffRemovalTransferCandidates.map((member) => ({ value: member.uid, label: toStr(member.displayName || member.email || member.uid) })),
+                                  ]}
+                                  onChange={(uid) => {
+                                    setStaffRemovalError("");
+                                    setPendingStaffRemoval((current) => (current ? { ...current, transferToUid: toStr(uid) } : current));
+                                  }}
+                                  disabled={locked || !staffRemovalTransferCandidates.length}
+                                  ariaLabel="Transfer their data to"
+                                  triggerClassName={`${fieldInputClass} justify-between`}
+                                />
+                                {!staffRemovalTransferCandidates.length ? (
+                                  <p className="text-[11.5px] font-medium" style={{ color: "var(--danger-strong)" }}>
+                                    There&apos;s no one else in the company to transfer their data to — it stays as described below.
+                                  </p>
+                                ) : null}
+                              </div>
+                              <div className="space-y-1.5">
+                                {STAFF_REMOVAL_DATA_ROWS.map((row) => {
+                                  const RowIcon = row.icon;
+                                  const count = pendingStaffRemoval?.counts ? pendingStaffRemoval.counts[row.kind] : null;
+                                  const nothing = count === 0;
+                                  const on = !nothing && Boolean(pendingStaffRemoval?.transfer[row.kind]) && staffRemovalTransferCandidates.length > 0;
+                                  return (
+                                    <div
+                                      key={row.kind}
+                                      className="flex items-start gap-3 rounded-[12px] border border-[var(--glass-border)] bg-[color-mix(in_srgb,var(--panel-bg)_55%,transparent)] px-3 py-2.5"
+                                      style={{ opacity: nothing ? 0.6 : 1 }}
+                                    >
+                                      <span
+                                        className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px]"
+                                        style={{ backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+                                      >
+                                        <RowIcon size={15} strokeWidth={2.1} />
+                                      </span>
+                                      <div className="min-w-0 flex-1">
+                                        <p className="flex flex-wrap items-center gap-1.5 text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
+                                          {row.label}
+                                          <span className={countPillClass} title={count === null ? "Couldn't be counted" : undefined}>{count === null ? "?" : count}</span>
+                                        </p>
+                                        <p className="mt-0.5 text-[12px] leading-[1.45]" style={{ color: on ? "var(--text-main)" : "var(--text-muted)" }}>
+                                          {nothing ? "Nothing to transfer." : on ? row.move(recipientName, removalName) : row.keep(removalName)}
+                                        </p>
+                                      </div>
+                                      <span className="self-center">
+                                        <GlassSwitch
+                                          size="sm"
+                                          checked={on}
+                                          disabled={nothing || locked || !staffRemovalTransferCandidates.length}
+                                          ariaLabel={`Transfer: ${row.label}`}
+                                          onChange={(next) => {
+                                            setStaffRemovalError("");
+                                            setPendingStaffRemoval((current) =>
+                                              current ? { ...current, transfer: { ...current.transfer, [row.kind]: next } } : current,
+                                            );
+                                          }}
+                                        />
+                                      </span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                              <p className="text-[11.5px] leading-[1.45]" style={{ color: "var(--text-muted)" }}>
+                                Completed projects keep {removalName} as their assignee, as part of their history.
+                              </p>
+                              {pendingStaffRemoval?.confirmPhase === "type_name" ? (
+                                <div className="space-y-1">
+                                  <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
+                                    Type{" "}
+                                    <span className="font-medium" style={{ color: "var(--text-main)" }}>{pendingStaffRemoval?.displayName}</span>
+                                    {" "}
+                                    to remove this user from the company.
+                                  </p>
+                                  <input
+                                    value={pendingStaffRemoval?.typedName ?? ""}
+                                    onChange={(e) => {
+                                      setStaffRemovalError("");
+                                      setPendingStaffRemoval((current) =>
+                                        current
+                                          ? {
+                                              ...current,
+                                              typedName: e.target.value,
+                                            }
+                                          : current,
+                                      );
+                                    }}
+                                    autoCapitalize="off"
+                                    autoCorrect="off"
+                                    spellCheck={false}
+                                    className={fieldInputClass}
+                                    placeholder={pendingStaffRemoval?.displayName}
+                                  />
+                                </div>
+                              ) : null}
+                              {staffRemovalError ? (
+                                <p className="text-[12px] font-semibold" style={{ color: "var(--danger-strong)" }}>
+                                  {staffRemovalError}
                                 </p>
                               ) : null}
                             </div>
-                          ) : null}
+                          );
+                        })()}
+                        <div className="flex flex-wrap items-center justify-end gap-2 border-t px-4 py-3" style={{ borderColor: "var(--glass-border)" }}>
                           {pendingStaffRemoval?.confirmPhase === "type_name" ? (
-                            <div className="space-y-1">
-                              <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
-                                Type{" "}
-                                <span className="font-bold" style={{ color: "var(--text-main)" }}>{pendingStaffRemoval?.displayName}</span>
-                                {" "}
-                                to remove this user from the company.
-                              </p>
-                              <input
-                                value={pendingStaffRemoval?.typedName ?? ""}
-                                onChange={(e) => {
-                                  setStaffRemovalError("");
-                                  setPendingStaffRemoval((current) =>
-                                    current
-                                      ? {
-                                          ...current,
-                                          typedName: e.target.value,
-                                        }
-                                      : current,
-                                  );
-                                }}
-                                autoCapitalize="off"
-                                autoCorrect="off"
-                                spellCheck={false}
-                                className={fieldInputClass}
-                                placeholder={pendingStaffRemoval?.displayName}
-                              />
-                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setStaffRemovalError("");
+                                setPendingStaffRemoval((current) => (current ? { ...current, confirmPhase: "prompt", typedName: "" } : current));
+                              }}
+                              disabled={!!removingStaffUid}
+                              className={`${secondaryButtonClass} mr-auto`}
+                            >
+                              Back
+                            </button>
                           ) : null}
-                          {staffRemovalError ? (
-                            <p className="text-[12px] font-semibold" style={{ color: "var(--danger-strong)" }}>
-                              {staffRemovalError}
-                            </p>
-                          ) : null}
-                        </div>
-                        <div className="flex items-center justify-end gap-2 border-t px-4 py-3" style={{ borderColor: "var(--glass-border)" }}>
                           <button
                             type="button"
                             onClick={() => {
@@ -5633,8 +5861,7 @@ export default function CompanySettingsPage() {
                               onClick={advanceStaffRemovalConfirmation}
                               disabled={
                                 !!removingStaffUid ||
-                                ((pendingStaffRemoval?.activeProjectCount ?? 0) > 0 &&
-                                  (!pendingStaffRemoval?.transferToUid || !staffRemovalTransferCandidates.length))
+                                (!!pendingStaffRemoval && staffRemovalNeedsRecipient(pendingStaffRemoval) && !pendingStaffRemoval.transferToUid)
                               }
                               className={primaryButtonClass}
                               style={primaryButtonStyle}
@@ -5650,8 +5877,12 @@ export default function CompanySettingsPage() {
               )}
 
               {active === "dashboard" && (
-                <div className="grid gap-[18px] xl:grid-cols-2">
-                  <Panel title="Project statuses" icon={KanbanSquare} description="The columns on your Dashboard board, in order. Drag to reorder; expand a status to add sub-stages.">
+                <div className="grid gap-[18px] max-lg:grid-cols-1 xl:grid-cols-2">
+                  <Panel
+                    title="Project statuses"
+                    icon={KanbanSquare}
+                    description="The columns on your Dashboard board, in order. Drag to reorder; expand a status to add sub-stages. Tick Completed on the status that means a job is finished."
+                  >
                     <div className="space-y-1.5">
                       {statuses.map((row, idx) => (
                         <div key={`project_status_${idx}`}>
@@ -5704,7 +5935,44 @@ export default function CompanySettingsPage() {
                               onChange={(e) => setStatuses((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))}
                               className={gridCellInputClass}
                             />
-                            {(row.subStages ?? []).length > 0 ? <span className={countPillClass}>{(row.subStages ?? []).length} sub-stages</span> : null}
+                            {/* Icon only on phones, where the row has no room for the word. Once a status is
+                                ticked as the completed one, only that row shows the button (to un-tick it); the
+                                others keep an invisible copy so their rows don't shift. */}
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked={Boolean(row.isComplete)}
+                              aria-label="Completed status"
+                              aria-hidden={(hasCompletedStatus && !row.isComplete) || undefined}
+                              tabIndex={hasCompletedStatus && !row.isComplete ? -1 : undefined}
+                              disabled={hasCompletedStatus && !row.isComplete}
+                              // Only one status can be the completed one: switching this on switches the others off.
+                              onClick={() =>
+                                setStatuses((prev) => prev.map((v, i) => ({ ...v, isComplete: i === idx ? !v.isComplete : false })))
+                              }
+                              title={
+                                row.isComplete
+                                  ? "The completed status — projects here count as finished, and are archived as set under Finished projects"
+                                  : "Make this the completed status (only one status can be)"
+                              }
+                              className={`inline-flex h-7 shrink-0 items-center gap-1 rounded-full border px-2 text-[11.5px] font-medium transition max-sm:w-7 max-sm:justify-center max-sm:px-0 ${
+                                hasCompletedStatus && !row.isComplete ? "invisible" : ""
+                              }`}
+                              style={
+                                row.isComplete
+                                  ? { borderColor: "var(--success-border)", backgroundColor: "var(--success-soft)", color: "var(--success-strong)" }
+                                  : { borderColor: "var(--glass-border)", backgroundColor: "transparent", color: "var(--text-muted)" }
+                              }
+                            >
+                              <CheckCircle2 size={13} />
+                              <span className="max-sm:hidden">Completed</span>
+                            </button>
+                            {(row.subStages ?? []).length > 0 ? (
+                              <span className={countPillClass} title="Sub-stages">
+                                {(row.subStages ?? []).length}
+                                <span className="max-sm:hidden">&nbsp;sub-stages</span>
+                              </span>
+                            ) : null}
                             <button
                               type="button"
                               onClick={() => toggleStatusSubStagesExpanded(idx)}
@@ -5722,7 +5990,7 @@ export default function CompanySettingsPage() {
                             </button>
                           </div>
                           {statusSubStagesExpanded[idx] && (
-                            <div className="my-1.5 ml-8 grid gap-1.5 rounded-[12px] border border-dashed p-2.5" style={{ borderColor: "color-mix(in srgb, var(--text-main) 16%, transparent)" }}>
+                            <div className="my-1.5 ml-8 grid gap-1.5 rounded-[12px] border border-dashed p-2.5 max-sm:ml-3" style={{ borderColor: "color-mix(in srgb, var(--text-main) 16%, transparent)" }}>
                               <p className="text-[11.5px]" style={{ color: "var(--text-muted)" }}>
                                 Sub-stages are optional — click this status&apos;s column header on the Dashboard board to drill in.
                               </p>
@@ -5764,7 +6032,7 @@ export default function CompanySettingsPage() {
                           )}
                         </div>
                       ))}
-                      <button type="button" onClick={() => setStatuses((prev) => [...prev, { name: "", color: "#64748B" }])} className={`${secondaryButtonClass} mt-1.5`}>
+                      <button type="button" onClick={() => setStatuses((prev) => [...prev, { name: "", color: "#64748B", isComplete: false }])} className={`${secondaryButtonClass} mt-1.5`}>
                         <Plus size={14} /> Add status
                       </button>
                     </div>
@@ -5968,7 +6236,17 @@ export default function CompanySettingsPage() {
                           <span className={countPillClass} title="Projects using this tag">{String(row.count || "0")}</span>
                           <button
                             type="button"
-                            onClick={() => setProjectTagUsage((prev) => prev.filter((_, i) => i !== idx))}
+                            onClick={(e) => {
+                              // A blank tag that was never named goes straight away; a real one asks first,
+                              // because deleting it also takes it off every project using it.
+                              if (!row.value.trim()) {
+                                setProjectTagUsage((prev) => prev.filter((_, i) => i !== idx));
+                                return;
+                              }
+                              tagDeleteOriginElRef.current = e.currentTarget;
+                              setTagDeleteOrigin(captureGlassModalOrigin(e));
+                              setPendingTagDelete({ index: idx, value: row.value.trim(), count: Math.max(0, Number(row.count || 0) || 0) });
+                            }}
                             className="inline-flex h-6 w-6 items-center justify-center rounded-full transition hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
                             style={{ color: "var(--text-muted)" }}
                             title="Remove tag"
@@ -5982,13 +6260,74 @@ export default function CompanySettingsPage() {
                       </button>
                     </div>
                   </Panel>
-                  <Panel title="Recently deleted" icon={Trash2} description="How long deleted projects stay in Recently Deleted before they're removed for good." allowOverflow>
-                    <FieldRow label="Keep deleted items for">
+                  {shouldRenderTagDeleteModal && pendingTagDelete ? (
+                    <div className="fixed inset-0 z-[1700] flex items-center justify-center px-4 py-4">
+                      <button
+                        type="button"
+                        aria-label="Close delete tag popup"
+                        onClick={() => setPendingTagDelete(null)}
+                        className="glass-modal-backdrop absolute inset-0"
+                      />
+                      <div ref={tagDeletePanelRef} className="glass-modal-panel relative z-[1701] flex w-full max-w-[440px] flex-col overflow-hidden">
+                        <div className="glass-modal-header flex items-center justify-between px-4 py-3">
+                          <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
+                            Delete tag?
+                          </p>
+                          <button type="button" onClick={() => setPendingTagDelete(null)} className={dangerIconButtonClass} aria-label="Close">
+                            <X size={16} />
+                          </button>
+                        </div>
+                        <div className="space-y-2 px-4 py-4">
+                          <p className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
+                            {pendingTagDelete.count > 0
+                              ? `“${pendingTagDelete.value}” is on ${pendingTagDelete.count} ${pendingTagDelete.count === 1 ? "project" : "projects"}. Deleting it takes it off ${pendingTagDelete.count === 1 ? "that project" : "all of them"}, including archived ones.`
+                              : `“${pendingTagDelete.value}” isn't on any projects.`}
+                          </p>
+                          {pendingTagDelete.count > 0 ? (
+                            <p className="text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>
+                              The projects themselves stay as they are — only the tag is removed. This can&apos;t be undone (adding the tag again won&apos;t put it back on them).
+                            </p>
+                          ) : null}
+                        </div>
+                        <div className="flex items-center justify-end gap-2 border-t px-4 py-3" style={{ borderColor: "var(--glass-border)" }}>
+                          <button type="button" onClick={() => setPendingTagDelete(null)} className={secondaryButtonClass}>
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const target = pendingTagDelete;
+                              setPendingTagDelete(null);
+                              // Matched by position and name, in case the list changed while this was open.
+                              setProjectTagUsage((prev) => prev.filter((row, i) => !(i === target.index && row.value.trim() === target.value)));
+                              // Saved straight away — that's when it comes off the projects (see save()).
+                              triggerToggleAutosave();
+                            }}
+                            className="inline-flex h-9 items-center justify-center rounded-[10px] border px-4 text-[12px] font-medium text-white transition hover:brightness-95"
+                            style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+                  <Panel
+                    title="Finished projects"
+                    icon={Archive}
+                    description={
+                      projectArchiveAfter === "instant"
+                        ? "As soon as a project is set to the Completed status, its client portal link stops working and it moves to the Archive. A project restored from the Archive stays out until it's completed again. Archived projects are kept until someone restores them or deletes them permanently."
+                        : "Once a project has been in the Completed status for this long, its client portal link stops working and it moves to the Archive. Archived projects are kept until someone restores them or deletes them permanently."
+                    }
+                    allowOverflow
+                  >
+                    <FieldRow label="Archive completed projects after">
                       <GlassDropdown
-                        value={form.deletedRetentionDays}
-                        options={deletedRetentionOptions.map((opt) => ({ value: opt.days, label: opt.label }))}
-                        onChange={(days) => setForm((prev) => ({ ...prev, deletedRetentionDays: days }))}
-                        ariaLabel="Keep deleted items for"
+                        value={projectArchiveAfter}
+                        options={PROJECT_ARCHIVE_DELAY_OPTIONS}
+                        onChange={(next) => setProjectArchiveAfter(normalizeProjectArchiveDelay(next))}
+                        ariaLabel="Archive completed projects after"
                         disabled={!canEditCompanySettings}
                         triggerClassName={`${fieldInputClass} max-w-[220px] justify-between`}
                       />
@@ -5998,9 +6337,9 @@ export default function CompanySettingsPage() {
               )}
 
               {active === "calendar" && (
-                <div className="grid gap-[18px] xl:grid-cols-2">
+                <div className="grid gap-[18px] max-lg:grid-cols-1 xl:grid-cols-2">
                   {/* Settings column: client portal, old events, workdays. Categories sit in the other column. */}
-                  <div className="grid content-start gap-[18px]">
+                  <div className="grid content-start gap-[18px] max-lg:grid-cols-1">
                     <Panel
                       title="Client portal"
                       icon={Eye}
@@ -6031,7 +6370,7 @@ export default function CompanySettingsPage() {
                         />
                       </FieldRow>
                     </Panel>
-                    <Panel title="Workdays" icon={CalendarDays} description="The days your business works. The rest are shown crossed out on the calendar (you can still add events to them).">
+                    <Panel title="Workdays" icon={CalendarDays} description="The days your business works. The rest are shown crossed out on the calendar (you can still add events to them), or can be left out.">
                       <div className="flex flex-wrap gap-1.5">
                         {([1, 2, 3, 4, 5, 6, 0] as const).map((dow) => {
                           const on = calendarWorkdays.includes(dow);
@@ -6062,6 +6401,19 @@ export default function CompanySettingsPage() {
                             </button>
                           );
                         })}
+                      </div>
+                      <div className="mt-3 border-t border-[var(--glass-border)]">
+                        <FieldRow
+                          label="Show non-workdays"
+                          hint="When off, the Month and Week views leave the non-workdays out. The Year view always shows every day."
+                        >
+                          <GlassSwitch
+                            checked={calendarShowNonWorkdays}
+                            ariaLabel="Show non-workdays"
+                            disabled={!canEditCompanySettings}
+                            onChange={(on) => setCalendarShowNonWorkdays(on)}
+                          />
+                        </FieldRow>
                       </div>
                     </Panel>
                   </div>
@@ -6221,7 +6573,7 @@ export default function CompanySettingsPage() {
               )}
 
               {active === "sales" && (
-                <div className="grid gap-[18px] xl:grid-cols-2">
+                <div className="grid gap-[18px] max-lg:grid-cols-1 xl:grid-cols-2">
                   <Panel title="Lead form" icon={FileInput} description="Your public enquiry form. Submissions land in Leads.">
                     <FieldRow label="Public form URL">
                       <input value={salesLeadFormUrl} onChange={(e) => setSalesLeadFormUrl(e.target.value)} placeholder="https://..." className={fieldInputClass} />
@@ -6292,7 +6644,10 @@ export default function CompanySettingsPage() {
                             <X size={16} />
                           </button>
                         </div>
-                        <div className="flex-1 overflow-y-auto">
+                        <div className="flex-1 overflow-y-auto max-lg:overflow-x-auto">
+                          {/* Below desktop this spreadsheet-style editor keeps its desktop column widths and
+                              scrolls sideways inside the pop-up, rather than squeezing the columns apart. */}
+                          <div className="max-lg:min-w-[880px]">
                           <div
                             className="grid grid-cols-[30px_30px_30px_72px_1fr_1fr] gap-2 border-b px-4 py-2 text-[10.5px] font-bold uppercase tracking-[0.6px]"
                             style={{ borderColor: "var(--glass-border)", color: "var(--text-muted)" }}
@@ -6477,6 +6832,7 @@ export default function CompanySettingsPage() {
                           <div className="px-4 py-3">
                             <button type="button" onClick={() => setItemCategories((prev) => [...prev, { name: "", color: "#7D99B3", subcategories: "", items: [] }])} className={secondaryButtonClass}><Plus size={14} /> Add category</button>
                           </div>
+                          </div>
                         </div>
                         <div className="flex items-center justify-end gap-2 border-t border-[var(--glass-border)] px-4 py-3">
                           <button
@@ -6493,14 +6849,14 @@ export default function CompanySettingsPage() {
                   ) : null}
                   {isSpecsLayoutModalOpen ? (
                     <div data-specs-layout-modal="true" className="fixed inset-0 z-[1000] flex flex-col bg-[var(--bg-app)]">
-                      <div className="glass-page-header flex h-[56px] shrink-0 items-center justify-between px-4 md:px-5">
-                        <div className="inline-flex items-center gap-3">
-                          <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                            <ClipboardList size={14} />
-                            <span>Specs Layout Builder</span>
+                      <div className="glass-page-header flex h-[56px] shrink-0 items-center justify-between gap-2 px-4 md:px-5">
+                        <div className="inline-flex min-w-0 items-center gap-3">
+                          <div className="inline-flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                            <ClipboardList size={14} className="shrink-0" />
+                            <span className="max-lg:truncate">Specs Layout Builder</span>
                           </div>
                           {specsTemplateSaveError ? (
-                            <span className="rounded-[8px] border px-2 py-1 text-[11px] font-bold" style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}>
+                            <span className="min-w-0 rounded-[8px] border px-2 py-1 text-[11px] font-bold max-lg:truncate" style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}>
                               {specsTemplateSaveError === "invalid-template-file"
                                 ? "That file isn't a valid template"
                                 : specsTemplateSaveError === "download-failed"
@@ -6509,7 +6865,7 @@ export default function CompanySettingsPage() {
                             </span>
                           ) : null}
                         </div>
-                        <div className="inline-flex items-center gap-2">
+                        <div className="inline-flex shrink-0 items-center gap-2">
                           {/* Temporary — see specsTemplateFileInputRef's own comment: lets this
                               template be downloaded from one company and uploaded into another. */}
                           <input
@@ -6531,7 +6887,7 @@ export default function CompanySettingsPage() {
                             style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                           >
                             <Download size={14} />
-                            Download
+                            <span className="max-sm:sr-only">Download</span>
                           </button>
                           <button
                             type="button"
@@ -6541,7 +6897,7 @@ export default function CompanySettingsPage() {
                             style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                           >
                             <Upload size={14} />
-                            Upload
+                            <span className="max-sm:sr-only">Upload</span>
                           </button>
                           <button
                             type="button"
@@ -6554,7 +6910,7 @@ export default function CompanySettingsPage() {
                             style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
                           >
                             <RotateCcw size={14} />
-                            Reset
+                            <span className="max-sm:sr-only">Reset</span>
                           </button>
                           <button
                             type="button"
@@ -6563,11 +6919,11 @@ export default function CompanySettingsPage() {
                             style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
                           >
                             <ArrowLeft size={14} />
-                            Back
+                            <span className="max-sm:sr-only">Back</span>
                           </button>
                         </div>
                       </div>
-                      <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 p-3 text-[12px] lg:grid-cols-[1fr_280px]">
+                      <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 p-3 text-[12px] max-lg:grid-rows-[minmax(0,1fr)_auto] lg:grid-cols-[1fr_280px]">
                           <div className="min-h-0 overflow-hidden rounded-[10px] border" style={{ borderColor: "var(--glass-border)" }}>
                             <SpecsGridEditor
                               key={specsTemplateEditorKey}
@@ -6591,7 +6947,7 @@ export default function CompanySettingsPage() {
                             />
                           </div>
                           <div
-                            className="overflow-y-auto rounded-[14px] border p-3"
+                            className="overflow-y-auto rounded-[14px] border p-3 max-lg:max-h-[30svh]"
                             style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", boxShadow: "var(--shadow-sm)" }}
                           >
                             <p className="text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>Placeholders</p>
@@ -6650,14 +7006,14 @@ export default function CompanySettingsPage() {
                   ) : null}
                   {isQuoteLayoutModalOpen ? (
                     <div data-quote-layout-modal="true" className="fixed inset-0 z-[1000] flex flex-col bg-[var(--bg-app)]">
-                      <div className="glass-page-header flex h-[56px] shrink-0 items-center justify-between px-4 md:px-5">
-                        <div className="inline-flex items-center gap-3">
-                          <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                            <ClipboardList size={14} />
-                            <span>Quote Layout Builder</span>
+                      <div className="glass-page-header flex h-[56px] shrink-0 items-center justify-between gap-2 px-4 md:px-5">
+                        <div className="inline-flex min-w-0 items-center gap-3">
+                          <div className="inline-flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                            <ClipboardList size={14} className="shrink-0" />
+                            <span className="max-lg:truncate">Quote Layout Builder</span>
                           </div>
                           {quoteTemplateSaveError ? (
-                            <span className="rounded-[8px] border px-2 py-1 text-[11px] font-bold" style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}>
+                            <span className="min-w-0 rounded-[8px] border px-2 py-1 text-[11px] font-bold max-lg:truncate" style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}>
                               {quoteTemplateSaveError === "invalid-template-file"
                                 ? "That file isn't a valid template"
                                 : quoteTemplateSaveError === "download-failed"
@@ -6666,7 +7022,7 @@ export default function CompanySettingsPage() {
                             </span>
                           ) : null}
                         </div>
-                        <div className="inline-flex items-center gap-2">
+                        <div className="inline-flex shrink-0 items-center gap-2">
                           {/* Temporary — see quoteTemplateFileInputRef's own comment: lets this
                               template be downloaded from one company and uploaded into another. */}
                           <input
@@ -6688,7 +7044,7 @@ export default function CompanySettingsPage() {
                             style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                           >
                             <Download size={14} />
-                            Download
+                            <span className="max-sm:sr-only">Download</span>
                           </button>
                           <button
                             type="button"
@@ -6698,7 +7054,7 @@ export default function CompanySettingsPage() {
                             style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                           >
                             <Upload size={14} />
-                            Upload
+                            <span className="max-sm:sr-only">Upload</span>
                           </button>
                           <button
                             type="button"
@@ -6711,7 +7067,7 @@ export default function CompanySettingsPage() {
                             style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
                           >
                             <RotateCcw size={14} />
-                            Reset
+                            <span className="max-sm:sr-only">Reset</span>
                           </button>
                           <button
                             type="button"
@@ -6720,11 +7076,11 @@ export default function CompanySettingsPage() {
                             style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
                           >
                             <ArrowLeft size={14} />
-                            Back
+                            <span className="max-sm:sr-only">Back</span>
                           </button>
                         </div>
                       </div>
-                      <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 p-3 text-[12px] lg:grid-cols-[1fr_280px]">
+                      <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 p-3 text-[12px] max-lg:grid-rows-[minmax(0,1fr)_auto] lg:grid-cols-[1fr_280px]">
                           <div className="min-h-0 overflow-hidden rounded-[10px] border" style={{ borderColor: "var(--glass-border)" }}>
                             <SpecsGridEditor
                               key={quoteTemplateEditorKey}
@@ -6740,7 +7096,7 @@ export default function CompanySettingsPage() {
                             />
                           </div>
                           <div
-                            className="overflow-y-auto rounded-[14px] border p-3"
+                            className="overflow-y-auto rounded-[14px] border p-3 max-lg:max-h-[30svh]"
                             style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", boxShadow: "var(--shadow-sm)" }}
                           >
                             <p className="text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>Placeholders</p>
@@ -6888,10 +7244,10 @@ export default function CompanySettingsPage() {
                             </button>
                           </div>
                           {jobTypeExpanded[idx] && (
-                            <div className="my-1.5 ml-8 grid gap-1.5 rounded-[12px] border border-dashed p-2.5" style={{ borderColor: "color-mix(in srgb, var(--text-main) 16%, transparent)" }}>
+                            <div className="my-1.5 ml-8 grid gap-1.5 rounded-[12px] border border-dashed p-2.5 max-sm:ml-3" style={{ borderColor: "color-mix(in srgb, var(--text-main) 16%, transparent)" }}>
                               {(row.sheetPrices ?? []).map((sp, spIdx) => (
-                                <div key={`${idx}_sheetprice_${spIdx}`} className={listRowClass}>
-                                  <span className="w-[200px] shrink-0">
+                                <div key={`${idx}_sheetprice_${spIdx}`} className={`${listRowClass} max-lg:flex-wrap`}>
+                                  <span className="w-[200px] shrink-0 max-sm:w-full">
                                     <GlassDropdown
                                       value={sp.sheetSize}
                                       options={[
@@ -7120,7 +7476,7 @@ export default function CompanySettingsPage() {
                         </div>
                         {(hardwareExpanded[idx] ?? false) && (
                           <div
-                            className="ml-8 space-y-2 rounded-[14px] border p-3"
+                            className="ml-8 space-y-2 rounded-[14px] border p-3 max-sm:ml-2"
                             style={{ backgroundColor: `color-mix(in srgb, ${row.color || "#7D99B3"} 7%, transparent)`, borderColor: "var(--glass-border)" }}
                           >
                             <Segmented
@@ -7253,8 +7609,8 @@ export default function CompanySettingsPage() {
                                       </button>
                                     </div>
                                     {isExpanded && (
-                                      <div className="space-y-2.5 px-2 pb-1.5 pl-9">
-                                        <div className="flex items-center gap-2 text-[12px]">
+                                      <div className="space-y-2.5 px-2 pb-1.5 pl-9 max-sm:pl-2">
+                                        <div className="flex items-center gap-2 text-[12px] max-lg:flex-wrap">
                                           <p className="w-[70px] font-semibold text-[var(--text-main)]">Bottoms</p>
                                           <span className="text-[var(--text-muted)]">Width</span>
                                           <input
@@ -7479,7 +7835,7 @@ export default function CompanySettingsPage() {
                                           </div>
                                         </div>
 
-                                        <div className="flex items-center gap-2 text-[12px]">
+                                        <div className="flex items-center gap-2 text-[12px] max-lg:flex-wrap">
                                           <p className="w-[120px] font-semibold text-[var(--text-main)]">Depth requirement</p>
                                           <input
                                             value={readDrawerSpaceRequirement(drawer)}
@@ -7514,7 +7870,7 @@ export default function CompanySettingsPage() {
                             </button>
                           </div>
                           <div className="space-y-2">
-                            <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-4">
+                            <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 xl:grid-cols-4">
                               {parseJsonObjects(row.hingesJson).map((hinge, hingeIdx) => (
                                 <div key={hingeIdx} className={listRowClass}>
                                   <button
@@ -7554,7 +7910,7 @@ export default function CompanySettingsPage() {
                             </button>
                           </div>
                           <div className="space-y-2">
-                            <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-4">
+                            <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 xl:grid-cols-4">
                               {parseJsonObjects(row.otherJson).map((other, otherIdx) => (
                                 <div key={otherIdx} className={listRowClass}>
                                   <button
@@ -7600,9 +7956,9 @@ export default function CompanySettingsPage() {
               )}
 
               {active === "backup" && (
-                <div className="grid gap-[18px]">
+                <div className="grid gap-[18px] max-lg:grid-cols-1">
                   <Panel title="Quote output template" icon={FileText} description="The header and footer printed on every exported quote." allowOverflow>
-                    <div className="grid gap-3 xl:grid-cols-2">
+                    <div className="grid gap-3 max-lg:grid-cols-1 xl:grid-cols-2">
                       <StackField label="Header HTML">
                         <textarea
                           value={backupTemplate.quoteTemplateHeaderHtml}
@@ -7670,7 +8026,7 @@ export default function CompanySettingsPage() {
   defaultCurrency: companyCurrency,
   measurementUnit: companyUnit,
   dateFormat: normalizeDateFormat(form.dateFormat),
-  deletedRetentionDays: form.deletedRetentionDays,
+  projectArchiveAfter,
   projectStatuses: statuses,
   leadStatuses,
   dashboardCompleteLegend: dashboardLegend,
@@ -7718,7 +8074,7 @@ export default function CompanySettingsPage() {
                   <Lightbulb size={15} className="mt-0.5 shrink-0" style={{ color: "var(--brand)" }} />
                   <p>
                     Keys like <strong style={{ color: "var(--text-main)" }}>Email</strong>, <strong style={{ color: "var(--text-main)" }}>Daytime Phone</strong> or{" "}
-                    <strong style={{ color: "var(--text-main)" }}>Suburb</strong> show up on each lead automatically. The URL already includes your secure
+                    <strong style={{ color: "var(--text-main)" }}>Suburb</strong>{" "}show up on each lead automatically. The URL already includes your secure
                     company token, so no extra headers are needed.
                   </p>
                 </div>
@@ -7781,18 +8137,19 @@ export default function CompanySettingsPage() {
                   </p>
                 ) : (
                   <div className="space-y-1.5">
-                    <div className="grid grid-cols-[28px_minmax(0,1fr)_170px_80px_80px] items-center gap-2 px-2">
+                    {/* Phones: "Use for" drops to its own line under each field (and its heading hides). */}
+                    <div className="grid grid-cols-[28px_minmax(0,1fr)_170px_80px_80px] items-center gap-2 px-2 max-sm:grid-cols-[24px_minmax(0,1fr)_52px_52px]">
                       <span />
                       <span className={columnHeadClass}>Field</span>
-                      <span className={columnHeadClass}>Use for</span>
-                      <span className={`text-center ${columnHeadClass}`}>Main row</span>
+                      <span className={`max-sm:hidden ${columnHeadClass}`}>Use for</span>
+                      <span className={`text-center max-sm:leading-tight ${columnHeadClass}`}>Main row</span>
                       <span className={`text-center ${columnHeadClass}`}>Details</span>
                     </div>
                       {mergedLeadFieldLayout.map((field, idx) => (
                         <div
                           key={field.key}
                           id={`settings_lead_field_${idx}`}
-                          className={`${listRowClass} grid grid-cols-[28px_minmax(0,1fr)_170px_80px_80px]`}
+                          className={`${listRowClass} grid grid-cols-[28px_minmax(0,1fr)_170px_80px_80px] max-sm:grid-cols-[24px_minmax(0,1fr)_52px_52px]`}
                           style={{ opacity: leadFieldDragIndex === idx ? 0.45 : 1 }}
                           onDragOver={(event) => {
                             event.preventDefault();
@@ -7844,7 +8201,7 @@ export default function CompanySettingsPage() {
                             <p className="truncate text-[13px] font-semibold text-[var(--text-main)]">{field.label}</p>
                             <p className="truncate font-mono text-[10.5px] text-[var(--text-muted)]">{field.key}</p>
                           </div>
-                          <span className="min-w-0">
+                          <span className="min-w-0 max-sm:col-start-2 max-sm:col-end-5 max-sm:row-start-2">
                             <GlassDropdown
                               value={field.projectFieldTarget || ""}
                               options={LEAD_PROJECT_FIELD_TARGET_OPTIONS.map((option) => ({ value: option.value, label: option.label }))}

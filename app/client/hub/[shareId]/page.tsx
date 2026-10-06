@@ -1,21 +1,25 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type MouseEvent as ReactMouseEvent } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import { ArrowLeft, CalendarDays, ClipboardList, DollarSign as QuoteIcon, Printer, Download, User, AtSign, Phone } from "lucide-react";
 import ClientScheduleView from "@/components/client-schedule-view";
 import type { ClientScheduleEvent } from "@/lib/calendar-data";
 import SpecsGridClientView from "@/components/specs-grid-client-view";
+import ClientSpecsQuestionList from "@/components/client-specs-question-list";
 import { computeSpecsPageBoxWidthPx, type SpecsCell, type SpecsGrid } from "@/lib/specs-grid-types";
 import { buildSpecsGridPdfBlob, openPdfBlobInPrintWindow } from "@/lib/specs-grid-pdf";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { usePublishKeyboardInsetVars } from "@/lib/use-keyboard-inset";
+import { swallowNextClick } from "@/lib/swallow-dismiss-click";
 
 type Phase = "loading" | "ready" | "load-error";
 type Tab = "specs" | "quote" | "schedule";
 
 const ERROR_MESSAGES: Record<string, string> = {
   "not-found": "This link isn't valid. Please check the email again.",
+  // The project is finished — its link was closed (see isShareLinkInactiveAdmin in lib/specs-share.ts).
+  "link-inactive": "This link is no longer active. If you need anything, please get in touch with us directly.",
   "project-not-found": "We couldn't find this project for this link.",
   "no-specifications-sheet": "There's no specifications sheet on this project yet.",
   "no-quote": "There's no quote on this project yet.",
@@ -47,6 +51,18 @@ function RedDot() {
   return <span aria-label="New" className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: "#DC2626" }} />;
 }
 
+// Phones and tablets: the same 1024px line (Tailwind's lg) the rest of the app switches to its
+// desktop layout at. Read through useSyncExternalStore so it's always the live answer, including
+// after a rotate; false on the server, where there's no screen to measure.
+const COMPACT_VIEWPORT_QUERY = "(max-width: 1023.98px)";
+function subscribeCompactViewport(onChange: () => void) {
+  const query = window.matchMedia(COMPACT_VIEWPORT_QUERY);
+  query.addEventListener("change", onChange);
+  return () => query.removeEventListener("change", onChange);
+}
+const readCompactViewport = () => window.matchMedia(COMPACT_VIEWPORT_QUERY).matches;
+const readCompactViewportOnServer = () => false;
+
 function errorMessageFor(error: string | undefined): string {
   if (!error) return "Something went wrong. Please try again.";
   return ERROR_MESSAGES[error] ?? "Something went wrong. Please try again.";
@@ -63,14 +79,18 @@ function isNotSentError(error: string | undefined): boolean {
 // could miss even on a long sheet they've scrolled all the way down.
 function SubmitBar({ onSubmitClick }: { onSubmitClick: (e: ReactMouseEvent<HTMLButtonElement>) => void }) {
   return (
-    <div className="flex items-center justify-between rounded-[10px] border px-4 py-3" style={{ borderColor: "#D8DEE8", backgroundColor: "#FFFFFF" }}>
+    // On a phone the copy sits above a full-width button instead of squeezing up beside it.
+    <div
+      className="flex items-center justify-between rounded-[10px] border px-4 py-3 max-lg:gap-3 max-sm:flex-col max-sm:items-stretch"
+      style={{ borderColor: "#D8DEE8", backgroundColor: "#FFFFFF" }}
+    >
       <p className="text-[12px]" style={{ color: "#334155" }}>
         You can change your answers as many times as you like. When everything looks right, submit to finalize.
       </p>
       <button
         type="button"
         onClick={onSubmitClick}
-        className="h-9 shrink-0 rounded-[8px] px-4 text-[12px] font-bold text-white"
+        className="h-9 shrink-0 rounded-[8px] px-4 text-[12px] font-bold text-white max-lg:h-11"
         style={{ backgroundColor: "#2F6BFF" }}
       >
         Submit
@@ -123,6 +143,7 @@ export default function ClientSpecsSharePage() {
   // screen. This page sits outside AppShell (a public, no-login route), so it needs its own copy
   // of the same one-line wiring rather than inheriting AppShell's.
   usePublishKeyboardInsetVars();
+  const isCompactViewport = useSyncExternalStore(subscribeCompactViewport, readCompactViewport, readCompactViewportOnServer);
 
   const [phase, setPhase] = useState<Phase>("loading");
   const [loadError, setLoadError] = useState("");
@@ -137,17 +158,41 @@ export default function ClientSpecsSharePage() {
   // buttons (their labels aren't equal width) rather than an assumed fraction, so it lines up
   // exactly and slides between them on click instead of just snapping to the new tab.
   const tabButtonRefs = useRef<Record<Tab, HTMLButtonElement | null>>({ specs: null, quote: null, schedule: null });
+  // Below lg the tabs get a full-width row of their own under the title bar, which scrolls sideways
+  // if they still don't fit (tabsScrollerRef); tabsTrackRef is the row of buttons inside it, and the
+  // underline's positioning parent.
+  const tabsScrollerRef = useRef<HTMLDivElement | null>(null);
+  const tabsTrackRef = useRef<HTMLDivElement | null>(null);
   const [tabIndicatorRect, setTabIndicatorRect] = useState<{ left: number; width: number } | null>(null);
   useLayoutEffect(() => {
     const el = tabButtonRefs.current[activeTab];
     if (!el) return;
     setTabIndicatorRect({ left: el.offsetLeft, width: el.offsetWidth });
+    // A phone whose tabs don't all fit: bring the one just picked into view.
+    const scroller = tabsScrollerRef.current;
+    if (scroller && scroller.scrollWidth > scroller.clientWidth) {
+      scroller.scrollTo({ left: el.offsetLeft - (scroller.clientWidth - el.offsetWidth) / 2, behavior: "smooth" });
+    }
+    // The buttons change size when the layout does (rotating a phone, crossing lg, the font finishing
+    // loading) — re-measure then too, or the underline stays where the tab used to be.
+    const track = tabsTrackRef.current;
+    if (!track || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      setTabIndicatorRect((prev) =>
+        prev && prev.left === el.offsetLeft && prev.width === el.offsetWidth ? prev : { left: el.offsetLeft, width: el.offsetWidth },
+      );
+    });
+    observer.observe(track);
+    for (const button of Object.values(tabButtonRefs.current)) {
+      if (button) observer.observe(button);
+    }
     // `phase` is in the dependency array (not just `activeTab`) on purpose: the tab buttons don't
     // exist in the DOM at all until data finishes loading and `showTabs` becomes true, so
     // `tabButtonRefs.current[activeTab]` is still null the first time this runs — on mount, before
     // `phase` becomes "ready". If `activeTab` never actually changes value after that (e.g. "specs"
     // was already the resolved default), this effect would otherwise never re-fire to measure the
     // now-real buttons, leaving the indicator permanently missing until the user's first click.
+    return () => observer.disconnect();
   }, [activeTab, phase]);
 
   const [specsAvailable, setSpecsAvailable] = useState(false);
@@ -182,6 +227,32 @@ export default function ClientSpecsSharePage() {
 
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [isPrinting, setIsPrinting] = useState(false);
+
+  // Below lg the floating "Your Point of Contact" card (desktop only, see its own comment in the
+  // render) opens from a button in the title bar instead.
+  const [showContactPopover, setShowContactPopover] = useState(false);
+  const contactButtonRef = useRef<HTMLButtonElement | null>(null);
+  const contactPopoverRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!showContactPopover) return;
+    // A press anywhere else only closes it — swallowNextClick keeps that same press from also
+    // acting on whatever it landed on (a tab, a Yes/No answer…).
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (target && (contactPopoverRef.current?.contains(target) || contactButtonRef.current?.contains(target))) return;
+      setShowContactPopover(false);
+      swallowNextClick();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setShowContactPopover(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [showContactPopover]);
 
   const [showSubmitModal, setShowSubmitModal] = useState(false);
   // Which Submit button (top or bottom bar) opened the modal — captured at click time (see
@@ -490,6 +561,8 @@ export default function ClientSpecsSharePage() {
   const quoteLocked = Boolean(quoteAcceptedAt);
   const tabCount = Number(specsAvailable) + Number(quoteAvailable) + Number(scheduleAvailable);
   const showTabs = tabCount > 1;
+  const activeTabLabel = activeTab === "quote" ? "Quote" : activeTab === "schedule" ? "Schedule" : "Specifications";
+  const hasAssignedContact = Boolean(assignedContact && (assignedContact.name || assignedContact.email || assignedContact.mobile));
   // The LARGER of the two sheets' own natural widths — computed from BOTH grids (not just whichever
   // tab is active), so switching between Specifications and Quote never visibly resizes the page.
   // Passed straight through to SpecsGridClientView's own boxWidthPx below, which only ever widens a
@@ -498,17 +571,32 @@ export default function ClientSpecsSharePage() {
   const pageBoxWidthPx = Math.max(grid ? computeSpecsPageBoxWidthPx(grid) : 0, quoteGrid ? computeSpecsPageBoxWidthPx(quoteGrid) : 0) || undefined;
 
   return (
-    <div className="min-h-screen" style={{ backgroundColor: "#F1F5F9" }}>
+    // svh, not vh (screen): on a phone 100vh is taller than what's visible while the browser's
+    // toolbar shows, which left a short page scrollable by that much for no reason.
+    <div className="min-h-svh" style={{ backgroundColor: "#F1F5F9" }}>
       {/* Same glass-page-header treatment (frosted blur + bottom border) every fixed title bar in
           the main app uses (see app/globals.css's own comment), so this public page reads as part
           of the same product rather than a bare, un-styled page. Fixed, not sticky/in-flow — the
-          content below gets matching top padding so nothing renders underneath it. */}
-      <div className="glass-page-header fixed inset-x-0 top-0 z-50 h-[56px] px-4 md:px-6">
+          content below gets matching top padding so nothing renders underneath it. Below lg the
+          tabs drop to a second row of their own (see the grid below), and the bar's padding takes in
+          the notch / rounded-corner safe-area insets so nothing sits under them — insets that are 0
+          on a desktop, where it's the same 56px bar as ever. */}
+      <div
+        className={`glass-page-header fixed inset-x-0 top-0 z-50 pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pt-[env(safe-area-inset-top)] md:pl-[max(1.5rem,env(safe-area-inset-left))] md:pr-[max(1.5rem,env(safe-area-inset-right))] ${
+          showTabs ? "h-[calc(100px+env(safe-area-inset-top))] lg:h-[calc(56px+env(safe-area-inset-top))]" : "h-[calc(56px+env(safe-area-inset-top))]"
+        }`}
+      >
         {/* A 3-column grid, not flex+justify-between — the outer two columns are equal (1fr)
             tracks, so the middle (tabs) column sits at the row's true center regardless of how
             wide the project name or status chip happen to be, rather than drifting toward
-            whichever side has less content. */}
-        <div className="mx-auto grid h-full w-full max-w-[1000px] grid-cols-[1fr_auto_1fr] items-stretch gap-3">
+            whichever side has less content. Below lg it's two columns instead — project name, then
+            the actions — with the tabs on a full-width 44px row underneath: a phone has nowhere
+            near the room for all three side by side. */}
+        <div
+          className={`mx-auto grid h-full w-full max-w-[1000px] grid-cols-[minmax(0,1fr)_auto] items-stretch gap-x-3 lg:grid-cols-[1fr_auto_1fr] ${
+            showTabs ? "grid-rows-[56px_44px] lg:grid-rows-none" : ""
+          }`}
+        >
           <div className="flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
             {isStaffPreview ? (
               <button
@@ -527,7 +615,7 @@ export default function ClientSpecsSharePage() {
                     // never navigated there in its own history.
                   }
                 }}
-                className="-ml-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] hover:brightness-95"
+                className="-ml-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] hover:brightness-95 max-lg:-ml-2 max-lg:h-10 max-lg:w-10"
                 style={{ color: "var(--text-main)" }}
                 aria-label="Exit to CutSmart"
                 title="Exit to CutSmart"
@@ -535,10 +623,24 @@ export default function ClientSpecsSharePage() {
                 <ArrowLeft size={18} />
               </button>
             ) : null}
-            <span className="truncate">{projectName || "Project"}</span>
+            <span className="flex min-w-0 flex-col">
+              <span className="truncate">{projectName || "Project"}</span>
+              {/* Below lg with just one document: its name goes here, under the project's, since the
+                  middle column it sits in on desktop isn't shown there. */}
+              {!showTabs && phase === "ready" ? (
+                <span className="truncate text-[11px] font-bold tracking-[0.5px] lg:hidden" style={{ color: "#2F6BFF" }}>
+                  {activeTabLabel}
+                </span>
+              ) : null}
+            </span>
           </div>
 
-          <div className="relative flex h-full items-stretch">
+          <div
+            ref={tabsScrollerRef}
+            className={`relative flex h-full items-stretch ${
+              showTabs ? "hide-scrollbar max-lg:col-span-2 max-lg:row-start-2 max-lg:overflow-x-auto" : "max-lg:hidden"
+            }`}
+          >
             {showTabs ? (
               // The tab switcher itself lives in the bar once there's more than one document to
               // switch between — moved here from a separate row in the content below, so it reads
@@ -546,7 +648,9 @@ export default function ClientSpecsSharePage() {
               // extra control underneath it. Full bar height, not a small pill — a real tab. The
               // underline is ONE shared absolutely-positioned element (not a per-button border) so
               // it can slide between the two buttons on click instead of just snapping over.
-              <>
+              // Below lg the buttons share out the row's full width (and the row scrolls if they
+              // still don't fit) — on desktop this is just the buttons, exactly as wide as they are.
+              <div ref={tabsTrackRef} className="relative flex h-full items-stretch max-lg:min-w-full max-lg:shrink-0">
                 {tabIndicatorRect ? (
                   <div
                     aria-hidden="true"
@@ -566,10 +670,10 @@ export default function ClientSpecsSharePage() {
                     tabButtonRefs.current.quote = el;
                   }}
                   onClick={() => selectTab("quote")}
-                  className="flex h-full items-center gap-1.5 px-4 text-[12px] font-bold uppercase tracking-[0.5px]"
+                  className="flex h-full items-center gap-1.5 px-4 text-[12px] font-bold uppercase tracking-[0.5px] max-lg:grow max-lg:justify-center max-lg:px-3"
                   style={{ color: activeTab === "quote" ? "#2F6BFF" : "#000000" }}
                 >
-                  <QuoteIcon size={13} />
+                  <QuoteIcon size={13} className="max-sm:hidden" />
                   Quote
                   {unseenTabs.has("quote") && activeTab !== "quote" ? <RedDot /> : null}
                 </button>
@@ -581,10 +685,10 @@ export default function ClientSpecsSharePage() {
                     tabButtonRefs.current.specs = el;
                   }}
                   onClick={() => selectTab("specs")}
-                  className="flex h-full items-center gap-1.5 px-4 text-[12px] font-bold uppercase tracking-[0.5px]"
+                  className="flex h-full items-center gap-1.5 px-4 text-[12px] font-bold uppercase tracking-[0.5px] max-lg:grow max-lg:justify-center max-lg:px-3"
                   style={{ color: activeTab === "specs" ? "#2F6BFF" : "#000000" }}
                 >
-                  <ClipboardList size={13} />
+                  <ClipboardList size={13} className="max-sm:hidden" />
                   Specifications
                   {unseenTabs.has("specs") && activeTab !== "specs" ? <RedDot /> : null}
                 </button>
@@ -596,15 +700,15 @@ export default function ClientSpecsSharePage() {
                       tabButtonRefs.current.schedule = el;
                     }}
                     onClick={() => selectTab("schedule")}
-                    className="flex h-full items-center gap-1.5 px-4 text-[12px] font-bold uppercase tracking-[0.5px]"
+                    className="flex h-full items-center gap-1.5 px-4 text-[12px] font-bold uppercase tracking-[0.5px] max-lg:grow max-lg:justify-center max-lg:px-3"
                     style={{ color: activeTab === "schedule" ? "#2F6BFF" : "#000000" }}
                   >
-                    <CalendarDays size={13} />
+                    <CalendarDays size={13} className="max-sm:hidden" />
                     Schedule
                     {unseenTabs.has("schedule") && activeTab !== "schedule" ? <RedDot /> : null}
                   </button>
                 ) : null}
-              </>
+              </div>
             ) : (
               <div className="flex h-full items-center gap-2 text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "#000000" }}>
                 {activeTab === "quote" ? <QuoteIcon size={14} /> : activeTab === "schedule" ? <CalendarDays size={14} /> : <ClipboardList size={14} />}
@@ -613,14 +717,31 @@ export default function ClientSpecsSharePage() {
             )}
           </div>
 
-          <div className="flex min-w-0 items-center justify-end gap-2">
+          <div className={`flex min-w-0 items-center justify-end gap-2 ${showTabs ? "max-lg:col-start-2 max-lg:row-start-1" : ""}`}>
+            {hasAssignedContact ? (
+              <button
+                ref={contactButtonRef}
+                type="button"
+                onClick={() => setShowContactPopover((open) => !open)}
+                className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[8px] border lg:hidden"
+                style={{ borderColor: "#D8DEE8", backgroundColor: "#FFFFFF", color: "#000000" }}
+                aria-label="Your point of contact"
+                aria-expanded={showContactPopover}
+              >
+                <User size={16} />
+              </button>
+            ) : null}
             {activeTab !== "schedule" && (activeTab === "quote" ? quoteGrid : grid) ? (
               <>
+                {/* Print is hidden on a touch phone/tablet: its window only opens once the PDF has
+                    been built, by which point those browsers no longer count it as part of the tap
+                    and block it (nor could they print a PDF tab that way). The PDF button beside
+                    it downloads the same file, which the device can print from. */}
                 <button
                   type="button"
                   disabled={isPrinting}
                   onClick={() => void printActiveSheet()}
-                  className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-[8px] border px-2.5 text-[11px] font-bold disabled:opacity-60"
+                  className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-[8px] border px-2.5 text-[11px] font-bold disabled:opacity-60 max-lg:pointer-coarse:hidden"
                   style={{ borderColor: "#D8DEE8", backgroundColor: "#FFFFFF", color: "#000000" }}
                 >
                   <Printer size={13} />
@@ -630,7 +751,7 @@ export default function ClientSpecsSharePage() {
                   type="button"
                   disabled={isExportingPdf}
                   onClick={() => void exportActiveSheetPdf()}
-                  className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-[8px] border px-2.5 text-[11px] font-bold disabled:opacity-60"
+                  className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-[8px] border px-2.5 text-[11px] font-bold disabled:opacity-60 max-lg:h-10 max-lg:px-3"
                   style={{ borderColor: "#D8DEE8", backgroundColor: "#FFFFFF", color: "#000000" }}
                 >
                   <Download size={13} />
@@ -641,13 +762,65 @@ export default function ClientSpecsSharePage() {
           </div>
         </div>
       </div>
+      {showContactPopover && isCompactViewport && assignedContact ? (
+        // Fixed, and outside the title bar rather than inside it: the bar's own backdrop blur would
+        // otherwise stop this one blurring the page behind it. Hangs just below the bar's first row.
+        // The same glass look as .glass-modal-panel, but written out here rather than using that
+        // class: the class also moves a pop-up around for the on-screen keyboard, which suits a
+        // centred modal but would pull this away from the button it hangs off.
+        <div
+          ref={contactPopoverRef}
+          role="dialog"
+          aria-label="Your point of contact"
+          className="fixed right-[max(1rem,env(safe-area-inset-right))] top-[calc(62px+env(safe-area-inset-top))] z-[60] w-[min(320px,calc(100vw-2rem))] rounded-[20px] border p-2 md:right-[max(1.5rem,env(safe-area-inset-right))]"
+          style={{
+            borderColor: "var(--glass-border)",
+            background: "var(--glass-modal-bg)",
+            WebkitBackdropFilter: "blur(12px) saturate(220%)",
+            backdropFilter: "blur(12px) saturate(220%)",
+            boxShadow: "var(--shadow-glass), 0 12px 32px rgba(15, 23, 42, 0.18)",
+          }}
+        >
+          <p className="px-2 pb-1 pt-1.5 text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
+            Your Point of Contact
+          </p>
+          {assignedContact.name ? (
+            <p className="flex min-h-[40px] items-center gap-2.5 px-2 text-[14px] font-medium" style={{ color: "var(--text-main)" }}>
+              <User size={16} className="shrink-0" style={{ color: "var(--text-muted)" }} />
+              <span className="min-w-0 break-words">{assignedContact.name}</span>
+            </p>
+          ) : null}
+          {assignedContact.email ? (
+            <a
+              href={`mailto:${assignedContact.email}`}
+              onClick={() => setShowContactPopover(false)}
+              className="flex min-h-[44px] items-center gap-2.5 rounded-[12px] px-2 text-[14px] font-medium active:opacity-70"
+              style={{ color: "var(--text-main)" }}
+            >
+              <AtSign size={16} className="shrink-0" style={{ color: "var(--text-muted)" }} />
+              <span className="min-w-0 break-all">{assignedContact.email}</span>
+            </a>
+          ) : null}
+          {assignedContact.mobile ? (
+            <a
+              href={`tel:${assignedContact.mobile}`}
+              onClick={() => setShowContactPopover(false)}
+              className="flex min-h-[44px] items-center gap-2.5 rounded-[12px] px-2 text-[14px] font-medium active:opacity-70"
+              style={{ color: "var(--text-main)" }}
+            >
+              <Phone size={16} className="shrink-0" style={{ color: "var(--text-muted)" }} />
+              <span className="min-w-0 break-words">{assignedContact.mobile}</span>
+            </a>
+          ) : null}
+        </div>
+      ) : null}
       {assignedContact && (assignedContact.name || assignedContact.email || assignedContact.mobile) ? (
         // Fixed to the viewport, not the content column — stays put (vertically centered on the
         // left edge) regardless of how far the sheet itself scrolls, same as a real floating help
         // widget. Hidden below a comfortably wide breakpoint (lg) rather than repositioned, since
         // there's no good place for a floating side panel on a narrow/mobile viewport without
-        // covering the sheet — the contact info is still reachable there via a mailto:/tel: link
-        // more naturally offered elsewhere if this ever needs a mobile-specific treatment.
+        // covering the sheet — there, the same details open from a button in the title bar
+        // instead (see showContactPopover).
         <div
           className="fixed left-4 top-1/2 z-40 hidden w-max min-w-[220px] max-w-[360px] -translate-y-1/2 rounded-[14px] border p-4 shadow-lg lg:block"
           style={{ borderColor: "#D8DEE8", backgroundColor: "#FFFFFF" }}
@@ -681,7 +854,14 @@ export default function ClientSpecsSharePage() {
           </div>
         </div>
       ) : null}
-      <div className="mx-auto max-w-[1000px] px-4 pb-8" style={{ paddingTop: 56 + 24 }}>
+      {/* Top padding clears the fixed title bar (taller below lg when it has the tabs row); the
+          side and bottom padding take in the safe-area insets, so the last Accept/Submit bar can
+          always be scrolled clear of the home indicator. All the insets are 0 on a desktop. */}
+      <div
+        className={`mx-auto max-w-[1000px] pb-[calc(2rem+env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pt-[calc(80px+env(safe-area-inset-top))] ${
+          showTabs ? "max-lg:pt-[calc(116px+env(safe-area-inset-top))]" : "max-lg:pt-[calc(72px+env(safe-area-inset-top))]"
+        }`}
+      >
         {/* No overflow-x-auto at this level any more — it used to wrap this whole column
             (buttons/banners included), and per the CSS spec, setting overflow-x alone forces
             overflow-y to compute as "auto" too (not "visible"), silently clipping any box-shadow
@@ -689,7 +869,9 @@ export default function ClientSpecsSharePage() {
             getting cut off. Horizontal scrolling is only actually needed for the wide sheet/grid
             table itself, so it's scoped to just that below instead (SpecsGridClientView's own
             wrapper), leaving buttons and banners un-clipped. */}
-        <div className="mx-auto" style={pageBoxWidthPx ? { width: pageBoxWidthPx } : undefined}>
+        {/* max-w-full below lg: never wider than the screen there — the sheet scales itself down
+            to fit instead (SpecsGridClientView's fitToWidth). */}
+        <div className="mx-auto max-lg:max-w-full" style={pageBoxWidthPx ? { width: pageBoxWidthPx } : undefined}>
             {phase === "loading" ? (
               <p className="text-[13px]" style={{ color: "#64748B" }}>Loading…</p>
             ) : phase === "load-error" ? (
@@ -721,8 +903,23 @@ export default function ClientSpecsSharePage() {
                       </div>
                     ) : null}
 
+                    {!locked && hasConfirmableCells ? (
+                      // Below lg the sheet is scaled down to fit the screen, leaving its Yes/No
+                      // toggles too small to tap — the same questions with full-size buttons.
+                      <div className="mb-4 lg:hidden">
+                        <ClientSpecsQuestionList grid={grid} onAnswer={onAnswer} answeringKey={answeringKey} />
+                      </div>
+                    ) : null}
+
                     <div className="overflow-x-auto">
-                      <SpecsGridClientView grid={grid} locked={locked} onAnswer={onAnswer} answeringKey={answeringKey} boxWidthPx={pageBoxWidthPx} />
+                      <SpecsGridClientView
+                        grid={grid}
+                        locked={locked}
+                        onAnswer={onAnswer}
+                        answeringKey={answeringKey}
+                        boxWidthPx={pageBoxWidthPx}
+                        fitToWidth={isCompactViewport}
+                      />
                     </div>
 
                     {!locked && hasConfirmableCells ? (
@@ -767,7 +964,14 @@ export default function ClientSpecsSharePage() {
                         regardless of acceptance state (accepting is a single terminal action on
                         the whole document, not a per-cell one like Specs). */}
                     <div className="overflow-x-auto">
-                      <SpecsGridClientView grid={quoteGrid} locked onAnswer={() => {}} answeringKey={null} boxWidthPx={pageBoxWidthPx} />
+                      <SpecsGridClientView
+                        grid={quoteGrid}
+                        locked
+                        onAnswer={() => {}}
+                        answeringKey={null}
+                        boxWidthPx={pageBoxWidthPx}
+                        fitToWidth={isCompactViewport}
+                      />
                     </div>
 
                     {!quoteLocked ? (
@@ -799,7 +1003,7 @@ export default function ClientSpecsSharePage() {
               `background: var(--glass-modal-bg)` (equal CSS specificity, but the style attribute
               always wins) — keeps the shared blur/border/radius/shadow recipe intact for every
               OTHER modal in the app while making just this one more white-tinted, per request. */}
-          <div ref={submitModalPanelRef} className="glass-modal-panel w-[min(380px,96vw)] p-5" style={{ backgroundColor: "rgba(255, 255, 255, 0.88)" }}>
+          <div ref={submitModalPanelRef} className="glass-modal-panel w-[min(380px,96vw)] max-w-full p-5" style={{ backgroundColor: "rgba(255, 255, 255, 0.88)" }}>
             <p className="mb-2 text-[14px] font-bold" style={{ color: "#000000" }}>Submit your confirmation</p>
             <p className="mb-3 text-[12px]" style={{ color: "#000000" }}>
               Once submitted, you won&apos;t be able to change your answers. Your name is optional but helps identify who confirmed this.
@@ -808,7 +1012,7 @@ export default function ClientSpecsSharePage() {
               value={submitNameDraft}
               onChange={(e) => setSubmitNameDraft(e.target.value)}
               placeholder="Your name (optional)"
-              className="mb-3 h-9 w-full rounded-[8px] border px-3 text-[13px] placeholder:text-[#4B5563]"
+              className="mb-3 h-9 w-full rounded-[8px] border px-3 text-[13px] placeholder:text-[#4B5563] max-lg:h-11"
               style={{ borderColor: "#6B7280", color: "#000000" }}
             />
             {submitError ? <p className="mb-2 text-[12px] font-bold" style={{ color: "#B42318" }}>{submitError}</p> : null}
@@ -816,7 +1020,7 @@ export default function ClientSpecsSharePage() {
               <button
                 type="button"
                 onClick={() => setShowSubmitModal(false)}
-                className="h-9 rounded-[8px] border px-4 text-[12px] font-bold"
+                className="h-9 rounded-[8px] border px-4 text-[12px] font-bold max-lg:h-11 max-sm:flex-1"
                 style={{ borderColor: "#D8DEE8", color: "#000000" }}
               >
                 Cancel
@@ -825,7 +1029,7 @@ export default function ClientSpecsSharePage() {
                 type="button"
                 disabled={isSubmitting}
                 onClick={() => void submitConfirmation()}
-                className="h-9 rounded-[8px] px-4 text-[12px] font-bold text-white disabled:opacity-60"
+                className="h-9 rounded-[8px] px-4 text-[12px] font-bold text-white disabled:opacity-60 max-lg:h-11 max-sm:flex-1"
                 style={{ backgroundColor: "#2F6BFF" }}
               >
                 {isSubmitting ? "Submitting…" : "Submit"}
@@ -837,7 +1041,7 @@ export default function ClientSpecsSharePage() {
 
       {shouldRenderAcceptModal ? (
         <div className="glass-modal-backdrop fixed inset-0 flex items-center justify-center px-4" style={{ zIndex: 2147483647 }}>
-          <div ref={acceptModalPanelRef} className="glass-modal-panel w-[min(380px,96vw)] p-5" style={{ backgroundColor: "rgba(255, 255, 255, 0.88)" }}>
+          <div ref={acceptModalPanelRef} className="glass-modal-panel w-[min(380px,96vw)] max-w-full p-5" style={{ backgroundColor: "rgba(255, 255, 255, 0.88)" }}>
             <p className="mb-2 text-[14px] font-bold" style={{ color: "#000000" }}>Accept this quote</p>
             <p className="mb-3 text-[12px]" style={{ color: "#000000" }}>
               Once accepted, this can&apos;t be undone. Please type your name to confirm.
@@ -846,7 +1050,7 @@ export default function ClientSpecsSharePage() {
               value={acceptNameDraft}
               onChange={(e) => setAcceptNameDraft(e.target.value)}
               placeholder="Your name"
-              className="mb-3 h-9 w-full rounded-[8px] border px-3 text-[13px] placeholder:text-[#4B5563]"
+              className="mb-3 h-9 w-full rounded-[8px] border px-3 text-[13px] placeholder:text-[#4B5563] max-lg:h-11"
               style={{ borderColor: "#6B7280", color: "#000000" }}
             />
             {acceptError ? <p className="mb-2 text-[12px] font-bold" style={{ color: "#B42318" }}>{acceptError}</p> : null}
@@ -854,7 +1058,7 @@ export default function ClientSpecsSharePage() {
               <button
                 type="button"
                 onClick={() => setShowAcceptModal(false)}
-                className="h-9 rounded-[8px] border px-4 text-[12px] font-bold"
+                className="h-9 rounded-[8px] border px-4 text-[12px] font-bold max-lg:h-11 max-sm:flex-1"
                 style={{ borderColor: "#D8DEE8", color: "#000000" }}
               >
                 Cancel
@@ -863,7 +1067,7 @@ export default function ClientSpecsSharePage() {
                 type="button"
                 disabled={isAccepting}
                 onClick={() => void acceptQuote()}
-                className="h-9 rounded-[8px] px-4 text-[12px] font-bold text-white disabled:opacity-60"
+                className="h-9 rounded-[8px] px-4 text-[12px] font-bold text-white disabled:opacity-60 max-lg:h-11 max-sm:flex-1"
                 style={{ backgroundColor: "#15803D" }}
               >
                 {isAccepting ? "Accepting…" : "Accept Quote"}

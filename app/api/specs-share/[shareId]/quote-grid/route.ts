@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
-import { getProjectDocRefAdmin, getQuoteShareGridTarget, resolveAssignedContactAdmin, type SpecsShareLinkDoc } from "@/lib/specs-share";
+import {
+  getProjectDocRefAdmin,
+  getQuoteShareGridTarget,
+  isShareLinkInactiveAdmin,
+  resolveAssignedContactAdmin,
+  SHARE_LINK_INACTIVE_ERROR,
+  type SpecsShareLinkDoc,
+} from "@/lib/specs-share";
 import { normalizeSpecsGrid } from "@/lib/specs-grid-types";
 
 // Quote's own version of .../grid/route.ts — same public, no-access-code shape (see that file's
@@ -26,6 +33,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   }
   const projectSnap = await projectRef.get();
   const projectData = (projectSnap.data() ?? {}) as Record<string, unknown>;
+  // A finished project's link stops working (archived, or past the company's archive delay).
+  if (await isShareLinkInactiveAdmin(adminDb, shareDoc, projectData)) {
+    return NextResponse.json({ ok: false, error: SHARE_LINK_INACTIVE_ERROR }, { status: 410 });
+  }
 
   const target = getQuoteShareGridTarget(projectRef, shareDoc);
   if (!target) {
