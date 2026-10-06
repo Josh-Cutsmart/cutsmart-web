@@ -163,6 +163,7 @@ function buildLeadResponse(
       data.rawFields && typeof data.rawFields === "object"
         ? (data.rawFields as Record<string, unknown>)
         : undefined,
+    boardOrder: typeof data.boardOrder === "number" && Number.isFinite(data.boardOrder) ? data.boardOrder : undefined,
   };
 }
 
@@ -398,7 +399,11 @@ export async function PATCH(request: NextRequest) {
     Object.prototype.hasOwnProperty.call(body, "assigned_to_name") ||
     Object.prototype.hasOwnProperty.call(body, "assignedTo");
 
-  if (!companyId || !leadId || (!status && !hasDeleteMode && !hasImageUrls && !hasImageItems && !hasAssignmentPatch)) {
+  // The lead's place in its Leads board column, after it's dragged (see lib/board-drop-order.ts).
+  const boardOrder = typeof body.boardOrder === "number" && Number.isFinite(body.boardOrder) ? body.boardOrder : null;
+  const hasBoardOrder = boardOrder !== null;
+
+  if (!companyId || !leadId || (!status && !hasDeleteMode && !hasImageUrls && !hasImageItems && !hasAssignmentPatch && !hasBoardOrder)) {
     return NextResponse.json(
       {
         ok: false,
@@ -427,6 +432,9 @@ export async function PATCH(request: NextRequest) {
     };
     if (status) {
       patch.status = status;
+    }
+    if (hasBoardOrder) {
+      patch.boardOrder = boardOrder;
     }
     if (hasDeleteMode) {
       patch.isDeleted = isDeleted;

@@ -98,6 +98,9 @@ export interface Project {
   // sub-stage marked "Default" in Company Settings, or "" (lands in the sub-board's "Other"
   // column) if it has none marked.
   dashboardSubStageId?: string;
+  // Its place in its Dashboard board column once someone has dragged it there (see
+  // lib/board-drop-order.ts) — unset until then, when it sits by date like any other card.
+  dashboardBoardOrder?: number;
   projectSettings?: Record<string, unknown>;
   cutlist?: Record<string, unknown>;
   checklists?: ProjectChecklist[];

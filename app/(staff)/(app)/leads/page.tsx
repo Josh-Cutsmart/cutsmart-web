@@ -24,10 +24,34 @@ import { retryAsync } from "@/lib/load-retry";
 import { swallowNextClick } from "@/lib/swallow-dismiss-click";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { useDragGhost, DragGhostLayer } from "@/lib/use-drag-ghost";
+import {
+  BOARD_DROP_PREVIEW_STYLE,
+  boardDropIndex,
+  boardOrderBetween,
+  boardSortKey,
+  normalizeBoardColumnSorts,
+  normalizeBoardSortMode,
+  sortBoardCards,
+  sortedBoardDropIndex,
+  withBoardDropPreview,
+  type BoardCardSortInfo,
+  type BoardSortMode,
+} from "@/lib/board-drop-order";
+import { BoardColumnSortMenu, BoardSortButton } from "@/components/board-sort-menu";
+import { readBoardSortPrefs, saveBoardSortPrefs } from "@/lib/board-sort-prefs";
 import { clusterPins, computeSpreadPositions, findClusterContainingPin } from "@/lib/pin-clustering";
 import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
 
 const SAMPLE_LEADS_STORAGE_KEY_PREFIX = "cutsmart_sample_leads:";
+// A lead's place in its board column: newest first, except where it's been dragged to a spot of its
+// own (lib/board-drop-order.ts).
+function leadBoardKey(lead: CompanyLeadRow): number {
+  return boardSortKey(lead.boardOrder, lead.createdAtIso || lead.submittedAtIso || lead.updatedAtIso);
+}
+function leadDateMs(lead: CompanyLeadRow): number {
+  const ms = Date.parse(lead.createdAtIso || lead.submittedAtIso || lead.updatedAtIso || "");
+  return Number.isFinite(ms) ? ms : 0;
+}
 const LEADS_BOARD_PREFS_STORAGE_PREFIX = "cutsmart_leads_board_prefs:";
 const LEAD_ARCHIVE_UPDATED_EVENT = "cutsmart_lead_archive_updated";
 const RESERVED_LEAD_FIELD_KEYS = new Set([
@@ -641,7 +665,15 @@ export default function LeadsPage() {
   const [leadsViewMode, setLeadsViewMode] = useState<"board" | "grid">("board");
   const [draggingLeadId, setDraggingLeadId] = useState("");
   const [dragOverStatusColumn, setDragOverStatusColumn] = useState("");
+  // The column and spot (among its other cards) the dragged lead would land in — shows its preview.
+  const [leadDropPreview, setLeadDropPreview] = useState<{ column: string; index: number } | null>(null);
+  // Drops still saving, by lead: the 10-second refresh keeps them where they were dropped meanwhile.
+  const pendingLeadMovesRef = useRef(new Map<string, Partial<CompanyLeadRow>>());
   const [collapsedStatusColumns, setCollapsedStatusColumns] = useState<Record<string, boolean>>({});
+  // This user's own sort choices: per column (the column's cog > Organize), and for the whole board
+  // (the toolbar's Sort — overrides every column while it's set). "custom" = the dragged order.
+  const [leadColumnSorts, setLeadColumnSorts] = useState<Record<string, BoardSortMode>>({});
+  const [leadBoardSort, setLeadBoardSort] = useState<BoardSortMode>("custom");
   const [isBoardCardsCompact, setIsBoardCardsCompact] = useState(false);
   const [compactCardOverrides, setCompactCardOverrides] = useState<Record<string, boolean>>({});
   const [isToolbarExpanded, setIsToolbarExpanded] = useState(true);
@@ -658,6 +690,8 @@ export default function LeadsPage() {
     setBoardPrefsHydrated(false);
     if (typeof window === "undefined" || !currentUserUid || !activeCompanyId) return;
     let nextCollapsed: Record<string, boolean> = {};
+    let nextColumnSorts: Record<string, BoardSortMode> = {};
+    let nextBoardSort: BoardSortMode = "custom";
     let nextCompact = false;
     let nextCardOverrides: Record<string, boolean> = {};
     // Toolbar defaults to expanded for anyone who's never touched the
@@ -671,6 +705,8 @@ export default function LeadsPage() {
         if (parsed.collapsedColumns && typeof parsed.collapsedColumns === "object") {
           nextCollapsed = parsed.collapsedColumns as Record<string, boolean>;
         }
+        nextColumnSorts = normalizeBoardColumnSorts(parsed.columnSorts);
+        nextBoardSort = normalizeBoardSortMode(parsed.boardSort);
         nextCompact = Boolean(parsed.compactCards);
         if (parsed.compactCardOverrides && typeof parsed.compactCardOverrides === "object") {
           nextCardOverrides = parsed.compactCardOverrides as Record<string, boolean>;
@@ -681,6 +717,8 @@ export default function LeadsPage() {
       }
     } catch {}
     setCollapsedStatusColumns(nextCollapsed);
+    setLeadColumnSorts(nextColumnSorts);
+    setLeadBoardSort(nextBoardSort);
     setIsBoardCardsCompact(nextCompact);
     setCompactCardOverrides(nextCardOverrides);
     setIsToolbarExpanded(nextToolbarExpanded);
@@ -699,13 +737,45 @@ export default function LeadsPage() {
         leadsBoardPrefsStorageKey(currentUserUid, activeCompanyId),
         JSON.stringify({
           collapsedColumns: collapsedStatusColumns,
+          columnSorts: leadColumnSorts,
+          boardSort: leadBoardSort,
           compactCards: isBoardCardsCompact,
           compactCardOverrides,
           toolbarExpanded: isToolbarExpanded,
         }),
       );
     } catch {}
-  }, [collapsedStatusColumns, isBoardCardsCompact, compactCardOverrides, isToolbarExpanded, boardPrefsHydrated, currentUserUid, activeCompanyId]);
+  }, [collapsedStatusColumns, leadColumnSorts, leadBoardSort, isBoardCardsCompact, compactCardOverrides, isToolbarExpanded, boardPrefsHydrated, currentUserUid, activeCompanyId]);
+  // The sort choices are saved on the user's own profile (lib/board-sort-prefs.ts), so they follow
+  // them to any device — the browser copy above only shows them straight away while that loads.
+  // Nothing is saved until the profile's copy has loaded (null), so it's never overwritten unseen.
+  const savedLeadSortPrefsRef = useRef<string | null>(null);
+  useEffect(() => {
+    savedLeadSortPrefsRef.current = null;
+    if (!currentUserUid || !activeCompanyId) return;
+    let cancelled = false;
+    void readBoardSortPrefs(currentUserUid, "leads", activeCompanyId).then((prefs) => {
+      if (cancelled) return;
+      if (!prefs) {
+        savedLeadSortPrefsRef.current = "";
+        return;
+      }
+      savedLeadSortPrefsRef.current = JSON.stringify(prefs);
+      setLeadColumnSorts(prefs.columnSorts);
+      setLeadBoardSort(prefs.boardSort);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUserUid, activeCompanyId]);
+  useEffect(() => {
+    if (!currentUserUid || !activeCompanyId || savedLeadSortPrefsRef.current === null) return;
+    const prefs = { columnSorts: leadColumnSorts, boardSort: leadBoardSort };
+    const serialized = JSON.stringify(prefs);
+    if (serialized === savedLeadSortPrefsRef.current) return;
+    savedLeadSortPrefsRef.current = serialized;
+    void saveBoardSortPrefs(currentUserUid, "leads", activeCompanyId, prefs);
+  }, [currentUserUid, activeCompanyId, leadColumnSorts, leadBoardSort]);
   // The board column row is `position: sticky` (see its className below) — it scrolls up with
   // the page along with the header/toolbar above it until its own top edge reaches just below the
   // fixed nav bar(s), then locks there; only the columns' own internal scroll moves after that.
@@ -757,6 +827,7 @@ export default function LeadsPage() {
     dragging: boolean;
     eligible: boolean;
     targetColumn: string;
+    targetIndex: number | null;
   } | null>(null);
   // Set right when a touch-drag commits — checked (and cleared) at the top of the card's own
   // onClick so the synthetic click some browsers still fire right after that touchend doesn't ALSO
@@ -968,7 +1039,15 @@ export default function LeadsPage() {
       const visibleSampleLeads = effectiveCanViewOtherLeads
         ? currentSampleLeads
         : currentSampleLeads.filter((lead) => String(lead.assignedToUid || "").trim() === currentUserUid);
-      const nextLeads = [...visibleSampleLeads, ...visibleLeads];
+      const fetchedLeads2 = [...visibleSampleLeads, ...visibleLeads];
+      // A lead dropped on the board a moment ago stays where it was dropped while that save is on its way.
+      const pendingMoves = pendingLeadMovesRef.current;
+      const nextLeads = pendingMoves.size
+        ? fetchedLeads2.map((lead) => {
+            const move = pendingMoves.get(lead.id);
+            return move ? { ...lead, ...move } : lead;
+          })
+        : fetchedLeads2;
       if (JSON.stringify(nextLeads) === JSON.stringify(shownLeadsRef.current)) return;
       setLeads(nextLeads);
       setLeadDetailsById((current) => {
@@ -1226,12 +1305,19 @@ export default function LeadsPage() {
     });
   }, [leads, search]);
 
+  // What a lead is sorted by: its dragged place, its date, and the name shown on its card.
+  const leadSortInfo = useCallback(
+    (lead: CompanyLeadRow): BoardCardSortInfo => ({
+      key: leadBoardKey(lead),
+      dateMs: leadDateMs(lead),
+      name: leadClientName(getLeadDynamicFields(lead), mergedFieldLayout) || lead.name || lead.email || lead.phone || "",
+    }),
+    [mergedFieldLayout],
+  );
+  // A column's order for this user: the board-wide sort while one is set, else the column's own.
+  const leadColumnSortFor = (columnName: string): BoardSortMode =>
+    leadBoardSort !== "custom" ? leadBoardSort : leadColumnSorts[columnName] ?? "custom";
   const leadStatusBoardColumns = useMemo(() => {
-    const leadTimestamp = (lead: CompanyLeadRow) => {
-      const raw = String(lead.createdAtIso || lead.submittedAtIso || lead.updatedAtIso || "").trim();
-      const parsed = raw ? new Date(raw).getTime() : 0;
-      return Number.isFinite(parsed) ? parsed : 0;
-    };
     const columns = leadStatusRows.map((row) => ({ name: row.name, color: row.color, leads: [] as CompanyLeadRow[] }));
     const byKey = new Map(columns.map((col) => [col.name.trim().toLowerCase(), col]));
     const otherLeads: CompanyLeadRow[] = [];
@@ -1240,10 +1326,11 @@ export default function LeadsPage() {
       if (col) col.leads.push(lead);
       else otherLeads.push(lead);
     }
-    for (const col of columns) col.leads.sort((a, b) => leadTimestamp(b) - leadTimestamp(a));
-    otherLeads.sort((a, b) => leadTimestamp(b) - leadTimestamp(a));
-    return { columns, otherLeads };
-  }, [searchFilteredLeads, leadStatusRows]);
+    for (const col of columns) {
+      col.leads = sortBoardCards(col.leads, leadBoardSort !== "custom" ? leadBoardSort : leadColumnSorts[col.name] ?? "custom", leadSortInfo);
+    }
+    return { columns, otherLeads: sortBoardCards(otherLeads, leadBoardSort, leadSortInfo) };
+  }, [searchFilteredLeads, leadStatusRows, leadBoardSort, leadColumnSorts, leadSortInfo]);
 
   const newCount = filteredLeads.filter((lead) => String(lead.status || "").trim().toLowerCase() === "new").length;
   const rowFields = useMemo(() => {
@@ -1918,12 +2005,81 @@ export default function LeadsPage() {
   const onLeadBoardCardDragEnd = () => {
     setDraggingLeadId("");
     setDragOverStatusColumn("");
+    setLeadDropPreview(null);
     leadBoardDragGhost.end();
   };
 
-  const onLeadBoardColumnDrop = (event: ReactDragEvent<HTMLElement>, statusName: string) => {
+  // A lead dropped on the board moves straight away — into the column it was dropped on, at the
+  // exact spot (dropIndex: among that column's other cards; null for a collapsed column, where it
+  // only changes status and keeps its place by date) — and saves in the background, going back only
+  // if that save fails. (It used to wait for the save before moving, then reload every lead, and
+  // ignored any other drop made while a save was still going.)
+  const moveLeadOnBoard = async (lead: CompanyLeadRow, statusName: string, dropIndex: number | null) => {
+    if (!statusName || !isUserVerified) return;
+    const sameStatus = String(lead.status || "").trim().toLowerCase() === statusName.trim().toLowerCase();
+    const columnLeads =
+      leadStatusBoardColumns.columns.find((col) => col.name.trim().toLowerCase() === statusName.trim().toLowerCase())?.leads ?? [];
+    let boardOrder: number | undefined;
+    // In a column this user has sorted, the sort decides where it goes — only its status changes.
+    if (dropIndex !== null && leadColumnSortFor(statusName) === "custom") {
+      if (sameStatus && columnLeads.findIndex((row) => row.id === lead.id) === dropIndex) return;
+      const others = columnLeads.filter((row) => row.id !== lead.id);
+      const before = others[dropIndex - 1];
+      const after = others[dropIndex];
+      boardOrder = boardOrderBetween(before ? leadBoardKey(before) : null, after ? leadBoardKey(after) : null);
+    } else if (sameStatus) {
+      return;
+    }
+    const move: Partial<CompanyLeadRow> = {
+      status: statusName,
+      updatedAtIso: new Date().toISOString(),
+      ...(boardOrder !== undefined ? { boardOrder } : {}),
+    };
+    const previous: Partial<CompanyLeadRow> = { status: lead.status, updatedAtIso: lead.updatedAtIso, boardOrder: lead.boardOrder };
+    // The detail cache too — getLeadById() prefers it (see onSelectLeadStatus).
+    const applyToLead = (patch: Partial<CompanyLeadRow>) => {
+      setLeads((prev) => prev.map((row) => (row.id === lead.id ? { ...row, ...patch } : row)));
+      setLeadDetailsById((prev) => (prev[lead.id] ? { ...prev, [lead.id]: { ...prev[lead.id], ...patch } } : prev));
+    };
+    applyToLead(move);
+    if (isTemporarySampleLead(lead)) {
+      sampleLeadsRef.current[lead.companyId] = (sampleLeadsRef.current[lead.companyId] || []).map((row) =>
+        row.id === lead.id ? { ...row, ...move } : row,
+      );
+      persistSampleLeads(lead.companyId, sampleLeadsRef.current[lead.companyId]);
+      return;
+    }
+    pendingLeadMovesRef.current.set(lead.id, move);
+    const response = await authorizedFetch("/api/leads", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        companyId: lead.companyId,
+        leadId: lead.id,
+        ...(sameStatus ? {} : { status: statusName }),
+        ...(boardOrder !== undefined ? { boardOrder } : {}),
+      }),
+    }).catch(() => null);
+    // A later drop of this same lead has taken over — that one decides.
+    if (pendingLeadMovesRef.current.get(lead.id) !== move) return;
+    pendingLeadMovesRef.current.delete(lead.id);
+    if (!response?.ok) {
+      applyToLead(previous);
+      void loadLeads(lead.companyId);
+    }
+  };
+
+  const leadDropIndexFor = (columnName: string, columnLeads: CompanyLeadRow[], columnEl: Element, clientY: number, leadId: string): number => {
+    const mode = leadColumnSortFor(columnName);
+    if (mode === "custom") return boardDropIndex(columnEl, clientY, leadId);
+    const lead = getLeadById(leadId);
+    return lead ? sortedBoardDropIndex(columnLeads, lead, mode, leadSortInfo) : 0;
+  };
+
+  const onLeadBoardColumnDrop = (event: ReactDragEvent<HTMLElement>, statusName: string, dropIndex: number | null) => {
     event.preventDefault();
     setDragOverStatusColumn("");
+    setLeadDropPreview(null);
     const leadId = event.dataTransfer.getData("text/plain") || draggingLeadId;
     setDraggingLeadId("");
     // Also dismiss the drag ghost here rather than relying solely on the
@@ -1936,8 +2092,7 @@ export default function LeadsPage() {
     leadBoardDragGhost.end();
     const lead = getLeadById(leadId);
     if (!lead) return;
-    if (String(lead.status || "").trim().toLowerCase() === statusName.trim().toLowerCase()) return;
-    void onSelectLeadStatus(lead, statusName);
+    void moveLeadOnBoard(lead, statusName, dropIndex);
   };
 
   const onLeadCardTouchStart = (lead: CompanyLeadRow, event: ReactTouchEvent<HTMLDivElement>) => {
@@ -1956,6 +2111,7 @@ export default function LeadsPage() {
       dragging: false,
       eligible: true,
       targetColumn: "",
+      targetIndex: null,
     };
     state.longPressTimer = setTimeout(() => {
       const current = leadCardTouchRef.current;
@@ -2012,6 +2168,15 @@ export default function LeadsPage() {
     const columnName = columnEl?.getAttribute("data-column-name") || "";
     state.targetColumn = columnName;
     setDragOverStatusColumn((prev) => (prev === columnName ? prev : columnName));
+    const touchColumnLeads = leadStatusBoardColumns.columns.find((col) => col.name === columnName)?.leads ?? [];
+    const dropIndex =
+      columnEl && columnName && columnEl.dataset.boardCollapsed !== "true"
+        ? leadDropIndexFor(columnName, touchColumnLeads, columnEl, touch.clientY, state.leadId)
+        : null;
+    state.targetIndex = dropIndex;
+    setLeadDropPreview((prev) =>
+      dropIndex === null ? null : prev && prev.column === columnName && prev.index === dropIndex ? prev : { column: columnName, index: dropIndex },
+    );
   };
 
   const endLeadCardTouchDrag = (commit: boolean) => {
@@ -2025,17 +2190,23 @@ export default function LeadsPage() {
     // while the finger stayed still, no touchmove ran to update targetColumn.
     if (commit && typeof document !== "undefined") {
       const columnEl = document.elementFromPoint(state.lastX, state.lastY)?.closest<HTMLElement>("[data-board-column]");
-      if (columnEl) state.targetColumn = columnEl.getAttribute("data-column-name") || state.targetColumn;
+      if (columnEl) {
+        state.targetColumn = columnEl.getAttribute("data-column-name") || state.targetColumn;
+        const releaseColumnLeads = leadStatusBoardColumns.columns.find((col) => col.name === state.targetColumn)?.leads ?? [];
+        state.targetIndex =
+          columnEl.dataset.boardCollapsed !== "true"
+            ? leadDropIndexFor(state.targetColumn, releaseColumnLeads, columnEl, state.lastY, state.leadId)
+            : null;
+      }
     }
     setDraggingLeadId("");
     setDragOverStatusColumn("");
+    setLeadDropPreview(null);
     leadBoardDragGhost.end();
     suppressNextLeadCardClickRef.current = state.leadId;
     if (commit && state.targetColumn) {
       const lead = getLeadById(state.leadId);
-      if (lead && String(lead.status || "").trim().toLowerCase() !== state.targetColumn.trim().toLowerCase()) {
-        void onSelectLeadStatus(lead, state.targetColumn);
-      }
+      if (lead) void moveLeadOnBoard(lead, state.targetColumn, state.targetIndex);
     }
   };
 
@@ -2935,7 +3106,7 @@ export default function LeadsPage() {
     setLeadImagePreviewIndex(nextIndex);
   }, []);
 
-  function renderLeadCard(lead: CompanyLeadRow, options?: { draggable?: boolean; accentColor?: string; compact?: boolean }) {
+  function renderLeadCard(lead: CompanyLeadRow, options?: { draggable?: boolean; accentColor?: string; compact?: boolean; preview?: boolean }) {
     const draggable = Boolean(options?.draggable);
     const accentColor = options?.accentColor;
     const compact = Boolean(options?.compact);
@@ -3093,7 +3264,7 @@ export default function LeadsPage() {
               </span>
             </div>
         )}
-        <p id={`lead-board-name-${lead.id}`} className="truncate pr-8 text-[14px] font-bold" style={{ color: boardTextColor }}>
+        <p id={options?.preview ? undefined : `lead-board-name-${lead.id}`} className="truncate pr-8 text-[14px] font-bold" style={{ color: boardTextColor }}>
           {displayName}
         </p>
         {!effectiveCompact && (
@@ -3422,6 +3593,7 @@ export default function LeadsPage() {
                         Compact
                       </button>
                     )}
+                    {leadsViewMode === "board" && <BoardSortButton value={leadBoardSort} onChange={setLeadBoardSort} />}
                     {leadsViewMode === "grid" && (
                       <div className="flex flex-wrap items-center gap-2 border-l pl-3" style={{ borderColor: "var(--glass-border)" }}>
                         <button
@@ -3525,12 +3697,26 @@ export default function LeadsPage() {
                     onDragOver: (e: ReactDragEvent<HTMLElement>) => {
                       e.preventDefault();
                       if (dragOverStatusColumn !== column.name) setDragOverStatusColumn(column.name);
+                      if (isCollapsed || !draggingLeadId) return;
+                      const index = leadDropIndexFor(column.name, column.leads, e.currentTarget, e.clientY, draggingLeadId);
+                      setLeadDropPreview((prev) => (prev && prev.column === column.name && prev.index === index ? prev : { column: column.name, index }));
                     },
                     onDragLeave: (e: ReactDragEvent<HTMLElement>) => {
                       if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
                       setDragOverStatusColumn((prev) => (prev === column.name ? "" : prev));
+                      setLeadDropPreview((prev) => (prev?.column === column.name ? null : prev));
                     },
-                    onDrop: (e: ReactDragEvent<HTMLElement>) => onLeadBoardColumnDrop(e, column.name),
+                    // Lands where its preview showed (worked out again from the drop point if there wasn't one).
+                    onDrop: (e: ReactDragEvent<HTMLElement>) =>
+                      onLeadBoardColumnDrop(
+                        e,
+                        column.name,
+                        isCollapsed
+                          ? null
+                          : leadDropPreview?.column === column.name
+                            ? leadDropPreview.index
+                            : leadDropIndexFor(column.name, column.leads, e.currentTarget, e.clientY, draggingLeadId || e.dataTransfer.getData("text/plain")),
+                      ),
                   };
                   const glassColumnBg = leadStatusHexToRgba(column.color, 0.85);
                   const glassColumnBorder = "rgba(255,255,255,0.3)";
@@ -3556,6 +3742,7 @@ export default function LeadsPage() {
                         {...dragHandlers}
                         data-board-column="true"
                         data-column-name={column.name}
+                        data-board-collapsed="true"
                         className="h-full w-[52px] shrink-0 snap-center sm:snap-align-none"
                         style={{ borderRadius: 16, boxShadow: glassColumnShadow }}
                       >
@@ -3614,7 +3801,23 @@ export default function LeadsPage() {
                           className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2.5"
                           style={{ borderColor: "rgba(0,0,0,0.15)" }}
                         >
-                          <p className="truncate text-[15px] font-semibold" style={{ color: "#000000" }}>{column.name}</p>
+                          <div className="flex min-w-0 items-center gap-1.5">
+                            <BoardColumnSortMenu
+                              columnName={column.name}
+                              value={leadColumnSorts[column.name] ?? "custom"}
+                              overriddenBy={leadBoardSort}
+                              onChange={(mode) =>
+                                setLeadColumnSorts((prev) => {
+                                  const next = { ...prev };
+                                  if (mode === "custom") delete next[column.name];
+                                  else next[column.name] = mode;
+                                  return next;
+                                })
+                              }
+                              buttonStyle={{ color: columnBadgeText, backgroundColor: columnBadgeBg }}
+                            />
+                            <p className="truncate text-[15px] font-semibold" style={{ color: "#000000" }}>{column.name}</p>
+                          </div>
                           <div className="flex shrink-0 items-center gap-1.5">
                             <span
                               className="inline-flex h-6 min-w-[24px] items-center justify-center rounded-full px-2 text-[10px] font-bold"
@@ -3635,13 +3838,34 @@ export default function LeadsPage() {
                           </div>
                         </div>
                         <div className="glass-scroll board-column-scroll flex-1 space-y-2.5 overflow-y-hidden p-2.5" style={{ scrollbarWidth: "none" }}>
-                          {column.leads.length === 0 ? (
-                            <p className="px-1 py-6 text-center text-[11px] font-semibold" style={{ color: "#000000" }}>
-                              No leads.
-                            </p>
-                          ) : (
-                            column.leads.map((lead) => renderLeadCard(lead, { draggable: true, accentColor: column.color, compact: isBoardCardsCompact }))
-                          )}
+                          {(() => {
+                            // While a lead is dragged over this column: a faded copy of it, in the spot it will land.
+                            const previewIndex = leadDropPreview?.column === column.name ? leadDropPreview.index : null;
+                            const previewLead = previewIndex !== null && draggingLeadId ? getLeadById(draggingLeadId) ?? null : null;
+                            if (column.leads.length === 0 && !previewLead) {
+                              return (
+                                <p className="px-1 py-6 text-center text-[11px] font-semibold" style={{ color: "#000000" }}>
+                                  No leads.
+                                </p>
+                              );
+                            }
+                            return withBoardDropPreview(
+                              column.leads,
+                              draggingLeadId,
+                              previewLead ? previewIndex : null,
+                              (lead) => (
+                                <div key={lead.id} data-board-card-id={lead.id}>
+                                  {renderLeadCard(lead, { draggable: true, accentColor: column.color, compact: isBoardCardsCompact })}
+                                </div>
+                              ),
+                              () =>
+                                previewLead ? (
+                                  <div key="lead-drop-preview" aria-hidden="true" inert className="pointer-events-none" style={BOARD_DROP_PREVIEW_STYLE}>
+                                    {renderLeadCard(previewLead, { accentColor: column.color, compact: isBoardCardsCompact, preview: true })}
+                                  </div>
+                                ) : null,
+                            );
+                          })()}
                         </div>
                       </div>
                     </div>

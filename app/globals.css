@@ -1086,6 +1086,18 @@ html::-webkit-scrollbar {
  * onMouseLeave — not CSS :has(:hover), which some environments don't
  * reliably recompute for hover-driven descendant style changes.
  */
+/* Kanban boards: the faded copy of a dragged card, in the spot it will land (lib/board-drop-order.ts). */
+@keyframes board-drop-preview-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 0.55;
+    transform: scale(1);
+  }
+}
+
 .row-glow-anchor {
   position: relative;
   z-index: 0;

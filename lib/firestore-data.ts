@@ -425,6 +425,8 @@ function normalizeProject(id: string, data: Record<string, unknown>, options?: {
     projectImageItems,
     dashboardCompleteStatusId: String(data.dashboardCompleteStatusId ?? "").trim() || undefined,
     dashboardSubStageId: String(data.dashboardSubStageId ?? "").trim() || undefined,
+    dashboardBoardOrder:
+      typeof data.dashboardBoardOrder === "number" && Number.isFinite(data.dashboardBoardOrder) ? data.dashboardBoardOrder : undefined,
     projectSettings: settings,
     // Never parsed here anymore, lightweight or not — cutlist rows moved to their own
     // subcollection; the project page fetches them itself, lazily, via useProjectCutlist.
@@ -1498,7 +1500,13 @@ export async function debugProjectSources(uid?: string): Promise<ProjectSourceDi
   return out;
 }
 
-export async function updateProjectStatus(project: Project, newStatus: string, nextSubStageId: string = ""): Promise<boolean> {
+export async function updateProjectStatus(
+  project: Project,
+  newStatus: string,
+  nextSubStageId: string = "",
+  // Saved in the same write — e.g. the Dashboard board's drop position (dashboardBoardOrder).
+  extraPatch?: Record<string, unknown>,
+): Promise<boolean> {
   if (!db || !project || !newStatus) {
     return false;
   }
@@ -1523,6 +1531,7 @@ export async function updateProjectStatus(project: Project, newStatus: string, n
     const storedCompletedAtIso = String(stored.completedAtIso ?? "").trim();
     const keepsCompletedAt = completedStatus && isCompletedStatus(stored.status) && Boolean(storedCompletedAtIso);
     const patch: Record<string, unknown> = {
+      ...(extraPatch ?? {}),
       status: newStatus,
       updatedAtIso: nowIso,
       completedAtIso: completedStatus ? (keepsCompletedAt ? storedCompletedAtIso : nowIso) : "",
@@ -4108,6 +4117,9 @@ export type CompanyLeadRow = {
   imageItems?: LeadImageItem[];
   imageUrls?: string[];
   rawFields?: Record<string, unknown>;
+  // Its place in its Leads board column once someone has dragged it there (see
+  // lib/board-drop-order.ts) — unset until then, when it sits by date.
+  boardOrder?: number;
 };
 
 function normalizeLeadImageItems(value: unknown): LeadImageItem[] {

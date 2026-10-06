@@ -68,8 +68,13 @@ whatsNew: [
 <li>An archived contact can be viewed but not edited</li>
 </ul>
 
-<u><b>Dashboard</b></u>
+<u><b>Dashboard & Leads Boards</b></u>
 <ul>
+<li>Drag cards into any order you like, even within a column — they land exactly where you drop them, the moment you drop them</li>
+<li>While dragging, a faded copy of the card shows where it will land, moving the other cards out of the way</li>
+<li>New <b>cog</b> on each column: <b>Organize</b> sorts that column Oldest – Newest, Newest – Oldest, A – Z or Z – A (or back to your own order)</li>
+<li>New <b>Sort</b> button in the toolbar sorts the whole board, overriding the columns — both are saved to your account, so they follow you to any device</li>
+<li>Leads: fixed a dragged lead jumping back before landing, and a second drag being ignored while the first was saving</li>
 <li>Desktop: drag the Kanban board sideways by grabbing the background or a column</li>
 </ul>
 

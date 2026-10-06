@@ -12,6 +12,21 @@ import { attachBoardDragScroll } from "@/lib/board-drag-scroll";
 import { useBoardStickyRef } from "@/lib/board-sticky-scroll";
 import { swallowNextClick } from "@/lib/swallow-dismiss-click";
 import { useDragGhost, DragGhostLayer } from "@/lib/use-drag-ghost";
+import {
+  BOARD_DROP_PREVIEW_STYLE,
+  boardDropIndex,
+  boardOrderBetween,
+  boardSortKey,
+  normalizeBoardColumnSorts,
+  normalizeBoardSortMode,
+  sortBoardCards,
+  sortedBoardDropIndex,
+  withBoardDropPreview,
+  type BoardCardSortInfo,
+  type BoardSortMode,
+} from "@/lib/board-drop-order";
+import { BoardColumnSortMenu, BoardSortButton } from "@/components/board-sort-menu";
+import { readBoardSortPrefs, saveBoardSortPrefs } from "@/lib/board-sort-prefs";
 import { useAppTabs } from "@/lib/app-tabs-context";
 import {
   addProjectChange,
@@ -100,6 +115,16 @@ function hexToRgba(hex: string, alpha: number): string {
 }
 
 const DASHBOARD_BOARD_PREFS_STORAGE_PREFIX = "cutsmart_dashboard_board_prefs:";
+// What a project is ordered by on the board: the spot it was dragged to (else its creation date,
+// newest first — see lib/board-drop-order.ts), its creation date, and its name.
+function projectBoardSortInfo(project: Project): BoardCardSortInfo {
+  const createdMs = Date.parse(String(project.createdAt || project.updatedAt || ""));
+  return {
+    key: boardSortKey(project.dashboardBoardOrder, project.createdAt || project.updatedAt),
+    dateMs: Number.isFinite(createdMs) ? createdMs : 0,
+    name: String(project.name || ""),
+  };
+}
 function dashboardBoardPrefsStorageKey(uid: string) {
   return `${DASHBOARD_BOARD_PREFS_STORAGE_PREFIX}${String(uid || "").trim()}`;
 }
@@ -360,6 +385,15 @@ export default function DashboardPage() {
   const [dashboardViewMode, setDashboardViewMode] = useState<"list" | "board">("list");
   const [draggingProjectId, setDraggingProjectId] = useState("");
   const [dragOverProjectStatusColumn, setDragOverProjectStatusColumn] = useState("");
+  // The column and spot (among its other cards) a dragged project would land in — shows its preview.
+  const [projectDropPreview, setProjectDropPreview] = useState<{ column: string; index: number } | null>(null);
+  const [subStageDropPreview, setSubStageDropPreview] = useState<{ column: string; index: number } | null>(null);
+  // This user's own sort choices: per column (the column's cog > Organize), and for the whole board
+  // (the toolbar's Sort — overrides every column while it's set). "custom" = the dragged order.
+  const [projectColumnSorts, setProjectColumnSorts] = useState<Record<string, BoardSortMode>>({});
+  const [projectBoardSort, setProjectBoardSort] = useState<BoardSortMode>("custom");
+  // The company the board's projects were loaded for (its sort choices are saved per company).
+  const [dashboardCompanyId, setDashboardCompanyId] = useState("");
   const [collapsedProjectStatusColumns, setCollapsedProjectStatusColumns] = useState<Record<string, boolean>>({});
   const [boardPrefsHydrated, setBoardPrefsHydrated] = useState(false);
   // Sub-column drill-down: clicking a main column's header (when it has configured sub-stages)
@@ -527,6 +561,8 @@ export default function DashboardPage() {
           collapsedColumns?: unknown;
           collapsedSubStageColumns?: unknown;
           openSubBoardColumnName?: unknown;
+          columnSorts?: unknown;
+          boardSort?: unknown;
         };
         if (parsed.viewMode === "board" || parsed.viewMode === "list") setDashboardViewMode(parsed.viewMode);
         if (parsed.collapsedColumns && typeof parsed.collapsedColumns === "object") {
@@ -535,6 +571,8 @@ export default function DashboardPage() {
         if (parsed.collapsedSubStageColumns && typeof parsed.collapsedSubStageColumns === "object") {
           setCollapsedSubStageColumns(parsed.collapsedSubStageColumns as Record<string, boolean>);
         }
+        setProjectColumnSorts(normalizeBoardColumnSorts(parsed.columnSorts));
+        setProjectBoardSort(normalizeBoardSortMode(parsed.boardSort));
         // Restore straight into "revealed" — fully open, no shatter animation to replay (there's no
         // real click event here to capture an origin rect from). onCloseSubBoard already falls back
         // to an instant close (no animation) when subBoardZoomOrigin is null, which is exactly this
@@ -560,9 +598,43 @@ export default function DashboardPage() {
         collapsedColumns: collapsedProjectStatusColumns,
         collapsedSubStageColumns,
         openSubBoardColumnName,
+        columnSorts: projectColumnSorts,
+        boardSort: projectBoardSort,
       }),
     );
-  }, [user?.uid, boardPrefsHydrated, dashboardViewMode, collapsedProjectStatusColumns, collapsedSubStageColumns, openSubBoardColumnName]);
+  }, [user?.uid, boardPrefsHydrated, dashboardViewMode, collapsedProjectStatusColumns, collapsedSubStageColumns, openSubBoardColumnName, projectColumnSorts, projectBoardSort]);
+  // The sort choices are saved on the user's own profile (lib/board-sort-prefs.ts), so they follow
+  // them to any device — the browser copy above only shows them straight away while that loads.
+  // Nothing is saved until the profile's copy has loaded (null), so it's never overwritten unseen.
+  const savedProjectSortPrefsRef = useRef<string | null>(null);
+  useEffect(() => {
+    savedProjectSortPrefsRef.current = null;
+    const uid = user?.uid;
+    if (!uid || !dashboardCompanyId) return;
+    let cancelled = false;
+    void readBoardSortPrefs(uid, "dashboard", dashboardCompanyId).then((prefs) => {
+      if (cancelled) return;
+      if (!prefs) {
+        savedProjectSortPrefsRef.current = "";
+        return;
+      }
+      savedProjectSortPrefsRef.current = JSON.stringify(prefs);
+      setProjectColumnSorts(prefs.columnSorts);
+      setProjectBoardSort(prefs.boardSort);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.uid, dashboardCompanyId]);
+  useEffect(() => {
+    const uid = user?.uid;
+    if (!uid || !dashboardCompanyId || savedProjectSortPrefsRef.current === null) return;
+    const prefs = { columnSorts: projectColumnSorts, boardSort: projectBoardSort };
+    const serialized = JSON.stringify(prefs);
+    if (serialized === savedProjectSortPrefsRef.current) return;
+    savedProjectSortPrefsRef.current = serialized;
+    void saveBoardSortPrefs(uid, "dashboard", dashboardCompanyId, prefs);
+  }, [user?.uid, dashboardCompanyId, projectColumnSorts, projectBoardSort]);
   const isDarkMode = themeMode === "dark";
   const dashboardPalette = isDarkMode
     ? {
@@ -780,6 +852,7 @@ export default function DashboardPage() {
         // card, the staff list, and the status columns empty while the app otherwise looked like
         // it had loaded fine.
         const companyId = storedCompanyId || fallbackCompanyId || String(user?.companyId || "").trim();
+        if (companyId) setDashboardCompanyId(companyId);
         const creatorUids = items.map((row) => String(row.createdByUid || "").trim()).filter(Boolean);
         const assignedUids = items.map((row) => String(row.assignedToUid || "").trim()).filter(Boolean);
         // The user-color lookup and the company doc/members lookup are both derived from `items`
@@ -1010,8 +1083,9 @@ export default function DashboardPage() {
     }, 220);
   };
 
-  const onSelectProjectStatus = async (project: Project, nextStatus: string) => {
-    if (!nextStatus || statusUpdatingProjectId || !canEditProjectFromDashboard(project)) return;
+  // boardOrder: where it was dropped on the board (lib/board-drop-order.ts), saved in the same write.
+  const onSelectProjectStatus = async (project: Project, nextStatus: string, boardOrder?: number) => {
+    if (!nextStatus || statusUpdatingProjectId === project.id || !canEditProjectFromDashboard(project)) return;
     const previousStatus = project.statusLabel;
     const previousSubStageId = String((project as unknown as Record<string, unknown>).dashboardSubStageId ?? "");
     // A card entering a column with sub-stages lands in whichever one is marked "Default" in
@@ -1037,19 +1111,26 @@ export default function DashboardPage() {
               dashboardSubStageId: nextSubStageId,
               updatedAt: nowIso,
               completedAtIso: nextCompletedAtIso || undefined,
+              ...(boardOrder !== undefined ? { dashboardBoardOrder: boardOrder } : {}),
             } as Project)
           : row,
       ),
     );
     setStatusMenuProjectId("");
     setStatusMenuPos(null);
-    const ok = await updateProjectStatus(project, nextStatus, nextSubStageId);
+    const ok = await updateProjectStatus(project, nextStatus, nextSubStageId, boardOrder !== undefined ? { dashboardBoardOrder: boardOrder } : undefined);
     if (!ok) {
       // Persist failed — put it back where it actually is.
       setAllProjects((prev) =>
         prev.map((row) =>
           row.id === project.id
-            ? ({ ...row, statusLabel: previousStatus, dashboardSubStageId: previousSubStageId, completedAtIso: project.completedAtIso } as Project)
+            ? ({
+                ...row,
+                statusLabel: previousStatus,
+                dashboardSubStageId: previousSubStageId,
+                completedAtIso: project.completedAtIso,
+                dashboardBoardOrder: project.dashboardBoardOrder,
+              } as Project)
             : row,
         ),
       );
@@ -1064,24 +1145,39 @@ export default function DashboardPage() {
   // writes the independent dashboardSubStageId field via the generic updateProjectPatch helper
   // instead — this NEVER touches statusLabel/status, so the card never moves on the main board.
   // subStageName === "" is a valid target (the sub-board's own "Other" column).
-  const onSelectProjectSubStage = async (project: Project, subStageName: string) => {
-    if (subStageUpdatingProjectId || !canEditProjectFromDashboard(project)) return;
+  const onSelectProjectSubStage = async (project: Project, subStageName: string, boardOrder?: number) => {
+    if (subStageUpdatingProjectId === project.id || !canEditProjectFromDashboard(project)) return;
     const previousSubStage = String((project as unknown as Record<string, unknown>).dashboardSubStageId ?? "");
+    const orderPatch = boardOrder !== undefined ? { dashboardBoardOrder: boardOrder } : {};
     setSubStageUpdatingProjectId(project.id);
     setAllProjects((prev) =>
       prev.map((row) =>
         row.id === project.id
-          ? ({ ...row, dashboardSubStageId: subStageName, updatedAt: new Date().toISOString() } as Project)
+          ? ({ ...row, dashboardSubStageId: subStageName, updatedAt: new Date().toISOString(), ...orderPatch } as Project)
           : row,
       ),
     );
-    const ok = await updateProjectPatch(project, { dashboardSubStageId: subStageName });
+    const ok = await updateProjectPatch(project, { dashboardSubStageId: subStageName, ...orderPatch });
     if (!ok) {
       setAllProjects((prev) =>
-        prev.map((row) => (row.id === project.id ? ({ ...row, dashboardSubStageId: previousSubStage } as Project) : row)),
+        prev.map((row) =>
+          row.id === project.id ? ({ ...row, dashboardSubStageId: previousSubStage, dashboardBoardOrder: project.dashboardBoardOrder } as Project) : row,
+        ),
       );
     }
     setSubStageUpdatingProjectId("");
+  };
+
+  // A drop within the same column: only its place changes.
+  const reorderProjectOnBoard = async (project: Project, boardOrder: number) => {
+    if (!canEditProjectFromDashboard(project)) return;
+    setAllProjects((prev) => prev.map((row) => (row.id === project.id ? ({ ...row, dashboardBoardOrder: boardOrder } as Project) : row)));
+    const ok = await updateProjectPatch(project, { dashboardBoardOrder: boardOrder });
+    if (!ok) {
+      setAllProjects((prev) =>
+        prev.map((row) => (row.id === project.id ? ({ ...row, dashboardBoardOrder: project.dashboardBoardOrder } as Project) : row)),
+      );
+    }
   };
 
   // Captures the clicked column's exact on-screen box + color as the "shatter" animation's
@@ -1293,8 +1389,29 @@ export default function DashboardPage() {
       if (col) col.projects.push(project);
       else otherProjects.push(project);
     }
-    return { columns, otherProjects };
-  }, [filtered, statusRows]);
+    for (const col of columns) {
+      col.projects = sortBoardCards(col.projects, projectBoardSort !== "custom" ? projectBoardSort : projectColumnSorts[col.name] ?? "custom", projectBoardSortInfo);
+    }
+    return { columns, otherProjects: sortBoardCards(otherProjects, projectBoardSort, projectBoardSortInfo) };
+  }, [filtered, statusRows, projectBoardSort, projectColumnSorts]);
+  // A column's order for this user: the board-wide sort while one is set, else the column's own.
+  const projectColumnSortFor = (columnName: string): BoardSortMode =>
+    projectBoardSort !== "custom" ? projectBoardSort : projectColumnSorts[columnName] ?? "custom";
+  // Where a dragged project lands in a column: the pointer's spot in a custom-order column, or where
+  // the sort puts it in a sorted one (so its preview shows where it really goes).
+  const projectDropIndexFor = (mode: BoardSortMode, columnProjects: Project[], columnEl: Element, clientY: number, projectId: string): number => {
+    if (mode === "custom") return boardDropIndex(columnEl, clientY, projectId);
+    const project = allProjects.find((row) => row.id === projectId);
+    return project ? sortedBoardDropIndex(columnProjects, project, mode, projectBoardSortInfo) : 0;
+  };
+  // The new place for a project dropped at dropIndex among a column's other cards — undefined when
+  // the column is sorted (the sort places it) or it was dropped where it already is.
+  const boardOrderForDrop = (columnProjects: Project[], project: Project, dropIndex: number): number | undefined => {
+    const others = columnProjects.filter((row) => row.id !== project.id);
+    const before = others[dropIndex - 1];
+    const after = others[dropIndex];
+    return boardOrderBetween(before ? projectBoardSortInfo(before).key : null, after ? projectBoardSortInfo(after).key : null);
+  };
 
   // Sub-board: sub-stage columns for whichever main column is currently drilled into (empty when
   // none is open). Sourced from that column's already search/quick-filter-scoped `projects` list,
@@ -1483,12 +1600,16 @@ export default function DashboardPage() {
   const onProjectBoardCardDragEnd = () => {
     setDraggingProjectId("");
     setDragOverProjectStatusColumn("");
+    setProjectDropPreview(null);
     projectBoardDragGhost.end();
   };
 
-  const onProjectBoardColumnDrop = (event: ReactDragEvent<HTMLElement>, statusName: string) => {
+  // A dropped project lands in the column it was dropped on, at the exact spot (dropIndex: among that
+  // column's other cards; null for a collapsed column, where it only changes status).
+  const onProjectBoardColumnDrop = (event: ReactDragEvent<HTMLElement>, statusName: string, dropIndex: number | null) => {
     event.preventDefault();
     setDragOverProjectStatusColumn("");
+    setProjectDropPreview(null);
     const projectId = event.dataTransfer.getData("text/plain") || draggingProjectId;
     setDraggingProjectId("");
     // Dismiss the ghost here too, not just on the source card's onDragEnd — a successful drop can
@@ -1498,8 +1619,19 @@ export default function DashboardPage() {
     projectBoardDragGhost.end();
     const project = allProjects.find((row) => row.id === projectId);
     if (!project) return;
-    if (String(project.statusLabel || "New").trim().toLowerCase() === statusName.trim().toLowerCase()) return;
-    void onSelectProjectStatus(project, statusName);
+    const sameStatus = String(project.statusLabel || "New").trim().toLowerCase() === statusName.trim().toLowerCase();
+    const columnProjects =
+      dashboardStatusBoardColumns.columns.find((col) => col.name.trim().toLowerCase() === statusName.trim().toLowerCase())?.projects ?? [];
+    let boardOrder: number | undefined;
+    if (dropIndex !== null && projectColumnSortFor(statusName) === "custom") {
+      if (sameStatus && columnProjects.findIndex((row) => row.id === project.id) === dropIndex) return;
+      boardOrder = boardOrderForDrop(columnProjects, project, dropIndex);
+    }
+    if (sameStatus) {
+      if (boardOrder !== undefined) void reorderProjectOnBoard(project, boardOrder);
+      return;
+    }
+    void onSelectProjectStatus(project, statusName, boardOrder);
   };
 
   // Sub-board drag handlers — same shape as the main board's own trio above, reusing the SAME
@@ -1525,12 +1657,14 @@ export default function DashboardPage() {
   const onSubStageCardDragEnd = () => {
     setDraggingSubStageProjectId("");
     setDragOverSubStageColumn("");
+    setSubStageDropPreview(null);
     projectBoardDragGhost.end();
   };
 
-  const onSubStageColumnDrop = (event: ReactDragEvent<HTMLElement>, subStageKey: string) => {
+  const onSubStageColumnDrop = (event: ReactDragEvent<HTMLElement>, subStageKey: string, dropIndex: number | null) => {
     event.preventDefault();
     setDragOverSubStageColumn("");
+    setSubStageDropPreview(null);
     const projectId = event.dataTransfer.getData("text/plain") || draggingSubStageProjectId;
     setDraggingSubStageProjectId("");
     projectBoardDragGhost.end();
@@ -1538,8 +1672,18 @@ export default function DashboardPage() {
     if (!project) return;
     const nextSubStage = subStageKey;
     const currentSubStage = String((project as unknown as Record<string, unknown>).dashboardSubStageId ?? "").trim().toLowerCase();
-    if (currentSubStage === nextSubStage.trim().toLowerCase()) return;
-    void onSelectProjectSubStage(project, nextSubStage);
+    const sameSubStage = currentSubStage === nextSubStage.trim().toLowerCase();
+    const columnProjects = subBoardColumns.columns.find((col) => col.name === subStageKey)?.projects ?? [];
+    let boardOrder: number | undefined;
+    if (dropIndex !== null && projectColumnSortFor(openSubBoardColumnName) === "custom") {
+      if (sameSubStage && columnProjects.findIndex((row) => row.id === project.id) === dropIndex) return;
+      boardOrder = boardOrderForDrop(columnProjects, project, dropIndex);
+    }
+    if (sameSubStage) {
+      if (boardOrder !== undefined) void reorderProjectOnBoard(project, boardOrder);
+      return;
+    }
+    void onSelectProjectSubStage(project, nextSubStage, boardOrder);
   };
 
   const renderProjectBoardCard = (
@@ -1638,6 +1782,10 @@ export default function DashboardPage() {
     renderCard: (project: Project) => React.ReactNode;
     renderHeader: (badgeBg: string, badgeText: string) => React.ReactNode;
     emptyLabel?: string;
+    // While a project is dragged over this column: it (draggedId), and the spot its preview shows.
+    draggedId?: string;
+    dropPreviewIndex?: number | null;
+    dropPreviewProject?: Project | null;
   }) => {
     const glassColumnBg = hexToRgba(options.color, 0.85);
     const glassColumnBorder = "rgba(255,255,255,0.3)";
@@ -1676,10 +1824,26 @@ export default function DashboardPage() {
               the board's horizontal scroller, which blocked swiping between columns. See
               setCardListsScrollable in lib/board-sticky-scroll.ts. */}
           <div className="glass-scroll board-column-scroll flex-1 space-y-2.5 overflow-y-hidden p-2.5" style={{ scrollbarWidth: "none" }}>
-            {options.projects.length === 0 ? (
+            {options.projects.length === 0 && !options.dropPreviewProject ? (
               <p className="px-1 py-6 text-center text-[11px] font-semibold" style={{ color: columnTitleTextColor }}>{options.emptyLabel ?? "No projects."}</p>
             ) : (
-              options.projects.map((project) => options.renderCard(project))
+              withBoardDropPreview(
+                options.projects,
+                options.draggedId ?? "",
+                options.dropPreviewProject ? options.dropPreviewIndex ?? null : null,
+                (project) => (
+                  <div key={project.id} data-board-card-id={project.id}>
+                    {options.renderCard(project)}
+                  </div>
+                ),
+                () =>
+                  options.dropPreviewProject ? (
+                    // A faded copy of the dragged project, in the spot it will land.
+                    <div key="project-drop-preview" aria-hidden="true" inert className="pointer-events-none" style={BOARD_DROP_PREVIEW_STYLE}>
+                      {renderProjectBoardCard(options.dropPreviewProject, options.color, { idPrefix: "project-board-preview-", isDragging: false })}
+                    </div>
+                  ) : null,
+              )
             )}
           </div>
         </div>
@@ -1692,6 +1856,8 @@ export default function DashboardPage() {
   // both get the exact same collapse affordance/styling from one place.
   const renderColumnHeaderBar = (options: {
     left: React.ReactNode;
+    // The column's sort cog, left of its title (main board columns).
+    sortControl?: React.ReactNode;
     count: number;
     badgeBg: string;
     badgeText: string;
@@ -1699,7 +1865,14 @@ export default function DashboardPage() {
     collapseTitle: string;
   }) => (
     <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2.5" style={{ borderColor: "rgba(0,0,0,0.15)" }}>
-      {options.left}
+      {options.sortControl ? (
+        <div className="flex min-w-0 items-center gap-1.5">
+          {options.sortControl}
+          {options.left}
+        </div>
+      ) : (
+        options.left
+      )}
       <div className="flex shrink-0 items-center gap-1.5">
         <span
           className="inline-flex h-6 min-w-[24px] items-center justify-center rounded-full px-2 text-[10px] font-bold"
@@ -1816,16 +1989,30 @@ export default function DashboardPage() {
           const isDragOver = dragOverSubStageColumn === col.key;
           const collapseKey = subStageCollapseKey(col.key);
           const isCollapsed = Boolean(collapsedSubStageColumns[collapseKey]);
+          const subSortMode = projectColumnSortFor(openSubBoardColumnName);
           const dragHandlers = {
             onDragOver: (e: ReactDragEvent<HTMLElement>) => {
               e.preventDefault();
               if (dragOverSubStageColumn !== col.key) setDragOverSubStageColumn(col.key);
+              if (isCollapsed || !draggingSubStageProjectId) return;
+              const index = projectDropIndexFor(subSortMode, col.projects, e.currentTarget, e.clientY, draggingSubStageProjectId);
+              setSubStageDropPreview((prev) => (prev && prev.column === col.key && prev.index === index ? prev : { column: col.key, index }));
             },
             onDragLeave: (e: ReactDragEvent<HTMLElement>) => {
               if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
               setDragOverSubStageColumn((prev) => (prev === col.key ? "" : prev));
+              setSubStageDropPreview((prev) => (prev?.column === col.key ? null : prev));
             },
-            onDrop: (e: ReactDragEvent<HTMLElement>) => onSubStageColumnDrop(e, col.key),
+            onDrop: (e: ReactDragEvent<HTMLElement>) =>
+              onSubStageColumnDrop(
+                e,
+                col.key,
+                isCollapsed
+                  ? null
+                  : subStageDropPreview?.column === col.key
+                    ? subStageDropPreview.index
+                    : projectDropIndexFor(subSortMode, col.projects, e.currentTarget, e.clientY, draggingSubStageProjectId || e.dataTransfer.getData("text/plain")),
+              ),
           };
           if (isCollapsed) {
             return renderCollapsedBoardColumn({
@@ -1845,6 +2032,12 @@ export default function DashboardPage() {
             projects: col.projects,
             isDragOver,
             dragHandlers,
+            draggedId: draggingSubStageProjectId,
+            dropPreviewIndex: subStageDropPreview?.column === col.key ? subStageDropPreview.index : null,
+            dropPreviewProject:
+              subStageDropPreview?.column === col.key && draggingSubStageProjectId
+                ? allProjects.find((row) => row.id === draggingSubStageProjectId) ?? null
+                : null,
             renderCard: (project) =>
               renderProjectBoardCard(project, col.color, {
                 idPrefix: "project-substage-board-name-",
@@ -1898,16 +2091,31 @@ export default function DashboardPage() {
       {!showProjectsLoadingState && statusRowsLoaded && filtered.length > 0 && dashboardStatusBoardColumns.columns.map((column) => {
         const isDragOver = dragOverProjectStatusColumn === column.name;
         const isCollapsed = Boolean(collapsedProjectStatusColumns[column.name]);
+        const columnSortMode = projectColumnSortFor(column.name);
         const dragHandlers = {
           onDragOver: (e: ReactDragEvent<HTMLElement>) => {
             e.preventDefault();
             if (dragOverProjectStatusColumn !== column.name) setDragOverProjectStatusColumn(column.name);
+            if (isCollapsed || !draggingProjectId) return;
+            const index = projectDropIndexFor(columnSortMode, column.projects, e.currentTarget, e.clientY, draggingProjectId);
+            setProjectDropPreview((prev) => (prev && prev.column === column.name && prev.index === index ? prev : { column: column.name, index }));
           },
           onDragLeave: (e: ReactDragEvent<HTMLElement>) => {
             if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
             setDragOverProjectStatusColumn((prev) => (prev === column.name ? "" : prev));
+            setProjectDropPreview((prev) => (prev?.column === column.name ? null : prev));
           },
-          onDrop: (e: ReactDragEvent<HTMLElement>) => onProjectBoardColumnDrop(e, column.name),
+          // Lands where its preview showed (worked out again from the drop point if there wasn't one).
+          onDrop: (e: ReactDragEvent<HTMLElement>) =>
+            onProjectBoardColumnDrop(
+              e,
+              column.name,
+              isCollapsed
+                ? null
+                : projectDropPreview?.column === column.name
+                  ? projectDropPreview.index
+                  : projectDropIndexFor(columnSortMode, column.projects, e.currentTarget, e.clientY, draggingProjectId || e.dataTransfer.getData("text/plain")),
+            ),
         };
         if (isCollapsed) {
           return renderCollapsedBoardColumn({
@@ -1928,9 +2136,31 @@ export default function DashboardPage() {
             projects: column.projects,
             isDragOver,
             dragHandlers,
+            draggedId: draggingProjectId,
+            dropPreviewIndex: projectDropPreview?.column === column.name ? projectDropPreview.index : null,
+            dropPreviewProject:
+              projectDropPreview?.column === column.name && draggingProjectId
+                ? allProjects.find((row) => row.id === draggingProjectId) ?? null
+                : null,
             renderCard: (project) => renderProjectBoardCard(project, column.color),
             renderHeader: (badgeBg, badgeText) =>
               renderColumnHeaderBar({
+                sortControl: (
+                  <BoardColumnSortMenu
+                    columnName={column.name}
+                    value={projectColumnSorts[column.name] ?? "custom"}
+                    overriddenBy={projectBoardSort}
+                    onChange={(mode) =>
+                      setProjectColumnSorts((prev) => {
+                        const next = { ...prev };
+                        if (mode === "custom") delete next[column.name];
+                        else next[column.name] = mode;
+                        return next;
+                      })
+                    }
+                    buttonStyle={{ color: badgeText, backgroundColor: badgeBg }}
+                  />
+                ),
                 left:
                   column.subStages.length > 0 ? (
                     <button
@@ -2914,6 +3144,7 @@ export default function DashboardPage() {
                     <Kanban size={15} style={{ color: dashboardViewMode === "board" ? "#fff" : dashboardPalette.textMuted }} />
                   </span>
                 </button>
+                {dashboardViewMode === "board" && <BoardSortButton value={projectBoardSort} onChange={setProjectBoardSort} />}
                 {dashboardViewMode === "list" && (
                   // Hidden on mobile — infinite scroll (see the load-more-near-bottom effect
                   // further down) already reveals more projects automatically as the user
