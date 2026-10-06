@@ -4016,8 +4016,11 @@ export default function CompanySettingsPage() {
                   </div>
                 ) : null}
               </div>
+              {/* data-horizontal-swipe-scroll: on phones this strip scrolls sideways, so a sideways swipe on it
+                  scrolls it rather than opening the app's side drawers (see AppShell's swipe handling). */}
               <nav
                 ref={sectionNavRef}
+                data-horizontal-swipe-scroll="true"
                 className="-mx-1 flex gap-1 overflow-x-auto overscroll-x-contain px-1 lg:mx-0 lg:min-h-0 lg:flex-col lg:gap-0.5 lg:overflow-y-auto lg:px-0"
               >
                 {sections.map((item, idx) => {
@@ -5211,7 +5214,7 @@ export default function CompanySettingsPage() {
                     </div>
                   </Panel>
                   <Panel className="xl:col-span-2" title="Part types" icon={Shapes} description="The kinds of part in a cutlist — their colour, behaviour and where they're included." allowOverflow>
-                    <div className="overflow-x-auto">
+                    <div className="overflow-x-auto" data-horizontal-swipe-scroll="true">
                       <div className="min-w-[860px] space-y-1.5">
                         <div className="grid grid-cols-[36px_minmax(140px,1fr)_150px_210px_96px_86px_80px_32px] items-center gap-2 px-2">
                           <span />
@@ -5316,7 +5319,7 @@ export default function CompanySettingsPage() {
                       ) : null
                     }
                   >
-                    <div className="overflow-x-auto">
+                    <div className="overflow-x-auto" data-horizontal-swipe-scroll="true">
                       {/* Desktop: a table. Below desktop each person is a two-line row — name, role and
                           remove on top, email and mobile under the name — instead of a table that
                           needed sideways scrolling. */}

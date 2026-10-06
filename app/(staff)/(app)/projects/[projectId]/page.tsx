@@ -27370,9 +27370,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     }
   }, [project, sentSpecsVersionId]);
   useEffect(() => {
-    // Fires on either sub-tab — the hub doc's status covers both Specs and Quote in one fetch, so
-    // whichever one staff opens first should populate the chip for both.
-    if (resolvedTab === "sales" && salesAccess.view && (salesNav === "specifications" || salesNav === "quote")) {
+    // Fires anywhere in the Design tab — the hub doc's status covers both Specs and Quote in one fetch
+    // (whichever opens first populates the chip for both), and the Design tab's own Client Portal
+    // button only shows once there's a portal to open.
+    if (resolvedTab === "sales" && salesAccess.view) {
       void fetchSpecsShareStatus();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -28316,7 +28317,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         : { borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" },
       content: isQuoteGridOutdated ? (
         <>
-          <span>Project changed since last viewed — showing the version last seen</span>
+          <span>{isCompactProjectViewport ? "Project changed since last viewed" : "Project changed since last viewed — showing the version last seen"}</span>
           <button
             type="button"
             disabled={isSavingQuoteGridUpdate}
@@ -37793,7 +37794,44 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                           style={{ ...cutlistListColumnStyle(key), color: groupTextColor }}
                                           onDoubleClick={() => startInitialCellEdit(row, key)}
                                         >
-                                          {isInitialEditing(row.id, key) ? (
+                                          {isInitialEditing(row.id, key) && key === "clashing" ? (
+                                            (() => {
+                                              const parts = splitClashing(initialEditingCellValue);
+                                              // Saved once focus leaves both dropdowns (and their menus) — a click anywhere
+                                              // else in the list, like the other cells' text boxes saving on blur.
+                                              const commitWhenFocusLeaves = () => {
+                                                window.setTimeout(() => {
+                                                  const editorRoot = document.querySelector(`[data-initial-clashing-edit="${row.id}"]`);
+                                                  const active = document.activeElement;
+                                                  if (editorRoot && active && editorRoot.contains(active)) return;
+                                                  void commitInitialCellEdit();
+                                                }, 0);
+                                              };
+                                              return (
+                                                <div data-initial-clashing-edit={row.id} className="grid grid-cols-2 gap-1">
+                                                  <CompactPlainDropdown
+                                                    autoFocus
+                                                    value={parts.left}
+                                                    options={CLASH_LEFT_OPTIONS}
+                                                    disabled={isDrawerPartType(row.partType)}
+                                                    onChange={(next) => setInitialEditingCellValue(joinClashing(next, parts.right))}
+                                                    onCommit={() => void commitInitialCellEdit()}
+                                                    onCancel={cancelInitialCellEdit}
+                                                    onBlur={commitWhenFocusLeaves}
+                                                  />
+                                                  <CompactPlainDropdown
+                                                    value={parts.right}
+                                                    options={CLASH_RIGHT_OPTIONS}
+                                                    disabled={isDrawerPartType(row.partType)}
+                                                    onChange={(next) => setInitialEditingCellValue(joinClashing(parts.left, next))}
+                                                    onCommit={() => void commitInitialCellEdit()}
+                                                    onCancel={cancelInitialCellEdit}
+                                                    onBlur={commitWhenFocusLeaves}
+                                                  />
+                                                </div>
+                                              );
+                                            })()
+                                          ) : isInitialEditing(row.id, key) ? (
                                             <input
                                               autoFocus
                                               value={initialEditingCellValue}
@@ -51623,6 +51661,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   { label: "Upgrades", icon: ArrowLeftRight, key: "compare" as const },
                   { label: "Specifications", icon: ClipboardList, key: "specifications" as const },
                   { label: "Project Management", icon: HardHat, key: "projectManagement" as const },
+                  // Once something's been shared with the client — same as the Quote/Specifications windows' button.
+                  ...(specsShareStatus && project?.id ? [{ label: "Client Portal", icon: ExternalLink, key: "clientPortal" as const }] : []),
                 ].map((item) => {
                   const Icon = item.icon;
                   const active = (salesNav as string) === item.key;
@@ -51631,8 +51671,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     <button
                       type="button"
                       ref={item.key === "initial" ? initialMeasureTabButtonRef : undefined}
-                      disabled={salesReadOnly}
+                      disabled={item.key === "clientPortal" ? false : salesReadOnly}
                       onClick={(e) => {
+                        if (item.key === "clientPortal") {
+                          if (project?.id) openClientHubInNewTab(project.id);
+                          return;
+                        }
                         if (item.key === "projectManagement") {
                           projectManagementModalOriginElRef.current = e.currentTarget;
                           setProjectManagementModalOrigin(captureGlassModalOrigin(e));

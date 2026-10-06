@@ -1,70 +1,80 @@
-Version: v0.4.9
+Version: v0.5.0
 
 whatsNew: [
-<u><b>Calendar</b></u>
+<u><b>Archive</b></u>
 <ul>
-<li>New: a <b>Year</b> view — every month of the year in rows, scrolling through the year</li>
-<li>Desktop: scroll the mouse wheel in Month view to move to the next or previous month — smoothly, one month at a time, with no doubled weeks</li>
-<li>Day view: the time columns now line up with the all-day events above them</li>
-<li>Even spacing around the calendar on every side</li>
-<li>Event pop-up: a smaller date box, the <b>All day</b> switch next to Starts (the times hide when it's on), and <b>Link project</b> above the times</li>
-<li>Event pop-up: the cursor goes straight to the event name</li>
-<li>Events linked to a project you can't access hide their location, notes and project, and can't be edited</li>
-<li>iPhone: save the Calendar to your home screen with its own icon — it opens straight to the calendar</li>
+<li>New: an <b>Archive</b> page (in the menu below Company Settings) — it replaces Recently Deleted, and everything that was in there has moved across</li>
+<li>Tabs for <b>Leads</b>, <b>Projects</b> and <b>Contacts</b>, each with its own search and filed by year and month, showing the date each item was archived</li>
+<li>The Delete buttons on projects, leads and contacts now <b>Archive</b> instead — nothing is ever deleted automatically</li>
+<li><b>Restore</b> asks first, and for a project lets you pick the status (and sub-status) it comes back in</li>
+<li><b>Delete permanently</b> from the Archive, one at a time or by selecting several, always with a confirmation</li>
+<li>Years and months you collapse stay collapsed</li>
+<li>Archived leads are titled by the client's name</li>
 </ul>
 
-<u><b>Calendar Settings</b></u>
+<u><b>Finished Projects</b></u>
 <ul>
-<li>New: <b>Archive events after</b> — old events are archived automatically after the time you choose (kept, but no longer shown)</li>
-<li>New: choose whether events linked to a project show on the client portal by default</li>
-<li>Client portal, Old events and Workdays now sit in one column</li>
-</ul>
-
-<u><b>Client Portal</b></u>
-<ul>
-<li>New: a <b>Schedule</b> tab listing the project's events you've chosen to share</li>
-<li>Each event has a <b>Show on client portal</b> switch, including in the event's project row</li>
-<li>A red dot shows on Schedule, Quote and Specifications when something's new since the client's last visit</li>
-<li>Specifications groups set to the bottom of the page now sit at the bottom</li>
-</ul>
-
-<u><b>Dark Mode</b></u>
-<ul>
-<li>Dark mode reworked across every page of the app</li>
-<li>Quote and Specifications: only the sheet itself stays white</li>
-<li>The typing cursor now matches the text colour in both light and dark mode</li>
-<li>Remedials and notes text is now light in dark mode</li>
-<li>Dashboard project rows are glass in dark mode</li>
-</ul>
-
-<u><b>Dashboard</b></u>
-<ul>
-<li>The Completed and Staff pop-ups now match the rest of the app's pop-ups</li>
-<li>The header bar now matches the search bar's colour, with even spacing around the search bar and filters</li>
-<li>Kanban: the sub-status <b>Back</b> button slides away in list view and comes back when you return to the board</li>
-</ul>
-
-<u><b>Company Settings</b></u>
-<ul>
-<li>The company logo's Replace and Remove buttons now sit under the text</li>
-<li>Narrower Currency and Date format dropdowns</li>
-<li>Fixed the Zapier lead field layout sometimes resetting when saving</li>
+<li>Mark one project status as the <b>Completed</b> status in Company Settings</li>
+<li>New <b>Archive completed projects after</b> setting — Never, Instantly, or after a week up to a year</li>
+<li>Once archived, a project leaves the Dashboard and its client portal link stops working</li>
+<li>Archived projects open read-only for everyone, with a yellow header, an "Archived on" note and a Restore button</li>
+<li>Archived projects no longer appear in the top tab bar</li>
 </ul>
 
 <u><b>Projects</b></u>
 <ul>
-<li>Project status pills no longer use bold text</li>
-<li>Project details: the scrollbar now starts below the header</li>
+<li>New <b>Lacquer</b> column (m²) next to Edge Tape in the Design tab's Product container — faces plus clashed edges, for Lacquer (1 side) and (2 side) products</li>
+<li>Company Wrapped's lacquer total uses the same calculation</li>
+<li>New <b>Client Portal</b> button in the Design tab once something has been shared with the client</li>
+<li>Initial Measure cutlist: the Clashing column now uses the L / S dropdowns when editing, like Production</li>
+<li>Mobile: the Design tab's Add Room box sits above the keyboard</li>
+<li>Mobile: the Nesting and CNC Visibility search box works when tapped</li>
+<li>Mobile: the Quote's "Project changed since last viewed" banner is shorter</li>
+</ul>
+
+<u><b>Calendar</b></u>
+<ul>
+<li>New setting to <b>show or hide non-workdays</b> in Month and Week views (the Year view always shows every day)</li>
+<li>Opened from the Calendar home-screen icon, it now shows just the calendar — no side menus or tab bar</li>
+<li>Editing an event, or picking a category for a new one, colours the pop-up in that category's colour</li>
+<li>Mobile: event pop-ups open in the middle of the screen, unless they open the keyboard straight away</li>
+<li>Mobile: the Month view fits the screen, with space at the bottom for rounded corners</li>
+<li>Mobile: fixed a bar showing on the left behind the event pop-up</li>
+</ul>
+
+<u><b>Company Settings</b></u>
+<ul>
+<li>Removing a staff member lets you choose what to hand over to someone else — projects, contacts, leads and calendar events — and nothing is deleted</li>
+<li>Contacts the person receiving them already has (same email, phone or name) aren't handed over twice</li>
+<li>Deleting a tag now asks for confirmation</li>
+<li>Mobile: every section fits the screen, and the settings tabs scroll sideways</li>
+</ul>
+
+<u><b>Client Portal</b></u>
+<ul>
+<li>The whole client portal now works on phones</li>
+<li>The Quote and Specifications sheets fit the screen, with pinch to zoom</li>
+<li>An easy list of the Yes / No questions above the Specifications sheet on phones</li>
+</ul>
+
+<u><b>Leads & Contacts</b></u>
+<ul>
+<li>Lead cards show the client's first and last name</li>
+<li>The Add Contact pop-up only closes on a click outside it while it's still empty</li>
+<li>An archived contact can be viewed but not edited</li>
+</ul>
+
+<u><b>Dashboard</b></u>
+<ul>
+<li>Desktop: drag the Kanban board sideways by grabbing the background or a column</li>
 </ul>
 
 <u><b>App-Wide</b></u>
 <ul>
-<li>App-wide optimization rework</li>
-<li>Pop-ups: the page behind no longer scrolls, and buttons bounce less when a pop-up closes</li>
-<li>All scrollbars now use the glass style and stay below the title bars</li>
-<li>Colour pickers: you can now drag to pick a colour</li>
-<li>Security improvements</li>
-<li>Sign-up: fixed verification code emails, with a clearer message if one can't be sent</li>
-<li>New accounts no longer see the "What's new" pop-up for the version they joined on</li>
+<li>Clicking off an open dropdown only closes it — it no longer opens or presses whatever is underneath</li>
+<li>Mobile: pop-ups stay on screen when typing, and the blur reaches behind the keyboard</li>
+<li>Mobile: the pull-down menu and side swipes are switched off while a pop-up is open</li>
+<li>The page background now reaches the bottom of the screen on short pages</li>
+<li>Fixed some missing spaces in text</li>
 </ul>
 ]
