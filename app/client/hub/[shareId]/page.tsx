@@ -891,7 +891,9 @@ export default function ClientSpecsSharePage() {
                         </span>
                         <span className="shrink-0">These answers are now locked.</span>
                       </div>
-                    ) : hasConfirmableCells ? (
+                    ) : hasConfirmableCells && !isStaffPreview ? (
+                      // Submitting (like accepting the quote) is the client's to do — staff opening the
+                      // portal from the app (?staffPreview=1) don't get the button.
                       <div className="mb-4">
                         <SubmitBar
                           onSubmitClick={(e) => {
@@ -922,7 +924,7 @@ export default function ClientSpecsSharePage() {
                       />
                     </div>
 
-                    {!locked && hasConfirmableCells ? (
+                    {!locked && hasConfirmableCells && !isStaffPreview ? (
                       <div className="mt-4">
                         <SubmitBar
                           onSubmitClick={(e) => {
@@ -948,7 +950,7 @@ export default function ClientSpecsSharePage() {
                           : ""}
                         .
                       </div>
-                    ) : (
+                    ) : isStaffPreview ? null : (
                       <div className="mb-4">
                         <AcceptBar
                           onAcceptClick={(e) => {
@@ -974,7 +976,7 @@ export default function ClientSpecsSharePage() {
                       />
                     </div>
 
-                    {!quoteLocked ? (
+                    {!quoteLocked && !isStaffPreview ? (
                       <div className="mt-4">
                         <AcceptBar
                           onAcceptClick={(e) => {
