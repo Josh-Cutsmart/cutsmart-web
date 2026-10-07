@@ -472,7 +472,7 @@ export default function DashboardPage() {
   const boardCheckRef = useRef<(() => void) | null>(null);
   // See lib/board-sticky-scroll.ts for the mechanism (position:sticky natively pinning the panel
   // + column-height-reveal), and why it no longer forces the page's own overflow to "hidden".
-  const boardStickyRef = useBoardStickyRef(dashboardViewModeRef, boardCheckRef, { bottomPadPx: 10 });
+  const boardStickyRef = useBoardStickyRef(dashboardViewModeRef, boardCheckRef, { bottomPadPx: 10, phoneBottomPadPx: 20 });
   // Re-run the check immediately on a view-mode toggle (rather than waiting for the next scroll
   // or resize) so switching into/out of board view updates the lock/height state right away.
   // useLayoutEffect, not useEffect: dashboardViewMode starts as "list" and only flips to "board"
@@ -3396,7 +3396,7 @@ export default function DashboardPage() {
           <div
             ref={boardScrollContainerCallbackRef}
             data-horizontal-swipe-scroll="true"
-            className="glass-scroll hide-native-scrollbar grid snap-x snap-mandatory overflow-x-auto overflow-y-hidden px-[10px] pb-[10px] pt-2 sm:snap-none lg:px-4"
+            className="glass-scroll hide-native-scrollbar grid snap-x snap-mandatory overflow-x-auto overflow-y-hidden px-[10px] pb-[10px] pt-2 max-md:pb-5 sm:snap-none lg:px-4"
             style={{ flex: "1 1 auto", minHeight: 0, gridTemplateRows: "1fr" }}
           >
             {/* Main board vs. sub-board: both grid-stacked onto the SAME cell (gridArea: "1 / 1")

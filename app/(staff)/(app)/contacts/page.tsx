@@ -526,7 +526,7 @@ function ClientsPageInner() {
   useEffect(() => {
     // While the list is still loading, wait for it: its rows are the merged view (live project data
     // layered over the saved record), whereas fetching a single contact first (e.g. when landing on
-    // /clients?contact=<id>) returns just the saved record with an older project history.
+    // /contacts?contact=<id>) returns just the saved record with an older project history.
     if (loading || !activeClientId || !activeCompanyId || clientDetailsById[activeClientId]) return;
     let cancelled = false;
     const loadClientDetail = async () => {
@@ -665,7 +665,7 @@ function ClientsPageInner() {
     return () => window.removeEventListener("popstate", onPopState);
   }, [hideDetail, showDetail]);
 
-  // A Next <Link> to /clients (the sidebar's Contacts item) changes the URL without a popstate, so the
+  // A Next <Link> to /contacts (the sidebar's Contacts item) changes the URL without a popstate, so the
   // search params are watched too: ?contact=<id> disappearing while the contact page is open closes it.
   const searchParams = useSearchParams();
   const contactParam = searchParams.get("contact") || "";
@@ -684,9 +684,9 @@ function ClientsPageInner() {
     }
   }, [contactParam, hideDetail]);
 
-  // Landing on /clients?contact=<id> (reload, or Back from a project opened out of a contact) starts
+  // Landing on /contacts?contact=<id> (reload, or Back from a project opened out of a contact) starts
   // with that contact already open, with no slide. That history entry was pushed by this page, so
-  // closing the contact pops it (history.back) instead of leaving a duplicate /clients entry.
+  // closing the contact pops it (history.back) instead of leaving a duplicate /contacts entry.
   useEffect(() => {
     const id = new URLSearchParams(window.location.search).get("contact") || "";
     if (!id) return;

@@ -5,7 +5,7 @@ whatsNew: [
 <ul>
 <li>Get your CutSmart notifications on your phone's lock screen or your computer, even when CutSmart is closed — turn them on in <b>User Settings</b></li>
 <li>Choose exactly what you're notified about, by category: Projects, Leads, Client Portal, Calendar and CutSmart — turn a whole category off in one go, or search for a notification</li>
-<li>New <b>Time between notifications</b> setting: anything that comes in during it is held and sent together as one (e.g. "10 new leads")</li>
+<li>New <b>Time between notifications</b> setting: anything that comes in during it is held and sent together as one, listed a line each (e.g. "10 new leads")</li>
 <li>New: <b>new leads</b> (if you can see leads), being <b>added to a lead or project</b> (as an editor or viewer), and <b>quotes declined</b> by clients</li>
 <li>Specifications submitted now says how many items the client accepted (e.g. 12/15)</li>
 <li><b>Calendar reminders</b> for events on your projects — add as many as you like, each with its own time (30 minutes to a month before; all-day events by days, weeks or months)</li>
@@ -88,6 +88,7 @@ whatsNew: [
 <u><b>Leads & Contacts</b></u>
 <ul>
 <li>Lead cards show the client's first and last name</li>
+<li>Contacts' web address is now <b>/contacts</b> (was /clients) — old links, bookmarks and Home Screen icons still open it</li>
 <li>The Add Contact pop-up only closes on a click outside it while it's still empty</li>
 <li>An archived contact can be viewed but not edited</li>
 <li>Every staff member is now in everyone's Contacts, under a new built-in <b>Staff</b> category (its colour can be changed in Company Settings)</li>

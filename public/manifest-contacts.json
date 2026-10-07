@@ -2,7 +2,7 @@
   "id": "/clients",
   "name": "CutSmart Contacts",
   "short_name": "Contacts",
-  "start_url": "/clients",
+  "start_url": "/contacts",
   "scope": "/",
   "display": "standalone",
   "background_color": "#eef2f9",

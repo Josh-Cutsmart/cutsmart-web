@@ -819,7 +819,7 @@ export default function LeadsPage() {
   // See lib/board-sticky-scroll.ts for the mechanism (position:sticky natively pinning the row +
   // column-height-reveal, plus the shared Left/Right arrow-key handling), and why it no longer
   // forces the page's own overflow to "hidden".
-  const boardStickyRef = useBoardStickyRef(leadsViewModeRef, boardCheckRef, { bottomPadPx: 8, attachArrowKeyScroll: true });
+  const boardStickyRef = useBoardStickyRef(leadsViewModeRef, boardCheckRef, { bottomPadPx: 8, phoneBottomPadPx: 20, attachArrowKeyScroll: true });
   // Re-run the check immediately on a view-mode toggle (rather than waiting for the next scroll
   // or resize) so switching into/out of board view updates the lock/height state right away.
   // useLayoutEffect, not useEffect: leadsViewMode can flip away from and back to "board" as the
@@ -3709,7 +3709,7 @@ export default function LeadsPage() {
               <div
                 ref={boardStickyRef}
                 data-horizontal-swipe-scroll="true"
-                className="glass-scroll sticky top-0 flex h-[calc(100svh-48px)] min-h-[280px] snap-x snap-mandatory items-stretch gap-2 -mx-2 -mt-2 px-2 pb-2 pt-2 sm:snap-none lg:top-[48px] lg:h-[calc(100svh-48px)] lg:min-h-[320px]"
+                className="glass-scroll sticky top-0 flex h-[calc(100svh-48px)] min-h-[280px] snap-x snap-mandatory items-stretch gap-2 -mx-2 -mt-2 px-2 pb-2 pt-2 max-md:pb-5 sm:snap-none lg:top-[48px] lg:h-[calc(100svh-48px)] lg:min-h-[320px]"
                 style={{ overflowX: "auto", overflowY: "hidden" }}
               >
                 {leadStatusBoardColumns.columns.map((column) => {

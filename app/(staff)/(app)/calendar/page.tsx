@@ -619,9 +619,22 @@ function CalendarPageContent() {
   // Lets the pop-up's category wash fade between colours (popupTintStyle).
   useEffect(() => registerPopupTint(), []);
 
+  // New event (the + / New event button): all day, on the day being looked at in the Day view, otherwise
+  // today — with the next half hour as its time if All day is switched off.
+  const newEventStartMs = () => {
+    const nextMs = nextHalfHourMs();
+    if (view !== "day" || startOfDay(cursor).getTime() === startOfDay(new Date()).getTime()) return nextMs;
+    const next = new Date(nextMs);
+    const onDay = new Date(cursor);
+    onDay.setHours(next.getHours(), next.getMinutes(), 0, 0);
+    return onDay.getTime();
+  };
+
   const openNew = (startMs: number, allDay: boolean, e?: ReactMouseEvent<HTMLElement> | ReactPointerEvent<HTMLElement>) => {
     if (!canCreate) return;
-    const endMs = allDay ? startMs : startMs + 60 * 60 * 1000;
+    // An all-day event ends the same day; its times (used if All day is switched off) still span an hour.
+    const timedEndMs = startMs + 60 * 60 * 1000;
+    const endMs = allDay ? startMs : timedEndMs;
     setModalOrigin(e ? captureGlassModalOrigin(e as ReactMouseEvent<HTMLElement>) : null);
     setModalError("");
     setConfirmDelete(false);
@@ -636,7 +649,7 @@ function CalendarPageContent() {
       startDate: toDateInput(startMs),
       startTime: toTimeInput(startMs),
       endDate: toDateInput(endMs),
-      endTime: toTimeInput(endMs),
+      endTime: toTimeInput(timedEndMs),
       location: "",
       notes: "",
       projectId: "",
@@ -1973,7 +1986,7 @@ function CalendarPageContent() {
             Calendar
           </div>
           {canCreate ? (
-            <button type="button" onClick={(e) => openNew(nextHalfHourMs(), false, e)} className={primaryButtonClass} style={primaryButtonStyle}>
+            <button type="button" onClick={(e) => openNew(newEventStartMs(), true, e)} className={primaryButtonClass} style={primaryButtonStyle}>
               <Plus size={15} /> New event
             </button>
           ) : null}
@@ -2037,7 +2050,7 @@ function CalendarPageContent() {
         ? createPortal(
             <button
               type="button"
-              onClick={(e) => openNew(nextHalfHourMs(), false, e)}
+              onClick={(e) => openNew(newEventStartMs(), true, e)}
               className="fixed right-4 z-[60] inline-flex h-14 w-14 items-center justify-center rounded-full border text-white shadow-[0_10px_28px_rgba(15,23,42,0.28)] transition hover:brightness-105 active:scale-95 lg:hidden"
               style={{ bottom: "calc(20px + env(safe-area-inset-bottom))", backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
               aria-label="New event"

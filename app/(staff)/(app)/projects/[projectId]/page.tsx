@@ -51313,7 +51313,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               type="button"
                               disabled={!projectContact}
                               onClick={() => {
-                                if (projectContact) router.push(`/clients?contact=${encodeURIComponent(projectContact.id)}`);
+                                if (projectContact) router.push(`/contacts?contact=${encodeURIComponent(projectContact.id)}`);
                               }}
                               className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-full text-[16px] font-medium leading-none transition enabled:hover:brightness-105 disabled:cursor-default"
                               title={projectContact ? "Open contact card" : undefined}

@@ -69,22 +69,25 @@ const MAX_HELD = 50;
 
 export type HeldPush = { type: string; title: string; body: string; url: string; atMs: number };
 
-// One notification standing for several: "10 new leads" (with the latest few), or for a mix,
-// "5 new notifications" / "3 new leads · 2 quotes accepted".
+// One notification standing for several, as a list — a line each (phones and computers show the first
+// few, and the rest when it's expanded): "10 new leads" with the latest few, or for a mix, "5 new
+// notifications" with how many of each kind ("• 3 new leads", "• 2 quotes accepted").
+const GROUP_LIST_LINES = 5;
+const groupListLine = (text: string) => `• ${text.length > 90 ? `${text.slice(0, 87).trimEnd()}…` : text}`;
+
 export function groupedPayload(held: HeldPush[], total: number): PushPayload {
   if (held.length === 1 && total === 1) {
     return { title: held[0].title, body: held[0].body, url: held[0].url, tag: "cutsmart-group" };
   }
   const types = Array.from(new Set(held.map((item) => item.type)));
   const urls = Array.from(new Set(held.map((item) => item.url)));
-  const clip = (text: string) => (text.length > 180 ? `${text.slice(0, 177).trimEnd()}…` : text);
   if (types.length === 1) {
     const phrase = pushGroupPhrase(types[0], total);
-    const latest = held.slice(-3).reverse().map((item) => item.body || item.title).filter(Boolean);
+    const latest = held.slice(-GROUP_LIST_LINES).reverse().map((item) => item.body || item.title).filter(Boolean);
     const more = total - latest.length;
     return {
       title: phrase.charAt(0).toUpperCase() + phrase.slice(1),
-      body: clip(`${latest.join(" · ")}${more > 0 ? ` · and ${more} more` : ""}`),
+      body: [...latest.map(groupListLine), ...(more > 0 ? [`and ${more} more`] : [])].join("\n"),
       url: urls.length === 1 ? urls[0] : types[0].startsWith("lead_") ? "/leads" : "/dashboard",
       tag: "cutsmart-group",
     };
@@ -94,7 +97,7 @@ export function groupedPayload(held: HeldPush[], total: number): PushPayload {
     .sort((a, b) => b.count - a.count);
   return {
     title: `${total} new notifications`,
-    body: clip(counts.map(({ type, count }) => pushGroupPhrase(type, count)).join(" · ")),
+    body: counts.map(({ type, count }) => groupListLine(pushGroupPhrase(type, count))).join("\n"),
     url: urls.length === 1 ? urls[0] : "/dashboard",
     tag: "cutsmart-group",
   };

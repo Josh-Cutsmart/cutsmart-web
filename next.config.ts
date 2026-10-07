@@ -1,6 +1,14 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // The Contacts page used to be at /clients — old links, bookmarks and home-screen icons still land on it
+  // (with their ?contact=<id> kept).
+  async redirects() {
+    return [
+      { source: "/clients", destination: "/contacts", permanent: true },
+      { source: "/clients/:path*", destination: "/contacts/:path*", permanent: true },
+    ];
+  },
   async headers() {
     return [
       {

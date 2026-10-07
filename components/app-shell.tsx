@@ -130,7 +130,7 @@ function normalizeGapAllowancesSettings(raw: unknown): GapAllowancesSettings {
 const topNav = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/leads", label: "Leads", icon: Inbox },
-  { href: "/clients", label: "Contacts", icon: Users },
+  { href: "/contacts", label: "Contacts", icon: Users },
   { href: "/calendar", label: "Calendar", icon: CalendarDays },
   { href: "/wrapped", label: "Company Wrapped", icon: PartyPopper },
   { href: "/company-settings", label: "Company Settings", icon: Settings },
@@ -1399,7 +1399,7 @@ export function AppShell({
     () =>
       topNav.filter((item) => {
         if (item.href === "/dashboard") return canAccessDashboard;
-        if (item.href === "/clients") return canAccessClients;
+        if (item.href === "/contacts") return canAccessClients;
         if (item.href === "/leads") return canAccessLeads;
         if (item.href === "/calendar") return canAccessCalendar;
         if (item.href === "/company-settings") return canAccessCompanySettings;
@@ -3096,25 +3096,41 @@ export function AppShell({
                       transition: "opacity 200ms ease",
                     }}
                   >
-                    <button
-                      type="button"
-                      onClick={openUserSettingsPanel}
-                      className="flex w-full items-center gap-3 rounded-[12px] px-3 py-3 text-left transition hover:bg-[var(--panel-muted)]"
-                      aria-label="Open user settings"
-                    >
-                      <div
-                        className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[14px] font-extrabold text-white"
-                        style={{ backgroundColor: userEmblemColor }}
+                    {/* The bar: tap it for the card above; the cog beside the name goes straight to User Settings. */}
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={openUserSettingsPanel}
+                        className="flex min-w-0 flex-1 items-center gap-3 rounded-[12px] px-3 py-3 text-left transition hover:bg-[var(--panel-muted)]"
+                        aria-label="Open user settings"
                       >
-                        {userInitials}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="m-0 block truncate text-[16px] font-semibold" style={{ color: shellPalette.text }}>{user?.displayName || "CutSmart User"}</p>
-                        {isDemoMode && (
-                          <span className="block truncate text-[12px] font-semibold" style={{ color: "#B7791F" }}>Demo data mode</span>
-                        )}
-                      </div>
-                    </button>
+                        <div
+                          className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[14px] font-extrabold text-white"
+                          style={{ backgroundColor: userEmblemColor }}
+                        >
+                          {userInitials}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="m-0 block truncate text-[16px] font-semibold" style={{ color: shellPalette.text }}>{user?.displayName || "CutSmart User"}</p>
+                          {isDemoMode && (
+                            <span className="block truncate text-[12px] font-semibold" style={{ color: "#B7791F" }}>Demo data mode</span>
+                          )}
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMobileNavOpen(false);
+                          router.push("/user-settings");
+                        }}
+                        className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[12px] transition hover:bg-[var(--panel-muted)]"
+                        style={{ color: shellPalette.textMuted }}
+                        aria-label="User Settings"
+                        title="User Settings"
+                      >
+                        <Settings size={20} />
+                      </button>
+                    </div>
                   </div>
                   <div
                     ref={mobileBottomPanelRef}

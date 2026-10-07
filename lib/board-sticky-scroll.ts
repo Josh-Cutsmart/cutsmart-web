@@ -28,9 +28,13 @@ import { attachBoardArrowKeyScroll } from "@/lib/board-arrow-key-scroll";
 export function useBoardStickyRef(
   viewModeRef: RefObject<string>,
   checkRef: MutableRefObject<(() => void) | null>,
-  opts?: { bottomPadPx?: number; attachArrowKeyScroll?: boolean },
+  // bottomPadPx: the gap left under the columns while they grow into view — the same as the board's own
+  // bottom padding (the gap once it's stuck), so it's the same all the way. phoneBottomPadPx: the same on a
+  // phone (under 768px), if different.
+  opts?: { bottomPadPx?: number; phoneBottomPadPx?: number; attachArrowKeyScroll?: boolean },
 ): (el: HTMLDivElement | null) => void {
-  const bottomPadPx = opts?.bottomPadPx ?? 10;
+  const desktopBottomPadPx = opts?.bottomPadPx ?? 10;
+  const phoneBottomPadPx = opts?.phoneBottomPadPx ?? desktopBottomPadPx;
   const shouldAttachArrowKeyScroll = opts?.attachArrowKeyScroll ?? false;
   const cleanupRef = useRef<(() => void) | null>(null);
 
@@ -42,6 +46,7 @@ export function useBoardStickyRef(
       if (!el) return;
       let raf = 0;
       const mainEl = document.querySelector("main");
+      const phoneQuery = window.matchMedia("(max-width: 767px)");
       // Each column's card list toggles overflow-y/touchAction directly on the DOM (not via React
       // state) for the same reason height is written directly below: going through setState here
       // would add a render cycle between "scroll crossed the threshold" and "the column can
@@ -156,6 +161,7 @@ export function useBoardStickyRef(
         // rather than snapping straight to it, avoiding a jump at the handoff. Measured off each
         // column's own rect (not the wrapper's) so this stays correct regardless of any padding
         // between the wrapper and the columns.
+        const bottomPadPx = phoneQuery.matches ? phoneBottomPadPx : desktopBottomPadPx;
         const grownHeight = Math.min(cachedFullHeight, Math.max(0, window.innerHeight - bottomPadPx - colRect.top));
         const nextHeight = grownHeight < cachedFullHeight - 0.5 ? `${grownHeight}px` : "";
         columns.forEach((col) => {

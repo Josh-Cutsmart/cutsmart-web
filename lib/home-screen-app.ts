@@ -18,7 +18,7 @@ export type HomeScreenApp = "calendar" | "leads" | "contacts";
 const APP_BY_PATH: Record<string, HomeScreenApp> = {
   "/calendar": "calendar",
   "/leads": "leads",
-  "/clients": "contacts",
+  "/contacts": "contacts",
 };
 
 const STORAGE_KEY = "cutsmart_home_screen_app";

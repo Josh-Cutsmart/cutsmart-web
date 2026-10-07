@@ -62,6 +62,7 @@ import { contrastTextForFill, labelFromRoleKey, normalizeRoleKey } from "@/lib/u
 import { SidebarColorPickerPopover, type ColorPickerAnchorRect } from "@/components/sidebar-color-picker-popover";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { PUSH_CATEGORY_ICONS, PushNotificationSettings } from "@/components/push-notification-settings";
+import { iconRemoveButtonClass } from "@/components/settings-ui";
 import { PUSH_NOTIFICATION_CATEGORIES } from "@/lib/push-notification-types";
 import { SlideOverPane, useIsPhone, useSlideOverPage } from "@/components/slide-over-page";
 
@@ -121,11 +122,12 @@ function MobileSettingsRow({
   onClick?: (event: ReactMouseEvent<HTMLButtonElement>) => void;
   children?: ReactNode;
 }) {
+  const tone = accent ? "var(--brand-strong)" : "";
   const content = (
     <>
-      <Icon size={17} className="shrink-0" style={{ color: accent ? "var(--brand-strong)" : "var(--text-muted)" }} />
+      <Icon size={17} className="shrink-0" style={{ color: tone || "var(--text-muted)" }} />
       <div className="min-w-0 flex-1">
-        <p className="truncate text-[14px] font-medium" style={{ color: accent ? "var(--brand-strong)" : "var(--text-main)" }}>{label}</p>
+        <p className="truncate text-[14px] font-medium" style={{ color: tone || "var(--text-main)" }}>{label}</p>
         {detail ? <p className="mt-0.5 text-[11px] leading-snug" style={{ color: "var(--text-muted)" }}>{detail}</p> : null}
       </div>
       {children}
@@ -194,6 +196,8 @@ export default function UserSettingsPage() {
     setNotificationsSearch(notificationsQuery);
     sectionSlide.open(sectionId);
   };
+  // Phone: a checklist's own page (its items), sliding in over the Checklists page.
+  const checklistSlide = useSlideOverPage(sectionSlide.paneRef, "userSettingsChecklist");
   const { canInstall: pwaCanInstall, isInstalled: pwaIsInstalled } = usePwaInstall();
   const [isIosInstallHint, setIsIosInstallHint] = useState(false);
   useEffect(() => {
@@ -233,6 +237,19 @@ export default function UserSettingsPage() {
   const [checklistEditorId, setChecklistEditorId] = useState("");
   const [checklistNameDraft, setChecklistNameDraft] = useState("");
   const [checklistRowsDraft, setChecklistRowsDraft] = useState<string[]>([""]);
+  // Deleting a checklist with anything in it takes a second tap to confirm (its Delete shows "Delete?").
+  const [confirmDeleteChecklistId, setConfirmDeleteChecklistId] = useState("");
+  // Likewise removing a checklist row with something typed in it ("Remove?") — an empty one just goes. Keyed
+  // by the item's id (a checklist's page) or "draft:<index>" (the checklist editor).
+  const [confirmRemoveRowKey, setConfirmRemoveRowKey] = useState("");
+  const confirmRowRemoval = (rowKey: string, hasText: boolean) => {
+    if (!hasText || confirmRemoveRowKey === rowKey) {
+      setConfirmRemoveRowKey("");
+      return true;
+    }
+    setConfirmRemoveRowKey(rowKey);
+    return false;
+  };
   const [isVerifyBoxOpen, setIsVerifyBoxOpen] = useState(false);
   const [verifyCode, setVerifyCode] = useState("");
   const [verifyError, setVerifyError] = useState("");
@@ -523,6 +540,7 @@ export default function UserSettingsPage() {
   }, [user?.uid]);
 
   const openNewChecklistEditor = () => {
+    setConfirmRemoveRowKey("");
     setChecklistEditorId("");
     setChecklistNameDraft("");
     setChecklistRowsDraft([""]);
@@ -530,6 +548,7 @@ export default function UserSettingsPage() {
   };
 
   const openExistingChecklistEditor = (template: ChecklistTemplate) => {
+    setConfirmRemoveRowKey("");
     setChecklistEditorId(template.id);
     setChecklistNameDraft(template.name);
     setChecklistRowsDraft(template.items.length ? template.items.map((item) => item.text) : [""]);
@@ -560,6 +579,17 @@ export default function UserSettingsPage() {
       });
       setIsChecklistEditorOpen(false);
     }
+  };
+
+  const requestDeleteChecklist = (template: ChecklistTemplate, onDeleting?: () => void) => {
+    const hasItems = template.items.some((item) => item.text.trim());
+    if (hasItems && confirmDeleteChecklistId !== template.id) {
+      setConfirmDeleteChecklistId(template.id);
+      return;
+    }
+    setConfirmDeleteChecklistId("");
+    onDeleting?.();
+    void removeChecklistTemplate(template.id);
   };
 
   const removeChecklistTemplate = async (templateId: string) => {
@@ -1057,12 +1087,21 @@ export default function UserSettingsPage() {
             <button
               type="button"
               disabled={checklistRowsDraft.length <= 1}
-              onClick={() => setChecklistRowsDraft((prev) => prev.filter((_, i) => i !== idx))}
-              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] transition hover:bg-[var(--panel-bg)] disabled:opacity-30"
-              style={{ color: "var(--text-muted)" }}
-              aria-label="Remove row"
+              onClick={() => {
+                if (confirmRowRemoval(`draft:${idx}`, Boolean(rowText.trim()))) {
+                  setChecklistRowsDraft((prev) => prev.filter((_, i) => i !== idx));
+                }
+              }}
+              className="inline-flex h-8 min-w-8 shrink-0 items-center justify-center gap-1 rounded-[8px] px-2 transition hover:bg-[var(--panel-bg)] disabled:opacity-30"
+              style={
+                confirmRemoveRowKey === `draft:${idx}`
+                  ? { color: "var(--danger-strong)", backgroundColor: "var(--danger-soft)" }
+                  : { color: "var(--text-muted)" }
+              }
+              aria-label={confirmRemoveRowKey === `draft:${idx}` ? "Click again to remove row" : "Remove row"}
             >
               <X size={14} />
+              {confirmRemoveRowKey === `draft:${idx}` ? <span className="text-[11px] font-semibold">Remove?</span> : null}
             </button>
           </div>
         ))}
@@ -1127,12 +1166,16 @@ export default function UserSettingsPage() {
             </button>
             <button
               type="button"
-              onClick={() => void removeChecklistTemplate(template.id)}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] transition hover:bg-[var(--danger-soft)]"
-              style={{ color: "var(--danger-strong)" }}
-              aria-label={`Delete ${template.name}`}
+              onClick={() => requestDeleteChecklist(template)}
+              className="inline-flex h-8 min-w-8 items-center justify-center gap-1 rounded-[8px] px-2 transition hover:bg-[var(--danger-soft)]"
+              style={{
+                color: "var(--danger-strong)",
+                backgroundColor: confirmDeleteChecklistId === template.id ? "var(--danger-soft)" : undefined,
+              }}
+              aria-label={confirmDeleteChecklistId === template.id ? `Click again to delete ${template.name}` : `Delete ${template.name}`}
             >
               <Trash2 size={13} />
+              {confirmDeleteChecklistId === template.id ? <span className="text-[11px] font-semibold">Delete?</span> : null}
             </button>
           </div>
         </div>
@@ -1354,7 +1397,65 @@ export default function UserSettingsPage() {
         ))}
     </div>
   );
-  const phoneChecklists = isChecklistEditorOpen ? (
+  const itemCountLabel = (template: ChecklistTemplate) => `${template.items.length} item${template.items.length === 1 ? "" : "s"}`;
+  // Opening a checklist's page starts it showing its items (not an editor left open from before).
+  // A checklist's page is always editable: tap its name or an item to change it, X removes an item, Add Row
+  // adds one — each change saved as it's made.
+  const [editingChecklistItemId, setEditingChecklistItemId] = useState("");
+  const [checklistItemDraft, setChecklistItemDraft] = useState("");
+  const [isEditingChecklistName, setIsEditingChecklistName] = useState(false);
+  const [checklistNameEditDraft, setChecklistNameEditDraft] = useState("");
+  const openChecklistPage = (templateId: string) => {
+    setConfirmDeleteChecklistId("");
+    setConfirmRemoveRowKey("");
+    setEditingChecklistItemId("");
+    setIsEditingChecklistName(false);
+    checklistSlide.open(templateId);
+  };
+  // Shown straight away, then saved (without any empty item still being typed).
+  const saveChecklistChange = (next: ChecklistTemplate) => {
+    setChecklistTemplates((prev) => prev.map((t) => (t.id === next.id ? next : t)).sort((a, b) => a.name.localeCompare(b.name)));
+    const uid = String(user?.uid || "").trim();
+    const items = next.items.map((item) => ({ ...item, text: item.text.trim() })).filter((item) => item.text);
+    if (uid && next.name.trim() && items.length) void saveChecklistTemplate(uid, { ...next, items });
+  };
+  const commitChecklistName = (template: ChecklistTemplate) => {
+    setIsEditingChecklistName(false);
+    const name = checklistNameEditDraft.trim();
+    if (name && name !== template.name) saveChecklistChange({ ...template, name });
+  };
+  const startEditingChecklistItem = (item: ChecklistTemplate["items"][number]) => {
+    setConfirmRemoveRowKey("");
+    setEditingChecklistItemId(item.id);
+    setChecklistItemDraft(item.text);
+  };
+  // Emptied, an item goes (unless it's the only one).
+  const commitChecklistItem = (template: ChecklistTemplate) => {
+    const itemId = editingChecklistItemId;
+    if (!itemId) return;
+    setEditingChecklistItemId("");
+    const text = checklistItemDraft.trim();
+    const items = text
+      ? template.items.map((item) => (item.id === itemId ? { ...item, text } : item))
+      : template.items.length > 1
+        ? template.items.filter((item) => item.id !== itemId)
+        : template.items;
+    saveChecklistChange({ ...template, items });
+  };
+  const removeChecklistItem = (template: ChecklistTemplate, itemId: string) => {
+    if (template.items.length <= 1) return;
+    if (editingChecklistItemId === itemId) setEditingChecklistItemId("");
+    saveChecklistChange({ ...template, items: template.items.filter((item) => item.id !== itemId) });
+  };
+  // A new, empty item at the bottom, ready to type in (saved once it has text).
+  const addChecklistRow = (templateId: string) => {
+    const id = newChecklistLocalId("item");
+    setChecklistTemplates((prev) => prev.map((t) => (t.id === templateId ? { ...t, items: [...t.items, { id, text: "" }] } : t)));
+    setEditingChecklistItemId(id);
+    setChecklistItemDraft("");
+  };
+  const isCreatingChecklist = isChecklistEditorOpen && !checklistEditorId;
+  const phoneChecklists = isCreatingChecklist ? (
     <div className="rounded-[18px] border p-3" style={glassCardStyle}>
       {checklistsContent}
     </div>
@@ -1365,36 +1466,137 @@ export default function UserSettingsPage() {
           key={template.id}
           icon={ClipboardList}
           label={template.name}
-          detail={`${template.items.length} item${template.items.length === 1 ? "" : "s"}`}
+          detail={itemCountLabel(template)}
+          onClick={() => openChecklistPage(template.id)}
         >
-          <div className="flex shrink-0 items-center gap-1">
-            <button
-              type="button"
-              onClick={() => openExistingChecklistEditor(template)}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] transition active:bg-[var(--panel-muted)]"
-              style={{ color: "var(--text-muted)" }}
-              aria-label={`Edit ${template.name}`}
-            >
-              <Pencil size={14} />
-            </button>
-            <button
-              type="button"
-              onClick={() => void removeChecklistTemplate(template.id)}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] transition active:bg-[var(--danger-soft)]"
-              style={{ color: "var(--danger-strong)" }}
-              aria-label={`Delete ${template.name}`}
-            >
-              <Trash2 size={14} />
-            </button>
-          </div>
+          <ChevronRight size={16} className="shrink-0" style={{ color: "var(--text-muted)" }} />
         </MobileSettingsRow>
       ))}
       <MobileSettingsRow icon={Plus} label="Create Checklist" accent onClick={openNewChecklistEditor} />
     </div>
   );
+  // A checklist's page: a title card (Back to Checklists, its name — tap to rename — and item count, and
+  // Delete on the right — a second tap confirms it if it has items), then its items, always editable.
+  const openChecklist = checklistTemplates.find((template) => template.id === checklistSlide.openId) ?? null;
+  const checklistPage = openChecklist ? (
+    <div className="space-y-4">
+      <div className="flex items-center gap-3 rounded-[18px] border p-4" style={glassCardStyle}>
+        <button
+          type="button"
+          onClick={() => checklistSlide.close()}
+          className="glass-nav-arrow inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full"
+          aria-label="Back"
+        >
+          <ChevronLeft size={18} />
+        </button>
+        <div
+          className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full"
+          style={{ backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+        >
+          <ClipboardList size={20} />
+        </div>
+        {isEditingChecklistName ? (
+          <input
+            autoFocus
+            aria-label="Checklist name"
+            value={checklistNameEditDraft}
+            onChange={(e) => setChecklistNameEditDraft(e.target.value)}
+            onBlur={() => commitChecklistName(openChecklist)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            }}
+            className="h-10 min-w-0 flex-1 rounded-[8px] border px-2 text-[17px] font-semibold outline-none"
+            style={phoneInputStyle}
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => {
+              setChecklistNameEditDraft(openChecklist.name);
+              setIsEditingChecklistName(true);
+            }}
+            className="min-w-0 flex-1 text-left"
+            aria-label={`Rename ${openChecklist.name}`}
+          >
+            <p className="truncate text-[20px] font-semibold leading-tight" style={{ color: "var(--text-main)" }}>{openChecklist.name}</p>
+            <p className="mt-0.5 text-[12px]" style={{ color: "var(--text-muted)" }}>{itemCountLabel(openChecklist)}</p>
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => requestDeleteChecklist(openChecklist, () => checklistSlide.close())}
+          className="inline-flex h-9 min-w-9 shrink-0 items-center justify-center gap-1 rounded-[10px] px-2 transition active:bg-[var(--danger-soft)]"
+          style={{
+            color: "var(--danger-strong)",
+            backgroundColor: confirmDeleteChecklistId === openChecklist.id ? "var(--danger-soft)" : undefined,
+          }}
+          aria-label={confirmDeleteChecklistId === openChecklist.id ? `Tap again to delete ${openChecklist.name}` : `Delete ${openChecklist.name}`}
+        >
+          <Trash2 size={16} />
+          {confirmDeleteChecklistId === openChecklist.id ? <span className="text-[12px] font-semibold">Delete?</span> : null}
+        </button>
+      </div>
+      <div className={MOBILE_ROWS_CARD_CLASS} style={glassCardStyle}>
+        {openChecklist.items.map((item, index) => (
+          <div key={item.id || index} className={MOBILE_ROW_CLASS}>
+            <span
+              className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold"
+              style={{ backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
+            >
+              {index + 1}
+            </span>
+            {editingChecklistItemId === item.id ? (
+              <input
+                autoFocus
+                aria-label={`Item ${index + 1}`}
+                placeholder={`Item ${index + 1}`}
+                value={checklistItemDraft}
+                onChange={(e) => setChecklistItemDraft(e.target.value)}
+                onBlur={() => commitChecklistItem(openChecklist)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                }}
+                className="h-9 min-w-0 flex-1 rounded-[8px] border px-2 text-[16px] outline-none"
+                style={phoneInputStyle}
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={() => startEditingChecklistItem(item)}
+                className="min-w-0 flex-1 break-words py-1 text-left text-[14px] font-medium"
+                style={{ color: item.text ? "var(--text-main)" : "var(--text-muted)" }}
+              >
+                {item.text || `Item ${index + 1}`}
+              </button>
+            )}
+            <button
+              type="button"
+              disabled={openChecklist.items.length <= 1}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                const text = editingChecklistItemId === item.id ? checklistItemDraft : item.text;
+                if (confirmRowRemoval(item.id, Boolean(text.trim()))) removeChecklistItem(openChecklist, item.id);
+              }}
+              className={
+                confirmRemoveRowKey === item.id
+                  ? "inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded-[8px] px-2 text-[11px] font-semibold"
+                  : iconRemoveButtonClass
+              }
+              style={confirmRemoveRowKey === item.id ? { color: "var(--danger-strong)", backgroundColor: "var(--danger-soft)" } : undefined}
+              aria-label={confirmRemoveRowKey === item.id ? `Tap again to remove item ${index + 1}` : `Remove item ${index + 1}`}
+            >
+              <X size={confirmRemoveRowKey === item.id ? 14 : 16} />
+              {confirmRemoveRowKey === item.id ? "Remove?" : null}
+            </button>
+          </div>
+        ))}
+        <MobileSettingsRow icon={Plus} label="Add Row" accent onClick={() => addChecklistRow(openChecklist.id)} />
+      </div>
+    </div>
+  ) : null;
 
   // Every setting on every page, for the first page's search: tapping one opens its page (a notification
-  // opens Notifications searched for it; a checklist opens it to edit).
+  // opens Notifications searched for it; a checklist opens Checklists, then its own page slides in).
   type SettingsSearchItem = {
     key: string;
     section: string;
@@ -1404,6 +1606,8 @@ export default function UserSettingsPage() {
     keywords?: string;
     notificationsQuery?: string;
     onOpen?: () => void;
+    // Once its page has slid in.
+    afterOpen?: () => void;
   };
   const settingsSearchItems: SettingsSearchItem[] = [
     { key: "general:colour", section: "general", label: "Badge Colour", icon: Palette, keywords: "color emblem initials" },
@@ -1442,7 +1646,7 @@ export default function UserSettingsPage() {
       label: template.name,
       icon: ClipboardList,
       keywords: "checklist",
-      onOpen: () => openExistingChecklistEditor(template),
+      afterOpen: () => openChecklistPage(template.id),
     })),
     { key: "checklists:create", section: "checklists", label: "Create Checklist", icon: Plus, keywords: "new checklist", onOpen: openNewChecklistEditor },
   ];
@@ -1541,6 +1745,7 @@ export default function UserSettingsPage() {
                     onClick={() => {
                       item.onOpen?.();
                       openSection(item.section, item.notificationsQuery);
+                      if (item.afterOpen) window.setTimeout(item.afterOpen, 340);
                     }}
                   >
                     <ChevronRight size={16} className="shrink-0" style={{ color: "var(--text-muted)" }} />
@@ -1697,6 +1902,9 @@ export default function UserSettingsPage() {
             phoneChecklists
           ) : null}
         </div>
+      </SlideOverPane>
+      <SlideOverPane {...checklistSlide} topClass="top-[92px]" zIndexClass="z-[30]">
+        {checklistPage}
       </SlideOverPane>
 
       <SidebarColorPickerPopover

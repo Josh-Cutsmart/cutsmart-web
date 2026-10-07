@@ -102,7 +102,7 @@ export function hasPermissionKey(permissionKeys: string[] | undefined, key: stri
 
 // Resolves the current user's effective role/permissions for the active company — the single
 // shared replacement for what used to be six near-identical, independently-drifted copies of this
-// same effect (dashboard/company-settings/clients/leads/archived/user-settings pages).
+// same effect (dashboard/company-settings/contacts/leads/archived/user-settings pages).
 //
 // Companion principle to lib/auth-context.tsx's own membershipStatus: a fetch that's still in
 // flight, or that failed/timed out even after retrying, must never be treated the same as "this
