@@ -134,6 +134,11 @@ export async function POST(request: NextRequest) {
         const version = toStr(row?.version);
         if (!version) continue;
         const id = normalizeVersionId(version);
+        // Editing a published version (the Changelog page's dev editor) — never adding one: that's only ever
+        // done by Publish (app/api/app-version/publish). An older copy of the app still tries to add a new
+        // version the moment it sees it (the old way of publishing); it's ignored, but answered ok so it
+        // doesn't fall back to writing it itself.
+        if (!(await versionsCollection().doc(id).get()).exists) continue;
         await versionsCollection()
           .doc(id)
           .set(

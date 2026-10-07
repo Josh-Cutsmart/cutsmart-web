@@ -1,4 +1,4 @@
-Version: v0.5.1
+Version: v0.5.2
 
 highlights: [
 Notifications on your lock screen | New leads, quotes accepted or declined, specifications submitted, unlock requests and calendar reminders — on your phone or computer, even when CutSmart is closed | /whats-new/v0.5.1/notifications.svg

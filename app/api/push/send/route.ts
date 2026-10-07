@@ -26,6 +26,9 @@ export async function POST(request: NextRequest) {
   const snap = await adminDb.collection("users").doc(recipientUid).collection("notifications").doc(notificationId).get();
   if (!snap.exists) return NextResponse.json({ ok: false, error: "notification-not-found" }, { status: 404 });
   const data = (snap.data() ?? {}) as Record<string, unknown>;
+  // "New version" notifications are only pushed by Publish, from the server (lib/app-version-server.ts) — one
+  // an older copy of the app made itself (the old way of announcing a version) isn't.
+  if (String(data.type ?? "") === "app_version") return NextResponse.json({ ok: true, skipped: "app-version" });
   const createdMs = Date.parse(String(data.createdAtIso ?? ""));
   if (!Number.isFinite(createdMs) || Date.now() - createdMs > MAX_AGE_MS) {
     return NextResponse.json({ ok: true, skipped: "too-old" });
