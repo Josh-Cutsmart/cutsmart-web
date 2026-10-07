@@ -142,10 +142,10 @@ export default function HomePage() {
       return;
     }
     setIsRegisterSubmitting(true);
-    // The app's current version (public/update-notes.txt), fetched while the account is being created.
+    // The app's current version (public/release-notes.txt), fetched while the account is being created.
     // A new account starts with it already marked as seen: the "What's new" pop-up (see AppShell) is for
     // people who used the app before an update, so new users only get it from the next update on.
-    const currentVersionPromise = fetch("/update-notes.txt", { cache: "no-store" })
+    const currentVersionPromise = fetch("/release-notes.txt", { cache: "no-store" })
       .then((res) => (res.ok ? res.text() : ""))
       .then((raw) => parseUpdateNotesText(raw).version.trim())
       .catch(() => "");

@@ -54,8 +54,8 @@ import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
 import { getFirebaseStorageQuotaExceededMessage, isFirebaseStorageQuotaExceeded } from "@/lib/firebase-storage-errors";
 import { applyThemeMode, readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
 import type { LeadCustomFieldSnapshot, ProjectImageItem } from "@/lib/types";
-import { normalizeChangelogHistory, parseUpdateNotesText, type WhatsNewHighlight } from "@/lib/update-notes-utils";
-import { APP_VERSION_PUBLISHED_EVENT, OPEN_WHATS_NEW_DRAFT_EVENT, WhatsNewSheet } from "@/components/whats-new-sheet";
+import { normalizeChangelogHistory, parseUpdateNotesText, WHATS_NEW_URL_PARAM, type WhatsNewHighlight } from "@/lib/update-notes-utils";
+import { APP_VERSION_PUBLISHED_EVENT, OPEN_WHATS_NEW_DRAFT_EVENT, OPEN_WHATS_NEW_EVENT, WhatsNewSheet } from "@/components/whats-new-sheet";
 import { useIsDevUser } from "@/lib/dev-mode";
 import {
   LEAD_PROJECT_CREATED_EVENT,
@@ -1744,7 +1744,7 @@ export function AppShell({
     let cancelled = false;
     const loadUpdateNotes = async () => {
       try {
-        const res = await fetch("/update-notes.txt", { cache: "no-store" });
+        const res = await fetch("/release-notes.txt", { cache: "no-store" });
         if (!res.ok) throw new Error(`Failed to load update notes (${res.status})`);
         const raw = await res.text();
         if (cancelled) return;
@@ -2201,7 +2201,7 @@ export function AppShell({
   // first, so it always shows the latest (they're often being edited while it's previewed).
   useEffect(() => {
     const onOpenDraft = () => {
-      void fetch("/update-notes.txt", { cache: "no-store" })
+      void fetch("/release-notes.txt", { cache: "no-store" })
         .then((res) => (res.ok ? res.text() : ""))
         .then((raw) => {
           const parsed = parseUpdateNotesText(raw);
@@ -2222,6 +2222,36 @@ export function AppShell({
     window.addEventListener(OPEN_WHATS_NEW_DRAFT_EVENT, onOpenDraft);
     return () => window.removeEventListener(OPEN_WHATS_NEW_DRAFT_EVENT, onOpenDraft);
   }, []);
+  // A published version's What's New page on demand — its "New version" notification (the bell's, or a
+  // push's ?whats-new=<version> link). That version, or the newest if it can't be found.
+  useEffect(() => {
+    const onOpen = (event: Event) => {
+      const wanted = String((event as CustomEvent<{ version?: string }>).detail?.version || "").trim().toLowerCase();
+      void fetchAppChangelogHistory().then((history) => {
+        const entry = history.find((row) => row.version.trim().toLowerCase() === wanted) ?? history[0];
+        if (!entry) return;
+        setUpdateNoticeVersion(entry.version);
+        setUpdateNoticeText(String(entry.whatsNew || "").trim());
+        setUpdateNoticeHighlights(entry.highlights ?? []);
+        setUpdateNoticeDateIso(entry.publishedAtIso || entry.capturedAtIso || "");
+        setWhatsNewIsDraft(false);
+        setShowUpdateNotice(true);
+      });
+    };
+    window.addEventListener(OPEN_WHATS_NEW_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_WHATS_NEW_EVENT, onOpen);
+  }, []);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const version = params.get(WHATS_NEW_URL_PARAM);
+    if (version === null) return;
+    // Taken back out of the address, so a reload doesn't open it again.
+    params.delete(WHATS_NEW_URL_PARAM);
+    const rest = params.toString();
+    window.history.replaceState(window.history.state, "", `${window.location.pathname}${rest ? `?${rest}` : ""}${window.location.hash}`);
+    window.dispatchEvent(new CustomEvent(OPEN_WHATS_NEW_EVENT, { detail: { version } }));
+  }, [pathname]);
+
   const onDraftPublished = () => {
     draftPublishedRef.current = true;
     window.dispatchEvent(new Event(APP_VERSION_PUBLISHED_EVENT));

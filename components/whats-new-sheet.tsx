@@ -32,6 +32,11 @@ import { updateNotesToDisplayHtml, type WhatsNewHighlight } from "@/lib/update-n
 
 // Opening a draft's preview from elsewhere (the Changelog page), and telling pages a version was published.
 export const OPEN_WHATS_NEW_DRAFT_EVENT = "cutsmart:open-whats-new-draft";
+// Opening a published version's What's New page (e.g. from its "New version" notification) — detail: { version }.
+export const OPEN_WHATS_NEW_EVENT = "cutsmart:open-whats-new";
+export function openWhatsNew(version: string) {
+  window.dispatchEvent(new CustomEvent(OPEN_WHATS_NEW_EVENT, { detail: { version } }));
+}
 export const APP_VERSION_PUBLISHED_EVENT = "cutsmart:app-version-published";
 
 const decodeEntities = (value: string) =>
@@ -97,7 +102,7 @@ function CardGlow({ color, index, strength = "55" }: { color: string; index: num
   return (
     <div
       aria-hidden="true"
-      className="whats-new-motion pointer-events-none absolute -inset-7 -z-10 rounded-[48px]"
+      className="whats-new-motion pointer-events-none absolute -inset-4 -z-10 rounded-[40px] md:-inset-7 md:rounded-[48px]"
       style={{
         background: `radial-gradient(closest-side, ${color}${strength}, transparent)`,
         animation: `whats-new-glow ${3.8 + (index % 3) * 0.9}s ease-in-out ${index * -0.7}s infinite`,
@@ -398,7 +403,7 @@ export function WhatsNewSheet({
   const renderSection = (section: { title: string; body: string }, index: number): ReactNode => {
     const { Icon, color } = sectionIcon(section.title);
     return (
-      <div key={`${section.title}-${index}`} className="whats-new-motion pb-8 pt-7" style={floatingStyle(index, sectionsStartMs)}>
+      <div key={`${section.title}-${index}`} className="whats-new-motion whats-new-float pb-8 pt-7" style={floatingStyle(index, sectionsStartMs)}>
         <div className="relative isolate">
         <CardGlow color={color} index={index} strength="40" />
         <div className="whats-new-card relative rounded-[20px] border p-4 pt-7 md:p-5 md:pt-8" style={{ ...cardStyle, ...tiltStyle(index + 3), borderColor: `${color}55` }}>
@@ -471,7 +476,7 @@ export function WhatsNewSheet({
             />
           ))}
         </div>
-        <div className="relative h-full overflow-y-auto overscroll-contain">
+        <div className="relative h-full overflow-y-auto overflow-x-hidden overscroll-contain">
           {/* Clear of a phone's notch / status bar — the page covers the whole screen. */}
           <div className="glass-page-header sticky top-0 z-[2]" style={{ paddingTop: "env(safe-area-inset-top, 0px)" }}>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2.5 px-4 py-3.5 md:flex-nowrap md:px-8">
@@ -487,7 +492,7 @@ export function WhatsNewSheet({
                 />
                 <div className="flex min-w-0 items-center gap-2.5">
                   <p className="truncate text-[20px] font-semibold leading-tight md:text-[22px]" style={{ color: "var(--text-main)" }}>
-                    What&apos;s new in CutSmart
+                    What&apos;s New
                   </p>
                   {/* The version (when it was published shows on hover). */}
                   <span
@@ -525,17 +530,17 @@ export function WhatsNewSheet({
             </div>
           </div>
 
-          <div className="space-y-8 px-5 pb-[max(28px,env(safe-area-inset-bottom))] pt-7 md:px-10">
+          <div className="space-y-8 px-5 pb-[max(28px,env(safe-area-inset-bottom))] pt-7 [overflow-x:clip] md:px-10">
             {highlights.length ? (
               <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,320px),1fr))] gap-x-7 gap-y-8 md:[&>*:nth-child(3n+2)]:mt-7 md:[&>*:nth-child(3n+3)]:mt-3">
                 {highlights.map((highlight, index) => {
                   const accent = ACCENTS[index % ACCENTS.length];
                   return (
-                  <div key={`${highlight.title}-${index}`} className="whats-new-motion relative isolate" style={floatingStyle(index, 380)}>
+                  <div key={`${highlight.title}-${index}`} className="whats-new-motion whats-new-float relative isolate" style={floatingStyle(index, 380)}>
                     <CardGlow color={accent} index={index} />
                     <span
                       aria-hidden="true"
-                      className={`absolute -top-4 z-[1] inline-flex h-10 w-10 items-center justify-center rounded-full text-white ${index % 2 ? "-left-3" : "-right-3"}`}
+                      className={`absolute -top-4 z-[1] inline-flex h-10 w-10 items-center justify-center rounded-full text-white ${index % 2 ? "-left-1.5 md:-left-3" : "-right-1.5 md:-right-3"}`}
                       style={{ backgroundColor: accent, boxShadow: `0 8px 18px ${accent}77`, transform: `rotate(${index % 2 ? -14 : 12}deg)` }}
                     >
                       <Sparkles size={18} />

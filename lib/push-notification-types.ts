@@ -1,3 +1,5 @@
+import { WHATS_NEW_URL_PARAM } from "@/lib/update-notes-utils";
+
 // The kinds of notification CutSmart puts in the bell's Notifications list — each one can also go to
 // the user's phone/desktop (web push: lib/push-client.ts, lib/push-server.ts), and each user picks which
 // kinds they want there (User Settings > Phone & Desktop Notifications), grouped into the categories
@@ -111,7 +113,7 @@ export function isPushNotificationWanted(userData: Record<string, unknown> | und
 }
 
 // Where tapping the notification takes them: the event for a calendar reminder, the project it's about,
-// Leads for a lead, the changelog for a new version, or the Dashboard.
+// Leads for a lead, the What's New page for a new version, or the Dashboard.
 export function pushNotificationUrl(input: { type?: unknown; projectId?: unknown; leadId?: unknown; eventId?: unknown; title?: unknown }): string {
   const eventId = String(input.eventId ?? "").trim();
   if (String(input.type ?? "") === "calendar_reminder" && eventId) return `/calendar?event=${encodeURIComponent(eventId)}`;
@@ -120,7 +122,7 @@ export function pushNotificationUrl(input: { type?: unknown; projectId?: unknown
   if (String(input.leadId ?? "").trim() || String(input.type ?? "").startsWith("lead_")) return "/leads";
   if (String(input.type ?? "") === "app_version") {
     const version = String(input.title ?? "").replace(/^New version\s*/i, "").trim();
-    return version ? `/changelog?version=${encodeURIComponent(version)}` : "/changelog";
+    return `/dashboard?${WHATS_NEW_URL_PARAM}=${encodeURIComponent(version)}`;
   }
   return "/dashboard";
 }

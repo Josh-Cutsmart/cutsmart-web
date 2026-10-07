@@ -6,6 +6,7 @@ import { createPortal } from "react-dom";
 import { usePathname, useRouter } from "next/navigation";
 import { Bell, ChevronLeft, LayoutDashboard, Menu, X } from "lucide-react";
 import { useSwipeToClose } from "@/lib/use-swipe-to-close";
+import { openWhatsNew } from "@/components/whats-new-sheet";
 import { swallowNextClick } from "@/lib/swallow-dismiss-click";
 import { useAppTabs, type AppWorkspaceTab } from "@/lib/app-tabs-context";
 import { applyThemeMode, readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
@@ -878,7 +879,8 @@ export function GlobalAppTabsBar() {
             void markUserNotificationRead(user.uid, row.id);
             setIsNotifOpen(false);
             if (isAppVersion) {
-              router.push(appVersion ? `/changelog?version=${encodeURIComponent(appVersion)}` : "/changelog");
+              // Straight to that version's What's New page, over whatever page this is.
+              openWhatsNew(appVersion);
             } else if (row.type === "calendar_reminder" && row.eventId) {
               router.push(`/calendar?event=${encodeURIComponent(row.eventId)}`);
             } else if (row.projectId) {

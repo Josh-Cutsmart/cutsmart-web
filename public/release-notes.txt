@@ -1,0 +1,102 @@
+Version: v0.5.3
+
+highlights: [
+Notifications on your lock screen | New leads, quotes accepted or declined, specifications submitted, unlock requests and calendar reminders — on your phone or computer, even when CutSmart is closed | /whats-new/v0.5.1/notifications.svg
+Cards that hang as you drag | The whole card follows your pointer and swings as you move it, then lands exactly where you let go | /whats-new/v0.5.1/drag-cards.svg
+Sort any column | Each column and sub-status has its own sort — or sort the whole board from the toolbar | /whats-new/v0.5.1/sort-columns.svg
+User Settings, made for phones | Search every setting, and each section opens as its own page under a title bar that stays put | /whats-new/v0.5.1/user-settings.svg
+New events start all day | And in Day view, + adds the event on the day you're looking at | /whats-new/v0.5.1/calendar-all-day.svg
+]
+
+whatsNew: [
+<u><b>Phone &amp; Desktop Notifications</b></u>
+<ul>
+<li>Get your CutSmart notifications on your phone's lock screen or your computer, even when CutSmart is closed — turn on <b>Push Notifications</b> in <b>User Settings</b></li>
+<li>Choose exactly what you're notified about, by category: Projects, Leads, Client Portal, Calendar and CutSmart — turn a whole category off in one go, or search for a notification</li>
+<li>New <b>Time between notifications</b> setting: anything that comes in during it is held and sent together as one, listed a line each (e.g. "10 new leads")</li>
+<li>New: <b>new leads</b> (if you can see leads), being <b>added to a lead or project</b> (as an editor or viewer), and <b>quotes declined</b> by clients</li>
+<li>Specifications submitted now says how many items the client accepted (e.g. 12/15)</li>
+<li><b>Calendar reminders</b> for events on your projects — add as many as you like, each with its own time (30 minutes to a month before; all-day events by days, weeks or months)</li>
+<li>Reminders when a <b>quote hasn't been accepted</b> or <b>specifications haven't been submitted</b> yet — after 2 days, or whenever you choose (1–7 days, as many as you like)</li>
+<li>iPhone and iPad: add CutSmart to your Home Screen (Safari &gt; Share &gt; Add to Home Screen) and turn them on from there</li>
+<li>Tapping a notification opens what it's about — a calendar reminder opens its event</li>
+<li>The "Quote sent" and "Specifications sent" notifications no longer show the client's email address</li>
+</ul>
+
+<u><b>Production Unlock Requests</b></u>
+<ul>
+<li>No password? <b>Request unlock</b> from the Unlock Edit pop-up — the project's owner, assignee and editors are notified</li>
+<li>Approve or deny it right from the notification (Android and computers), or from the banner on the project's Production tab</li>
+<li>You're notified as soon as your request is answered</li>
+</ul>
+
+<u><b>Finished Projects</b></u>
+<ul>
+<li>Mark one project status as the <b>Completed</b> status in Company Settings</li>
+<li><b>Archive completed projects after</b> can be set to Never, Instantly, or after a week up to a year</li>
+</ul>
+
+<u><b>Projects</b></u>
+<ul>
+<li>Redesigned Production <b>Order</b> page — your hardware brand (in its own colour) with <b>Drawers</b>, <b>Hinges</b> and <b>Other</b> picked from Company Settings → Hardware, a separate <b>Misc</b> list for anything else, and Boards To Order</li>
+<li>Nesting: the Machine dropdown opens above everything, shows just the machine names and highlights the one you're on — the same style as the CNC Cutlist export menu</li>
+<li>Items tab: even spacing above and below its containers</li>
+</ul>
+
+<u><b>Calendar</b></u>
+<ul>
+<li>Month view: click anywhere in a day to open it</li>
+<li>Mobile: New event is now a round <b>+</b> button at the bottom right of the screen</li>
+<li>New events start as <b>All day</b> — and with a day open in Day view, they're on that day instead of today</li>
+</ul>
+
+<u><b>Company Settings</b></u>
+<ul>
+<li>Hardware: drag Hinges and Other items to reorder them, like Drawers</li>
+<li>Hardware: Drawer, Hinge and Other names can have spaces in them again</li>
+</ul>
+
+<u><b>Client Portal</b></u>
+<ul>
+<li>Clients can now <b>Decline</b> a quote (with an optional reason) — it shows on the project's Quote, and you're notified</li>
+<li>Desktop: the Client Portal button opens it in a normal browser tab again, not a separate window</li>
+<li>Viewing the portal as staff no longer shows the client's <b>Accept Quote</b> and <b>Submit Specifications</b> buttons</li>
+</ul>
+
+<u><b>Leads & Contacts</b></u>
+<ul>
+<li>Every staff member is now in everyone's Contacts, under a new built-in <b>Staff</b> category (its colour can be changed in Company Settings)</li>
+<li>A contact keeps every project they've ever had — <b>Past Projects</b> lists the completed ones, plus any that were archived or deleted</li>
+<li>Contacts' web address is now <b>/contacts</b> (was /clients) — old links, bookmarks and Home Screen icons still open it</li>
+</ul>
+
+<u><b>Dashboard & Leads Boards</b></u>
+<ul>
+<li>Drag cards into any order you like, even within a column — they land exactly where you drop them, the moment you drop them</li>
+<li>While dragging, a faded copy of the card shows where it will land, moving the other cards out of the way</li>
+<li>The card you're dragging follows you as a see-through copy of the whole card, hanging from the pointer and swinging smoothly as you move</li>
+<li>New <b>sort</b> button on each column: sort that column Oldest – Newest, Newest – Oldest, A – Z or Z – A (or back to your own order)</li>
+<li>Dashboard: a status's <b>sub-status columns</b> have their own sort buttons too</li>
+<li>New <b>Sort</b> button in the toolbar sorts the whole board, overriding every column — all saved to your account, so they follow you to any device</li>
+<li>The glow on a card at the top of a column is no longer cut off</li>
+<li>Mobile: the columns stop just above the bottom of the screen, like the Calendar, however far you've scrolled</li>
+<li>Leads: fixed a dragged lead jumping back before landing, and a second drag being ignored while the first was saving</li>
+</ul>
+
+<u><b>User Settings</b></u>
+<ul>
+<li>Mobile: <b>User Settings</b> is now your profile card, a search bar for every setting, and a short list — General, Preferences, Notifications and Checklists — each opening as its own page under a title bar that stays put (tap Back or swipe right to return)</li>
+<li>Mobile: each checklist opens as its own page, ready to edit — tap an item to change it, X to remove it, Add Row for a new one, or tap its name to rename it</li>
+<li>Deleting a checklist, or removing a checklist item with text in it, asks you to tap again to confirm</li>
+<li>Push Notifications settings show straight away</li>
+</ul>
+
+<u><b>App-Wide</b></u>
+<ul>
+<li><b>Leads</b> and <b>Contacts</b> can now be added to your Home Screen as their own apps, like the Calendar — open the page, then Add to Home Screen. Opened from their icons, they show just that page</li>
+<li>Bigger "CutSmart" on the Calendar, Leads and Contacts app icons</li>
+<li>Closing a tab in the top bar just closes it — it no longer opens another project. Closing the one you're on takes you to the Dashboard</li>
+<li>Mobile: a settings cog beside your name at the bottom of the menu goes straight to User Settings</li>
+<li>Dragging things like Sales Items and settings rows swings smoothly instead of shaking when moved slowly</li>
+</ul>
+]

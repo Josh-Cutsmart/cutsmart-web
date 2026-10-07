@@ -1,5 +1,9 @@
 export const UPDATE_CHANGELOG_HISTORY_STORAGE_KEY_PREFIX = "cutsmart_update_changelog_history_";
 
+// ?whats-new=<version> on any page opens that version's What's New page over it (a "New version"
+// notification's link) — components/app-shell.tsx.
+export const WHATS_NEW_URL_PARAM = "whats-new";
+
 // A feature card at the top of the What's New page: a title, a line about it, and a picture or a short
 // video showing it (a path under public/, e.g. /whats-new/v0.5.2/drag.mp4 — .mp4/.webm play on a loop).
 export type WhatsNewHighlight = { title: string; description: string; media: string };

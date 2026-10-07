@@ -1287,6 +1287,10 @@ textarea,
 .whats-new-card:hover {
   transform: rotate(0deg) scale(1.025);
 }
+/* Hovering a card stops its bobbing (the animation's set inline on the card's wrapper, hence !important). */
+.whats-new-float:hover {
+  animation-play-state: paused !important;
+}
 /* The coloured glow behind a What's New card, breathing slowly. */
 @keyframes whats-new-glow {
   0%, 100% { opacity: 0.55; transform: scale(0.96); }

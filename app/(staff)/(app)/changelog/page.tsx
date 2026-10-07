@@ -487,7 +487,7 @@ export default function ChangelogPage() {
       setAppVersion(rows[0]?.version || "");
       setDraftVersion("");
       try {
-        const updateRes = await fetch("/update-notes.txt", { cache: "no-store" });
+        const updateRes = await fetch("/release-notes.txt", { cache: "no-store" });
         if (updateRes.ok) {
           const deployed = String(parseUpdateNotesText(await updateRes.text()).version || "").trim();
           if (cancelled) return;

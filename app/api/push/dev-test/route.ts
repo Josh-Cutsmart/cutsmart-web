@@ -83,7 +83,7 @@ async function buildTest(sample: string, siteOrigin: string): Promise<{ type: st
     return { type: group.held[0].type, payload: { ...groupedPayload(held, group.total), tag } };
   }
   const appVersion =
-    sample === "app_version" ? (/^\s*Version:\s*(\S+)/im.exec(await readPublicTextFile("update-notes.txt", siteOrigin))?.[1] ?? "") : "";
+    sample === "app_version" ? (/^\s*Version:\s*(\S+)/im.exec(await readPublicTextFile("release-notes.txt", siteOrigin))?.[1] ?? "") : "";
   const single = devTestSample(sample, appVersion);
   if (!single) return null;
   return {

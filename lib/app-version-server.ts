@@ -6,7 +6,7 @@ import { addNotificationAndPush } from "@/lib/push-server";
 import { parseUpdateNotesText, type WhatsNewHighlight } from "@/lib/update-notes-utils";
 
 // Publishing a new version — only ever when a Dev user says so (the What's New page's Publish, now or at a
-// set date and time). Deploying never publishes anything by itself: a version in public/update-notes.txt
+// set date and time). Deploying never publishes anything by itself: a version in public/release-notes.txt
 // that isn't in the changelog yet is a draft only Dev users see.
 //
 // Publishing (publishVersionNow):
@@ -35,9 +35,11 @@ function changelogVersionsCollection() {
 
 const versionIdOf = (version: string) => version.trim().toLowerCase();
 
-// The version and notes this deploy carries (its own public/update-notes.txt).
+// The version and notes this deploy carries (its own public/release-notes.txt). It used to be
+// public/update-notes.txt — older copies of the app still read that one, which stays at a version everyone's
+// seen (v0.5.0), so they never see a new version: no old "Updated to" pop-up, no publishing it themselves.
 export async function readDeployedNotes(siteOrigin: string): Promise<PublishContent> {
-  const { version, whatsNew, highlights } = parseUpdateNotesText(await readPublicTextFile("update-notes.txt", siteOrigin));
+  const { version, whatsNew, highlights } = parseUpdateNotesText(await readPublicTextFile("release-notes.txt", siteOrigin));
   return { version, whatsNew, highlights };
 }
 
