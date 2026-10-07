@@ -100,7 +100,17 @@ export async function POST(request: NextRequest) {
   // branch, merged onto the doc rather than replacing it wholesale.
   const patch: Record<string, unknown> =
     kind === "quote"
-      ? { ...envelope, quoteVersionId: versionId, quoteSentFromLive: sentFromLive, quoteAcceptedAt: FieldValue.delete(), quoteAcceptedByName: FieldValue.delete() }
+      ? {
+          ...envelope,
+          quoteVersionId: versionId,
+          quoteSentFromLive: sentFromLive,
+          // A new send starts fresh: no acceptance — or decline — carried over from the last one.
+          quoteAcceptedAt: FieldValue.delete(),
+          quoteAcceptedByName: FieldValue.delete(),
+          quoteDeclinedAt: FieldValue.delete(),
+          quoteDeclinedByName: FieldValue.delete(),
+          quoteDeclineReason: FieldValue.delete(),
+        }
       : { ...envelope, versionId, specsSentFromLive: sentFromLive, submittedAt: FieldValue.delete(), submittedByName: FieldValue.delete() };
 
   await shareRef.set(patch, { merge: true });

@@ -56,7 +56,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   const assignedContact = await resolveAssignedContactAdmin(adminDb, shareDoc.companyId, projectData);
   const quoteAcceptedAt = shareDoc.quoteAcceptedAt || null;
   const quoteAcceptedByName = shareDoc.quoteAcceptedByName || null;
+  const quoteDeclinedAt = shareDoc.quoteDeclinedAt || null;
+  const quoteDeclinedByName = shareDoc.quoteDeclinedByName || null;
   // Which send this is — the portal compares it with what the client last saw to flag the tab as new.
   const sentVersion = String(shareDoc.quoteVersionId || "");
-  return NextResponse.json({ ok: true, grid, projectName, assignedContact, quoteAcceptedAt, quoteAcceptedByName, sentVersion });
+  return NextResponse.json({ ok: true, grid, projectName, assignedContact, quoteAcceptedAt, quoteAcceptedByName, quoteDeclinedAt, quoteDeclinedByName, sentVersion });
 }

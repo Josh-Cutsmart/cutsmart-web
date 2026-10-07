@@ -1,7 +1,51 @@
 import { NextRequest, NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
-import { apiHasPermission, requireCompanyMember } from "@/lib/api-company-access";
+import { apiHasPermission, listCompanyMemberAccess, requireCompanyMember } from "@/lib/api-company-access";
+import { addNotificationAndPush } from "@/lib/push-server";
+import { leadClientDisplayName } from "@/lib/lead-name";
+
+// A lead's name for a notification: its client's name (the company's lead field mapping), else what the
+// form sent.
+async function leadNameForNotification(companyId: string, lead: Record<string, unknown>): Promise<string> {
+  let fieldLayout: unknown = null;
+  try {
+    const companySnap = await adminDb!.collection("companies").doc(companyId).get();
+    const integrations = (companySnap.data()?.integrations ?? {}) as Record<string, unknown>;
+    fieldLayout = ((integrations.zapierLeads ?? {}) as Record<string, unknown>).fieldLayout ?? null;
+  } catch {
+    fieldLayout = null;
+  }
+  return leadClientDisplayName(lead.rawFields, fieldLayout) || toStr(lead.name) || toStr(lead.email) || toStr(lead.phone) || "A new lead";
+}
+
+// "New lead" to everyone who can see it: a brand-new lead isn't assigned yet, so that's the owner/admins
+// and anyone allowed to see others' leads (leads.view.others) — same rule as the Leads page.
+async function notifyNewLead(companyId: string, leadId: string, lead: Record<string, unknown>, siteOrigin: string) {
+  try {
+    const [members, name] = await Promise.all([listCompanyMemberAccess(companyId), leadNameForNotification(companyId, lead)]);
+    const from = toStr(lead.formName) || (toStr(lead.source) === "zapier-form" ? "" : toStr(lead.source));
+    await Promise.all(
+      members
+        .filter((member) => apiHasPermission(member.access, "leads.view.others"))
+        .map((member) =>
+          addNotificationAndPush(
+            member.access.uid,
+            {
+              title: "New lead",
+              message: from ? `${name} came in from ${from}.` : `${name} just came in.`,
+              type: "lead_new",
+              leadId,
+              companyId,
+            },
+            siteOrigin,
+          ),
+        ),
+    );
+  } catch (error) {
+    console.error("[leads] new-lead notifications failed:", error);
+  }
+}
 
 function toStr(value: unknown) {
   return String(value ?? "").trim();
@@ -313,6 +357,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, error: "lead-save-failed" }, { status: 500 });
   }
 
+  await notifyNewLead(companyId, leadRef.id, { ...payload, rawFields: body }, new URL(request.url).origin);
   return NextResponse.json({ ok: true, leadId: leadRef.id });
 }
 
@@ -414,7 +459,8 @@ export async function PATCH(request: NextRequest) {
   }
   // Changing a lead needs a signed-in member of this company (the app is the only caller; Zapier's own
   // POST/DELETE use the company's webhook secret instead).
-  if (!(await requireCompanyMember(request, companyId))) {
+  const callerAccess = await requireCompanyMember(request, companyId);
+  if (!callerAccess) {
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   }
 
@@ -454,6 +500,25 @@ export async function PATCH(request: NextRequest) {
       patch.assignedTo = assignedToName || "";
     }
     await leadRef.update(patch);
+    // Assigned to someone new (not themselves): let them know.
+    const previousAssigneeUid = toStr((leadSnap.data() ?? {}).assignedToUid);
+    const nextAssigneeUid = toStr(assignedToUid);
+    if (hasAssignmentPatch && nextAssigneeUid && nextAssigneeUid !== previousAssigneeUid && nextAssigneeUid !== callerAccess.uid) {
+      const callerMembership = await adminDb.collection("companies").doc(companyId).collection("memberships").doc(callerAccess.uid).get();
+      const assignerName = toStr(callerMembership.data()?.displayName ?? callerMembership.data()?.name) || "A teammate";
+      const leadName = await leadNameForNotification(companyId, (leadSnap.data() ?? {}) as Record<string, unknown>);
+      await addNotificationAndPush(
+        nextAssigneeUid,
+        {
+          title: "Added to a lead",
+          message: `${assignerName} added you to the lead "${leadName}".`,
+          type: "lead_access",
+          leadId,
+          companyId,
+        },
+        new URL(request.url).origin,
+      );
+    }
     return NextResponse.json({
       ok: true,
       leadId,

@@ -386,6 +386,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           clearLastKnown();
         }
         if (auth && hasFirebaseConfig) {
+          // This device stops getting their phone/desktop notifications.
+          await Promise.race([
+            import("@/lib/push-client").then(({ disablePushOnThisDevice }) => disablePushOnThisDevice()).catch(() => undefined),
+            new Promise((resolve) => setTimeout(resolve, 2500)),
+          ]);
           await signOut(auth);
           return;
         }

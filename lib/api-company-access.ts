@@ -90,8 +90,23 @@ export async function requireCompanyMember(request: NextRequest, companyId: stri
   const userData = (userSnap.exists ? userSnap.data() : {}) as Record<string, unknown>;
   if (!membershipSnap.exists && toStr(userData.companyId) !== cid) return null;
 
-  const companyData = (companySnap.data() ?? {}) as Record<string, unknown>;
-  const membershipData = (membershipSnap.exists ? membershipSnap.data() : {}) as Record<string, unknown>;
+  return resolveMemberAccess(
+    (companySnap.data() ?? {}) as Record<string, unknown>,
+    uid,
+    (membershipSnap.exists ? membershipSnap.data() : {}) as Record<string, unknown>,
+    userData,
+  );
+}
+
+// What `uid` can do in a company, from the company doc, their membership doc and their user doc (the
+// part of requireCompanyMember after it has read those) — also used to work out who should hear about
+// something (e.g. a new lead) without them being the caller.
+export function resolveMemberAccess(
+  companyData: Record<string, unknown>,
+  uid: string,
+  membershipData: Record<string, unknown>,
+  userData: Record<string, unknown>,
+): ApiCompanyAccess {
   const overrides = (companyData.staffRoleIdsByUid ?? {}) as Record<string, unknown>;
   const roleId = normalizeRoleId(overrides[uid] ?? membershipData.roleId ?? membershipData.role);
   const permissionKeys = normalizePermissionKeys([
@@ -104,6 +119,32 @@ export async function requireCompanyMember(request: NextRequest, companyId: stri
   const accountRole = normalizeRoleId(userData.roleId ?? userData.role);
   const role = strongerRole(roleId || derived, accountRole || "staff");
   return { uid, role, permissionKeys };
+}
+
+export type CompanyMemberAccessRow = { access: ApiCompanyAccess; displayName: string };
+
+// Every member of a company (their membership docs), with what each can do.
+export async function listCompanyMemberAccess(companyId: string): Promise<CompanyMemberAccessRow[]> {
+  const cid = toStr(companyId);
+  if (!adminDb || !cid) return [];
+  const db = adminDb;
+  const companyRef = db.collection("companies").doc(cid);
+  const [companySnap, membershipsSnap] = await Promise.all([companyRef.get(), companyRef.collection("memberships").limit(500).get()]);
+  if (!companySnap.exists) return [];
+  const companyData = (companySnap.data() ?? {}) as Record<string, unknown>;
+  const members = membershipsSnap.docs
+    .map((docSnap) => ({ uid: toStr((docSnap.data() ?? {}).uid) || docSnap.id, data: (docSnap.data() ?? {}) as Record<string, unknown> }))
+    .filter((member) => member.uid);
+  if (!members.length) return [];
+  const userSnaps = await db.getAll(...members.map((member) => db.collection("users").doc(member.uid)));
+  return members.map((member, index) => {
+    const userData = (userSnaps[index]?.exists ? userSnaps[index].data() : {}) as Record<string, unknown>;
+    const nameOverrides = (companyData.staffDisplayNamesByUid ?? {}) as Record<string, unknown>;
+    return {
+      access: resolveMemberAccess(companyData, member.uid, member.data, userData),
+      displayName: toStr(nameOverrides[member.uid]) || toStr(member.data.displayName ?? member.data.name) || toStr(userData.displayName) || toStr(member.data.email),
+    };
+  });
 }
 
 // Same rules as the client's hasPermissionKey (lib/use-company-access.ts), plus owners/admins.

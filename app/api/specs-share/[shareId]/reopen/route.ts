@@ -49,7 +49,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       await projectRef
         .collection("quoteGridVersions")
         .doc(shareDoc.quoteVersionId)
-        .update({ sentToClient: FieldValue.delete(), acceptedAtIso: FieldValue.delete(), acceptedByName: FieldValue.delete() })
+        .update({
+          sentToClient: FieldValue.delete(),
+          acceptedAtIso: FieldValue.delete(),
+          acceptedByName: FieldValue.delete(),
+          declinedAtIso: FieldValue.delete(),
+          declinedByName: FieldValue.delete(),
+        })
         .catch(() => {});
     }
   } else if (kind === "specs" && shareDoc.versionId) {
@@ -72,6 +78,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           quoteVersionId: FieldValue.delete(),
           quoteAcceptedAt: FieldValue.delete(),
           quoteAcceptedByName: FieldValue.delete(),
+          quoteDeclinedAt: FieldValue.delete(),
+          quoteDeclinedByName: FieldValue.delete(),
+          quoteDeclineReason: FieldValue.delete(),
           quoteSentFromLive: FieldValue.delete(),
         }
       : {

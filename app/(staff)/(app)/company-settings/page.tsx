@@ -68,6 +68,7 @@ import {
 } from "@/lib/company-formats";
 import { FileText, Lightbulb } from "lucide-react";
 import { Box, FileInput, FolderTree, LayoutTemplate, Lock, Percent, Receipt, Shield, ShieldCheck, UserMinus, UserPlus } from "lucide-react";
+import { isStaffContactCategory, withStaffContactCategory } from "@/lib/staff-contacts";
 import { Archive, Award, CalendarDays, CircleDashed, Cog, Columns3, Contact, Copy, Cpu, DoorClosed, Eye, Factory, Globe2, HardHat as TradeIcon, ImageUp, Inbox, KanbanSquare, KeyRound, Palette, PanelLeft, RefreshCw, Ruler, Shapes, SlidersHorizontal, Star, Tags, Trash2 } from "lucide-react";
 import {
   ColorCircle,
@@ -970,14 +971,17 @@ function normalizeContactCategories(raw: unknown): ContactCategoryRow[] {
     { name: "Contractor", color: "#F2A33C" },
     { name: "Supplier", color: "#7D99B3" },
   ];
-  if (!Array.isArray(raw)) return defaults;
-  return raw
-    .filter((item) => item && typeof item === "object")
-    .map((item) => {
-      const row = item as Record<string, unknown>;
-      return { name: toStr(row.name), color: toStr(row.color, "#7D99B3") };
-    })
-    .filter((row) => row.name);
+  const rows = !Array.isArray(raw)
+    ? defaults
+    : raw
+        .filter((item) => item && typeof item === "object")
+        .map((item) => {
+          const row = item as Record<string, unknown>;
+          return { name: toStr(row.name), color: toStr(row.color, "#7D99B3") };
+        })
+        .filter((row) => row.name);
+  // Every staff member is in everyone's Contacts under "Staff" (lib/staff-contacts.ts).
+  return withStaffContactCategory(rows, (name, color) => ({ name, color }));
 }
 
 function normalizePartTypes(raw: unknown): PartTypeRow[] {
@@ -3304,7 +3308,7 @@ export default function CompanySettingsPage() {
           ...(row.access && Object.keys(row.access).length ? { access: row.access } : {}),
         }))
         .filter((row) => row.name),
-      contactCategories: contactCategories
+      contactCategories: withStaffContactCategory(contactCategories, (name, color) => ({ name, color }))
         .map((row) => {
           const name = toStr(row.name);
           if (!name) return null;
@@ -6119,7 +6123,7 @@ export default function CompanySettingsPage() {
                       </button>
                     </div>
                   </Panel>
-                  <Panel title="Contact categories" icon={Contact} description="Group your contacts — the colour themes each contact's card. Drag to set the order they're listed in.">
+                  <Panel title="Contact categories" icon={Contact} description="Group your contacts — the colour themes each contact's card. Drag to set the order they're listed in. Staff is built in: every staff member is in everyone's Contacts under it.">
                     <div className="space-y-1.5">
                       {contactCategories.map((row, idx) => (
                         <div
@@ -6164,12 +6168,20 @@ export default function CompanySettingsPage() {
                           <input
                             value={row.name}
                             placeholder="Category name"
+                            readOnly={isStaffContactCategory(row.name)}
+                            title={isStaffContactCategory(row.name) ? "Built in — every staff member is listed under Staff" : undefined}
                             onChange={(e) => setContactCategories((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))}
                             className={gridCellInputClass}
                           />
-                          <button type="button" onClick={() => setContactCategories((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} title="Remove">
-                            <X size={15} />
-                          </button>
+                          {isStaffContactCategory(row.name) ? (
+                            <span className={`${dangerIconButtonClass} pointer-events-none`} title="Built in — can't be removed" aria-label="Built in — can't be removed">
+                              <Lock size={14} />
+                            </span>
+                          ) : (
+                            <button type="button" onClick={() => setContactCategories((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} title="Remove">
+                              <X size={15} />
+                            </button>
+                          )}
                         </div>
                       ))}
                       <button type="button" onClick={() => setContactCategories((prev) => [...prev, { name: "", color: "#7D99B3" }])} className={`${secondaryButtonClass} mt-1.5`}>

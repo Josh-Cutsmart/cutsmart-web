@@ -1049,9 +1049,13 @@ export default function CalendarPage() {
             <div
               key={dayMs}
               data-mi={monthIdx}
-              onClick={(e) => openNew(dayMs, true, e)}
+              onClick={() => {
+                setCursor(startOfDay(dd));
+                changeView("day");
+              }}
               {...dayDropProps(dayMs)}
-              className={`cal-day group relative flex min-h-0 min-w-0 flex-col gap-0.5 overflow-hidden p-1 transition-colors duration-300 ${col === cols - 1 ? "" : "border-r"} ${canCreate ? "cursor-pointer hover:bg-[color-mix(in_srgb,var(--text-main)_3%,transparent)]" : ""}`}
+              title="Open this day"
+              className={`cal-day group relative flex min-h-0 min-w-0 cursor-pointer flex-col gap-0.5 overflow-hidden p-1 transition-colors duration-300 hover:bg-[color-mix(in_srgb,var(--text-main)_3%,transparent)] ${col === cols - 1 ? "" : "border-r"}`}
               style={{
                 borderColor: "var(--glass-border)",
                 backgroundColor: monthDropDay === dayMs ? "var(--brand-soft)" : "var(--cal-day-bg, transparent)",
@@ -1087,8 +1091,6 @@ export default function CalendarPage() {
                   >
                     +{more}
                   </button>
-                ) : canCreate ? (
-                  <Plus size={13} className="opacity-0 transition group-hover:opacity-60" style={{ color: "var(--text-muted)" }} />
                 ) : null}
               </div>
             </div>
@@ -1976,17 +1978,6 @@ export default function CalendarPage() {
               ]}
               onChange={changeView}
             />
-            {canCreate ? (
-              <button
-                type="button"
-                onClick={(e) => openNew(nextHalfHourMs(), false, e)}
-                className={`${primaryButtonClass} lg:hidden`}
-                style={primaryButtonStyle}
-                aria-label="New event"
-              >
-                <Plus size={15} />
-              </button>
-            ) : null}
           </div>
           {mobileFilterOpen ? (
             <div className="rounded-[20px] border p-2.5 lg:hidden" style={cardStyle}>
@@ -2002,6 +1993,24 @@ export default function CalendarPage() {
           </div>
         </div>
       </div>
+
+      {/* Phones/tablets: New event, as a floating round + at the bottom right of the screen (portalled so
+          it's fixed to the screen whatever the page around it does). */}
+      {canCreate && typeof document !== "undefined"
+        ? createPortal(
+            <button
+              type="button"
+              onClick={(e) => openNew(nextHalfHourMs(), false, e)}
+              className="fixed right-4 z-[60] inline-flex h-14 w-14 items-center justify-center rounded-full border text-white shadow-[0_10px_28px_rgba(15,23,42,0.28)] transition hover:brightness-105 active:scale-95 lg:hidden"
+              style={{ bottom: "calc(20px + env(safe-area-inset-bottom))", backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+              aria-label="New event"
+              title="New event"
+            >
+              <Plus size={28} strokeWidth={2.4} />
+            </button>,
+            document.body,
+          )
+        : null}
 
       {/* Event pop-up */}
       {shouldRenderModal && d && typeof document !== "undefined"

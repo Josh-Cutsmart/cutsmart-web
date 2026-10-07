@@ -1,0 +1,29 @@
+import { NextResponse, type NextRequest } from "next/server";
+import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
+import { runCalendarReminders } from "@/lib/calendar-reminders-server";
+import { flushDuePushDigests } from "@/lib/push-server";
+
+// The notifications scheduled job — meant to be called every minute or few by a scheduler, with the
+// CRON_SECRET environment variable as `Authorization: Bearer <CRON_SECRET>` (what Vercel Cron sends) or
+// `?key=<CRON_SECRET>` (for a service like cron-job.org). It sends:
+// - calendar reminders that are due (lib/calendar-reminders-server.ts), for every company;
+// - notifications held by people's "time between notifications" whose time is up, grouped into one
+//   (flushDuePushDigests in lib/push-server.ts).
+
+export const maxDuration = 60;
+
+export async function GET(request: NextRequest) {
+  const secret = String(process.env.CRON_SECRET || "").trim();
+  if (!secret) return NextResponse.json({ ok: false, error: "cron-not-configured" }, { status: 503 });
+  const header = String(request.headers.get("authorization") || "");
+  const key = new URL(request.url).searchParams.get("key") || "";
+  if (header !== `Bearer ${secret}` && key !== secret) {
+    return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  }
+  if (!adminDb || !hasFirebaseAdminConfig) {
+    return NextResponse.json({ ok: false, error: "missing-firebase-admin-config" }, { status: 500 });
+  }
+  const siteOrigin = new URL(request.url).origin;
+  const [reminders, groupsSent] = await Promise.all([runCalendarReminders({ siteOrigin }), flushDuePushDigests(siteOrigin)]);
+  return NextResponse.json({ ok: true, reminders, groupsSent });
+}

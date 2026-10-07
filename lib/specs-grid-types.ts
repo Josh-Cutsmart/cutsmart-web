@@ -829,6 +829,9 @@ export type SpecsGridVersion = {
   // after the share link itself is later revoked or expires.
   acceptedAtIso?: string;
   acceptedByName?: string;
+  // Quote only — or declined instead (app/api/specs-share/[shareId]/decline), the same permanent way.
+  declinedAtIso?: string;
+  declinedByName?: string;
   // Specs only — set once the client submits their confirmation of this specific frozen version
   // (see app/api/specs-share/[shareId]/submit). Same permanent-record reasoning as
   // acceptedAtIso/acceptedByName above: written directly onto this version document, not just the
@@ -852,6 +855,8 @@ export function normalizeSpecsGridVersions(raw: unknown): SpecsGridVersion[] {
     const sentToClient = row.sentToClient === true;
     const acceptedAtIso = typeof row.acceptedAtIso === "string" && row.acceptedAtIso ? row.acceptedAtIso : "";
     const acceptedByName = typeof row.acceptedByName === "string" && row.acceptedByName ? row.acceptedByName : "";
+    const declinedAtIso = typeof row.declinedAtIso === "string" && row.declinedAtIso ? row.declinedAtIso : "";
+    const declinedByName = typeof row.declinedByName === "string" && row.declinedByName ? row.declinedByName : "";
     const submittedAtIso = typeof row.submittedAtIso === "string" && row.submittedAtIso ? row.submittedAtIso : "";
     const submittedByName = typeof row.submittedByName === "string" && row.submittedByName ? row.submittedByName : "";
     out.push({
@@ -869,6 +874,8 @@ export function normalizeSpecsGridVersions(raw: unknown): SpecsGridVersion[] {
       ...(sentToClient ? { sentToClient } : {}),
       ...(acceptedAtIso ? { acceptedAtIso } : {}),
       ...(acceptedByName ? { acceptedByName } : {}),
+      ...(declinedAtIso ? { declinedAtIso } : {}),
+      ...(declinedByName ? { declinedByName } : {}),
       ...(submittedAtIso ? { submittedAtIso } : {}),
       ...(submittedByName ? { submittedByName } : {}),
       grid,

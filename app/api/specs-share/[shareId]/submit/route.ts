@@ -7,8 +7,29 @@ import {
   SHARE_LINK_INACTIVE_ERROR,
   type SpecsShareLinkDoc,
 } from "@/lib/specs-share";
-import { normalizeSpecsGrid } from "@/lib/specs-grid-types";
+import { getExpandedRowGroups, normalizeSpecsGrid, type SpecsGrid } from "@/lib/specs-grid-types";
+
+// How many of the sheet's Yes/No questions the client answered Yes, out of how many there are — the
+// ones they could see (rows in a hidden group don't count), like their portal's own question list.
+function countConfirmations(grid: SpecsGrid): { accepted: number; total: number } {
+  const hiddenRows = new Set<number>();
+  for (const group of getExpandedRowGroups(grid)) {
+    if (group.hidden) for (let row = group.startRow; row <= group.endRow; row += 1) hiddenRows.add(row);
+  }
+  let accepted = 0;
+  let total = 0;
+  grid.rows.forEach((row, rowIndex) => {
+    if (hiddenRows.has(rowIndex)) return;
+    row.cells.forEach((cell) => {
+      if (!cell?.confirmable) return;
+      total += 1;
+      if (cell.confirmedYes === true) accepted += 1;
+    });
+  });
+  return { accepted, total };
+}
 import { projectNotifySubscriberUids } from "@/lib/project-notify";
+import { pushStoredNotification } from "@/lib/push-server";
 
 // No access code — the link itself (this shareId) is the only secret, per the user's explicit
 // call. See lib/specs-share.ts's buildSpecsConfirmationEmailText comment for the reasoning.
@@ -115,19 +136,24 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       notifySubscriptionOverrides: (projectData.notifySubscriptionOverrides ?? {}) as Record<string, boolean>,
     });
     const projectName = String(projectData.name ?? "a project");
+    const confirmations = countConfirmations(grid);
     const db = adminDb;
     await Promise.all(
       subscriberUids.map((uid) =>
         db.collection("users").doc(uid).collection("notifications").add({
-          title: "Client submitted Specifications",
-          message: `${name || "The client"} submitted Specifications for "${projectName}".`,
+          title: "Specifications submitted",
+          message: confirmations.total
+            ? `${name || "The client"} submitted specs for ${projectName} with ${confirmations.accepted}/${confirmations.total} accepted`
+            : `${name || "The client"} submitted specs for ${projectName}`,
           type: "specs_submitted",
           projectId: shareDoc.projectId,
           companyId: String(projectData.companyId ?? "") || null,
           read: false,
           createdAt: new Date(nowIso),
           createdAtIso: nowIso,
-        }),
+        })
+        // And to their phone/desktop (lib/push-server.ts) — never holding up the response if it can't.
+        .then((ref) => pushStoredNotification(uid, ref.id, new URL(request.url).origin).catch(() => undefined)),
       ),
     );
   } catch (err) {

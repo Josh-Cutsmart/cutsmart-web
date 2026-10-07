@@ -32,6 +32,7 @@ import { dispatchUserColorUpdated } from "@/lib/user-color-sync";
 import { contrastTextForFill, labelFromRoleKey, normalizeRoleKey } from "@/lib/user-profile-format";
 import { SidebarColorPickerPopover, type ColorPickerAnchorRect } from "@/components/sidebar-color-picker-popover";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
+import { PushNotificationSettings } from "@/components/push-notification-settings";
 
 function newChecklistLocalId(prefix: string) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -1076,6 +1077,8 @@ export default function UserSettingsPage() {
               </div>
             </div>
           </div>
+
+          <PushNotificationSettings uid={String(user?.uid || "")} cardStyle={glassCardStyle} Toggle={SettingsToggleSwitch} />
 
           <div className="rounded-[18px] border p-5" style={glassCardStyle}>
             <div className="mb-5 flex items-start justify-between gap-3">

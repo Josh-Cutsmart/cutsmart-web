@@ -25,8 +25,11 @@ import {
   fetchCompanyClientById,
   fetchCompanyClients,
   fetchCompanyDoc,
+  fetchCompanyMembers,
   updateCompanyClientProfile,
   type CompanyClientRow,
+  type CompanyClientProjectHistoryRow,
+  type CompanyMemberOption,
 } from "@/lib/firestore-data";
 import { retryAsync } from "@/lib/load-retry";
 import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
@@ -34,6 +37,7 @@ import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin 
 import { useLongPress } from "@/lib/use-long-press";
 import { swallowNextClick } from "@/lib/swallow-dismiss-click";
 import { completedStatusMatcher } from "@/lib/project-archive";
+import { isStaffContactCategory, isStaffContactId, withStaffContactCategory, withStaffContacts } from "@/lib/staff-contacts";
 import { GlassActionMenu, GlassDropdown, type GlassActionMenuItem, type GlassDropdownOption } from "@/components/glass-dropdown";
 
 type ContactCategoryOption = { name: string; color: string };
@@ -106,16 +110,18 @@ const MOBILE_NAME_LEFT_COLLAPSED_PX = MOBILE_BADGE_LEFT_COLLAPSED_PX + MOBILE_BA
 const MOBILE_NAME_RIGHT_COLLAPSED_PX = 12 + 40 + 10;
 
 function normalizeContactCategoriesForDisplay(raw: unknown): ContactCategoryOption[] {
-  if (!Array.isArray(raw)) return DEFAULT_CONTACT_CATEGORIES;
-  return raw
-    .filter((item) => item && typeof item === "object")
-    .map((item) => {
-      const row = item as Record<string, unknown>;
-      const name = String(row.name ?? "").trim();
-      const color = String(row.color ?? "").trim() || "#7D99B3";
-      return { name, color };
-    })
-    .filter((row) => row.name);
+  const rows = !Array.isArray(raw)
+    ? DEFAULT_CONTACT_CATEGORIES
+    : raw
+        .filter((item) => item && typeof item === "object")
+        .map((item) => {
+          const row = item as Record<string, unknown>;
+          const name = String(row.name ?? "").trim();
+          const color = String(row.color ?? "").trim() || "#7D99B3";
+          return { name, color };
+        })
+        .filter((row) => row.name);
+  return withStaffContactCategory(rows, (name, color) => ({ name, color }));
 }
 
 // The company's date format (lib/company-formats.ts).
@@ -237,6 +243,8 @@ function ClientsPageInner() {
   // Company Settings) splits a contact's projects into Active and Completed.
   const [companyProjectStatuses, setCompanyProjectStatuses] = useState<unknown>(null);
   const isCompletedProjectStatus = completedStatusMatcher(companyProjectStatuses);
+  const isPastContactProject = (row: CompanyClientProjectHistoryRow) =>
+    Boolean(row.deleted || row.archived || !String(row.projectId || "").trim()) || isCompletedProjectStatus(row.statusLabel);
   const [loading, setLoading] = useState(true);
   const [reloadTick, setReloadTick] = useState(0);
   const [detailLoadingClientId, setDetailLoadingClientId] = useState("");
@@ -350,6 +358,8 @@ function ClientsPageInner() {
         return companyClients;
       };
       const clientsLoad = canAccessClients ? loadClients().catch(() => [] as CompanyClientRow[]) : null;
+      // Everyone on the staff is in everyone's Contacts, under Staff (lib/staff-contacts.ts).
+      const membersLoad = canAccessClients ? fetchCompanyMembers(activeCompanyId).catch(() => [] as CompanyMemberOption[]) : null;
       try {
         const companyDoc = await retryAsync(() => fetchCompanyDoc(activeCompanyId), { attempts: 2, delayMs: 250 });
         if (cancelled) return;
@@ -365,7 +375,7 @@ function ClientsPageInner() {
           setClientDetailsById({});
           return;
         }
-        const companyClients = await clientsLoad;
+        const companyClients = withStaffContacts(await clientsLoad, (await membersLoad) ?? [], activeCompanyId);
         if (cancelled) return;
         setClients(companyClients);
         setClientDetailsById(
@@ -477,9 +487,12 @@ function ClientsPageInner() {
   // "Uncategorized" for a contact's own field; `currentValue` keeps a category that has since been
   // renamed/removed in Company Settings visible (instead of silently showing the none option).
   const buildCategoryOptions = (noneLabel: string, currentValue?: string): GlassDropdownOption[] => {
+    const isFilter = noneLabel === "All Categories";
     const options: GlassDropdownOption[] = [
       { value: "", label: noneLabel },
-      ...contactCategories.map((c) => ({ value: c.name, label: c.name, color: c.color })),
+      ...contactCategories
+        .filter((c) => isFilter || !isStaffContactCategory(c.name) || isStaffContactCategory(currentValue))
+        .map((c) => ({ value: c.name, label: c.name, color: c.color })),
     ];
     if (currentValue && !contactCategories.some((c) => c.name === currentValue)) {
       options.push({ value: currentValue, label: currentValue });
@@ -535,6 +548,8 @@ function ClientsPageInner() {
   // An archived contact (opened from a link, e.g. a project's Client Details) can be looked at but not
   // changed — restore it from the Archive first.
   const isActiveContactArchived = Boolean(activeDetail?.archived);
+  // A staff member's card (made from their staff profile, not a stored contact) is read-only.
+  const isActiveContactStaff = isStaffContactId(activeDetail?.id);
   const activeDetailLoading = Boolean(activeClientId) && !activeDetail && (loading || detailLoadingClientId === activeClientId);
   const activeCategoryColor = activeDetail?.category ? categoryColorByName.get(activeDetail.category) : undefined;
   const ambientColor = activeCategoryColor || NEUTRAL_AMBIENT_COLOR;
@@ -872,7 +887,7 @@ function ClientsPageInner() {
   // Every field change (including the category dropdown) is written straight away — optimistic in
   // the UI, rolled back with a visible error if the write doesn't go through.
   const saveActiveClientField = async (patch: Partial<Pick<CompanyClientRow, "name" | "email" | "phone" | "address" | "notes" | "category">>) => {
-    if (!activeClientId || !activeCompanyId) return;
+    if (!activeClientId || !activeCompanyId || isActiveContactArchived || isActiveContactStaff) return;
     const clientId = activeClientId;
     const contact = activeDetail;
     const previous: Partial<CompanyClientRow> = {};
@@ -916,7 +931,7 @@ function ClientsPageInner() {
     setIsEditingProfile(false);
   }, [activeClientId]);
   const toggleEditingProfile = () => {
-    if (isActiveContactArchived) return;
+    if (isActiveContactArchived || isActiveContactStaff) return;
     if (isEditingProfile) {
       // Flush the field being typed in — its onBlur is what saves it.
       (document.activeElement as HTMLElement | null)?.blur?.();
@@ -1039,6 +1054,8 @@ function ClientsPageInner() {
         value={activeDetail.category || ""}
         options={buildCategoryOptions("Uncategorized", activeDetail.category)}
         onChange={(next) => void saveActiveClientField({ category: next })}
+        // Staff cards (and a contact who is a staff member) stay under Staff.
+        disabled={isActiveContactArchived || isActiveContactStaff || isStaffContactCategory(activeDetail.category)}
         ariaLabel="Contact category"
         menuMinWidth={190}
         menuAlign="center"
@@ -1370,7 +1387,10 @@ function ClientsPageInner() {
                       {letterClients.map((client) => {
                         const emblemColor = (client.category ? categoryColorByName.get(client.category) : undefined) || NEUTRAL_AMBIENT_COLOR;
                         // Long-press (touch) opens the row's menu; a normal tap still opens the contact.
-                        const { style: longPressStyle, ...longPressHandlers } = rowLongPress.makeHandlers((origin) => openRowMenu(client.id, origin));
+                        // (Staff cards have no Archive — the long-press menu doesn't open on them.)
+                        const { style: longPressStyle, ...longPressHandlers } = rowLongPress.makeHandlers((origin) => {
+                          if (!isStaffContactId(client.id)) openRowMenu(client.id, origin);
+                        });
                         const isMenuRow = rowMenu?.clientId === client.id && !rowMenuClosing;
                         return (
                           <button
@@ -1560,6 +1580,14 @@ function ClientsPageInner() {
                         title="Archived — restore it from the Archive to make changes"
                       >
                         Archived
+                      </span>
+                    ) : isActiveContactStaff ? (
+                      <span
+                        className="inline-flex h-10 items-center rounded-full border px-4 text-[13px] font-medium"
+                        style={{ borderColor: mix(AMBIENT_VAR, 45), backgroundColor: mix(AMBIENT_VAR, 16), color: "var(--text-main)" }}
+                        title="A staff member — their details come from their staff profile"
+                      >
+                        Staff
                       </span>
                     ) : (
                       editButtonMobile
@@ -1768,6 +1796,7 @@ function ClientsPageInner() {
                             <label className={`block text-[11px] font-bold ${mobileFieldCardClass} order-4`} style={{ color: "var(--text-muted)" }}>
                               Notes
                               <textarea
+                                readOnly={isActiveContactArchived || isActiveContactStaff}
                                 defaultValue={activeDetail.notes}
                                 key={`${activeDetail.id}_notes_${fieldsRev.notes ?? 0}`}
                                 onBlur={(e) => {
@@ -1791,11 +1820,13 @@ function ClientsPageInner() {
                           </div>
                         </div>
                       </div>
-                      {/* Active / Completed Projects aren't editable, so on mobile they step aside while editing. */}
-                      <div className={`space-y-3 ${isEditingProfile ? "hidden" : ""}`}>
+                      {/* Active / Past Projects aren't editable, so on mobile they step aside while editing. Past is
+                          everything the contact has had that's finished, archived or deleted — the contact keeps
+                          every project in its history (lib/firestore-data.ts), so nothing drops off. */}
+                      <div className={`space-y-3 ${isEditingProfile || isActiveContactStaff ? "hidden" : ""}`}>
                         {([
-                          { title: "Active Projects", rows: activeDetail.history.filter((h) => !isCompletedProjectStatus(h.statusLabel)), empty: "No active projects." },
-                          { title: "Completed Projects", rows: activeDetail.history.filter((h) => isCompletedProjectStatus(h.statusLabel)), empty: "No completed projects." },
+                          { title: "Active Projects", rows: activeDetail.history.filter((h) => !isPastContactProject(h)), empty: "No active projects." },
+                          { title: "Past Projects", rows: activeDetail.history.filter((h) => isPastContactProject(h)), empty: "No past projects." },
                         ] as const).map((section) => (
                           <div key={section.title} className="glass-card-mobile rounded-[14px] border border-[var(--glass-border)] bg-[var(--panel-bg)] p-4">
                             <p className="text-[12px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
@@ -1806,7 +1837,7 @@ function ClientsPageInner() {
                                 <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>{section.empty}</p>
                               ) : (
                                 section.rows.map((history) => {
-                                  const canOpenProject = Boolean(String(history.projectId || "").trim());
+                                  const canOpenProject = Boolean(String(history.projectId || "").trim()) && !history.deleted;
                                   const rowBody = (
                                     <div
                                       className="glass-tint-row flex items-center justify-between rounded-[10px] border border-[var(--glass-border)] bg-[var(--panel-muted)] px-3 py-2 text-[12px] transition-colors"
@@ -1815,22 +1846,36 @@ function ClientsPageInner() {
                                       <div className="min-w-0">
                                         <p className="truncate font-semibold">{history.projectName}</p>
                                         <p className="truncate" style={{ color: "var(--text-muted)" }}>
-                                          {history.statusLabel} | {formatClientDate(history.updatedAtIso || history.createdAtIso)}
+                                          {history.statusLabel} |{" "}
+                                          {history.deleted && history.deletedAtIso
+                                            ? `Deleted ${formatClientDate(history.deletedAtIso)}`
+                                            : formatClientDate(history.updatedAtIso || history.createdAtIso)}
                                         </p>
                                       </div>
-                                      {/* The whole row is the link to the project, so there's no "Open" label; a project
-                                          that no longer exists still says "Removed" (that row isn't a link). */}
-                                      {canOpenProject ? null : (
-                                        <span className="ml-3 shrink-0 text-[11px]" style={{ color: "var(--text-muted)" }}>
-                                          Removed
+                                      {/* The whole row is the link to the project, so there's no "Open" label. An archived
+                                          project still opens (read-only); a deleted one is only this row now. */}
+                                      {history.deleted || !String(history.projectId || "").trim() ? (
+                                        <span
+                                          className="ml-3 shrink-0 rounded-full border px-2 py-[1px] text-[10.5px] font-semibold"
+                                          style={{ borderColor: "color-mix(in srgb, var(--danger-strong) 40%, transparent)", backgroundColor: "color-mix(in srgb, var(--danger-strong) 10%, transparent)", color: "var(--text-main)" }}
+                                        >
+                                          Deleted
                                         </span>
-                                      )}
+                                      ) : history.archived ? (
+                                        <span
+                                          className="ml-3 shrink-0 rounded-full border px-2 py-[1px] text-[10.5px] font-semibold"
+                                          style={{ borderColor: "color-mix(in srgb, var(--accent-amber) 55%, transparent)", backgroundColor: "color-mix(in srgb, var(--accent-amber) 20%, transparent)", color: "var(--text-main)" }}
+                                        >
+                                          Archived
+                                        </span>
+                                      ) : null}
                                     </div>
                                   );
                                   return canOpenProject ? (
                                     <Link
                                       key={history.projectId}
-                                      href={`/projects/${history.projectId}?tab=general`}
+                                      // An archived project opens like it does from the Archive (kept out of the tab bar).
+                                      href={`/projects/${history.projectId}?tab=general${history.archived ? "&fromArchive=1" : ""}`}
                                       className="block no-underline"
                                     >
                                       {rowBody}

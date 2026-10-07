@@ -885,6 +885,8 @@ export function GlobalAppTabsBar() {
               router.push(appVersion ? `/changelog?version=${encodeURIComponent(appVersion)}` : "/changelog");
             } else if (row.projectId) {
               router.push(`/projects/${row.projectId}`);
+            } else if (String(row.type || "").startsWith("lead_")) {
+              router.push("/leads");
             }
           }}
           className="block w-full border-b px-3 py-2 text-left transition-colors last:border-b-0 hover:bg-[var(--panel-muted)]"

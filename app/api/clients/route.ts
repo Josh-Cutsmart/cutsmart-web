@@ -108,7 +108,29 @@ type ClientHistoryRow = {
   clientEmail: string;
   clientPhone: string;
   clientAddress: string;
+  // Archived, or deleted for good (only the contact's saved row is left) — see withLiveProjectState.
+  archived?: boolean;
+  deleted?: boolean;
+  deletedAtIso?: string;
 };
+
+function isArchivedProjectData(project: Record<string, unknown>): boolean {
+  return project.isArchived === true || project.isDeleted === true;
+}
+
+// A contact's history keeps every project it's ever had (lib/firestore-data.ts saves each one). Whether
+// each is archived now — or deleted, when it's no longer among the company's projects — comes from the
+// projects themselves (liveArchivedById: every current project's id → archived or not), not from the
+// saved row, which can be out of date.
+function withLiveProjectState(history: ClientHistoryRow[], liveArchivedById: Map<string, boolean>): ClientHistoryRow[] {
+  return history.map((row) => {
+    const projectId = toStr(row.projectId);
+    if (!projectId) return row;
+    const liveArchived = liveArchivedById.get(projectId);
+    if (liveArchived === undefined) return { ...row, deleted: true };
+    return { ...row, archived: liveArchived, deleted: false, deletedAtIso: "" };
+  });
+}
 
 type ClientRow = {
   id: string;
@@ -195,6 +217,7 @@ function buildHistoryFromProject(project: Record<string, unknown>): ClientHistor
     clientEmail: toStr(project.clientEmail ?? project.email),
     clientPhone: toStr(project.clientPhone ?? project.clientNumber ?? project.phone),
     clientAddress: toStr(project.clientAddress ?? project.projectAddress ?? project.address),
+    archived: isArchivedProjectData(project),
   };
 }
 
@@ -334,6 +357,9 @@ function buildClientFromDoc(companyId: string, id: string, data: Record<string, 
         clientEmail: toStr(row.clientEmail),
         clientPhone: toStr(row.clientPhone),
         clientAddress: toStr(row.clientAddress),
+        archived: row.archived === true,
+        deleted: row.deleted === true,
+        deletedAtIso: toIsoString(row.deletedAtIso, ""),
       }))
     : [];
   return {
@@ -415,12 +441,20 @@ export async function GET(request: NextRequest) {
         if (client.deleted || !canViewerAccessClientRow(client, viewerUid, includeAll)) {
           return NextResponse.json({ ok: false, error: "client-not-found" }, { status: 404 });
         }
-        return NextResponse.json({ ok: true, client });
+        const liveSnap = await adminDb.collection("companies").doc(companyId).collection("jobs").select("id", "isArchived", "isDeleted").get();
+        const liveArchivedById = new Map<string, boolean>();
+        liveSnap.docs.forEach((docSnap) => {
+          const data = (docSnap.data() ?? {}) as Record<string, unknown>;
+          liveArchivedById.set(toStr(data.id) || docSnap.id, isArchivedProjectData(data));
+        });
+        return NextResponse.json({ ok: true, client: { ...client, history: withLiveProjectState(client.history, liveArchivedById) } });
       }
       const merged = new Map<string, ClientRow>();
+      const detailLiveArchivedById = new Map<string, boolean>();
       const jobsSnap = await adminDb.collection("companies").doc(companyId).collection("jobs").get();
       jobsSnap.docs.forEach((docSnap) => {
         const data = (docSnap.data() ?? {}) as Record<string, unknown>;
+        detailLiveArchivedById.set(toStr(data.id) || docSnap.id, isArchivedProjectData(data));
         const candidate = buildClientFromProject(companyId, { ...data, id: toStr(data.id) || docSnap.id });
         if (!candidate.name && !candidate.email && !candidate.phone) return;
         const matchId = findMatchingClientIdInMap(merged, { ...data, id: toStr(data.id) || docSnap.id }) || candidate.id;
@@ -430,7 +464,7 @@ export async function GET(request: NextRequest) {
       if (!client || !canViewerAccessClientRow(client, viewerUid, includeAll)) {
         return NextResponse.json({ ok: false, error: "client-not-found" }, { status: 404 });
       }
-      return NextResponse.json({ ok: true, client });
+      return NextResponse.json({ ok: true, client: { ...client, history: withLiveProjectState(client.history, detailLiveArchivedById) } });
     } catch {
       return NextResponse.json({ ok: false, error: "client-detail-load-failed" }, { status: 500 });
     }
@@ -468,11 +502,15 @@ export async function GET(request: NextRequest) {
   // The people on an archived contact's projects can see it on the Archived page, the same way they'd
   // see it in Contacts (an archived card's own doc may not list all of them).
   const archivedViewerUids = new Map<string, { createdByUids: string[]; assignedToUids: string[] }>();
+  const liveArchivedById = new Map<string, boolean>();
+  let liveProjectsRead = false;
   try {
     const jobsSnap = await adminDb.collection("companies").doc(companyId).collection("jobs").get();
+    liveProjectsRead = true;
     jobsSnap.docs.forEach((docSnap) => {
       const data = (docSnap.data() ?? {}) as Record<string, unknown>;
       const projectInput = { ...data, id: toStr(data.id) || docSnap.id };
+      liveArchivedById.set(projectInput.id, isArchivedProjectData(data));
       // A project linked to a card (clientId) belongs to that card whatever its client details say now —
       // that link keeps a changed phone/email from splitting it off into a duplicate contact.
       const linkedId = toStr(data.clientId);
@@ -548,7 +586,10 @@ export async function GET(request: NextRequest) {
     const aName = toStr(a.name || a.email).toLowerCase();
     const bName = toStr(b.name || b.email).toLowerCase();
     return aName.localeCompare(bName);
-  }).filter((client) => canViewerAccessClientRow(client, viewerUid, includeAll) && !client.archived);
+  })
+    .filter((client) => canViewerAccessClientRow(client, viewerUid, includeAll) && !client.archived)
+    // (Only once the projects were actually read — otherwise every project would look deleted.)
+    .map((client) => (liveProjectsRead ? { ...client, history: withLiveProjectState(client.history, liveArchivedById) } : client));
 
   return NextResponse.json({
     ok: true,

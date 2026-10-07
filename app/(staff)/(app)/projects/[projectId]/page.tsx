@@ -32,6 +32,7 @@ import {
 import { useSwipeToClose } from "@/lib/use-swipe-to-close";
 import { swallowNextClick } from "@/lib/swallow-dismiss-click";
 import { RestoreDialog, restoreStatusOptionsFrom } from "@/components/restore-dialog";
+import { authorizedFetch } from "@/lib/api-fetch";
 import { useKeepAnchoredPopoverAboveKeyboard } from "@/lib/use-keep-anchored-popover-above-keyboard";
 import { useMobileFloatingActionSheet } from "@/lib/use-mobile-floating-action-sheet";
 import { useLongPress } from "@/lib/use-long-press";
@@ -6223,6 +6224,10 @@ export default function ProjectDetailsPage() {
     quoteVersionId: string | null;
     quoteAcceptedAt: string | null;
     quoteAcceptedByName: string | null;
+    // The client declined it instead (app/api/specs-share/[shareId]/decline), maybe saying why.
+    quoteDeclinedAt?: string | null;
+    quoteDeclinedByName?: string | null;
+    quoteDeclineReason?: string | null;
     // True only when quoteVersionId was created by snapshotting the LIVE grid at the exact moment
     // it was sent (the normal "Send Quote to Client" flow while viewing live) — false/null when it
     // was instead an EXISTING historical version marked sent directly from the sidebar (see
@@ -7068,6 +7073,9 @@ export default function ProjectDetailsPage() {
   const [productionNotesToolbarHost, setProductionNotesToolbarHost] = useState<HTMLDivElement | null>(null);
   const [productionUnlockExpiryTick, setProductionUnlockExpiryTick] = useState(0);
   const [isGrantingUnlock, setIsGrantingUnlock] = useState(false);
+  // Production unlock requests (lib/production-unlock-server.ts): asking for one, and answering one.
+  const [isRequestingUnlock, setIsRequestingUnlock] = useState(false);
+  const [answeringUnlockRequestUid, setAnsweringUnlockRequestUid] = useState("");
   const [isUnlockEditModalOpen, setIsUnlockEditModalOpen] = useState(false);
   const [unlockEditModalOrigin, setUnlockEditModalOrigin] = useState<GlassModalOrigin>(null);
   const unlockEditModalPanelRef = useRef<HTMLDivElement | null>(null);
@@ -17532,6 +17540,19 @@ export default function ProjectDetailsPage() {
       logProjectChange(
         `Permissions — ${targetMember?.displayName || "Staff"}: ${accessLabel(oldAccess)} → ${accessLabel(nextAccess)}`,
       );
+      // Given access (or it changed between viewer and editor): let them know — not when it's taken away.
+      if (nextAccess && nextAccess !== oldAccess && targetUid !== user?.uid) {
+        const role = nextAccess === "edit" ? "an editor" : "a viewer";
+        void addUserNotification(targetUid, {
+          title: oldAccess ? "Project access changed" : "Added to a project",
+          message: oldAccess
+            ? `${user?.displayName || "A teammate"} made you ${role} on "${project.name || "a project"}".`
+            : `${user?.displayName || "A teammate"} added you to "${project.name || "a project"}" as ${role}.`,
+          type: "project_access",
+          projectId: project.id,
+          companyId: project.companyId,
+        });
+      }
       setLockMessage("");
     } else {
       setLockMessage("Could not save project permissions.");
@@ -18103,6 +18124,73 @@ export default function ProjectDetailsPage() {
       setUnlockEditError("Could not unlock edit right now.");
     }
     setIsGrantingUnlock(false);
+  };
+
+  // No password: ask the people who can let them in (they're notified, and can approve from the
+  // notification or the banner on this page's Production tab).
+  const onRequestProductionUnlock = async () => {
+    if (!project || !user?.uid || isRequestingUnlock) return;
+    setIsRequestingUnlock(true);
+    setUnlockEditError("");
+    try {
+      const response = await authorizedFetch("/api/production-unlock/request", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyId: project.companyId, projectId: project.id }),
+      });
+      const json = (await response.json().catch(() => null)) as { ok?: boolean; requestedAtIso?: string } | null;
+      if (!response.ok || !json?.ok) {
+        setUnlockEditError("Couldn't send the request — please try again.");
+        return;
+      }
+      const uid = user.uid;
+      setProject((prev) =>
+        prev
+          ? {
+              ...prev,
+              productionUnlockRequests: {
+                ...(prev.productionUnlockRequests ?? {}),
+                [uid]: { requestedAtIso: json.requestedAtIso || new Date().toISOString(), name: user.displayName || "" },
+              },
+            }
+          : prev,
+      );
+    } finally {
+      setIsRequestingUnlock(false);
+    }
+  };
+
+  // Approve (they get the usual temporary production edit) or deny someone's request.
+  const onAnswerProductionUnlockRequest = async (requesterUid: string, decision: "approve" | "deny") => {
+    if (!project || answeringUnlockRequestUid) return;
+    setAnsweringUnlockRequestUid(requesterUid);
+    try {
+      const response = await authorizedFetch("/api/production-unlock/respond", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyId: project.companyId, projectId: project.id, requesterUid, decision }),
+      });
+      const json = (await response.json().catch(() => null)) as { ok?: boolean; expiryIso?: string | null } | null;
+      if (!response.ok || !json?.ok) {
+        setLockMessage("Couldn't answer that unlock request — please try again.");
+        return;
+      }
+      setProject((prev) => {
+        if (!prev) return prev;
+        const requests = { ...(prev.productionUnlockRequests ?? {}) };
+        delete requests[requesterUid];
+        const settings = (prev.projectSettings ?? {}) as Record<string, unknown>;
+        return {
+          ...prev,
+          productionUnlockRequests: requests,
+          projectSettings: json.expiryIso
+            ? { ...settings, productionTempEdit: { ...((settings.productionTempEdit ?? {}) as Record<string, unknown>), [requesterUid]: json.expiryIso } }
+            : settings,
+        };
+      });
+    } finally {
+      setAnsweringUnlockRequestUid("");
+    }
   };
 
   const onRemoveProductionTempUnlock = async (targetUid: string) => {
@@ -26944,12 +27032,77 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     {isGrantingUnlock ? "Unlocking..." : "Unlock Edit"}
                   </button>
                 </div>
+                {(() => {
+                  const myRequest = user?.uid ? project?.productionUnlockRequests?.[user.uid] : undefined;
+                  return (
+                    <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4" style={{ borderColor: "var(--glass-border)" }}>
+                      <p className="min-w-0 flex-1 text-[12px]" style={{ color: "var(--text-muted)" }}>
+                        {myRequest
+                          ? "Request sent — you'll be notified when it's approved."
+                          : "No password? Ask for it to be unlocked — the project's owner, assignee and editors can approve it."}
+                      </p>
+                      <button
+                        type="button"
+                        disabled={isRequestingUnlock || Boolean(myRequest)}
+                        onClick={() => void onRequestProductionUnlock()}
+                        className="h-9 shrink-0 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95 disabled:opacity-55"
+                        style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+                      >
+                        {myRequest ? "Requested" : isRequestingUnlock ? "Sending..." : "Request unlock"}
+                      </button>
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           </div>,
           document.body,
         )
       : null;
+  // Pending production unlock requests, for the people who can answer them — at the top of the
+  // Production tab (iPhones can't show Approve/Deny on the notification itself, so this is where theirs go).
+  const pendingUnlockRequestRows = Object.entries(project?.productionUnlockRequests ?? {}).filter(([uid]) => uid !== user?.uid);
+  const productionUnlockRequestsBanner =
+    canManageProductionTempUnlocks && pendingUnlockRequestRows.length ? (
+      <div className="mb-3 space-y-2">
+        {pendingUnlockRequestRows.map(([requesterUid, request]) => {
+          const requester = companyMembers.find((member) => String(member.uid || "").trim() === requesterUid);
+          const isAnswering = answeringUnlockRequestUid === requesterUid;
+          return (
+            <div
+              key={requesterUid}
+              className="flex flex-wrap items-center justify-between gap-3 rounded-[14px] border px-4 py-3 text-[13px]"
+              style={{ borderColor: "var(--accent-amber)", backgroundColor: "color-mix(in srgb, var(--accent-amber) 14%, var(--panel-bg))", color: "var(--text-main)" }}
+            >
+              <p className="min-w-0 flex-1">
+                <span className="font-semibold">{requester?.displayName || request.name || "A teammate"}</span> asked to unlock production
+                {request.requestedAtIso ? <span style={{ color: "var(--text-muted)" }}> · {activeDateTime(request.requestedAtIso)}</span> : null}
+              </p>
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  disabled={isAnswering}
+                  onClick={() => void onAnswerProductionUnlockRequest(requesterUid, "deny")}
+                  className="h-8 rounded-[9px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-55"
+                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                >
+                  Deny
+                </button>
+                <button
+                  type="button"
+                  disabled={isAnswering}
+                  onClick={() => void onAnswerProductionUnlockRequest(requesterUid, "approve")}
+                  className="h-8 rounded-[9px] border px-3 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-55"
+                  style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                >
+                  {isAnswering ? "Saving..." : `Approve (${productionUnlockDurationHours}h)`}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    ) : null;
   // Built once and inserted at every production/sales render path (same reasoning as
   // unlockEditModalPortal just above) — its trigger lives in the Production Overview tab bar,
   // but isCutlistFullscreen/isCncFullscreen/etc. are separate early-return trees, so without this
@@ -27426,6 +27579,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         quoteVersionId?: string | null;
         quoteAcceptedAt?: string | null;
         quoteAcceptedByName?: string | null;
+        quoteDeclinedAt?: string | null;
+        quoteDeclinedByName?: string | null;
+        quoteDeclineReason?: string | null;
         quoteSentFromLive?: boolean | null;
       };
       if (!data.ok) return;
@@ -27440,6 +27596,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               quoteVersionId: data.quoteVersionId || null,
               quoteAcceptedAt: data.quoteAcceptedAt || null,
               quoteAcceptedByName: data.quoteAcceptedByName || null,
+              quoteDeclinedAt: data.quoteDeclinedAt || null,
+              quoteDeclinedByName: data.quoteDeclinedByName || null,
+              quoteDeclineReason: data.quoteDeclineReason || null,
               quoteSentFromLive: data.quoteSentFromLive ?? null,
             }
           : null,
@@ -27835,7 +27994,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         // showing even though the reopen route had already cleared the real record.
         const reopenedVersionId = data.reopenedVersionId || "";
         setSpecsShareStatus((prev) =>
-          prev ? { ...prev, quoteVersionId: null, quoteAcceptedAt: null, quoteAcceptedByName: null, quoteSentFromLive: null } : prev,
+          prev
+            ? { ...prev, quoteVersionId: null, quoteAcceptedAt: null, quoteAcceptedByName: null, quoteDeclinedAt: null, quoteDeclinedByName: null, quoteDeclineReason: null, quoteSentFromLive: null }
+            : prev,
         );
         // The version's own sentToClient/acceptedAtIso/acceptedByName are cleared server-side too
         // (see the reopen route's own comment — reopening retracts the send itself, not just the
@@ -44945,10 +45106,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       ? Boolean(activeQuoteGridVersion?.sentToClient || activeQuoteGridVersion?.acceptedAtIso)
       : false;
     const quoteAcceptedBannerVisible = Boolean(specsShareStatus?.quoteAcceptedAt) && isViewingSentQuoteVersion;
-    // Sent, but the client hasn't accepted it yet — the other half of the same "which banner shows
-    // above the sheet" decision as quoteAcceptedBannerVisible above; exactly one of the two is ever
-    // true at once.
-    const quotePendingBannerVisible = isQuoteLockedForSending && !specsShareStatus?.quoteAcceptedAt && isViewingSentQuoteVersion;
+    // The client declined it (in their portal) instead of accepting.
+    const quoteDeclinedBannerVisible = !quoteAcceptedBannerVisible && Boolean(specsShareStatus?.quoteDeclinedAt) && isViewingSentQuoteVersion;
+    // Sent, but the client hasn't answered yet — the other half of the same "which banner shows
+    // above the sheet" decision as the two above; exactly one of them is ever true at once.
+    const quotePendingBannerVisible =
+      isQuoteLockedForSending && !specsShareStatus?.quoteAcceptedAt && !specsShareStatus?.quoteDeclinedAt && isViewingSentQuoteVersion;
     // Rendered in the SAME centered top-bar slot as quoteGridOutdatedChipData (mutually exclusive
     // with it — that one explicitly excludes sent/accepted versions, this one requires it), via the
     // shared TopBarStatusChip shell instead of the previous full-width banner above the sheet — one
@@ -44977,6 +45140,37 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               }}
               className="inline-flex h-7 shrink-0 items-center rounded-[8px] px-3 text-[11px] font-bold hover:brightness-95 disabled:opacity-60"
               style={{ borderColor: "var(--success-strong)", backgroundColor: "var(--panel-bg)", color: "var(--success-strong)", borderWidth: "1px", borderStyle: "solid" }}
+            >
+              {isReopeningQuoteAcceptance ? "Reopening…" : "Reopen for editing"}
+            </button>
+          ) : null}
+        </>
+      ),
+    } : quoteDeclinedBannerVisible ? {
+      key: "quote-declined",
+      style: { borderColor: "var(--danger-strong)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" },
+      content: (
+        <>
+          <span title={specsShareStatus?.quoteDeclineReason ? `Reason: ${specsShareStatus.quoteDeclineReason}` : undefined}>
+            {specsShareStatus?.quoteDeclinedAt
+              ? (() => {
+                  const { date, time } = numericDDMMYYYYAndTime(specsShareStatus.quoteDeclinedAt);
+                  return `Declined by ${specsShareStatus?.quoteDeclinedByName || "client"} on ${date} at ${time}`;
+                })()
+              : `Declined by ${specsShareStatus?.quoteDeclinedByName || "client"}`}
+            {specsShareStatus?.quoteDeclineReason ? ` — "${specsShareStatus.quoteDeclineReason}"` : ""}
+          </span>
+          {salesAllowReopenForEditingEnabled ? (
+            <button
+              type="button"
+              disabled={isReopeningQuoteAcceptance}
+              onClick={(e) => {
+                reopenQuoteConfirmOriginElRef.current = e.currentTarget;
+                setReopenQuoteConfirmOrigin(captureGlassModalOrigin(e));
+                setIsReopenQuoteConfirmOpen(true);
+              }}
+              className="inline-flex h-7 shrink-0 items-center rounded-[8px] px-3 text-[11px] font-bold hover:brightness-95 disabled:opacity-60"
+              style={{ borderColor: "var(--danger-strong)", backgroundColor: "var(--panel-bg)", color: "var(--danger-strong)", borderWidth: "1px", borderStyle: "solid" }}
             >
               {isReopeningQuoteAcceptance ? "Reopening…" : "Reopen for editing"}
             </button>
@@ -52293,6 +52487,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     : "relative isolate mt-3 w-full max-w-[1120px] space-y-4 px-3 sm:px-4 md:px-5 xl:mt-5 xl:pl-0 xl:pr-5"
                 }
               >
+                {productionUnlockRequestsBanner}
                 {productionNav === "cutlist" ? (
                   isCompactProjectViewport ? (
                     <div className={`space-y-3 pb-2 ${isTabletProjectViewport ? "mx-auto max-w-[1100px]" : ""}`}>

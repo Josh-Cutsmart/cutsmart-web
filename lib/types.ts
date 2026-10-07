@@ -101,6 +101,8 @@ export interface Project {
   // Its place in its Dashboard board column once someone has dragged it there (see
   // lib/board-drop-order.ts) — unset until then, when it sits by date like any other card.
   dashboardBoardOrder?: number;
+  // Production unlock requests waiting for an answer, by requester uid (lib/production-unlock-server.ts).
+  productionUnlockRequests?: Record<string, { requestedAtIso: string; name: string }>;
   projectSettings?: Record<string, unknown>;
   cutlist?: Record<string, unknown>;
   checklists?: ProjectChecklist[];

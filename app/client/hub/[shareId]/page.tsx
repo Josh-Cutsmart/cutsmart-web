@@ -24,6 +24,8 @@ const ERROR_MESSAGES: Record<string, string> = {
   "no-specifications-sheet": "There's no specifications sheet on this project yet.",
   "no-quote": "There's no quote on this project yet.",
   "missing-name": "Please enter your name to accept.",
+  "quote-declined": "This quote has already been declined.",
+  "quote-accepted": "This quote has already been accepted.",
 };
 
 // What the client had seen the last time they opened this link, on this device — the basis for the
@@ -108,16 +110,33 @@ function SubmitBar({ onSubmitClick }: { onSubmitClick: (e: ReactMouseEvent<HTMLB
 // utility classes, since those tie in CSS specificity with .glass-modal-panel's own `color`/
 // `border-radius` (both plain single-class rules) and can lose depending on stylesheet order —
 // an inline style always wins.
-function AcceptBar({ onAcceptClick }: { onAcceptClick: (e: ReactMouseEvent<HTMLButtonElement>) => void }) {
+// Decline sits beside it, smaller and outlined, so accepting stays the obvious choice.
+function AcceptBar({
+  onAcceptClick,
+  onDeclineClick,
+}: {
+  onAcceptClick: (e: ReactMouseEvent<HTMLButtonElement>) => void;
+  onDeclineClick: (e: ReactMouseEvent<HTMLButtonElement>) => void;
+}) {
   return (
-    <button
-      type="button"
-      onClick={onAcceptClick}
-      className="glass-modal-panel flex w-full items-center justify-center px-4 py-3 text-[14px] font-bold transition hover:brightness-105"
-      style={{ backgroundColor: "#15803D", borderColor: "#15803D", color: "#ffffff", borderRadius: 8 }}
-    >
-      Accept Quote
-    </button>
+    <div className="flex gap-2">
+      <button
+        type="button"
+        onClick={onAcceptClick}
+        className="glass-modal-panel flex min-w-0 flex-1 items-center justify-center px-4 py-3 text-[14px] font-bold transition hover:brightness-105"
+        style={{ backgroundColor: "#15803D", borderColor: "#15803D", color: "#ffffff", borderRadius: 8 }}
+      >
+        Accept Quote
+      </button>
+      <button
+        type="button"
+        onClick={onDeclineClick}
+        className="glass-modal-panel flex shrink-0 items-center justify-center px-4 py-3 text-[14px] font-bold transition hover:brightness-95"
+        style={{ backgroundColor: "rgba(255,255,255,0.88)", borderColor: "#B42318", color: "#B42318", borderRadius: 8 }}
+      >
+        Decline
+      </button>
+    </div>
   );
 }
 
@@ -224,6 +243,8 @@ export default function ClientSpecsSharePage() {
   const [quoteGrid, setQuoteGrid] = useState<SpecsGrid | null>(null);
   const [quoteAcceptedAt, setQuoteAcceptedAt] = useState<string | null>(null);
   const [quoteAcceptedByName, setQuoteAcceptedByName] = useState<string | null>(null);
+  const [quoteDeclinedAt, setQuoteDeclinedAt] = useState<string | null>(null);
+  const [quoteDeclinedByName, setQuoteDeclinedByName] = useState<string | null>(null);
 
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [isPrinting, setIsPrinting] = useState(false);
@@ -275,6 +296,15 @@ export default function ClientSpecsSharePage() {
   const [acceptNameDraft, setAcceptNameDraft] = useState("");
   const [isAccepting, setIsAccepting] = useState(false);
   const [acceptError, setAcceptError] = useState("");
+  // Declining: the same pop-up, with an optional reason.
+  const [showDeclineModal, setShowDeclineModal] = useState(false);
+  const [declineModalOrigin, setDeclineModalOrigin] = useState<GlassModalOrigin>(null);
+  const declineModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const declineModalOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderDeclineModal = useGlassModalPopOrigin(showDeclineModal, declineModalOrigin, declineModalPanelRef, undefined, declineModalOriginElRef);
+  const [declineReasonDraft, setDeclineReasonDraft] = useState("");
+  const [isDeclining, setIsDeclining] = useState(false);
+  const [declineError, setDeclineError] = useState("");
 
   // No access code — the link itself (this shareId) is the only secret, per the user's explicit
   // call that a separate code isn't worth the friction for how unlikely the URL is to be guessed.
@@ -306,6 +336,8 @@ export default function ClientSpecsSharePage() {
               assignedContact?: { name: string; email: string; mobile: string } | null;
               quoteAcceptedAt?: string | null;
               quoteAcceptedByName?: string | null;
+              quoteDeclinedAt?: string | null;
+              quoteDeclinedByName?: string | null;
               sentVersion?: string;
             }>,
           fetch(`/api/specs-share/${shareId}/schedule`)
@@ -334,6 +366,8 @@ export default function ClientSpecsSharePage() {
           setAssignedContact((prev) => prev || quoteData.assignedContact || null);
           setQuoteAcceptedAt(quoteData.quoteAcceptedAt || null);
           setQuoteAcceptedByName(quoteData.quoteAcceptedByName || null);
+          setQuoteDeclinedAt(quoteData.quoteDeclinedAt || null);
+          setQuoteDeclinedByName(quoteData.quoteDeclinedByName || null);
           setQuoteAvailable(true);
           anyAvailable = true;
         } else if (!sharedError && !isNotSentError(quoteData.error)) {
@@ -515,6 +549,37 @@ export default function ClientSpecsSharePage() {
     }
   };
 
+  // Declining needs their name too (shared with the accept pop-up's field); the reason is optional.
+  const declineQuote = async () => {
+    if (isDeclining) return;
+    const trimmedName = acceptNameDraft.trim();
+    if (!trimmedName) {
+      setDeclineError("Please enter your name to decline.");
+      return;
+    }
+    setIsDeclining(true);
+    setDeclineError("");
+    try {
+      const res = await fetch(`/api/specs-share/${shareId}/decline`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: trimmedName, reason: declineReasonDraft.trim() }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; quoteDeclinedAt?: string; quoteDeclinedByName?: string };
+      if (!data.ok) {
+        setDeclineError(errorMessageFor(data.error));
+        return;
+      }
+      setQuoteDeclinedAt(data.quoteDeclinedAt || new Date().toISOString());
+      setQuoteDeclinedByName(data.quoteDeclinedByName || trimmedName);
+      setShowDeclineModal(false);
+    } catch {
+      setDeclineError(errorMessageFor(undefined));
+    } finally {
+      setIsDeclining(false);
+    }
+  };
+
   // Both Print and PDF reuse the EXACT same generator the staff editor's own "Print"/"Download
   // PDF" buttons use (buildSpecsGridPdfBlob/openPdfBlobInPrintWindow, extracted verbatim into
   // lib/specs-grid-pdf.ts so both places share one implementation) — a clean, vector-text PDF
@@ -558,7 +623,8 @@ export default function ClientSpecsSharePage() {
 
   const hasConfirmableCells = Boolean(grid?.rows.some((r) => r.cells.some((c) => c?.confirmable)));
   const locked = Boolean(confirmationSubmittedAt);
-  const quoteLocked = Boolean(quoteAcceptedAt);
+  // Accepted or declined — either way it's answered, until staff reopen it.
+  const quoteLocked = Boolean(quoteAcceptedAt || quoteDeclinedAt);
   const tabCount = Number(specsAvailable) + Number(quoteAvailable) + Number(scheduleAvailable);
   const showTabs = tabCount > 1;
   const activeTabLabel = activeTab === "quote" ? "Quote" : activeTab === "schedule" ? "Schedule" : "Specifications";
@@ -942,7 +1008,13 @@ export default function ClientSpecsSharePage() {
 
                 {activeTab === "quote" && quoteAvailable && quoteGrid ? (
                   <>
-                    {quoteLocked ? (
+                    {quoteDeclinedAt && !quoteAcceptedAt ? (
+                      <div className="mb-4 rounded-[10px] border px-4 py-3 text-[13px] font-bold" style={{ borderColor: "#B42318", backgroundColor: "#FEF3F2", color: "#B42318" }}>
+                        Declined by {quoteDeclinedByName || "you"} on{" "}
+                        {`${new Date(quoteDeclinedAt).toLocaleDateString()} at ${new Date(quoteDeclinedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`}
+                        .
+                      </div>
+                    ) : quoteLocked ? (
                       <div className="mb-4 rounded-[10px] border px-4 py-3 text-[13px] font-bold" style={{ borderColor: "#15803D", backgroundColor: "#F0FDF4", color: "#15803D" }}>
                         Accepted by {quoteAcceptedByName || "you"} on{" "}
                         {quoteAcceptedAt
@@ -957,6 +1029,12 @@ export default function ClientSpecsSharePage() {
                             acceptModalOriginElRef.current = e.currentTarget;
                             setAcceptModalOrigin(captureGlassModalOrigin(e));
                             setShowAcceptModal(true);
+                          }}
+                          onDeclineClick={(e) => {
+                            declineModalOriginElRef.current = e.currentTarget;
+                            setDeclineModalOrigin(captureGlassModalOrigin(e));
+                            setDeclineError("");
+                            setShowDeclineModal(true);
                           }}
                         />
                       </div>
@@ -983,6 +1061,12 @@ export default function ClientSpecsSharePage() {
                             acceptModalOriginElRef.current = e.currentTarget;
                             setAcceptModalOrigin(captureGlassModalOrigin(e));
                             setShowAcceptModal(true);
+                          }}
+                          onDeclineClick={(e) => {
+                            declineModalOriginElRef.current = e.currentTarget;
+                            setDeclineModalOrigin(captureGlassModalOrigin(e));
+                            setDeclineError("");
+                            setShowDeclineModal(true);
                           }}
                         />
                       </div>
@@ -1073,6 +1157,51 @@ export default function ClientSpecsSharePage() {
                 style={{ backgroundColor: "#15803D" }}
               >
                 {isAccepting ? "Accepting…" : "Accept Quote"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {shouldRenderDeclineModal ? (
+        <div className="glass-modal-backdrop fixed inset-0 flex items-center justify-center px-4" style={{ zIndex: 2147483647 }}>
+          <div ref={declineModalPanelRef} className="glass-modal-panel w-[min(380px,96vw)] max-w-full p-5" style={{ backgroundColor: "rgba(255, 255, 255, 0.88)" }}>
+            <p className="mb-2 text-[14px] font-bold" style={{ color: "#000000" }}>Decline this quote</p>
+            <p className="mb-3 text-[12px]" style={{ color: "#000000" }}>
+              We&apos;ll let the team know. Please type your name to confirm — and if you like, tell us why.
+            </p>
+            <input
+              value={acceptNameDraft}
+              onChange={(e) => setAcceptNameDraft(e.target.value)}
+              placeholder="Your name"
+              className="mb-2 h-9 w-full rounded-[8px] border px-3 text-[13px] placeholder:text-[#4B5563] max-lg:h-11"
+              style={{ borderColor: "#6B7280", color: "#000000" }}
+            />
+            <textarea
+              value={declineReasonDraft}
+              onChange={(e) => setDeclineReasonDraft(e.target.value)}
+              placeholder="Reason (optional)"
+              rows={3}
+              className="mb-3 w-full resize-none rounded-[8px] border px-3 py-2 text-[13px] placeholder:text-[#4B5563]"
+              style={{ borderColor: "#6B7280", color: "#000000" }}
+            />
+            {declineError ? <p className="mb-2 text-[12px] font-bold" style={{ color: "#B42318" }}>{declineError}</p> : null}
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowDeclineModal(false)}
+                className="h-9 rounded-[8px] border px-4 text-[12px] font-bold max-lg:h-11 max-sm:flex-1"
+                style={{ borderColor: "#D8DEE8", color: "#000000" }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeclining}
+                onClick={() => void declineQuote()}
+                className="h-9 rounded-[8px] px-4 text-[12px] font-bold text-white disabled:opacity-60 max-lg:h-11 max-sm:flex-1"
+                style={{ backgroundColor: "#B42318" }}
+              >
+                {isDeclining ? "Declining…" : "Decline Quote"}
               </button>
             </div>
           </div>

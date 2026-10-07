@@ -427,6 +427,17 @@ function normalizeProject(id: string, data: Record<string, unknown>, options?: {
     dashboardSubStageId: String(data.dashboardSubStageId ?? "").trim() || undefined,
     dashboardBoardOrder:
       typeof data.dashboardBoardOrder === "number" && Number.isFinite(data.dashboardBoardOrder) ? data.dashboardBoardOrder : undefined,
+    productionUnlockRequests: (() => {
+      const raw = data.productionUnlockRequests;
+      if (!raw || typeof raw !== "object") return undefined;
+      const out: Record<string, { requestedAtIso: string; name: string }> = {};
+      for (const [uid, value] of Object.entries(raw as Record<string, unknown>)) {
+        const row = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+        const requestedAtIso = String(row.requestedAtIso ?? "").trim();
+        if (uid && requestedAtIso) out[uid] = { requestedAtIso, name: String(row.name ?? "").trim() };
+      }
+      return Object.keys(out).length ? out : undefined;
+    })(),
     projectSettings: settings,
     // Never parsed here anymore, lightweight or not — cutlist rows moved to their own
     // subcollection; the project page fetches them itself, lazily, via useProjectCutlist.
@@ -1566,7 +1577,6 @@ export async function updateProjectStatus(
     );
   };
   const syncClientProfile = async (completedAtIso: string) => {
-    if (!normalizeClientEmail(project.clientEmail)) return;
     const nextProjectSnapshot: Project = {
       ...project,
       statusLabel: newStatus,
@@ -1787,6 +1797,12 @@ export async function permanentlyDeleteProject(project: Project): Promise<boolea
   if (!db || !project) {
     return false;
   }
+
+  // Its contact keeps it in their history (marked deleted), so the contact still shows it.
+  await syncCompanyClientProfileFromProjectInternal(project, {
+    syncOnly: true,
+    historyPatch: { deleted: true, deletedAtIso: new Date().toISOString() },
+  }).catch(() => undefined);
 
   try {
     const topLevelRef = doc(db, "projects", project.id);
@@ -2951,6 +2967,12 @@ export type CompanyClientProjectHistoryRow = {
   clientEmail: string;
   clientPhone: string;
   clientAddress: string;
+  // The project is archived (still opens, read-only) — or deleted for good, when only this row is left
+  // of it. A contact keeps every project it's ever had in its history, so these stay listed (under Past
+  // Projects) after the project itself is archived or gone.
+  archived?: boolean;
+  deleted?: boolean;
+  deletedAtIso?: string;
 };
 
 export type CompanyClientRow = {
@@ -3157,6 +3179,7 @@ function createCompanyClientUid(): string {
 
 function buildCompanyClientProjectHistory(project: Project): CompanyClientProjectHistoryRow {
   return {
+    archived: project.isArchived === true || (project as unknown as Record<string, unknown>).isDeleted === true,
     projectId: String(project.id || "").trim(),
     projectName: String(project.name || "").trim() || "Untitled Project",
     createdAtIso: String(project.createdAt || "").trim(),
@@ -3308,6 +3331,9 @@ function buildCompanyClientRowFromDoc(
       clientEmail: String(row.clientEmail ?? "").trim(),
       clientPhone: String(row.clientPhone ?? "").trim(),
       clientAddress: String(row.clientAddress ?? "").trim(),
+      archived: row.archived === true,
+      deleted: row.deleted === true,
+      deletedAtIso: toIsoString(row.deletedAtIso, ""),
     })),
   };
 }
@@ -3375,7 +3401,8 @@ async function collectCompanyProjectsForClients(companyId: string): Promise<Proj
 
 async function syncCompanyClientProfileFromProjectInternal(
   project: Project,
-  options?: { countCompletedProject?: boolean; syncOnly?: boolean },
+  // historyPatch: extra on this project's history row (permanentlyDeleteProject marks it deleted).
+  options?: { countCompletedProject?: boolean; syncOnly?: boolean; historyPatch?: Partial<CompanyClientProjectHistoryRow> },
 ): Promise<{ ok: boolean; clientId?: string }> {
   const cid = String(project?.companyId || "").trim();
   const email = String(project?.clientEmail || "").trim();
@@ -3428,7 +3455,15 @@ async function syncCompanyClientProfileFromProjectInternal(
       !currentCompletedIds.includes(String(project.id || "").trim())
     ) {
       currentCompletedIds.push(String(project.id || "").trim());
-      currentHistory.push(buildCompanyClientProjectHistory(project));
+    }
+    // This project's row in the contact's history, added or brought up to date — every project the
+    // contact has ever had stays there, so it's still listed after it's archived or deleted.
+    const historyProjectId = String(project.id || "").trim();
+    if (historyProjectId) {
+      const historyRow = { ...buildCompanyClientProjectHistory(project), ...(options?.historyPatch ?? {}) };
+      const existingIndex = currentHistory.findIndex((row) => row.projectId === historyProjectId);
+      if (existingIndex >= 0) currentHistory[existingIndex] = historyRow;
+      else currentHistory.push(historyRow);
     }
 
     const sortedHistory = currentHistory
@@ -4740,6 +4775,10 @@ export async function addUserNotification(
       createdAt: serverTimestamp(),
       createdAtIso: new Date().toISOString(),
     });
+    // ...and to their phone/desktop, if they've turned that on (lib/push-client.ts).
+    void import("@/lib/push-client")
+      .then(({ requestPushForNotification }) => requestPushForNotification(userId, ref.id, input.companyId))
+      .catch(() => undefined);
     return true;
   } catch (err) {
     console.error("[addUserNotification] write failed:", err);

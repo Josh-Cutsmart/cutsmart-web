@@ -46,6 +46,11 @@ export type SpecsShareLinkDoc = {
   quoteVersionId?: string;
   quoteAcceptedAt?: string;
   quoteAcceptedByName?: string;
+  // The client declined the quote instead (app/api/specs-share/[shareId]/decline) — with their name and
+  // the reason they gave, if any. Locks it the same way accepting does, until staff reopen it.
+  quoteDeclinedAt?: string;
+  quoteDeclinedByName?: string;
+  quoteDeclineReason?: string;
   // True only when quoteVersionId was created by snapshotting the LIVE grid at the exact moment it
   // was sent (staff sending straight from the live editor) — false/absent when an ALREADY-SAVED
   // historical version was marked sent directly from the Version History sidebar instead. The live

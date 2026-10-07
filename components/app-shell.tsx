@@ -69,6 +69,7 @@ import { swallowNextClick } from "@/lib/swallow-dismiss-click";
 import { isAnyPopupOpen } from "@/components/scroll-lock-watcher";
 import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
 import { SidebarUserSettingsPanel } from "@/components/sidebar-user-settings-panel";
+import { usePushNotificationsOnAppOpen } from "@/lib/push-client";
 import { VerifyAccountModal } from "@/components/verify-account-modal";
 import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
@@ -477,6 +478,8 @@ export function AppShell({
   // screen — mounted once here (AppShell wraps every staff page) rather than per-modal, since
   // every modal already shares that one class.
   usePublishKeyboardInsetVars();
+  // Phone/desktop notifications (lib/push-client.ts): keep this device current, clear the icon badge.
+  usePushNotificationsOnAppOpen(user?.uid);
   const [projectName, setProjectName] = useState("");
   const [clientFirstName, setClientFirstName] = useState("");
   const [clientLastName, setClientLastName] = useState("");
