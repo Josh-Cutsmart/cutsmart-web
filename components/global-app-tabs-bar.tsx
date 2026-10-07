@@ -800,13 +800,9 @@ export function GlobalAppTabsBar() {
       setPendingActiveAppTabKey("");
       setIsAppTabsMenuOpen("");
       setAppTabsMenuPos(null);
-      const fallbackTab =
-        visibleGlobalAppTabs
-          .filter((tab) => tab.scopeKey !== closingTab.scopeKey)
-          .slice()
-          .sort((a, b) => (Number(a.order) || Number.MAX_SAFE_INTEGER) - (Number(b.order) || Number.MAX_SAFE_INTEGER))[0] ??
-        null;
-      router.push(fallbackTab?.href || "/dashboard");
+      // Closing a tab only closes it — it never opens another one. Only when it's the page being looked at
+      // does that page have to go, and then it's for the Dashboard. (The page saves as it's left, as always.)
+      if (isClosingCurrentScope) router.push("/dashboard");
       return;
     }
     if (closingTab && isClosingCurrentScope) {
@@ -883,6 +879,8 @@ export function GlobalAppTabsBar() {
             setIsNotifOpen(false);
             if (isAppVersion) {
               router.push(appVersion ? `/changelog?version=${encodeURIComponent(appVersion)}` : "/changelog");
+            } else if (row.type === "calendar_reminder" && row.eventId) {
+              router.push(`/calendar?event=${encodeURIComponent(row.eventId)}`);
             } else if (row.projectId) {
               router.push(`/projects/${row.projectId}`);
             } else if (String(row.type || "").startsWith("lead_")) {

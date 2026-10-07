@@ -6,7 +6,7 @@
 // to local midnight of the day after its last day (end is exclusive), so a one-day all-day event is
 // exactly 24h long and multi-day spans are easy to lay out.
 
-import { collection, deleteDoc, doc, getDocs, onSnapshot, query, setDoc, where, writeBatch } from "firebase/firestore";
+import { collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, query, setDoc, where, writeBatch } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 
 // Per-category access, keyed by normalized role id (normalizeRoleKey). A role with no entry gets View;
@@ -180,6 +180,17 @@ export function subscribeCalendarEvents(
     },
     (error) => onError?.(error),
   );
+}
+
+// One event (null if it's gone or archived) — e.g. to open it from a calendar reminder notification.
+export async function fetchCalendarEvent(companyId: string, eventId: string): Promise<CalendarEvent | null> {
+  if (!db || !companyId || !eventId) return null;
+  try {
+    const snap = await getDoc(doc(db, "companies", companyId, "calendarEvents", eventId));
+    return snap.exists() ? toEvent(snap.id, (snap.data() ?? {}) as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function saveCalendarEvent(companyId: string, event: CalendarEvent): Promise<{ ok: boolean; error?: string }> {

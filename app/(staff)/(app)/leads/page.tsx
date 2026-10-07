@@ -38,6 +38,17 @@ import {
   type BoardSortMode,
 } from "@/lib/board-drop-order";
 import { BoardColumnSortMenu, BoardSortButton } from "@/components/board-sort-menu";
+import { useHomeScreenApp } from "@/lib/home-screen-app";
+import { useAppTabs } from "@/lib/app-tabs-context";
+
+// The page's own padding when it's the Leads home-screen app (the app shell drops its <main> padding
+// then) — clear of the notch and rounded corners.
+const HOME_SCREEN_APP_PAGE_PADDING = {
+  paddingTop: "max(12px, env(safe-area-inset-top, 0px))",
+  paddingLeft: "max(12px, env(safe-area-inset-left, 0px))",
+  paddingRight: "max(12px, env(safe-area-inset-right, 0px))",
+  paddingBottom: "max(12px, env(safe-area-inset-bottom, 0px))",
+};
 import { readBoardSortPrefs, saveBoardSortPrefs } from "@/lib/board-sort-prefs";
 import { clusterPins, computeSpreadPositions, findClusterContainingPin } from "@/lib/pin-clustering";
 import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
@@ -657,6 +668,17 @@ export default function LeadsPage() {
   const access = useCompanyAccess();
   const activeCompanyId = access.companyId;
   const canAccessLeads = access.status === "ready" && (isOwnerOrAdmin(access.role) || hasPermissionKey(access.permissionKeys, "leads.view"));
+  // Opened from Leads' own home-screen icon: just Leads, without the app around it (no sidebars, tab bar,
+  // pull-down menu or side drawers — lib/home-screen-app.ts). Not when this person can't see leads, so
+  // they aren't left on a dead end.
+  const leadsChromeless = useHomeScreenApp() === "leads" && (access.status === "loading" || canAccessLeads);
+  const { setChromeHidden } = useAppTabs();
+  // Before paint, so the tab bar and sidebar don't flash up for a frame as the app opens.
+  useLayoutEffect(() => {
+    if (!leadsChromeless) return;
+    setChromeHidden(true);
+    return () => setChromeHidden(false);
+  }, [leadsChromeless, setChromeHidden]);
   const canViewOtherLeads = access.status === "ready" && (isOwnerOrAdmin(access.role) || hasPermissionKey(access.permissionKeys, "leads.view.others"));
   const [leads, setLeads] = useState<CompanyLeadRow[]>([]);
   const [leadDetailsById, setLeadDetailsById] = useState<Record<string, CompanyLeadRow>>({});
@@ -3472,7 +3494,7 @@ export default function LeadsPage() {
   }
 
   return (
-    <>
+    <div style={leadsChromeless ? HOME_SCREEN_APP_PAGE_PADDING : { display: "contents" }}>
         {access.status === "loading" ? (
           <div className="rounded-[14px] border p-6 text-[13px] font-semibold" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}>
             Checking access...
@@ -5399,6 +5421,6 @@ export default function LeadsPage() {
           </div>,
           document.body,
         )}
-    </>
+    </div>
   );
 }

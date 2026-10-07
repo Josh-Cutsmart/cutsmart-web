@@ -1335,6 +1335,8 @@ export interface UserNotificationRow {
   createdAtIso: string;
   projectId?: string;
   companyId?: string;
+  // A calendar reminder's event.
+  eventId?: string;
 }
 
 export type AppReportKind = "issue" | "feature";
@@ -4724,6 +4726,7 @@ export async function fetchUserNotifications(uid: string, companyId?: string): P
         createdAtIso: toIsoString(data.createdAtIso ?? data.createdAt, ""),
         projectId: String(data.projectId ?? "").trim() || undefined,
         companyId: String(data.companyId ?? "").trim() || undefined,
+        eventId: String(data.eventId ?? "").trim() || undefined,
       };
     });
     if (!scopeCompanyId) return rows;

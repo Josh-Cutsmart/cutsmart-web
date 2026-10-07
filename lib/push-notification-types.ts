@@ -42,13 +42,23 @@ export const PUSH_NOTIFICATION_CATEGORIES: readonly PushNotificationCategory[] =
       { type: "specs_submitted", label: "Specifications submitted", description: "A client submits their specifications answers." },
       { type: "quote_sent", label: "Quote sent to a client", description: "A teammate sends a quote for a project you follow." },
       { type: "specs_sent", label: "Specifications sent to a client", description: "A teammate sends specifications for a project you follow." },
+      {
+        type: "quote_pending",
+        label: "Quote not accepted yet",
+        description: "A quote sent to a client still hasn't been accepted — choose after how long below.",
+      },
+      {
+        type: "specs_pending",
+        label: "Specifications not submitted yet",
+        description: "Specifications sent to a client still haven't been submitted — choose after how long below.",
+      },
     ],
   },
   {
     id: "calendar",
     label: "Calendar",
     types: [
-      { type: "calendar_reminder", label: "Upcoming project events", description: "An event for a project assigned to you is coming up — choose how far ahead below." },
+      { type: "calendar_reminder", label: "Upcoming project events", description: "An event for a project assigned to you is coming up — choose how far ahead below (add as many as you like)." },
     ],
   },
   {
@@ -79,9 +89,32 @@ export function isPushNotificationTypeEnabled(choices: unknown, type: unknown): 
   return (choices as Record<string, unknown>)[pushNotificationTypeKey(type)] !== false;
 }
 
-// Where tapping the notification takes them: the project it's about, Leads for a lead, the changelog for
-// a new version, or the Dashboard.
-export function pushNotificationUrl(input: { type?: unknown; projectId?: unknown; leadId?: unknown; title?: unknown }): string {
+// Which category a kind of notification is in.
+export function pushNotificationCategoryOf(type: unknown): string {
+  const key = pushNotificationTypeKey(type);
+  return PUSH_NOTIFICATION_CATEGORIES.find((category) => category.types.some((option) => option.type === key))?.id ?? "";
+}
+
+// A whole category can be turned off too (users/{uid}.pushNotificationCategories = { [id]: false }) —
+// without changing the kinds' own switches, so turning it back on puts them back as they were.
+export function isPushNotificationCategoryEnabled(categoryChoices: unknown, categoryId: string): boolean {
+  if (!categoryChoices || typeof categoryChoices !== "object") return true;
+  return (categoryChoices as Record<string, unknown>)[categoryId] !== false;
+}
+
+// Whether a kind of notification goes to someone's devices: its category and its own switch both on.
+export function isPushNotificationWanted(userData: Record<string, unknown> | undefined, type: unknown): boolean {
+  return (
+    isPushNotificationCategoryEnabled(userData?.pushNotificationCategories, pushNotificationCategoryOf(type)) &&
+    isPushNotificationTypeEnabled(userData?.pushNotificationTypes, type)
+  );
+}
+
+// Where tapping the notification takes them: the event for a calendar reminder, the project it's about,
+// Leads for a lead, the changelog for a new version, or the Dashboard.
+export function pushNotificationUrl(input: { type?: unknown; projectId?: unknown; leadId?: unknown; eventId?: unknown; title?: unknown }): string {
+  const eventId = String(input.eventId ?? "").trim();
+  if (String(input.type ?? "") === "calendar_reminder" && eventId) return `/calendar?event=${encodeURIComponent(eventId)}`;
   const projectId = String(input.projectId ?? "").trim();
   if (projectId) return `/projects/${encodeURIComponent(projectId)}`;
   if (String(input.leadId ?? "").trim() || String(input.type ?? "").startsWith("lead_")) return "/leads";
@@ -105,9 +138,10 @@ export function pushNotificationBody(input: { type?: unknown; message?: unknown 
   return text.length > 180 ? `${text.slice(0, 177).trimEnd()}…` : text;
 }
 
-// ---- Calendar reminders: how far ahead each user wants to hear about events for their projects —
-// one choice for timed events, one for all-day events (which only go by days, weeks or months).
-// Stored on their profile as users/{uid}.calendarReminderLead = { timedMinutes, allDayDays }.
+// ---- Calendar reminders: how far ahead each user wants to hear about events for their projects — as
+// many times as they like, for timed events and for all-day events (which only go by days, weeks or
+// months). Stored on their profile as users/{uid}.calendarReminderLead = { timedMinutes: [...],
+// allDayDays: [...] } (a single number each, from before there could be several, still reads).
 
 export type ReminderLeadOption = { value: number; label: string };
 
@@ -134,14 +168,45 @@ export const ALL_DAY_EVENT_REMINDER_OPTIONS: readonly ReminderLeadOption[] = [
 
 export const DEFAULT_TIMED_REMINDER_MINUTES = 60;
 export const DEFAULT_ALL_DAY_REMINDER_DAYS = 1;
+// The most reminder times one list can have.
+export const MAX_REMINDER_ROWS = 6;
 
-export function normalizeCalendarReminderLead(raw: unknown): { timedMinutes: number; allDayDays: number } {
+// A saved list of choices (or an older single number): only real options, no repeats, in order.
+function normalizeChoiceList(raw: unknown, options: readonly ReminderLeadOption[], fallback: number): number[] {
+  const values = (Array.isArray(raw) ? raw : [raw]).map(Number).filter((value) => options.some((option) => option.value === value));
+  const unique = Array.from(new Set(values)).slice(0, MAX_REMINDER_ROWS);
+  return unique.length ? unique : [fallback];
+}
+
+export type CalendarReminderLead = { timedMinutes: number[]; allDayDays: number[] };
+
+export function normalizeCalendarReminderLead(raw: unknown): CalendarReminderLead {
   const row = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
-  const timed = Number(row.timedMinutes);
-  const allDay = Number(row.allDayDays);
   return {
-    timedMinutes: TIMED_EVENT_REMINDER_OPTIONS.some((o) => o.value === timed) ? timed : DEFAULT_TIMED_REMINDER_MINUTES,
-    allDayDays: ALL_DAY_EVENT_REMINDER_OPTIONS.some((o) => o.value === allDay) ? allDay : DEFAULT_ALL_DAY_REMINDER_DAYS,
+    timedMinutes: normalizeChoiceList(row.timedMinutes, TIMED_EVENT_REMINDER_OPTIONS, DEFAULT_TIMED_REMINDER_MINUTES),
+    allDayDays: normalizeChoiceList(row.allDayDays, ALL_DAY_EVENT_REMINDER_OPTIONS, DEFAULT_ALL_DAY_REMINDER_DAYS),
+  };
+}
+
+// ---- A quote / specifications sent to a client and still not accepted / submitted: after how many
+// days each user wants to hear about it — as many as they like (e.g. 2 days and 5 days). Stored on
+// their profile as users/{uid}.clientPortalReminderDays = { quote: [...], specs: [...] }; 2 days each
+// until they change it.
+
+export const CLIENT_PORTAL_PENDING_OPTIONS: readonly ReminderLeadOption[] = [1, 2, 3, 4, 5, 6, 7].map((days) => ({
+  value: days,
+  label: `After ${days} day${days === 1 ? "" : "s"}`,
+}));
+
+export const DEFAULT_CLIENT_PORTAL_PENDING_DAYS = 2;
+
+export type ClientPortalReminderDays = { quote: number[]; specs: number[] };
+
+export function normalizeClientPortalReminderDays(raw: unknown): ClientPortalReminderDays {
+  const row = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    quote: normalizeChoiceList(row.quote, CLIENT_PORTAL_PENDING_OPTIONS, DEFAULT_CLIENT_PORTAL_PENDING_DAYS),
+    specs: normalizeChoiceList(row.specs, CLIENT_PORTAL_PENDING_OPTIONS, DEFAULT_CLIENT_PORTAL_PENDING_DAYS),
   };
 }
 
@@ -198,6 +263,8 @@ const PUSH_GROUP_PHRASES: Record<string, [string, string]> = {
   quote_sent: ["quote sent", "quotes sent"],
   specs_sent: ["specification sent", "specifications sent"],
   calendar_reminder: ["upcoming event", "upcoming events"],
+  quote_pending: ["quote waiting on a client", "quotes waiting on clients"],
+  specs_pending: ["specification waiting on a client", "specifications waiting on clients"],
   app_version: ["new version", "new versions"],
   role_change: ["role change", "role changes"],
 };

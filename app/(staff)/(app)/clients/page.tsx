@@ -6,6 +6,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -38,6 +39,17 @@ import { useLongPress } from "@/lib/use-long-press";
 import { swallowNextClick } from "@/lib/swallow-dismiss-click";
 import { completedStatusMatcher } from "@/lib/project-archive";
 import { isStaffContactCategory, isStaffContactId, withStaffContactCategory, withStaffContacts } from "@/lib/staff-contacts";
+import { useHomeScreenApp } from "@/lib/home-screen-app";
+import { useAppTabs } from "@/lib/app-tabs-context";
+
+// The page's own padding when it's the Contacts home-screen app (the app shell drops its <main> padding
+// then) — clear of the notch and rounded corners.
+const HOME_SCREEN_APP_PAGE_PADDING = {
+  paddingTop: "max(12px, env(safe-area-inset-top, 0px))",
+  paddingLeft: "max(12px, env(safe-area-inset-left, 0px))",
+  paddingRight: "max(12px, env(safe-area-inset-right, 0px))",
+  paddingBottom: "max(12px, env(safe-area-inset-bottom, 0px))",
+};
 import { GlassActionMenu, GlassDropdown, type GlassActionMenuItem, type GlassDropdownOption } from "@/components/glass-dropdown";
 
 type ContactCategoryOption = { name: string; color: string };
@@ -303,6 +315,17 @@ function ClientsPageInner() {
   const canAccessClients =
     access.status === "ready" &&
     (isOwnerOrAdmin(access.role) || hasPermissionKey(access.permissionKeys, "clients.view") || canViewAllClients);
+  // Opened from Contacts' own home-screen icon: just Contacts, without the app around it (no sidebars,
+  // tab bar, pull-down menu or side drawers — lib/home-screen-app.ts). Not when this person can't see
+  // contacts, so they aren't left on a dead end.
+  const contactsChromeless = useHomeScreenApp() === "contacts" && (access.status === "loading" || canAccessClients);
+  const { setChromeHidden } = useAppTabs();
+  // Before paint, so the tab bar and sidebar don't flash up for a frame as the app opens.
+  useLayoutEffect(() => {
+    if (!contactsChromeless) return;
+    setChromeHidden(true);
+    return () => setChromeHidden(false);
+  }, [contactsChromeless, setChromeHidden]);
 
   useEffect(() => {
     // Access itself is still loading/erroring — lib/use-company-access.ts's own status drives the
@@ -1163,7 +1186,7 @@ function ClientsPageInner() {
   const gateCardClass = "rounded-[14px] border p-6 text-[13px] font-semibold";
 
   return (
-    <>
+    <div style={contactsChromeless ? HOME_SCREEN_APP_PAGE_PADDING : { display: "contents" }}>
       {access.status === "loading" ? (
         <div className={gateCardClass} style={{ borderColor: border, backgroundColor: panelBg, color: textSoft }}>
           Checking access...
@@ -2083,6 +2106,6 @@ function ClientsPageInner() {
           </div>
         </div>
       ) : null}
-    </>
+    </div>
   );
 }

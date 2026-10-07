@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
 import { requireCompanyMember } from "@/lib/api-company-access";
 import { runCalendarReminders } from "@/lib/calendar-reminders-server";
+import { runClientPortalPendingReminders } from "@/lib/client-portal-reminders-server";
 import { flushDuePushDigests } from "@/lib/push-server";
 
 // The fallback for calendar reminders (and held notification groups) when no scheduler is calling
@@ -34,6 +35,10 @@ export async function POST(request: NextRequest) {
   if (!due) return NextResponse.json({ ok: true, skipped: "recently-checked" });
   const siteOrigin = new URL(request.url).origin;
   // And any held notification groups whose time is up (anyone's — it's the scheduled job's backup).
-  const [result, groupsSent] = await Promise.all([runCalendarReminders({ siteOrigin, companyIds: [companyId], now }), flushDuePushDigests(siteOrigin)]);
-  return NextResponse.json({ ok: true, ...result, groupsSent });
+  const [result, clientPortal, groupsSent] = await Promise.all([
+    runCalendarReminders({ siteOrigin, companyIds: [companyId], now }),
+    runClientPortalPendingReminders({ siteOrigin, companyIds: [companyId], now }),
+    flushDuePushDigests(siteOrigin),
+  ]);
+  return NextResponse.json({ ok: true, ...result, clientPortal, groupsSent });
 }

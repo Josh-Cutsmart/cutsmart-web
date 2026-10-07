@@ -1,12 +1,14 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
 import { runCalendarReminders } from "@/lib/calendar-reminders-server";
+import { runClientPortalPendingReminders } from "@/lib/client-portal-reminders-server";
 import { flushDuePushDigests } from "@/lib/push-server";
 
 // The notifications scheduled job — meant to be called every minute or few by a scheduler, with the
 // CRON_SECRET environment variable as `Authorization: Bearer <CRON_SECRET>` (what Vercel Cron sends) or
 // `?key=<CRON_SECRET>` (for a service like cron-job.org). It sends:
 // - calendar reminders that are due (lib/calendar-reminders-server.ts), for every company;
+// - "quote not accepted / specifications not submitted yet" reminders (lib/client-portal-reminders-server.ts);
 // - notifications held by people's "time between notifications" whose time is up, grouped into one
 //   (flushDuePushDigests in lib/push-server.ts).
 
@@ -24,6 +26,10 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ ok: false, error: "missing-firebase-admin-config" }, { status: 500 });
   }
   const siteOrigin = new URL(request.url).origin;
-  const [reminders, groupsSent] = await Promise.all([runCalendarReminders({ siteOrigin }), flushDuePushDigests(siteOrigin)]);
-  return NextResponse.json({ ok: true, reminders, groupsSent });
+  const [reminders, clientPortal, groupsSent] = await Promise.all([
+    runCalendarReminders({ siteOrigin }),
+    runClientPortalPendingReminders({ siteOrigin }),
+    flushDuePushDigests(siteOrigin),
+  ]);
+  return NextResponse.json({ ok: true, reminders, clientPortal, groupsSent });
 }

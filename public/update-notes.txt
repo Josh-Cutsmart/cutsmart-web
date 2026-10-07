@@ -4,11 +4,12 @@ whatsNew: [
 <u><b>Phone &amp; Desktop Notifications</b></u>
 <ul>
 <li>Get your CutSmart notifications on your phone's lock screen or your computer, even when CutSmart is closed — turn them on in <b>User Settings</b></li>
-<li>Choose exactly what you're notified about, by category: Projects, Leads, Client Portal, Calendar and CutSmart</li>
+<li>Choose exactly what you're notified about, by category: Projects, Leads, Client Portal, Calendar and CutSmart — turn a whole category off in one go, or search for a notification</li>
 <li>New <b>Time between notifications</b> setting: anything that comes in during it is held and sent together as one (e.g. "10 new leads")</li>
 <li>New: <b>new leads</b> (if you can see leads), being <b>added to a lead or project</b> (as an editor or viewer), and <b>quotes declined</b> by clients</li>
 <li>Specifications submitted now says how many items the client accepted (e.g. 12/15)</li>
-<li><b>Calendar reminders</b> for events on your projects — pick how far ahead (30 minutes to a month; all-day events by days, weeks or months)</li>
+<li><b>Calendar reminders</b> for events on your projects — add as many as you like, each with its own time (30 minutes to a month before; all-day events by days, weeks or months)</li>
+<li>Reminders when a <b>quote hasn't been accepted</b> or <b>specifications haven't been submitted</b> yet — after 2 days, or whenever you choose (1–7 days, as many as you like)</li>
 <li>iPhone and iPad: add CutSmart to your Home Screen (Safari &gt; Share &gt; Add to Home Screen) and turn them on from there</li>
 <li>Tapping a notification opens what it's about</li>
 </ul>
@@ -81,6 +82,7 @@ whatsNew: [
 <li>Desktop: the Client Portal button opens it in a normal browser tab again, not a separate window</li>
 <li>The Quote and Specifications sheets fit the screen, with pinch to zoom</li>
 <li>An easy list of the Yes / No questions above the Specifications sheet on phones</li>
+<li>The "Quote sent" and "Specifications sent" notifications no longer show the client's email address</li>
 </ul>
 
 <u><b>Leads & Contacts</b></u>
@@ -104,6 +106,10 @@ whatsNew: [
 
 <u><b>App-Wide</b></u>
 <ul>
+<li><b>Leads</b> and <b>Contacts</b> can now be added to your Home Screen as their own apps, like the Calendar — open the page, then Add to Home Screen. Opened from their icons, they show just that page</li>
+<li>Bigger "CutSmart" on the Calendar, Leads and Contacts app icons</li>
+<li>Mobile: <b>User Settings</b> is now your profile card and a short list — General, Preferences, Notifications and Checklists — each opening as its own page (swipe right to go back)</li>
+<li>Closing a tab in the top bar just closes it — it no longer opens another project. Closing the one you're on takes you to the Dashboard</li>
 <li>Clicking off an open dropdown only closes it — it no longer opens or presses whatever is underneath</li>
 <li>Mobile: pop-ups stay on screen when typing, and the blur reaches behind the keyboard</li>
 <li>Mobile: the pull-down menu and side swipes are switched off while a pop-up is open</li>

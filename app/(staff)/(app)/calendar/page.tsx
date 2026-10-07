@@ -7,9 +7,10 @@
 // be shown/hidden here per person. Opening the tab needs calendar.view; who can edit / view / not see each
 // category is set per role on the category (Company Settings > Calendar).
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { CalendarDays, ChevronLeft, ChevronRight, Clock, ExternalLink, Filter, FolderKanban, Lock, MapPin, Pencil, Plus, Search, Trash2, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { fetchCompanyDoc, fetchCompanyMembers, fetchProjects } from "@/lib/firestore-data";
@@ -23,6 +24,7 @@ import { useAppTabs } from "@/lib/app-tabs-context";
 import { useCalendarAppMode } from "@/lib/calendar-app-mode";
 import {
   deleteCalendarEvent,
+  fetchCalendarEvent,
   newCalendarId,
   archiveOldCalendarEvents,
   calendarRetentionCutoffMs,
@@ -414,7 +416,16 @@ function categoryButtonStyle(color: string): CSSProperties {
   return { backgroundColor: color, color: textOn(color), boxShadow: `0 6px 16px color-mix(in srgb, ${color} 35%, transparent)` };
 }
 
+// useSearchParams (for /calendar?event=<id>, opened from a calendar reminder) needs a Suspense boundary.
 export default function CalendarPage() {
+  return (
+    <Suspense fallback={null}>
+      <CalendarPageContent />
+    </Suspense>
+  );
+}
+
+function CalendarPageContent() {
   const { user } = useAuth();
   const access = useCompanyAccess();
   useCompanyFormats();
@@ -648,6 +659,32 @@ export default function CalendarPage() {
     setRenderedDraft(next);
   };
   const closeModal = () => setDraft(null);
+
+  // /calendar?event=<id> (a calendar reminder notification, or the bell's entry for one): go to that
+  // event's day and open it, then tidy the address so a reload doesn't open it again.
+  const eventParam = useSearchParams().get("event") || "";
+  useEffect(() => {
+    if (!eventParam || !companyId) return;
+    let cancelled = false;
+    void fetchCalendarEvent(companyId, eventParam).then((event) => {
+      if (cancelled) return;
+      window.history.replaceState(window.history.state, "", window.location.pathname);
+      if (!event) return;
+      setCursor(startOfDay(new Date(event.startMs)));
+      // What openExisting does (without a button to grow from).
+      setModalOrigin(null);
+      setModalError("");
+      setConfirmDelete(false);
+      setProjectQuery("");
+      setEventMode("view");
+      const next = draftFromEvent(event);
+      setDraft(next);
+      setRenderedDraft(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [eventParam, companyId]);
   const submitDraft = async () => {
     if (!draft || !companyId || !canEditEvent(draft)) return;
     const event = eventFromDraft(draft);

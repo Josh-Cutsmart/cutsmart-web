@@ -3,7 +3,7 @@ import webpush from "web-push";
 import { FieldValue } from "firebase-admin/firestore";
 import { adminDb } from "@/lib/firebase-admin";
 import {
-  isPushNotificationTypeEnabled,
+  isPushNotificationWanted,
   normalizePushQuietMinutes,
   pushGroupPhrase,
   pushNotificationBody,
@@ -67,11 +67,11 @@ const PUSH_THROTTLE_COLLECTION = "pushThrottle";
 // How many held notifications are kept word for word (the count keeps going past it).
 const MAX_HELD = 50;
 
-type HeldPush = { type: string; title: string; body: string; url: string; atMs: number };
+export type HeldPush = { type: string; title: string; body: string; url: string; atMs: number };
 
 // One notification standing for several: "10 new leads" (with the latest few), or for a mix,
 // "5 new notifications" / "3 new leads · 2 quotes accepted".
-function groupedPayload(held: HeldPush[], total: number): PushPayload {
+export function groupedPayload(held: HeldPush[], total: number): PushPayload {
   if (held.length === 1 && total === 1) {
     return { title: held[0].title, body: held[0].body, url: held[0].url, tag: "cutsmart-group" };
   }
@@ -101,7 +101,7 @@ function groupedPayload(held: HeldPush[], total: number): PushPayload {
 }
 
 // Sends to every device the user turned notifications on for, unless they've switched this kind of
-// notification off (skipChoices: the settings page's test), or it's within their time between
+// notification off (skipChoices: dev mode's tests), or it's within their time between
 // notifications (then it's held — skipQuiet: send now regardless). Devices the push service says no
 // longer exist (the app was removed, notifications were turned off in the phone's settings, …) are deleted.
 export async function sendPushToUser(
@@ -119,7 +119,7 @@ export async function sendPushToUser(
     db.collection(PUSH_SUBSCRIPTIONS_COLLECTION).where("uid", "==", userId).get(),
   ]);
   if (subsSnap.empty) return { ...result, reason: "no-devices" };
-  if (!options.skipChoices && !isPushNotificationTypeEnabled(userSnap.data()?.pushNotificationTypes, options.type)) {
+  if (!options.skipChoices && !isPushNotificationWanted(userSnap.data(), options.type)) {
     return { ...result, reason: "type-off" };
   }
 

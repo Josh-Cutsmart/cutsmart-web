@@ -11,8 +11,11 @@ import { isCompanyMemberUid, pushStoredNotification } from "@/lib/push-server";
 // app/api/cron/calendar-reminders (a scheduled call every few minutes) and, as a fallback, whenever
 // someone in the company has the app open (app/api/push/reminders-tick).
 //
-// Sent once per person per event time: the event remembers it (remindersSent.{uid} = the startMs it
-// was sent for), so moving the event to a new time sends a fresh one.
+// Each of a person's reminder times is sent once per event time: the event remembers it
+// (remindersSent.{uid}_m{minutes} / {uid}_d{days} = the startMs it was sent for), so moving the event
+// to a new time sends fresh ones. If several fall due at once (an event made at short notice), only the
+// nearest is sent — the rest are just marked done. (remindersSent.{uid} alone is from before there could
+// be several: those count as already sent.)
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -110,24 +113,36 @@ export async function runCalendarReminders(options: { siteOrigin: string; compan
       const project = await projectFor(projectId);
       if (!project || project.closed || !project.assigneeUid) continue;
       const uid = project.assigneeUid;
-      const sentFor = (event.remindersSent as Record<string, unknown> | undefined)?.[uid];
-      if (sentFor === startMs) continue;
-      result.events += 1;
       const allDay = event.allDay === true;
       const lead = await leadFor(uid);
-      const remindAt = allDay ? startMs - lead.allDayDays * DAY_MS + ALL_DAY_REMINDER_HOUR * HOUR_MS : startMs - lead.timedMinutes * MINUTE_MS;
-      if (now < remindAt) continue;
+      // Each of their reminder times for this event: its key, when it's due, and how far ahead it is.
+      const times = allDay
+        ? lead.allDayDays.map((days) => ({ key: `${uid}_d${days}`, remindAt: startMs - days * DAY_MS + ALL_DAY_REMINDER_HOUR * HOUR_MS, ahead: days * DAY_MS }))
+        : lead.timedMinutes.map((minutes) => ({ key: `${uid}_m${minutes}`, remindAt: startMs - minutes * MINUTE_MS, ahead: minutes * MINUTE_MS }));
+      const sentMap = (event.remindersSent as Record<string, unknown> | undefined) ?? {};
+      const due = times.filter((time) => now >= time.remindAt && sentMap[time.key] !== startMs);
+      if (!due.length) continue;
+      result.events += 1;
       if (!(await isCompanyMemberUid(companyId, uid))) continue;
+      const legacySent = sentMap[uid] === startMs;
 
-      // Claim it first (so two runs at once can't both send it), then send.
+      // Claim them first (so two runs at once can't both send), then send the nearest one.
       const claimed = await db.runTransaction(async (tx) => {
         const fresh = await tx.get(eventSnap.ref);
-        const current = (fresh.data()?.remindersSent as Record<string, unknown> | undefined)?.[uid];
-        if (!fresh.exists || current === startMs) return false;
-        tx.update(eventSnap.ref, new FieldPath("remindersSent", uid), startMs);
+        if (!fresh.exists) return false;
+        const current = (fresh.data()?.remindersSent as Record<string, unknown> | undefined) ?? {};
+        const stillDue = due.filter((time) => current[time.key] !== startMs);
+        if (!stillDue.length) return false;
+        const [first, ...rest] = stillDue;
+        tx.update(
+          eventSnap.ref,
+          new FieldPath("remindersSent", first.key),
+          startMs,
+          ...rest.flatMap((time) => [new FieldPath("remindersSent", time.key), startMs]),
+        );
         return true;
       });
-      if (!claimed) continue;
+      if (!claimed || legacySent) continue;
 
       const title = str(event.title) || "Event";
       const projectName = project.name || str(event.projectName) || "your project";

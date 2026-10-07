@@ -2,6 +2,7 @@
 
 import { ProtectedRoute } from "@/components/protected-route";
 import { AppShell } from "@/components/app-shell";
+import { DevMode } from "@/components/dev-mode";
 import { VerifyEmailGate } from "@/components/verify-email-gate";
 import { useAuth } from "@/lib/auth-context";
 
@@ -26,6 +27,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <ProtectedRoute>
       <AppShell>{children}</AppShell>
+      {/* Dev users only (public/dev-emails.txt) — renders nothing for everyone else. */}
+      <DevMode />
     </ProtectedRoute>
   );
 }

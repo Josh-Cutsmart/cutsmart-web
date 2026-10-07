@@ -27780,7 +27780,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         if (subscriberUid === user?.uid) continue;
         void addUserNotification(subscriberUid, {
           title: "Specifications sent to client",
-          message: `${user?.displayName || "A teammate"} sent Specifications for "${project.name || "a project"}" to ${clientEmail}.`,
+          message: `${user?.displayName || "A teammate"} sent Specifications for "${project.name || "a project"}" to the client.`,
           type: "specs_sent",
           projectId: project.id,
         });
@@ -27945,7 +27945,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         if (subscriberUid === user?.uid) continue;
         void addUserNotification(subscriberUid, {
           title: "Quote sent to client",
-          message: `${user?.displayName || "A teammate"} sent a Quote for "${project.name || "a project"}" to ${clientEmail}.`,
+          message: `${user?.displayName || "A teammate"} sent a Quote for "${project.name || "a project"}" to the client.`,
           type: "quote_sent",
           projectId: project.id,
         });

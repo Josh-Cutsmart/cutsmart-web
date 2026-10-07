@@ -71,17 +71,28 @@ async function currentSubscription(): Promise<PushSubscription | null> {
   return registration ? registration.pushManager.getSubscription().catch(() => null) : null;
 }
 
-async function saveSubscription(subscription: PushSubscription, mode: "enable" | "refresh"): Promise<boolean> {
+// The server's answer this session for this device's push address — whether notifications are on here for
+// the signed-in user (from the refresh when the app opens, or turning them on) — so it isn't asked again.
+let serverAnswer: { endpoint: string; active: boolean } | null = null;
+
+// Stores this device's push address for the signed-in user: true/false = whether notifications are now on
+// here for them, null = the server couldn't be reached.
+async function saveSubscription(subscription: PushSubscription, mode: "enable" | "refresh"): Promise<boolean | null> {
   const response = await authorizedFetch("/api/push/subscriptions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ subscription: subscription.toJSON(), mode, deviceLabel: deviceLabel() }),
   }).catch(() => null);
   const json = (await response?.json().catch(() => null)) as { ok?: boolean; active?: boolean } | null;
-  return Boolean(response?.ok && json?.ok && json.active);
+  if (!response?.ok || !json?.ok) return null;
+  const active = Boolean(json.active);
+  serverAnswer = { endpoint: subscription.endpoint, active };
+  return active;
 }
 
-// Whether this device gets notifications for the signed-in user (and if not, why not).
+// Whether this device gets notifications for the signed-in user (and if not, why not) — straight from the
+// device, no waiting on the server: one with a push address counts as on, unless the server has said
+// otherwise this session. confirmPushDeviceStatus then checks with the server.
 export async function readPushDeviceStatus(): Promise<PushDeviceStatus> {
   if (typeof window === "undefined") return "unsupported";
   if (!VAPID_PUBLIC_KEY) return "unconfigured";
@@ -91,7 +102,20 @@ export async function readPushDeviceStatus(): Promise<PushDeviceStatus> {
   if (Notification.permission !== "granted") return "off";
   const subscription = await currentSubscription();
   if (!subscription) return "off";
-  return (await saveSubscription(subscription, "refresh")) ? "on" : "off";
+  if (serverAnswer?.endpoint === subscription.endpoint) return serverAnswer.active ? "on" : "off";
+  return "on";
+}
+
+// The server's word on it (and this device's details kept current there) — asked once a session, usually
+// already by the time anyone opens User Settings (refreshPushOnAppOpen). null if it can't be asked or
+// reached, so whatever's shown stays.
+export async function confirmPushDeviceStatus(): Promise<PushDeviceStatus | null> {
+  if (!isPushSupported() || !VAPID_PUBLIC_KEY || Notification.permission !== "granted") return null;
+  const subscription = await currentSubscription();
+  if (!subscription) return null;
+  if (serverAnswer?.endpoint === subscription.endpoint) return serverAnswer.active ? "on" : "off";
+  const active = await saveSubscription(subscription, "refresh");
+  return active === null ? null : active ? "on" : "off";
 }
 
 // Turns them on here. Call it straight from a tap — iPhones only let a web app ask then.
@@ -117,11 +141,12 @@ export async function enablePushOnThisDevice(): Promise<PushDeviceStatus> {
       return "off";
     }
   }
-  return (await saveSubscription(subscription, "enable")) ? "on" : "off";
+  return (await saveSubscription(subscription, "enable")) === true ? "on" : "off";
 }
 
 // Turns them off here (also on sign-out, so the next person to sign in on this device doesn't get them).
 export async function disablePushOnThisDevice(): Promise<void> {
+  serverAnswer = null;
   if (!isPushSupported()) return;
   const subscription = await currentSubscription();
   if (!subscription) return;
@@ -147,16 +172,6 @@ export async function refreshPushOnAppOpen(): Promise<void> {
 export function clearAppIconBadge(): void {
   const nav = navigator as Navigator & { clearAppBadge?: () => Promise<void> };
   nav.clearAppBadge?.().catch(() => undefined);
-}
-
-// "Send a test" — to this user's own devices: "" when a device got it, else why not.
-export async function sendTestPush(): Promise<"" | "not-configured" | "no-devices" | "failed"> {
-  const response = await authorizedFetch("/api/push/test", { method: "POST" }).catch(() => null);
-  const json = (await response?.json().catch(() => null)) as { ok?: boolean; reason?: string; sent?: number } | null;
-  if (json?.ok) return "";
-  if (json?.reason === "not-configured" || json?.reason === "no-database") return "not-configured";
-  if (json?.reason === "no-devices") return "no-devices";
-  return "failed";
 }
 
 // After addUserNotification stores a notification in someone's list: send it to their devices too

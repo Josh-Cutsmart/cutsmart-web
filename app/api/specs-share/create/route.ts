@@ -104,6 +104,9 @@ export async function POST(request: NextRequest) {
           ...envelope,
           quoteVersionId: versionId,
           quoteSentFromLive: sentFromLive,
+          // When this quote went (lastSentAt is shared with Specifications) — the "not accepted yet"
+          // reminders count from it (lib/client-portal-reminders-server.ts).
+          quoteSentAt: nowIso,
           // A new send starts fresh: no acceptance — or decline — carried over from the last one.
           quoteAcceptedAt: FieldValue.delete(),
           quoteAcceptedByName: FieldValue.delete(),
@@ -111,7 +114,15 @@ export async function POST(request: NextRequest) {
           quoteDeclinedByName: FieldValue.delete(),
           quoteDeclineReason: FieldValue.delete(),
         }
-      : { ...envelope, versionId, specsSentFromLive: sentFromLive, submittedAt: FieldValue.delete(), submittedByName: FieldValue.delete() };
+      : {
+          ...envelope,
+          versionId,
+          specsSentFromLive: sentFromLive,
+          // When these specifications went — the "not submitted yet" reminders count from it.
+          specsSentAt: nowIso,
+          submittedAt: FieldValue.delete(),
+          submittedByName: FieldValue.delete(),
+        };
 
   await shareRef.set(patch, { merge: true });
 

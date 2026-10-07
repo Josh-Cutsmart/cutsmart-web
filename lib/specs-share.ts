@@ -51,6 +51,12 @@ export type SpecsShareLinkDoc = {
   quoteDeclinedAt?: string;
   quoteDeclinedByName?: string;
   quoteDeclineReason?: string;
+  // When the current quote / specifications were sent (lastSentAt above is shared by both) — the
+  // "not accepted / submitted yet" reminders count from these (lib/client-portal-reminders-server.ts),
+  // and remember which they've sent in pendingRemindersSent.
+  quoteSentAt?: string;
+  specsSentAt?: string;
+  pendingRemindersSent?: Record<string, string>;
   // True only when quoteVersionId was created by snapshotting the LIVE grid at the exact moment it
   // was sent (staff sending straight from the live editor) — false/absent when an ALREADY-SAVED
   // historical version was marked sent directly from the Version History sidebar instead. The live

@@ -1,0 +1,14 @@
+{
+  "id": "/leads",
+  "name": "CutSmart Leads",
+  "short_name": "Leads",
+  "start_url": "/leads",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#eef2f9",
+  "theme_color": "#2563eb",
+  "icons": [
+    { "src": "/leads-icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/leads-icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
