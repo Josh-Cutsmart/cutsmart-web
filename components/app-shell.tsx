@@ -23,9 +23,9 @@ import {
   Save,
   Search,
   Settings,
+  Sparkles,
   Tag,
   Users,
-  X,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { authorizedFetch } from "@/lib/api-fetch";
@@ -45,7 +45,6 @@ import {
   markUserUpdateNoticeSeen,
   resyncCompanyProjectTagUsage,
     syncCompanyClientProfileFromProject,
-    syncAppChangelogHistory,
     upsertCompanyClientProfileOnProjectCreate,
   } from "@/lib/firestore-data";
 import { db, hasFirebaseConfig, storage } from "@/lib/firebase";
@@ -55,7 +54,9 @@ import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
 import { getFirebaseStorageQuotaExceededMessage, isFirebaseStorageQuotaExceeded } from "@/lib/firebase-storage-errors";
 import { applyThemeMode, readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
 import type { LeadCustomFieldSnapshot, ProjectImageItem } from "@/lib/types";
-import { normalizeChangelogHistory, parseUpdateNotesText, updateNotesToDisplayHtml } from "@/lib/update-notes-utils";
+import { normalizeChangelogHistory, parseUpdateNotesText, type WhatsNewHighlight } from "@/lib/update-notes-utils";
+import { APP_VERSION_PUBLISHED_EVENT, OPEN_WHATS_NEW_DRAFT_EVENT, WhatsNewSheet } from "@/components/whats-new-sheet";
+import { useIsDevUser } from "@/lib/dev-mode";
 import {
   LEAD_PROJECT_CREATED_EVENT,
   OPEN_NEW_PROJECT_EVENT,
@@ -676,6 +677,14 @@ export function AppShell({
   const [showUpdateNotice, setShowUpdateNotice] = useState(false);
   const [updateNoticeVersion, setUpdateNoticeVersion] = useState("");
   const [updateNoticeText, setUpdateNoticeText] = useState("");
+  // The What's New page (components/whats-new-sheet.tsx): the published version's feature cards and date —
+  // or, for Dev users, the deployed version that isn't published yet (a draft), to preview and publish.
+  const [updateNoticeHighlights, setUpdateNoticeHighlights] = useState<WhatsNewHighlight[]>([]);
+  const [updateNoticeDateIso, setUpdateNoticeDateIso] = useState("");
+  const [draftUpdate, setDraftUpdate] = useState<{ version: string; whatsNew: string; highlights: WhatsNewHighlight[] } | null>(null);
+  const [whatsNewIsDraft, setWhatsNewIsDraft] = useState(false);
+  const draftPublishedRef = useRef(false);
+  const isDevUser = useIsDevUser();
   const [companyThemeColor, setCompanyThemeColor] = useState("#2F6BFF");
   const [companyLogoPath, setCompanyLogoPath] = useState("");
   // Warms the browser's own image cache the moment the logo URL is known, rather than waiting
@@ -1742,7 +1751,6 @@ export function AppShell({
         const parsed = parseUpdateNotesText(raw);
         const version = String(parsed.version || "").trim();
         const whatsNew = String(parsed.whatsNew || "").trim();
-        setUpdateNoticeVersion(version);
         const storedCompanyId =
           typeof window !== "undefined"
             ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim()
@@ -1752,30 +1760,25 @@ export function AppShell({
         const companyId = storedCompanyId || directCompanyId || String(fallbackMembership?.companyId || "").trim();
         if (version) {
           const existing = await fetchAppChangelogHistory();
+          if (cancelled) return;
           const matched = existing.find(
             (row) => String(row.version || "").trim().toLowerCase() === version.toLowerCase(),
           );
-          const canonicalWhatsNew = String(matched?.whatsNew || whatsNew || "").trim();
-          setUpdateNoticeText(canonicalWhatsNew);
-          // Not in the changelog yet: the server adds it and tells this company — the scheduled job
-          // normally has already, for every company, within a minute of it going live
-          // (lib/app-version-server.ts), and either way each company is only told once. Only if the server
-          // can't be reached is it added to the changelog from here (the job still announces it later).
+          // Not published yet — a draft. Only Dev users see it (to preview and publish, from the What's New
+          // page); for everyone else nothing changes until a Dev publishes it (lib/app-version-server.ts).
           if (!matched) {
-            const announced = companyId
-              ? await authorizedFetch("/api/app-version/announce", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ companyId }),
-                })
-                  .then((res) => res.ok)
-                  .catch(() => false)
-              : false;
-            if (!announced) {
-              await syncAppChangelogHistory([{ version, whatsNew: canonicalWhatsNew, capturedAtIso: new Date().toISOString() }]);
-            }
+            setDraftUpdate({ version, whatsNew, highlights: parsed.highlights });
+            setUpdateNoticeVersion("");
+            setShowUpdateNotice(false);
+            return;
           }
+          setDraftUpdate(null);
+          setUpdateNoticeVersion(version);
+          setUpdateNoticeText(String(matched.whatsNew || whatsNew || "").trim());
+          setUpdateNoticeHighlights(matched.highlights ?? []);
+          setUpdateNoticeDateIso(matched.publishedAtIso || matched.capturedAtIso || "");
         } else {
+          setUpdateNoticeVersion("");
           setUpdateNoticeText(whatsNew);
         }
         if (version) {
@@ -2193,6 +2196,58 @@ export function AppShell({
     }
     setPreviewClosePopped(false);
   }, [previewAnim?.phase]);
+
+  // A draft's preview (Dev users): opened from the button below or the Changelog page — re-reading the notes
+  // first, so it always shows the latest (they're often being edited while it's previewed).
+  useEffect(() => {
+    const onOpenDraft = () => {
+      void fetch("/update-notes.txt", { cache: "no-store" })
+        .then((res) => (res.ok ? res.text() : ""))
+        .then((raw) => {
+          const parsed = parseUpdateNotesText(raw);
+          const version = String(parsed.version || "").trim();
+          if (!version) return;
+          setDraftUpdate((prev) =>
+            prev && prev.version.toLowerCase() === version.toLowerCase()
+              ? { version, whatsNew: String(parsed.whatsNew || "").trim(), highlights: parsed.highlights }
+              : prev,
+          );
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          setWhatsNewIsDraft(true);
+          setShowUpdateNotice(true);
+        });
+    };
+    window.addEventListener(OPEN_WHATS_NEW_DRAFT_EVENT, onOpenDraft);
+    return () => window.removeEventListener(OPEN_WHATS_NEW_DRAFT_EVENT, onOpenDraft);
+  }, []);
+  const onDraftPublished = () => {
+    draftPublishedRef.current = true;
+    window.dispatchEvent(new Event(APP_VERSION_PUBLISHED_EVENT));
+  };
+  const closeDraftPreview = () => {
+    setShowUpdateNotice(false);
+    setWhatsNewIsDraft(false);
+    if (!draftPublishedRef.current || !draftUpdate) return;
+    draftPublishedRef.current = false;
+    const published = draftUpdate;
+    setDraftUpdate(null);
+    setUpdateNoticeVersion(published.version);
+    setUpdateNoticeText(published.whatsNew);
+    setUpdateNoticeHighlights(published.highlights);
+    setUpdateNoticeDateIso(new Date().toISOString());
+    const uid = String(user?.uid || "").trim();
+    if (uid) {
+      try {
+        window.localStorage.setItem(`${UPDATE_NOTICE_SEEN_STORAGE_KEY_PREFIX}${uid}_${published.version}`, "1");
+      } catch {
+        // Saved on the account below anyway.
+      }
+      const companyId = String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || user?.companyId || "").trim();
+      void markUserUpdateNoticeSeen(uid, companyId, published.version);
+    }
+  };
 
   const dismissUpdateNotice = () => {
     const version = String(updateNoticeVersion || "").trim();
@@ -3640,46 +3695,39 @@ export function AppShell({
             bars. Fullscreen views (chromeHidden) and Quote/Specs (ownsMobileScroll) bring their own. */}
         {!isDesktopViewport && !chromeHidden && !ownsMobileScroll ? <GlassScrollbarThumb scrollRef={mainScrollRef} /> : null}
       </div>
-      {showUpdateNotice && (
-        <div
-          className="glass-modal-backdrop fixed inset-0 z-[8900] flex items-center justify-center px-4"
-          onClick={dismissUpdateNotice}
+      {/* What's New: the published version, once per person — or a Dev's preview of a draft, to publish it. */}
+      {showUpdateNotice && whatsNewIsDraft && draftUpdate ? (
+        <WhatsNewSheet
+          version={draftUpdate.version}
+          dateIso=""
+          whatsNew={draftUpdate.whatsNew}
+          highlights={draftUpdate.highlights}
+          draft
+          onClose={closeDraftPreview}
+          onPublished={onDraftPublished}
+        />
+      ) : showUpdateNotice && !whatsNewIsDraft && updateNoticeVersion ? (
+        <WhatsNewSheet
+          version={updateNoticeVersion}
+          dateIso={updateNoticeDateIso}
+          whatsNew={updateNoticeText}
+          highlights={updateNoticeHighlights}
+          draft={false}
+          onClose={dismissUpdateNotice}
+        />
+      ) : null}
+      {/* Dev users: a deployed version that isn't published yet — preview it and publish it. */}
+      {isDevUser && draftUpdate && !showUpdateNotice ? (
+        <button
+          type="button"
+          onClick={() => window.dispatchEvent(new Event(OPEN_WHATS_NEW_DRAFT_EVENT))}
+          className="fixed left-4 z-[60] inline-flex h-9 items-center gap-1.5 rounded-full border px-3.5 text-[12px] font-semibold text-white shadow-[0_8px_22px_rgba(15,23,42,0.22)] transition hover:brightness-105"
+          style={{ bottom: "calc(20px + env(safe-area-inset-bottom))", backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
         >
-          <div
-            className="glass-modal-panel relative flex w-[min(860px,calc(100vw-20px))] max-h-[min(80vh,720px)] flex-col overflow-hidden text-[var(--text-main)]"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="glass-modal-header relative flex h-[56px] shrink-0 items-center justify-between px-4">
-              <p className="text-[17px] font-medium text-[var(--text-main)]">
-                Updated to {updateNoticeVersion || "Unknown Version"}
-              </p>
-              <button
-                type="button"
-                onClick={dismissUpdateNotice}
-                className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border hover:brightness-95"
-                style={{
-                  borderColor: "var(--danger-glass-border)",
-                  backgroundColor: "var(--danger-glass-bg)",
-                  backdropFilter: "blur(10px) saturate(180%)",
-                  WebkitBackdropFilter: "blur(10px) saturate(180%)",
-                  color: "#FFFFFF",
-                }}
-                title="Close"
-              >
-                <X size={16} strokeWidth={2.4} />
-              </button>
-            </div>
-            <div className="min-h-0 flex-1 overflow-auto px-4 py-4">
-              <div
-                className="notes-rich text-[13px] leading-5 text-[var(--text-main)]"
-                dangerouslySetInnerHTML={{
-                  __html: updateNotesToDisplayHtml(updateNoticeText || "- No update notes provided."),
-                }}
-              />
-            </div>
-          </div>
-        </div>
-      )}
+          <Sparkles size={14} />
+          Draft {draftUpdate.version} · Preview &amp; publish
+        </button>
+      ) : null}
 
       {shouldRenderNewProjectModal && (
         <div

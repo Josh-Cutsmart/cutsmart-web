@@ -3,7 +3,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Check, ChevronDown, ChevronLeft, Copy, Pencil, Search, X } from "lucide-react";
+import { Check, ChevronDown, ChevronLeft, Copy, Pencil, Search, Sparkles, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import {
   fetchAppChangelogHistory,
@@ -24,6 +24,7 @@ import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin 
 import { retryAsync } from "@/lib/load-retry";
 import { swallowNextClick } from "@/lib/swallow-dismiss-click";
 import { useAppTabs } from "@/lib/app-tabs-context";
+import { APP_VERSION_PUBLISHED_EVENT, OPEN_WHATS_NEW_DRAFT_EVENT } from "@/components/whats-new-sheet";
 type ReportDeviceType = "desktop" | "tablet" | "mobile";
 const HEADER_HEIGHT = 56;
 const DESKTOP_TAB_BAR_HEIGHT = 48;
@@ -261,6 +262,15 @@ export default function ChangelogPage() {
   const [visibleEntryCount, setVisibleEntryCount] = useState<number>(10);
   const [isDevUser, setIsDevUser] = useState(false);
   const [appVersion, setAppVersion] = useState("");
+  // The deployed version when it isn't published yet — a draft only Dev users see (to preview and publish).
+  const [draftVersion, setDraftVersion] = useState("");
+  // Reloads the list once a version's been published (from the What's New page).
+  const [reloadKey, setReloadKey] = useState(0);
+  useEffect(() => {
+    const onPublished = () => setReloadKey((key) => key + 1);
+    window.addEventListener(APP_VERSION_PUBLISHED_EVENT, onPublished);
+    return () => window.removeEventListener(APP_VERSION_PUBLISHED_EVENT, onPublished);
+  }, []);
   const [showDevReports, setShowDevReports] = useState(false);
   const [reportsLoading, setReportsLoading] = useState(false);
   const [reports, setReports] = useState<AppReportRow[]>([]);
@@ -472,17 +482,21 @@ export default function ChangelogPage() {
         return Math.min(Math.max(minimum, next), rows.length || minimum);
       });
 
+      // The current version is the newest published one: a deployed version that isn't published yet is a
+      // draft (lib/app-version-server.ts).
+      setAppVersion(rows[0]?.version || "");
+      setDraftVersion("");
       try {
         const updateRes = await fetch("/update-notes.txt", { cache: "no-store" });
         if (updateRes.ok) {
-          const updateRaw = await updateRes.text();
-          const parsed = parseUpdateNotesText(updateRaw);
-          setAppVersion(String(parsed.version || "").trim() || rows[0]?.version || "");
-        } else {
-          setAppVersion(rows[0]?.version || "");
+          const deployed = String(parseUpdateNotesText(await updateRes.text()).version || "").trim();
+          if (cancelled) return;
+          const isPublished = rows.some((row) => row.version.trim().toLowerCase() === deployed.toLowerCase());
+          if (deployed && isPublished) setAppVersion(deployed);
+          if (deployed && !isPublished) setDraftVersion(deployed);
         }
       } catch {
-        setAppVersion(rows[0]?.version || "");
+        // Keep the newest published version.
       }
 
       const email = String(user?.email || "").trim().toLowerCase();
@@ -510,7 +524,7 @@ export default function ChangelogPage() {
     return () => {
       cancelled = true;
     };
-  }, [user?.uid, entriesPerPage]);
+  }, [user?.uid, entriesPerPage, reloadKey]);
 
   // A `?version=` link (e.g. clicking an "app_version" notification in the top bar) opens straight
   // to that entry — applied once, right after entries first load, since that's the earliest point
@@ -940,6 +954,17 @@ export default function ChangelogPage() {
                 <PerPageDropdown value={entriesPerPage} options={PAGE_SIZE_OPTIONS} onChange={onChangeEntriesPerPage} />
                 {isDevUser && (
                   <div className="flex items-center border-l pl-3" style={{ borderColor: "var(--glass-border)" }}>
+                    {draftVersion ? (
+                      <button
+                        type="button"
+                        onClick={() => window.dispatchEvent(new Event(OPEN_WHATS_NEW_DRAFT_EVENT))}
+                        className="mr-2 inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-3 text-[12px] font-bold text-white transition hover:brightness-95"
+                        style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                      >
+                        <Sparkles size={13} />
+                        Draft {draftVersion} · Publish
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       onClick={() => setShowDevReports((prev) => !prev)}
@@ -984,6 +1009,17 @@ export default function ChangelogPage() {
               <PerPageDropdown value={entriesPerPage} options={PAGE_SIZE_OPTIONS} onChange={onChangeEntriesPerPage} />
               {isDevUser && (
                 <div className="flex items-center border-l pl-3" style={{ borderColor: "var(--glass-border)" }}>
+                  {draftVersion ? (
+                    <button
+                      type="button"
+                      onClick={() => window.dispatchEvent(new Event(OPEN_WHATS_NEW_DRAFT_EVENT))}
+                      className="mr-2 inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-3 text-[12px] font-bold text-white transition hover:brightness-95"
+                      style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                    >
+                      <Sparkles size={13} />
+                      Draft {draftVersion} · Publish
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     onClick={() => setShowDevReports((prev) => !prev)}

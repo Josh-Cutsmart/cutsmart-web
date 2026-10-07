@@ -1,5 +1,13 @@
 Version: v0.5.1
 
+highlights: [
+Notifications on your lock screen | New leads, quotes accepted or declined, specifications submitted, unlock requests and calendar reminders — on your phone or computer, even when CutSmart is closed | /whats-new/v0.5.1/notifications.svg
+Cards that hang as you drag | The whole card follows your pointer and swings as you move it, then lands exactly where you let go | /whats-new/v0.5.1/drag-cards.svg
+Sort any column | Each column and sub-status has its own sort — or sort the whole board from the toolbar | /whats-new/v0.5.1/sort-columns.svg
+User Settings, made for phones | Search every setting, and each section opens as its own page under a title bar that stays put | /whats-new/v0.5.1/user-settings.svg
+New events start all day | And in Day view, + adds the event on the day you're looking at | /whats-new/v0.5.1/calendar-all-day.svg
+]
+
 whatsNew: [
 <u><b>Phone &amp; Desktop Notifications</b></u>
 <ul>

@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" width="640" height="360" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title>Notifications arriving on a phone's lock screen and a computer</title>
+  <style>
+    .drop { animation: drop 7s ease-in-out infinite both; }
+    .d2 { animation-delay: .7s; }
+    .d3 { animation-delay: 1.4s; }
+    @keyframes drop {
+      0%, 6% { transform: translateY(-18px); opacity: 0; }
+      14%, 84% { transform: translateY(0); opacity: 1; }
+      94%, 100% { transform: translateY(0); opacity: 0; }
+    }
+    .slide { animation: slide 7s ease-in-out infinite both; animation-delay: 2.1s; }
+    @keyframes slide {
+      0%, 6% { transform: translateX(40px); opacity: 0; }
+      14%, 84% { transform: translateX(0); opacity: 1; }
+      94%, 100% { transform: translateX(0); opacity: 0; }
+    }
+    .ring { transform-box: fill-box; transform-origin: center; animation: ring 2.4s ease-out infinite; }
+    @keyframes ring { 0% { transform: scale(.6); opacity: .55; } 100% { transform: scale(1.7); opacity: 0; } }
+    .bell { transform-box: fill-box; transform-origin: 50% 10%; animation: bell 2.4s ease-in-out infinite; }
+    @keyframes bell { 0%, 40%, 100% { transform: rotate(0); } 8% { transform: rotate(14deg); } 16% { transform: rotate(-12deg); } 24% { transform: rotate(8deg); } 32% { transform: rotate(-4deg); } }
+  </style>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#EEF3FB"/>
+      <stop offset="1" stop-color="#E1E9F7"/>
+    </linearGradient>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3B82F6"/>
+      <stop offset="1" stop-color="#1D4ED8"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#0F172A" flood-opacity=".14"/>
+    </filter>
+  </defs>
+  <rect width="640" height="360" fill="url(#bg)"/>
+
+  <!-- the bell -->
+  <g transform="translate(118 180)">
+    <circle class="ring" cx="0" cy="0" r="38" fill="none" stroke="#3B82F6" stroke-width="3"/>
+    <circle cx="0" cy="0" r="38" fill="url(#brand)" filter="url(#shadow)"/>
+    <g class="bell" fill="none" stroke="#FFFFFF" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M-13 8 V-3 a13 13 0 0 1 26 0 V8 l4 5 H-17 Z"/>
+      <path d="M-5 17 a5 5 0 0 0 10 0"/>
+    </g>
+  </g>
+
+  <!-- the phone -->
+  <g filter="url(#shadow)">
+    <rect x="222" y="20" width="196" height="360" rx="32" fill="#0F172A"/>
+    <rect x="230" y="28" width="180" height="344" rx="25" fill="#F8FAFF"/>
+    <rect x="292" y="36" width="56" height="14" rx="7" fill="#0F172A"/>
+  </g>
+  <text x="320" y="96" text-anchor="middle" font-size="40" font-weight="600" fill="#0F172A">9:41</text>
+  <text x="320" y="118" text-anchor="middle" font-size="11.5" fill="#64748B">Wednesday 7 October</text>
+
+  <g class="drop">
+    <rect x="240" y="134" width="160" height="50" rx="12" fill="#FFFFFF" stroke="#D9E2F1"/>
+    <rect x="250" y="146" width="24" height="24" rx="7" fill="url(#brand)"/>
+    <text x="262" y="163" text-anchor="middle" font-size="13" font-weight="700" fill="#FFFFFF">C</text>
+    <text x="282" y="155" font-size="11.5" font-weight="600" fill="#0F172A">New lead</text>
+    <text x="282" y="171" font-size="10.5" fill="#64748B">Jane Smith came in</text>
+  </g>
+  <g class="drop d2">
+    <rect x="240" y="192" width="160" height="50" rx="12" fill="#FFFFFF" stroke="#D9E2F1"/>
+    <rect x="250" y="204" width="24" height="24" rx="7" fill="url(#brand)"/>
+    <text x="262" y="221" text-anchor="middle" font-size="13" font-weight="700" fill="#FFFFFF">C</text>
+    <text x="282" y="213" font-size="11.5" font-weight="600" fill="#0F172A">Quote accepted</text>
+    <text x="282" y="229" font-size="10.5" fill="#64748B">Smith Kitchen</text>
+  </g>
+  <g class="drop d3">
+    <rect x="240" y="250" width="160" height="70" rx="12" fill="#FFFFFF" stroke="#D9E2F1"/>
+    <rect x="250" y="262" width="24" height="24" rx="7" fill="url(#brand)"/>
+    <text x="262" y="279" text-anchor="middle" font-size="13" font-weight="700" fill="#FFFFFF">C</text>
+    <text x="282" y="271" font-size="11.5" font-weight="600" fill="#0F172A">Unlock request</text>
+    <text x="282" y="286" font-size="10.5" fill="#64748B">Sam asked to unlock</text>
+    <rect x="250" y="294" width="68" height="18" rx="6" fill="#DCFCE7"/>
+    <text x="284" y="307" text-anchor="middle" font-size="10.5" font-weight="600" fill="#15803D">Approve</text>
+    <rect x="322" y="294" width="68" height="18" rx="6" fill="#FEE2E2"/>
+    <text x="356" y="307" text-anchor="middle" font-size="10.5" font-weight="600" fill="#B91C1C">Deny</text>
+  </g>
+
+  <!-- a computer's notification -->
+  <g class="slide" filter="url(#shadow)">
+    <rect x="446" y="70" width="168" height="62" rx="12" fill="#FFFFFF" stroke="#D9E2F1"/>
+    <rect x="458" y="84" width="24" height="24" rx="7" fill="url(#brand)"/>
+    <text x="470" y="101" text-anchor="middle" font-size="13" font-weight="700" fill="#FFFFFF">C</text>
+    <text x="490" y="94" font-size="11.5" font-weight="600" fill="#0F172A">Upcoming: Install</text>
+    <text x="490" y="110" font-size="10.5" fill="#64748B">Smith Kitchen · in 1 hour</text>
+    <text x="490" y="124" font-size="9.5" fill="#94A3B8">CutSmart · now</text>
+  </g>
+  <g class="slide" style="animation-delay:2.8s" filter="url(#shadow)">
+    <rect x="446" y="144" width="168" height="62" rx="12" fill="#FFFFFF" stroke="#D9E2F1"/>
+    <rect x="458" y="158" width="24" height="24" rx="7" fill="url(#brand)"/>
+    <text x="470" y="175" text-anchor="middle" font-size="13" font-weight="700" fill="#FFFFFF">C</text>
+    <text x="490" y="168" font-size="11.5" font-weight="600" fill="#0F172A">10 new leads</text>
+    <text x="490" y="184" font-size="10.5" fill="#64748B">• Liam Brown came in</text>
+    <text x="490" y="198" font-size="10.5" fill="#64748B">• Olivia Wilson came in</text>
+  </g>
+</svg>

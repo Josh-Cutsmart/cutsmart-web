@@ -1,10 +1,50 @@
 export const UPDATE_CHANGELOG_HISTORY_STORAGE_KEY_PREFIX = "cutsmart_update_changelog_history_";
 
+// A feature card at the top of the What's New page: a title, a line about it, and a picture or a short
+// video showing it (a path under public/, e.g. /whats-new/v0.5.2/drag.mp4 — .mp4/.webm play on a loop).
+export type WhatsNewHighlight = { title: string; description: string; media: string };
+
 export type UpdateChangelogEntry = {
   version: string;
   whatsNew: string;
   capturedAtIso: string;
+  highlights?: WhatsNewHighlight[];
+  // When a dev published it (versions from before publishing existed don't have it).
+  publishedAtIso?: string;
 };
+
+export function normalizeWhatsNewHighlights(raw: unknown): WhatsNewHighlight[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((row) => row && typeof row === "object")
+    .map((row) => {
+      const item = row as Record<string, unknown>;
+      return {
+        title: String(item.title ?? "").trim(),
+        description: String(item.description ?? "").trim(),
+        media: String(item.media ?? "").trim(),
+      };
+    })
+    .filter((item) => item.title);
+}
+
+// The notes file's optional highlights block — one card a line, its parts split by "|":
+//   highlights: [
+//   Cards that hang as you drag | The whole card follows your pointer | /whats-new/v0.5.2/drag.mp4
+//   ]
+function parseWhatsNewHighlights(text: string): WhatsNewHighlight[] {
+  const block = text.match(/^\s*highlights\s*:\s*\[([\s\S]*?)\]\s*$/im);
+  if (!block) return [];
+  return block[1]
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"))
+    .map((line) => {
+      const [title = "", description = "", media = ""] = line.split("|").map((part) => part.trim());
+      return { title, description, media };
+    })
+    .filter((item) => item.title);
+}
 
 function escapeHtml(value: string): string {
   return String(value ?? "")
@@ -53,22 +93,23 @@ export function updateNotesToDisplayHtml(value: string): string {
   return html.replace(/\n/g, "<br />");
 }
 
-export function parseUpdateNotesText(raw: string): { version: string; whatsNew: string } {
+export function parseUpdateNotesText(raw: string): { version: string; whatsNew: string; highlights: WhatsNewHighlight[] } {
   const text = String(raw || "");
   const versionMatch = text.match(/^\s*(?:version|verison)\s*:\s*(.+?)\s*$/im);
   const version = String(versionMatch?.[1] || "").trim();
+  const highlights = parseWhatsNewHighlights(text);
 
   const bracketMatch = text.match(/^\s*whatsnew\s*:\s*\[([\s\S]*?)\]\s*$/im);
   if (bracketMatch) {
-    return { version, whatsNew: String(bracketMatch[1] || "").trim() };
+    return { version, whatsNew: String(bracketMatch[1] || "").trim(), highlights };
   }
 
   const whatLineMatch = text.match(/^\s*whatsnew\s*:\s*(.+?)\s*$/im);
   if (whatLineMatch) {
-    return { version, whatsNew: String(whatLineMatch[1] || "").trim() };
+    return { version, whatsNew: String(whatLineMatch[1] || "").trim(), highlights };
   }
 
-  return { version, whatsNew: "" };
+  return { version, whatsNew: "", highlights };
 }
 
 export function normalizeChangelogHistory(raw: unknown): UpdateChangelogEntry[] {

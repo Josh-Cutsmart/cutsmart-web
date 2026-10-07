@@ -1,6 +1,11 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // The server reads these from its own deploy (lib/public-file-server.ts) — e.g. publishing a staged
+  // deploy's What's New, whose address can't be fetched past Vercel's protection.
+  outputFileTracingIncludes: {
+    "/api/**/*": ["./public/update-notes.txt", "./public/dev-emails.txt"],
+  },
   // The Contacts page used to be at /clients — old links, bookmarks and home-screen icons still land on it
   // (with their ?contact=<id> kept).
   async redirects() {

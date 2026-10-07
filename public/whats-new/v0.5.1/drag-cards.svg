@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" width="640" height="360" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title>A card hanging from the pointer and swinging as it's dragged to another column</title>
+  <style>
+    .travel { animation: travel 5s ease-in-out infinite both; }
+    @keyframes travel {
+      0%, 12% { transform: translate(0, 0); }
+      52%, 70% { transform: translate(196px, 54px); }
+      88%, 100% { transform: translate(0, 0); }
+    }
+    .swing { transform-box: fill-box; transform-origin: 50% 0%; animation: swing 5s ease-in-out infinite both; }
+    @keyframes swing {
+      0%, 12% { transform: rotate(3deg); }
+      24% { transform: rotate(-11deg); }
+      44% { transform: rotate(-6deg); }
+      56% { transform: rotate(9deg); }
+      63%, 70% { transform: rotate(3deg); }
+      76% { transform: rotate(11deg); }
+      84% { transform: rotate(-5deg); }
+      92%, 100% { transform: rotate(3deg); }
+    }
+    .slot { animation: slot 5s ease-in-out infinite both; }
+    @keyframes slot { 0%, 30% { opacity: 0; } 42%, 74% { opacity: 1; } 84%, 100% { opacity: 0; } }
+    .shift { animation: shift 5s ease-in-out infinite both; }
+    @keyframes shift { 0%, 30% { transform: translateY(0); } 42%, 74% { transform: translateY(58px); } 84%, 100% { transform: translateY(0); } }
+  </style>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#EEF3FB"/>
+      <stop offset="1" stop-color="#E1E9F7"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="180%">
+      <feDropShadow dx="0" dy="10" stdDeviation="9" flood-color="#0F172A" flood-opacity=".22"/>
+    </filter>
+    <filter id="soft" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0F172A" flood-opacity=".08"/>
+    </filter>
+  </defs>
+  <rect width="640" height="360" fill="url(#bg)"/>
+
+  <!-- three columns -->
+  <g filter="url(#soft)">
+    <rect x="36" y="30" width="176" height="310" rx="16" fill="#FFFFFF" fill-opacity=".75" stroke="#D9E2F1"/>
+    <rect x="232" y="30" width="176" height="310" rx="16" fill="#FFFFFF" fill-opacity=".75" stroke="#D9E2F1"/>
+    <rect x="428" y="30" width="176" height="310" rx="16" fill="#FFFFFF" fill-opacity=".75" stroke="#D9E2F1"/>
+  </g>
+  <rect x="36" y="30" width="176" height="40" rx="16" fill="#A5B4FC"/>
+  <rect x="36" y="54" width="176" height="16" fill="#A5B4FC"/>
+  <text x="52" y="55" font-size="13" font-weight="600" fill="#1E1B4B">New</text>
+  <rect x="232" y="30" width="176" height="40" rx="16" fill="#FCD34D"/>
+  <rect x="232" y="54" width="176" height="16" fill="#FCD34D"/>
+  <text x="248" y="55" font-size="13" font-weight="600" fill="#422006">Quoted</text>
+  <rect x="428" y="30" width="176" height="40" rx="16" fill="#86EFAC"/>
+  <rect x="428" y="54" width="176" height="16" fill="#86EFAC"/>
+  <text x="444" y="55" font-size="13" font-weight="600" fill="#052E16">In production</text>
+
+  <!-- cards that stay put -->
+  <g font-size="11.5">
+    <rect x="48" y="140" width="152" height="48" rx="10" fill="#FFFFFF" stroke="#E2E8F0"/>
+    <text x="60" y="160" font-weight="600" fill="#0F172A">Brown Laundry</text>
+    <text x="60" y="176" font-size="10.5" fill="#64748B">Liam Brown</text>
+    <rect x="48" y="196" width="152" height="48" rx="10" fill="#FFFFFF" stroke="#E2E8F0"/>
+    <text x="60" y="216" font-weight="600" fill="#0F172A">Clarke Vanity</text>
+    <text x="60" y="232" font-size="10.5" fill="#64748B">Noah Clarke</text>
+
+    <rect x="244" y="82" width="152" height="48" rx="10" fill="#FFFFFF" stroke="#E2E8F0"/>
+    <text x="256" y="102" font-weight="600" fill="#0F172A">Adams Pantry</text>
+    <text x="256" y="118" font-size="10.5" fill="#64748B">Ella Adams</text>
+    <g class="shift">
+      <rect x="244" y="138" width="152" height="48" rx="10" fill="#FFFFFF" stroke="#E2E8F0"/>
+      <text x="256" y="158" font-weight="600" fill="#0F172A">Wilson Robes</text>
+      <text x="256" y="174" font-size="10.5" fill="#64748B">Olivia Wilson</text>
+    </g>
+
+    <rect x="440" y="82" width="152" height="48" rx="10" fill="#FFFFFF" stroke="#E2E8F0"/>
+    <text x="452" y="102" font-weight="600" fill="#0F172A">Taylor Kitchen</text>
+    <text x="452" y="118" font-size="10.5" fill="#64748B">Sam Taylor</text>
+  </g>
+
+  <!-- where it'll land -->
+  <rect class="slot" x="244" y="138" width="152" height="48" rx="10" fill="#DBEAFE" fill-opacity=".6" stroke="#3B82F6" stroke-dasharray="5 4"/>
+
+  <!-- the dragged card: a see-through copy, hanging from the pointer -->
+  <g class="travel">
+    <g class="swing" filter="url(#shadow)">
+      <rect x="48" y="84" width="152" height="48" rx="10" fill="#FFFFFF" fill-opacity=".86" stroke="#3B82F6" stroke-width="1.5"/>
+      <text x="60" y="104" font-size="11.5" font-weight="600" fill="#0F172A">Smith Kitchen</text>
+      <text x="60" y="120" font-size="10.5" fill="#64748B">Jane Smith</text>
+    </g>
+    <path d="M124 70 l0 22 l6 -6 l4 9 l4 -2 l-4 -9 l8 0 z" fill="#0F172A" stroke="#FFFFFF" stroke-width="1.5" stroke-linejoin="round"/>
+  </g>
+</svg>

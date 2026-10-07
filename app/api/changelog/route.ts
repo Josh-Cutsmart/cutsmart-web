@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
+import { normalizeWhatsNewHighlights } from "@/lib/update-notes-utils";
 
 type AppReportKind = "issue" | "feature";
 
@@ -98,6 +99,8 @@ export async function GET(request: NextRequest) {
           version: toStr(data.version),
           whatsNew: String(data.whatsNew ?? ""),
           capturedAtIso: toStr(data.capturedAtIso),
+          highlights: normalizeWhatsNewHighlights(data.highlights),
+          publishedAtIso: toStr(data.publishedAtIso) || undefined,
         };
       })
       .filter((row) => row.version);

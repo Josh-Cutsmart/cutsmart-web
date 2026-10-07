@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" width="640" height="360" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title>User Settings on a phone: tapping Notifications slides its page in under a title bar that stays put</title>
+  <style>
+    .strip { animation: strip 6s cubic-bezier(.32,.72,0,1) infinite both; }
+    @keyframes strip { 0%, 26% { transform: translateX(0); } 36%, 78% { transform: translateX(-168px); } 88%, 100% { transform: translateX(0); } }
+    .tap { transform-box: fill-box; transform-origin: center; animation: tap 6s ease-out infinite both; }
+    @keyframes tap { 0%, 14% { opacity: 0; transform: scale(.4); } 18% { opacity: .55; transform: scale(1); } 26%, 100% { opacity: 0; transform: scale(1.5); } }
+    .back { transform-box: fill-box; transform-origin: center; animation: back 6s ease-out infinite both; }
+    @keyframes back { 0%, 66% { opacity: 0; transform: scale(.4); } 70% { opacity: .55; transform: scale(1); } 78%, 100% { opacity: 0; transform: scale(1.5); } }
+    .flip { animation: flip 6s ease-in-out infinite both; }
+    @keyframes flip { 0%, 44% { transform: translateX(0); } 48%, 100% { transform: translateX(12px); } }
+  </style>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#EEF3FB"/>
+      <stop offset="1" stop-color="#E1E9F7"/>
+    </linearGradient>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3B82F6"/>
+      <stop offset="1" stop-color="#1D4ED8"/>
+    </linearGradient>
+    <clipPath id="screen"><rect x="236" y="62" width="168" height="296"/></clipPath>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="8" stdDeviation="9" flood-color="#0F172A" flood-opacity=".16"/>
+    </filter>
+  </defs>
+  <rect width="640" height="360" fill="url(#bg)"/>
+
+  <!-- the phone -->
+  <g filter="url(#shadow)">
+    <rect x="228" y="12" width="184" height="380" rx="30" fill="#0F172A"/>
+    <rect x="236" y="20" width="168" height="364" rx="23" fill="#F4F7FC"/>
+  </g>
+  <rect x="294" y="27" width="52" height="13" rx="6.5" fill="#0F172A"/>
+
+  <!-- the pages, sliding under the bar -->
+  <g clip-path="url(#screen)">
+    <g class="strip">
+      <!-- the first page -->
+      <g>
+        <rect x="244" y="70" width="152" height="40" rx="10" fill="#FFFFFF" stroke="#E2E8F0"/>
+        <circle cx="262" cy="90" r="12" fill="url(#brand)"/>
+        <text x="262" y="94" text-anchor="middle" font-size="10" font-weight="700" fill="#FFFFFF">JS</text>
+        <text x="280" y="88" font-size="10.5" font-weight="600" fill="#0F172A">Jane Smith</text>
+        <text x="280" y="101" font-size="8.5" fill="#64748B">jane@cutsmart.app</text>
+        <rect x="244" y="118" width="152" height="22" rx="7" fill="#FFFFFF" stroke="#E2E8F0"/>
+        <circle cx="256" cy="129" r="4" fill="none" stroke="#94A3B8" stroke-width="1.4"/>
+        <text x="266" y="132" font-size="9" fill="#94A3B8">Search settings</text>
+        <rect x="244" y="148" width="152" height="128" rx="10" fill="#FFFFFF" stroke="#E2E8F0"/>
+        <g font-size="10" fill="#0F172A">
+          <rect x="254" y="160" width="10" height="10" rx="3" fill="#CBD5E1"/>
+          <text x="272" y="169">General</text>
+          <line x1="244" y1="180" x2="396" y2="180" stroke="#EEF2F7"/>
+          <rect x="254" y="191" width="10" height="10" rx="3" fill="#CBD5E1"/>
+          <text x="272" y="200">Preferences</text>
+          <line x1="244" y1="211" x2="396" y2="211" stroke="#EEF2F7"/>
+          <rect x="254" y="222" width="10" height="10" rx="3" fill="#93C5FD"/>
+          <text x="272" y="231" font-weight="600">Notifications</text>
+          <line x1="244" y1="242" x2="396" y2="242" stroke="#EEF2F7"/>
+          <rect x="254" y="253" width="10" height="10" rx="3" fill="#CBD5E1"/>
+          <text x="272" y="262">Checklists</text>
+        </g>
+        <g fill="none" stroke="#94A3B8" stroke-width="1.4" stroke-linecap="round">
+          <path d="M383 161 l4 4 l-4 4"/><path d="M383 192 l4 4 l-4 4"/><path d="M383 223 l4 4 l-4 4"/><path d="M383 254 l4 4 l-4 4"/>
+        </g>
+      </g>
+      <!-- the Notifications page -->
+      <g transform="translate(168 0)">
+        <rect x="244" y="70" width="152" height="40" rx="10" fill="#FFFFFF" stroke="#E2E8F0"/>
+        <circle cx="262" cy="90" r="12" fill="#EEF2F7"/>
+        <path d="M257 93 v-4 a5 5 0 0 1 10 0 v4 l1.5 2 h-13 z" fill="none" stroke="#0F172A" stroke-width="1.3"/>
+        <text x="280" y="95" font-size="13" font-weight="600" fill="#0F172A">Notifications</text>
+        <rect x="244" y="118" width="152" height="130" rx="10" fill="#FFFFFF" stroke="#E2E8F0"/>
+        <g font-size="10" fill="#0F172A">
+          <text x="256" y="139" font-weight="600">Push Notifications</text>
+          <line x1="244" y1="152" x2="396" y2="152" stroke="#EEF2F7"/>
+          <text x="256" y="171">Projects</text>
+          <line x1="244" y1="184" x2="396" y2="184" stroke="#EEF2F7"/>
+          <text x="256" y="203">Leads</text>
+          <line x1="244" y1="216" x2="396" y2="216" stroke="#EEF2F7"/>
+          <text x="256" y="235">Calendar</text>
+        </g>
+        <g>
+          <rect x="360" y="128" width="26" height="15" rx="7.5" fill="#2563EB"/>
+          <circle class="flip" cx="368" cy="135.5" r="5.5" fill="#FFFFFF"/>
+          <rect x="360" y="160" width="26" height="15" rx="7.5" fill="#2563EB"/><circle cx="380" cy="167.5" r="5.5" fill="#FFFFFF"/>
+          <rect x="360" y="192" width="26" height="15" rx="7.5" fill="#2563EB"/><circle cx="380" cy="199.5" r="5.5" fill="#FFFFFF"/>
+          <rect x="360" y="224" width="26" height="15" rx="7.5" fill="#CBD5E1"/><circle cx="368" cy="231.5" r="5.5" fill="#FFFFFF"/>
+        </g>
+      </g>
+    </g>
+  </g>
+
+  <!-- the title bar: the same on every page, so it stays put -->
+  <rect x="236" y="42" width="168" height="22" fill="#FFFFFF" stroke="#E2E8F0"/>
+  <text x="246" y="57" font-size="8.5" font-weight="600" letter-spacing=".8" fill="#0F172A">USER SETTINGS</text>
+  <rect x="380" y="45" width="16" height="16" rx="5" fill="url(#brand)"/>
+  <path d="M390 49 l-4 4 l4 4" fill="none" stroke="#FFFFFF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- taps -->
+  <circle class="tap" cx="330" cy="227" r="14" fill="#3B82F6"/>
+  <circle class="back" cx="388" cy="53" r="12" fill="#3B82F6"/>
+</svg>

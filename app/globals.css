@@ -1246,3 +1246,52 @@ textarea,
   width: max-content;
   animation: marquee-scroll-frames 6s linear infinite;
 }
+
+/* The What's New page (components/whats-new-sheet.tsx): slides up over the whole app, and back down. */
+@keyframes whats-new-sheet-up {
+  from { transform: translate3d(0, 100%, 0); }
+  to { transform: translate3d(0, 0, 0); }
+}
+@keyframes whats-new-sheet-down {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(0, 100%, 0); }
+}
+@keyframes whats-new-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes whats-new-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+/* The What's New page's cards: they pop in one after another once the page is up, then float — each
+ * bobbing gently at its own pace (--wn-bob-* set per card); the soft blobs behind them drift slowly.
+ * The tilt is on the card itself (--wn-tilt), so hovering can straighten it. Off for reduced motion. */
+@keyframes whats-new-pop-in {
+  from { opacity: 0; transform: translate3d(0, 28px, 0) scale(0.95); }
+  to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+}
+@keyframes whats-new-bob {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  50% { transform: translate3d(0, var(--wn-bob-y, -6px), 0); }
+}
+@keyframes whats-new-drift {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(var(--wn-drift-x, 40px), var(--wn-drift-y, -30px), 0) scale(1.08); }
+}
+.whats-new-card {
+  transform: rotate(var(--wn-tilt, 0deg));
+  transition: transform 320ms cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 320ms ease;
+}
+.whats-new-card:hover {
+  transform: rotate(0deg) scale(1.025);
+}
+/* The coloured glow behind a What's New card, breathing slowly. */
+@keyframes whats-new-glow {
+  0%, 100% { opacity: 0.55; transform: scale(0.96); }
+  50% { opacity: 1; transform: scale(1.04); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .whats-new-motion { animation: none !important; }
+}

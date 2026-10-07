@@ -34,7 +34,7 @@ import {
 } from "@/lib/project-archive";
 import type { ProductComparison } from "@/lib/cutlist-types";
 import type { ChecklistTemplate, Cutlist, Project, ProjectChange, ProjectChecklist, ProjectImageItem, SalesQuote } from "@/lib/types";
-import type { UpdateChangelogEntry } from "@/lib/update-notes-utils";
+import { normalizeWhatsNewHighlights, type UpdateChangelogEntry } from "@/lib/update-notes-utils";
 
 function toIsoString(value: unknown, fallback = "") {
   if (!value) {
@@ -2874,6 +2874,8 @@ export async function fetchAppChangelogHistory(): Promise<UpdateChangelogEntry[]
           version: String(data.version || "").trim(),
           whatsNew: String(data.whatsNew || ""),
           capturedAtIso: String(data.capturedAtIso || ""),
+          highlights: normalizeWhatsNewHighlights(data.highlights),
+          publishedAtIso: String(data.publishedAtIso || "") || undefined,
         } as UpdateChangelogEntry;
       })
       .filter((row) => row.version);
