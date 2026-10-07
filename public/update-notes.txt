@@ -1,9 +1,9 @@
-Version: v0.5.0
+Version: v0.5.1
 
 whatsNew: [
 <u><b>Phone &amp; Desktop Notifications</b></u>
 <ul>
-<li>Get your CutSmart notifications on your phone's lock screen or your computer, even when CutSmart is closed — turn them on in <b>User Settings</b></li>
+<li>Get your CutSmart notifications on your phone's lock screen or your computer, even when CutSmart is closed — turn on <b>Push Notifications</b> in <b>User Settings</b></li>
 <li>Choose exactly what you're notified about, by category: Projects, Leads, Client Portal, Calendar and CutSmart — turn a whole category off in one go, or search for a notification</li>
 <li>New <b>Time between notifications</b> setting: anything that comes in during it is held and sent together as one, listed a line each (e.g. "10 new leads")</li>
 <li>New: <b>new leads</b> (if you can see leads), being <b>added to a lead or project</b> (as an editor or viewer), and <b>quotes declined</b> by clients</li>
@@ -11,7 +11,8 @@ whatsNew: [
 <li><b>Calendar reminders</b> for events on your projects — add as many as you like, each with its own time (30 minutes to a month before; all-day events by days, weeks or months)</li>
 <li>Reminders when a <b>quote hasn't been accepted</b> or <b>specifications haven't been submitted</b> yet — after 2 days, or whenever you choose (1–7 days, as many as you like)</li>
 <li>iPhone and iPad: add CutSmart to your Home Screen (Safari &gt; Share &gt; Add to Home Screen) and turn them on from there</li>
-<li>Tapping a notification opens what it's about</li>
+<li>Tapping a notification opens what it's about — a calendar reminder opens its event</li>
+<li>The "Quote sent" and "Specifications sent" notifications no longer show the client's email address</li>
 </ul>
 
 <u><b>Production Unlock Requests</b></u>
@@ -21,100 +22,73 @@ whatsNew: [
 <li>You're notified as soon as your request is answered</li>
 </ul>
 
-<u><b>Archive</b></u>
-<ul>
-<li>New: an <b>Archive</b> page (in the menu below Company Settings) — it replaces Recently Deleted, and everything that was in there has moved across</li>
-<li>Tabs for <b>Leads</b>, <b>Projects</b> and <b>Contacts</b>, each with its own search and filed by year and month, showing the date each item was archived</li>
-<li>The Delete buttons on projects, leads and contacts now <b>Archive</b> instead — nothing is ever deleted automatically</li>
-<li><b>Restore</b> asks first, and for a project lets you pick the status (and sub-status) it comes back in</li>
-<li><b>Delete permanently</b> from the Archive, one at a time or by selecting several, always with a confirmation</li>
-<li>Years and months you collapse stay collapsed</li>
-<li>Archived leads are titled by the client's name</li>
-</ul>
-
 <u><b>Finished Projects</b></u>
 <ul>
 <li>Mark one project status as the <b>Completed</b> status in Company Settings</li>
-<li>New <b>Archive completed projects after</b> setting — Never, Instantly, or after a week up to a year</li>
-<li>Once archived, a project leaves the Dashboard and its client portal link stops working</li>
-<li>Archived projects open read-only for everyone, with a yellow header, an "Archived on" note and a Restore button</li>
-<li>Archived projects no longer appear in the top tab bar</li>
+<li><b>Archive completed projects after</b> can be set to Never, Instantly, or after a week up to a year</li>
 </ul>
 
 <u><b>Projects</b></u>
 <ul>
 <li>Redesigned Production <b>Order</b> page — your hardware brand (in its own colour) with <b>Drawers</b>, <b>Hinges</b> and <b>Other</b> picked from Company Settings → Hardware, a separate <b>Misc</b> list for anything else, and Boards To Order</li>
-<li>New <b>Lacquer</b> column (m²) next to Edge Tape in the Design tab's Product container — faces plus clashed edges, for Lacquer (1 side) and (2 side) products</li>
-<li>Company Wrapped's lacquer total uses the same calculation</li>
-<li>New <b>Client Portal</b> button in the Design tab once something has been shared with the client</li>
-<li>Initial Measure cutlist: the Clashing column now uses the L / S dropdowns when editing, like Production</li>
-<li>Mobile: the Design tab's Add Room box sits above the keyboard</li>
-<li>Mobile: the Nesting and CNC Visibility search box works when tapped</li>
-<li>Mobile: the Quote's "Project changed since last viewed" banner is shorter</li>
+<li>Nesting: the Machine dropdown opens above everything, shows just the machine names and highlights the one you're on — the same style as the CNC Cutlist export menu</li>
+<li>Items tab: even spacing above and below its containers</li>
 </ul>
 
 <u><b>Calendar</b></u>
 <ul>
-<li>New setting to <b>show or hide non-workdays</b> in Month and Week views (the Year view always shows every day)</li>
 <li>Month view: click anywhere in a day to open it</li>
 <li>Mobile: New event is now a round <b>+</b> button at the bottom right of the screen</li>
-<li>Opened from the Calendar home-screen icon, it now shows just the calendar — no side menus or tab bar</li>
-<li>Editing an event, or picking a category for a new one, colours the pop-up in that category's colour</li>
-<li>Mobile: event pop-ups open in the middle of the screen, unless they open the keyboard straight away</li>
-<li>Mobile: the Month view fits the screen, with space at the bottom for rounded corners</li>
-<li>Mobile: fixed a bar showing on the left behind the event pop-up</li>
+<li>New events start as <b>All day</b> — and with a day open in Day view, they're on that day instead of today</li>
 </ul>
 
 <u><b>Company Settings</b></u>
 <ul>
-<li>Removing a staff member lets you choose what to hand over to someone else — projects, contacts, leads and calendar events — and nothing is deleted</li>
-<li>Contacts the person receiving them already has (same email, phone or name) aren't handed over twice</li>
-<li>Deleting a tag now asks for confirmation</li>
 <li>Hardware: drag Hinges and Other items to reorder them, like Drawers</li>
 <li>Hardware: Drawer, Hinge and Other names can have spaces in them again</li>
-<li>Mobile: every section fits the screen, and the settings tabs scroll sideways</li>
 </ul>
 
 <u><b>Client Portal</b></u>
 <ul>
-<li>The whole client portal now works on phones</li>
 <li>Clients can now <b>Decline</b> a quote (with an optional reason) — it shows on the project's Quote, and you're notified</li>
 <li>Desktop: the Client Portal button opens it in a normal browser tab again, not a separate window</li>
-<li>The Quote and Specifications sheets fit the screen, with pinch to zoom</li>
-<li>An easy list of the Yes / No questions above the Specifications sheet on phones</li>
-<li>The "Quote sent" and "Specifications sent" notifications no longer show the client's email address</li>
+<li>Viewing the portal as staff no longer shows the client's <b>Accept Quote</b> and <b>Submit Specifications</b> buttons</li>
 </ul>
 
 <u><b>Leads & Contacts</b></u>
 <ul>
-<li>Lead cards show the client's first and last name</li>
-<li>Contacts' web address is now <b>/contacts</b> (was /clients) — old links, bookmarks and Home Screen icons still open it</li>
-<li>The Add Contact pop-up only closes on a click outside it while it's still empty</li>
-<li>An archived contact can be viewed but not edited</li>
 <li>Every staff member is now in everyone's Contacts, under a new built-in <b>Staff</b> category (its colour can be changed in Company Settings)</li>
 <li>A contact keeps every project they've ever had — <b>Past Projects</b> lists the completed ones, plus any that were archived or deleted</li>
+<li>Contacts' web address is now <b>/contacts</b> (was /clients) — old links, bookmarks and Home Screen icons still open it</li>
 </ul>
 
 <u><b>Dashboard & Leads Boards</b></u>
 <ul>
 <li>Drag cards into any order you like, even within a column — they land exactly where you drop them, the moment you drop them</li>
 <li>While dragging, a faded copy of the card shows where it will land, moving the other cards out of the way</li>
+<li>The card you're dragging follows you as a see-through copy of the whole card, hanging from the pointer and swinging smoothly as you move</li>
 <li>New <b>sort</b> button on each column: sort that column Oldest – Newest, Newest – Oldest, A – Z or Z – A (or back to your own order)</li>
-<li>New <b>Sort</b> button in the toolbar sorts the whole board, overriding the columns — both are saved to your account, so they follow you to any device</li>
+<li>Dashboard: a status's <b>sub-status columns</b> have their own sort buttons too</li>
+<li>New <b>Sort</b> button in the toolbar sorts the whole board, overriding every column — all saved to your account, so they follow you to any device</li>
+<li>The glow on a card at the top of a column is no longer cut off</li>
+<li>Mobile: the columns stop just above the bottom of the screen, like the Calendar, however far you've scrolled</li>
 <li>Leads: fixed a dragged lead jumping back before landing, and a second drag being ignored while the first was saving</li>
-<li>Desktop: drag the Kanban board sideways by grabbing the background or a column</li>
+</ul>
+
+<u><b>User Settings</b></u>
+<ul>
+<li>Mobile: <b>User Settings</b> is now your profile card, a search bar for every setting, and a short list — General, Preferences, Notifications and Checklists — each opening as its own page under a title bar that stays put (tap Back or swipe right to return)</li>
+<li>Mobile: each checklist opens as its own page, ready to edit — tap an item to change it, X to remove it, Add Row for a new one, or tap its name to rename it</li>
+<li>Deleting a checklist, or removing a checklist item with text in it, asks you to tap again to confirm</li>
+<li>Push Notifications settings show straight away</li>
 </ul>
 
 <u><b>App-Wide</b></u>
 <ul>
 <li><b>Leads</b> and <b>Contacts</b> can now be added to your Home Screen as their own apps, like the Calendar — open the page, then Add to Home Screen. Opened from their icons, they show just that page</li>
 <li>Bigger "CutSmart" on the Calendar, Leads and Contacts app icons</li>
-<li>Mobile: <b>User Settings</b> is now your profile card and a short list — General, Preferences, Notifications and Checklists — each opening as its own page (swipe right to go back)</li>
 <li>Closing a tab in the top bar just closes it — it no longer opens another project. Closing the one you're on takes you to the Dashboard</li>
-<li>Clicking off an open dropdown only closes it — it no longer opens or presses whatever is underneath</li>
-<li>Mobile: pop-ups stay on screen when typing, and the blur reaches behind the keyboard</li>
-<li>Mobile: the pull-down menu and side swipes are switched off while a pop-up is open</li>
-<li>The page background now reaches the bottom of the screen on short pages</li>
-<li>Fixed some missing spaces in text</li>
+<li>Mobile: a settings cog beside your name at the bottom of the menu goes straight to User Settings</li>
+<li>Dragging things like Sales Items and settings rows swings smoothly instead of shaking when moved slowly</li>
 </ul>
 ]

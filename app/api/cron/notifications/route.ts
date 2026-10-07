@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
+import { announceCurrentAppVersion } from "@/lib/app-version-server";
 import { runCalendarReminders } from "@/lib/calendar-reminders-server";
 import { runClientPortalPendingReminders } from "@/lib/client-portal-reminders-server";
 import { flushDuePushDigests } from "@/lib/push-server";
@@ -10,7 +11,9 @@ import { flushDuePushDigests } from "@/lib/push-server";
 // - calendar reminders that are due (lib/calendar-reminders-server.ts), for every company;
 // - "quote not accepted / specifications not submitted yet" reminders (lib/client-portal-reminders-server.ts);
 // - notifications held by people's "time between notifications" whose time is up, grouped into one
-//   (flushDuePushDigests in lib/push-server.ts).
+//   (flushDuePushDigests in lib/push-server.ts);
+// - a new version, once it's live: added to the changelog and announced to everyone in every company,
+//   without anyone having to open CutSmart first (lib/app-version-server.ts).
 
 export const maxDuration = 60;
 
@@ -26,10 +29,14 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ ok: false, error: "missing-firebase-admin-config" }, { status: 500 });
   }
   const siteOrigin = new URL(request.url).origin;
-  const [reminders, clientPortal, groupsSent] = await Promise.all([
+  const [reminders, clientPortal, groupsSent, newVersion] = await Promise.all([
     runCalendarReminders({ siteOrigin }),
     runClientPortalPendingReminders({ siteOrigin }),
     flushDuePushDigests(siteOrigin),
+    announceCurrentAppVersion(siteOrigin).catch((error) => {
+      console.error("[cron/notifications] new version announcement failed:", error);
+      return null;
+    }),
   ]);
-  return NextResponse.json({ ok: true, reminders, clientPortal, groupsSent });
+  return NextResponse.json({ ok: true, reminders, clientPortal, groupsSent, newVersion });
 }

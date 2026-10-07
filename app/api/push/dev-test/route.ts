@@ -1,7 +1,8 @@
 import { after, NextResponse, type NextRequest } from "next/server";
 import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
 import { verifyBearerUser } from "@/lib/api-auth";
-import { isDevEmailOnServer, readPublicTextFile } from "@/lib/dev-emails-server";
+import { isDevEmailOnServer } from "@/lib/dev-emails-server";
+import { readPublicTextFile } from "@/lib/public-file-server";
 import {
   DEV_TEST_ACTION_TOKEN,
   DEV_TEST_DELAYS,

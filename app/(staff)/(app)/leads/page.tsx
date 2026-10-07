@@ -2171,19 +2171,11 @@ export default function LeadsPage() {
       return;
     }
     event.preventDefault();
-    // Drives the ghost's transform by hand — useDragGhost's own tracking only ever runs off a
-    // native `dragover` listener, which touch never dispatches. Same translate+rotate "swing" math
-    // as that listener, so a touch drag looks identical to a mouse one.
-    const ghost = leadBoardDragGhost.ghostRef.current?.getEl();
-    if (ghost) {
-      const dx = touch.clientX - state.lastX;
-      const rotation = Math.max(-18, Math.min(18, dx * 1.6));
-      ghost.style.transition = "none";
-      ghost.style.transform = `translate(${touch.clientX}px, ${touch.clientY}px) translate(-50%, 6px) rotate(${rotation}deg)`;
-    }
+    // useDragGhost's own tracking only runs off a native `dragover` listener, which touch never
+    // dispatches — so the touch position is reported to it: the ghost follows (the same swing as a
+    // mouse drag), and holding the card at the screen's left/right edge steps the board a column.
     state.lastX = touch.clientX;
     state.lastY = touch.clientY;
-    // Holding the card at the screen's left/right edge steps the board a column that way.
     leadBoardDragGhost.trackPointer(touch.clientX, touch.clientY);
     const target = document.elementFromPoint(touch.clientX, touch.clientY);
     const columnEl = target?.closest<HTMLElement>("[data-board-column]");

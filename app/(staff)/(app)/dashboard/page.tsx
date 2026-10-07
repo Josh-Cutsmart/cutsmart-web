@@ -117,6 +117,11 @@ function hexToRgba(hex: string, alpha: number): string {
 const DASHBOARD_BOARD_PREFS_STORAGE_PREFIX = "cutsmart_dashboard_board_prefs:";
 // What a project is ordered by on the board: the spot it was dragged to (else its creation date,
 // newest first — see lib/board-drop-order.ts), its creation date, and its name.
+// A sub-stage column's own sort is saved with the main columns' (keyed by name), as "<status> › <sub-stage>".
+function subStageSortKey(statusName: string, subStageName: string): string {
+  return `${statusName} › ${subStageName}`;
+}
+
 function projectBoardSortInfo(project: Project): BoardCardSortInfo {
   const createdMs = Date.parse(String(project.createdAt || project.updatedAt || ""));
   return {
@@ -1397,6 +1402,13 @@ export default function DashboardPage() {
   // A column's order for this user: the board-wide sort while one is set, else the column's own.
   const projectColumnSortFor = (columnName: string): BoardSortMode =>
     projectBoardSort !== "custom" ? projectBoardSort : projectColumnSorts[columnName] ?? "custom";
+  const setProjectColumnSort = (sortKey: string, mode: BoardSortMode) =>
+    setProjectColumnSorts((prev) => {
+      const next = { ...prev };
+      if (mode === "custom") delete next[sortKey];
+      else next[sortKey] = mode;
+      return next;
+    });
   // Where a dragged project lands in a column: the pointer's spot in a custom-order column, or where
   // the sort puts it in a sorted one (so its preview shows where it really goes).
   const projectDropIndexFor = (mode: BoardSortMode, columnProjects: Project[], columnEl: Element, clientY: number, projectId: string): number => {
@@ -1436,8 +1448,13 @@ export default function DashboardPage() {
       const col = key ? byKey.get(key) : undefined;
       col?.projects.push(project);
     }
+    // Each in its own order: the board-wide sort while one is set, else the sub-column's own.
+    for (const col of columns) {
+      const mode = projectBoardSort !== "custom" ? projectBoardSort : projectColumnSorts[subStageSortKey(openSubBoardColumnName, col.name)] ?? "custom";
+      col.projects = sortBoardCards(col.projects, mode, projectBoardSortInfo);
+    }
     return { columns };
-  }, [dashboardStatusBoardColumns, openSubBoardColumnName]);
+  }, [dashboardStatusBoardColumns, openSubBoardColumnName, projectBoardSort, projectColumnSorts]);
 
   const SUB_BOARD_ZOOM_MOVE_MS = 420;
   const SUB_BOARD_ZOOM_FADE_MS = 150;
@@ -1675,7 +1692,7 @@ export default function DashboardPage() {
     const sameSubStage = currentSubStage === nextSubStage.trim().toLowerCase();
     const columnProjects = subBoardColumns.columns.find((col) => col.name === subStageKey)?.projects ?? [];
     let boardOrder: number | undefined;
-    if (dropIndex !== null && projectColumnSortFor(openSubBoardColumnName) === "custom") {
+    if (dropIndex !== null && projectColumnSortFor(subStageSortKey(openSubBoardColumnName, subStageKey)) === "custom") {
       if (sameSubStage && columnProjects.findIndex((row) => row.id === project.id) === dropIndex) return;
       boardOrder = boardOrderForDrop(columnProjects, project, dropIndex);
     }
@@ -1856,7 +1873,7 @@ export default function DashboardPage() {
   // both get the exact same collapse affordance/styling from one place.
   const renderColumnHeaderBar = (options: {
     left: React.ReactNode;
-    // The column's sort button, left of its title (main board columns).
+    // The column's sort button, left of its title.
     sortControl?: React.ReactNode;
     count: number;
     badgeBg: string;
@@ -1989,7 +2006,8 @@ export default function DashboardPage() {
           const isDragOver = dragOverSubStageColumn === col.key;
           const collapseKey = subStageCollapseKey(col.key);
           const isCollapsed = Boolean(collapsedSubStageColumns[collapseKey]);
-          const subSortMode = projectColumnSortFor(openSubBoardColumnName);
+          const subSortKey = subStageSortKey(openSubBoardColumnName, col.key);
+          const subSortMode = projectColumnSortFor(subSortKey);
           const dragHandlers = {
             onDragOver: (e: ReactDragEvent<HTMLElement>) => {
               e.preventDefault();
@@ -2047,6 +2065,15 @@ export default function DashboardPage() {
               }),
             renderHeader: (badgeBg, badgeText) =>
               renderColumnHeaderBar({
+                sortControl: (
+                  <BoardColumnSortMenu
+                    columnName={col.name}
+                    value={projectColumnSorts[subSortKey] ?? "custom"}
+                    overriddenBy={projectBoardSort}
+                    onChange={(mode) => setProjectColumnSort(subSortKey, mode)}
+                    buttonStyle={{ color: badgeText, backgroundColor: badgeBg }}
+                  />
+                ),
                 left: <p className="truncate text-[15px] font-semibold" style={{ color: rowTextColorForFill(col.color) }}>{col.name}</p>,
                 count: col.projects.length,
                 badgeBg,
@@ -2150,14 +2177,7 @@ export default function DashboardPage() {
                     columnName={column.name}
                     value={projectColumnSorts[column.name] ?? "custom"}
                     overriddenBy={projectBoardSort}
-                    onChange={(mode) =>
-                      setProjectColumnSorts((prev) => {
-                        const next = { ...prev };
-                        if (mode === "custom") delete next[column.name];
-                        else next[column.name] = mode;
-                        return next;
-                      })
-                    }
+                    onChange={(mode) => setProjectColumnSort(column.name, mode)}
                     buttonStyle={{ color: badgeText, backgroundColor: badgeBg }}
                   />
                 ),
