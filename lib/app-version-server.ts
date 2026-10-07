@@ -15,9 +15,9 @@ import { parseUpdateNotesText, type WhatsNewHighlight } from "@/lib/update-notes
 //    too, not when it was deployed.
 // 2. It's added to the changelog (Application/changelog/versions) — the What's New page then shows it to
 //    everyone the next time they open CutSmart.
-// 3. If "Notify everyone" was ticked, every member of every company gets a "New version" notification,
-//    pushed to their phones/computers — each company once (appVersionAnnouncements/{version}, server-only;
-//    the scheduled job finishes anything that didn't get through).
+// 3. If "Notify everyone" was ticked, everyone in every company gets a "New version" notification, pushed
+//    to their phones/computers — each person once (appVersionAnnouncements/{version}, server-only; the
+//    scheduled job finishes anything that didn't get through).
 //
 // A scheduled publish (appVersionPublishes/{version}, server-only) keeps what's to be published — the
 // notes, which deploy to make live, whether to notify — and the scheduled job (every minute) runs it once
@@ -164,13 +164,17 @@ export async function publishVersionNow(options: {
   // Anything scheduled for it is done with.
   await db.collection(SCHEDULES_COLLECTION).doc(id).set({ status: "published", publishedAtIso: new Date().toISOString() }, { merge: true }).catch(() => undefined);
   if (!notify) return { ok: true, version, promoted, companies: 0, notified: 0 };
-  const announced = await announceToCompanies(recordRef, version, content.whatsNew, siteOrigin);
+  const announced = await announceToEveryone(recordRef, version, content.whatsNew, siteOrigin);
   return { ok: true, version, promoted, ...announced };
 }
 
-// Tells every company that hasn't been told yet — claimed one at a time, so each is told once even if the
-// scheduled job and a publish are both at it.
-async function announceToCompanies(
+// Tells everyone — each person once, however many companies they're in (in the first of them). People are
+// claimed in the announcement record before they're told (record.users), a batch at a time, so nobody's told
+// twice even if the scheduled job and a publish are both at it, or it's picked up again after running out
+// of time.
+const ANNOUNCE_BATCH = 40;
+
+async function announceToEveryone(
   recordRef: FirebaseFirestore.DocumentReference,
   version: string,
   whatsNew: string,
@@ -178,33 +182,43 @@ async function announceToCompanies(
 ): Promise<{ companies: number; notified: number }> {
   const db = adminDb!;
   const companyIds = (await db.collection("companies").select().get()).docs.map((docSnap) => docSnap.id);
-  let companies = 0;
-  let notified = 0;
+  const companyOf = new Map<string, string>();
   for (const companyId of companyIds) {
+    const members = await listCompanyMemberAccess(companyId).catch(() => []);
+    for (const member of members) {
+      const uid = member.access.uid;
+      if (uid && !companyOf.has(uid)) companyOf.set(uid, companyId);
+    }
+  }
+
+  const everyone = Array.from(companyOf.keys());
+  let notified = 0;
+  for (let start = 0; start < everyone.length; start += ANNOUNCE_BATCH) {
+    const batch = everyone.slice(start, start + ANNOUNCE_BATCH);
     const claimed = await db.runTransaction(async (tx) => {
       const snap = await tx.get(recordRef);
-      const told = (snap.data()?.companies ?? {}) as Record<string, unknown>;
-      if (told[companyId]) return false;
-      tx.update(recordRef, new FieldPath("companies", companyId), new Date().toISOString());
-      return true;
+      const told = (snap.data()?.users ?? {}) as Record<string, unknown>;
+      const fresh = batch.filter((uid) => !told[uid]);
+      if (!fresh.length) return [];
+      const nowIso = new Date().toISOString();
+      // update(ref, field, value, ...more fields and values) — each person under users.<uid>.
+      const more = fresh.slice(1).flatMap((uid) => [new FieldPath("users", uid), nowIso]);
+      tx.update(recordRef, new FieldPath("users", fresh[0]), nowIso, ...more);
+      return fresh;
     });
-    if (!claimed) continue;
-    companies += 1;
-    const members = await listCompanyMemberAccess(companyId).catch(() => []);
-    const uids = Array.from(new Set(members.map((member) => member.access.uid).filter(Boolean)));
     await Promise.all(
-      uids.map((uid) =>
+      claimed.map((uid) =>
         addNotificationAndPush(
           uid,
-          { title: `New version ${version}`, message: whatsNew || "CutSmart has been updated.", type: "app_version", companyId },
+          { title: `New version ${version}`, message: whatsNew || "CutSmart has been updated.", type: "app_version", companyId: companyOf.get(uid) },
           siteOrigin,
         ),
       ),
     );
-    notified += uids.length;
+    notified += claimed.length;
   }
   await recordRef.set({ pending: false, doneAtIso: new Date().toISOString() }, { merge: true });
-  return { companies, notified };
+  return { companies: companyIds.length, notified };
 }
 
 // ---- Scheduling
@@ -308,7 +322,7 @@ export async function runAppVersionJobs(siteOrigin: string): Promise<{ published
   for (const recordSnap of pending.docs) {
     const version = String(recordSnap.data().version || "");
     const entry = await changelogVersionsCollection().doc(versionIdOf(version)).get();
-    const announced = await announceToCompanies(recordSnap.ref, version, String(entry.data()?.whatsNew || ""), siteOrigin);
+    const announced = await announceToEveryone(recordSnap.ref, version, String(entry.data()?.whatsNew || ""), siteOrigin);
     result.announced += announced.notified;
   }
   return result;
