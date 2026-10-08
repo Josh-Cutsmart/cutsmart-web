@@ -4,12 +4,16 @@ import { activeDate, activeDateTime, useCompanyFormats } from "@/lib/company-for
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { useRouter } from "next/navigation";
 import { createPortal } from "react-dom";
-import { Activity, Archive, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, ChevronsLeftRight, ChevronsRightLeft, FolderKanban, Kanban, ListFilter, RefreshCw, Rows3, Search, Users2, X } from "lucide-react";
+import { Activity, Archive, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, FolderKanban, Kanban, ListFilter, RefreshCw, Rows3, Search, Users2, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
 import { attachBoardArrowKeyScroll } from "@/lib/board-arrow-key-scroll";
 import { attachBoardDragScroll } from "@/lib/board-drag-scroll";
 import { useBoardStickyRef } from "@/lib/board-sticky-scroll";
+import { collapseBoardColumnAnimated, expandBoardColumnAnimated } from "@/lib/board-column-collapse";
+import { BoardColumnFrame, ColumnCollapseChevrons, getBoardColumnVisibleRect } from "@/components/board-column-frame";
+import { flatPageBg } from "@/lib/flat-page";
+import { scrollBoardToSearchMatch } from "@/lib/board-search-scroll";
 import { swallowNextClick } from "@/lib/swallow-dismiss-click";
 import { useDragGhost, DragGhostLayer } from "@/lib/use-drag-ghost";
 import {
@@ -361,6 +365,58 @@ type DashboardSnapshot = {
   themeColor: string;
 };
 
+// Switching the dashboard between list and board: the toolbar controls that belong to the view being
+// left (marked data-view-toolbar-item — the list's filter pills and page size — and the board's Sort
+// button) pop away where they are, the same pop as a button leaving the Quote window's bottom bar
+// (floating-bar-slot-pop): copies of them, since the real ones are gone the moment the view changes.
+function popAwayViewToolbarItems(toolbarRow: HTMLElement) {
+  toolbarRow.querySelectorAll<HTMLElement>('[data-view-toolbar-item], [aria-label="Sort the whole board"]').forEach((el) => {
+    const rect = el.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const ghost = el.cloneNode(true) as HTMLElement;
+    // A copied <select> shows its first option, not the one chosen.
+    const selects = el.querySelectorAll("select");
+    ghost.querySelectorAll("select").forEach((select, index) => {
+      select.value = selects[index]?.value ?? select.value;
+    });
+    ghost.removeAttribute("data-view-toolbar-item");
+    ghost.removeAttribute("aria-label");
+    ghost.setAttribute("aria-hidden", "true");
+    // Not whatever pop-in it came in with (the Sort button's is set on it directly).
+    ghost.classList.remove("glass-bubble-pop");
+    ghost.style.removeProperty("animation");
+    ghost.classList.add("floating-bar-slot-pop");
+    Object.assign(ghost.style, {
+      position: "fixed",
+      left: `${rect.left}px`,
+      top: `${rect.top}px`,
+      width: `${rect.width}px`,
+      height: `${rect.height}px`,
+      margin: "0",
+      zIndex: "9999",
+      pointerEvents: "none",
+    });
+    document.body.appendChild(ghost);
+    window.setTimeout(() => ghost.remove(), 200);
+  });
+}
+
+// The project list's rows (dashboard list view): a colour across a row that fades out over its
+// last 72px at each end instead of stopping in a hard edge — for the hover highlight, and for the
+// dividers between rows (drawn as a 1px line along the bottom of the row, in its background).
+function fadedAcrossRow(color: string) {
+  return `linear-gradient(90deg, transparent 0, ${color} 72px, ${color} calc(100% - 72px), transparent 100%)`;
+}
+
+function fadedRowLineStyle(lineColor: string, rowBackground = "none"): React.CSSProperties {
+  return {
+    backgroundImage: `${fadedAcrossRow(lineColor)}, ${rowBackground}`,
+    backgroundSize: "100% 1px, 100% 100%",
+    backgroundPosition: "left bottom, left top",
+    backgroundRepeat: "no-repeat",
+  };
+}
+
 export default function DashboardPage() {
   // Re-render when the company's date format changes.
   useCompanyFormats();
@@ -388,6 +444,36 @@ export default function DashboardPage() {
   // and per-column collapse state are remembered per-user (localStorage keyed by uid), so two
   // people sharing a browser profile each keep their own preference.
   const [dashboardViewMode, setDashboardViewMode] = useState<"list" | "board">("list");
+  // Set once the view's been switched with the toolbar toggle: the controls that belong to one view
+  // (the list's filter pills and page size, the board's Sort) pop in as that view comes in — not on
+  // the page's first load. The ones leaving pop away (popAwayViewToolbarItems).
+  const [viewToolbarPopIn, setViewToolbarPopIn] = useState(false);
+  // Switching the view moves the search bar and the phone's filter button (the board's Sort button
+  // comes in before them, or goes): where they were, recorded on the switch, so they slide from there
+  // to their new places instead of jumping. One thing at a time, so nothing slides across anything:
+  // going to the list, they wait for the Sort button to pop away first, then slide into its place;
+  // going to the board, they slide out of the way first, then it pops in (its own delayed pop below).
+  const searchSlideRef = useRef<HTMLDivElement | null>(null);
+  const slideViewToolbarItemsFromRef = useRef<Map<HTMLElement, number> | null>(null);
+  useLayoutEffect(() => {
+    const from = slideViewToolbarItemsFromRef.current;
+    slideViewToolbarItemsFromRef.current = null;
+    if (!from) return;
+    const delayMs = dashboardViewMode === "list" ? 160 : 0;
+    from.forEach((oldLeft, el) => {
+      if (!el.isConnected) return;
+      const dx = oldLeft - el.getBoundingClientRect().left;
+      if (Math.abs(dx) < 0.5) return;
+      el.style.transition = "none";
+      el.style.transform = `translateX(${dx}px)`;
+      void el.offsetWidth;
+      el.style.transition = `transform 280ms cubic-bezier(0.22, 1, 0.36, 1) ${delayMs}ms`;
+      el.style.transform = "";
+      window.setTimeout(() => {
+        if (!el.style.transform) el.style.removeProperty("transition");
+      }, 300 + delayMs);
+    });
+  }, [dashboardViewMode]);
   const [draggingProjectId, setDraggingProjectId] = useState("");
   const [dragOverProjectStatusColumn, setDragOverProjectStatusColumn] = useState("");
   // The column and spot (among its other cards) a dragged project would land in — shows its preview.
@@ -407,6 +493,21 @@ export default function DashboardPage() {
   // Remembered per-user (localStorage, same mechanism as dashboardViewMode/collapsedColumns below)
   // so a refresh reopens the same sub-board instead of dropping back to the main board.
   const [openSubBoardColumnName, setOpenSubBoardColumnName] = useState("");
+
+  // Searching the board slides it over to the first column with a match (once typing pauses); Enter in the
+  // search box goes on to the next one (lib/board-search-scroll.ts).
+  const searchMatchColumnRef = useRef(-1);
+  useEffect(() => {
+    if (dashboardViewMode !== "board" || !search.trim()) {
+      searchMatchColumnRef.current = -1;
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      searchMatchColumnRef.current = scrollBoardToSearchMatch(-1);
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [search, dashboardViewMode, openSubBoardColumnName]);
+
   // The sub-status stays open while the list view is shown, but its back button only belongs on the board.
   const showSubBoardBackButton = Boolean(openSubBoardColumnName) && dashboardViewMode === "board";
   const [draggingSubStageProjectId, setDraggingSubStageProjectId] = useState("");
@@ -1213,10 +1314,7 @@ export default function DashboardPage() {
     // find the wrong (main-board) elements instead.
     const container = boardScrollContainerRef.current;
     const rects = container
-      ? Array.from(container.querySelectorAll<HTMLElement>("[data-board-column]")).map((el) => {
-          const r = el.getBoundingClientRect();
-          return { left: r.left, top: r.top, width: r.width, height: r.height };
-        })
+      ? Array.from(container.querySelectorAll<HTMLElement>("[data-board-column]")).map((el) => getBoardColumnVisibleRect(el))
       : [];
     setSubBoardZoomCloseStartRects(rects);
     setMainBoardFadeIn(false);
@@ -1509,7 +1607,7 @@ export default function DashboardPage() {
     void pieces[0]!.offsetWidth;
     pieces.forEach((piece, i) => {
       if (!piece) return;
-      const targetRect = realColumnEls[i].getBoundingClientRect();
+      const targetRect = getBoardColumnVisibleRect(realColumnEls[i]);
       piece.style.transition = subBoardZoomMoveTransition;
       piece.style.left = `${targetRect.left}px`;
       piece.style.top = `${targetRect.top}px`;
@@ -1822,14 +1920,12 @@ export default function DashboardPage() {
     // exact same color picker.
     const columnTitleTextColor = rowTextColorForFill(options.color);
     return (
-      // See the main board's collapsed-column case for why the shadow and reveal height sit on
-      // this outer shell rather than on the column div below.
-      <div
+      // The frame cuts the column off at the bottom of the screen while the board scrolls into place.
+      <BoardColumnFrame
         key={options.columnKey}
         {...options.dragHandlers}
-        data-board-column="true"
         className="h-full w-[85vw] max-w-[300px] shrink-0 snap-center sm:w-[280px] sm:max-w-none sm:snap-align-none"
-        style={{ borderRadius: 16, boxShadow: glassColumnShadow }}
+        shadow={glassColumnShadow}
       >
         <div
           className="flex h-full w-full flex-col overflow-hidden rounded-[16px] border transition"
@@ -1864,7 +1960,7 @@ export default function DashboardPage() {
             )}
           </div>
         </div>
-      </div>
+      </BoardColumnFrame>
     );
   };
 
@@ -1881,7 +1977,7 @@ export default function DashboardPage() {
     onCollapse: () => void;
     collapseTitle: string;
   }) => (
-    <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2.5" style={{ borderColor: "rgba(0,0,0,0.15)" }}>
+    <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2" style={{ borderColor: "rgba(0,0,0,0.15)" }}>
       {options.sortControl ? (
         <div className="flex min-w-0 items-center gap-1.5">
           {options.sortControl}
@@ -1892,20 +1988,23 @@ export default function DashboardPage() {
       )}
       <div className="flex shrink-0 items-center gap-1.5">
         <span
-          className="inline-flex h-6 min-w-[24px] items-center justify-center rounded-full px-2 text-[10px] font-bold"
+          className="inline-flex h-7 min-w-[28px] items-center justify-center rounded-full px-2 text-[11px] font-bold"
           style={{ color: options.badgeText, backgroundColor: options.badgeBg }}
         >
           {options.count}
         </span>
         <button
           type="button"
-          onClick={options.onCollapse}
-          className="inline-flex h-6 w-6 items-center justify-center rounded-full transition hover:brightness-95"
+          // Slides the column into its strip, this button riding its edge over to where the sort
+          // button was (lib/board-column-collapse.ts).
+          onClick={(e) => collapseBoardColumnAnimated(e.currentTarget, options.onCollapse)}
+          data-column-collapse-button="true"
+          className="inline-flex h-7 w-7 items-center justify-center rounded-full transition hover:brightness-95"
           style={{ color: options.badgeText, backgroundColor: options.badgeBg }}
           title={options.collapseTitle}
           aria-label={options.collapseTitle}
         >
-          <ChevronsRightLeft size={13} />
+          <ColumnCollapseChevrons size={14} />
         </button>
       </div>
     </div>
@@ -1939,33 +2038,33 @@ export default function DashboardPage() {
     const columnBadgeText = isDarkMode ? dashboardPalette.text : "#000000";
     const columnTitleTextColor = rowTextColorForFill(options.color);
     return (
-      // Shadow AND the scroll-reveal height live on this outer shell (not the button below) — the
-      // shadow always renders around whatever size the outer currently is, so setting the height
-      // here (rather than clip-path-ing the button) keeps it continuously in sync with the reveal
-      // instead of needing to be a separate unclipped layer.
-      <div
+      // The frame cuts the column off at the bottom of the screen while the board scrolls into place.
+      <BoardColumnFrame
         key={options.columnKey}
         {...options.dragHandlers}
-        data-board-column="true"
         className="h-full w-[52px] shrink-0 snap-center sm:snap-align-none"
-        style={{ borderRadius: 16, boxShadow: glassColumnShadow }}
+        shadow={glassColumnShadow}
       >
         <button
           type="button"
-          onClick={options.onExpand}
-          className="flex h-full w-full flex-col items-center gap-3 overflow-hidden rounded-[16px] border pb-3 pt-2.5 transition hover:brightness-105"
+          onClick={(e) => expandBoardColumnAnimated(e.currentTarget, options.onExpand)}
+          // pt-2: its expand button on the same line as a full column's header buttons, where the
+          // collapse button slides to (lib/board-column-collapse.ts).
+          className="flex h-full w-full flex-col items-center gap-3 overflow-hidden rounded-[16px] border pb-3 pt-2 transition hover:brightness-105"
           style={{ borderColor: glassColumnBorder, ...glassColumnSurface }}
           title={`Expand ${options.name}`}
           aria-label={`Expand ${options.name}`}
         >
           <span
-            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full"
+            // Where a full column's collapse button slides to (lib/board-column-collapse.ts).
+            data-column-collapse-button="true"
+            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full"
             style={{ color: columnBadgeText, backgroundColor: columnBadgeBg }}
           >
-            <ChevronsLeftRight size={13} />
+            <ColumnCollapseChevrons size={14} flipped />
           </span>
           <span
-            className="inline-flex h-6 min-w-[24px] shrink-0 items-center justify-center rounded-full px-2 text-[10px] font-bold"
+            className="inline-flex h-7 min-w-[28px] shrink-0 items-center justify-center rounded-full px-2 text-[11px] font-bold"
             style={{ color: columnBadgeText, backgroundColor: columnBadgeBg }}
           >
             {options.count}
@@ -1977,7 +2076,7 @@ export default function DashboardPage() {
             {options.name}
           </span>
         </button>
-      </div>
+      </BoardColumnFrame>
     );
   };
 
@@ -2206,15 +2305,10 @@ export default function DashboardPage() {
         );
       })}
       {!showProjectsLoadingState && statusRowsLoaded && dashboardStatusBoardColumns.otherProjects.length > 0 && (
-        // See the column cases above for why the shadow and reveal height sit on this
-        // outer shell rather than on the column div below.
-        <div
-          data-board-column="true"
+        // The frame cuts the column off at the bottom of the screen while the board scrolls into place.
+        <BoardColumnFrame
           className="h-full w-[85vw] max-w-[300px] shrink-0 snap-center sm:w-[280px] sm:max-w-none sm:snap-align-none"
-          style={{
-            borderRadius: 16,
-            boxShadow: "inset 0 1px 0 rgba(255,255,255,0.7), inset 0 30px 40px -32px rgba(255,255,255,0.25), var(--shadow-glass)",
-          }}
+          shadow="inset 0 1px 0 rgba(255,255,255,0.7), inset 0 30px 40px -32px rgba(255,255,255,0.25), var(--shadow-glass)"
         >
           <div
             className="flex h-full w-full flex-col overflow-hidden rounded-[16px] border"
@@ -2225,9 +2319,9 @@ export default function DashboardPage() {
               backgroundColor: "var(--glass-bg-strong)",
             }}
           >
-            <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2.5" style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelMuted }}>
+            <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2" style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelMuted }}>
               <p className="truncate text-[15px] font-semibold" style={{ color: dashboardPalette.text }}>Other</p>
-              <span className="shrink-0 rounded-full px-2 py-[1px] text-[10px] font-bold" style={{ backgroundColor: dashboardPalette.textMuted, color: dashboardPalette.panelBg }}>
+              <span className="inline-flex h-7 min-w-[28px] shrink-0 items-center justify-center rounded-full px-2 text-[11px] font-bold" style={{ backgroundColor: dashboardPalette.textMuted, color: dashboardPalette.panelBg }}>
                 {dashboardStatusBoardColumns.otherProjects.length}
               </span>
             </div>
@@ -2235,7 +2329,7 @@ export default function DashboardPage() {
               {dashboardStatusBoardColumns.otherProjects.map((project) => renderProjectBoardCard(project, "#64748B"))}
             </div>
           </div>
-        </div>
+        </BoardColumnFrame>
       )}
     </>
   );
@@ -2938,7 +3032,11 @@ export default function DashboardPage() {
           <div className="-mt-3 space-y-0 md:-mt-4 lg:-mt-4">
 
           {dashboardStatCardsEnabled && (
-          <div className="relative z-0" style={{ paddingTop: 16, paddingBottom: 16 }}>
+          // z-[18]: above the toolbar below (z-10, z-[15] over the board), so the cards' shadows fall
+          // over its search box and buttons instead of being cut off along their edges — the cards'
+          // own boxes end before it, so this doesn't cover anything you click. Still under the list's
+          // sticky header (z-20), which they scroll up past.
+          <div className="relative z-[18]" style={{ paddingTop: 16, paddingBottom: 16 }}>
             <div className="grid grid-cols-2 gap-2 sm:gap-4 lg:grid-cols-4">
               {statCards.map((card) => {
                 const Icon = card.icon;
@@ -3017,17 +3115,22 @@ export default function DashboardPage() {
               viewport, since the toolbar's own height would always sit above them inside the
               stuck panel. */}
           <div
-            className={`relative z-10 -mx-3 border-t px-[10px] pb-3 md:-mx-4 lg:-mx-5 ${dashboardStatCardsEnabled ? "pt-3" : "pt-0"} ${dashboardViewMode === "board" ? "border-b" : ""}`}
+            className={`relative border-t pb-3 ${dashboardStatCardsEnabled ? "pt-3" : "pt-0"} ${dashboardViewMode === "board" ? "z-[15] border-b" : "z-10"}`}
             style={{
-              borderColor: "var(--glass-border)",
-              backgroundColor: dashboardPalette.panelMuted,
-              // -mx-3/md:-mx-4/lg:-mx-5 exactly cancels <main>'s own px at each breakpoint, so this
-              // bar touches the true left/right edge everywhere — the true viewport edge on mobile,
-              // and <main>'s edge (flush against the 240px sidebar) on desktop. The inner px-[10px]
-              // above keeps its own buttons/search box from touching that edge directly.
+              // The page is one flat colour (lib/flat-page.ts), in light and dark mode, so no line
+              // across it, and no fill of its own either — that hid the bottom of the stat cards'
+              // shadows above it.
+              borderColor: "transparent",
+              backgroundColor: "transparent",
+              // Within <main>'s own padding (no bleed to its edges — with no fill of its own there's
+              // nothing to run edge to edge), so its search box and buttons start and end the same
+              // distance from the sidebar and the screen's edge as the stat cards and the list's rows.
             }}
           >
-              <div className="relative flex flex-wrap items-center gap-2 pl-0 pr-[92px] sm:pl-[10px] sm:pr-0">
+              {/* pr-[90px] on a phone: room for the view toggle sitting over the row's right end (82px
+                  wide), plus the row's own 8px gap — so the search bar, open, ends as far from the
+                  toggle as it starts from the button before it. */}
+              <div className="relative flex flex-wrap items-center gap-2 pl-0 pr-[90px] sm:pr-0">
                 {/* Sub-board back button — always mounted (not conditionally rendered), but
                     collapsed to zero width (and a matching negative margin that cancels out the
                     row's own gap-2) when hidden, so the search bar/toggle actually sit at their
@@ -3066,21 +3169,43 @@ export default function DashboardPage() {
                     it has to stay this element's own containing block or it detaches and pins
                     itself to the outer toolbar row instead, no longer tracking the bar as it
                     shifts (e.g. when the sub-board back button pushes it over). */}
-                <div className="peer relative order-1 w-[92px] min-w-[92px] shrink-0 flex-none transition-[flex-grow,width] duration-200 focus-within:w-auto focus-within:flex-1 sm:order-none sm:w-auto sm:min-w-[260px] sm:max-w-[360px] sm:flex-none sm:focus-within:flex-none">
+                {/* Phone: just the search icon in a circle (w-9), growing into the full bar (flex-1,
+                    its flex-grow animating 0 → 1) while it's tapped into — and staying open while
+                    there's something searched for. Slides along when the view's switched
+                    (slideViewToolbarItemsFromRef). */}
+                <div
+                  ref={searchSlideRef}
+                  className={`peer relative order-1 w-9 min-w-9 shrink-0 flex-none transition-[flex-grow,width] duration-200 focus-within:flex-1 sm:order-none sm:w-auto sm:min-w-[260px] sm:max-w-[360px] sm:flex-none sm:focus-within:flex-none ${
+                    search.trim() ? "max-sm:flex-1" : ""
+                  }`}
+                >
                   <Search
                     size={14}
-                    className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2"
+                    className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 max-sm:left-[11px]"
                     style={{ color: dashboardPalette.textMuted }}
                   />
                   <input
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key !== "Enter" || dashboardViewMode !== "board" || !search.trim()) return;
+                      e.preventDefault();
+                      searchMatchColumnRef.current = scrollBoardToSearchMatch(searchMatchColumnRef.current);
+                    }}
                     placeholder="Search"
-                    className="h-9 w-full rounded-[10px] border pl-9 pr-3 text-[12px] font-semibold outline-none transition focus:border-[var(--brand)]"
+                    // cs-own-fill: the same fill and border as the view toggle beside it in dark mode
+                    // too, not the grey every text box is given there (globals.css). Phone: padding that
+                    // fits the 36px circle while it's just the icon (a text box can't be narrower than its
+                    // own padding — it stuck out as a pill), the right side's back once it opens.
+                    className={`cs-own-fill h-9 w-full rounded-full border pl-9 pr-3.5 text-[12px] font-semibold outline-none transition focus:border-[var(--brand)] max-sm:pl-[34px] ${
+                      search.trim() ? "" : "max-sm:pr-0 max-sm:focus:pr-3.5"
+                    }`}
                     style={{
                       borderColor: dashboardPalette.border,
                       backgroundColor: dashboardPalette.panelBg,
                       color: dashboardPalette.inputText,
+                      ["--field-bg" as string]: dashboardPalette.panelBg,
+                      ["--field-border" as string]: dashboardPalette.border,
                     }}
                   />
                 </div>
@@ -3093,7 +3218,8 @@ export default function DashboardPage() {
                     <button
                       key={option.key}
                       onClick={() => setQuickFilter(option.key as QuickFilter)}
-                      className="h-9 rounded-[10px] border px-4 text-[12px] font-bold transition"
+                      data-view-toolbar-item="true"
+                      className={`h-9 rounded-full border px-4 text-[12px] font-bold transition ${viewToolbarPopIn ? "glass-bubble-pop" : ""}`}
                       style={{
                         backgroundColor: quickFilter === option.key ? undefined : dashboardPalette.panelBg,
                         backgroundImage: quickFilter === option.key ? "var(--brand-gradient)" : "none",
@@ -3110,8 +3236,9 @@ export default function DashboardPage() {
                 {/* Mobile — the pills collapse into a single icon that opens a glass dropdown
                     with the same three options, since there isn't room otherwise. Fades/slides
                     out of the way (same as it did as a button row) while the search bar is
-                    focused and expanded. */}
-                <div className="relative z-0 order-2 flex flex-1 translate-x-0 justify-center overflow-hidden transition-[opacity,flex-grow,transform] duration-200 peer-focus-within:pointer-events-none peer-focus-within:flex-none peer-focus-within:w-0 peer-focus-within:translate-x-6 peer-focus-within:opacity-0 sm:hidden">
+                    focused and expanded — taking the row's gap before it along with it
+                    (peer-focus-within:-ml-2), so none's left over beside the bar. */}
+                <div className="relative z-0 order-2 flex flex-1 translate-x-0 justify-center overflow-hidden transition-[opacity,flex-grow,transform,margin] duration-200 peer-focus-within:pointer-events-none peer-focus-within:-ml-2 peer-focus-within:flex-none peer-focus-within:w-0 peer-focus-within:translate-x-6 peer-focus-within:opacity-0 sm:hidden">
                   <button
                     type="button"
                     data-quick-filter-trigger="true"
@@ -3131,7 +3258,7 @@ export default function DashboardPage() {
                       });
                       setIsMobileQuickFilterOpen(true);
                     }}
-                    className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border"
+                    className="inline-flex h-9 w-9 items-center justify-center rounded-full border"
                     style={{
                       backgroundColor: quickFilter === "all" ? dashboardPalette.panelBg : undefined,
                       backgroundImage: quickFilter === "all" ? "none" : "var(--brand-gradient)",
@@ -3147,7 +3274,19 @@ export default function DashboardPage() {
                   type="button"
                   role="switch"
                   aria-checked={dashboardViewMode === "board"}
-                  onClick={() => setDashboardViewMode((prev) => (prev === "list" ? "board" : "list"))}
+                  onClick={(e) => {
+                    if (e.currentTarget.parentElement) {
+                      popAwayViewToolbarItems(e.currentTarget.parentElement);
+                      // Where the search bar and the phone's filter button are now, so they can slide
+                      // from there to wherever the other view puts them (the layout effect below).
+                      const sliding = [searchSlideRef.current, e.currentTarget.parentElement.querySelector<HTMLElement>("[data-quick-filter-trigger]")];
+                      slideViewToolbarItemsFromRef.current = new Map(
+                        sliding.filter((el): el is HTMLElement => Boolean(el)).map((el) => [el, el.getBoundingClientRect().left]),
+                      );
+                    }
+                    setViewToolbarPopIn(true);
+                    setDashboardViewMode((prev) => (prev === "list" ? "board" : "list"));
+                  }}
                   className="absolute right-0 top-1/2 z-20 order-3 inline-flex h-[38px] w-[82px] -translate-y-1/2 shrink-0 items-center overflow-hidden rounded-full border p-1 sm:static sm:order-none sm:translate-y-0 sm:z-auto"
                   style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelBg }}
                   title="Toggle project view"
@@ -3164,19 +3303,43 @@ export default function DashboardPage() {
                     <Kanban size={15} style={{ color: dashboardViewMode === "board" ? "#fff" : dashboardPalette.textMuted }} />
                   </span>
                 </button>
-                {dashboardViewMode === "board" && <BoardSortButton value={projectBoardSort} onChange={setProjectBoardSort} />}
+                {dashboardViewMode === "board" && (
+                  // White like the search box and view toggle beside it (under the blue fill once sorted),
+                  // and fully rounded ends like them and the top bar's tabs; its icon and text the search
+                  // icon's grey until a sort's chosen (then white on the blue). Just the icon, in a
+                  // circle, on a phone.
+                  <BoardSortButton
+                    value={projectBoardSort}
+                    onChange={setProjectBoardSort}
+                    className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 border px-3 text-[12px] font-bold transition hover:brightness-95 max-sm:w-9 max-sm:px-0"
+                    labelClassName="max-sm:hidden"
+                    style={{
+                      // Pops in once the search bar has slid out of its way (see searchSlideRef).
+                      animation: viewToolbarPopIn ? "glass-bubble-pop-in 380ms cubic-bezier(0.34, 1.56, 0.64, 1) 200ms both" : undefined,
+                      backgroundColor: dashboardPalette.panelBg,
+                      borderRadius: 9999,
+                      ...(projectBoardSort === "custom" ? { color: dashboardPalette.textMuted, borderColor: dashboardPalette.border } : {}),
+                    }}
+                  />
+                )}
                 {dashboardViewMode === "list" && (
                   // Hidden on mobile — infinite scroll (see the load-more-near-bottom effect
                   // further down) already reveals more projects automatically as the user
                   // scrolls, using this same pageSize as its batch size, so there's nothing left
                   // for the picker itself to do there besides take up space.
-                  <div className="order-4 hidden w-full items-center gap-1.5 sm:order-none sm:ml-auto sm:flex sm:w-auto">
+                  <div
+                    data-view-toolbar-item="true"
+                    className={`order-4 hidden w-full items-center gap-1.5 sm:order-none sm:ml-auto sm:flex sm:w-auto ${viewToolbarPopIn ? "glass-bubble-pop" : ""}`}
+                  >
                     <span className="text-[11px] font-semibold" style={{ color: dashboardPalette.textMuted }}>Show</span>
                     <select
                       value={pageSize}
                       onChange={(e) => setPageSize(Number(e.target.value))}
-                      className="h-9 rounded-[10px] border px-2 text-[12px] font-bold outline-none"
+                      className="h-9 border px-3 text-[12px] font-bold outline-none"
                       style={{
+                        // Pill ends like the buttons beside it — set here, since globals.css gives every
+                        // select 10px corners, which out-ranks a rounded-full class.
+                        borderRadius: 9999,
                         borderColor: dashboardPalette.border,
                         backgroundColor: dashboardPalette.panelBg,
                         color: dashboardPalette.text,
@@ -3197,7 +3360,9 @@ export default function DashboardPage() {
 
           <div
             ref={boardStickyRef}
-            className={`relative z-10 border-b ${
+            // No bottom border on the board — it would sit along the bottom of the screen, under the
+            // gap below the columns.
+            className={`relative z-10 ${
               dashboardViewMode === "board"
                 ? // Bleeds past <main>'s own px (same -mx values as the filter bar above) so the
                   // board columns wrapper's own side padding re-insets from the TRUE edge —
@@ -3207,12 +3372,24 @@ export default function DashboardPage() {
                   // clips its contents, so the columns need room inside it for the white ring/glow
                   // they light up with while a project is dragged over them (it was cut off along
                   // their tops). Deliberately NOT matched to the (bigger) side padding.
-                  "sticky top-0 flex h-[calc(100svh-48px)] min-h-[280px] flex-col overflow-hidden pt-[2px] -mx-3 md:-mx-4 lg:top-[48px] lg:-mx-5 lg:h-[calc(100svh-48px)] lg:min-h-[320px]"
+                  // -mt-6: the board starts 24px higher, reaching up under the toolbar (which sits
+                  // above it — z-[15] — and is see-through), and its scroller below has
+                  // the same extra room inside (pt-8): the columns stay where they were, but their
+                  // shadows have room to show over the toolbar area instead of being cut off along
+                  // their tops by the scroller's own clipping.
+                  //
+                  // Where it sticks: so the columns (34px down inside it — pt-[2px] + the scroller's
+                  // pt-8) stop the same distance below the 48px top bar as their bottoms sit above the
+                  // bottom of the screen: 10px (the scroller's pb), 20px on a phone (max-md:pb-5).
+                  // That's top 24px (34px on a phone) — whichever is scrolling, the document on
+                  // desktop or <main> below 1024px, starts at the top of the screen, under the bar
+                  // (on this page, <main> reaches up under it: app-shell.tsx's data-flat-under-bar).
+                  // The height reaches the bottom of the screen from there. The toolbar ends 10px
+                  // (20px on a phone — max-md:-mt-[14px]) above the columns, so by then it's gone
+                  // under the bar.
+                  "sticky top-6 -mt-6 flex h-[calc(100svh-24px)] min-h-[280px] flex-col overflow-hidden pt-[2px] -mx-3 max-md:top-[34px] max-md:-mt-[14px] max-md:h-[calc(100svh-34px)] md:-mx-4 lg:-mx-5 lg:min-h-[320px]"
                 : ""
             }`}
-            style={{
-              borderColor: "var(--glass-border)",
-            }}
           >
 
           {dashboardViewMode === "list" && (
@@ -3416,7 +3593,7 @@ export default function DashboardPage() {
           <div
             ref={boardScrollContainerCallbackRef}
             data-horizontal-swipe-scroll="true"
-            className="glass-scroll hide-native-scrollbar grid snap-x snap-mandatory overflow-x-auto overflow-y-hidden px-[10px] pb-[10px] pt-2 max-md:pb-5 sm:snap-none lg:px-4"
+            className="glass-scroll hide-native-scrollbar grid snap-x snap-mandatory overflow-x-auto overflow-y-hidden px-[10px] pb-[10px] pt-8 max-md:pb-5 sm:snap-none lg:px-4"
             style={{ flex: "1 1 auto", minHeight: 0, gridTemplateRows: "1fr" }}
           >
             {/* Main board vs. sub-board: both grid-stacked onto the SAME cell (gridArea: "1 / 1")
@@ -3490,17 +3667,13 @@ export default function DashboardPage() {
           )}
 
           {dashboardViewMode === "list" && (
-          // lg:-mx-5 exactly cancels <main>'s own lg:px-5 so the table (and its rows' own
-          // backgrounds/borders/hover states, which span its full width) touches the sidebar on
-          // the left and the true viewport edge on the right — unlike the board columns above,
-          // which stay padded to match their own gap from the filter bar.
+          // Inside <main>'s own padding, so the table (and its rows' dividers and hover states,
+          // which span its full width) lines up with the stat cards' edges above it instead of
+          // running the full width of the page.
           <div
             ref={dashboardListTableWrapperCallbackRef}
-            className="hidden lg:-mx-5 lg:block"
-            // Dark mode: the list sits on a glass panel (rows are see-through over it). Light mode is
-            // unchanged. No backdrop blur: the panel is over the plain page background, where a blur
-            // shows nothing, and the browser redid it across the whole list on every frame of a scroll.
-            style={isDarkMode ? { backgroundColor: "var(--glass-bg)" } : undefined}
+            className="hidden lg:block"
+            // Straight on the page's own flat colour (lib/flat-page.ts) in both modes — no panel.
           >
                 <table
                   className="w-full table-fixed text-[12px]"
@@ -3520,16 +3693,17 @@ export default function DashboardPage() {
                     style={{
                       backgroundColor: isProjectsHeaderStuck
                         ? isDarkMode
-                          ? "rgba(10,10,12,0.4)"
-                          : "rgba(238,241,248,0.4)"
-                        : // Same colour as the toolbar strip above (search bar, view toggles).
-                          dashboardPalette.panelMuted,
+                          ? "rgba(11,13,18,0.6)"
+                          : "rgba(245,247,250,0.6)"
+                        : // The page's own flat colour, like the toolbar strip above.
+                          flatPageBg(isDarkMode),
                       backdropFilter: isProjectsHeaderStuck ? "blur(12px) saturate(220%)" : "none",
                       WebkitBackdropFilter: isProjectsHeaderStuck ? "blur(12px) saturate(220%)" : "none",
                       transition: "background-color 280ms ease, backdrop-filter 280ms ease",
                     }}
                   >
-                    <tr className="border-b" style={{ borderBottomColor: dashboardPalette.border }}>
+                    {/* Its bottom line fades out at each end, like the rows' dividers below. */}
+                    <tr style={fadedRowLineStyle(dashboardPalette.border)}>
                       <th
                         className="py-2 pl-[10px] text-left text-[11px] font-bold"
                         style={{ color: dashboardPalette.textMuted }}
@@ -3576,7 +3750,7 @@ export default function DashboardPage() {
 
                   {showProjectsLoadingState && (
                     <tr>
-                      <td className="py-3" style={{ color: dashboardPalette.textMuted, backgroundColor: isDarkMode ? "transparent" : dashboardPalette.panelBg }} colSpan={hideTagsColumnInList ? 5 : 6}>
+                      <td className="py-3" style={{ color: dashboardPalette.textMuted }} colSpan={hideTagsColumnInList ? 5 : 6}>
                         <div className="flex min-h-[60vh] items-center justify-center gap-2">
                           Loading projects...
                           <div
@@ -3590,7 +3764,7 @@ export default function DashboardPage() {
                   )}
                   {!showProjectsLoadingState && filtered.length === 0 && (
                     <tr>
-                      <td className="py-10 text-center" style={{ backgroundColor: isDarkMode ? "transparent" : dashboardPalette.panelBg }} colSpan={hideTagsColumnInList ? 5 : 6}>
+                      <td className="py-10 text-center" colSpan={hideTagsColumnInList ? 5 : 6}>
                         <div className="flex flex-col items-center gap-3">
                           <p className="text-[14px] font-bold" style={{ color: dashboardPalette.textSoft }}>No Projects Yet</p>
                           <button
@@ -3606,22 +3780,20 @@ export default function DashboardPage() {
                   )}
 
                   {visibleProjects.map((project) => {
-                    // Dark mode: see-through glass rows, brighter on hover.
-                    // Light mode: unchanged (white, light blue-grey on hover).
+                    // On the page's own flat colour: a touch darker on hover, in both modes — across the
+                    // whole row (on the row, not each cell), fading out over its last 72px at each end
+                    // instead of stopping in a hard edge.
                     const isRowHovered = hoveredProjectId === project.id;
-                    const rowBg = isDarkMode
-                      ? isRowHovered
-                        ? "rgba(255, 255, 255, 0.09)"
-                        : "transparent"
-                      : isRowHovered
-                        ? dashboardPalette.rowHover
-                        : dashboardPalette.panelBg;
+                    const rowHoverColor = isDarkMode ? "rgba(0, 0, 0, 0.25)" : "#ECF0F6";
+                    const rowBg = isRowHovered ? fadedAcrossRow(rowHoverColor) : "none";
                     return (
                     <tr
                       key={project.id}
-                      className="cursor-pointer border-b transition-colors"
+                      className="cursor-pointer transition-colors"
                       style={{
-                        borderBottomColor: isDarkMode ? "var(--glass-border)" : dashboardPalette.border,
+                        // Its divider (a line along the bottom, fading out at each end the same as the
+                        // hover highlight — a border can't fade) over the highlight.
+                        ...fadedRowLineStyle(isDarkMode ? "var(--glass-border)" : dashboardPalette.border, rowBg),
                         opacity: openingProjectAnim?.id === project.id ? 0 : 1,
                         transition: "opacity 200ms ease",
                       }}
@@ -3629,9 +3801,9 @@ export default function DashboardPage() {
                       onMouseLeave={() => setHoveredProjectId((prev) => (prev === project.id ? "" : prev))}
                       onClick={(e) => onProjectRowActivate(project, e.currentTarget)}
                     >
-                      <td className="py-[11px] pl-[10px] font-bold" style={{ color: dashboardPalette.text, backgroundColor: rowBg }}>{project.name}</td>
+                      <td className="py-[11px] pl-[10px] font-bold" style={{ color: dashboardPalette.text }}>{project.name}</td>
                       {!hideTagsColumnInList && (
-                        <td className="py-[11px]" style={{ backgroundColor: rowBg }}>
+                        <td className="py-[11px]">
                           <div className="flex flex-wrap gap-1">
                             {project.tags.slice(0, 2).map((tag) => (
                               <span
@@ -3650,7 +3822,7 @@ export default function DashboardPage() {
                           </div>
                         </td>
                       )}
-                      <td className="py-[11px]" style={{ backgroundColor: rowBg }}>
+                      <td className="py-[11px]">
                         <div className="flex min-w-0 items-center gap-2 text-[12px]">
                           {assignedDisplayName(project) ? (
                             <>
@@ -3668,14 +3840,14 @@ export default function DashboardPage() {
                           ) : null}
                         </div>
                       </td>
-                      <td className="truncate py-[11px] text-center text-[12px]" style={{ color: dashboardPalette.textSoft, backgroundColor: rowBg }}>{dashboardDate(project.createdAt)}</td>
-                      <td className="truncate py-[11px] text-center text-[12px]" style={{ color: dashboardPalette.textSoft, backgroundColor: rowBg }}>{dashboardDate(project.updatedAt)}</td>
+                      <td className="truncate py-[11px] text-center text-[12px]" style={{ color: dashboardPalette.textSoft }}>{dashboardDate(project.createdAt)}</td>
+                      <td className="truncate py-[11px] text-center text-[12px]" style={{ color: dashboardPalette.textSoft }}>{dashboardDate(project.updatedAt)}</td>
                       {/* py-[6px] here, not the py-[11px] every other cell in this row uses — the
                           status pill's own py-2 (below) adds exactly the 5px-per-side this cell's
                           own padding gives up, so its total contribution to the row's height (and
                           therefore the row's own overall height) stays exactly what it was before
                           the pill grew taller: 11+3 before, 6+8 now, both 14px per side. */}
-                      <td className="relative py-[6px] text-right" style={{ width: listStatusColumnWidthPx, backgroundColor: rowBg }}>
+                      <td className="relative py-[6px] text-right" style={{ width: listStatusColumnWidthPx }}>
                           <button
                             data-status-trigger="true"
                             data-status-trigger-project-id={project.id}
@@ -3883,10 +4055,10 @@ export default function DashboardPage() {
                             already-full-size content comes into view as the piece grows over it.
                             Non-interactive by inheritance (the portal wrapper is pointer-events-none). */}
                         <div className="flex h-full flex-col" style={{ width: 280 }}>
-                          <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2.5" style={{ borderColor: "rgba(0,0,0,0.15)" }}>
+                          <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2" style={{ borderColor: "rgba(0,0,0,0.15)" }}>
                             <p className="truncate text-[15px] font-semibold" style={{ color: rowTextColorForFill(info.color) }}>{info.name}</p>
                             <span
-                              className="inline-flex h-6 min-w-[24px] items-center justify-center rounded-full px-2 text-[10px] font-bold"
+                              className="inline-flex h-7 min-w-[28px] items-center justify-center rounded-full px-2 text-[11px] font-bold"
                               style={{
                                 color: isDarkMode ? dashboardPalette.text : "#000000",
                                 backgroundColor: isDarkMode ? "rgba(0,0,0,0.35)" : "rgba(255,255,255,0.55)",

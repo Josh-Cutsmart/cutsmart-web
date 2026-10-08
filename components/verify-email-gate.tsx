@@ -7,10 +7,9 @@ import { useAppTabs } from "@/lib/app-tabs-context";
 import { useAccountVerification } from "@/lib/use-account-verification";
 
 // Full-screen gate — replaces the entire app (no sidebar, no nav, nothing) whenever a signed-in
-// user's account isn't verified yet. Mounted in app/(app)/layout.tsx (ahead of AppShell/children)
-// and at the top of app/company-onboarding/page.tsx, since those are the only two places an
-// authenticated user can land — a fresh registration goes to company-onboarding directly, an
-// existing unverified account logging back in goes to the (app) group. Unlike VerifyAccountModal
+// user's account isn't verified yet. Mounted in app/(app)/layout.tsx (ahead of AppShell/children) —
+// the login screen (components/login) has its own verify step for anyone signing in there, so this
+// catches an unverified account that opens an app page directly. Unlike VerifyAccountModal
 // (a dismissable popup for an already-unlocked, view-only session), this one has no close button:
 // the only way past it is a correct code, or logging out to use a different account.
 export function VerifyEmailGate() {

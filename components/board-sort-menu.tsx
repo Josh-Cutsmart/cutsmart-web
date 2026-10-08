@@ -126,12 +126,12 @@ export function BoardColumnSortMenu({
           if (menuPos) setMenuPos(null);
           else setMenuPos(menuPosUnder(e.currentTarget));
         }}
-        className={buttonClassName ?? "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition hover:brightness-95"}
+        className={buttonClassName ?? "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition hover:brightness-95"}
         style={buttonStyle}
         title={isSorted ? `${columnName}: ${BOARD_SORT_LABELS[value]}` : `Sort ${columnName}`}
         aria-label={`Sort ${columnName}`}
       >
-        <ArrowUpDown size={13} />
+        <ArrowUpDown size={14} />
       </button>
       {menuPos && typeof document !== "undefined"
         ? createPortal(
@@ -164,11 +164,14 @@ export function BoardSortButton({
   value,
   onChange,
   className,
+  labelClassName,
   style,
 }: {
   value: BoardSortMode;
   onChange: (mode: BoardSortMode) => void;
   className?: string;
+  // On the button's text ("Sort", or the sort in use) — e.g. hiding it on a phone for an icon-only button.
+  labelClassName?: string;
   style?: CSSProperties;
 }) {
   const [menuPos, setMenuPos] = useState<MenuPos | null>(null);
@@ -198,7 +201,7 @@ export function BoardSortButton({
         aria-label="Sort the whole board"
       >
         <ArrowUpDown size={14} />
-        {isSorted ? BOARD_SORT_LABELS[value] : "Sort"}
+        <span className={labelClassName}>{isSorted ? BOARD_SORT_LABELS[value] : "Sort"}</span>
       </button>
       {menuPos && typeof document !== "undefined"
         ? createPortal(

@@ -6,6 +6,9 @@ import { createPortal } from "react-dom";
 import { ChevronsLeftRight, ChevronsRightLeft, ChevronUp, ImagePlus, Inbox, Kanban, LayoutGrid, Plus, Rows3, Search, X } from "lucide-react";
 import { FullscreenImageViewerShell } from "@/components/fullscreen-image-viewer-shell";
 import { useBoardStickyRef } from "@/lib/board-sticky-scroll";
+import { collapseBoardColumnAnimated, expandBoardColumnAnimated } from "@/lib/board-column-collapse";
+import { BoardColumnFrame, ColumnCollapseChevrons } from "@/components/board-column-frame";
+import { scrollBoardToSearchMatch } from "@/lib/board-search-scroll";
 import { useAuth } from "@/lib/auth-context";
 import { authorizedFetch } from "@/lib/api-fetch";
 import { fetchCompanyDoc, fetchCompanyMembers, fetchUserColorMapByUids, type CompanyLeadRow, type CompanyMemberOption } from "@/lib/firestore-data";
@@ -685,6 +688,20 @@ export default function LeadsPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [leadsViewMode, setLeadsViewMode] = useState<"board" | "grid">("board");
+  // Searching the board slides it over to the first column with a match (once typing pauses); Enter in the
+  // search box goes on to the next one (lib/board-search-scroll.ts).
+  const searchMatchColumnRef = useRef(-1);
+  useEffect(() => {
+    if (leadsViewMode !== "board" || !search.trim()) {
+      searchMatchColumnRef.current = -1;
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      searchMatchColumnRef.current = scrollBoardToSearchMatch(-1);
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [search, leadsViewMode]);
+
   const [draggingLeadId, setDraggingLeadId] = useState("");
   const [dragOverStatusColumn, setDragOverStatusColumn] = useState("");
   // The column and spot (among its other cards) the dragged lead would land in — shows its preview.
@@ -3553,6 +3570,11 @@ export default function LeadsPage() {
                   <input
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key !== "Enter" || leadsViewMode !== "board" || !search.trim()) return;
+                      e.preventDefault();
+                      searchMatchColumnRef.current = scrollBoardToSearchMatch(searchMatchColumnRef.current);
+                    }}
                     placeholder="Search leads..."
                     className="h-8 w-full bg-transparent text-[12px] outline-none"
                     style={{ color: "var(--text-main)" }}
@@ -3664,7 +3686,8 @@ export default function LeadsPage() {
               <button
                 type="button"
                 onClick={() => setIsToolbarExpanded((prev) => !prev)}
-                className="absolute bottom-0 left-1/2 flex h-6 w-6 -translate-x-1/2 translate-y-1/2 items-center justify-center rounded-full border transition hover:brightness-95"
+                // z-20: above the board below, which reaches up under this edge (room for its columns' shadows).
+                className="absolute bottom-0 left-1/2 z-20 flex h-6 w-6 -translate-x-1/2 translate-y-1/2 items-center justify-center rounded-full border transition hover:brightness-95"
                 style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: themeMode === "dark" ? "#aaaaaa" : "#475467" }}
                 title={isToolbarExpanded ? "Collapse toolbar" : "Expand toolbar"}
                 aria-label={isToolbarExpanded ? "Collapse toolbar" : "Expand toolbar"}
@@ -3701,7 +3724,19 @@ export default function LeadsPage() {
               <div
                 ref={boardStickyRef}
                 data-horizontal-swipe-scroll="true"
-                className="glass-scroll sticky top-0 flex h-[calc(100svh-48px)] min-h-[280px] snap-x snap-mandatory items-stretch gap-2 -mx-2 -mt-2 px-2 pb-2 pt-2 max-md:pb-5 sm:snap-none lg:top-[48px] lg:h-[calc(100svh-48px)] lg:min-h-[320px]"
+                // pt-7: room above the columns for their shadows (this scroller clips them), reaching
+                // up under the toolbar (-mt-6 / max-md:-mt-3 against the space-y-4 gap above).
+                //
+                // Where it sticks: so the columns (28px down inside it) stop the same distance below
+                // the top bar as their bottoms sit above the bottom of the screen — 8px (pb-2), 20px on
+                // a phone (max-md:pb-5). That's top 28px on desktop (the document scrolls, under the
+                // 48px bar), and -20px / -8px under 1024px, where <main> scrolls and already starts
+                // below the bar; the height reaches the bottom of the screen from there. At rest the
+                // columns sit 20px (32px on a phone) below the header, so by then it — and the
+                // collapse button hanging 12px off its bottom — has gone under the bar. No native
+                // scrollbar (same as the Dashboard board): it took 10px under the columns, on top of
+                // that gap, whenever the columns didn't all fit across.
+                className="glass-scroll hide-native-scrollbar sticky -top-5 flex h-[calc(100svh-28px)] min-h-[280px] snap-x snap-mandatory items-stretch gap-2 -mx-2 -mt-6 px-2 pb-2 pt-7 max-md:-top-2 max-md:-mt-3 max-md:h-[calc(100svh-40px)] max-md:pb-5 sm:snap-none lg:top-7 lg:h-[calc(100svh-28px)] lg:min-h-[320px]"
                 style={{ overflowX: "auto", overflowY: "hidden" }}
               >
                 {leadStatusBoardColumns.columns.map((column) => {
@@ -3734,10 +3769,11 @@ export default function LeadsPage() {
                   };
                   const glassColumnBg = leadStatusHexToRgba(column.color, 0.85);
                   const glassColumnBorder = "rgba(255,255,255,0.3)";
+                  // No backdrop blur: the columns only ever sit over the plain page background, where a
+                  // blur changes nothing you can see (and the frame's window stops it seeing past the
+                  // column anyway) — but the browser would redo it on every frame of a board scroll.
                   const glassColumnSurface: React.CSSProperties = {
                     backgroundColor: glassColumnBg,
-                    backdropFilter: "blur(20px) saturate(180%)",
-                    WebkitBackdropFilter: "blur(20px) saturate(180%)",
                   };
                   const glassColumnShadow = isDragOver
                     ? "0 0 0 3px rgba(255,255,255,0.85), inset 0 1px 0 rgba(255,255,255,0.7)"
@@ -3746,24 +3782,24 @@ export default function LeadsPage() {
                   const columnBadgeText = themeMode === "dark" ? "var(--text-main)" : "#000000";
                   if (isCollapsed) {
                     return (
-                      // Shadow AND the scroll-reveal height live on this outer shell (not the button
-                      // below) — the shadow always renders around whatever size the outer currently
-                      // is, so setting the height here (rather than clip-path-ing the button) keeps
-                      // it continuously in sync with the reveal instead of needing to be a separate
-                      // unclipped layer.
-                      <div
+                      // The frame cuts the column off at the bottom of the screen while the board
+                      // scrolls into place.
+                      <BoardColumnFrame
                         key={column.name}
                         {...dragHandlers}
-                        data-board-column="true"
                         data-column-name={column.name}
                         data-board-collapsed="true"
                         className="h-full w-[52px] shrink-0 snap-center sm:snap-align-none"
-                        style={{ borderRadius: 16, boxShadow: glassColumnShadow }}
+                        shadow={glassColumnShadow}
                       >
                         <button
                           type="button"
-                          onClick={() => setCollapsedStatusColumns((prev) => ({ ...prev, [column.name]: false }))}
-                          className="flex h-full w-full flex-col items-center gap-3 overflow-hidden rounded-[16px] border pb-3 pt-2.5 transition hover:brightness-105"
+                          onClick={(e) =>
+                            expandBoardColumnAnimated(e.currentTarget, () => setCollapsedStatusColumns((prev) => ({ ...prev, [column.name]: false })))
+                          }
+                          // pt-2: its expand button on the same line as a full column's header buttons,
+                          // where the collapse button slides to (lib/board-column-collapse.ts).
+                          className="flex h-full w-full flex-col items-center gap-3 overflow-hidden rounded-[16px] border pb-3 pt-2 transition hover:brightness-105"
                           style={{
                             borderColor: glassColumnBorder,
                             ...glassColumnSurface,
@@ -3772,13 +3808,15 @@ export default function LeadsPage() {
                           aria-label={`Expand ${column.name}`}
                         >
                           <span
-                            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full"
+                            // Where a full column's collapse button slides to (lib/board-column-collapse.ts).
+                            data-column-collapse-button="true"
+                            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full"
                             style={{ color: columnBadgeText, backgroundColor: columnBadgeBg }}
                           >
-                            <ChevronsLeftRight size={13} />
+                            <ColumnCollapseChevrons size={14} flipped />
                           </span>
                           <span
-                            className="inline-flex h-6 min-w-[24px] shrink-0 items-center justify-center rounded-full px-2 text-[10px] font-bold"
+                            className="inline-flex h-7 min-w-[28px] shrink-0 items-center justify-center rounded-full px-2 text-[11px] font-bold"
                             style={{ color: columnBadgeText, backgroundColor: columnBadgeBg }}
                           >
                             {column.leads.length}
@@ -3790,19 +3828,18 @@ export default function LeadsPage() {
                             {column.name}
                           </span>
                         </button>
-                      </div>
+                      </BoardColumnFrame>
                     );
                   }
                   return (
-                    // See the collapsed-button case above for why the shadow and reveal height sit
-                    // on this outer shell rather than on the column div below.
-                    <div
+                    // The frame cuts the column off at the bottom of the screen while the board scrolls
+                    // into place.
+                    <BoardColumnFrame
                       key={column.name}
                       {...dragHandlers}
-                      data-board-column="true"
                       data-column-name={column.name}
                       className="h-full w-[85vw] max-w-[320px] shrink-0 snap-center sm:w-[300px] sm:max-w-none sm:snap-align-none"
-                      style={{ borderRadius: 16, boxShadow: glassColumnShadow }}
+                      shadow={glassColumnShadow}
                     >
                       <div
                         className="flex h-full w-full flex-col overflow-hidden rounded-[16px] border transition"
@@ -3812,7 +3849,7 @@ export default function LeadsPage() {
                         }}
                       >
                         <div
-                          className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2.5"
+                          className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2"
                           style={{ borderColor: "rgba(0,0,0,0.15)" }}
                         >
                           <div className="flex min-w-0 items-center gap-1.5">
@@ -3834,20 +3871,25 @@ export default function LeadsPage() {
                           </div>
                           <div className="flex shrink-0 items-center gap-1.5">
                             <span
-                              className="inline-flex h-6 min-w-[24px] items-center justify-center rounded-full px-2 text-[10px] font-bold"
+                              className="inline-flex h-7 min-w-[28px] items-center justify-center rounded-full px-2 text-[11px] font-bold"
                               style={{ color: columnBadgeText, backgroundColor: columnBadgeBg }}
                             >
                               {column.leads.length}
                             </span>
                             <button
                               type="button"
-                              onClick={() => setCollapsedStatusColumns((prev) => ({ ...prev, [column.name]: true }))}
-                              className="inline-flex h-6 w-6 items-center justify-center rounded-full transition hover:brightness-95"
+                              // Slides the column into its strip, this button riding its edge over to
+                              // where the sort button was (lib/board-column-collapse.ts).
+                              onClick={(e) =>
+                                collapseBoardColumnAnimated(e.currentTarget, () => setCollapsedStatusColumns((prev) => ({ ...prev, [column.name]: true })))
+                              }
+                              data-column-collapse-button="true"
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-full transition hover:brightness-95"
                               style={{ color: columnBadgeText, backgroundColor: columnBadgeBg }}
                               title={`Collapse ${column.name}`}
                               aria-label={`Collapse ${column.name}`}
                             >
-                              <ChevronsRightLeft size={13} />
+                              <ColumnCollapseChevrons size={14} />
                             </button>
                           </div>
                         </div>
@@ -3882,33 +3924,30 @@ export default function LeadsPage() {
                           })()}
                         </div>
                       </div>
-                    </div>
+                    </BoardColumnFrame>
                   );
                 })}
                 {leadStatusBoardColumns.otherLeads.length > 0 && (
-                  // See the column cases above for why the shadow and reveal height sit on this
-                  // outer shell rather than on the column div below.
-                  <div
-                    data-board-column="true"
+                  // The frame cuts the column off at the bottom of the screen while the board scrolls into
+                  // place. No backdrop blur — same reason as the status columns'.
+                  <BoardColumnFrame
                     className="h-full w-[85vw] max-w-[320px] shrink-0 snap-center sm:w-[300px] sm:max-w-none sm:snap-align-none"
-                    style={{ borderRadius: 16, boxShadow: "var(--shadow-glass)" }}
+                    shadow="var(--shadow-glass)"
                   >
                     <div
                       className="flex h-full w-full flex-col overflow-hidden rounded-[16px] border"
                       style={{
                         borderColor: "var(--glass-border)",
                         backgroundColor: "var(--glass-bg-strong)",
-                        backdropFilter: "blur(20px) saturate(180%)",
-                        WebkitBackdropFilter: "blur(20px) saturate(180%)",
                       }}
                     >
                       <div
-                        className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2.5"
+                        className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2"
                         style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}
                       >
                         <p className="truncate text-[15px] font-semibold" style={{ color: "var(--text-main)" }}>Other</p>
                         <span
-                          className="shrink-0 rounded-full px-2 py-[1px] text-[10px] font-bold"
+                          className="inline-flex h-7 min-w-[28px] shrink-0 items-center justify-center rounded-full px-2 text-[11px] font-bold"
                           style={{ backgroundColor: "var(--text-muted)", color: "var(--panel-bg)" }}
                         >
                           {leadStatusBoardColumns.otherLeads.length}
@@ -3918,7 +3957,7 @@ export default function LeadsPage() {
                         {leadStatusBoardColumns.otherLeads.map((lead) => renderLeadCard(lead, { compact: isBoardCardsCompact }))}
                       </div>
                     </div>
-                  </div>
+                  </BoardColumnFrame>
                 )}
               </div>
             )}

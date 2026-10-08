@@ -1,4 +1,4 @@
-import { doc, FieldPath, getDoc, setDoc } from "firebase/firestore";
+import { doc, FieldPath, getDoc, setDoc } from "@/lib/firestore-client";
 import { db } from "@/lib/firebase";
 import { normalizeBoardColumnSorts, normalizeBoardSortMode, type BoardSortMode } from "@/lib/board-drop-order";
 

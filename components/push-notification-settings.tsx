@@ -12,7 +12,7 @@ import {
   type TouchEvent as ReactTouchEvent,
 } from "react";
 import { createPortal } from "react-dom";
-import { doc, getDoc, setDoc } from "firebase/firestore";
+import { doc, getDoc, setDoc } from "@/lib/firestore-client";
 import { Bell, CalendarDays, ChevronLeft, ChevronRight, FolderKanban, Globe, Inbox, Plus, Search, Share, Sparkles, Timer, X, type LucideIcon } from "lucide-react";
 import { db } from "@/lib/firebase";
 import { GlassDropdown } from "@/components/glass-dropdown";

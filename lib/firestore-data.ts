@@ -17,7 +17,7 @@ import {
   updateDoc,
   where,
   writeBatch,
-} from "firebase/firestore";
+} from "@/lib/firestore-client";
 import { auth, db, hasFirebaseConfig } from "@/lib/firebase";
 import { fetchCompanyAccess, type CompanyAccessInfo } from "@/lib/membership";
 import { mockChanges, mockCutlists, mockProjects, mockQuotes } from "@/lib/mock-data";
@@ -1324,6 +1324,10 @@ export interface CompanyMemberOption {
   userColor?: string;
   badgeColor?: string;
   membershipDisplayName?: string;
+  // How they joined: the join code's key (companyJoinCodes/{key}), and "invite" / "master-code" /
+  // "temporary-code" when the server recorded it (lib/company-join-codes-server.ts).
+  joinCodeKey?: string;
+  joinedVia?: string;
 }
 
 export interface UserNotificationRow {
@@ -2590,6 +2594,8 @@ async function loadCompanyMembers(cid: string): Promise<CompanyMemberOption[]> {
         mobile,
         userColor: userColor || undefined,
         badgeColor: badgeColor || undefined,
+        joinCodeKey: String(data.joinCodeKey ?? "").trim() || undefined,
+        joinedVia: String(data.joinedVia ?? "").trim() || undefined,
       });
     }
 

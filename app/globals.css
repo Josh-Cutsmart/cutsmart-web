@@ -400,6 +400,17 @@ body[data-theme="dark"].cs-app select.bg-white\/15 {
   color: #fff !important;
 }
 
+/* A field that keeps the fill and border it's given (--field-bg / --field-border) in dark mode too,
+   instead of the blanket dark grey above — e.g. the Dashboard's search box, matching the view toggle
+   beside it. */
+body[data-theme="dark"].cs-app input.cs-own-fill:not([type="color"]):not([type="checkbox"]):not([type="radio"]) {
+  background: var(--field-bg) !important;
+  border-color: var(--field-border) !important;
+}
+body[data-theme="dark"].cs-app input.cs-own-fill:not([type="color"]):not([type="checkbox"]):not([type="radio"]):focus {
+  border-color: var(--brand) !important;
+}
+
 /* A field deliberately shown as plain text (e.g. a contact's read-only profile fields until "Edit" is
    pressed): no box, in both themes. The blanket rules above (a white bordered textarea in light mode,
    a grey bordered input/select/textarea forced with !important in dark) would otherwise draw one. */
@@ -1265,9 +1276,9 @@ textarea,
   to { opacity: 0; }
 }
 
-/* The What's New page's cards: they pop in one after another once the page is up, then float — each
- * bobbing gently at its own pace (--wn-bob-* set per card); the soft blobs behind them drift slowly.
- * The tilt is on the card itself (--wn-tilt), so hovering can straighten it. Off for reduced motion. */
+/* The What's New page's feature cards: they pop in one after another once the page is up, then float —
+ * each bobbing gently at its own pace (--wn-bob-* set per card). The tilt is on the card itself
+ * (--wn-tilt), so hovering can straighten it. Off for reduced motion. */
 @keyframes whats-new-pop-in {
   from { opacity: 0; transform: translate3d(0, 28px, 0) scale(0.95); }
   to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
@@ -1275,10 +1286,6 @@ textarea,
 @keyframes whats-new-bob {
   0%, 100% { transform: translate3d(0, 0, 0); }
   50% { transform: translate3d(0, var(--wn-bob-y, -6px), 0); }
-}
-@keyframes whats-new-drift {
-  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
-  50% { transform: translate3d(var(--wn-drift-x, 40px), var(--wn-drift-y, -30px), 0) scale(1.08); }
 }
 .whats-new-card {
   transform: rotate(var(--wn-tilt, 0deg));
@@ -1288,6 +1295,141 @@ textarea,
   transform: rotate(0deg) scale(1.025);
 }
 /* Hovering a card stops its bobbing (the animation's set inline on the card's wrapper, hence !important). */
+/* Kanban board columns (components/board-column-frame.tsx). The window a column is seen through: 48px
+ * of room above and to the sides of it (for its shadow), everything above its last 16px, and in those
+ * last 16px only the column's own shape — its 16px rounded bottom corners — so the column is cut off
+ * along this window's bottom edge as if that were its own. lib/board-sticky-scroll.ts slides the
+ * window so that edge stays on the bottom of the screen while the board scrolls into place. */
+.board-column-window {
+  -webkit-mask-image: linear-gradient(#000, #000), radial-gradient(circle at 100% 0, #000 15.5px, transparent 16px), radial-gradient(circle at 0 0, #000 15.5px, transparent 16px), linear-gradient(#000, #000);
+  mask-image: linear-gradient(#000, #000), radial-gradient(circle at 100% 0, #000 15.5px, transparent 16px), radial-gradient(circle at 0 0, #000 15.5px, transparent 16px), linear-gradient(#000, #000);
+  -webkit-mask-size: 100% calc(100% - 16px), 16px 16px, 16px 16px, calc(100% - 128px) 16px;
+  mask-size: 100% calc(100% - 16px), 16px 16px, 16px 16px, calc(100% - 128px) 16px;
+  -webkit-mask-position: 0 0, 48px 100%, calc(100% - 48px) 100%, 64px 100%;
+  mask-position: 0 0, 48px 100%, calc(100% - 48px) 100%, 64px 100%;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+}
+
+/* A column's collapse button's arrows (ColumnCollapseChevrons): each turns round on its own spot, >< to
+ * <>, as the column slides into its collapsed strip (whose button they then are) — and back as it
+ * expands (lib/board-column-collapse.ts sets data-column-chevrons-flipped on the button for that). */
+.column-collapse-chevrons path {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform 300ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.column-collapse-chevrons[data-flipped="true"] path,
+[data-column-chevrons-flipped="true"] .column-collapse-chevrons path {
+  transform: scaleX(-1);
+}
+
+[data-column-chevrons-instant="true"] .column-collapse-chevrons path {
+  transition: none;
+}
+
+/* ...and the shadow along that bottom edge, which the window cuts off the column's own: only the part
+ * from the column's last 16px down. */
+.board-column-cap {
+  clip-path: inset(calc(100% - 16px) -48px -48px -48px);
+}
+
+/* The top tab bar's tabs (components/global-app-tabs-bar.tsx): a little darker with a faint blue
+ * outline on hover, and a project tab keeps it the whole time it's the one open (data-active — the
+ * Dashboard button never gets that); hovering a tab's X turns the outline red. Hover is mouse only — a
+ * tap doesn't leave it on.
+ *
+ * The outline is the tab's own `outline` (just inside its edge), not drawn on the layer below, so
+ * any change to it repaints the whole tab. Drawn on the layer, the switch to red (which changes
+ * nothing on the tab itself — only that layer) left stray dots of the old colour around the rounded
+ * edges, just outside what the browser repainted (the tabs sit at fractional positions), until
+ * something else repainted the bar, e.g. a scroll. Everything here changes colour only, never
+ * opacity (an opacity fade lifts the layer out onto its own, with the same stray-pixel result). */
+[data-app-top-tab] {
+  --app-top-tab-tint: rgba(15, 23, 42, 0.035);
+  --app-top-tab-ring: color-mix(in srgb, var(--brand) 40%, transparent);
+  --app-top-tab-ring-close: color-mix(in srgb, #ef4444 60%, transparent);
+  outline: 1px solid transparent;
+  outline-offset: -1px;
+}
+
+body[data-theme="dark"] [data-app-top-tab] {
+  --app-top-tab-tint: rgba(0, 0, 0, 0.16);
+}
+
+/* The tint: between the tab's own background (set inline) and its label, so it works over whatever
+ * colour the tab is. */
+[data-app-top-tab]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background-color: transparent;
+  pointer-events: none;
+  transition: background-color 140ms ease;
+}
+
+[data-app-top-tab][data-active="true"] {
+  outline-color: var(--app-top-tab-ring);
+}
+
+[data-app-top-tab][data-active="true"]::after {
+  background-color: var(--app-top-tab-tint);
+}
+
+@media (hover: hover) {
+  [data-app-top-tab]:hover {
+    outline-color: var(--app-top-tab-ring);
+  }
+
+  [data-app-top-tab]:hover::after {
+    background-color: var(--app-top-tab-tint);
+  }
+
+  [data-app-top-tab]:has([data-app-top-tab-close]:hover) {
+    outline-color: var(--app-top-tab-ring-close);
+  }
+}
+
+/* Still a keyboard focus ring on the Dashboard button (the transparent outline above would hide it). */
+[data-app-top-tab]:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+/* The copy of a tab popping away as it's closed (popAwayClosingTab) — as it looked with its X hovered. */
+[data-app-top-tab][data-closing="true"] {
+  outline-color: var(--app-top-tab-ring-close);
+}
+
+[data-app-top-tab][data-closing="true"]::after {
+  background-color: var(--app-top-tab-tint);
+  transition: none;
+}
+
+/* app-shell.tsx: a flat page's <main> on a phone/tablet (where it's the scroller) reaches up under the
+ * 48px top tab bar — its own top padding (12px, 16px from md) moved down by the bar's height — and
+ * runs to the bottom of the screen. */
+main[data-flat-under-bar="true"] {
+  margin-top: -48px;
+  padding-top: 60px !important;
+  height: 100svh !important;
+}
+
+@media (min-width: 768px) {
+  main[data-flat-under-bar="true"] {
+    padding-top: 64px !important;
+  }
+}
+
+/* The top tab bar's glass (components/global-app-tabs-bar.tsx) fades in once a page scrolls under
+ * it — and is always on while the phone pull-down menu stretches the bar (app-shell.tsx). */
+[data-app-top-bar][data-pulling="true"] [data-app-top-bar-glass] {
+  opacity: 1 !important;
+}
+
 .whats-new-float:hover {
   animation-play-state: paused !important;
 }

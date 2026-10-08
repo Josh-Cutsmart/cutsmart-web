@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" width="640" height="360" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title>The Join key pop-up: the company's master code, and a temporary code for one person being made, then revoked</title>
+  <style>
+    .newBtn { transform-box: fill-box; transform-origin: center; animation: newBtn 6s ease-in-out infinite both; }
+    @keyframes newBtn { 0%, 14% { transform: scale(1); } 17% { transform: scale(.92); } 20%, 100% { transform: scale(1); } }
+    .newRow { animation: newRow 6s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes newRow { 0%, 19% { opacity: 0; transform: translateY(-12px); } 27%, 68% { opacity: 1; transform: translateY(0); } 74%, 90% { opacity: .45; transform: translateY(0); } 96%, 100% { opacity: 0; transform: translateY(0); } }
+    .revokeBtn { transform-box: fill-box; transform-origin: center; animation: revokeBtn 6s ease-in-out infinite both; }
+    @keyframes revokeBtn { 0%, 56% { transform: scale(1); opacity: 1; } 59% { transform: scale(.9); opacity: 1; } 62% { transform: scale(1); opacity: 1; } 66%, 100% { opacity: 0; } }
+    .strike { transform-box: fill-box; transform-origin: 0 50%; animation: strike 6s ease-out infinite both; }
+    @keyframes strike { 0%, 62% { transform: scaleX(0); } 68%, 100% { transform: scaleX(1); } }
+    .unused { animation: unused 6s ease-in-out infinite both; }
+    @keyframes unused { 0%, 62% { opacity: 1; } 66%, 100% { opacity: 0; } }
+    .revoked { animation: revoked 6s ease-in-out infinite both; }
+    @keyframes revoked { 0%, 62% { opacity: 0; } 66%, 100% { opacity: 1; } }
+    .cursor { animation: cursor 6s ease-in-out infinite both; }
+    @keyframes cursor {
+      0%, 3% { transform: translate(560px, 330px); opacity: 0; }
+      7% { opacity: 1; }
+      14%, 26% { transform: translate(452px, 184px); opacity: 1; }
+      37% { transform: translate(506px, 238px); opacity: 1; }
+      48%, 62% { transform: translate(462px, 274px); opacity: 1; }
+      72%, 100% { transform: translate(560px, 330px); opacity: 0; }
+    }
+  </style>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#EEF3FB"/>
+      <stop offset="1" stop-color="#E1E9F7"/>
+    </linearGradient>
+    <filter id="pop" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#0F172A" flood-opacity=".16"/>
+    </filter>
+  </defs>
+  <rect width="640" height="360" fill="url(#bg)"/>
+
+  <rect x="120" y="24" width="400" height="312" rx="22" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+  <text x="144" y="60" font-size="16" font-weight="700" fill="#0F172A">Join key</text>
+  <circle cx="492" cy="54" r="12" fill="#F1F5F9"/>
+  <path d="M487.5 49.5 l9 9 m0 -9 l-9 9" stroke="#64748B" stroke-width="1.6" stroke-linecap="round"/>
+
+  <text x="144" y="90" font-size="11" font-weight="600" fill="#64748B">Master code</text>
+  <rect x="144" y="100" width="352" height="42" rx="12" fill="#F8FAFC" stroke="#D7DEE8"/>
+  <text x="162" y="127" font-family="Consolas, 'Courier New', monospace" font-size="16" font-weight="700" letter-spacing="1.5" fill="#0F172A">CSM-4821-KT</text>
+  <rect x="380" y="110" width="48" height="22" rx="11" fill="#FFFFFF" stroke="#D7DEE8"/>
+  <text x="404" y="125" text-anchor="middle" font-size="10.5" font-weight="600" fill="#334155">Copy</text>
+  <text x="458" y="125" text-anchor="middle" font-size="10.5" font-weight="700" fill="#2563EB">Change</text>
+
+  <path d="M144 160 H496" stroke="#E2E8F0"/>
+  <text x="144" y="188" font-size="11" font-weight="600" fill="#64748B">Temporary codes</text>
+  <g class="newBtn">
+    <rect x="404" y="172" width="92" height="24" rx="12" fill="#2563EB"/>
+    <text x="450" y="188" text-anchor="middle" font-size="10.5" font-weight="700" fill="#FFFFFF">+ New code</text>
+  </g>
+
+  <!-- a code someone has already joined with -->
+  <rect x="144" y="206" width="352" height="46" rx="12" fill="#F8FAFC" stroke="#E2E8F0"/>
+  <text x="160" y="226" font-family="Consolas, 'Courier New', monospace" font-size="13" font-weight="700" letter-spacing="1" fill="#0F172A">R7KQ-2MXD</text>
+  <text x="160" y="242" font-size="10.5" fill="#64748B">Used by Sam Lee</text>
+  <rect x="384" y="218" width="100" height="22" rx="11" fill="#FEF2F2" stroke="#FECACA"/>
+  <text x="434" y="233" text-anchor="middle" font-size="10" font-weight="700" fill="#DC2626">Revoke &amp; remove</text>
+
+  <!-- the new one, made then revoked -->
+  <g class="newRow">
+    <rect x="144" y="260" width="352" height="46" rx="12" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="160" y="280" font-family="Consolas, 'Courier New', monospace" font-size="13" font-weight="700" letter-spacing="1" fill="#0F172A">P4ZT-9HWE</text>
+    <rect class="strike" x="158" y="275" width="92" height="1.6" fill="#0F172A"/>
+    <text class="unused" x="160" y="296" font-size="10.5" fill="#64748B">Not used yet</text>
+    <text class="revoked" x="160" y="296" font-size="10.5" font-weight="600" fill="#DC2626">Revoked</text>
+    <g class="revokeBtn">
+      <rect x="424" y="272" width="60" height="22" rx="11" fill="#FFFFFF" stroke="#FECACA"/>
+      <text x="454" y="287" text-anchor="middle" font-size="10" font-weight="700" fill="#DC2626">Revoke</text>
+    </g>
+  </g>
+
+  <g class="cursor">
+    <path d="M0 0 l0 20 l5 -5 l4 9 l3.4 -1.5 l-4 -9 l7 0 z" fill="#0F172A" stroke="#FFFFFF" stroke-width="1.4" stroke-linejoin="round"/>
+  </g>
+</svg>

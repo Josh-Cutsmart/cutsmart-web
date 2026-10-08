@@ -6,7 +6,7 @@
 // to local midnight of the day after its last day (end is exclusive), so a one-day all-day event is
 // exactly 24h long and multi-day spans are easy to lay out.
 
-import { collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, query, setDoc, where, writeBatch } from "firebase/firestore";
+import { collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, query, setDoc, where, writeBatch } from "@/lib/firestore-client";
 import { db } from "@/lib/firebase";
 
 // Per-category access, keyed by normalized role id (normalizeRoleKey). A role with no entry gets View;

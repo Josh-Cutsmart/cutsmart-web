@@ -1,0 +1,872 @@
+/* The login screen (components/login/login-screen.tsx): the auth card, its sliding steps, the feature
+ * slider and its drawings. Colours come from the app's theme variables plus the --lg-* set below,
+ * which the drawings use so they also work in dark mode. */
+
+.lg-root {
+  --lg-card: #ffffff;
+  --lg-sunk: #f4f6fa;
+  --lg-line: #e6eaf0;
+  --lg-faint: #eef1f5;
+  --lg-ink: #111111;
+  --lg-sub: #374151;
+  --lg-muted: #6b7280;
+  --lg-skel: #e3e8ef;
+  --lg-sheet: #f3efe8;
+  --lg-sheet-line: #ddd5c8;
+  --lg-done-bg: #effaf7;
+  --lg-blue-bg: #d9ebff;
+  --lg-blue-fg: #0b4a99;
+  --lg-blue-ev: #bcdcff;
+  --lg-purple-bg: #ecebfd;
+  --lg-purple-fg: #4b3fc4;
+  --lg-purple-ev: #d8d2ff;
+  --lg-teal-bg: #dcf5f1;
+  --lg-teal-fg: #0c6b61;
+  --lg-teal-ev: #bdeee6;
+  --lg-amber-bg: #fff1d6;
+  --lg-amber-fg: #8a5a00;
+  --lg-amber-ev: #ffe2b0;
+  --lg-field-bg: #ffffff;
+  --lg-field-border: #d7dee8;
+  --lg-box-bg: rgba(255, 255, 255, 0.9);
+  --lg-box-border: rgba(255, 255, 255, 0.95);
+  --lg-seg-bg: #eef1f6;
+  --lg-seg-on: #ffffff;
+  position: relative;
+  min-height: 100svh;
+  overflow: hidden;
+  background: var(--bg-app);
+  color: var(--text-main);
+}
+
+:root[data-theme="dark"] .lg-root {
+  --lg-card: #1c1f25;
+  --lg-sunk: #252a32;
+  --lg-line: #363c46;
+  --lg-faint: #2c313a;
+  --lg-ink: #f1f1f1;
+  --lg-sub: #d4d4d8;
+  --lg-muted: #a1a1aa;
+  --lg-skel: #3a404a;
+  --lg-sheet: #3a352d;
+  --lg-sheet-line: #5a5246;
+  --lg-done-bg: rgba(23, 179, 163, 0.16);
+  --lg-blue-bg: #1e3a5f;
+  --lg-blue-fg: #a9d1ff;
+  --lg-blue-ev: #24476d;
+  --lg-purple-bg: #2e2a55;
+  --lg-purple-fg: #cbc3ff;
+  --lg-purple-ev: #3b3570;
+  --lg-teal-bg: #133c37;
+  --lg-teal-fg: #8de6d9;
+  --lg-teal-ev: #1d4a44;
+  --lg-amber-bg: #3d2f12;
+  --lg-amber-fg: #f3c76a;
+  --lg-amber-ev: #5a431a;
+  --lg-field-bg: #17191e;
+  --lg-field-border: #3a404a;
+  --lg-box-bg: rgba(28, 31, 37, 0.9);
+  --lg-box-border: rgba(255, 255, 255, 0.06);
+  --lg-seg-bg: #262a31;
+  --lg-seg-on: #343a44;
+}
+
+.lg-blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(70px);
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+:root[data-theme="dark"] .lg-blob {
+  opacity: 0.18;
+}
+
+.lg-dots-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* Layout: slider and card side by side on desktop; just the card, full screen, on phones. */
+.lg-main {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  min-height: 100svh;
+  align-items: center;
+  justify-content: center;
+  gap: 56px;
+  padding: 40px 40px 96px;
+}
+
+.lg-slider {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 620px;
+}
+
+@media (max-width: 1023px) {
+  .lg-slider {
+    display: none;
+  }
+}
+
+/* Feature slider */
+.lg-stage {
+  position: relative;
+  height: 520px;
+}
+
+.lg-slide {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transform: translateX(28px);
+  transition: opacity 0.5s ease, transform 0.6s cubic-bezier(0.3, 1, 0.4, 1);
+  pointer-events: none;
+}
+
+.lg-slide[data-active] {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+
+.lg-art {
+  border-radius: 22px;
+  border: 1px solid var(--glass-border);
+  background: color-mix(in srgb, var(--lg-card) 94%, transparent);
+  box-shadow: 0 22px 54px rgba(15, 23, 42, 0.1);
+  padding: 16px;
+}
+
+.lg-art svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  font-family: inherit;
+}
+
+.lg-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 20px;
+  border-radius: 999px;
+  padding: 4px 11px;
+  font-size: 12px;
+  font-weight: 500;
+  background: var(--lg-blue-bg);
+  color: var(--lg-blue-fg);
+}
+
+.lg-slide-title {
+  margin: 10px 0 0;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.lg-slide-text {
+  margin: 4px 0 0;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.lg-dots {
+  display: flex;
+  gap: 7px;
+  margin-top: 6px;
+}
+
+.lg-dot {
+  position: relative;
+  width: 18px;
+  height: 7px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 4px;
+  padding: 0;
+  background: color-mix(in srgb, var(--text-main) 16%, transparent);
+  cursor: pointer;
+  transition: width 0.3s ease;
+}
+
+.lg-dot[data-active] {
+  width: 38px;
+}
+
+.lg-dot > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  border-radius: 4px;
+  background: var(--brand);
+}
+
+.lg-dot[data-active] > span {
+  animation: lg-progress linear forwards;
+}
+
+.lg-slider:hover .lg-dot[data-active] > span {
+  animation-play-state: paused;
+}
+
+@keyframes lg-progress {
+  to {
+    width: 100%;
+  }
+}
+
+/* Drawing parts switched on by the slider (data-on). */
+.lg-sq {
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: opacity 0.45s ease, transform 0.55s cubic-bezier(0.3, 1.25, 0.5, 1);
+}
+
+.lg-sq.lg-drop {
+  transform: translate(-6px, -12px) scale(1.06);
+}
+
+.lg-sq.lg-pop {
+  transform: scale(0.4);
+}
+
+.lg-sq.lg-grow {
+  transform: scaleY(0);
+  transform-origin: top;
+}
+
+.lg-sq.lg-down {
+  transform: translateY(-8px);
+}
+
+.lg-sq.lg-wipe {
+  opacity: 1;
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition-timing-function: ease;
+}
+
+.lg-sq[data-on] {
+  opacity: 1;
+  transform: none;
+}
+
+circle.lg-lead-dot {
+  fill: var(--lg-card);
+  stroke: var(--lg-line);
+  stroke-width: 2;
+  transition: fill 0.4s ease, stroke 0.4s ease;
+}
+
+circle.lg-lead-dot[data-on] {
+  fill: var(--brand);
+  stroke: var(--brand);
+}
+
+circle.lg-lead-dot-won[data-on] {
+  fill: #17b3a3;
+  stroke: #17b3a3;
+}
+
+.lg-kanban-move {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.lg-slide[data-active] .lg-kanban-move {
+  animation: lg-kanban 5s cubic-bezier(0.5, 0, 0.3, 1) forwards;
+}
+
+@keyframes lg-kanban {
+  0%,
+  12% {
+    transform: none;
+  }
+  22% {
+    transform: translate(52px, 40px) rotate(5deg) scale(1.05);
+  }
+  34%,
+  50% {
+    transform: translate(104px, 96px);
+  }
+  60% {
+    transform: translate(156px, 72px) rotate(5deg) scale(1.05);
+  }
+  72%,
+  100% {
+    transform: translate(208px, 48px);
+  }
+}
+
+/* The auth card */
+.lg-card {
+  position: relative;
+  flex: none;
+  width: 400px;
+  border-radius: 26px;
+  border: 1px solid var(--lg-box-border);
+  background: var(--lg-box-bg);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 30px 80px rgba(15, 23, 42, 0.16);
+  padding: 30px 30px 24px;
+}
+
+@media (max-width: 767px) {
+  .lg-main {
+    padding: 0;
+  }
+
+  /* Phones: the card is the whole screen. */
+  .lg-card {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    width: 100%;
+    min-height: 100svh;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: var(--panel-bg);
+    padding: calc(28px + env(safe-area-inset-top)) 22px calc(96px + env(safe-area-inset-bottom));
+  }
+}
+
+.lg-logo {
+  display: block;
+  width: 68px;
+  height: 68px;
+  margin: 0 auto 12px;
+  border-radius: 16px;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.16);
+}
+
+.lg-title {
+  margin: 0;
+  text-align: center;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.lg-subtitle {
+  margin: 4px 0 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* Steps slide sideways: forward pushes the old one off to the left, back to the right. */
+.lg-steps {
+  position: relative;
+  transition: height 0.35s cubic-bezier(0.3, 1, 0.4, 1);
+}
+
+.lg-step {
+  width: 100%;
+}
+
+.lg-step[data-leaving] {
+  position: absolute;
+  inset: 0 0 auto 0;
+  pointer-events: none;
+}
+
+.lg-step[data-dir="forward"]:not([data-leaving]) {
+  animation: lg-in-forward 0.42s cubic-bezier(0.3, 1, 0.4, 1) both;
+}
+
+.lg-step[data-dir="back"]:not([data-leaving]) {
+  animation: lg-in-back 0.42s cubic-bezier(0.3, 1, 0.4, 1) both;
+}
+
+.lg-step[data-dir="forward"][data-leaving] {
+  animation: lg-out-forward 0.32s ease both;
+}
+
+.lg-step[data-dir="back"][data-leaving] {
+  animation: lg-out-back 0.32s ease both;
+}
+
+@keyframes lg-in-forward {
+  from {
+    opacity: 0;
+    transform: translateX(46px);
+  }
+}
+
+@keyframes lg-in-back {
+  from {
+    opacity: 0;
+    transform: translateX(-46px);
+  }
+}
+
+@keyframes lg-out-forward {
+  to {
+    opacity: 0;
+    transform: translateX(-46px);
+  }
+}
+
+@keyframes lg-out-back {
+  to {
+    opacity: 0;
+    transform: translateX(46px);
+  }
+}
+
+/* Log in / Register switch */
+.lg-switch {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  margin: 20px 0 6px;
+  border-radius: 13px;
+  padding: 4px;
+  background: var(--lg-seg-bg);
+}
+
+.lg-switch::before {
+  content: "";
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: calc(50% - 4px);
+  height: calc(100% - 8px);
+  border-radius: 10px;
+  background: var(--lg-seg-on);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.12);
+  transition: transform 0.32s cubic-bezier(0.3, 1.2, 0.5, 1);
+}
+
+.lg-switch[data-side="register"]::before {
+  transform: translateX(100%);
+}
+
+.lg-switch button {
+  position: relative;
+  z-index: 1;
+  height: 36px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.lg-switch button[aria-pressed="true"] {
+  color: var(--text-main);
+}
+
+.lg-field {
+  display: block;
+  margin-top: 12px;
+}
+
+.lg-field > span {
+  display: block;
+  margin: 0 0 5px 2px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.lg-input {
+  width: 100%;
+  height: 46px;
+  border-radius: 12px;
+  border: 1px solid var(--lg-field-border);
+  background: var(--lg-field-bg);
+  padding: 0 14px;
+  font-size: 15px;
+  color: var(--text-main);
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.lg-input:focus {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 18%, transparent);
+}
+
+.lg-input-wrap {
+  position: relative;
+}
+
+.lg-input-wrap .lg-input {
+  padding-right: 48px;
+}
+
+.lg-reveal {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  transform: translateY(-50%);
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.lg-reveal:hover {
+  color: var(--text-main);
+  background: color-mix(in srgb, var(--text-main) 6%, transparent);
+}
+
+.lg-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-main);
+  cursor: pointer;
+}
+
+.lg-check input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--brand);
+}
+
+.lg-error {
+  margin: 10px 0 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--danger);
+}
+
+.lg-note {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.lg-primary {
+  display: inline-flex;
+  width: 100%;
+  height: 48px;
+  margin-top: 18px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 13px;
+  background-image: var(--brand-gradient);
+  font-size: 15px;
+  font-weight: 600;
+  color: #ffffff;
+  cursor: pointer;
+  box-shadow: 0 10px 22px color-mix(in srgb, var(--brand) 28%, transparent);
+  transition: filter 0.15s ease, transform 0.15s ease;
+}
+
+.lg-primary:hover {
+  filter: brightness(1.05);
+}
+
+.lg-primary:active {
+  transform: scale(0.99);
+}
+
+.lg-primary:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.lg-secondary {
+  display: inline-flex;
+  width: 100%;
+  height: 46px;
+  margin-top: 10px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 13px;
+  border: 1px solid var(--lg-field-border);
+  background: var(--lg-field-bg);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-main);
+  cursor: pointer;
+}
+
+.lg-secondary:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.lg-link {
+  display: inline-flex;
+  width: 100%;
+  margin-top: 10px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  padding: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.lg-link:hover {
+  color: var(--text-main);
+}
+
+.lg-option {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  border-radius: 16px;
+  border: 1px solid var(--lg-line);
+  background: var(--lg-field-bg);
+  padding: 14px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+.lg-option:hover {
+  border-color: color-mix(in srgb, var(--brand) 55%, transparent);
+  transform: translateY(-1px);
+}
+
+.lg-option-icon {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex: none;
+  place-items: center;
+  border-radius: 12px;
+}
+
+.lg-option b {
+  display: block;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.lg-option small {
+  display: block;
+  margin-top: 1px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.lg-invite {
+  margin-top: 16px;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--brand) 30%, transparent);
+  background: color-mix(in srgb, var(--brand) 8%, transparent);
+  padding: 12px;
+}
+
+.lg-invite p {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-main);
+}
+
+.lg-invite-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.lg-invite-actions button {
+  flex: 1;
+  height: 36px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.lg-invite-actions button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.lg-pin {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.lg-pin-box {
+  display: grid;
+  width: 54px;
+  height: 62px;
+  place-items: center;
+  border-radius: 14px;
+  border: 1px solid var(--lg-field-border);
+  background: var(--lg-field-bg);
+  font-size: 26px;
+  font-weight: 600;
+  color: var(--text-main);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.lg-pin-box[data-current] {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 18%, transparent);
+}
+
+.lg-pin[data-shake] {
+  animation: lg-shake 0.4s ease;
+}
+
+@keyframes lg-shake {
+  20%,
+  60% {
+    transform: translateX(-8px);
+  }
+  40%,
+  80% {
+    transform: translateX(8px);
+  }
+}
+
+.lg-pin-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  font-size: 16px;
+  cursor: text;
+}
+
+.lg-code {
+  height: 54px;
+  text-align: center;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 8px;
+}
+
+.lg-spinner {
+  width: 34px;
+  height: 34px;
+  margin: 26px auto 8px;
+  border-radius: 50%;
+  border: 3px solid color-mix(in srgb, var(--text-main) 12%, transparent);
+  border-top-color: var(--brand);
+  animation: lg-spin 0.8s linear infinite;
+}
+
+@keyframes lg-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.lg-icon-badge {
+  display: grid;
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 12px;
+  place-items: center;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--brand) 13%, transparent);
+  color: var(--brand);
+}
+
+/* "Try CutSmart Preview" — bottom of the screen. */
+.lg-preview {
+  position: absolute;
+  left: 50%;
+  bottom: calc(22px + env(safe-area-inset-bottom));
+  z-index: 2;
+  display: inline-flex;
+  max-width: calc(100% - 32px);
+  align-items: center;
+  gap: 10px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg-strong);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  padding: 7px 16px 7px 7px;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.12);
+  color: var(--text-main);
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  white-space: nowrap;
+}
+
+.lg-preview:hover {
+  transform: translateX(-50%) translateY(-2px);
+  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.16);
+}
+
+.lg-preview-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  place-items: center;
+  border-radius: 50%;
+  background-image: var(--brand-gradient);
+  color: #ffffff;
+}
+
+.lg-preview b {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.lg-preview small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lg-root *,
+  .lg-root *::before {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  .lg-sq {
+    opacity: 1;
+    transform: none;
+  }
+}

@@ -24,7 +24,14 @@ import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin 
 import { retryAsync } from "@/lib/load-retry";
 import { swallowNextClick } from "@/lib/swallow-dismiss-click";
 import { useAppTabs } from "@/lib/app-tabs-context";
-import { APP_VERSION_PUBLISHED_EVENT, OPEN_WHATS_NEW_DRAFT_EVENT } from "@/components/whats-new-sheet";
+import {
+  APP_VERSION_PUBLISHED_EVENT,
+  APP_VERSION_SCHEDULE_CHANGED_EVENT,
+  fetchPublishStatus,
+  OPEN_WHATS_NEW_DRAFT_EVENT,
+  useReleaseCountdown,
+  type WaitingPublish,
+} from "@/components/whats-new-sheet";
 type ReportDeviceType = "desktop" | "tablet" | "mobile";
 const HEADER_HEIGHT = 56;
 const DESKTOP_TAB_BAR_HEIGHT = 48;
@@ -261,6 +268,25 @@ export default function ChangelogPage() {
   const [entriesPerPage, setEntriesPerPage] = useState<number>(10);
   const [visibleEntryCount, setVisibleEntryCount] = useState<number>(10);
   const [isDevUser, setIsDevUser] = useState(false);
+  // Dev users: a publish scheduled for later, and how long until it goes out.
+  const [waitingPublish, setWaitingPublish] = useState<WaitingPublish | null>(null);
+  const releaseCountdown = useReleaseCountdown(waitingPublish?.scheduledForIso ?? "");
+  useEffect(() => {
+    if (!isDevUser) return;
+    let cancelled = false;
+    const load = () =>
+      void fetchPublishStatus().then((status) => {
+        if (!cancelled) setWaitingPublish(status?.waiting ?? null);
+      });
+    load();
+    window.addEventListener(APP_VERSION_SCHEDULE_CHANGED_EVENT, load);
+    window.addEventListener(APP_VERSION_PUBLISHED_EVENT, load);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(APP_VERSION_SCHEDULE_CHANGED_EVENT, load);
+      window.removeEventListener(APP_VERSION_PUBLISHED_EVENT, load);
+    };
+  }, [isDevUser]);
   const [appVersion, setAppVersion] = useState("");
   // The deployed version when it isn't published yet — a draft only Dev users see (to preview and publish).
   const [draftVersion, setDraftVersion] = useState("");
@@ -954,7 +980,7 @@ export default function ChangelogPage() {
                 <PerPageDropdown value={entriesPerPage} options={PAGE_SIZE_OPTIONS} onChange={onChangeEntriesPerPage} />
                 {isDevUser && (
                   <div className="flex items-center border-l pl-3" style={{ borderColor: "var(--glass-border)" }}>
-                    {draftVersion ? (
+                    {draftVersion || waitingPublish ? (
                       <button
                         type="button"
                         onClick={() => window.dispatchEvent(new Event(OPEN_WHATS_NEW_DRAFT_EVENT))}
@@ -962,7 +988,9 @@ export default function ChangelogPage() {
                         style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
                       >
                         <Sparkles size={13} />
-                        Draft {draftVersion} · Publish
+                        {waitingPublish && (!draftVersion || waitingPublish.version === draftVersion)
+                        ? `Scheduled ${waitingPublish.version} · ${releaseCountdown || "scheduled"}`
+                        : `Draft ${draftVersion} · Publish`}
                       </button>
                     ) : null}
                     <button
@@ -1009,7 +1037,7 @@ export default function ChangelogPage() {
               <PerPageDropdown value={entriesPerPage} options={PAGE_SIZE_OPTIONS} onChange={onChangeEntriesPerPage} />
               {isDevUser && (
                 <div className="flex items-center border-l pl-3" style={{ borderColor: "var(--glass-border)" }}>
-                  {draftVersion ? (
+                  {draftVersion || waitingPublish ? (
                     <button
                       type="button"
                       onClick={() => window.dispatchEvent(new Event(OPEN_WHATS_NEW_DRAFT_EVENT))}
@@ -1017,7 +1045,9 @@ export default function ChangelogPage() {
                       style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
                     >
                       <Sparkles size={13} />
-                      Draft {draftVersion} · Publish
+                      {waitingPublish && (!draftVersion || waitingPublish.version === draftVersion)
+                        ? `Scheduled ${waitingPublish.version} · ${releaseCountdown || "scheduled"}`
+                        : `Draft ${draftVersion} · Publish`}
                     </button>
                   ) : null}
                   <button

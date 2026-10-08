@@ -5,7 +5,7 @@ import { attachBoardArrowKeyScroll } from "@/lib/board-arrow-key-scroll";
 
 // Shared sticky-board scroll handling for a kanban column panel (used by the Dashboard board/
 // sub-board and the Leads board — same `position: sticky` panel + `[data-board-column]` children
-// convention).
+// convention, each column drawn by components/board-column-frame.tsx).
 //
 // This used to also force `overflow-y: hidden` on the page once a board was "nearly locked," with
 // the only release path wired to the `wheel` event (manually driving `scrollTop` while briefly
@@ -23,8 +23,29 @@ import { attachBoardArrowKeyScroll } from "@/lib/board-arrow-key-scroll";
 // What's left: each column's card list still needs to switch from `overflow-y: hidden` to `auto`
 // at the right moment — not always-on, or a swipe over a not-yet-stuck column would scroll the
 // cards instead of finishing the page scroll that brings the board into its stuck position — and
-// the column height-reveal animation (a column grows into view as it scrolls up under the sticky
-// panel).
+// the columns' reveal: while the board scrolls up into place, each column's bottom edge stays on the
+// bottom of the screen (bottomPadPx above it), the column showing more of itself as it rises.
+//
+// The reveal never resizes anything. A column's frame (board-column-frame.tsx) is cut off at the
+// bottom by a window that's moved up by however much of the column is past that line — the "shift" —
+// with the column itself moved back down by the same amount. Where the browser can (ScrollTimeline:
+// Chrome, Edge, Safari), those two moves are animations tied to the page's scroll position, which the
+// browser applies in the same step as the scroll itself, so the edge holds perfectly still; this
+// script only works out the numbers, and only redoes them when the layout changes. It used to set
+// every column's height from a scroll listener instead, which always landed a frame behind the scroll
+// (and re-laid-out every column, every frame) — the edge visibly wobbled. Elsewhere the moves are
+// still set from the scroll listener, but they're only transforms now (no layout).
+
+// The least of a column ever shown at that edge: its rounded corners (see .board-column-window).
+const REVEAL_MIN_PX = 16;
+
+type ScrollTimelineConstructor = new (options: { source: Element; axis?: "block" | "inline" }) => AnimationTimeline;
+
+function getScrollTimelineConstructor(): ScrollTimelineConstructor | null {
+  if (typeof window === "undefined") return null;
+  return (window as unknown as { ScrollTimeline?: ScrollTimelineConstructor }).ScrollTimeline ?? null;
+}
+
 export function useBoardStickyRef(
   viewModeRef: RefObject<string>,
   checkRef: MutableRefObject<(() => void) | null>,
@@ -47,11 +68,11 @@ export function useBoardStickyRef(
       let raf = 0;
       const mainEl = document.querySelector("main");
       const phoneQuery = window.matchMedia("(max-width: 767px)");
+      const ScrollTimelineCtor = getScrollTimelineConstructor();
       // Each column's card list toggles overflow-y/touchAction directly on the DOM (not via React
-      // state) for the same reason height is written directly below: going through setState here
-      // would add a render cycle between "scroll crossed the threshold" and "the column can
-      // actually be scrolled", long enough to eat the rest of a trackpad gesture. A plain style
-      // write lands on the very next paint.
+      // state): going through setState here would add a render cycle between "scroll crossed the
+      // threshold" and "the column can actually be scrolled", long enough to eat the rest of a
+      // trackpad gesture. A plain style write lands on the very next paint.
       //
       // Only written when it flips (it used to be rewritten on every list, every scroll frame);
       // listsScrollable is reset to null whenever the board's contents change, so freshly rendered
@@ -72,19 +93,75 @@ export function useBoardStickyRef(
           list.style.touchAction = "";
         });
       };
-      // Each column is two nested elements: an outer shell (marked `data-board-column`) that owns
-      // the box-shadow and layout sizing, and an inner element that owns the background/border/
-      // blur and rounded/overflow-hidden. The reveal below sets the OUTER's real `height` directly
-      // rather than clip-path-ing anything — that's what keeps the shadow (which always renders
-      // around whatever size the outer currently is) and the rounded bottom (the inner's own
-      // border-radius, which rounds correctly at any height) continuously in sync with how much of
-      // the column is actually revealed. Safe to do with a real height (unlike the row/panel
-      // itself) because a column's own height doesn't feed into the row's — the row's is fixed
-      // independently, so shrinking a column here never changes the page's total scrollable
-      // height.
       const getColumns = (): HTMLElement[] => Array.from(el.querySelectorAll<HTMLElement>("[data-board-column]"));
-      let cachedFullHeight = 0;
-      let cachedFullHeightKey = "";
+      const getMoved = (col: HTMLElement) => ({
+        lift: col.querySelector<HTMLElement>("[data-board-column-lift]"),
+        drop: col.querySelector<HTMLElement>("[data-board-column-drop]"),
+      });
+
+      // --- Applying the shift
+      // Scroll-linked: each column's two moves as animations on the page's scroll timeline, from
+      // keyframes over the whole scroll range. Recreated only when those keyframes change (the
+      // key), or for columns that weren't there before.
+      const columnAnimations = new WeakMap<HTMLElement, { key: string; animations: Animation[] }>();
+      const animatedColumns = new Set<HTMLElement>();
+      const stopAnimations = (col: HTMLElement) => {
+        columnAnimations.get(col)?.animations.forEach((animation) => animation.cancel());
+        columnAnimations.delete(col);
+        animatedColumns.delete(col);
+      };
+      // Set straight from script: the fallback, and a page that can't scroll at all.
+      const staticShift = new WeakMap<HTMLElement, number>();
+      const setStaticShift = (col: HTMLElement, shift: number) => {
+        if (columnAnimations.has(col)) stopAnimations(col);
+        if (staticShift.get(col) === shift) return;
+        staticShift.set(col, shift);
+        const { lift, drop } = getMoved(col);
+        if (lift) lift.style.transform = shift ? `translate3d(0, ${-shift}px, 0)` : "";
+        if (drop) drop.style.transform = shift ? `translate3d(0, ${shift}px, 0)` : "";
+      };
+      // The page's scroll timeline; id goes into the keyframes' key, so a new one (the page scrolling
+      // with a different element after a resize) means new animations.
+      let timeline: { source: Element; timeline: AnimationTimeline; id: number } | null = null;
+      const getTimeline = (source: Element) => {
+        if (!ScrollTimelineCtor) return null;
+        if (!timeline || timeline.source !== source) {
+          timeline = { source, timeline: new ScrollTimelineCtor({ source, axis: "block" }), id: (timeline?.id ?? 0) + 1 };
+        }
+        return timeline;
+      };
+      const setScrollLinkedShift = (
+        col: HTMLElement,
+        frames: { offset: number; shift: number }[],
+        key: string,
+        scrollTimeline: AnimationTimeline,
+      ) => {
+        if (columnAnimations.get(col)?.key === key) return;
+        stopAnimations(col);
+        if (staticShift.has(col)) {
+          staticShift.delete(col);
+          const { lift, drop } = getMoved(col);
+          if (lift) lift.style.transform = "";
+          if (drop) drop.style.transform = "";
+        }
+        const { lift, drop } = getMoved(col);
+        const animations: Animation[] = [];
+        const options: KeyframeAnimationOptions = { timeline: scrollTimeline, fill: "both", easing: "linear" };
+        if (lift) {
+          animations.push(lift.animate(frames.map((f) => ({ offset: f.offset, transform: `translate3d(0, ${-f.shift}px, 0)` })), options));
+        }
+        if (drop) {
+          animations.push(drop.animate(frames.map((f) => ({ offset: f.offset, transform: `translate3d(0, ${f.shift}px, 0)` })), options));
+        }
+        columnAnimations.set(col, { key, animations });
+        animatedColumns.add(col);
+      };
+      const resetShifts = () => {
+        animatedColumns.forEach((col) => stopAnimations(col));
+        getColumns().forEach((col) => setStaticShift(col, 0));
+      };
+
+      // --- Where things are
       // The panel's sticky offset and whether <main> is the scroller only change with the layout (a
       // resize, or the board's contents changing) — read once then, not on every scroll frame (each
       // is a computed-style read). See check() for what they mean.
@@ -98,6 +175,11 @@ export function useBoardStickyRef(
         }
         return layout;
       };
+      // For the scroll-linked moves: where the columns' tops would be at scroll 0, and the scroll
+      // position the panel locks at. Measured while the panel is still moving with the page (once
+      // it's stuck its position stops telling either) and kept for while it's stuck.
+      let geometry: { colTopAtZero: number; stickAt: number } | null = null;
+
       const check = () => {
         raf = 0;
         // Each column's card list has a fixed, viewport-relative height from the moment it
@@ -108,8 +190,6 @@ export function useBoardStickyRef(
         // gesture bubbles up to the page/main scroll and finishes bringing the board to the top.
         if (viewModeRef.current !== "board") {
           setCardListsScrollable(false);
-          getColumns().forEach((col) => { col.style.height = ""; });
-          cachedFullHeightKey = "";
           return;
         }
         // getBoundingClientRect() is always viewport-relative, but the sticky `top` offset is
@@ -120,6 +200,7 @@ export function useBoardStickyRef(
         const { stuckTop, mainScrolls } = readLayout();
         const containerTop = mainScrolls ? (mainEl as HTMLElement).getBoundingClientRect().top : 0;
         const rect = el.getBoundingClientRect();
+        const lockedTop = containerTop + stuckTop;
         // A discrete wheel/trackpad tick resolves its scroll target ONCE, based on what's
         // scrollable at that instant — so if a card list only becomes overflow-y-auto exactly AT
         // the pixel the panel finishes locking, the tick that lands the panel there still scrolls
@@ -131,42 +212,61 @@ export function useBoardStickyRef(
         // reintroduce cards swallowing a swipe well before the panel has scrolled into place — it
         // only shaves the last few pixels of an already-almost-finished scroll.
         const EARLY_SCROLLABLE_PX = 24;
-        const nearlyLocked = rect.top <= containerTop + stuckTop + EARLY_SCROLLABLE_PX;
-        setCardListsScrollable(nearlyLocked);
+        setCardListsScrollable(rect.top <= lockedTop + EARLY_SCROLLABLE_PX);
+
         const columns = getColumns();
         const firstCol = columns[0];
         if (!firstCol) return;
-        // The column's natural (fully-grown) height doesn't change from one scroll frame to the
-        // next — only how much of it is currently revealed does — so it's cached here instead of
-        // being remeasured on every single scroll-driven call. Remeasuring meant resetting height
-        // to "" and immediately reading getBoundingClientRect(), a write-then-read that forces a
-        // synchronous layout reflow; doing that (plus repainting every column's backdrop-filter
-        // blur) on every scroll frame for the whole lock-in transition is what showed up as
-        // stutter, especially visible right at the moving bottom edge, worse on mobile GPUs. The
-        // cache key covers the two things that actually DO change it: the column count (data
-        // load/filter swapping which columns exist) and the viewport size (resize/orientation).
-        const fullHeightCacheKey = `${columns.length}:${window.innerWidth}x${window.innerHeight}`;
-        if (fullHeightCacheKey !== cachedFullHeightKey) {
-          const prevHeight = firstCol.style.height;
-          firstCol.style.height = "";
-          cachedFullHeight = firstCol.getBoundingClientRect().height;
-          firstCol.style.height = prevHeight;
-          cachedFullHeightKey = fullHeightCacheKey;
-        }
+        // The slot is never moved or resized — it's where the whole column is.
         const colRect = firstCol.getBoundingClientRect();
-        // bottomPadPx gives the revealed edge breathing room from the viewport bottom, matching
-        // the surrounding padding so every side of a column has the same gap instead of running
-        // flush to the screen edge. It stays in the formula even once locked — rect.top then holds
-        // steady at the sticky offset, so this settles just short of the column's true height
-        // rather than snapping straight to it, avoiding a jump at the handoff. Measured off each
-        // column's own rect (not the wrapper's) so this stays correct regardless of any padding
-        // between the wrapper and the columns.
+        const fullHeight = colRect.height;
         const bottomPadPx = phoneQuery.matches ? phoneBottomPadPx : desktopBottomPadPx;
-        const grownHeight = Math.min(cachedFullHeight, Math.max(0, window.innerHeight - bottomPadPx - colRect.top));
-        const nextHeight = grownHeight < cachedFullHeight - 0.5 ? `${grownHeight}px` : "";
-        columns.forEach((col) => {
-          if (col.style.height !== nextHeight) col.style.height = nextHeight;
-        });
+        const maxShift = Math.max(0, fullHeight - REVEAL_MIN_PX);
+
+        const scroller = mainScrolls ? (mainEl as HTMLElement) : document.scrollingElement ?? document.documentElement;
+        const scrollPos = scroller.scrollTop;
+        const maxScroll = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+        if (Math.abs(rect.top - lockedTop) > 0.5) {
+          geometry = { colTopAtZero: Math.round(colRect.top + scrollPos), stickAt: Math.round(scrollPos + rect.top - lockedTop) };
+        } else if (!geometry) {
+          // Already stuck with nothing measured yet (e.g. the page came back scrolled down): where it
+          // would be if it weren't sticky.
+          const previousPosition = el.style.position;
+          el.style.position = "static";
+          const naturalTop = el.getBoundingClientRect().top;
+          const naturalColTop = firstCol.getBoundingClientRect().top;
+          el.style.position = previousPosition;
+          geometry = { colTopAtZero: Math.round(naturalColTop + scrollPos), stickAt: Math.round(scrollPos + naturalTop - lockedTop) };
+        }
+        const { colTopAtZero, stickAt } = geometry;
+        // The line the columns' bottom edges stay on: bottomPadPx above the bottom of the screen —
+        // or, if the board actually finishes a little higher once scrolled all the way (its own
+        // bottom border, the page's height being rounded to a whole pixel), there, so the edge has
+        // nowhere left to move at the very end. (It used to be carried up the last pixel or two.)
+        const finalBottom = colTopAtZero - Math.min(maxScroll, stickAt) + fullHeight;
+        const screenLine = window.innerHeight - bottomPadPx;
+        const edgeY = finalBottom < screenLine && screenLine - finalBottom < 24 ? finalBottom : screenLine;
+        const shiftFor = (colTop: number) => Math.min(maxShift, Math.max(0, colTop + fullHeight - edgeY));
+
+        const pageTimeline = maxScroll > 0 ? getTimeline(scroller) : null;
+        if (!pageTimeline) {
+          // No scroll-linked animations here (or nothing to scroll): set it for where things are now.
+          const shift = Math.round(shiftFor(colRect.top) * 2) / 2;
+          columns.forEach((col) => setStaticShift(col, shift));
+          return;
+        }
+        // The shift at scroll s. Straight lines between: where the column first shows its last
+        // REVEAL_MIN_PX, where it's whole, where the panel locks, and either end.
+        const shiftAt = (s: number) => shiftFor(colTopAtZero - Math.min(s, stickAt));
+        const wholeAt = colTopAtZero + fullHeight - edgeY;
+        const points = [0, maxScroll, wholeAt - maxShift, wholeAt, stickAt]
+          .filter((s) => s >= 0 && s <= maxScroll)
+          .sort((a, b) => a - b)
+          .filter((s, i, all) => i === 0 || s - all[i - 1] > 0.5);
+        const frames = points.map((s) => ({ offset: s / maxScroll, shift: Math.round(shiftAt(s) * 2) / 2 }));
+        if (frames[frames.length - 1].offset < 1) frames.push({ offset: 1, shift: Math.round(shiftAt(maxScroll) * 2) / 2 });
+        const key = `${pageTimeline.id}/${frames.map((f) => `${f.offset.toFixed(5)}:${f.shift}`).join("|")}`;
+        columns.forEach((col) => setScrollLinkedShift(col, frames, key, pageTimeline.timeline));
       };
       checkRef.current = check;
       const onScroll = () => {
@@ -175,6 +275,7 @@ export function useBoardStickyRef(
       };
       const onResize = () => {
         layout = null;
+        geometry = null;
         onScroll();
       };
       check();
@@ -182,7 +283,7 @@ export function useBoardStickyRef(
       window.addEventListener("resize", onResize);
       mainEl?.addEventListener("scroll", onScroll, { passive: true });
       // Columns load asynchronously, so the very first `check()` call above can land before any
-      // column has actually rendered — `getColumns()` finds nothing yet, so nothing gets sized,
+      // column has actually rendered — `getColumns()` finds nothing yet, so nothing gets set up,
       // and nothing else was going to call `check()` again once the columns actually mounted (the
       // view-mode re-check effect elsewhere only reruns on the view mode itself, which by then has
       // already settled). Watching `el` for child changes catches that moment generically — real
@@ -194,6 +295,7 @@ export function useBoardStickyRef(
       // MutationObserver, for hidden tabs) — no reason to route through it.
       const observer = new MutationObserver(() => {
         layout = null;
+        geometry = null;
         listsScrollable = null;
         check();
       });
@@ -206,7 +308,7 @@ export function useBoardStickyRef(
         mainEl?.removeEventListener("scroll", onScroll);
         observer.disconnect();
         detachArrowKeyScroll?.();
-        getColumns().forEach((col) => { col.style.height = ""; });
+        resetShifts();
         listsScrollable = null;
         setCardListsScrollable(false);
       };

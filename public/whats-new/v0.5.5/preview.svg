@@ -1,0 +1,117 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" width="640" height="360" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title>Trying the CutSmart Preview from the log in page: a demo company to look around and edit, with nothing saved</title>
+  <style>
+    .stageA { transform-box: fill-box; transform-origin: center; animation: stageA 6s ease-in-out infinite both; }
+    @keyframes stageA { 0%, 28% { opacity: 1; transform: scale(1); } 36%, 95% { opacity: 0; transform: scale(1.06); } 100% { opacity: 1; transform: scale(1); } }
+    .stageB { animation: stageB 6s ease-in-out infinite both; }
+    @keyframes stageB { 0%, 31% { opacity: 0; } 39%, 93% { opacity: 1; } 99%, 100% { opacity: 0; } }
+    .tryBtn { transform-box: fill-box; transform-origin: center; animation: tryBtn 6s ease-in-out infinite both; }
+    @keyframes tryBtn { 0%, 21% { transform: scale(1); } 24% { transform: scale(.93); } 27%, 100% { transform: scale(1); } }
+    .cursorA { animation: cursorA 6s ease-in-out infinite both; }
+    @keyframes cursorA { 0%, 4% { transform: translate(150px, 70px); opacity: 0; } 8% { opacity: 1; } 20%, 28% { transform: translate(0, 0); opacity: 1; } 34%, 100% { transform: translate(0, 0); opacity: 0; } }
+    .cursorB { animation: cursorB 6s ease-in-out infinite both; }
+    @keyframes cursorB { 0%, 42% { transform: translate(80px, 60px); opacity: 0; } 46% { opacity: 1; } 56%, 66% { transform: translate(0, 0); opacity: 1; } 74%, 100% { transform: translate(40px, 40px); opacity: 0; } }
+    .newPill { animation: newPill 6s ease-in-out infinite both; }
+    @keyframes newPill { 0%, 60% { opacity: 1; } 64%, 100% { opacity: 0; } }
+    .designPill { transform-box: fill-box; transform-origin: center; animation: designPill 6s cubic-bezier(.34, 1.56, .64, 1) infinite both; }
+    @keyframes designPill { 0%, 61% { opacity: 0; transform: scale(.6); } 67%, 100% { opacity: 1; transform: scale(1); } }
+    .banner { transform-box: fill-box; transform-origin: center bottom; animation: banner 6s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes banner { 0%, 40% { opacity: 0; transform: translateY(14px); } 48%, 93% { opacity: 1; transform: translateY(0); } 99%, 100% { opacity: 0; transform: translateY(14px); } }
+  </style>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#EEF3FB"/>
+      <stop offset="1" stop-color="#E1E9F7"/>
+    </linearGradient>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3B82F6"/>
+      <stop offset="1" stop-color="#1D4ED8"/>
+    </linearGradient>
+    <filter id="soft" x="-10%" y="-10%" width="120%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0F172A" flood-opacity=".08"/>
+    </filter>
+    <filter id="pop" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="10" flood-color="#0F172A" flood-opacity=".16"/>
+    </filter>
+  </defs>
+  <rect width="640" height="360" fill="url(#bg)"/>
+
+  <!-- the log in page, with the Preview button under the box -->
+  <g class="stageA">
+    <rect x="200" y="40" width="240" height="210" rx="22" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+    <rect x="300" y="58" width="40" height="40" rx="11" fill="url(#brand)"/>
+    <text x="320" y="86" text-anchor="middle" font-size="21" font-weight="800" fill="#FFFFFF">C</text>
+    <text x="320" y="126" text-anchor="middle" font-size="16" font-weight="700" fill="#0F172A">Log in</text>
+    <rect x="220" y="140" width="200" height="30" rx="10" fill="#F8FAFC" stroke="#D7DEE8"/>
+    <rect x="220" y="178" width="200" height="30" rx="10" fill="#F8FAFC" stroke="#D7DEE8"/>
+    <rect x="220" y="216" width="200" height="22" rx="11" fill="#2563EB" fill-opacity=".35"/>
+    <g class="tryBtn">
+      <rect x="216" y="270" width="208" height="38" rx="19" fill="#EEF4FF" stroke="#93B4F5" stroke-width="1.5"/>
+      <path d="M244 280 l2.2 5.6 l5.6 2.2 l-5.6 2.2 l-2.2 5.6 l-2.2 -5.6 l-5.6 -2.2 l5.6 -2.2 z" fill="#2563EB"/>
+      <text x="334" y="294" text-anchor="middle" font-size="13" font-weight="700" fill="#2563EB">Try the CutSmart Preview</text>
+    </g>
+  </g>
+  <g class="cursorA">
+    <path d="M330 292 l0 20 l5 -5 l4 9 l3.4 -1.5 l-4 -9 l7 0 z" fill="#0F172A" stroke="#FFFFFF" stroke-width="1.4" stroke-linejoin="round"/>
+  </g>
+
+  <!-- the demo company -->
+  <g class="stageB">
+    <rect width="640" height="360" fill="#F5F7FA"/>
+    <rect x="0" y="0" width="116" height="360" fill="#FFFFFF" fill-opacity=".85"/>
+    <path d="M116 0 V360" stroke="#E2E8F0"/>
+    <text x="16" y="30" font-size="15" font-weight="800" fill="#0F172A">Cut<tspan fill="#2563EB">Smart</tspan></text>
+    <rect x="12" y="50" width="92" height="22" rx="8" fill="#2563EB"/>
+    <text x="22" y="65" font-size="10" font-weight="600" fill="#FFFFFF">+ New Project</text>
+    <rect x="12" y="82" width="92" height="20" rx="7" fill="#DBEAFE"/>
+    <text x="22" y="96" font-size="10" font-weight="600" fill="#1D4ED8">Dashboard</text>
+    <g font-size="10" fill="#64748B">
+      <text x="22" y="122">Leads</text><text x="22" y="144">Contacts</text><text x="22" y="166">Calendar</text><text x="22" y="188">Company Settings</text>
+    </g>
+    <circle cx="26" cy="334" r="10" fill="#C2410C"/>
+    <text x="26" y="338" text-anchor="middle" font-size="9" font-weight="700" fill="#FFFFFF">AM</text>
+    <text x="42" y="331" font-size="9.5" font-weight="600" fill="#0F172A">Alex Morgan</text>
+    <text x="42" y="343" font-size="8.5" fill="#D97706">CutSmart Preview</text>
+
+    <rect x="130" y="12" width="96" height="24" rx="12" fill="#FFFFFF" stroke="#E2E8F0"/>
+    <text x="178" y="28" text-anchor="middle" font-size="10" font-weight="600" fill="#334155">Dashboard</text>
+
+    <g filter="url(#soft)">
+      <rect x="130" y="48" width="154" height="58" rx="14" fill="#FFFFFF"/>
+      <rect x="294" y="48" width="154" height="58" rx="14" fill="#FFFFFF"/>
+      <rect x="458" y="48" width="154" height="58" rx="14" fill="#FFFFFF"/>
+    </g>
+    <circle cx="150" cy="68" r="9" fill="#3B82F6"/><circle cx="314" cy="68" r="9" fill="#F59E0B"/><circle cx="478" cy="68" r="9" fill="#8B5CF6"/>
+    <g font-size="10" fill="#475569"><text x="164" y="72">Projects</text><text x="328" y="72">Active</text><text x="492" y="72">Staff</text></g>
+    <g font-size="20" font-weight="700" fill="#0F172A"><text x="142" y="98">12</text><text x="306" y="98">10</text><text x="470" y="98">4</text></g>
+
+    <g font-size="11" fill="#0F172A" font-weight="600">
+      <text x="142" y="140">Harbour View Kitchen</text>
+      <text x="142" y="176">Ellis St Laundry</text>
+      <text x="142" y="212">Bayview Vanity</text>
+      <text x="142" y="248">Smith Kitchen Renovation</text>
+      <text x="142" y="284">Henderson Laundry</text>
+    </g>
+    <g stroke="#D7DEE8"><path d="M140 154 H602 M140 190 H602 M140 226 H602 M140 262 H602"/></g>
+    <g font-size="10" font-weight="700" fill="#FFFFFF" text-anchor="middle">
+      <rect x="536" y="126" width="66" height="20" rx="10" fill="#EA7A2B"/><text x="569" y="140">New</text>
+      <g class="newPill"><rect x="536" y="162" width="66" height="20" rx="10" fill="#EA7A2B"/><text x="569" y="176">New</text></g>
+      <g class="designPill"><rect x="536" y="162" width="66" height="20" rx="10" fill="#C44BD9"/><text x="569" y="176">Design</text></g>
+      <rect x="536" y="198" width="66" height="20" rx="10" fill="#C44BD9"/><text x="569" y="212">Design</text>
+      <rect x="536" y="234" width="66" height="20" rx="10" fill="#3B5FD0"/><text x="569" y="248">Production</text>
+      <rect x="536" y="270" width="66" height="20" rx="10" fill="#3B5FD0"/><text x="569" y="284">Production</text>
+    </g>
+
+    <g class="banner" filter="url(#pop)">
+      <rect x="196" y="312" width="340" height="34" rx="17" fill="#FFFFFF"/>
+      <circle cx="216" cy="329" r="11" fill="url(#brand)"/>
+      <path d="M216 322 l1.6 4 l4 1.6 l-4 1.6 l-1.6 4 l-1.6 -4 l-4 -1.6 l4 -1.6 z" fill="#FFFFFF"/>
+      <text x="234" y="333" font-size="11" font-weight="700" fill="#0F172A">CutSmart Preview <tspan font-weight="400" fill="#64748B">· changes aren't saved</tspan></text>
+      <rect x="478" y="318" width="50" height="22" rx="11" fill="#2563EB"/>
+      <text x="503" y="333" text-anchor="middle" font-size="10.5" font-weight="700" fill="#FFFFFF">Exit</text>
+    </g>
+  </g>
+  <g class="cursorB">
+    <path d="M572 174 l0 20 l5 -5 l4 9 l3.4 -1.5 l-4 -9 l7 0 z" fill="#0F172A" stroke="#FFFFFF" stroke-width="1.4" stroke-linejoin="round"/>
+  </g>
+</svg>

@@ -10,11 +10,13 @@ import {
   CalendarClock,
   CalendarDays,
   Check,
+  Eye,
   FolderKanban,
   Globe,
   Hammer,
   LayoutDashboard,
   LockOpen,
+  LogIn,
   Settings,
   Sparkles,
   UserCog,
@@ -38,6 +40,8 @@ export function openWhatsNew(version: string) {
   window.dispatchEvent(new CustomEvent(OPEN_WHATS_NEW_EVENT, { detail: { version } }));
 }
 export const APP_VERSION_PUBLISHED_EVENT = "cutsmart:app-version-published";
+// A publish was scheduled, cancelled or run early — the Dev button's countdown reloads.
+export const APP_VERSION_SCHEDULE_CHANGED_EVENT = "cutsmart:app-version-schedule-changed";
 
 const decodeEntities = (value: string) =>
   value.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'");
@@ -53,6 +57,8 @@ function whatsNewSections(html: string): Array<{ title: string; body: string }> 
 
 // Each section's icon and its colour.
 const SECTION_ICONS: Array<[RegExp, LucideIcon, string]> = [
+  [/log in|sign up/i, LogIn, "#0EA5E9"],
+  [/preview/i, Eye, "#D97706"],
   [/notification/i, Bell, "#3B82F6"],
   [/unlock/i, LockOpen, "#F59E0B"],
   [/archive|finished/i, Archive, "#64748B"],
@@ -88,24 +94,24 @@ const tiltStyle = (index: number): CSSProperties => ({ ["--wn-tilt" as string]: 
 // The feature cards' colours, in turn.
 const ACCENTS = ["#3B82F6", "#EC4899", "#22C55E", "#F59E0B", "#8B5CF6", "#14B8A6"];
 
-// Soft colour blobs drifting behind the cards.
-const BLOBS: Array<{ className: string; color: string; seconds: number; x: number; y: number }> = [
-  { className: "-left-24 top-16 h-96 w-96", color: "rgba(59, 130, 246, 0.30)", seconds: 18, x: 70, y: 50 },
-  { className: "-right-24 top-[22%] h-[28rem] w-[28rem]", color: "rgba(236, 72, 153, 0.24)", seconds: 23, x: -60, y: 40 },
-  { className: "bottom-0 left-[28%] h-80 w-80", color: "rgba(34, 197, 94, 0.22)", seconds: 20, x: 50, y: -50 },
-  { className: "-bottom-24 -right-10 h-96 w-96", color: "rgba(245, 158, 11, 0.22)", seconds: 26, x: -50, y: -40 },
-  { className: "left-[45%] top-[45%] h-72 w-72", color: "rgba(139, 92, 246, 0.20)", seconds: 29, x: -70, y: 30 },
+// Soft colour blobs behind the cards.
+const BLOBS: Array<{ className: string; color: string }> = [
+  { className: "-left-24 top-16 h-96 w-96", color: "rgba(59, 130, 246, 0.30)" },
+  { className: "-right-24 top-[22%] h-[28rem] w-[28rem]", color: "rgba(236, 72, 153, 0.24)" },
+  { className: "bottom-0 left-[28%] h-80 w-80", color: "rgba(34, 197, 94, 0.22)" },
+  { className: "-bottom-24 -right-10 h-96 w-96", color: "rgba(245, 158, 11, 0.22)" },
+  { className: "left-[45%] top-[45%] h-72 w-72", color: "rgba(139, 92, 246, 0.20)" },
 ];
 
 // A soft glow of a card's colour behind it, breathing slowly.
-function CardGlow({ color, index, strength = "55" }: { color: string; index: number; strength?: string }) {
+function CardGlow({ color, index, strength = "55", still = false }: { color: string; index: number; strength?: string; still?: boolean }) {
   return (
     <div
       aria-hidden="true"
       className="whats-new-motion pointer-events-none absolute -inset-4 -z-10 rounded-[40px] md:-inset-7 md:rounded-[48px]"
       style={{
         background: `radial-gradient(closest-side, ${color}${strength}, transparent)`,
-        animation: `whats-new-glow ${3.8 + (index % 3) * 0.9}s ease-in-out ${index * -0.7}s infinite`,
+        ...(still ? {} : { animation: `whats-new-glow ${3.8 + (index % 3) * 0.9}s ease-in-out ${index * -0.7}s infinite` }),
       }}
     />
   );
@@ -148,18 +154,59 @@ function HighlightMedia({ highlight }: { highlight: WhatsNewHighlight }) {
 
 // ---- A draft's publish controls (Dev users only)
 
+// The publish waiting for its time, with what it'll publish (so it can be previewed from any page).
+export type WaitingPublish = { version: string; whatsNew: string; highlights: WhatsNewHighlight[]; scheduledForIso: string; notify: boolean };
+
 type PublishStatus = {
+  // The version asked about (this deploy's by default), and this deploy's own.
+  version: string;
+  deployedVersion: string;
   published: boolean;
   schedule: { scheduledForIso: string; notify: boolean; status: string; error?: string } | null;
+  waiting: WaitingPublish | null;
   deploy: { onVercel: boolean; isLive: boolean; canPromote: boolean; blockedReason: string };
 };
 
 // This deploy's version: published or scheduled yet, and whether it can be published from here.
-const fetchPublishStatus = (): Promise<PublishStatus | null> =>
-  authorizedFetch("/api/app-version/publish")
+// Dev users only — anyone else gets null.
+export const fetchPublishStatus = (version?: string): Promise<PublishStatus | null> =>
+  authorizedFetch(`/api/app-version/publish${version ? `?version=${encodeURIComponent(version)}` : ""}`)
     .then((res) => res.json())
     .then((json: PublishStatus & { ok?: boolean }) => (json?.ok ? json : null))
     .catch(() => null);
+
+// How long until a scheduled release: "37 min", "2 h 5 min", "3 d 4 h" — "" once it's due.
+function formatCountdown(ms: number): string {
+  if (ms <= 0) return "";
+  const minutes = Math.ceil(ms / 60_000);
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const restMinutes = minutes % 60;
+  if (hours < 24) return restMinutes ? `${hours} h ${restMinutes} min` : `${hours} h`;
+  const days = Math.floor(hours / 24);
+  const restHours = hours % 24;
+  return restHours ? `${days} d ${restHours} h` : `${days} d`;
+}
+
+// "releases in 37 min" (or "releasing now" once it's due), kept up to date every 30 seconds.
+export function useReleaseCountdown(iso: string): string {
+  const [label, setLabel] = useState("");
+  useEffect(() => {
+    if (!iso) return;
+    const target = Date.parse(iso);
+    const tick = () => {
+      const left = formatCountdown(target - Date.now());
+      setLabel(left ? `releases in ${left}` : "releasing now");
+    };
+    const first = window.setTimeout(tick, 0);
+    const timer = window.setInterval(tick, 30_000);
+    return () => {
+      window.clearTimeout(first);
+      window.clearInterval(timer);
+    };
+  }, [iso]);
+  return iso ? label : "";
+}
 
 const PUBLISH_ERRORS: Record<string, string> = {
   "already-published": "This version is already published.",
@@ -189,12 +236,12 @@ function DraftPublishControls({
   const [done, setDone] = useState("");
 
   const loadStatus = () =>
-    fetchPublishStatus().then((next) => {
+    fetchPublishStatus(version).then((next) => {
       if (next) setStatus(next);
     });
   useEffect(() => {
     let cancelled = false;
-    void fetchPublishStatus().then((next) => {
+    void fetchPublishStatus(version).then((next) => {
       if (cancelled || !next) return;
       setStatus(next);
       onLocalNotice(next.deploy.onVercel ? "" : next.deploy.blockedReason);
@@ -202,7 +249,7 @@ function DraftPublishControls({
     return () => {
       cancelled = true;
     };
-  }, [onLocalNotice]);
+  }, [onLocalNotice, version]);
 
   const send = async (body: Record<string, unknown>) => {
     setBusy(true);
@@ -239,12 +286,26 @@ function DraftPublishControls({
       return;
     }
     const json = await send({ action: "schedule", notify, scheduledForIso: new Date(`${date}T${time}`).toISOString() });
-    if (json) void loadStatus();
+    if (!json) return;
+    void loadStatus();
+    window.dispatchEvent(new Event(APP_VERSION_SCHEDULE_CHANGED_EVENT));
   };
   const cancelSchedule = async () => {
-    const json = await send({ action: "cancel" });
-    if (json) void loadStatus();
+    const json = await send({ action: "cancel", version });
+    if (!json) return;
+    void loadStatus();
+    window.dispatchEvent(new Event(APP_VERSION_SCHEDULE_CHANGED_EVENT));
   };
+  // A scheduled release, now instead of at its time.
+  const publishScheduledNow = async () => {
+    const json = await send({ action: "publish-scheduled", version });
+    if (!json) return;
+    setDone(`Published${json.promoted ? " and live" : ""}${json.notified ? ` · ${json.notified} notified` : ""}`);
+    window.dispatchEvent(new Event(APP_VERSION_SCHEDULE_CHANGED_EVENT));
+    onPublished();
+  };
+
+  const countdown = useReleaseCountdown(status?.schedule?.status === "scheduled" ? status.schedule.scheduledForIso : "");
 
   const chip = "inline-flex h-9 items-center gap-1.5 rounded-[10px] border px-3 text-[12.5px] font-medium";
   const chipStyle = { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" } as const;
@@ -271,17 +332,27 @@ function DraftPublishControls({
     return (
       <div className="flex flex-col items-end gap-1">
         <div className="flex flex-wrap items-center justify-end gap-2">
-          <span className={chip} style={chipStyle}>
+          <span className={chip} style={{ ...chipStyle, borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}>
             <CalendarClock size={15} />
-            Publishes {formatWhen(scheduled.scheduledForIso)}
-            {scheduled.notify ? " · notifies everyone" : ""}
+            <span className="first-letter:uppercase">{countdown || "scheduled"}</span>
           </span>
           <button type="button" disabled={busy} onClick={() => void cancelSchedule()} className={`${chip} disabled:opacity-55`} style={chipStyle}>
             Cancel
           </button>
+          <button type="button" disabled={busy} onClick={() => void publishScheduledNow()} className={primary} style={primaryStyle}>
+            {busy ? "Working…" : "Publish now"}
+          </button>
         </div>
+        {note(`${formatWhen(scheduled.scheduledForIso)}${scheduled.notify ? " · notifies everyone" : ""}`)}
         {error ? note(error, "error") : null}
       </div>
+    );
+  }
+  if (status && status.version !== status.deployedVersion) {
+    return (
+      <span className={chip} style={chipStyle}>
+        Not scheduled any more — publish it from its deploy&apos;s link
+      </span>
     );
   }
 
@@ -398,15 +469,14 @@ export function WhatsNewSheet({
   const sections = whatsNewSections(whatsNew);
   const published = formatDay(dateIso);
 
-  // The section cards start popping in after the feature cards.
-  const sectionsStartMs = 380 + highlights.length * 90;
+  // The section cards: still and straight (only the feature cards move and lean), with a still glow.
   const renderSection = (section: { title: string; body: string }, index: number): ReactNode => {
     const { Icon, color } = sectionIcon(section.title);
     return (
-      <div key={`${section.title}-${index}`} className="whats-new-motion whats-new-float pb-8 pt-7" style={floatingStyle(index, sectionsStartMs)}>
+      <div key={`${section.title}-${index}`} className="pb-8 pt-7">
         <div className="relative isolate">
-        <CardGlow color={color} index={index} strength="40" />
-        <div className="whats-new-card relative rounded-[20px] border p-4 pt-7 md:p-5 md:pt-8" style={{ ...cardStyle, ...tiltStyle(index + 3), borderColor: `${color}55` }}>
+        <CardGlow color={color} index={index} strength="40" still />
+        <div className="relative rounded-[20px] border p-4 pt-7 md:p-5 md:pt-8" style={{ ...cardStyle, borderColor: `${color}55` }}>
           {section.title ? (
             <>
               <span
@@ -414,7 +484,6 @@ export function WhatsNewSheet({
                 style={{
                   backgroundColor: color,
                   boxShadow: `0 8px 20px ${color}66`,
-                  transform: `rotate(${TILTS[(index + 5) % TILTS.length] * 4}deg)`,
                 }}
               >
                 <Icon size={20} />
@@ -466,13 +535,8 @@ export function WhatsNewSheet({
           {BLOBS.map((blob, index) => (
             <div
               key={index}
-              className={`whats-new-motion absolute rounded-full ${blob.className}`}
-              style={{
-                background: `radial-gradient(circle, ${blob.color}, transparent 70%)`,
-                animation: `whats-new-drift ${blob.seconds}s ease-in-out ${index * -4}s infinite`,
-                ["--wn-drift-x" as string]: `${blob.x}px`,
-                ["--wn-drift-y" as string]: `${blob.y}px`,
-              }}
+              className={`absolute rounded-full ${blob.className}`}
+              style={{ background: `radial-gradient(circle, ${blob.color}, transparent 70%)` }}
             />
           ))}
         </div>

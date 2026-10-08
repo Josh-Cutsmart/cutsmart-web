@@ -1,9 +1,10 @@
 "use client";
 
 import { activeDateTime } from "@/lib/company-formats";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type TouchEvent as ReactTouchEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type ReactNode, type TouchEvent as ReactTouchEvent } from "react";
 import { createPortal } from "react-dom";
 import { usePathname, useRouter } from "next/navigation";
+import { isFlatPage } from "@/lib/flat-page";
 import { Bell, ChevronLeft, LayoutDashboard, Menu, X } from "lucide-react";
 import { useSwipeToClose } from "@/lib/use-swipe-to-close";
 import { openWhatsNew } from "@/components/whats-new-sheet";
@@ -64,6 +65,9 @@ export function GlobalAppTabsBar() {
     return stored || String(user?.companyId || "").trim();
   }, [user?.companyId]);
   const [themeMode, setThemeMode] = useState<ThemeMode>("light");
+  // Whether the page has scrolled under the bar: the bar is see-through at the top of a page and its
+  // glass fades in once there's something underneath it.
+  const [isPageScrolledUnder, setIsPageScrolledUnder] = useState(false);
   const [isAppTabsMenuOpen, setIsAppTabsMenuOpen] = useState("");
   const [appTabsMenuPos, setAppTabsMenuPos] = useState<{ left: number; top: number; width: number } | null>(null);
   const [notifRows, setNotifRows] = useState<UserNotificationRow[]>([]);
@@ -116,6 +120,19 @@ export function GlobalAppTabsBar() {
   const [dragInsertIndex, setDragInsertIndex] = useState<number | null>(null);
   const [draggedGroupWidth, setDraggedGroupWidth] = useState(0);
   const [collapsedDraggedGroupKey, setCollapsedDraggedGroupKey] = useState("");
+  // False for the moment a tab is picked up: the picked-up tab vanishes from the row and the tabs
+  // after it hold their places in one go, instead of it visibly squeezing away to the left (and the
+  // others sliding into its gap and back out). Tabs only animate once the drag is under way.
+  const [dragShiftAnimated, setDragShiftAnimated] = useState(false);
+  // The tab that was just let go of: hidden in the row while its ghost slides into its place, then
+  // shown again (settleGhostInto). settleTokenRef stops an older slide finishing over a newer drag.
+  const [settlingGroupKey, setSettlingGroupKey] = useState("");
+  // Closing a tab: the space it leaves in the row, which slides shut once the tab has popped away
+  // (popAwayClosingTab). index: where it sits among the tabs; collapsed: sliding shut.
+  const [closingTabGaps, setClosingTabGaps] = useState<{ id: number; index: number; width: number; collapsed: boolean }[]>([]);
+  const closingTabGapIdRef = useRef(0);
+  const closingTabTimersRef = useRef<number[]>([]);
+  const settleTokenRef = useRef(0);
   const [pressedGroupKey, setPressedGroupKey] = useState("");
   const appTabsMenuRef = useRef<HTMLDivElement | null>(null);
   const appTabsDropdownRef = useRef<HTMLDivElement | null>(null);
@@ -124,6 +141,8 @@ export function GlobalAppTabsBar() {
   const dragLayoutRef = useRef<Array<{ groupKey: string; left: number; width: number }>>([]);
   const customDragGhostRef = useRef<HTMLDivElement | null>(null);
   const dragGhostGrabOffsetXRef = useRef(0);
+  // Stops the desktop drag ghost following the pointer (see followPointerWithGhost).
+  const stopGhostFollowRef = useRef<(() => void) | null>(null);
   // Touch-driven reorder for mobile — native HTML5 draggable/dragstart/dragover never fire from a
   // touch gesture, so desktop's drag system (above) is silently inert on phones; this is a parallel
   // touch implementation that drives the SAME state (draggedGroupKey/dragInsertIndex/etc.) so both
@@ -146,6 +165,37 @@ export function GlobalAppTabsBar() {
   // the tab that just got reordered under the finger.
   const suppressNextTabClickRef = useRef("");
 
+  // Desktop scrolls the document; phones scroll <main> (app-shell.tsx); Quote/Specifications scroll
+  // their own data-app-scroll-root. Any of those away from the top means content is under the bar.
+  useEffect(() => {
+    const read = () => {
+      let top = window.scrollY || document.scrollingElement?.scrollTop || 0;
+      const main = document.querySelector<HTMLElement>("main");
+      if (main) top = Math.max(top, main.scrollTop);
+      document.querySelectorAll<HTMLElement>('[data-app-scroll-root="true"]').forEach((el) => {
+        top = Math.max(top, el.scrollTop);
+      });
+      setIsPageScrolledUnder(top > 2);
+    };
+    const onScroll = (event: Event) => {
+      const target = event.target;
+      if (
+        target === document ||
+        (target instanceof HTMLElement && (target.tagName === "MAIN" || target.getAttribute("data-app-scroll-root") === "true"))
+      ) {
+        read();
+      }
+    };
+    const frame = window.requestAnimationFrame(read);
+    document.addEventListener("scroll", onScroll, { capture: true, passive: true });
+    window.addEventListener("resize", read);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.removeEventListener("scroll", onScroll, { capture: true });
+      window.removeEventListener("resize", read);
+    };
+  }, [pathname]);
+
   const shellPalette = themeMode === "dark"
     ? {
         panelBg: "#212121",
@@ -153,7 +203,8 @@ export function GlobalAppTabsBar() {
         border: "#3f3f46",
         text: "#f1f1f1",
         textMuted: "#aaaaaa",
-        stripBg: "rgba(10,10,12,0.4)",
+        // Over a flat page (lib/flat-page.ts) it's that page's own colour.
+        stripBg: isFlatPage(pathname) ? "rgba(11,13,18,0.4)" : "rgba(10,10,12,0.4)",
         tabIdleBg: "rgba(255,255,255,0.05)",
         stripHighlight: "rgba(255,255,255,0.07)",
       }
@@ -163,7 +214,8 @@ export function GlobalAppTabsBar() {
         border: "#D8DEE8",
         text: "#0F172A",
         textMuted: "#475467",
-        stripBg: "rgba(238,241,248,0.4)",
+        // Over a flat page (lib/flat-page.ts) it's that page's own grey.
+        stripBg: isFlatPage(pathname) ? "rgba(245,247,250,0.4)" : "rgba(238,241,248,0.4)",
         tabIdleBg: "rgba(255,255,255,0.55)",
         stripHighlight: "rgba(255,255,255,0.55)",
       };
@@ -395,16 +447,200 @@ export function GlobalAppTabsBar() {
     }
   };
 
-  useEffect(() => {
-    if (!draggedGroupKey || typeof document === "undefined") return;
-    const onDocumentDragOver = (event: DragEvent) => {
-      const ghost = customDragGhostRef.current;
-      if (!ghost || !event.clientX) return;
-      ghost.style.left = `${event.clientX - dragGhostGrabOffsetXRef.current}px`;
+  // Which slot the dragged tab is over: compared by the tab's own centre (where its ghost is), against
+  // the other tabs' centres as they were when it was picked up. Only the tab's sideways position
+  // counts — the pointer doesn't have to be over the bar.
+  const updateInsertIndexForGhost = (sourceKey: string, ghostCentreX: number) => {
+    const remainingLayouts = dragLayoutRef.current.filter((item) => item.groupKey !== sourceKey);
+    let nextInsertIndex = remainingLayouts.length;
+    for (let index = 0; index < remainingLayouts.length; index += 1) {
+      const layout = remainingLayouts[index];
+      if (ghostCentreX < layout.left + layout.width / 2) {
+        nextInsertIndex = index;
+        break;
+      }
+    }
+    setDragInsertIndex(nextInsertIndex);
+    setDragOverGroupKey(remainingLayouts[nextInsertIndex]?.groupKey || "");
+  };
+
+  // Desktop: the dragged tab's ghost follows the pointer from the moment it's picked up — listening
+  // straight away (not once React has re-rendered with the drag state, which missed the first moments
+  // of every drag and left it trailing behind), and moved once per frame with a GPU transform. The
+  // whole page accepts the drop (so letting go anywhere puts the tab where it's shown), but nothing on
+  // the page receives it — the drag is finished in handleGroupDragEnd.
+  const followPointerWithGhost = (ghost: HTMLElement, startX: number, sourceKey: string, ghostWidth: number) => {
+    stopGhostFollowRef.current?.();
+    const baseLeft = startX - dragGhostGrabOffsetXRef.current;
+    let pendingX = startX;
+    let frame = 0;
+    const paint = () => {
+      frame = 0;
+      const left = pendingX - dragGhostGrabOffsetXRef.current;
+      ghost.style.transform = `translate3d(${left - baseLeft}px, 0, 0)`;
+      updateInsertIndexForGhost(sourceKey, left + ghostWidth / 2);
     };
-    document.addEventListener("dragover", onDocumentDragOver);
-    return () => document.removeEventListener("dragover", onDocumentDragOver);
-  }, [draggedGroupKey]);
+    const onMove = (event: DragEvent) => {
+      if (event.type === "dragover") {
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+      }
+      // The very last drag event of a drag reports 0,0 — ignore it.
+      if (!event.clientX && !event.clientY) return;
+      pendingX = event.clientX;
+      if (!frame) frame = window.requestAnimationFrame(paint);
+    };
+    const onDrop = (event: DragEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    ghost.style.left = `${baseLeft}px`;
+    ghost.style.transition = "none";
+    ghost.style.willChange = "transform";
+    document.addEventListener("drag", onMove, true);
+    document.addEventListener("dragover", onMove, true);
+    document.addEventListener("drop", onDrop, true);
+    stopGhostFollowRef.current = () => {
+      document.removeEventListener("drag", onMove, true);
+      document.removeEventListener("dragover", onMove, true);
+      document.removeEventListener("drop", onDrop, true);
+      if (frame) window.cancelAnimationFrame(frame);
+      stopGhostFollowRef.current = null;
+    };
+  };
+
+  // Let go of: the ghost slides from where it was dropped into the tab's place in the row (where the
+  // gap was), then the real tab shows again in its place.
+  const settleGhostInto = (groupKey: string) => {
+    const ghost = customDragGhostRef.current;
+    if (!ghost || !groupKey || typeof window === "undefined") {
+      removeCustomDragGhost();
+      return;
+    }
+    stopGhostFollowRef.current?.();
+    const token = ++settleTokenRef.current;
+    setSettlingGroupKey(groupKey);
+    const fromLeft = ghost.getBoundingClientRect().left;
+    ghost.style.transition = "none";
+    ghost.style.transform = "none";
+    ghost.style.left = `${fromLeft}px`;
+    const finish = () => {
+      if (token !== settleTokenRef.current) return;
+      setSettlingGroupKey("");
+      // Once the real tab is showing again.
+      window.requestAnimationFrame(() => {
+        if (token === settleTokenRef.current) removeCustomDragGhost();
+      });
+    };
+    // After the row has re-rendered with the tab back in it.
+    window.requestAnimationFrame(() =>
+      window.requestAnimationFrame(() => {
+        if (token !== settleTokenRef.current) return;
+        const toLeft = groupNodeRefs.current[groupKey]?.getBoundingClientRect().left;
+        if (toLeft === undefined) {
+          finish();
+          return;
+        }
+        ghost.style.transition = "transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1)";
+        ghost.style.transform = `translate3d(${toLeft - fromLeft}px, 0, 0)`;
+        window.setTimeout(finish, 240);
+      }),
+    );
+  };
+
+  // Closing a tab with its X: it pops away the same way a button leaving the Quote window's bottom bar
+  // does — a copy of it on the spot swells a touch, then shrinks and fades (floating-bar-slot-pop,
+  // 180ms) — and only then does the row slide shut over the space it left (300ms), the same order as
+  // FloatingBarSlot in the project page. The tab itself is closed straight away; the copy and the
+  // space are just left behind for the animation.
+  const popAwayClosingTab = (groupKey: string) => {
+    const node = groupNodeRefs.current[groupKey];
+    const index = scrollableTabGroups.findIndex((group) => group.groupKey === groupKey);
+    if (!node || index < 0 || typeof window === "undefined") return;
+    const rect = node.getBoundingClientRect();
+    if (!rect.width) return;
+    const ghost = node.cloneNode(true) as HTMLDivElement;
+    ghost.removeAttribute("data-app-tab-group");
+    // Its X was just clicked: the copy keeps the red outline that showed while the X was hovered
+    // (globals.css).
+    ghost.setAttribute("data-closing", "true");
+    ghost.classList.add("floating-bar-slot-pop");
+    ghost.style.position = "fixed";
+    ghost.style.left = `${rect.left}px`;
+    ghost.style.top = `${rect.top}px`;
+    ghost.style.width = `${rect.width}px`;
+    ghost.style.height = `${rect.height}px`;
+    ghost.style.margin = "0";
+    ghost.style.pointerEvents = "none";
+    ghost.style.zIndex = "9999";
+    ghost.style.transform = "none";
+    ghost.style.transition = "none";
+    document.body.appendChild(ghost);
+    const id = ++closingTabGapIdRef.current;
+    setClosingTabGaps((prev) => [...prev, { id, index, width: rect.width, collapsed: false }]);
+    closingTabTimersRef.current.push(
+      window.setTimeout(() => {
+        ghost.remove();
+        setClosingTabGaps((prev) => prev.map((gap) => (gap.id === id ? { ...gap, collapsed: true } : gap)));
+      }, 180),
+      window.setTimeout(() => setClosingTabGaps((prev) => prev.filter((gap) => gap.id !== id)), 180 + 320),
+    );
+  };
+
+  useEffect(() => {
+    const timers = closingTabTimersRef.current;
+    return () => timers.forEach((timer) => window.clearTimeout(timer));
+  }, []);
+
+  // The tab row with the spaces closed tabs left, each where its tab was (tabNodes: one per
+  // scrollableTabGroups entry). A space slides shut by its width, and by the row's 6px gap (gap-1.5)
+  // next to it, so nothing's left once it's gone.
+  const withClosingTabGaps = (tabNodes: ReactNode[]) => {
+    if (!closingTabGaps.length) return tabNodes;
+    const renderGap = (gap: (typeof closingTabGaps)[number]) => (
+      <div
+        key={`closing-tab-gap-${gap.id}`}
+        aria-hidden="true"
+        className="h-9 shrink-0"
+        style={{
+          width: gap.collapsed ? 0 : gap.width,
+          marginRight: gap.collapsed ? -6 : 0,
+          transition: "width 300ms ease-in-out, margin-right 300ms ease-in-out",
+        }}
+      />
+    );
+    const out: ReactNode[] = [];
+    tabNodes.forEach((node, index) => {
+      closingTabGaps.filter((gap) => gap.index === index).forEach((gap) => out.push(renderGap(gap)));
+      out.push(node);
+    });
+    closingTabGaps.filter((gap) => gap.index >= tabNodes.length).forEach((gap) => out.push(renderGap(gap)));
+    return out;
+  };
+
+  // A new drag while the last one is still sliding into place: that one just finishes.
+  const cancelSettle = () => {
+    settleTokenRef.current += 1;
+    setSettlingGroupKey("");
+    removeCustomDragGhost();
+  };
+
+  // Ends a drag (desktop or touch): puts the tab where it was shown (commit), or back where it was,
+  // then slides it into place.
+  const finishTabDrag = (sourceKey: string, commit: boolean) => {
+    stopGhostFollowRef.current?.();
+    if (commit && sourceKey && dragInsertIndex !== null) {
+      reorderGroupToIndex(sourceKey, dragInsertIndex);
+    }
+    setDraggedGroupKey("");
+    setDragOverGroupKey("");
+    setDragInsertIndex(null);
+    setDraggedGroupWidth(0);
+    setCollapsedDraggedGroupKey("");
+    setPressedGroupKey("");
+    dragLayoutRef.current = [];
+    settleGhostInto(sourceKey);
+  };
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -429,6 +665,7 @@ export function GlobalAppTabsBar() {
   const handleGroupDragStart = (groupKey: string, event: ReactDragEvent<HTMLElement>) => {
     const normalizedGroupKey = String(groupKey || "").trim();
     if (!normalizedGroupKey) return;
+    cancelSettle();
     setDraggedGroupKey(normalizedGroupKey);
     setDragOverGroupKey(normalizedGroupKey);
     const groupNode = groupNodeRefs.current[normalizedGroupKey];
@@ -451,12 +688,16 @@ export function GlobalAppTabsBar() {
     setAppTabsMenuPos(null);
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", normalizedGroupKey);
+    setDragShiftAnimated(false);
+    setDragInsertIndex(Math.max(0, scrollableTabGroups.findIndex((group) => group.groupKey === normalizedGroupKey)));
     if (typeof window !== "undefined") {
       window.requestAnimationFrame(() => {
         setCollapsedDraggedGroupKey(normalizedGroupKey);
+        window.requestAnimationFrame(() => window.requestAnimationFrame(() => setDragShiftAnimated(true)));
       });
     } else {
       setCollapsedDraggedGroupKey(normalizedGroupKey);
+      setDragShiftAnimated(true);
     }
     if (groupNode && groupRect) {
       // Suppress the browser's native drag-image entirely (it always tracks the
@@ -481,107 +722,42 @@ export function GlobalAppTabsBar() {
       document.body.appendChild(ghost);
       customDragGhostRef.current = ghost;
       dragGhostGrabOffsetXRef.current = event.clientX - groupRect.left;
+      followPointerWithGhost(ghost, event.clientX, normalizedGroupKey, groupRect.width);
     }
   };
 
   const removeCustomDragGhost = () => {
+    stopGhostFollowRef.current?.();
     customDragGhostRef.current?.remove();
     customDragGhostRef.current = null;
   };
 
+  // The drop itself is caught page-wide while a tab is dragged (followPointerWithGhost), so these only
+  // keep the tab row a valid place to drop; the drag is finished by handleGroupDragEnd.
   const handleGroupDrop = (_groupKey: string, event: ReactDragEvent<HTMLElement>) => {
     event.preventDefault();
-    const sourceGroupKey =
-      String(event.dataTransfer.getData("text/plain") || "").trim() ||
-      draggedGroupKey;
-    if (sourceGroupKey && dragInsertIndex !== null) {
-      reorderGroupToIndex(sourceGroupKey, dragInsertIndex);
-    }
-    setDraggedGroupKey("");
-    setDragOverGroupKey("");
-    setDragInsertIndex(null);
-    setDraggedGroupWidth(0);
-    setCollapsedDraggedGroupKey("");
-    removeCustomDragGhost();
   };
 
-  const handleGroupDragEnd = () => {
-    setDraggedGroupKey("");
-    setDragOverGroupKey("");
-    setDragInsertIndex(null);
-    setDraggedGroupWidth(0);
-    setCollapsedDraggedGroupKey("");
-    setPressedGroupKey("");
-    dragLayoutRef.current = [];
-    removeCustomDragGhost();
+  // Escape, or letting go outside the window, cancels (dropEffect "none") — the tab goes back where it
+  // was; anywhere else, it goes where it's shown.
+  const handleGroupDragEnd = (event: ReactDragEvent<HTMLElement>) => {
+    finishTabDrag(draggedGroupKey, event.dataTransfer?.dropEffect !== "none");
   };
 
   const handleTabsStripDragOver = (event: ReactDragEvent<HTMLDivElement>) => {
     if (!draggedGroupKey) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "move";
-    const target = event.target as HTMLElement | null;
-    const isInsideStrip = Boolean(target?.closest?.("[data-app-tabs-strip]"));
-    if (!isInsideStrip) {
-      setDragOverGroupKey("");
-      setDragInsertIndex(null);
-      return;
-    }
-    const remainingLayouts = dragLayoutRef.current.filter((item) => item.groupKey !== draggedGroupKey);
-    if (!remainingLayouts.length) {
-      setDragOverGroupKey("");
-      setDragInsertIndex(0);
-      return;
-    }
-    // Use the dragged tab's own visual center (where the ghost actually is),
-    // not the raw cursor point — the cursor can be grabbed anywhere within the
-    // tab, so comparing its raw X against sibling midpoints made the "make room"
-    // shift trigger out of sync with where the dragged tab visibly overlaps.
-    const clientX = event.clientX - dragGhostGrabOffsetXRef.current + draggedGroupWidth / 2;
-    let nextInsertIndex = remainingLayouts.length;
-    for (let index = 0; index < remainingLayouts.length; index += 1) {
-      const layout = remainingLayouts[index];
-      const midpoint = layout.left + layout.width / 2;
-      if (clientX < midpoint) {
-        nextInsertIndex = index;
-        break;
-      }
-    }
-    setDragInsertIndex(nextInsertIndex);
-    const nextGroupKey = remainingLayouts[nextInsertIndex]?.groupKey || "";
-    if (!nextGroupKey) {
-      setDragOverGroupKey("");
-    } else {
-      setDragOverGroupKey(nextGroupKey);
-    }
   };
 
-  const handleTabsStripDragLeave = (event: ReactDragEvent<HTMLDivElement>) => {
-    if (!draggedGroupKey) return;
-    const nextTarget = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null;
-    const isStillInsideStrip = Boolean(nextTarget?.closest?.("[data-app-tabs-strip]"));
-    if (!isStillInsideStrip) {
-      setDragOverGroupKey("");
-      setDragInsertIndex(null);
-    }
+  const handleTabsStripDragLeave = () => {
+    // Leaving the bar doesn't matter — where the tab goes follows the tab itself (see
+    // updateInsertIndexForGhost), not the pointer.
   };
 
   const handleTabsStripDrop = (event: ReactDragEvent<HTMLDivElement>) => {
     if (!draggedGroupKey) return;
     event.preventDefault();
-    const sourceGroupKey =
-      String(event.dataTransfer.getData("text/plain") || "").trim() ||
-      draggedGroupKey;
-    if (sourceGroupKey && dragInsertIndex !== null) {
-      reorderGroupToIndex(sourceGroupKey, dragInsertIndex);
-    }
-    setDraggedGroupKey("");
-    setDragOverGroupKey("");
-    setDragInsertIndex(null);
-    setDraggedGroupWidth(0);
-    setCollapsedDraggedGroupKey("");
-    dragLayoutRef.current = [];
-    removeCustomDragGhost();
   };
 
   const getRemainingGroupIndex = (groupKey: string) => {
@@ -605,6 +781,7 @@ export function GlobalAppTabsBar() {
   // Touch equivalent of handleGroupDragStart — same ghost-clone/dragLayoutRef setup, just sourced
   // from a touch point instead of a native DragEvent (which never arrives on mobile at all).
   const beginMobileTabDrag = (groupKey: string, touch: { clientX: number; clientY: number }) => {
+    cancelSettle();
     const groupNode = groupNodeRefs.current[groupKey];
     const groupRect = groupNode?.getBoundingClientRect();
     if (!groupNode || !groupRect) return;
@@ -624,7 +801,10 @@ export function GlobalAppTabsBar() {
     // let the browser's native drag-image snapshot capture the element before it collapses; touch
     // dragging has no native drag image, and the clone below is taken synchronously from the still-
     // uncollapsed DOM regardless of when the collapse state actually re-renders.
+    setDragShiftAnimated(false);
+    setDragInsertIndex(Math.max(0, scrollableTabGroups.findIndex((group) => group.groupKey === groupKey)));
     setCollapsedDraggedGroupKey(groupKey);
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => setDragShiftAnimated(true)));
     dragGhostGrabOffsetXRef.current = touch.clientX - groupRect.left;
     const ghost = groupNode.cloneNode(true) as HTMLDivElement;
     ghost.style.position = "fixed";
@@ -721,17 +901,8 @@ export function GlobalAppTabsBar() {
     if (!state) return;
     if (state.longPressTimer) clearTimeout(state.longPressTimer);
     if (!state.dragging) return;
-    if (commit && dragInsertIndex !== null) {
-      reorderGroupToIndex(state.groupKey, dragInsertIndex);
-    }
     suppressNextTabClickRef.current = state.groupKey;
-    setDraggedGroupKey("");
-    setDragOverGroupKey("");
-    setDragInsertIndex(null);
-    setDraggedGroupWidth(0);
-    setCollapsedDraggedGroupKey("");
-    dragLayoutRef.current = [];
-    removeCustomDragGhost();
+    finishTabDrag(state.groupKey, commit);
   };
 
   const onTabTouchEnd = () => endMobileTabDrag(true);
@@ -916,23 +1087,36 @@ export function GlobalAppTabsBar() {
       <div
         data-app-top-bar="true"
         className="app-top-bar-sidebar-offset fixed left-0 right-0 top-0 z-[95] h-12 px-2"
-        style={{
-          backgroundColor: shellPalette.stripBg,
-          backdropFilter: "blur(12px) saturate(220%)",
-          WebkitBackdropFilter: "blur(12px) saturate(220%)",
-          // No var(--shadow-glass) here — it's a downward drop-shadow (0 8px 32px) that bleeds
-          // into whatever sits directly below this fixed bar on every page, reading as a visible
-          // gap even when the content below is genuinely flush against it.
-          boxShadow: `inset 0 1px 0 ${shellPalette.stripHighlight}`,
-          color: shellPalette.text,
-        }}
+        style={{ color: shellPalette.text }}
       >
+        {/* The bar's glass: see-through at the top of a page, fading in once the page scrolls under
+            it (isPageScrolledUnder) — and while the phone pull-down menu is open (app-shell.tsx
+            marks the bar data-pulling; see globals.css). Its own layer, so the bar's height can
+            still be changed by that pull-down without touching this fade. */}
+        <div
+          data-app-top-bar-glass="true"
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0"
+          style={{
+            backgroundColor: shellPalette.stripBg,
+            backdropFilter: "blur(12px) saturate(220%)",
+            WebkitBackdropFilter: "blur(12px) saturate(220%)",
+            // No var(--shadow-glass) here — it's a downward drop-shadow (0 8px 32px) that bleeds
+            // into whatever sits directly below this fixed bar on every page, reading as a visible
+            // gap even when the content below is genuinely flush against it.
+            boxShadow: `inset 0 1px 0 ${shellPalette.stripHighlight}`,
+            opacity: isPageScrolledUnder ? 1 : 0,
+            transition: "opacity 240ms ease",
+          }}
+        />
         {/* Rendered as its own layer (not a border on this container) so the active
             tab's connector/notch pieces below can reliably paint over it via normal
-            DOM-order stacking, instead of depending on an ancestor's own border layer. */}
+            DOM-order stacking, instead of depending on an ancestor's own border layer.
+            Only with the glass — at the top of a page there's no line under the bar. */}
         <div
+          data-app-top-bar-glass="true"
           className="pointer-events-none absolute inset-x-0 bottom-0 h-px"
-          style={{ backgroundColor: "var(--glass-border)" }}
+          style={{ backgroundColor: "var(--glass-border)", opacity: isPageScrolledUnder ? 1 : 0, transition: "opacity 240ms ease" }}
         />
         {/* data-app-top-bar-content, separate from the outer bar's own data-app-top-bar — the
             pulldown gesture (app-shell.tsx) fades THIS (hamburger/tabs/bell) out while leaving
@@ -970,7 +1154,9 @@ export function GlobalAppTabsBar() {
                     type="button"
                     onClick={(event) => selectAppTab(onlyTab, event.currentTarget)}
                     onMouseDown={handleAuxButtonMouseDown}
-                    className="inline-flex h-9 min-w-[100px] max-w-[200px] shrink-0 items-center gap-2 rounded-[10px] px-3 text-left text-[12px] font-bold transition-colors"
+                    // The tabs' hover look (globals.css) — only on hover here, never kept while it's open.
+                    data-app-top-tab="true"
+                    className="relative isolate inline-flex h-9 min-w-[100px] max-w-[200px] shrink-0 items-center gap-2 rounded-full px-4 text-left text-[12px] font-bold transition-colors"
                     style={{
                       backgroundColor: isActiveTab ? shellPalette.panelBg : shellPalette.tabIdleBg,
                       boxShadow: isActiveTab ? "none" : "var(--shadow-sm)",
@@ -993,11 +1179,11 @@ export function GlobalAppTabsBar() {
             onDrop={handleTabsStripDrop}
             // hide-native-scrollbar: never shows a scrollbar (width or height) here either way.
             // Mobile keeps overflow-x-auto so the strip is still pull/swipe-scrollable by touch;
-            // desktop's own tabs shrink to fit instead (see their flex-1/min-w below), with
+            // desktop's own tabs shrink to fit instead (see their shrink/min-w below), with
             // overflow-x-auto left on only as a defensive fallback if that floor is ever hit.
             className="hide-native-scrollbar flex h-full min-w-0 flex-1 items-center gap-1.5 overflow-x-auto overflow-y-hidden"
           >
-            {scrollableTabGroups.map((group) => {
+            {withClosingTabGaps(scrollableTabGroups.map((group) => {
               // Which sub-view represents this project's tab: whichever one is the current route,
               // else whichever one the project page itself flagged `active` (its own last-active-
               // view bookkeeping — this is what makes clicking the tab reopen wherever the user
@@ -1020,24 +1206,31 @@ export function GlobalAppTabsBar() {
                     groupNodeRefs.current[group.groupKey] = node;
                   }}
                   data-app-tab-group={group.groupKey}
+                  // Hover / open look: globals.css.
+                  data-app-top-tab="true"
+                  data-active={isActiveTab ? "true" : undefined}
                   // Mobile: fixed min/max width, never shrinks — the strip scrolls (by touch)
-                  // instead. Desktop: flex-1 with a shared flex-basis of 0 makes every tab the
-                  // same width and shrink together as more get added, down to the min-width
-                  // floor, instead of the strip ever needing to scroll.
+                  // instead. Desktop: each tab is as wide as its name (plus its padding and close
+                  // button), so tabs differ in size; when they no longer all fit they shrink in
+                  // proportion, down to the min-width floor, instead of the strip needing to scroll.
                   className={
                     isDesktopViewport
-                      ? "group relative inline-flex h-9 min-w-[90px] max-w-[220px] flex-1 items-center gap-1.5 rounded-[10px] px-3 transition-colors"
-                      : "group relative inline-flex h-9 max-w-[320px] shrink-0 items-center gap-1.5 rounded-[10px] px-3 transition-colors"
+                      ? "group relative isolate inline-flex h-9 min-w-[90px] max-w-[280px] shrink items-center gap-1.5 rounded-full pl-4 pr-1.5 transition-colors"
+                      : "group relative isolate inline-flex h-9 max-w-[320px] shrink-0 items-center gap-1.5 rounded-full pl-4 pr-1.5 transition-colors"
                   }
                   onDrop={(event) => handleGroupDrop(group.groupKey, event)}
                   style={{
                     backgroundColor: isActiveTab ? shellPalette.panelBg : shellPalette.tabIdleBg,
                     boxShadow: isActiveTab ? "none" : "var(--shadow-sm)",
-                    opacity: isCollapsedDragSource ? 0 : 1,
+                    opacity: isCollapsedDragSource || settlingGroupKey === group.groupKey ? 0 : 1,
                     transform: groupShiftX > 0 ? `translateX(${groupShiftX}px)` : "translateX(0)",
+                    // While dragging, only the other tabs sliding aside animates — the picked-up tab
+                    // itself disappears from the row at once (see dragShiftAnimated).
                     transition: draggedGroupKey
-                      ? "transform 180ms ease, box-shadow 180ms ease, opacity 180ms ease, width 180ms ease, min-width 180ms ease, max-width 180ms ease, padding 180ms ease, border-width 180ms ease"
-                      : "background-color 120ms ease, box-shadow 180ms ease, opacity 180ms ease",
+                      ? dragShiftAnimated
+                        ? "transform 180ms ease, box-shadow 180ms ease"
+                        : "none"
+                      : "background-color 120ms ease, box-shadow 180ms ease, outline-color 140ms ease",
                     cursor: isPressed ? "grabbing" : "pointer",
                     width: isCollapsedDragSource ? 0 : undefined,
                     minWidth: isCollapsedDragSource ? 0 : undefined,
@@ -1091,9 +1284,12 @@ export function GlobalAppTabsBar() {
                     type="button"
                     onMouseDown={handleAuxButtonMouseDown}
                     onClick={() => {
+                      popAwayClosingTab(group.groupKey);
                       closeAppTab(group.tabs.length > 1 ? `${CLOSING_SCOPE_PREFIX}${group.groupKey}` : activeTab.key);
                     }}
-                    className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] transition-colors hover:bg-[var(--panel-border)]"
+                    // Hovering it turns the tab's outline red (globals.css).
+                    data-app-top-tab-close="true"
+                    className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-[var(--panel-border)]"
                     style={{ color: shellPalette.textMuted }}
                     aria-label={`Close ${group.groupLabel}`}
                   >
@@ -1101,7 +1297,7 @@ export function GlobalAppTabsBar() {
                   </button>
                 </div>
               );
-            })}
+            }))}
           </div>
           {user?.uid ? (
             <button

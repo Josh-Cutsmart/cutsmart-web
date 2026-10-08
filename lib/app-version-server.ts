@@ -273,11 +273,67 @@ export async function schedulePublish(options: {
     });
 }
 
+// The publish that's waiting for its time (at most one — scheduling a newer version replaces it), with what
+// it'll publish, so Dev users can preview it — and see when it goes out — from any page, not just its
+// deploy's.
+export type WaitingPublish = PublishContent & { scheduledForIso: string; notify: boolean };
+
+export async function readWaitingPublish(): Promise<WaitingPublish | null> {
+  if (!adminDb) return null;
+  const snap = await adminDb.collection(SCHEDULES_COLLECTION).where("status", "==", "scheduled").limit(1).get();
+  const data = snap.docs[0]?.data();
+  if (!data) return null;
+  return {
+    version: String(data.version || ""),
+    whatsNew: String(data.whatsNew || ""),
+    highlights: Array.isArray(data.highlights) ? (data.highlights as WhatsNewHighlight[]) : [],
+    scheduledForIso: String(data.scheduledForIso || ""),
+    notify: Boolean(data.notify),
+  };
+}
+
 export async function cancelScheduledPublish(version: string): Promise<void> {
   await adminDb!.collection(SCHEDULES_COLLECTION).doc(versionIdOf(version)).delete();
 }
 
 // ---- The scheduled job (app/api/cron/notifications, every minute)
+
+// Runs one scheduled publish — claimed first, so the job and a Publish now can't both run it. null if it
+// isn't waiting any more.
+async function runScheduledPublish(ref: FirebaseFirestore.DocumentReference, siteOrigin: string): Promise<PublishResult | null> {
+  const db = adminDb!;
+  const data = await db.runTransaction(async (tx) => {
+    const fresh = await tx.get(ref);
+    if (fresh.data()?.status !== "scheduled") return null;
+    tx.update(ref, { status: "publishing", startedAtIso: new Date().toISOString() });
+    return fresh.data() ?? null;
+  });
+  if (!data) return null;
+  const published = await publishVersionNow({
+    content: {
+      version: String(data.version || ""),
+      whatsNew: String(data.whatsNew || ""),
+      highlights: Array.isArray(data.highlights) ? (data.highlights as WhatsNewHighlight[]) : [],
+    },
+    notify: Boolean(data.notify),
+    publishedByUid: String(data.scheduledByUid || ""),
+    siteOrigin,
+    deploymentId: String(data.deploymentId || "") || undefined,
+  });
+  if (published.ok || published.error === "already-published") {
+    await ref.set({ status: "published", publishedAtIso: new Date().toISOString() }, { merge: true });
+  } else {
+    await ref.set({ status: "failed", error: published.error || "failed" }, { merge: true });
+  }
+  return published;
+}
+
+// A scheduled publish, now instead of at its time (from any page — it has everything it needs).
+export async function publishScheduledNow(version: string, siteOrigin: string): Promise<PublishResult> {
+  if (!adminDb) return { ok: false, error: "no-database", version };
+  const ran = await runScheduledPublish(adminDb.collection(SCHEDULES_COLLECTION).doc(versionIdOf(version)), siteOrigin);
+  return ran ?? { ok: false, error: "not-scheduled", version };
+}
 
 export async function runAppVersionJobs(siteOrigin: string): Promise<{ published: string[]; failed: string[]; announced: number }> {
   const result = { published: [] as string[], failed: [] as string[], announced: 0 };
@@ -288,35 +344,10 @@ export async function runAppVersionJobs(siteOrigin: string): Promise<{ published
   // Scheduled publishes whose time has come.
   const due = await db.collection(SCHEDULES_COLLECTION).where("status", "==", "scheduled").get();
   for (const docSnap of due.docs) {
-    const data = docSnap.data();
-    if (String(data.scheduledForIso || "") > nowIso) continue;
-    // Claimed, so two runs can't both publish it.
-    const claimed = await db.runTransaction(async (tx) => {
-      const fresh = await tx.get(docSnap.ref);
-      if (fresh.data()?.status !== "scheduled") return false;
-      tx.update(docSnap.ref, { status: "publishing", startedAtIso: new Date().toISOString() });
-      return true;
-    });
-    if (!claimed) continue;
-    const content: PublishContent = {
-      version: String(data.version || ""),
-      whatsNew: String(data.whatsNew || ""),
-      highlights: Array.isArray(data.highlights) ? (data.highlights as WhatsNewHighlight[]) : [],
-    };
-    const published = await publishVersionNow({
-      content,
-      notify: Boolean(data.notify),
-      publishedByUid: String(data.scheduledByUid || ""),
-      siteOrigin,
-      deploymentId: String(data.deploymentId || "") || undefined,
-    });
-    if (published.ok || published.error === "already-published") {
-      result.published.push(content.version);
-      await docSnap.ref.set({ status: "published", publishedAtIso: new Date().toISOString() }, { merge: true });
-    } else {
-      result.failed.push(content.version);
-      await docSnap.ref.set({ status: "failed", error: published.error || "failed" }, { merge: true });
-    }
+    if (String(docSnap.data().scheduledForIso || "") > nowIso) continue;
+    const ran = await runScheduledPublish(docSnap.ref, siteOrigin);
+    if (!ran) continue;
+    (ran.ok || ran.error === "already-published" ? result.published : result.failed).push(ran.version);
   }
 
   // Announcements that didn't finish (a publish that ran out of time).

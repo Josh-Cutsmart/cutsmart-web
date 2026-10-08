@@ -13,16 +13,19 @@ import {
 import {
   browserLocalPersistence,
   browserSessionPersistence,
+  createUserWithEmailAndPassword,
   onAuthStateChanged,
   setPersistence,
   signInWithEmailAndPassword,
   signOut,
   type User,
 } from "firebase/auth";
-import { auth, hasFirebaseConfig } from "@/lib/firebase";
+import { forgetPinLock } from "@/lib/device-pin";
+import { auth, db, hasFirebaseConfig } from "@/lib/firebase";
 import { hedgedAsync } from "@/lib/load-retry";
 import { clearLastKnown, readLastKnown, saveLastKnown } from "@/lib/last-known";
 import { fetchPrimaryMembership, fetchUserProfileSummary } from "@/lib/membership";
+import { exitPreview, isPreviewMode } from "@/lib/preview-mode";
 import type { AppUser, UserRole } from "@/lib/types";
 
 // "loading": the initial membership/profile fetch for the current sign-in hasn't settled yet.
@@ -41,6 +44,9 @@ interface AuthContextValue {
   membershipStatus: MembershipStatus;
   retryMembershipLoad: () => void;
   signIn: (email: string, password: string, rememberOnDevice?: boolean) => Promise<void>;
+  // Creates the account and signs it in for this browser session only (a PIN can keep it longer —
+  // see lib/device-pin.ts). Returns the new account's uid.
+  register: (email: string, password: string) => Promise<string>;
   signInDemo: (role: UserRole) => void;
   logout: () => Promise<void>;
   setUserColorLocal: (color: string) => void;
@@ -291,8 +297,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     void loadMembership(currentFirebaseUserRef.current);
   }, [loadMembership]);
 
+  // CutSmart Preview: no account — the made-up company is written into the preview's own offline
+  // database (lib/preview-seed.ts), then its owner is "signed in".
   useEffect(() => {
-    if (!hasFirebaseConfig || !auth) {
+    if (!hasFirebaseConfig || !db || !isPreviewMode()) return;
+    const previewDb = db;
+    let cancelled = false;
+    void import("@/lib/preview-seed").then(async (seed) => {
+      await seed.seedPreviewDatabase(previewDb);
+      if (cancelled) return;
+      setUser({
+        uid: seed.PREVIEW_UID,
+        email: seed.PREVIEW_EMAIL,
+        displayName: seed.PREVIEW_NAME,
+        userColor: "#2F6BFF",
+        role: "owner",
+        companyId: seed.PREVIEW_COMPANY_ID,
+        permissions: seed.PREVIEW_PERMISSION_KEYS,
+        verified: true,
+      });
+      setIsDemoMode(true);
+      setMembershipStatus("ready");
+      setIsLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!hasFirebaseConfig || !auth || isPreviewMode()) {
       return;
     }
 
@@ -361,6 +395,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           throw new Error("Firebase is not configured.");
         }
         if (typeof window !== "undefined") {
+          // Whether this sign-in is kept with a PIN is decided afresh (see the login screen).
+          forgetPinLock();
           window.localStorage.setItem(REMEMBER_DEVICE_STORAGE_KEY, rememberOnDevice ? "1" : "0");
           // Defensive twin of the logout-time clear above, for a session that ended without an
           // explicit logout (browser closed, session expired) — a fresh sign-in should never
@@ -371,6 +407,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await setPersistence(auth, rememberOnDevice ? browserLocalPersistence : browserSessionPersistence);
         await signInWithEmailAndPassword(auth, email, password);
       },
+      register: async (email, password) => {
+        if (!auth) {
+          throw new Error("Firebase is not configured.");
+        }
+        if (typeof window !== "undefined") {
+          forgetPinLock();
+          window.localStorage.setItem(REMEMBER_DEVICE_STORAGE_KEY, "0");
+          window.localStorage.removeItem(ACTIVE_COMPANY_STORAGE_KEY);
+          clearLastKnown();
+        }
+        await setPersistence(auth, browserSessionPersistence);
+        const created = await createUserWithEmailAndPassword(auth, email, password);
+        return String(created.user?.uid || "").trim();
+      },
       signInDemo: (role) => {
         if (typeof window !== "undefined") {
           window.localStorage.setItem(DEMO_STORAGE_KEY, role);
@@ -380,10 +430,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setMembershipStatus("ready");
       },
       logout: async () => {
+        if (isPreviewMode()) {
+          exitPreview();
+          return;
+        }
         if (typeof window !== "undefined") {
           window.localStorage.removeItem(ACTIVE_COMPANY_STORAGE_KEY);
           // Nothing of this account's is left saved on the device.
           clearLastKnown();
+          forgetPinLock();
         }
         if (auth && hasFirebaseConfig) {
           // This device stops getting their phone/desktop notifications.

@@ -1,4 +1,4 @@
-import { doc, getDoc } from "firebase/firestore";
+import { doc, getDoc } from "@/lib/firestore-client";
 import { db } from "@/lib/firebase";
 
 // A short-lived, shared cache for the few documents nearly every page reads on load — the company doc,

@@ -5,7 +5,7 @@ import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type T
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { doc, serverTimestamp, setDoc } from "firebase/firestore";
+import { doc, serverTimestamp, setDoc } from "@/lib/firestore-client";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import {
   Archive,
@@ -55,8 +55,17 @@ import { getFirebaseStorageQuotaExceededMessage, isFirebaseStorageQuotaExceeded 
 import { applyThemeMode, readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
 import type { LeadCustomFieldSnapshot, ProjectImageItem } from "@/lib/types";
 import { normalizeChangelogHistory, parseUpdateNotesText, WHATS_NEW_URL_PARAM, type WhatsNewHighlight } from "@/lib/update-notes-utils";
-import { APP_VERSION_PUBLISHED_EVENT, OPEN_WHATS_NEW_DRAFT_EVENT, OPEN_WHATS_NEW_EVENT, WhatsNewSheet } from "@/components/whats-new-sheet";
-import { useIsDevUser } from "@/lib/dev-mode";
+import {
+  APP_VERSION_PUBLISHED_EVENT,
+  APP_VERSION_SCHEDULE_CHANGED_EVENT,
+  fetchPublishStatus,
+  OPEN_WHATS_NEW_DRAFT_EVENT,
+  OPEN_WHATS_NEW_EVENT,
+  useReleaseCountdown,
+  WhatsNewSheet,
+  type WaitingPublish,
+} from "@/components/whats-new-sheet";
+import { devButtonClass, useDevModeOn, useIsDevUser } from "@/lib/dev-mode";
 import {
   LEAD_PROJECT_CREATED_EVENT,
   OPEN_NEW_PROJECT_EVENT,
@@ -72,6 +81,8 @@ import { SidebarUserSettingsPanel } from "@/components/sidebar-user-settings-pan
 import { usePushNotificationsOnAppOpen } from "@/lib/push-client";
 import { VerifyAccountModal } from "@/components/verify-account-modal";
 import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
+import { isPreviewMode } from "@/lib/preview-mode";
+import { flatPageBg, isFlatPage } from "@/lib/flat-page";
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const COMPANY_BRANDING_CACHE_KEY_PREFIX = "cutsmart_company_branding_";
 const COMPANY_ACCESS_CACHE_KEY_PREFIX = "cutsmart_company_access_";
@@ -685,6 +696,14 @@ export function AppShell({
   const [whatsNewIsDraft, setWhatsNewIsDraft] = useState(false);
   const draftPublishedRef = useRef(false);
   const isDevUser = useIsDevUser();
+  // Dev users: a publish scheduled for later — previewable from any page (it carries its notes), with a
+  // countdown on the Dev button.
+  const [waitingPublish, setWaitingPublish] = useState<WaitingPublish | null>(null);
+  const releaseCountdown = useReleaseCountdown(waitingPublish?.scheduledForIso ?? "");
+  // What a Dev previews: this deploy's draft, or else the scheduled one.
+  const previewDraft: { version: string; whatsNew: string; highlights: WhatsNewHighlight[] } | null =
+    draftUpdate ?? (waitingPublish ? { version: waitingPublish.version, whatsNew: waitingPublish.whatsNew, highlights: waitingPublish.highlights } : null);
+  const previewIsScheduled = Boolean(waitingPublish && previewDraft && waitingPublish.version.toLowerCase() === previewDraft.version.toLowerCase());
   const [companyThemeColor, setCompanyThemeColor] = useState("#2F6BFF");
   const [companyLogoPath, setCompanyLogoPath] = useState("");
   // Warms the browser's own image cache the moment the logo URL is known, rather than waiting
@@ -1000,6 +1019,7 @@ export function AppShell({
     if (topBarEl) {
       topBarEl.style.transition = animate ? `height ${PULL_BANNER_RESET_DURATION_MS}ms ease` : "none";
       topBarEl.style.height = "";
+      topBarEl.removeAttribute("data-pulling");
     }
     const topBarContentEl = pullTopBarContentElRef.current;
     if (topBarContentEl) {
@@ -1009,6 +1029,63 @@ export function AppShell({
     }
     applyPullZoneStyles("dashboard", false);
   };
+  // Dev mode's "test navigation" button (phones/tablets, where the pull-down menu is): shows the menu
+  // pulled all the way down, to look at — the same bar and banner the pull gesture drives. Tapping a
+  // zone in it only shows that zone selected, then armed (the blue circle) — nothing it does is done.
+  const devModeOn = useDevModeOn();
+  const [pullPreviewOpen, setPullPreviewOpen] = useState(false);
+  const pullPreviewZoneRef = useRef<{ zone: PullZone; armed: boolean }>({ zone: "dashboard", armed: false });
+  if (pullPreviewOpen && !devModeOn) setPullPreviewOpen(false);
+  const openPullPreview = () => {
+    if (typeof document === "undefined") return;
+    pullTopBarElRef.current = document.querySelector<HTMLElement>('[data-app-top-bar="true"]');
+    pullTopBarContentElRef.current = document.querySelector<HTMLElement>('[data-app-top-bar-content="true"]');
+    const transition = `opacity ${PULL_BANNER_RESET_DURATION_MS}ms ease, height ${PULL_BANNER_RESET_DURATION_MS}ms ease`;
+    const banner = pullBannerRef.current;
+    if (!banner) return;
+    banner.style.transition = transition;
+    banner.style.height = `${PULL_BANNER_MAX_HEIGHT_PX}px`;
+    banner.style.opacity = "1";
+    banner.style.pointerEvents = "auto";
+    const topBarEl = pullTopBarElRef.current;
+    if (topBarEl) {
+      topBarEl.style.transition = `height ${PULL_BANNER_RESET_DURATION_MS}ms ease`;
+      topBarEl.style.height = `${PULL_BANNER_MAX_HEIGHT_PX}px`;
+      topBarEl.setAttribute("data-pulling", "true");
+    }
+    const topBarContentEl = pullTopBarContentElRef.current;
+    if (topBarContentEl) {
+      topBarContentEl.style.transition = `opacity ${PULL_BANNER_RESET_DURATION_MS}ms ease`;
+      topBarContentEl.style.opacity = "0";
+      topBarContentEl.style.pointerEvents = "none";
+    }
+    pullPrevSelectedRef.current = "dashboard";
+    pullPreviewZoneRef.current = { zone: "dashboard", armed: false };
+    applyPullZoneStyles("dashboard", false);
+    // The circle goes under the icon once the bar's finished growing (the icons move as it grows).
+    window.setTimeout(() => snapPullPillToZone("dashboard", false), PULL_BANNER_RESET_DURATION_MS + 20);
+    setPullPreviewOpen(true);
+  };
+  const closePullPreview = () => {
+    resetPullBanner(true);
+    setPullPreviewOpen(false);
+  };
+  // A tap on the open preview: that third of it selected — or, already selected, armed / un-armed.
+  const onPullPreviewTap = (clientX: number) => {
+    const fraction = clientX / window.innerWidth;
+    const zone: PullZone = fraction < 1 / 3 ? "reload" : fraction < 2 / 3 ? "dashboard" : "saveBack";
+    const current = pullPreviewZoneRef.current;
+    const armed = zone === current.zone ? !current.armed : false;
+    pullPreviewZoneRef.current = { zone, armed };
+    applyPullZoneStyles(zone, armed);
+  };
+  useEffect(() => {
+    // Dev mode turned off with the preview open: put the bar back.
+    if (!devModeOn && pullBannerRef.current && pullBannerRef.current.style.opacity === "1" && !pullDashboardRef.current) {
+      resetPullBanner(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [devModeOn]);
   const onMainTouchStart = (event: ReactTouchEvent<HTMLElement>) => {
     // data-app-gesture-exempt is a page surface that owns BOTH axes of its own touch handling
     // entirely (e.g. Nesting/CNC's mobile Visibility slide-up panel) — without it, tapping into
@@ -1237,6 +1314,8 @@ export function AppShell({
     if (topBarEl) {
       topBarEl.style.transition = "none";
       topBarEl.style.height = `${barHeight}px`;
+      // Shows the bar's glass while it's pulled down (globals.css).
+      topBarEl.setAttribute("data-pulling", "true");
     }
     const topBarContentEl = pullTopBarContentElRef.current;
     if (topBarContentEl) {
@@ -2222,6 +2301,23 @@ export function AppShell({
     window.addEventListener(OPEN_WHATS_NEW_DRAFT_EVENT, onOpenDraft);
     return () => window.removeEventListener(OPEN_WHATS_NEW_DRAFT_EVENT, onOpenDraft);
   }, []);
+  useEffect(() => {
+    if (!isDevUser) return;
+    let cancelled = false;
+    const load = () =>
+      void fetchPublishStatus().then((status) => {
+        if (!cancelled) setWaitingPublish(status?.waiting ?? null);
+      });
+    load();
+    window.addEventListener(APP_VERSION_SCHEDULE_CHANGED_EVENT, load);
+    window.addEventListener(APP_VERSION_PUBLISHED_EVENT, load);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(APP_VERSION_SCHEDULE_CHANGED_EVENT, load);
+      window.removeEventListener(APP_VERSION_PUBLISHED_EVENT, load);
+    };
+  }, [isDevUser]);
+
   // A published version's What's New page on demand — its "New version" notification (the bell's, or a
   // push's ?whats-new=<version> link). That version, or the newest if it can't be found.
   useEffect(() => {
@@ -2259,10 +2355,11 @@ export function AppShell({
   const closeDraftPreview = () => {
     setShowUpdateNotice(false);
     setWhatsNewIsDraft(false);
-    if (!draftPublishedRef.current || !draftUpdate) return;
+    if (!draftPublishedRef.current || !previewDraft) return;
     draftPublishedRef.current = false;
-    const published = draftUpdate;
-    setDraftUpdate(null);
+    const published = previewDraft;
+    if (draftUpdate?.version === published.version) setDraftUpdate(null);
+    if (waitingPublish?.version === published.version) setWaitingPublish(null);
     setUpdateNoticeVersion(published.version);
     setUpdateNoticeText(published.whatsNew);
     setUpdateNoticeHighlights(published.highlights);
@@ -3126,7 +3223,7 @@ export function AppShell({
                       <Link
                         href={item.href}
                         className={cn(
-                          "flex items-center gap-3 rounded-[12px] px-4 py-3.5 text-[17px] font-semibold transition",
+                          "flex items-center gap-3 rounded-[12px] px-4 py-3.5 text-[17px] font-medium transition",
                           active ? "bg-[var(--brand-soft)]" : "hover:bg-[var(--panel-muted)]",
                         )}
                         style={{
@@ -3181,7 +3278,7 @@ export function AppShell({
                         <div className="min-w-0 flex-1">
                           <p className="m-0 block truncate text-[16px] font-semibold" style={{ color: shellPalette.text }}>{user?.displayName || "CutSmart User"}</p>
                           {isDemoMode && (
-                            <span className="block truncate text-[12px] font-semibold" style={{ color: "#B7791F" }}>Demo data mode</span>
+                            <span className="block truncate text-[12px] font-semibold" style={{ color: "#B7791F" }}>{isPreviewMode() ? "CutSmart Preview" : "Demo data mode"}</span>
                           )}
                         </div>
                       </button>
@@ -3378,7 +3475,7 @@ export function AppShell({
                     }}
                     title={isSidebarIconOnlyContent ? item.label : undefined}
                     className={cn(
-                      "relative z-[1] flex items-center gap-2.5 rounded-[10px] py-2.5 text-[13px] font-semibold transition-colors",
+                      "relative z-[1] flex items-center gap-2.5 rounded-[10px] py-2.5 text-[13px] font-medium transition-colors",
                       isSidebarIconOnlyContent ? "justify-center px-0" : "px-3",
                       !active && "hover:bg-[var(--panel-muted)]",
                     )}
@@ -3527,7 +3624,7 @@ export function AppShell({
                     <div className="sidebar-label-fade-in min-w-0 flex-1">
                       <p className="m-0 block truncate text-[12px] font-semibold" style={{ color: shellPalette.text }}>{user?.displayName || "CutSmart User"}</p>
                       {isDemoMode && (
-                        <span className="block truncate text-[10px] font-semibold" style={{ color: "#B7791F" }}>Demo data mode</span>
+                        <span className="block truncate text-[10px] font-semibold" style={{ color: "#B7791F" }}>{isPreviewMode() ? "CutSmart Preview" : "Demo data mode"}</span>
                       )}
                     </div>
                   </button>
@@ -3583,16 +3680,40 @@ export function AppShell({
           PULL_FADE_DISTANCE_PX so the switch reads as near-instant — the same opacity transition now
           carries this solid background in at the same rate, so the covered-up effect ramps in
           together with the icons rather than snapping in abruptly. */}
+      {!isDesktopViewport && mobileTopBarEnabled && devModeOn && (
+        // Dev mode: the pull-down menu, shown pulled down to look at (openPullPreview) — floating just
+        // under the bar, or under the menu while it's open.
+        <button
+          type="button"
+          onClick={() => (pullPreviewOpen ? closePullPreview() : openPullPreview())}
+          className={`fixed left-1/2 z-[160] -translate-x-1/2 transition-[top] duration-200 ${devButtonClass(pullPreviewOpen)}`}
+          style={{
+            top: (pullPreviewOpen ? PULL_BANNER_MAX_HEIGHT_PX : PULL_BANNER_MIN_HEIGHT_PX) + 8,
+            borderColor: "var(--glass-border)",
+            backgroundColor: "var(--panel-bg)",
+            color: "var(--text-muted)",
+          }}
+        >
+          {pullPreviewOpen ? "close test navigation" : "test navigation"}
+        </button>
+      )}
       {!isDesktopViewport && mobileTopBarEnabled && (
         <div
           ref={pullBannerRef}
           aria-hidden="true"
+          // Only the dev "test navigation" preview takes taps here (onPullPreviewTap) — the real pull
+          // gesture is all touch handling on <main>.
+          onClick={pullPreviewOpen ? (event) => onPullPreviewTap(event.clientX) : undefined}
           className="fixed left-0 right-0 top-0 z-[150] flex"
           style={{
             height: PULL_BANNER_MIN_HEIGHT_PX,
             opacity: 0,
             pointerEvents: "none",
-            backgroundColor: "var(--panel-bg)",
+            // On a flat page (lib/flat-page.ts), that page's own colour — the same as everything else
+            // there, the top tab bar included — with a faint line along its bottom edge so it still
+            // reads as pulled down over the page.
+            backgroundColor: isFlatPage(pathname) ? flatPageBg(themeMode === "dark") : "var(--panel-bg)",
+            boxShadow: isFlatPage(pathname) ? "inset 0 -1px 0 var(--glass-border)" : undefined,
           }}
         >
           {/* One shared circle (not one per zone) that lives under whichever zone is selected —
@@ -3648,6 +3769,9 @@ export function AppShell({
         data-app-main-push="true"
         className={chromeHidden ? "min-w-0" : "min-w-0 pt-12"}
         style={{
+          // The strip under the see-through top tab bar: a flat page's own grey on flat pages, so the
+          // bar over it is that same grey too.
+          backgroundColor: isFlatPage(pathname) ? flatPageBg(themeMode === "dark") : undefined,
           width: "100%",
           paddingLeft: 0,
           overflowX: "visible",
@@ -3656,6 +3780,12 @@ export function AppShell({
       >
         <main
           ref={mainScrollRef}
+          // A flat page (lib/flat-page.ts) on a phone/tablet, where <main> is the page's scroller: it
+          // starts at the very top of the screen, under the see-through top tab bar, instead of below
+          // it (globals.css) — otherwise it cut off anything reaching up past its top edge (the
+          // Dashboard stat cards' shadows) in a hard line along the bar. The page also scrolls under
+          // the bar's glass then, the same as on desktop.
+          data-flat-under-bar={isFlatPage(pathname) && !isDesktopViewport && !chromeHidden && !ownsMobileScroll ? "true" : undefined}
           className={
             chromeHidden
               ? "min-h-0 min-w-0 overscroll-y-contain hide-native-scrollbar"
@@ -3710,7 +3840,7 @@ export function AppShell({
             // as a flat grey band at the very bottom instead of the app's actual background,
             // rather than the intended gradient. Giving it its own explicit background closes
             // that gap regardless of the exact cause.
-            backgroundColor: "var(--bg-app)",
+            backgroundColor: isFlatPage(pathname) ? flatPageBg(themeMode === "dark") : "var(--bg-app)",
           }}
         >
           {/* height:100% is a no-op unless <main> itself has a definite height
@@ -3726,12 +3856,12 @@ export function AppShell({
         {!isDesktopViewport && !chromeHidden && !ownsMobileScroll ? <GlassScrollbarThumb scrollRef={mainScrollRef} /> : null}
       </div>
       {/* What's New: the published version, once per person — or a Dev's preview of a draft, to publish it. */}
-      {showUpdateNotice && whatsNewIsDraft && draftUpdate ? (
+      {showUpdateNotice && whatsNewIsDraft && previewDraft ? (
         <WhatsNewSheet
-          version={draftUpdate.version}
+          version={previewDraft.version}
           dateIso=""
-          whatsNew={draftUpdate.whatsNew}
-          highlights={draftUpdate.highlights}
+          whatsNew={previewDraft.whatsNew}
+          highlights={previewDraft.highlights}
           draft
           onClose={closeDraftPreview}
           onPublished={onDraftPublished}
@@ -3747,7 +3877,7 @@ export function AppShell({
         />
       ) : null}
       {/* Dev users: a deployed version that isn't published yet — preview it and publish it. */}
-      {isDevUser && draftUpdate && !showUpdateNotice ? (
+      {isDevUser && previewDraft && !showUpdateNotice ? (
         <button
           type="button"
           onClick={() => window.dispatchEvent(new Event(OPEN_WHATS_NEW_DRAFT_EVENT))}
@@ -3755,7 +3885,9 @@ export function AppShell({
           style={{ bottom: "calc(20px + env(safe-area-inset-bottom))", backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
         >
           <Sparkles size={14} />
-          Draft {draftUpdate.version} · Preview &amp; publish
+          {previewIsScheduled
+            ? `Scheduled ${previewDraft.version} · ${releaseCountdown || "scheduled"}`
+            : `Draft ${previewDraft.version} · Preview & publish`}
         </button>
       ) : null}
 

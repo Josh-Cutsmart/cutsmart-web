@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" width="640" height="360" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title>A board column sliding into its collapsed strip, its collapse button riding the edge over and flipping its arrows, then sliding back out</title>
+  <style>
+    /* collapse 22% → 40%, collapsed until 70%, expand 70% → 88% */
+    .mid { transform-box: fill-box; transform-origin: 0 50%; animation: mid 6s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes mid { 0%, 22% { transform: scaleX(1); } 40%, 70% { transform: scaleX(.0678); } 88%, 100% { transform: scaleX(1); } }
+    .edge { animation: edge 6s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes edge { 0%, 22% { transform: translateX(0); } 40%, 70% { transform: translateX(-110px); } 88%, 100% { transform: translateX(0); } }
+    .btn { animation: btn 6s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes btn { 0%, 22% { transform: translateX(0); } 40%, 70% { transform: translateX(-106px); } 88%, 100% { transform: translateX(0); } }
+    .flip { transform-box: fill-box; transform-origin: center; animation: flip 6s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes flip { 0%, 22% { transform: scaleX(1); } 40%, 70% { transform: scaleX(-1); } 88%, 100% { transform: scaleX(1); } }
+    .press { transform-box: fill-box; transform-origin: center; animation: press 6s ease-in-out infinite both; }
+    @keyframes press { 0%, 18% { transform: scale(1); } 20% { transform: scale(.82); } 22%, 66% { transform: scale(1); } 68% { transform: scale(.82); } 70%, 100% { transform: scale(1); } }
+    .full { animation: full 6s ease-in-out infinite both; }
+    @keyframes full { 0%, 22% { opacity: 1; } 28%, 82% { opacity: 0; } 88%, 100% { opacity: 1; } }
+    .strip { animation: strip 6s ease-in-out infinite both; }
+    @keyframes strip { 0%, 40% { opacity: 0; } 46%, 66% { opacity: 1; } 70%, 100% { opacity: 0; } }
+    .cursor { animation: cursor 6s ease-in-out infinite both; }
+    @keyframes cursor {
+      0%, 4% { transform: translate(560px, 330px); opacity: 0; }
+      8% { opacity: 1; }
+      17%, 22% { transform: translate(362px, 64px); opacity: 1; animation-timing-function: cubic-bezier(.22, 1, .36, 1); }
+      40% { transform: translate(256px, 64px); opacity: 1; }
+      66%, 70% { transform: translate(256px, 64px); opacity: 1; animation-timing-function: cubic-bezier(.22, 1, .36, 1); }
+      88% { transform: translate(362px, 64px); opacity: 1; }
+      96%, 100% { transform: translate(560px, 330px); opacity: 0; }
+    }
+  </style>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#EEF3FB"/>
+      <stop offset="1" stop-color="#E1E9F7"/>
+    </linearGradient>
+    <filter id="col" x="-20%" y="-10%" width="140%" height="125%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#1F2937" flood-opacity=".14"/>
+    </filter>
+  </defs>
+  <rect width="640" height="360" fill="url(#bg)"/>
+
+  <!-- New -->
+  <g filter="url(#col)">
+    <rect x="60" y="40" width="150" height="280" rx="16" fill="#EA8A3C"/>
+  </g>
+  <rect x="60" y="83" width="150" height="1" fill="#000000" fill-opacity=".15"/>
+  <circle cx="80" cy="62" r="11" fill="#FFFFFF" fill-opacity=".55"/>
+  <path d="M77 57 v10 m-2.5 -2.5 l2.5 2.5 l2.5 -2.5 M83 67 v-10 m-2.5 2.5 l2.5 -2.5 l2.5 2.5" fill="none" stroke="#000000" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="98" y="67" font-size="13" font-weight="700" fill="#FFFFFF">New</text>
+  <circle cx="168" cy="62" r="11" fill="#FFFFFF" fill-opacity=".55"/><text x="168" y="66" text-anchor="middle" font-size="10" font-weight="700" fill="#000000">2</text>
+  <circle cx="194" cy="62" r="11" fill="#FFFFFF" fill-opacity=".55"/>
+  <path d="M200 66 l-3 -4 l3 -4 M188 66 l3 -4 l-3 -4" fill="none" stroke="#000000" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <g fill="#FFFFFF" fill-opacity=".88"><rect x="70" y="96" width="130" height="48" rx="10"/><rect x="70" y="152" width="130" height="48" rx="10"/></g>
+
+  <!-- Design: the one that collapses — a left end, a middle that narrows and a right end that slides in -->
+  <g filter="url(#col)">
+    <rect x="230" y="40" width="32" height="280" rx="16" fill="#C44BD9"/>
+    <rect class="mid" x="246" y="40" width="118" height="280" fill="#C44BD9"/>
+    <rect class="edge" x="348" y="40" width="32" height="280" rx="16" fill="#C44BD9"/>
+  </g>
+  <g class="full">
+    <rect x="230" y="83" width="150" height="1" fill="#000000" fill-opacity=".15"/>
+    <circle cx="250" cy="62" r="11" fill="#FFFFFF" fill-opacity=".55"/>
+    <path d="M247 57 v10 m-2.5 -2.5 l2.5 2.5 l2.5 -2.5 M253 67 v-10 m-2.5 2.5 l2.5 -2.5 l2.5 2.5" fill="none" stroke="#000000" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="268" y="67" font-size="13" font-weight="700" fill="#FFFFFF">Design</text>
+    <circle cx="338" cy="62" r="11" fill="#FFFFFF" fill-opacity=".55"/><text x="338" y="66" text-anchor="middle" font-size="10" font-weight="700" fill="#000000">3</text>
+    <g fill="#FFFFFF" fill-opacity=".88"><rect x="240" y="96" width="130" height="48" rx="10"/><rect x="240" y="152" width="130" height="48" rx="10"/><rect x="240" y="208" width="130" height="48" rx="10"/></g>
+  </g>
+  <g class="strip">
+    <circle cx="250" cy="96" r="11" fill="#FFFFFF" fill-opacity=".55"/><text x="250" y="100" text-anchor="middle" font-size="10" font-weight="700" fill="#000000">3</text>
+    <text x="0" y="0" transform="translate(245 118) rotate(90)" font-size="13" font-weight="600" letter-spacing="1.5" fill="#FFFFFF">Design</text>
+  </g>
+  <!-- its collapse button: rides the right edge over, its arrows turning >< into <> -->
+  <g class="btn">
+    <g class="press">
+      <circle cx="356" cy="62" r="11" fill="#FFFFFF" fill-opacity=".55"/>
+      <g fill="none" stroke="#000000" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+        <path class="flip" d="M362 66 l-3 -4 l3 -4"/>
+        <path class="flip" d="M350 66 l3 -4 l-3 -4"/>
+      </g>
+    </g>
+  </g>
+
+  <!-- Production: slides along -->
+  <g class="edge">
+    <g filter="url(#col)">
+      <rect x="400" y="40" width="150" height="280" rx="16" fill="#4F6FD8"/>
+    </g>
+    <rect x="400" y="83" width="150" height="1" fill="#000000" fill-opacity=".15"/>
+    <circle cx="420" cy="62" r="11" fill="#FFFFFF" fill-opacity=".55"/>
+    <path d="M417 57 v10 m-2.5 -2.5 l2.5 2.5 l2.5 -2.5 M423 67 v-10 m-2.5 2.5 l2.5 -2.5 l2.5 2.5" fill="none" stroke="#000000" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="438" y="67" font-size="13" font-weight="700" fill="#FFFFFF">Production</text>
+    <circle cx="534" cy="62" r="11" fill="#FFFFFF" fill-opacity=".55"/>
+    <path d="M540 66 l-3 -4 l3 -4 M528 66 l3 -4 l-3 -4" fill="none" stroke="#000000" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <g fill="#FFFFFF" fill-opacity=".88"><rect x="410" y="96" width="130" height="48" rx="10"/><rect x="410" y="152" width="130" height="48" rx="10"/><rect x="410" y="208" width="130" height="48" rx="10"/><rect x="410" y="264" width="130" height="48" rx="10"/></g>
+  </g>
+
+  <g class="cursor">
+    <path d="M0 0 l0 20 l5 -5 l4 9 l3.4 -1.5 l-4 -9 l7 0 z" fill="#0F172A" stroke="#FFFFFF" stroke-width="1.4" stroke-linejoin="round"/>
+  </g>
+</svg>

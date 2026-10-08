@@ -65,7 +65,18 @@ import {
   normalizeMeasurementUnit,
   setActiveCompanyFormats,
   activeLength,
+  activeDateTime,
 } from "@/lib/company-formats";
+import { CompanyJoinCodesModal } from "@/components/company-join-codes-modal";
+import {
+  cancelCompanyInvite,
+  fetchCompanyInvites,
+  fetchJoinCodes,
+  revokeTemporaryJoinCode,
+  type CompanyInviteRow,
+  type JoinCodeRecord,
+  type JoinCodesState,
+} from "@/lib/company-join-codes";
 import { FileText, Lightbulb } from "lucide-react";
 import { Box, FileInput, FolderTree, LayoutTemplate, Lock, Percent, Receipt, Shield, ShieldCheck, UserMinus, UserPlus } from "lucide-react";
 import { isStaffContactCategory, withStaffContactCategory } from "@/lib/staff-contacts";
@@ -250,6 +261,9 @@ type PendingStaffRemovalState = {
   transferToUid: string;
   typedName: string;
   confirmPhase: "prompt" | "type_name";
+  // Set when this removal is revoking the temporary join code they joined with (Join key pop-up):
+  // revoked once they're removed.
+  revokeCode?: { key: string; code: string };
 };
 
 // The Remove Staff Member pop-up's hand-over rows: one per kind of company data tied to the person
@@ -1821,7 +1835,16 @@ export default function CompanySettingsPage() {
   // which sits far from this modal and is easy to miss entirely. From the user's seat, clicking
   // Confirm then looked like nothing happened at all.
   const [staffRemovalError, setStaffRemovalError] = useState("");
-  const [showJoinKey, setShowJoinKey] = useState(false);
+  // Company > Join key pop-up, and the codes it shows (also used for Staff's "Joined with").
+  const [joinCodesOpen, setJoinCodesOpen] = useState(false);
+  const [joinCodes, setJoinCodes] = useState<JoinCodesState | null>(null);
+  const [joinCodesError, setJoinCodesError] = useState("");
+  const [joinCodesReloadTick, setJoinCodesReloadTick] = useState(0);
+  // Staff > Invited: invites still waiting to be accepted.
+  const [pendingInvites, setPendingInvites] = useState<CompanyInviteRow[]>([]);
+  const [invitesReloadTick, setInvitesReloadTick] = useState(0);
+  const [confirmCancelInviteId, setConfirmCancelInviteId] = useState("");
+  const [cancellingInviteId, setCancellingInviteId] = useState("");
   const openStaffRoleMenuRef = useRef<HTMLDivElement | null>(null);
   const [form, setForm] = useState({
     name: "",
@@ -2224,6 +2247,87 @@ export default function CompanySettingsPage() {
     return hasPermissionKey(perms, "company.settings");
   }, [access.permissionKeys, access.status, currentMemberRole, user?.permissions]);
 
+  // The same people the server lets manage join codes (lib/company-join-codes-server.ts).
+  const canManageJoinCodes = canAddStaff || canAccessCompanySettings;
+
+  useEffect(() => {
+    if (!activeCompanyId || !canManageJoinCodes || (active !== "staff" && !joinCodesOpen)) return;
+    let cancelled = false;
+    void fetchJoinCodes(activeCompanyId).then((result) => {
+      if (cancelled) return;
+      if (result.ok) {
+        setJoinCodes(result.data);
+        setJoinCodesError("");
+      } else {
+        setJoinCodesError(result.error);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [active, activeCompanyId, canManageJoinCodes, joinCodesOpen, joinCodesReloadTick]);
+
+  useEffect(() => {
+    if (!activeCompanyId || active !== "staff") return;
+    let cancelled = false;
+    void fetchCompanyInvites(activeCompanyId).then((rows) => {
+      if (!cancelled) setPendingInvites(rows);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [active, activeCompanyId, invitesReloadTick]);
+
+  const joinCodesByKey = useMemo(() => new Map((joinCodes?.codes ?? []).map((row) => [row.key, row] as const)), [joinCodes]);
+
+  // How a staff member joined, for their row: the code they used (and what kind), an invite, or
+  // creating the company.
+  const joinedWithFor = (row: CompanyMemberOption, isOwnerRow: boolean): { code: string; kind: string } => {
+    const key = toStr(row.joinCodeKey).toLowerCase();
+    if (toStr(row.joinedVia) === "invite") return { code: "", kind: "Joined from an invite" };
+    if (!key) return { code: "", kind: isOwnerRow ? "Created the company" : "—" };
+    const record = joinCodesByKey.get(key);
+    if (joinCodes?.masterKey && key === joinCodes.masterKey) return { code: joinCodes.masterCode, kind: "Master code" };
+    if (record?.kind === "temporary") return { code: record.code, kind: "Temporary code" };
+    if (record?.kind === "master") return { code: record.code, kind: "Old master code" };
+    return { code: key.toUpperCase(), kind: "Code" };
+  };
+
+  const cancelInvite = async (invite: CompanyInviteRow) => {
+    if (confirmCancelInviteId !== invite.id) {
+      setConfirmCancelInviteId(invite.id);
+      return;
+    }
+    setCancellingInviteId(invite.id);
+    const ok = activeCompanyId ? await cancelCompanyInvite(activeCompanyId, invite.id) : false;
+    setCancellingInviteId("");
+    setConfirmCancelInviteId("");
+    if (!ok) {
+      setSaveLabel("Couldn't cancel the invite");
+      return;
+    }
+    setPendingInvites((prev) => prev.filter((row) => row.id !== invite.id));
+    setSaveLabel(`Invite cancelled: ${invite.email}`);
+  };
+
+  // Revoking a temporary code someone has already joined with: remove them first (Staff's Remove
+  // pop-up, with the hand-over of their data), then the code is revoked. If they've already left,
+  // it's just revoked.
+  const revokeUsedJoinCode = async (record: JoinCodeRecord) => {
+    const member = staff.find((row) => toStr(row.uid) === toStr(record.usedByUid));
+    if (!member) {
+      const result = activeCompanyId ? await revokeTemporaryJoinCode(activeCompanyId, record.key) : { ok: false, error: "" };
+      setJoinCodesReloadTick((tick) => tick + 1);
+      if (!result.ok) setJoinCodesError(result.error || "Couldn't revoke the code.");
+      return;
+    }
+    setJoinCodesOpen(false);
+    setActive("staff");
+    staffRemovalOriginElRef.current = null;
+    setStaffRemovalOrigin(null);
+    void openStaffRemovalDialog(member, { key: record.key, code: record.code });
+  };
+
   // Phones/tablets: the section tabs are a sideways-scrolling strip — keep the selected one in view
   // (after a search jump, a ?section= link, or tapping one half off the edge). On desktop the tabs are
   // a column that doesn't scroll sideways, so this does nothing there.
@@ -2311,15 +2415,14 @@ export default function CompanySettingsPage() {
     }
 
     setIsInvitingStaff(true);
-    const companyCode = toStr(company?.joinCode ?? company?.companyCode ?? company?.joinPassword ?? company?.companyPassword);
     const result = await createCompanyInviteDetailed(activeCompanyId, cleanEmail, {
       companyName: toStr(form.name || company?.name || company?.companyName || activeCompanyId),
-      companyCode,
       invitedByUid: String(user?.uid || ""),
       invitedByName: String(user?.displayName || user?.email || ""),
     });
     if (result.ok) {
       setSaveLabel(`Invite sent: ${cleanEmail}`);
+      setInvitesReloadTick((tick) => tick + 1);
     } else {
       setSaveLabel(`Invite failed (${result.error || "unknown"})`);
     }
@@ -2487,7 +2590,7 @@ export default function CompanySettingsPage() {
     setSaveLabel("Saved");
   };
 
-  const openStaffRemovalDialog = async (row: CompanyMemberOption) => {
+  const openStaffRemovalDialog = async (row: CompanyMemberOption, revokeCode?: { key: string; code: string }) => {
     const uid = toStr(row.uid);
     const roleId = normalizeRoleKey(row.roleId || row.role);
     if (!uid || !activeCompanyId || !canRemoveStaff || roleId === "owner") {
@@ -2516,6 +2619,7 @@ export default function CompanySettingsPage() {
         transferToUid: "",
         typedName: "",
         confirmPhase: "prompt",
+        revokeCode,
       });
     } finally {
       setPreparingStaffRemovalUid("");
@@ -2579,6 +2683,10 @@ export default function CompanySettingsPage() {
     setStaff((prev) => prev.filter((member) => toStr(member.uid) !== pendingStaffRemoval.uid));
     setOpenStaffRoleUid((current) => (current === pendingStaffRemoval.uid ? "" : current));
     setPendingStaffRemoval(null);
+    const revokeCode = pendingStaffRemoval.revokeCode;
+    if (revokeCode) {
+      void revokeTemporaryJoinCode(activeCompanyId, revokeCode.key).then(() => setJoinCodesReloadTick((tick) => tick + 1));
+    }
     const transferredTotal = Object.values(result.transferred ?? {}).reduce((sum, n) => sum + n, 0);
     const skippedContacts = result.skippedContacts ?? 0;
     const skippedNote = skippedContacts
@@ -4074,32 +4182,6 @@ export default function CompanySettingsPage() {
                   );
                 })}
               </nav>
-              <div
-                className="mt-1 hidden gap-1.5 rounded-[14px] border p-3 text-[12px] lg:grid"
-                style={{ borderColor: "var(--glass-border)", backgroundColor: "color-mix(in srgb, var(--panel-bg) 55%, transparent)" }}
-              >
-                <div className="flex justify-between gap-2">
-                  <span style={{ color: "var(--text-muted)" }}>Company</span>
-                  <span className="truncate font-semibold" style={{ color: "var(--text-main)" }}>{toStr(company?.name, "Unknown")}</span>
-                </div>
-                <div className="flex justify-between gap-2">
-                  <span style={{ color: "var(--text-muted)" }}>Company ID</span>
-                  <span className="truncate font-mono text-[11.5px]" style={{ color: "var(--text-main)" }}>{toStr(company?.id, activeCompanyId)}</span>
-                </div>
-                <div className="flex justify-between gap-2">
-                  <span style={{ color: "var(--text-muted)" }}>Plan</span>
-                  <span className="rounded-full px-2 text-[11px] font-bold" style={{ backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}>{toStr(company?.planName, "Free")}</span>
-                </div>
-                <div className="flex items-center justify-between gap-2">
-                  <span style={{ color: "var(--text-muted)" }}>Join key</span>
-                  <span className="flex items-center gap-1.5">
-                    <span className="font-mono text-[11.5px]" style={{ color: "var(--text-main)" }}>{showJoinKey ? toStr(company?.joinKey ?? company?.joinCode, "------") : "••••••"}</span>
-                    <button type="button" onClick={() => setShowJoinKey((v) => !v)} className="text-[11.5px] font-semibold" style={{ color: "var(--brand-strong)" }}>
-                      {showJoinKey ? "Hide" : "Show"}
-                    </button>
-                  </span>
-                </div>
-              </div>
             </aside>
 
             <main
@@ -4172,6 +4254,42 @@ export default function CompanySettingsPage() {
                       Verify your account (in User Settings) to edit Company Settings.
                     </div>
                   )}
+                  <Panel title="Company" icon={Building2} description="Your company's details, and the codes people join it with.">
+                    <FieldRow label="Company name" hint="Change it under Brand below.">
+                      <span className="text-[13.5px] font-semibold" style={{ color: "var(--text-main)" }}>{toStr(company?.name, "Unknown")}</span>
+                    </FieldRow>
+                    <FieldRow label="Company ID" hint="Quote this if you contact CutSmart support.">
+                      <span className="font-mono text-[12.5px]" style={{ color: "var(--text-main)" }}>{toStr(company?.id, activeCompanyId)}</span>
+                    </FieldRow>
+                    <FieldRow label="Plan">
+                      <span className="rounded-full px-2.5 py-0.5 text-[11.5px] font-bold" style={{ backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}>
+                        {toStr(company?.planName, "Free")}
+                      </span>
+                    </FieldRow>
+                    <FieldRow label="Join key" hint="The master code people join with, and one-person temporary codes you can revoke.">
+                      <button
+                        type="button"
+                        onClick={() => setJoinCodesOpen(true)}
+                        disabled={!canManageJoinCodes || !activeCompanyId}
+                        className={secondaryButtonClass}
+                        title={canManageJoinCodes ? undefined : "Only people who can add staff can manage join codes"}
+                      >
+                        <KeyRound size={14} /> Join key
+                      </button>
+                    </FieldRow>
+                  </Panel>
+                  {joinCodesOpen ? (
+                    <CompanyJoinCodesModal
+                      companyId={activeCompanyId}
+                      companyName={toStr(company?.name)}
+                      data={joinCodes}
+                      loading={!joinCodes && !joinCodesError}
+                      loadError={joinCodesError}
+                      onReload={() => setJoinCodesReloadTick((tick) => tick + 1)}
+                      onClose={() => setJoinCodesOpen(false)}
+                      onRevokeUsedCode={(record) => void revokeUsedJoinCode(record)}
+                    />
+                  ) : null}
                   <Panel title="Brand" icon={Palette} description="How your company appears on quotes, documents and across the app.">
                     <FieldRow label="Company name" hint="Shown on quotes, specs sheets and in the sidebar.">
                       <input value={form.name} onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))} className={`${fieldInputClass} max-w-[380px]`} />
@@ -5377,6 +5495,7 @@ export default function CompanySettingsPage() {
                                 <span className="inline-flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white" style={{ backgroundColor: iconColor }}>
                                   {initials || "CU"}
                                 </span>
+                                <span className="flex min-w-0 flex-1 flex-col">
                                 <input
                                   value={String(row.displayName ?? "")}
                                   onFocus={() => {
@@ -5390,6 +5509,24 @@ export default function CompanySettingsPage() {
                                   disabled={savingStaffNameUid === row.uid}
                                   className={`${gridCellInputClass} font-semibold ${savingStaffNameUid === row.uid ? "opacity-60" : ""}`}
                                 />
+                                {(() => {
+                                  // How they joined: the code they used (and what kind), an invite, or creating the company.
+                                  const joinedWith = joinedWithFor(row, isOwnerRow);
+                                  return (
+                                    <span className="truncate px-1 text-[11px] leading-tight" style={{ color: "var(--text-muted)" }}>
+                                      {joinedWith.code ? (
+                                        <>
+                                          Joined with <span className="font-mono font-semibold" style={{ color: "var(--text-main)" }}>{joinedWith.code}</span> · {joinedWith.kind}
+                                        </>
+                                      ) : joinedWith.kind === "—" ? (
+                                        "Joined with: not recorded"
+                                      ) : (
+                                        joinedWith.kind
+                                      )}
+                                    </span>
+                                  );
+                                })()}
+                                </span>
                               </span>
                               <span className="truncate px-1 text-[12.5px] max-lg:col-start-1 max-lg:row-start-2 max-lg:pl-[46px]" style={{ color: "var(--text-muted)" }}>{toStr(row.email) || "—"}</span>
                               <span className="truncate px-1 text-[12.5px] max-lg:col-start-2 max-lg:col-end-4 max-lg:row-start-2 max-lg:text-right" style={{ color: "var(--text-muted)" }}>{toStr(row.mobile) || "—"}</span>
@@ -5438,6 +5575,45 @@ export default function CompanySettingsPage() {
                         })}
                       </div>
                     </div>
+                    {pendingInvites.length ? (
+                      <div className="mt-4 space-y-1.5 border-t pt-3" style={{ borderColor: "var(--glass-border)" }}>
+                        <div className="flex items-center gap-2 px-2">
+                          <span className={columnHeadClass}>Invited</span>
+                          <span className={countPillClass}>{pendingInvites.length}</span>
+                        </div>
+                        {pendingInvites.map((invite) => (
+                          <div key={invite.id} className={`${listRowClass} flex flex-wrap items-center gap-x-3 gap-y-1`}>
+                            <span className="min-w-[180px] flex-1 truncate text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>{invite.email}</span>
+                            <span
+                              className="rounded-full px-2.5 py-0.5 text-[11.5px] font-semibold"
+                              style={{ backgroundColor: "color-mix(in srgb, var(--accent-amber) 20%, transparent)", color: "var(--text-main)" }}
+                            >
+                              Pending
+                            </span>
+                            <span className="text-[11.5px]" style={{ color: "var(--text-muted)" }}>
+                              {[invite.createdAtIso ? `Invited ${activeDateTime(invite.createdAtIso)}` : "Invited", invite.invitedByName ? `by ${invite.invitedByName}` : ""]
+                                .filter(Boolean)
+                                .join(" ")}
+                            </span>
+                            {canAddStaff ? (
+                              <button
+                                type="button"
+                                onClick={() => void cancelInvite(invite)}
+                                disabled={cancellingInviteId === invite.id}
+                                className={secondaryButtonClass}
+                                style={
+                                  confirmCancelInviteId === invite.id
+                                    ? { backgroundImage: "var(--danger-gradient)", color: "#fff", borderColor: "transparent" }
+                                    : undefined
+                                }
+                              >
+                                {cancellingInviteId === invite.id ? "Cancelling…" : confirmCancelInviteId === invite.id ? "Cancel invite?" : "Cancel invite"}
+                              </button>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
                   </Panel>
                   <Panel title="Roles" icon={Shield} description="Click a role to edit what it can do. Drag to reorder.">
                     <div className="space-y-1.5">
@@ -5732,6 +5908,13 @@ export default function CompanySettingsPage() {
                                   They lose access to {toStr(company?.name, "the company")}{" "}straight away. Choose which of their data to hand
                                   to someone else. Nothing is deleted — whatever you don&apos;t transfer stays in the company.
                                 </p>
+                                {pendingStaffRemoval?.revokeCode ? (
+                                  <p className="text-[12.5px] leading-[1.5]" style={{ color: "var(--text-main)" }}>
+                                    Their temporary code{" "}
+                                    <span className="font-mono font-semibold">{pendingStaffRemoval.revokeCode.code}</span>
+                                    {" "}is revoked once they&apos;re removed.
+                                  </p>
+                                ) : null}
                               </div>
                               <div className="space-y-1.5">
                                 <p className="text-[12px] font-medium" style={{ color: "var(--text-main)" }}>Transfer to</p>

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getDoc } from "firebase/firestore";
+import { getDoc } from "@/lib/firestore-client";
 import type { Project } from "@/lib/types";
 import {
   extractLegacySalesFieldFromRawDoc,
