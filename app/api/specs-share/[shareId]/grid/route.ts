@@ -8,7 +8,7 @@ import {
   SHARE_LINK_INACTIVE_ERROR,
   type SpecsShareLinkDoc,
 } from "@/lib/specs-share";
-import { normalizeSpecsGrid } from "@/lib/specs-grid-types";
+import { normalizeSpecsGrid, withCurrentCompanyLogo } from "@/lib/specs-grid-types";
 
 // No access code — the link itself (this shareId) is the only secret, per the user's explicit
 // call. See lib/specs-share.ts's buildSpecsConfirmationEmailText comment for the reasoning.
@@ -70,5 +70,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   const confirmationSubmittedByName = shareDoc.submittedByName || null;
   // Which send this is — the portal compares it with what the client last saw to flag the tab as new.
   const sentVersion = String(shareDoc.versionId || shareDoc.lastSentAt || "");
-  return NextResponse.json({ ok: true, grid, projectName, assignedContact, confirmationSubmittedAt, confirmationSubmittedByName, sentVersion });
+  // A company-logo cell shows the company's current logo (its own address can be an old logo's).
+  const companyData = (await adminDb.collection("companies").doc(String(shareDoc.companyId || "")).get()).data() ?? {};
+  const companyLogo = String(companyData.logoPath ?? companyData.logoUrl ?? (companyData.theme as Record<string, unknown> | undefined)?.logoPath ?? "").trim();
+  return NextResponse.json({ ok: true, grid: withCurrentCompanyLogo(grid, companyLogo), projectName, assignedContact, confirmationSubmittedAt, confirmationSubmittedByName, sentVersion });
 }

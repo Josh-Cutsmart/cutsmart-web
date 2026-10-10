@@ -9,6 +9,22 @@ export function flatPageBg(isDark: boolean): string {
   return isDark ? FLAT_PAGE_BG_DARK : FLAT_PAGE_BG;
 }
 
+const FLAT_PAGES = new Set(["/dashboard", "/calendar"]);
+
 export function isFlatPage(pathname: string | null | undefined): boolean {
-  return String(pathname || "").replace(/\/+$/, "") === "/dashboard";
+  return FLAT_PAGES.has(String(pathname || "").replace(/\/+$/, ""));
+}
+
+// Phones/tablets, where <main> is the page's scroller: pages where it starts at the very top of the
+// screen, under the see-through top tab bar, instead of below it (app-shell.tsx, globals.css) —
+// otherwise it cuts off the shadows of the cards at the top of the page in a hard line along the bar.
+// The flat pages, the settings pages and Project details (its header bars still pin just under the bar
+// — a sticky bar pins inside <main>'s top padding, which is the bar's height then — and the page
+// scrolls under the bar's glass above them). Not Archived or Changelog: their own bars aren't set up
+// for it.
+const UNDER_BAR_PAGES = new Set(["/company-settings", "/user-settings"]);
+
+export function startsUnderTopBar(pathname: string | null | undefined): boolean {
+  const path = String(pathname || "").replace(/\/+$/, "");
+  return isFlatPage(path) || UNDER_BAR_PAGES.has(path) || /^\/projects\/[^/]+$/.test(path);
 }

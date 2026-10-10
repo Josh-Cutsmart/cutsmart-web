@@ -4,7 +4,6 @@ import { activeDateTime } from "@/lib/company-formats";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type ReactNode, type TouchEvent as ReactTouchEvent } from "react";
 import { createPortal } from "react-dom";
 import { usePathname, useRouter } from "next/navigation";
-import { isFlatPage } from "@/lib/flat-page";
 import { Bell, ChevronLeft, LayoutDashboard, Menu, X } from "lucide-react";
 import { useSwipeToClose } from "@/lib/use-swipe-to-close";
 import { openWhatsNew } from "@/components/whats-new-sheet";
@@ -12,6 +11,7 @@ import { swallowNextClick } from "@/lib/swallow-dismiss-click";
 import { useAppTabs, type AppWorkspaceTab } from "@/lib/app-tabs-context";
 import { applyThemeMode, readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
 import { useAuth } from "@/lib/auth-context";
+import { prefetchProjectById } from "@/lib/firestore-data";
 import {
   fetchUserNotifications,
   markUserNotificationRead,
@@ -111,7 +111,9 @@ export function GlobalAppTabsBar() {
     isNotifOpen && !isDesktopViewport,
     () => setIsNotifOpen(false),
     mobileNotifPanelRef,
-    { edge: "right", pushRef: mainPushRef },
+    // Slides in over the page as frosted glass, the page staying put behind it (app-shell.tsx's
+    // mobilePanelGlass) — it no longer shoves the page over.
+    { edge: "right" },
   );
   const [pendingActiveAppTabKey, setPendingActiveAppTabKey] = useState(pendingActiveAppTabKeyMemory);
   const [hiddenScopeKeys, setHiddenScopeKeys] = useState<string[]>([]);
@@ -203,8 +205,8 @@ export function GlobalAppTabsBar() {
         border: "#3f3f46",
         text: "#f1f1f1",
         textMuted: "#aaaaaa",
-        // Over a flat page (lib/flat-page.ts) it's that page's own colour.
-        stripBg: isFlatPage(pathname) ? "rgba(11,13,18,0.4)" : "rgba(10,10,12,0.4)",
+        // The page's own dark (--bg-app, the same as a flat page's — lib/flat-page.ts), on every page.
+        stripBg: "rgba(11,13,18,0.4)",
         tabIdleBg: "rgba(255,255,255,0.05)",
         stripHighlight: "rgba(255,255,255,0.07)",
       }
@@ -214,8 +216,8 @@ export function GlobalAppTabsBar() {
         border: "#D8DEE8",
         text: "#0F172A",
         textMuted: "#475467",
-        // Over a flat page (lib/flat-page.ts) it's that page's own grey.
-        stripBg: isFlatPage(pathname) ? "rgba(245,247,250,0.4)" : "rgba(238,241,248,0.4)",
+        // The page grey (--bg-app, the same as a flat page's — lib/flat-page.ts).
+        stripBg: "rgba(245,247,250,0.4)",
         tabIdleBg: "rgba(255,255,255,0.55)",
         stripHighlight: "rgba(255,255,255,0.55)",
       };
@@ -924,6 +926,31 @@ export function GlobalAppTabsBar() {
     router.push(tab.href);
   };
 
+  // Opening a project's tab quickly: its page's code is fetched ahead for every open tab (below), and its
+  // project starts loading the moment the tab is pointed at or touched — the project page picks that up
+  // (prefetchProjectById in lib/firestore-data.ts) instead of only starting once it's open.
+  const warmProjectTab = (groupKey: string) => {
+    const projectId = groupKey.startsWith("project:") ? groupKey.slice("project:".length) : "";
+    if (!projectId || !user?.uid) return;
+    let storedCompanyId = "";
+    try {
+      storedCompanyId = String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim();
+    } catch {
+      // No stored company — the user's own is looked up.
+    }
+    prefetchProjectById(projectId, user.uid, [storedCompanyId, String(user.companyId || "").trim()].filter(Boolean));
+  };
+
+  // Each open tab's page, fetched ahead (its code and route), so opening it doesn't wait on that.
+  const tabPrefetchKey = scrollableTabGroups
+    .map((group) => (group.tabs.find((tab) => tab.active) ?? group.tabs[0])?.href ?? "")
+    .filter(Boolean)
+    .join("|");
+  useEffect(() => {
+    if (!tabPrefetchKey) return;
+    tabPrefetchKey.split("|").forEach((href) => router.prefetch(href));
+  }, [tabPrefetchKey, router]);
+
   // Clicking a project's tab reopens whichever sub-view (Sales > Initial Cutlist, Production >
   // Nesting, etc.) that project was last left on, rather than always jumping to General — same
   // priority as the `activeTab` used for the tab's own label/title below: prefer the tab actually
@@ -1115,6 +1142,7 @@ export function GlobalAppTabsBar() {
             Only with the glass — at the top of a page there's no line under the bar. */}
         <div
           data-app-top-bar-glass="true"
+          data-app-top-bar-line="true"
           className="pointer-events-none absolute inset-x-0 bottom-0 h-px"
           style={{ backgroundColor: "var(--glass-border)", opacity: isPageScrolledUnder ? 1 : 0, transition: "opacity 240ms ease" }}
         />
@@ -1206,6 +1234,9 @@ export function GlobalAppTabsBar() {
                     groupNodeRefs.current[group.groupKey] = node;
                   }}
                   data-app-tab-group={group.groupKey}
+                  // Its project starts loading as soon as it's pointed at or touched (warmProjectTab).
+                  onPointerEnter={() => warmProjectTab(group.groupKey)}
+                  onPointerDown={() => warmProjectTab(group.groupKey)}
                   // Hover / open look: globals.css.
                   data-app-top-tab="true"
                   data-active={isActiveTab ? "true" : undefined}
@@ -1253,6 +1284,11 @@ export function GlobalAppTabsBar() {
                         suppressNextTabClickRef.current = "";
                         return;
                       }
+                      // The project that's already open (or opening): nothing to reopen.
+                      if (isActiveTab) {
+                        blurTopTabTarget(event.currentTarget);
+                        return;
+                      }
                       selectGroupPrimaryTab(group, event.currentTarget);
                     }}
                     onMouseDown={(event) => handleTopTabMouseDown(group.groupKey, event)}
@@ -1267,7 +1303,7 @@ export function GlobalAppTabsBar() {
                     className="min-w-0 flex-1 truncate text-left text-[12px] font-bold"
                     style={{
                       color: isActiveTab ? shellPalette.text : shellPalette.textMuted,
-                      cursor: isPressed ? "grabbing" : "pointer",
+                      cursor: isPressed ? "grabbing" : isActiveTab ? "default" : "pointer",
                       // Long-press on mobile is how you pick a tab up to reorder it — without these,
                       // the browser's own default long-press UI (text-selection callout, tap-color
                       // flash) fires first and visually fights with/masks the pick-up.
@@ -1389,7 +1425,7 @@ export function GlobalAppTabsBar() {
               <button
                 type="button"
                 data-swipe-backdrop="true"
-                className="absolute inset-0 bg-[rgba(15,23,42,0.45)]"
+                className="absolute inset-0 bg-transparent"
                 onClick={() => setIsNotifOpen(false)}
                 aria-label="Close notifications backdrop"
               />
@@ -1402,7 +1438,10 @@ export function GlobalAppTabsBar() {
                 data-mobile-notif-panel="true"
                 className="relative ml-auto flex h-full w-full flex-col overflow-hidden"
                 style={{
-                  backgroundColor: "var(--panel-bg)",
+                  // Frosted glass over the page (the same as the phone menu's — app-shell.tsx).
+                  backgroundColor: themeMode === "dark" ? "rgba(11, 13, 18, 0.62)" : "rgba(245, 247, 250, 0.62)",
+                  backdropFilter: "blur(22px) saturate(180%)",
+                  WebkitBackdropFilter: "blur(22px) saturate(180%)",
                   touchAction: "pan-y",
                 }}
               >

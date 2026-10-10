@@ -193,7 +193,8 @@ export function normalizeCalendarReminderLead(raw: unknown): CalendarReminderLea
 // ---- A quote / specifications sent to a client and still not accepted / submitted: after how many
 // days each user wants to hear about it — as many as they like (e.g. 2 days and 5 days). Stored on
 // their profile as users/{uid}.clientPortalReminderDays = { quote: [...], specs: [...] }; 2 days each
-// until they change it.
+// until they change it. Any of those can repeat (quoteRepeat / specsRepeat — some of the same days):
+// "after 2 days" repeating reminds them every 2 days until the client answers.
 
 export const CLIENT_PORTAL_PENDING_OPTIONS: readonly ReminderLeadOption[] = [1, 2, 3, 4, 5, 6, 7].map((days) => ({
   value: days,
@@ -202,14 +203,19 @@ export const CLIENT_PORTAL_PENDING_OPTIONS: readonly ReminderLeadOption[] = [1, 
 
 export const DEFAULT_CLIENT_PORTAL_PENDING_DAYS = 2;
 
-export type ClientPortalReminderDays = { quote: number[]; specs: number[] };
+export type ClientPortalReminderDays = { quote: number[]; specs: number[]; quoteRepeat: number[]; specsRepeat: number[] };
+
+// Which of the days repeat — only ones still in the list.
+function normalizeRepeatDays(raw: unknown, days: number[]): number[] {
+  if (!Array.isArray(raw)) return [];
+  return Array.from(new Set(raw.map((value) => Number(value)).filter((value) => days.includes(value))));
+}
 
 export function normalizeClientPortalReminderDays(raw: unknown): ClientPortalReminderDays {
   const row = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
-  return {
-    quote: normalizeChoiceList(row.quote, CLIENT_PORTAL_PENDING_OPTIONS, DEFAULT_CLIENT_PORTAL_PENDING_DAYS),
-    specs: normalizeChoiceList(row.specs, CLIENT_PORTAL_PENDING_OPTIONS, DEFAULT_CLIENT_PORTAL_PENDING_DAYS),
-  };
+  const quote = normalizeChoiceList(row.quote, CLIENT_PORTAL_PENDING_OPTIONS, DEFAULT_CLIENT_PORTAL_PENDING_DAYS);
+  const specs = normalizeChoiceList(row.specs, CLIENT_PORTAL_PENDING_OPTIONS, DEFAULT_CLIENT_PORTAL_PENDING_DAYS);
+  return { quote, specs, quoteRepeat: normalizeRepeatDays(row.quoteRepeat, quote), specsRepeat: normalizeRepeatDays(row.specsRepeat, specs) };
 }
 
 // "in 1 hour", "in 2 days", "in 1 week", "tomorrow" — how far off an event is, in the reminder's words.

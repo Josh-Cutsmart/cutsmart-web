@@ -200,12 +200,15 @@ export function Segmented<T extends string>({
   size = "md",
   disabled,
   tone = "neutral",
+  pill = false,
 }: {
   value: T;
   options: Array<{ value: T; label: ReactNode }>;
   onChange: (next: T) => void;
   size?: "sm" | "md";
   disabled?: boolean;
+  // Fully rounded ends — the track, the thumb and each option.
+  pill?: boolean;
   // "brand": the selected option is the blue brand fill with white text (like the switches), instead
   // of a plain raised white thumb.
   tone?: "neutral" | "brand";
@@ -229,12 +232,12 @@ export function Segmented<T extends string>({
     <div
       ref={wrapRef}
       role="radiogroup"
-      className={`relative inline-flex shrink-0 rounded-[12px] border border-[var(--glass-border)] bg-[color-mix(in_srgb,var(--panel-bg)_55%,transparent)] p-[3px] ${disabled ? "opacity-60" : ""}`}
+      className={`relative inline-flex shrink-0 ${pill ? "rounded-full" : "rounded-[12px]"} border border-[var(--glass-border)] bg-[color-mix(in_srgb,var(--panel-bg)_55%,transparent)] p-[3px] ${disabled ? "opacity-60" : ""}`}
     >
       {thumb ? (
         <span
           aria-hidden
-          className="absolute bottom-[3px] top-[3px] rounded-[9px] shadow-[0_1px_4px_rgba(0,0,0,0.12)]"
+          className={`absolute bottom-[3px] top-[3px] ${pill ? "rounded-full" : "rounded-[9px]"} shadow-[0_1px_4px_rgba(0,0,0,0.12)]`}
           style={{
             left: thumb.left,
             width: thumb.width,
@@ -257,7 +260,7 @@ export function Segmented<T extends string>({
             data-seg-value={opt.value}
             disabled={disabled}
             onClick={() => onChange(opt.value)}
-            className={`relative z-[1] rounded-[9px] font-semibold transition-colors ${size === "sm" ? "h-[26px] px-2.5 text-[12px]" : "h-[30px] px-3.5 text-[12.5px]"}`}
+            className={`relative z-[1] ${pill ? "rounded-full" : "rounded-[9px]"} font-semibold transition-colors ${size === "sm" ? "h-[26px] px-2.5 text-[12px]" : "h-[30px] px-3.5 text-[12.5px]"}`}
             style={{ color: on ? (tone === "brand" ? "#FFFFFF" : "var(--text-main)") : "var(--text-muted)" }}
           >
             {opt.label}

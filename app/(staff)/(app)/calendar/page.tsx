@@ -53,6 +53,9 @@ import {
 } from "@/components/settings-ui";
 import type { Project } from "@/lib/types";
 
+// The toolbar's Today and Categories buttons: the small button, with fully rounded ends.
+const pillButtonClass = smallButtonClass.replace("rounded-[10px]", "rounded-full");
+
 type CalendarView = "year" | "month" | "week" | "day" | "list";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -778,9 +781,10 @@ function CalendarPageContent() {
   // is a static copy of the current DOM that slides out while the new one slides in (see the effect below).
   const viewWrapRef = useRef<HTMLDivElement | null>(null);
   const pendingSlideRef = useRef<{ ghost: HTMLElement; axis: "x" | "y"; dir: -1 | 1 } | null>(null);
-  const beginSlide = (dir: -1 | 1) => {
+  // onPhone: a swipe on a phone (day and week views) slides too — Previous / Next there don't.
+  const beginSlide = (dir: -1 | 1, onPhone = false) => {
     const wrap = viewWrapRef.current;
-    if (!wrap || window.matchMedia("(max-width: 767px), (prefers-reduced-motion: reduce)").matches) return;
+    if (!wrap || window.matchMedia(onPhone ? "(prefers-reduced-motion: reduce)" : "(max-width: 767px), (prefers-reduced-motion: reduce)").matches) return;
     wrap.querySelectorAll("[data-cal-slide-ghost]").forEach((el) => el.remove());
     const live = wrap.firstElementChild as HTMLElement | null;
     if (!live) return;
@@ -821,7 +825,7 @@ function CalendarPageContent() {
     };
   }, [cursor]);
 
-  const step = (dir: -1 | 1) => {
+  const step = (dir: -1 | 1, swiped = false) => {
     if (view === "month") {
       const el = monthScrollerRef.current;
       if (el && el.clientHeight) {
@@ -841,7 +845,7 @@ function CalendarPageContent() {
         return;
       }
     }
-    beginSlide(dir);
+    beginSlide(dir, swiped);
     setCursor((prev) => {
       if (view === "year") {
         const x = startOfMonth(prev);
@@ -972,7 +976,7 @@ function CalendarPageContent() {
           e.stopPropagation();
           openExisting(event, e);
         }}
-        className={`flex h-[18px] min-w-0 shrink-0 items-center gap-1.5 truncate rounded-[6px] px-1.5 text-left text-[10.5px] font-normal transition hover:bg-[color-mix(in_srgb,var(--text-main)_6%,transparent)] ${place ? "pointer-events-auto absolute" : "w-full"}`}
+        className={`flex h-[18px] min-w-0 shrink-0 items-center gap-1.5 truncate rounded-[6px] px-1.5 text-left text-[10.5px] font-normal transition hover:bg-[color-mix(in_srgb,var(--text-main)_6%,transparent)] max-md:text-clip ${place ? "pointer-events-auto absolute" : "w-full"}`}
         style={{
           ...place,
           color: "var(--text-main)",
@@ -984,7 +988,7 @@ function CalendarPageContent() {
       >
         <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: cat.color }} />
         <span className="shrink-0 opacity-70">{timeText(event.startMs)}</span>
-        <span className="truncate">{event.title || "Untitled event"}</span>
+        <span className="truncate max-md:text-clip">{event.title || "Untitled event"}</span>
       </button>
     );
   };
@@ -1027,7 +1031,7 @@ function CalendarPageContent() {
               e.stopPropagation();
               openExisting(b.event, e);
             }}
-            className="pointer-events-auto absolute flex items-center gap-1 truncate px-2 text-left text-[11px] font-normal transition hover:brightness-95"
+            className="pointer-events-auto absolute flex items-center gap-1 truncate px-2 text-left text-[11px] font-normal transition hover:brightness-95 max-md:text-clip"
             style={{
               top: b.lane * BAR_H,
               height: BAR_H - 2,
@@ -1046,7 +1050,7 @@ function CalendarPageContent() {
           >
             {b.contBefore ? <span className="shrink-0 opacity-80">←</span> : null}
             {!b.event.allDay && !b.contBefore ? <span className="shrink-0 opacity-85">{timeText(b.event.startMs)}</span> : null}
-            <span className="truncate">{b.event.title || "Untitled event"}</span>
+            <span className="truncate max-md:text-clip">{b.event.title || "Untitled event"}</span>
             {b.contAfter ? <span className="ml-auto shrink-0 opacity-80">→</span> : null}
           </button>
         );
@@ -1423,6 +1427,28 @@ function CalendarPageContent() {
     }
   };
 
+  // Phones, day and week views: a sideways swipe goes to the next or previous day (week) — sliding over,
+  // like Previous / Next do on a computer. Up and down still scrolls the hours; a swipe that starts on an
+  // event is that event being dragged.
+  const daySwipeRef = useRef<{ x: number; y: number; at: number } | null>(null);
+  const onDaySwipeStart = (e: React.TouchEvent<HTMLElement>) => {
+    const target = e.target as HTMLElement | null;
+    daySwipeRef.current =
+      isMobile && e.touches.length === 1 && !target?.closest("[data-cal-event]")
+        ? { x: e.touches[0].clientX, y: e.touches[0].clientY, at: performance.now() }
+        : null;
+  };
+  const onDaySwipeEnd = (e: React.TouchEvent<HTMLElement>) => {
+    const start = daySwipeRef.current;
+    daySwipeRef.current = null;
+    const touch = e.changedTouches[0];
+    if (!start || !touch) return;
+    const dx = touch.clientX - start.x;
+    const dy = touch.clientY - start.y;
+    if (Math.abs(dx) < 50 || Math.abs(dx) < Math.abs(dy) * 1.5 || performance.now() - start.at > 900) return;
+    step(dx < 0 ? 1 : -1, true);
+  };
+
   const timeGrid = () => {
     // Week: the days in weekCols (non-work days may be left out); day: just the one.
     const dayCols = view === "week" ? weekCols : undefined;
@@ -1430,7 +1456,12 @@ function CalendarPageContent() {
     const dayCount = days.length;
     const gridCols = { gridTemplateColumns: `repeat(${dayCount}, minmax(0, 1fr))` };
     return (
-      <div className={`flex min-h-0 flex-col overflow-hidden lg:flex-1 ${viewShell.className}`} style={viewShell.style}>
+      <div
+        className={`flex min-h-0 flex-col overflow-hidden lg:flex-1 ${viewShell.className}`}
+        style={viewShell.style}
+        onTouchStart={onDaySwipeStart}
+        onTouchEnd={onDaySwipeEnd}
+      >
         {/* Day headers, then the all-day row (all-day and multi-day events as continuous bars). */}
         {(() => {
           const { bars, lanes } = layoutBars(range.from, dayCount, dayLayoutEvents, rankOf, false, dayCols);
@@ -1552,6 +1583,8 @@ function CalendarPageContent() {
                           key={`${event.id}_${dayStart}`}
                           role="button"
                           tabIndex={0}
+                          // A swipe starting on an event is it being dragged, not the day changing (onDaySwipe).
+                          data-cal-event="true"
                           onPointerDown={(e) => onEventPointerDown(e, event, "move")}
                           onPointerMove={onEventPointerMove}
                           onPointerUp={onEventPointerUp}
@@ -1577,13 +1610,13 @@ function CalendarPageContent() {
                             outline: dragging ? "2px solid var(--text-main)" : undefined,
                           }}
                         >
-                          <p className="truncate font-normal">{event.title || "Untitled event"}</p>
+                          <p className="truncate font-normal max-md:text-clip">{event.title || "Untitled event"}</p>
                           {height > 30 ? (
-                            <p className="truncate opacity-85">
+                            <p className="truncate opacity-85 max-md:text-clip">
                               {timeText(event.startMs)} – {timeText(event.endMs)}
                             </p>
                           ) : null}
-                          {height > 46 && event.location ? <p className="truncate opacity-80">{event.location}</p> : null}
+                          {height > 46 && event.location ? <p className="truncate opacity-80 max-md:text-clip">{event.location}</p> : null}
                           {canEditEvent(event) ? (
                             <span
                               onPointerDown={(e) => onEventPointerDown(e, event, "resize")}
@@ -1781,7 +1814,7 @@ function CalendarPageContent() {
                             e.stopPropagation();
                             openExisting(bar.event, e);
                           }}
-                          className="pointer-events-auto absolute truncate px-1 text-left text-[11px] leading-[15px] transition hover:brightness-95"
+                          className="pointer-events-auto absolute truncate px-1 text-left text-[11px] leading-[15px] transition hover:brightness-95 max-md:text-clip"
                           style={{
                             top: bar.lane * YEAR_BAR_H,
                             height: YEAR_BAR_H - 2,
@@ -2001,7 +2034,7 @@ function CalendarPageContent() {
         <div className={`flex min-w-0 flex-col gap-3 lg:min-h-0 ${fillMonth ? "min-h-0" : ""}`}>
           {/* Toolbar */}
           <div className="flex flex-wrap items-center gap-2 rounded-[20px] border px-3 py-2.5" style={cardStyle}>
-            <button type="button" onClick={() => setCursor(startOfDay(new Date()))} className={smallButtonClass}>
+            <button type="button" onClick={() => setCursor(startOfDay(new Date()))} className={pillButtonClass}>
               Today
             </button>
             <div className="flex items-center">
@@ -2013,11 +2046,14 @@ function CalendarPageContent() {
               </button>
             </div>
             <h1 className="min-w-0 flex-1 truncate text-[17px] font-semibold" style={{ color: "var(--text-main)" }}>{title}</h1>
-            <button type="button" onClick={() => setMobileFilterOpen((v) => !v)} className={`${smallButtonClass} lg:hidden`}>
+            <button type="button" onClick={() => setMobileFilterOpen((v) => !v)} className={`${pillButtonClass} lg:hidden`}>
               <Filter size={14} /> Categories
             </button>
+            {/* The view in use in the blue fill, so it's clear which it is; fully rounded, like Today. */}
             <Segmented
               size="sm"
+              tone="brand"
+              pill
               value={view}
               options={[
                 { value: "year", label: "Year" },

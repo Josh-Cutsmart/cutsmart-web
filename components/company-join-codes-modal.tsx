@@ -1,19 +1,22 @@
 "use client";
 
 import { useState } from "react";
-import { Check, Copy, Eye, EyeOff, KeyRound, Plus, X } from "lucide-react";
+import { Check, Copy, Eye, EyeOff, KeyRound, Plus, Trash2, X } from "lucide-react";
 import { glassFieldClass, iconRemoveButtonClass, primaryButtonClass, primaryButtonStyle, smallButtonClass } from "@/components/settings-ui";
 import { activeDateTime } from "@/lib/company-formats";
 import {
   changeMasterJoinCode,
   createTemporaryJoinCode,
+  deleteJoinCode,
   revokeTemporaryJoinCode,
   type JoinCodeRecord,
   type JoinCodesState,
 } from "@/lib/company-join-codes";
 
 // Company Settings > Company > Join key: the company's master code (with a way to change it) and
-// one-person temporary codes (create, copy, revoke) — see lib/company-join-codes-server.ts.
+// one-person temporary codes (create, copy, revoke, and delete once revoked) — see
+// lib/company-join-codes-server.ts. Inviting someone (Staff > Add staff) makes them one too, shown with
+// who it was sent to.
 // Revoking a code someone has already used means removing them, which the page does (its Remove Staff
 // pop-up, then the revoke) through onRevokeUsedCode.
 
@@ -124,6 +127,25 @@ export function CompanyJoinCodesModal({
       return;
     }
     if (newCode && record.code === newCode) setNewCode("");
+    onReload();
+  };
+
+  // A revoked code, off the list (tap twice — the first asks).
+  const [confirmDeleteKey, setConfirmDeleteKey] = useState("");
+  const remove = async (record: JoinCodeRecord) => {
+    if (confirmDeleteKey !== record.key) {
+      setConfirmDeleteKey(record.key);
+      return;
+    }
+    setBusy(record.key);
+    setError("");
+    const result = await deleteJoinCode(companyId, record.key);
+    setBusy("");
+    setConfirmDeleteKey("");
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
     onReload();
   };
 
@@ -262,7 +284,11 @@ export function CompanyJoinCodesModal({
                           style={{ borderColor: "var(--glass-border)", opacity: state === "revoked" ? 0.65 : 1 }}
                         >
                           <span className="font-mono text-[13.5px] font-semibold tracking-[1px]" style={{ color: "var(--text-main)" }}>{record.code}</span>
-                          {record.label ? (
+                          {record.inviteId ? (
+                            <span className="truncate text-[12.5px]" style={{ color: "var(--text-muted)" }}>
+                              Invite · {record.invitedEmail || record.label}
+                            </span>
+                          ) : record.label ? (
                             <span className="truncate text-[12.5px]" style={{ color: "var(--text-muted)" }}>{record.label}</span>
                           ) : null}
                           <span className="rounded-full px-2.5 py-0.5 text-[11.5px] font-semibold" style={{ backgroundColor: style.bg, color: style.fg }}>
@@ -284,7 +310,22 @@ export function CompanyJoinCodesModal({
                               >
                                 {busy === record.key ? "Revoking…" : confirmRevokeKey === record.key ? "Revoke code?" : state === "used" ? "Revoke & remove" : "Revoke"}
                               </button>
-                            ) : null}
+                            ) : (
+                              <button
+                                type="button"
+                                className={smallButtonClass}
+                                disabled={busy === record.key}
+                                onClick={() => void remove(record)}
+                                style={
+                                  confirmDeleteKey === record.key
+                                    ? { backgroundImage: "var(--danger-gradient)", color: "#fff", borderColor: "transparent" }
+                                    : undefined
+                                }
+                              >
+                                <Trash2 size={13} />
+                                {busy === record.key ? "Deleting…" : confirmDeleteKey === record.key ? "Delete code?" : "Delete"}
+                              </button>
+                            )}
                           </span>
                         </div>
                       );

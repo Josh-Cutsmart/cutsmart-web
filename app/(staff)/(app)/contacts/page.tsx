@@ -1296,7 +1296,7 @@ function ClientsPageInner() {
                 <button
                   type="button"
                   onClick={openAddContact}
-                  className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] border text-white hover:brightness-95"
+                  className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-white hover:brightness-95"
                   style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
                   aria-label="Add contact"
                 >
@@ -1312,13 +1312,14 @@ function ClientsPageInner() {
                       onChange={setCategoryFilter}
                       ariaLabel="Filter by category"
                       menuMinWidth={170}
-                      triggerClassName="h-9 w-[140px] rounded-[10px] border px-2.5 text-[12px] font-medium"
+                      menuAlign="center"
+                      triggerClassName="h-9 w-[140px] rounded-full border px-3 text-[12px] font-medium"
                       triggerStyle={{ borderColor: border, backgroundColor: panelBg, color: text }}
                     />
                   </div>
                 ) : null}
                 <div
-                  className={`flex h-9 min-w-0 items-center overflow-hidden rounded-[10px] border transition-all duration-200 ${isMobileSearchOpen ? "max-w-[500px] flex-1 justify-start gap-2 pl-0 pr-3" : "max-w-9 shrink-0 justify-center gap-0 px-0"}`}
+                  className={`flex h-9 min-w-0 items-center overflow-hidden rounded-full border transition-all duration-200 ${isMobileSearchOpen ? "max-w-[500px] flex-1 justify-start gap-2 pl-0 pr-3" : "w-9 max-w-9 shrink-0 justify-center gap-0 px-0"}`}
                   style={{ borderColor: border, backgroundColor: panelBg }}
                 >
                   <button
@@ -1328,7 +1329,7 @@ function ClientsPageInner() {
                       setIsMobileSearchOpen(true);
                       window.setTimeout(() => mobileSearchInputRef.current?.focus(), 0);
                     }}
-                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center"
+                    className="inline-flex h-[34px] w-[34px] shrink-0 items-center justify-center"
                     aria-label="Search contacts"
                   >
                     <Search size={14} style={{ color: textSoft }} />

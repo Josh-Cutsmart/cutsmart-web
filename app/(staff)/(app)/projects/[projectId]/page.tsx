@@ -39,7 +39,7 @@ import { useLongPress } from "@/lib/use-long-press";
 import { useDragGhost, DragGhostLayer } from "@/lib/use-drag-ghost";
 import { clusterPins, computeSpreadPositions, findClusterContainingPin } from "@/lib/pin-clustering";
 import SpecsGridEditor, { preloadSpecsGridEditor } from "@/components/specs-grid-editor-lazy";
-import { type SpecsGrid, type SpecsGridVersion, type SpecsRowGroup, normalizeSpecsGrid, normalizeSpecsGridVersion, resolveSpecsGridTokens, genSpecsRowId, getExpandedRowGroups, setRowGroupHidden, applyGroupRules, clearAllConfirmableMarks } from "@/lib/specs-grid-types";
+import { type SpecsGrid, type SpecsGridVersion, type SpecsRowGroup, normalizeSpecsGrid, normalizeSpecsGridVersion, resolveSpecsGridTokens, genSpecsRowId, getExpandedRowGroups, setRowGroupHidden, applyGroupRules, clearAllConfirmableMarks, withCurrentCompanyLogo } from "@/lib/specs-grid-types";
 import { isProjectNotifySubscribed, projectNotifySubscriberUids } from "@/lib/project-notify";
 import { retryAsync, withTimeout } from "@/lib/load-retry";
 import {
@@ -5839,6 +5839,28 @@ function extractSalesPayloadFromProject(project: Project | null): Record<string,
   return {};
 }
 
+// Project details' header on scroll. The dates bar's lines (creator, assigned, created, modified —
+// data-header-fade) fade away as the title bar reaches each one, and back in as it leaves it
+// (globals.css), rather than sliding under it. The header's one sheet of glass (see the header markup) — behind the top
+// tab bar, the title bar and the tab bar together, so they read as one smooth surface rather than three
+// bars, each with its own blur edges — shows once the tab bar is pinned right under the title bar (the
+// page scrolling under them then), from the top of the screen to the tab bar's bottom.
+function placeProjectHeaderGlass(glass: HTMLElement | null, titleBar: HTMLElement | null, tabBar: HTMLElement | null) {
+  if (!titleBar) return;
+  const titleBottom = titleBar.getBoundingClientRect().bottom;
+  titleBar.parentElement?.querySelectorAll<HTMLElement>("[data-header-fade]").forEach((line) => {
+    const faded = line.getBoundingClientRect().top < titleBottom + 4 ? "true" : "false";
+    if (line.dataset.faded !== faded) line.dataset.faded = faded;
+  });
+  if (!glass) return;
+  const tabs = tabBar?.getBoundingClientRect();
+  const glassOn = tabs && tabs.top <= titleBottom + 1 ? "true" : "false";
+  glass.style.height = `${Math.max(0, tabs ? tabs.bottom : titleBottom)}px`;
+  glass.style.opacity = glassOn === "true" ? "1" : "0";
+  // The title bar: solid until then, hiding the dates bar going under it however fast it's scrolled.
+  if (titleBar.dataset.glassOn !== glassOn) titleBar.dataset.glassOn = glassOn;
+}
+
 export default function ProjectDetailsPage() {
   const params = useParams<{ projectId: string }>();
   const router = useRouter();
@@ -6980,7 +7002,11 @@ export default function ProjectDetailsPage() {
   // made the tab bar below stick flush against the title bar instead of underneath it — its own
   // `top` was computed from this stuck-at-0 height). A callback ref instead fires every time the
   // underlying DOM node actually changes, including this late first attach.
+  // The title bar itself (projectHeaderRowRef keeps it), and the header's glass (placeProjectHeaderGlass).
+  const projectHeaderRowElRef = useRef<HTMLDivElement | null>(null);
+  const projectHeaderGlassRef = useRef<HTMLDivElement | null>(null);
   const projectHeaderRowRef = useCallback((el: HTMLDivElement | null) => {
+    projectHeaderRowElRef.current = el;
     if (projectHeaderRowObserverRef.current) {
       projectHeaderRowObserverRef.current.disconnect();
       projectHeaderRowObserverRef.current = null;
@@ -7038,6 +7064,12 @@ export default function ProjectDetailsPage() {
       setIsProjectHeaderStuck(window.scrollY > 0 || (mainEl ? mainEl.scrollTop > 0 : false));
     };
     sync();
+    // The header's glass follows the tab bar on every scroll event, unthrottled, so it's already
+    // under the tab bar the moment that pins.
+    const placeGlass = () =>
+      placeProjectHeaderGlass(projectHeaderGlassRef.current, projectHeaderRowElRef.current, projectStickyBarRef.current);
+    window.addEventListener("scroll", placeGlass, { capture: true, passive: true });
+    window.addEventListener("resize", placeGlass);
     // rAF-throttled for the same reason as GlassScrollbarThumb's own identical fix — coalesces
     // however many scroll events a fast wheel gesture fires down to at most one recompute per
     // frame, instead of running sync() (and its DOM reads) once per raw event.
@@ -7054,9 +7086,15 @@ export default function ProjectDetailsPage() {
     return () => {
       window.removeEventListener("scroll", scheduleSync, true);
       window.removeEventListener("resize", scheduleSync);
+      window.removeEventListener("scroll", placeGlass, { capture: true });
+      window.removeEventListener("resize", placeGlass);
       if (rafId !== null) cancelAnimationFrame(rafId);
     };
   }, []);
+  // ...and when the title bar changes height (tags wrap) or the page first scrolls.
+  useLayoutEffect(() => {
+    placeProjectHeaderGlass(projectHeaderGlassRef.current, projectHeaderRowElRef.current, projectStickyBarRef.current);
+  }, [projectHeaderRowHeight, isProjectHeaderStuck, isLgUpViewport]);
   const [isDeleteProjectModalOpen, setIsDeleteProjectModalOpen] = useState(false);
   const [deleteProjectNameInput, setDeleteProjectNameInput] = useState("");
   const [deleteProjectModalOrigin, setDeleteProjectModalOrigin] = useState<GlassModalOrigin>(null);
@@ -8487,6 +8525,12 @@ export default function ProjectDetailsPage() {
   const archivedHeaderBackground = isProjectArchived(project)
     ? "color-mix(in srgb, var(--accent-amber) 20%, var(--panel-bg))"
     : undefined;
+  // The header (title bar, dates bar and tab bar) carries on the top tab bar above it as one surface:
+  // the bars themselves are clear — the page's own grey — with one sheet of the top tab bar's glass
+  // behind them all once the page scrolls under them (placeProjectHeaderGlass).
+  const projectHeaderGlass: React.CSSProperties = archivedHeaderBackground
+    ? { backgroundColor: archivedHeaderBackground, backdropFilter: "none", WebkitBackdropFilter: "none" }
+    : { backgroundColor: "transparent", backdropFilter: "none", WebkitBackdropFilter: "none" };
   // A darker yellow than the header behind it, so the note still stands out on it.
   const archivedNoteStyle: React.CSSProperties = {
     borderColor: "color-mix(in srgb, var(--accent-amber) 80%, transparent)",
@@ -14248,6 +14292,37 @@ export default function ProjectDetailsPage() {
       };
     };
 
+  // Changing tabs while scrolled down (the title and tab bars stuck at the top): the page slides back up
+  // to the top instead of jumping there. The page keeps its height while it slides — the new tab is often
+  // shorter, which would otherwise cut the slide short with a jump — then lets go once it's at the top.
+  const slidePageToTop = () => {
+    const main = document.querySelector<HTMLElement>("main");
+    const scrollers = [document.scrollingElement as HTMLElement | null, main].filter(
+      (el): el is HTMLElement => Boolean(el && el.scrollTop > 0),
+    );
+    if (!scrollers.length) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      scrollers.forEach((el) => el.scrollTo({ top: 0 }));
+      return;
+    }
+    const content = main?.firstElementChild as HTMLElement | null;
+    if (content) content.style.minHeight = `${content.offsetHeight}px`;
+    scrollers.forEach((el) => el.scrollTo({ top: 0, behavior: "smooth" }));
+    let done = false;
+    const release = () => {
+      if (done) return;
+      done = true;
+      if (content) content.style.minHeight = "";
+    };
+    const check = () => {
+      if (scrollers.every((el) => el.scrollTop <= 1)) release();
+      else if (!done) window.requestAnimationFrame(check);
+    };
+    window.requestAnimationFrame(check);
+    // However the slide goes (cut short by a touch, say), the page's height comes back.
+    window.setTimeout(release, 1200);
+  };
+
   const onChangeTab = async (value: string) => {
     if (value === "sales" && !salesAccess.view) {
       setLockMessage("Design is locked for your role on this project.");
@@ -14262,10 +14337,7 @@ export default function ProjectDetailsPage() {
       return;
     }
     setLockMessage("");
-    if (typeof window !== "undefined") {
-      window.scrollTo({ top: 0 });
-      document.querySelector("main")?.scrollTo({ top: 0 });
-    }
+    if (typeof window !== "undefined") slidePageToTop();
     if (resolvedTab === "sales" && salesNav === "quote" && value !== "sales") {
       setActiveQuoteSnapshotId("");
     }
@@ -28671,13 +28743,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   const onPrintSpecificationsSheet = async () => {
     if (!displayedSpecsSheetGrid) return;
     const { buildSpecsGridPdfBlob, openPdfBlobInPrintWindow } = await loadPdfExportModules();
-    const blob = await buildSpecsGridPdfBlob(displayedSpecsSheetGrid);
+    const blob = await buildSpecsGridPdfBlob(withCurrentCompanyLogo(displayedSpecsSheetGrid, quoteCompanyLogoPath));
     if (blob) openPdfBlobInPrintWindow(blob);
   };
   const onDownloadSpecificationsSheetPdf = async () => {
     if (!displayedSpecsSheetGrid) return;
     const { buildSpecsGridPdfBlob } = await loadPdfExportModules();
-    const blob = await buildSpecsGridPdfBlob(displayedSpecsSheetGrid);
+    const blob = await buildSpecsGridPdfBlob(withCurrentCompanyLogo(displayedSpecsSheetGrid, quoteCompanyLogoPath));
     if (!blob) return;
     const safeProject = (project?.name || "specifications").replace(/[\\/:*?"<>|]/g, "_").replace(/\s+/g, "_").slice(0, 64);
     const url = URL.createObjectURL(blob);
@@ -28696,13 +28768,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   const onPrintQuoteGrid = async () => {
     if (!displayedQuoteGrid) return;
     const { buildSpecsGridPdfBlob, openPdfBlobInPrintWindow } = await loadPdfExportModules();
-    const blob = await buildSpecsGridPdfBlob(displayedQuoteGrid);
+    const blob = await buildSpecsGridPdfBlob(withCurrentCompanyLogo(displayedQuoteGrid, quoteCompanyLogoPath));
     if (blob) openPdfBlobInPrintWindow(blob);
   };
   const onDownloadQuoteGridPdf = async () => {
     if (!displayedQuoteGrid) return;
     const { buildSpecsGridPdfBlob } = await loadPdfExportModules();
-    const blob = await buildSpecsGridPdfBlob(displayedQuoteGrid);
+    const blob = await buildSpecsGridPdfBlob(withCurrentCompanyLogo(displayedQuoteGrid, quoteCompanyLogoPath));
     if (!blob) return;
     const safeProject = (project?.name || "quote").replace(/[\\/:*?"<>|]/g, "_").replace(/\s+/g, "_").slice(0, 64);
     const url = URL.createObjectURL(blob);
@@ -50347,29 +50419,41 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   return (
         <div>
           {/* Row 1 (project name/tags left, notifications/delete/status right) is its own sticky
-              bar — sticks immediately (top-0/lg:top-12, same split as the tab bar further below,
-              for the same reason: <main> scrolls internally on mobile and its wrapper already
-              reserves the fixed GlobalAppTabsBar's 48px via padding, so top-12 there would
-              double-reserve it; at lg+ the window scrolls and does need the full 48px). Its
-              rendered height is measured (projectHeaderRowRef) since it varies — tags wrap, the
-              add-tag input toggles — so the tab bar below can sit flush underneath it exactly,
-              whatever that height actually is. */}
+              bar — sticks immediately, just under the fixed GlobalAppTabsBar: lg:top-12 where the
+              window scrolls; top-0 below lg, where <main> scrolls and reaches up under the bar on this
+              page (startsUnderTopBar, lib/flat-page.ts) with the bar's 48px as its top padding — a
+              sticky bar pins inside its scroller's padding, so 0 is already under the bar there (and
+              the page scrolls on up under the bar's glass). Its rendered height is measured
+              (projectHeaderRowRef) since it varies — tags wrap, the add-tag input toggles — so the tab
+              bar below can sit flush underneath it exactly, whatever that height actually is.
+              data-continues-top-bar: no line between it and the top tab bar (globals.css). */}
+          {/* The header's one sheet of glass, behind the top tab bar (whose own glass is off on this
+              page — globals.css, data-continues-top-bar), the title bar and the tab bar: the top tab
+              bar's glass, on the moment the page scrolls under the pinned tab bar (no fade), with its
+              line along the bottom. Sized and shown by placeProjectHeaderGlass; z-[29], under the bars
+              (z-30/31). */}
+          <div
+            ref={projectHeaderGlassRef}
+            aria-hidden="true"
+            className="app-top-bar-sidebar-offset pointer-events-none fixed left-0 right-0 top-0 z-[29]"
+            style={{
+              backgroundColor: isDarkMode ? "rgba(11,13,18,0.4)" : "rgba(245,247,250,0.4)",
+              backdropFilter: "blur(12px) saturate(220%)",
+              WebkitBackdropFilter: "blur(12px) saturate(220%)",
+              boxShadow: "inset 0 -1px 0 var(--glass-border)",
+              opacity: 0,
+            }}
+          />
           <div
             ref={projectHeaderRowRef}
+            data-continues-top-bar="true"
             className="glass-page-header sticky top-0 z-[31] -mx-4 px-4 py-[10px] md:-mx-5 md:px-5 lg:top-12"
             style={{
-              // A deliberate divider (not an attempt to hide a seam) between this bar and the tab
-              // strip below, shown only once the two are actually touching — i.e. once Row 1 is
-              // pinned in its stuck position (isProjectHeaderStuck). At rest, Row 2 still sits
-              // between them, so this stays off there rather than drawing a line above Row 2.
-              borderBottom: isProjectHeaderStuck
-                ? `1px solid ${isDarkMode ? "rgba(255,255,255,0.08)" : "var(--glass-border)"}`
-                : "none",
-              // No var(--shadow-glass) here — it's a downward drop-shadow (0 8px 32px) that
-              // visually bled into the space below this bar, reading as a gap even once the
-              // actual layout gap was fully closed.
-              boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.07)" : "rgba(255,255,255,0.55)"}`,
-              ...(archivedHeaderBackground ? { background: archivedHeaderBackground } : {}),
+              // The page's grey until the header's glass shows, so the dates bar scrolls out of sight
+              // under it; clear over the glass then (globals.css, data-glass-on — set by
+              // placeProjectHeaderGlass). An archived project's stays amber. No line under it.
+              ...(archivedHeaderBackground ? projectHeaderGlass : { backdropFilter: "none", WebkitBackdropFilter: "none" }),
+              borderBottom: "none",
             }}
           >
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -50738,21 +50822,18 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           <div
             data-title-bar="true"
             className="-mx-4 md:-mx-5"
-            style={{
-              backgroundColor: archivedHeaderBackground ?? "var(--glass-modal-bg)",
-              backdropFilter: "blur(12px) saturate(220%)",
-              WebkitBackdropFilter: "blur(12px) saturate(220%)",
-            }}
+            style={projectHeaderGlass}
           >
           <div>
             <div className="px-4 pb-2 pt-2 md:px-5">
             {/* Row 2: Creator/Assigned (left mount) — Created/Modified (right mount). Icon + badge
                 + name, with the "Creator:"/"Assigned:" text label shown on desktop and hidden on
                 mobile (icon-only there). Stays in this same non-sticky header block (unlike the
-                tab strip below), so it always scrolls away normally and never sticks. */}
+                tab strip below), so it always scrolls away normally and never sticks — each line
+                (data-header-fade) fading away as the title bar reaches it (placeProjectHeaderGlass). */}
             <div className="flex flex-row items-start justify-between gap-4 pt-0 md:pt-2">
               <div className="flex min-w-0 flex-col gap-1.5">
-                <div className="flex min-w-0 items-center gap-1.5">
+                <div data-header-fade="true" className="flex min-w-0 items-center gap-1.5">
                   <User size={13} className="shrink-0" style={{ color: projectPalette.textMuted }} />
                   <span className="hidden shrink-0 text-[13px] md:inline" style={{ color: projectPalette.textMuted }}>Creator:</span>
                   <div
@@ -50770,7 +50851,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   </div>
                   <span className="min-w-0 truncate text-[13px]" style={{ color: projectPalette.textMuted }}>{creatorDisplayName}</span>
                 </div>
-                <div className="flex min-w-0 items-center gap-1.5">
+                <div data-header-fade="true" className="flex min-w-0 items-center gap-1.5">
                   {effectiveAssignedSelectionUid ? (
                     <>
                       <Users size={13} className="shrink-0" style={{ color: projectPalette.textMuted }} />
@@ -50876,11 +50957,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 </div>
               </div>
               <div className="flex shrink-0 flex-col items-end gap-1.5">
-                <div className="flex items-center gap-1.5">
+                <div data-header-fade="true" className="flex items-center gap-1.5">
                   <CalendarDays size={13} className="shrink-0" style={{ color: projectPalette.textMuted }} />
                   <span className="whitespace-nowrap text-[13px]" style={{ color: projectPalette.textMuted }}>{dashboardStyleDate(project.createdAt)}</span>
                 </div>
-                <div className="flex items-center gap-1.5">
+                <div data-header-fade="true" className="flex items-center gap-1.5">
                   <RefreshCw size={13} className="shrink-0" style={{ color: projectPalette.textMuted }} />
                   <span className="whitespace-nowrap text-[13px]" style={{ color: projectPalette.textMuted }}>{dashboardStyleDate(project.updatedAt)}</span>
                 </div>
@@ -50892,15 +50973,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
           {/* Sticks right underneath Row 1 above (real content, not a duplicate bar) — its `top`
               is Row 1's own measured height (projectHeaderRowHeight) plus 0/48 for the same
-              <main>-scrolls-internally-on-mobile split used throughout this header. */}
+              <main>-scrolls-on-mobile split as Row 1's. */}
           <div
             ref={projectStickyBarRef}
             className="glass-page-header sticky z-[30] -mx-4 md:-mx-5"
             style={{
               top: projectHeaderRowHeight + (isLgUpViewport ? 48 : 0),
               marginTop: 0,
-              boxShadow: "var(--shadow-sm)",
-              ...(archivedHeaderBackground ? { background: archivedHeaderBackground } : {}),
+              // Clear, over the header's glass (projectHeaderGlass) — whose own line closes it off.
+              // An archived project's amber bar keeps its line.
+              ...projectHeaderGlass,
+              borderBottomColor: archivedHeaderBackground ? "var(--glass-border)" : "transparent",
             }}
           >
             <div className="px-4 md:px-5">

@@ -448,6 +448,8 @@ export default function DashboardPage() {
   // (the list's filter pills and page size, the board's Sort) pop in as that view comes in — not on
   // the page's first load. The ones leaving pop away (popAwayViewToolbarItems).
   const [viewToolbarPopIn, setViewToolbarPopIn] = useState(false);
+  // The search bar has just been touched (phone) — it opens out from then, before it has focus.
+  const [searchOpening, setSearchOpening] = useState(false);
   // Switching the view moves the search bar and the phone's filter button (the board's Sort button
   // comes in before them, or goes): where they were, recorded on the switch, so they slide from there
   // to their new places instead of jumping. One thing at a time, so nothing slides across anything:
@@ -1716,7 +1718,8 @@ export default function DashboardPage() {
     setDraggingProjectId("");
     setDragOverProjectStatusColumn("");
     setProjectDropPreview(null);
-    projectBoardDragGhost.end();
+    // Its copy glides onto the card's spot — where it was dropped, or back where it was.
+    projectBoardDragGhost.end(draggingProjectId);
   };
 
   // A dropped project lands in the column it was dropped on, at the exact spot (dropIndex: among that
@@ -1730,8 +1733,8 @@ export default function DashboardPage() {
     // Dismiss the ghost here too, not just on the source card's onDragEnd — a successful drop can
     // move the project into a different column (a different DOM parent), and if that happens
     // before the browser dispatches `dragend` on the now-detached original element, the native
-    // event never fires and the ghost is left stuck on screen.
-    projectBoardDragGhost.end();
+    // event never fires and the ghost is left stuck on screen. It glides onto the project's new spot.
+    projectBoardDragGhost.end(projectId);
     const project = allProjects.find((row) => row.id === projectId);
     if (!project) return;
     const sameStatus = String(project.statusLabel || "New").trim().toLowerCase() === statusName.trim().toLowerCase();
@@ -1773,7 +1776,7 @@ export default function DashboardPage() {
     setDraggingSubStageProjectId("");
     setDragOverSubStageColumn("");
     setSubStageDropPreview(null);
-    projectBoardDragGhost.end();
+    projectBoardDragGhost.end(draggingSubStageProjectId);
   };
 
   const onSubStageColumnDrop = (event: ReactDragEvent<HTMLElement>, subStageKey: string, dropIndex: number | null) => {
@@ -1782,7 +1785,7 @@ export default function DashboardPage() {
     setSubStageDropPreview(null);
     const projectId = event.dataTransfer.getData("text/plain") || draggingSubStageProjectId;
     setDraggingSubStageProjectId("");
-    projectBoardDragGhost.end();
+    projectBoardDragGhost.end(projectId);
     const project = allProjects.find((row) => row.id === projectId);
     if (!project) return;
     const nextSubStage = subStageKey;
@@ -3175,8 +3178,21 @@ export default function DashboardPage() {
                     (slideViewToolbarItemsFromRef). */}
                 <div
                   ref={searchSlideRef}
+                  // Phone: it starts opening as soon as it's touched (data-opening), not once it has focus
+                  // — the keyboard sliding up then (the page re-drawing as it does) made the start of the
+                  // slide stutter; this way most of it's done by then.
+                  data-opening={searchOpening ? "true" : undefined}
+                  onPointerDown={(event) => {
+                    setSearchOpening(true);
+                    // A touch that turned into a scroll (the search never got focus): back it goes.
+                    const wrap = event.currentTarget;
+                    window.setTimeout(() => {
+                      if (!wrap.contains(document.activeElement)) setSearchOpening(false);
+                    }, 700);
+                  }}
+                  onBlur={() => setSearchOpening(false)}
                   className={`peer relative order-1 w-9 min-w-9 shrink-0 flex-none transition-[flex-grow,width] duration-200 focus-within:flex-1 sm:order-none sm:w-auto sm:min-w-[260px] sm:max-w-[360px] sm:flex-none sm:focus-within:flex-none ${
-                    search.trim() ? "max-sm:flex-1" : ""
+                    search.trim() || searchOpening ? "max-sm:flex-1" : ""
                   }`}
                 >
                   <Search
@@ -3197,7 +3213,7 @@ export default function DashboardPage() {
                     // too, not the grey every text box is given there (globals.css). Phone: padding that
                     // fits the 36px circle while it's just the icon (a text box can't be narrower than its
                     // own padding — it stuck out as a pill), the right side's back once it opens.
-                    className={`cs-own-fill h-9 w-full rounded-full border pl-9 pr-3.5 text-[12px] font-semibold outline-none transition focus:border-[var(--brand)] max-sm:pl-[34px] ${
+                    className={`cs-own-fill h-9 w-full rounded-full border pl-9 pr-3.5 text-[12px] font-semibold outline-none transition-colors focus:border-[var(--brand)] max-sm:pl-[34px] ${
                       search.trim() ? "" : "max-sm:pr-0 max-sm:focus:pr-3.5"
                     }`}
                     style={{
@@ -3238,7 +3254,7 @@ export default function DashboardPage() {
                     out of the way (same as it did as a button row) while the search bar is
                     focused and expanded — taking the row's gap before it along with it
                     (peer-focus-within:-ml-2), so none's left over beside the bar. */}
-                <div className="relative z-0 order-2 flex flex-1 translate-x-0 justify-center overflow-hidden transition-[opacity,flex-grow,transform,margin] duration-200 peer-focus-within:pointer-events-none peer-focus-within:-ml-2 peer-focus-within:flex-none peer-focus-within:w-0 peer-focus-within:translate-x-6 peer-focus-within:opacity-0 sm:hidden">
+                <div className="relative z-0 order-2 flex flex-1 translate-x-0 justify-center overflow-hidden transition-[opacity,flex-grow,transform,margin] duration-200 peer-focus-within:pointer-events-none peer-focus-within:-ml-2 peer-focus-within:flex-none peer-focus-within:w-0 peer-focus-within:translate-x-6 peer-focus-within:opacity-0 peer-data-[opening=true]:pointer-events-none peer-data-[opening=true]:-ml-2 peer-data-[opening=true]:flex-none peer-data-[opening=true]:w-0 peer-data-[opening=true]:translate-x-6 peer-data-[opening=true]:opacity-0 sm:hidden">
                   <button
                     type="button"
                     data-quick-filter-trigger="true"
@@ -3383,7 +3399,7 @@ export default function DashboardPage() {
                   // bottom of the screen: 10px (the scroller's pb), 20px on a phone (max-md:pb-5).
                   // That's top 24px (34px on a phone) — whichever is scrolling, the document on
                   // desktop or <main> below 1024px, starts at the top of the screen, under the bar
-                  // (on this page, <main> reaches up under it: app-shell.tsx's data-flat-under-bar).
+                  // (on this page, <main> reaches up under it: app-shell.tsx's data-under-bar).
                   // The height reaches the bottom of the screen from there. The toolbar ends 10px
                   // (20px on a phone — max-md:-mt-[14px]) above the columns, so by then it's gone
                   // under the bar.

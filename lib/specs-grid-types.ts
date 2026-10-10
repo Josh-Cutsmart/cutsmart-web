@@ -131,6 +131,35 @@ export type SpecsRow = {
   cells: (SpecsCell | null)[];
 };
 
+// ---- The company logo in a grid cell (the builder's "company logo" button). A cell keeps the logo's
+// web address from when it was put in; that file can be replaced by a new logo upload (Company Settings
+// > Company), which used to delete it — leaving the cell showing a broken image ("?" in Safari). Anything
+// showing a grid (the editor, PDFs, the client portal) shows such a cell with the company's current logo
+// instead. A company logo file is stored as companies/{id}/branding/logo_<time>.<ext> — its download
+// address has that path in it, "/" written as %2F.
+export function isCompanyLogoImageUrl(url: string | undefined | null): boolean {
+  return /branding(?:%2F|\/)logo_/i.test(String(url || ""));
+}
+
+// The grid with its company-logo cells on `logoUrl` (unchanged, the same object, when there's nothing to do).
+export function withCurrentCompanyLogo<G extends { rows: Array<{ cells: Array<{ imageUrl?: string } | null> }> }>(grid: G, logoUrl: string | undefined | null): G {
+  const current = String(logoUrl || "").trim();
+  if (!current) return grid;
+  let changed = false;
+  const rows = grid.rows.map((row) => {
+    let rowChanged = false;
+    const cells = row.cells.map((cell) => {
+      if (!cell?.imageUrl || cell.imageUrl === current || !isCompanyLogoImageUrl(cell.imageUrl)) return cell;
+      rowChanged = true;
+      return { ...cell, imageUrl: current };
+    });
+    if (!rowChanged) return row;
+    changed = true;
+    return { ...row, cells };
+  });
+  return changed ? { ...grid, rows } : grid;
+}
+
 export type SpecsPageSize = "A3" | "A4" | "A5" | "Letter" | "Legal";
 
 // A named span of whole rows that can be shown/hidden as a unit — created in the builder by

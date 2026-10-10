@@ -82,7 +82,7 @@ import { usePushNotificationsOnAppOpen } from "@/lib/push-client";
 import { VerifyAccountModal } from "@/components/verify-account-modal";
 import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
 import { isPreviewMode } from "@/lib/preview-mode";
-import { flatPageBg, isFlatPage } from "@/lib/flat-page";
+import { flatPageBg, isFlatPage, startsUnderTopBar } from "@/lib/flat-page";
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const COMPANY_BRANDING_CACHE_KEY_PREFIX = "cutsmart_company_branding_";
 const COMPANY_ACCESS_CACHE_KEY_PREFIX = "cutsmart_company_access_";
@@ -528,15 +528,16 @@ export function AppShell({
   const navListRef = useRef<HTMLDivElement | null>(null);
   const navLinkRefs = useRef<Record<string, HTMLAnchorElement | null>>({});
   const mobileNavPanelRef = useRef<HTMLDivElement | null>(null);
-  // The page's own content wrapper (everything below the fixed global top bar) — pushed
-  // sideways in sync with the drawer's own slide so opening it reads as shoving the page over
-  // rather than just laying an overlay on top of static content underneath.
+  // The page's own content wrapper (everything below the fixed global top bar).
   const mainPushRef = useRef<HTMLDivElement | null>(null);
+  // Phones: the menu (and the notifications panel, in global-app-tabs-bar.tsx) slides in OVER the page
+  // as frosted glass — the page stays where it is, blurred behind it — rather than shoving the page
+  // over to make room, which is what pushRef did.
   const { shouldRender: shouldRenderMobileNav, touchHandlers: mobileNavTouchHandlers } = useSwipeToClose(
     mobileNavOpen,
     () => setMobileNavOpen(false),
     mobileNavPanelRef,
-    { edge: "left", pushRef: mainPushRef },
+    { edge: "left" },
   );
   const [isUserSettingsPanelOpen, setIsUserSettingsPanelOpen] = useState(false);
   const desktopAsideRef = useRef<HTMLElement | null>(null);
@@ -752,6 +753,18 @@ export function AppShell({
   const [effectiveCompanyRole, setEffectiveCompanyRole] = useState("");
   const [effectiveCompanyPermissions, setEffectiveCompanyPermissions] = useState<string[]>([]);
   const [themeMode, setThemeMode] = useState<ThemeMode>("light");
+  // The phone's status bar / Dynamic Island tint (the theme-color meta, app/layout.tsx): the page's
+  // background, light or dark.
+  useEffect(() => {
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", themeMode === "dark" ? "#0b0d12" : "#f5f7fa");
+  }, [themeMode]);
+  // The phone menu's and notifications panel's glass: the top tab bar's, a little stronger so what's in
+  // them stays easy to read over the page.
+  const mobilePanelGlass = {
+    backgroundColor: themeMode === "dark" ? "rgba(11, 13, 18, 0.62)" : "rgba(245, 247, 250, 0.62)",
+    backdropFilter: "blur(22px) saturate(180%)",
+    WebkitBackdropFilter: "blur(22px) saturate(180%)",
+  };
   const photoThumbRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const previewPanelRef = useRef<HTMLDivElement | null>(null);
   const previewTimerRef = useRef<number | null>(null);
@@ -814,31 +827,18 @@ export function AppShell({
       ? mobileNavPanelRef.current
       : document.querySelector<HTMLElement>('[data-mobile-notif-panel="true"]');
     if (!panel) return;
-    const push = mainPushRef.current;
     const width = panel.getBoundingClientRect().width || window.innerWidth;
+    // Only the panel moves — it slides in over the page (see mobilePanelGlass).
     if (kind === "nav") {
       // edge "left": closed = translateX(-100%), fully open = translateX(0).
       const clampedDx = Math.max(0, Math.min(width, dx));
       panel.style.transition = "none";
       panel.style.transform = `translateX(calc(-100% + ${clampedDx}px))`;
-      if (push) {
-        // Pixels, not a percentage of push's OWN width — translateX(N%) is relative to the
-        // element it's applied to, so a percentage here moved the (often wider/narrower) page at
-        // a different rate than the panel's own pixel-based transform above, reading as the two
-        // sliding at different speeds. clampedDx IS the panel's own current pixel offset from
-        // closed, so mirroring it directly keeps them moving 1:1.
-        push.style.transition = "none";
-        push.style.transform = clampedDx === 0 ? "" : `translateX(${clampedDx}px)`;
-      }
     } else {
       // edge "right": closed = translateX(100%), fully open = translateX(0).
       const clampedDx = Math.max(-width, Math.min(0, dx));
       panel.style.transition = "none";
       panel.style.transform = `translateX(calc(100% + ${clampedDx}px))`;
-      if (push) {
-        push.style.transition = "none";
-        push.style.transform = clampedDx === 0 ? "" : `translateX(${clampedDx}px)`;
-      }
     }
   };
   // Pull-to-navigate: dragging down past the top of an already-at-top page (the same gesture
@@ -1409,17 +1409,6 @@ export function AppShell({
       const transition = "transform 260ms cubic-bezier(0.32, 0.72, 0, 1)";
       panel.style.transition = transition;
       panel.style.transform = "translateX(0px)";
-      const push = mainPushRef.current;
-      if (push) {
-        // Pixels (matching `width`, the panel's own measured width — same value used just above
-        // for `progress`), not a percentage of push's own width — this settle-to-open step was
-        // still using the old percentage-based transform even after the live-drag path above was
-        // fixed to track in pixels, so releasing past the open threshold could snap to a slightly
-        // different final offset than the drag had been tracking toward, reading as the page
-        // drifting away from the panel over the course of the gesture.
-        push.style.transition = transition;
-        push.style.transform = kind === "nav" ? `translateX(${width}px)` : `translateX(${-width}px)`;
-      }
     }
   };
   const normalizedEffectivePermissions = useMemo(
@@ -3147,10 +3136,11 @@ export function AppShell({
           aria-hidden={!shouldRenderMobileNav}
           inert={!shouldRenderMobileNav}
         >
+          {/* No dimming: the page shows through the menu's glass as it is, just blurred. */}
           <button
             type="button"
             data-swipe-backdrop="true"
-            className="absolute inset-0 bg-[rgba(15,23,42,0.45)]"
+            className="absolute inset-0 bg-transparent"
             style={{ opacity: 0 }}
             onClick={() => setMobileNavOpen(false)}
             aria-label="Close menu backdrop"
@@ -3160,7 +3150,7 @@ export function AppShell({
             {...mobileNavTouchHandlers}
             className="relative z-[121] flex h-full w-full flex-col overflow-hidden"
             style={{
-              backgroundColor: "var(--panel-bg)",
+              ...mobilePanelGlass,
               color: shellPalette.text,
               touchAction: "pan-y",
               transform: "translateX(-100%)",
@@ -3709,11 +3699,11 @@ export function AppShell({
             height: PULL_BANNER_MIN_HEIGHT_PX,
             opacity: 0,
             pointerEvents: "none",
-            // On a flat page (lib/flat-page.ts), that page's own colour — the same as everything else
-            // there, the top tab bar included — with a faint line along its bottom edge so it still
-            // reads as pulled down over the page.
-            backgroundColor: isFlatPage(pathname) ? flatPageBg(themeMode === "dark") : "var(--panel-bg)",
-            boxShadow: isFlatPage(pathname) ? "inset 0 -1px 0 var(--glass-border)" : undefined,
+            // The page's own colour — the same as the top tab bar's strip it grows out of, on every
+            // page — with a faint line along its bottom edge so it still reads as pulled down over the
+            // page.
+            backgroundColor: isFlatPage(pathname) ? flatPageBg(themeMode === "dark") : "var(--bg-app)",
+            boxShadow: "inset 0 -1px 0 var(--glass-border)",
           }}
         >
           {/* One shared circle (not one per zone) that lives under whichever zone is selected —
@@ -3769,9 +3759,10 @@ export function AppShell({
         data-app-main-push="true"
         className={chromeHidden ? "min-w-0" : "min-w-0 pt-12"}
         style={{
-          // The strip under the see-through top tab bar: a flat page's own grey on flat pages, so the
-          // bar over it is that same grey too.
-          backgroundColor: isFlatPage(pathname) ? flatPageBg(themeMode === "dark") : undefined,
+          // The strip under the see-through top tab bar: the page's own colour, on every page — left
+          // unpainted, the body's soft colour washes showed through there, a different shade from the
+          // page under it.
+          backgroundColor: isFlatPage(pathname) ? flatPageBg(themeMode === "dark") : "var(--bg-app)",
           width: "100%",
           paddingLeft: 0,
           overflowX: "visible",
@@ -3780,12 +3771,14 @@ export function AppShell({
       >
         <main
           ref={mainScrollRef}
-          // A flat page (lib/flat-page.ts) on a phone/tablet, where <main> is the page's scroller: it
-          // starts at the very top of the screen, under the see-through top tab bar, instead of below
-          // it (globals.css) — otherwise it cut off anything reaching up past its top edge (the
-          // Dashboard stat cards' shadows) in a hard line along the bar. The page also scrolls under
-          // the bar's glass then, the same as on desktop.
-          data-flat-under-bar={isFlatPage(pathname) && !isDesktopViewport && !chromeHidden && !ownsMobileScroll ? "true" : undefined}
+          // Some pages on a phone/tablet (startsUnderTopBar, lib/flat-page.ts), where <main> is the
+          // page's scroller: it starts at the very top of the screen, under the see-through top tab
+          // bar, instead of below it (globals.css) — otherwise it cut off anything reaching up past its
+          // top edge (the Dashboard stat cards', the Settings card's shadows) in a hard line along the
+          // bar. The page also scrolls under the bar's glass then, the same as on desktop.
+          data-under-bar={startsUnderTopBar(pathname) && !isDesktopViewport && !chromeHidden && !ownsMobileScroll ? "true" : undefined}
+          // A page without <main>'s own top padding (reduceMainTopPadding) keeps none under the bar too.
+          data-reduce-top={!chromeHidden && reduceMainTopPadding ? "true" : undefined}
           className={
             chromeHidden
               ? "min-h-0 min-w-0 overscroll-y-contain hide-native-scrollbar"

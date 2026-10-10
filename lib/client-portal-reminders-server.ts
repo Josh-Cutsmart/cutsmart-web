@@ -14,7 +14,9 @@ import { getProjectDocRefAdmin, isShareLinkInactiveAdmin, type SpecsShareLinkDoc
 //
 // Each person's each "after N days" is sent once per send: the share doc remembers it
 // (pendingRemindersSent.{uid}_{quote|specs}_{N} = the sent time it was for), so a re-send starts over.
-// If several are due at once, only the latest milestone is sent.
+// One they've set to repeat goes again every N days (after N, 2N, 3N… days) until the client answers:
+// pendingRemindersSent.{uid}_{kind}_{N}_repeat = "<sent time>#<how many N's>" for the last one sent.
+// If several are due at once, only one reminder is sent.
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -82,8 +84,17 @@ export async function runClientPortalPendingReminders(options: { siteOrigin: str
       const sentMs = Date.parse(sentAtIso);
       const daysSince = Math.floor((now - sentMs) / DAY_MS);
       for (const uid of recipients) {
-        const days = (await daysFor(uid))[kind];
-        const due = days.filter((d) => now >= sentMs + d * DAY_MS && sentMap[`${uid}_${kind}_${d}`] !== sentAtIso);
+        const prefs = await daysFor(uid);
+        const repeating = kind === "quote" ? prefs.quoteRepeat : prefs.specsRepeat;
+        // Each due one as the share-doc field it's remembered under and the value that marks it sent.
+        const due = prefs[kind].flatMap((d) => {
+          if (repeating.includes(d)) {
+            const times = Math.floor((now - sentMs) / (d * DAY_MS));
+            const mark = `${sentAtIso}#${times}`;
+            return times >= 1 && sentMap[`${uid}_${kind}_${d}_repeat`] !== mark ? [{ field: `${uid}_${kind}_${d}_repeat`, mark }] : [];
+          }
+          return now >= sentMs + d * DAY_MS && sentMap[`${uid}_${kind}_${d}`] !== sentAtIso ? [{ field: `${uid}_${kind}_${d}`, mark: sentAtIso }] : [];
+        });
         if (!due.length) continue;
         if (!(await isCompanyMemberUid(companyId, uid))) continue;
         // Claim them (so two runs at once can't both send), then send one.
@@ -91,14 +102,14 @@ export async function runClientPortalPendingReminders(options: { siteOrigin: str
           const fresh = await tx.get(shareSnap.ref);
           if (!fresh.exists) return false;
           const current = (fresh.data()?.pendingRemindersSent as Record<string, unknown> | undefined) ?? {};
-          const stillDue = due.filter((d) => current[`${uid}_${kind}_${d}`] !== sentAtIso);
+          const stillDue = due.filter((item) => current[item.field] !== item.mark);
           if (!stillDue.length) return false;
           const [first, ...rest] = stillDue;
           tx.update(
             shareSnap.ref,
-            new FieldPath("pendingRemindersSent", `${uid}_${kind}_${first}`),
-            sentAtIso,
-            ...rest.flatMap((d) => [new FieldPath("pendingRemindersSent", `${uid}_${kind}_${d}`), sentAtIso]),
+            new FieldPath("pendingRemindersSent", first.field),
+            first.mark,
+            ...rest.flatMap((item) => [new FieldPath("pendingRemindersSent", item.field), item.mark]),
           );
           return true;
         });

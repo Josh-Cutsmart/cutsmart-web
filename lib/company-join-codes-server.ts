@@ -16,6 +16,11 @@ import { hasPermissionKey, resolveMemberAccess } from "@/lib/company-access-serv
 // A temporary code is for one person: it stops working the moment they join, so they never learn the
 // master code and can't come back with it after being removed. Revoking a used one means removing
 // them first (with the usual hand-over of their data); revoking an unused one just cancels it.
+//
+// Inviting someone (Company Settings > Staff > Add staff) makes them a temporary code too, linked to the
+// invite (inviteId, invitedEmail): accepting the invite uses it up, the same as joining with it, so they
+// show as having joined with it — and joining with it accepts the invite. Cancelling the invite revokes
+// it. A revoked code can then be deleted from the list.
 
 export type JoinCodeKind = "master" | "temporary";
 export type JoinCodeStatus = "active" | "used" | "revoked" | "replaced";
@@ -34,6 +39,9 @@ export type JoinCodeRecord = {
   usedByEmail: string;
   usedAtIso: string;
   revokedAtIso: string;
+  // Made for an invite: which one, and who it was sent to.
+  inviteId: string;
+  invitedEmail: string;
 };
 
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -78,6 +86,8 @@ function recordFrom(key: string, data: Record<string, unknown>): JoinCodeRecord 
     usedByEmail: toStr(data.usedByEmail),
     usedAtIso: toStr(data.usedAtIso),
     revokedAtIso: toStr(data.revokedAtIso),
+    inviteId: toStr(data.inviteId),
+    invitedEmail: toStr(data.invitedEmail),
   };
 }
 
@@ -103,7 +113,13 @@ export async function listJoinCodes(db: Firestore, companyId: string) {
   return { masterCode, masterKey: joinCodeKeyFor(masterCode), codes };
 }
 
-export async function createTemporaryCode(db: Firestore, companyId: string, by: { uid: string; name: string }, label: string) {
+export async function createTemporaryCode(
+  db: Firestore,
+  companyId: string,
+  by: { uid: string; name: string },
+  label: string,
+  invite?: { inviteId: string; invitedEmail: string },
+) {
   const companyRef = db.collection("companies").doc(companyId);
   const companyName = toStr(((await companyRef.get()).data() ?? {}).name);
   for (let attempt = 0; attempt < 6; attempt += 1) {
@@ -122,6 +138,7 @@ export async function createTemporaryCode(db: Firestore, companyId: string, by: 
         createdAtIso: nowIso,
         createdByUid: by.uid,
         createdByName: by.name,
+        ...(invite?.inviteId ? { inviteId: invite.inviteId, invitedEmail: invite.invitedEmail.toLowerCase() } : {}),
       });
       return true;
     });
@@ -206,6 +223,43 @@ export async function revokeTemporaryCode(db: Firestore, companyId: string, key:
   return { ok: true as const };
 }
 
+// Cancelling an invite: revokes the code made for it, if it hasn't been used.
+export async function revokeCodesForInvite(db: Firestore, companyId: string, inviteId: string) {
+  if (!inviteId) return { ok: false as const, error: "missing-invite" };
+  const companyRef = db.collection("companies").doc(companyId);
+  const linked = await companyRef.collection("joinCodes").where("inviteId", "==", inviteId).get();
+  const nowIso = new Date().toISOString();
+  const batch = db.batch();
+  let revoked = 0;
+  for (const doc of linked.docs) {
+    const record = recordFrom(doc.id, (doc.data() ?? {}) as Record<string, unknown>);
+    if (record.status !== "active" || record.usedByUid) continue;
+    const lookupRef = db.collection("companyJoinCodes").doc(doc.id);
+    const lookup = await lookupRef.get();
+    if (lookup.exists && toStr(lookup.data()?.companyId) === companyId) batch.delete(lookupRef);
+    batch.set(doc.ref, { status: "revoked", revokedAtIso: nowIso }, { merge: true });
+    revoked += 1;
+  }
+  if (revoked) await batch.commit();
+  return { ok: true as const, revoked };
+}
+
+// Removes a revoked code from the list for good (it already can't be joined with).
+export async function deleteRevokedCode(db: Firestore, companyId: string, key: string) {
+  const recordRef = db.collection("companies").doc(companyId).collection("joinCodes").doc(key);
+  const recordSnap = await recordRef.get();
+  if (!recordSnap.exists) return { ok: true as const };
+  const record = recordFrom(key, (recordSnap.data() ?? {}) as Record<string, unknown>);
+  if (record.status !== "revoked") return { ok: false as const, error: "not-revoked" };
+  const lookupRef = db.collection("companyJoinCodes").doc(key);
+  const lookup = await lookupRef.get();
+  const batch = db.batch();
+  if (lookup.exists && toStr(lookup.data()?.companyId) === companyId) batch.delete(lookupRef);
+  batch.delete(recordRef);
+  await batch.commit();
+  return { ok: true as const };
+}
+
 // Joins a company with a code (master or temporary). A temporary code is used up by this join.
 export async function joinWithCode(
   db: Firestore,
@@ -260,6 +314,8 @@ export async function joinWithCode(
         { status: "used", usedByUid: user.uid, usedByName: user.name || user.email, usedByEmail: user.email, usedAtIso: nowIso },
         { merge: true },
       );
+      // An invite's code: joining with it accepts the invite.
+      if (record?.inviteId) tx.delete(companyRef.collection("invites").doc(record.inviteId));
     }
     return { ok: true as const, companyId };
   });
@@ -276,11 +332,18 @@ export async function joinWithInvite(
   const companyRef = db.collection("companies").doc(companyId);
   const inviteRef = companyRef.collection("invites").doc(inviteId);
   return db.runTransaction(async (tx) => {
-    const [invite, companySnap, membershipSnap] = await Promise.all([
+    const [invite, companySnap, membershipSnap, linkedCodes] = await Promise.all([
       tx.get(inviteRef),
       tx.get(companyRef),
       tx.get(companyRef.collection("memberships").doc(user.uid)),
+      tx.get(companyRef.collection("joinCodes").where("inviteId", "==", inviteId)),
     ]);
+    // The code made for this invite, if it's still waiting: accepting uses it up (as if they'd joined
+    // with it), so they show as having joined with it.
+    const linkedCode = linkedCodes.docs.find((doc) => {
+      const record = recordFrom(doc.id, (doc.data() ?? {}) as Record<string, unknown>);
+      return record.status === "active" && !record.usedByUid;
+    });
     const inviteData = (invite.data() ?? {}) as Record<string, unknown>;
     const inviteEmail = toStr(inviteData.emailLower ?? inviteData.email).toLowerCase();
     if (!invite.exists || !companySnap.exists || inviteEmail !== user.email.toLowerCase()) return { ok: false as const, error: "no-such-invite" };
@@ -294,6 +357,7 @@ export async function joinWithInvite(
         role: "staff",
         roleId: "staff",
         joinedVia: "invite",
+        ...(linkedCode ? { joinCodeKey: linkedCode.id } : {}),
         companyName: toStr(companyData.name ?? companyData.companyName),
         createdAt: FieldValue.serverTimestamp(),
         createdAtIso: nowIso,
@@ -307,6 +371,14 @@ export async function joinWithInvite(
       { merge: true },
     );
     tx.delete(inviteRef);
+    if (linkedCode && !membershipSnap.exists) {
+      tx.delete(db.collection("companyJoinCodes").doc(linkedCode.id));
+      tx.set(
+        linkedCode.ref,
+        { status: "used", usedByUid: user.uid, usedByName: user.name || user.email, usedByEmail: user.email, usedAtIso: nowIso },
+        { merge: true },
+      );
+    }
     return { ok: true as const, companyId };
   });
 }

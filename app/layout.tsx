@@ -33,7 +33,10 @@ export const viewport: Viewport = {
   maximumScale: 1,
   userScalable: false,
   viewportFit: "cover",
-  themeColor: "#2563eb",
+  // The colour phones tint around the status bar / Dynamic Island (Safari, and the Home Screen app): the
+  // page's own background, so it runs on from the see-through top bar. Swapped for the dark one in dark
+  // mode — by the theme script below on load, and by app-shell.tsx when the theme changes.
+  themeColor: "#f5f7fa",
 };
 
 export default function RootLayout({
@@ -52,6 +55,8 @@ export default function RootLayout({
                   var mode = localStorage.getItem("cutsmart_theme_mode");
                   var next = String(mode || "").trim().toLowerCase() === "dark" ? "dark" : "light";
                   document.documentElement.setAttribute("data-theme", next);
+                  var themeColorMeta = document.querySelector('meta[name="theme-color"]');
+                  if (themeColorMeta) themeColorMeta.setAttribute("content", next === "dark" ? "#0b0d12" : "#f5f7fa");
                   document.documentElement.style.colorScheme = next;
                   if (document.body) {
                     document.body.setAttribute("data-theme", next);

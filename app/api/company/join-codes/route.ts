@@ -5,7 +5,9 @@ import {
   canManageJoinCodes,
   changeMasterCode,
   createTemporaryCode,
+  deleteRevokedCode,
   listJoinCodes,
+  revokeCodesForInvite,
   revokeTemporaryCode,
 } from "@/lib/company-join-codes-server";
 
@@ -14,9 +16,11 @@ import {
 //
 // GET ?companyId= — the master code and every code's record.
 // POST { companyId, action }:
-// - "create-temporary" { label } → a new one-person code
+// - "create-temporary" { label, inviteId?, invitedEmail? } → a new one-person code (for an invite, linked to it)
 // - "change-master" { code } → a new master code (nobody already in the company is affected)
 // - "revoke" { key } → stops a temporary code; one already used needs its person removed first
+// - "revoke-for-invite" { inviteId } → a cancelled invite's code, if unused
+// - "delete" { key } → removes a revoked code from the list
 
 function toStr(v: unknown): string {
   return String(v ?? "").trim();
@@ -51,7 +55,16 @@ export async function POST(request: NextRequest) {
   const by = { uid: caller.uid, name: caller.name };
 
   if (action === "create-temporary") {
-    const result = await createTemporaryCode(caller.db, companyId, by, toStr(body.label));
+    const inviteId = toStr(body.inviteId);
+    // Inviting the same person again: the code from their earlier invite stops, so there's only one.
+    if (inviteId) await revokeCodesForInvite(caller.db, companyId, inviteId);
+    const result = await createTemporaryCode(
+      caller.db,
+      companyId,
+      by,
+      toStr(body.label),
+      inviteId ? { inviteId, invitedEmail: toStr(body.invitedEmail) } : undefined,
+    );
     return NextResponse.json(result, { status: result.ok ? 200 : 500 });
   }
   if (action === "change-master") {
@@ -60,6 +73,14 @@ export async function POST(request: NextRequest) {
   }
   if (action === "revoke") {
     const result = await revokeTemporaryCode(caller.db, companyId, toStr(body.key));
+    return NextResponse.json(result, { status: result.ok ? 200 : 409 });
+  }
+  if (action === "revoke-for-invite") {
+    const result = await revokeCodesForInvite(caller.db, companyId, toStr(body.inviteId));
+    return NextResponse.json(result, { status: result.ok ? 200 : 400 });
+  }
+  if (action === "delete") {
+    const result = await deleteRevokedCode(caller.db, companyId, toStr(body.key));
     return NextResponse.json(result, { status: result.ok ? 200 : 409 });
   }
   return NextResponse.json({ ok: false, error: "unknown-action" }, { status: 400 });

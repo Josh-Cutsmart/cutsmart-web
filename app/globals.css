@@ -11,7 +11,8 @@
   --accent-teal: #17b3a3;
   --accent-amber: #e8a838;
   --ink: #111111;
-  --bg-app: #eef1f8;
+  /* The app's page grey — the same flat grey as the Dashboard's (lib/flat-page.ts). */
+  --bg-app: #f5f7fa;
   --bg-wash-1: rgba(0, 122, 255, 0.06);
   --bg-wash-2: rgba(124, 108, 240, 0.05);
   --bg-wash-3: rgba(23, 179, 163, 0.04);
@@ -39,7 +40,7 @@
   --shadow-modal: 0 24px 60px rgba(15, 23, 42, 0.18);
   --glass-bg: rgba(255, 255, 255, 0.6);
   --glass-bg-strong: rgba(255, 255, 255, 0.78);
-  --glass-modal-bg: rgba(238, 241, 248, 0.4);
+  --glass-modal-bg: rgba(245, 247, 250, 0.4);
   --glass-border: rgba(15, 23, 42, 0.07);
   --glass-highlight: rgba(255, 255, 255, 0.5);
   --shadow-glass: 0 8px 32px rgba(31, 41, 55, 0.10), 0 1px 1px rgba(31, 41, 55, 0.05);
@@ -1409,19 +1410,59 @@ body[data-theme="dark"] [data-app-top-tab] {
   transition: none;
 }
 
-/* app-shell.tsx: a flat page's <main> on a phone/tablet (where it's the scroller) reaches up under the
- * 48px top tab bar — its own top padding (12px, 16px from md) moved down by the bar's height — and
+/* app-shell.tsx: some pages' <main> on a phone/tablet (where it's the scroller — startsUnderTopBar in
+ * lib/flat-page.ts) reaches up under the 48px top tab bar — its own top padding (12px, 16px from md) moved down by the bar's height — and
  * runs to the bottom of the screen. */
-main[data-flat-under-bar="true"] {
+main[data-under-bar="true"] {
   margin-top: -48px;
   padding-top: 60px !important;
   height: 100svh !important;
 }
 
 @media (min-width: 768px) {
-  main[data-flat-under-bar="true"] {
+  main[data-under-bar="true"] {
     padding-top: 64px !important;
   }
+}
+
+/* A page that opts out of <main>'s own top padding (reduceMainTopPadding): just the bar's height. */
+main[data-under-bar="true"][data-reduce-top="true"] {
+  padding-top: 48px !important;
+}
+
+/* Project details' dates bar: each line fades away as the title bar above reaches it on scrolling down,
+ * and back in on the way up (placeProjectHeaderGlass in app/(staff)/(app)/projects/[projectId]/page.tsx). */
+[data-header-fade] {
+  transition: opacity 180ms ease;
+}
+
+[data-header-fade][data-faded="true"] {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Project details' title bar: the page's own grey, so the dates bar below goes out of sight under it as
+ * it scrolls up (however fast) — until the header's glass shows behind it, once the tab bar is pinned:
+ * clear then, straight away (no fade), so the glass reads as one sheet (data-glass-on,
+ * placeProjectHeaderGlass). */
+.glass-page-header[data-continues-top-bar="true"] {
+  background: var(--bg-app);
+}
+
+.glass-page-header[data-continues-top-bar="true"][data-glass-on="true"] {
+  background-color: transparent;
+}
+
+/* By then the dates bar is all the way under the title bar: hidden outright, so none of it can show
+ * through the clear title bar, or the top tab bar above it, however fast it's scrolled. */
+[data-continues-top-bar="true"][data-glass-on="true"] ~ [data-title-bar="true"] {
+  visibility: hidden;
+}
+
+/* Project details' header (data-continues-top-bar) has one sheet of glass behind the top tab bar and
+ * its own bars together — so the bar's own glass and line are off there. */
+body:has([data-continues-top-bar="true"]) [data-app-top-bar-glass] {
+  display: none;
 }
 
 /* The top tab bar's glass (components/global-app-tabs-bar.tsx) fades in once a page scrolls under

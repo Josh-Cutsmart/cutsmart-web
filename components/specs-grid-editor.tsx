@@ -101,6 +101,7 @@ import {
   DEFAULT_BORDER_WIDTH_PX,
   MIN_BORDER_WIDTH_PX,
   MAX_BORDER_WIDTH_PX,
+  isCompanyLogoImageUrl,
 } from "@/lib/specs-grid-types";
 import { SpecsCellColorPopover, type SpecsColorPopoverAnchorRect } from "@/components/specs-cell-color-popover";
 import { swallowNextClick } from "@/lib/swallow-dismiss-click";
@@ -3908,7 +3909,9 @@ export default function SpecsGridEditor({
                         // this reliably tracks the cell's real size (including as rows/columns resize).
                         <>
                           <img
-                            src={cell.imageUrl}
+                            // The company's current logo for a logo cell (isCompanyLogoImageUrl) — its own
+                            // address can be an old logo's, since replaced.
+                            src={companyLogoUrl && isCompanyLogoImageUrl(cell.imageUrl) ? companyLogoUrl : cell.imageUrl}
                             alt=""
                             draggable={false}
                             className="pointer-events-none absolute inset-0 select-none object-contain"

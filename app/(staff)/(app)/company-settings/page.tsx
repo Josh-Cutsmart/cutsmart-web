@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, Building2, CheckCircle2, ChevronDown, CircleDollarSign, CircleHelp, ClipboardList, Clock3, DatabaseBackup, Download, GripVertical, HardHat, Layers3, LayoutDashboard, Link2, Loader2, Package2, Plus, RotateCcw, Search, Settings, Upload, Users, Wrench, X } from "lucide-react";
-import { deleteObject, getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
+import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { useAuth } from "@/lib/auth-context";
 import { authorizedFetch } from "@/lib/api-fetch";
 import { useAppTabs } from "@/lib/app-tabs-context";
@@ -70,6 +70,8 @@ import {
 import { CompanyJoinCodesModal } from "@/components/company-join-codes-modal";
 import {
   cancelCompanyInvite,
+  createTemporaryJoinCode,
+  revokeJoinCodesForInvite,
   fetchCompanyInvites,
   fetchJoinCodes,
   revokeTemporaryJoinCode,
@@ -2308,6 +2310,8 @@ export default function CompanySettingsPage() {
     }
     setPendingInvites((prev) => prev.filter((row) => row.id !== invite.id));
     setSaveLabel(`Invite cancelled: ${invite.email}`);
+    // Its join code stops working too.
+    if (activeCompanyId) void revokeJoinCodesForInvite(activeCompanyId, invite.id).then(() => setJoinCodesReloadTick((tick) => tick + 1));
   };
 
   // Revoking a temporary code someone has already joined with: remove them first (Staff's Remove
@@ -2421,8 +2425,14 @@ export default function CompanySettingsPage() {
       invitedByName: String(user?.displayName || user?.email || ""),
     });
     if (result.ok) {
-      setSaveLabel(`Invite sent: ${cleanEmail}`);
+      // A one-person join code for them too, linked to the invite (Join key > Temporary codes): accepting
+      // the invite uses it up, so they show as having joined with it, and revoking it removes them.
+      const code = result.inviteId
+        ? await createTemporaryJoinCode(activeCompanyId, cleanEmail, { inviteId: result.inviteId, invitedEmail: cleanEmail })
+        : null;
+      setSaveLabel(code?.ok && code.code ? `Invite sent: ${cleanEmail} · join code ${code.code}` : `Invite sent: ${cleanEmail}`);
       setInvitesReloadTick((tick) => tick + 1);
+      setJoinCodesReloadTick((tick) => tick + 1);
     } else {
       setSaveLabel(`Invite failed (${result.error || "unknown"})`);
     }
@@ -3159,21 +3169,6 @@ export default function CompanySettingsPage() {
     setDrawerHeightsExpanded((prev) => ({ ...prev, [key]: !(prev[key] ?? false) }));
   };
 
-  const deleteStorageObjectIfExists = async (value: string) => {
-    const client = storage;
-    const raw = String(value || "").trim();
-    if (!client || !raw) return;
-    try {
-      if (/^https?:\/\//i.test(raw) || /^gs:\/\//i.test(raw)) {
-        await deleteObject(storageRef(client, raw));
-        return;
-      }
-      await deleteObject(storageRef(client, raw));
-    } catch {
-      // best effort
-    }
-  };
-
   const onUploadCompanyLogo = async (file: File | null) => {
     if (!file || !activeCompanyId || !canEditCompanySettings) return;
     const client = storage;
@@ -3182,7 +3177,6 @@ export default function CompanySettingsPage() {
       return;
     }
     setIsUploadingLogo(true);
-    const previousLogoPath = toStr(form.logoPath);
     try {
       const ext = file.name.includes(".") ? file.name.split(".").pop() : "png";
       const safeExt = String(ext || "png").replace(/[^a-zA-Z0-9]/g, "").toLowerCase() || "png";
@@ -3202,10 +3196,9 @@ export default function CompanySettingsPage() {
       setForm((prev) => ({ ...prev, logoPath: nextUrl }));
       setCompany((prev) => (prev ? { ...prev, logoPath: nextUrl } : prev));
       setSaveLabel("Saved");
-
-      if (previousLogoPath && previousLogoPath !== nextUrl) {
-        await deleteStorageObjectIfExists(previousLogoPath);
-      }
+      // The previous logo's file is kept: quotes, specifications and their PDFs and sent copies can still
+      // have its address in a cell (deleting it showed them a broken image) — they show the new logo
+      // anyway (withCurrentCompanyLogo in lib/specs-grid-types.ts).
     } catch (error) {
       setSaveLabel(
         isFirebaseStorageQuotaExceeded(error)
@@ -5595,6 +5588,15 @@ export default function CompanySettingsPage() {
                                 .filter(Boolean)
                                 .join(" ")}
                             </span>
+                            {(() => {
+                              // The join code made for this invite (Join key > Temporary codes).
+                              const code = joinCodes?.codes.find((row) => row.inviteId === invite.id && row.status === "active");
+                              return code ? (
+                                <span className="font-mono text-[12px] font-semibold tracking-[1px]" style={{ color: "var(--text-main)" }} title="Their join code">
+                                  {code.code}
+                                </span>
+                              ) : null;
+                            })()}
                             {canAddStaff ? (
                               <button
                                 type="button"

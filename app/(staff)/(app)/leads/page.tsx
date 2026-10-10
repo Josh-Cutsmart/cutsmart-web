@@ -2045,7 +2045,8 @@ export default function LeadsPage() {
     setDraggingLeadId("");
     setDragOverStatusColumn("");
     setLeadDropPreview(null);
-    leadBoardDragGhost.end();
+    // Its copy glides onto the card's spot — where it was dropped, or back where it was.
+    leadBoardDragGhost.end(draggingLeadId);
   };
 
   // A lead dropped on the board moves straight away — into the column it was dropped on, at the
@@ -2127,8 +2128,8 @@ export default function LeadsPage() {
     // in the DOM, so React unmounts/remounts that card's element), and if
     // that happens before the browser gets around to dispatching `dragend`
     // on the now-detached original element, the native event never fires
-    // and the ghost is left stuck on screen until the next drag.
-    leadBoardDragGhost.end();
+    // and the ghost is left stuck on screen until the next drag. It glides onto the lead's new spot.
+    leadBoardDragGhost.end(leadId);
     const lead = getLeadById(leadId);
     if (!lead) return;
     void moveLeadOnBoard(lead, statusName, dropIndex);
@@ -2233,7 +2234,7 @@ export default function LeadsPage() {
     setDraggingLeadId("");
     setDragOverStatusColumn("");
     setLeadDropPreview(null);
-    leadBoardDragGhost.end();
+    leadBoardDragGhost.end(state.leadId);
     suppressNextLeadCardClickRef.current = state.leadId;
     if (commit && state.targetColumn) {
       const lead = getLeadById(state.leadId);

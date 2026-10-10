@@ -82,8 +82,10 @@ export type DragGhostController = {
   // grow out of (the FLIP "pick-up" pop); falls back to growing in place if
   // that element can't be found.
   spawn: (event: { clientX: number; clientY: number }, originElId: string, content: { label: string; color: string }) => void;
-  // Call from onDragEnd.
-  end: () => void;
+  // Call from onDragEnd. landOnCardId: a board card's id — its copy then glides onto that card's own spot
+  // (where it was dropped, or back where it started if the drag was cancelled) and hands over to it,
+  // instead of fading out where it was let go.
+  end: (landOnCardId?: string) => void;
   // For drags the hook can't see itself (a touch-driven drag never dispatches `dragover`): report
   // the pointer position each move — the ghost follows it (swinging as usual) and the board edge
   // auto-scroll below still runs.
@@ -203,6 +205,13 @@ export function useDragGhost(): DragGhostController {
   // Whether the ghost is a card's copy (not the pill), and the timer that empties its slot after a drop.
   const isCardRef = useRef(false);
   const clearCardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // A card's copy is gliding into place (end with landOnCardId) — a second end() (a drop, then the drag's
+  // own end) leaves it to finish.
+  const landingRef = useRef(false);
+  // Finishes a landing at once (a new drag starting before it's done).
+  const landingFinishRef = useRef<(() => void) | null>(null);
+  // Bumped by each new drag, so a landing still waiting for the board to draw doesn't run on the next one.
+  const landingTokenRef = useRef(0);
   // The pointer's latest position, and the swing — moved a frame at a time (swingFrameRef) while it's
   // still catching up with the pointer, then left alone until the pointer moves again.
   const pointerRef = useRef({ x: 0, y: 0 });
@@ -278,6 +287,9 @@ export function useDragGhost(): DragGhostController {
   };
 
   const spawn: DragGhostController["spawn"] = (event, originElId, content) => {
+    landingFinishRef.current?.();
+    landingTokenRef.current += 1;
+    landingRef.current = false;
     clearPendingGrow();
     startSwing(event.clientX, event.clientY);
     startPointRef.current = { x: event.clientX, y: event.clientY };
@@ -385,7 +397,8 @@ export function useDragGhost(): DragGhostController {
     }
   };
 
-  const end: DragGhostController["end"] = () => {
+  const end: DragGhostController["end"] = (landOnCardId) => {
+    if (landingRef.current) return;
     clearPendingGrow();
     edgeScroll.stop();
     if (swingRef.current.raf) cancelAnimationFrame(swingRef.current.raf);
@@ -395,6 +408,17 @@ export function useDragGhost(): DragGhostController {
     }
     const handle = ghostRef.current;
     const ghost = handle?.getEl();
+    if (
+      ghost &&
+      isCardRef.current &&
+      landOnCardId &&
+      typeof window !== "undefined" &&
+      !window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      landingRef.current = true;
+      landCard(landOnCardId);
+      return;
+    }
     if (ghost) {
       ghost.style.transition = "opacity 150ms ease-out";
       ghost.style.opacity = "0";
@@ -408,6 +432,62 @@ export function useDragGhost(): DragGhostController {
         ghostRef.current?.getCardSlot()?.replaceChildren();
       }, 160);
     }
+  };
+
+  // The card's copy glides from where it was let go onto the card itself — found once the board has
+  // drawn it in its new spot (a couple of frames on) — straightening and turning solid on the way, then
+  // the card shows again under it and the copy goes. The last match is the one on top (a Dashboard
+  // sub-status board over the main board). No card to land on: it fades out as usual.
+  const landCard = (cardId: string) => {
+    const token = landingTokenRef.current;
+    const fadeOut = () => {
+      landingRef.current = false;
+      const ghost = ghostRef.current?.getEl();
+      if (ghost) {
+        ghost.style.transition = "opacity 150ms ease-out";
+        ghost.style.opacity = "0";
+      }
+      clearCardTimerRef.current = setTimeout(() => {
+        clearCardTimerRef.current = null;
+        ghostRef.current?.getCardSlot()?.replaceChildren();
+      }, 160);
+    };
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        if (token !== landingTokenRef.current) return;
+        const ghost = ghostRef.current?.getEl();
+        const slot = ghostRef.current?.getCardSlot();
+        const copy = slot?.firstElementChild as HTMLElement | null;
+        const wrappers = Array.from(document.querySelectorAll<HTMLElement>(`[data-board-card-id="${CSS.escape(cardId)}"]`));
+        const wrapper = wrappers[wrappers.length - 1];
+        const card = wrapper?.firstElementChild as HTMLElement | null;
+        const rect = card?.getBoundingClientRect();
+        if (!ghost || !wrapper || !card || !rect || !rect.width) {
+          fadeOut();
+          return;
+        }
+        wrapper.style.opacity = "0";
+        const finish = () => {
+          if (clearCardTimerRef.current) clearTimeout(clearCardTimerRef.current);
+          clearCardTimerRef.current = null;
+          landingFinishRef.current = null;
+          wrapper.style.opacity = "";
+          ghost.style.transition = "none";
+          ghost.style.opacity = "0";
+          ghostRef.current?.getCardSlot()?.replaceChildren();
+          landingRef.current = false;
+        };
+        landingFinishRef.current = finish;
+        ghost.style.transition = "transform 280ms cubic-bezier(0.22, 1, 0.36, 1)";
+        ghost.style.transform = `translate(${rect.left + rect.width / 2}px, ${rect.top}px) translate(-50%, 0px) rotate(0deg)`;
+        if (copy) {
+          copy.style.transition = "opacity 280ms ease, box-shadow 280ms ease";
+          copy.style.opacity = "1";
+          copy.style.boxShadow = getComputedStyle(card).boxShadow;
+        }
+        clearCardTimerRef.current = setTimeout(finish, 300);
+      }),
+    );
   };
 
   const trackPointer: DragGhostController["trackPointer"] = (clientX, clientY) => {

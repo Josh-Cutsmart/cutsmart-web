@@ -17,7 +17,7 @@ import { Bell, CalendarDays, ChevronLeft, ChevronRight, FolderKanban, Globe, Inb
 import { db } from "@/lib/firebase";
 import { GlassDropdown } from "@/components/glass-dropdown";
 import { DevTestButton } from "@/components/dev-mode";
-import { iconRemoveButtonClass } from "@/components/settings-ui";
+import { GlassSwitch, iconRemoveButtonClass } from "@/components/settings-ui";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import {
   ALL_DAY_EVENT_REMINDER_OPTIONS,
@@ -72,19 +72,27 @@ const SLIDE_TRANSITION = "transform 260ms cubic-bezier(0.32, 0.72, 0, 1)";
 type ToggleProps = { checked: boolean; onChange: (checked: boolean) => void; disabled?: boolean };
 
 // A list of reminder times (e.g. "1 day before", "1 hour before"): one dropdown per row, X to remove a
-// row (there's always at least one), and + to add another (a choice not already in the list).
+// row (there's always at least one), and + to add another (a choice not already in the list). With
+// `repeating` (the times set to repeat), each row has a Repeat switch too: "after 2 days", repeating,
+// goes again every 2 days.
 function ReminderTimesList({
   label,
   values,
   options,
   onChange,
+  repeating,
 }: {
   label: string;
   values: number[];
   options: readonly ReminderLeadOption[];
-  onChange: (next: number[]) => void;
+  // Gets the times set to repeat as well, when `repeating` is given.
+  onChange: (next: number[], nextRepeating?: number[]) => void;
+  repeating?: number[];
 }) {
   const unused = options.filter((option) => !values.includes(option.value));
+  // A row's time changing or going takes its Repeat with it.
+  const change = (next: number[], nextRepeating = repeating) =>
+    onChange(next, nextRepeating?.filter((value) => next.includes(value)));
   return (
     <div className="block text-[11px] font-semibold" style={{ color: SUB_TEXT_COLOR }}>
       {label}
@@ -98,16 +106,32 @@ function ReminderTimesList({
                 options={options
                   .filter((option) => option.value === value || !values.includes(option.value))
                   .map((option) => ({ value: String(option.value), label: option.label }))}
-                onChange={(next) => onChange(values.map((v, i) => (i === index ? Number(next) : v)))}
+                onChange={(next) =>
+                  change(
+                    values.map((v, i) => (i === index ? Number(next) : v)),
+                    repeating?.map((v) => (v === value ? Number(next) : v)),
+                  )
+                }
                 ariaLabel={`${label} reminder ${index + 1}`}
                 triggerClassName="flex h-9 w-full items-center justify-between rounded-[9px] border px-3 text-[12px] font-medium"
                 triggerStyle={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
               />
             </div>
+            {repeating ? (
+              <label className="flex shrink-0 items-center gap-1.5 text-[11.5px] font-semibold" style={{ color: SUB_TEXT_COLOR }} title={`Remind again every ${value} day${value === 1 ? "" : "s"}`}>
+                Repeat
+                <GlassSwitch
+                  size="sm"
+                  checked={repeating.includes(value)}
+                  onChange={(on) => change(values, on ? [...repeating, value] : repeating.filter((v) => v !== value))}
+                  ariaLabel={`Repeat this reminder every ${value} day${value === 1 ? "" : "s"}`}
+                />
+              </label>
+            ) : null}
             <button
               type="button"
               disabled={values.length <= 1}
-              onClick={() => onChange(values.filter((_, i) => i !== index))}
+              onClick={() => change(values.filter((_, i) => i !== index))}
               className={iconRemoveButtonClass}
               aria-label={`Remove this ${label.toLowerCase()} reminder`}
               title="Remove"
@@ -119,7 +143,7 @@ function ReminderTimesList({
         {values.length < MAX_REMINDER_ROWS && unused.length ? (
           <button
             type="button"
-            onClick={() => onChange([...values, unused[0].value])}
+            onClick={() => change([...values, unused[0].value])}
             className="inline-flex h-8 items-center gap-1 rounded-[9px] border px-2.5 text-[11.5px] font-semibold transition hover:brightness-95"
             style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--brand-strong)" }}
           >
@@ -487,7 +511,12 @@ export function PushNotificationSettings({
               label="Remind me"
               values={option.type === "quote_pending" ? pendingDays.quote : pendingDays.specs}
               options={CLIENT_PORTAL_PENDING_OPTIONS}
-              onChange={(next) => onPendingDaysChange(option.type === "quote_pending" ? { quote: next } : { specs: next })}
+              repeating={option.type === "quote_pending" ? pendingDays.quoteRepeat : pendingDays.specsRepeat}
+              onChange={(next, nextRepeating = []) =>
+                onPendingDaysChange(
+                  option.type === "quote_pending" ? { quote: next, quoteRepeat: nextRepeating } : { specs: next, specsRepeat: nextRepeating },
+                )
+              }
             />
           </div>
         ) : null}

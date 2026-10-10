@@ -1006,7 +1006,9 @@ export function LoginScreen() {
         </section>
       </main>
 
-      {step === "login" || step === "register" || step === "checking" ? (
+      {/* Only for someone at the log in / register box — not while a remembered account is being signed in
+          (checking), or once Log in / Register has been pressed (busy). */}
+      {(step === "login" || step === "register") && !busy ? (
         <button type="button" className="lg-preview" onClick={enterPreview}>
           <span className="lg-preview-icon">
             <Sparkles size={17} />

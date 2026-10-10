@@ -978,7 +978,39 @@ export async function fetchProjects(
   return hasFirebaseConfig ? [] : mocks();
 }
 
+// A project being opened from its top-bar tab starts loading the moment the tab's pointed at or touched
+// (prefetchProjectById), so it's there, or nearly, by the time the project page asks for it. The page's
+// own fetchProjectById takes that load if it's fresh (PROJECT_PREFETCH_MS) — once; after that it reads
+// as usual, so nothing stays stale.
+const PROJECT_PREFETCH_MS = 15_000;
+const projectPrefetches = new Map<string, { at: number; promise: Promise<Project | null> }>();
+
+export function prefetchProjectById(projectId: string, uid?: string, preferredCompanyIds?: string[]) {
+  const id = String(projectId || "").trim();
+  if (!id) return;
+  const existing = projectPrefetches.get(id);
+  if (existing && Date.now() - existing.at < PROJECT_PREFETCH_MS) return;
+  const promise = loadProjectById(id, uid, preferredCompanyIds).catch(() => null);
+  projectPrefetches.set(id, { at: Date.now(), promise });
+}
+
 export async function fetchProjectById(
+  projectId: string,
+  uid?: string,
+  preferredCompanyIds?: string[],
+): Promise<Project | null> {
+  const prefetched = projectPrefetches.get(String(projectId || "").trim());
+  if (prefetched) {
+    projectPrefetches.delete(String(projectId || "").trim());
+    if (Date.now() - prefetched.at < PROJECT_PREFETCH_MS) {
+      const result = await prefetched.promise;
+      if (result) return result;
+    }
+  }
+  return loadProjectById(projectId, uid, preferredCompanyIds);
+}
+
+async function loadProjectById(
   projectId: string,
   uid?: string,
   preferredCompanyIds?: string[],
@@ -4361,7 +4393,7 @@ export async function createCompanyInviteDetailed(
   companyId: string,
   email: string,
   meta?: { companyName?: string; companyCode?: string; invitedByUid?: string; invitedByName?: string },
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; inviteId?: string }> {
   const cid = String(companyId || "").trim();
   const emailRaw = String(email || "").trim();
   const emailLower = emailRaw.toLowerCase();
@@ -4390,7 +4422,7 @@ export async function createCompanyInviteDetailed(
       },
       { merge: true },
     );
-    return { ok: true };
+    return { ok: true, inviteId };
   } catch (error) {
     const fallback = "invite-write-failed";
     const msg =
