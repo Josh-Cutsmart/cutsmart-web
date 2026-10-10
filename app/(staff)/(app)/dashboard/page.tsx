@@ -2073,7 +2073,7 @@ export default function DashboardPage() {
             {options.count}
           </span>
           <span
-            className="shrink-0 whitespace-nowrap text-[14px] font-normal"
+            className="shrink-0 whitespace-nowrap text-[20px] font-medium"
             style={{ writingMode: "vertical-rl", color: columnTitleTextColor, letterSpacing: "0.12em" }}
           >
             {options.name}
@@ -3265,7 +3265,7 @@ export default function DashboardPage() {
                         return;
                       }
                       const rect = e.currentTarget.getBoundingClientRect();
-                      const menuWidth = Math.max(140, rect.width);
+                      const menuWidth = Math.max(180, rect.width);
                       const centeredLeft = rect.left + rect.width / 2 - menuWidth / 2;
                       setMobileQuickFilterPos({
                         left: Math.min(Math.max(8, centeredLeft), window.innerWidth - menuWidth - 8),
@@ -3479,11 +3479,13 @@ export default function DashboardPage() {
                               }
                               const trigger = e.currentTarget as HTMLButtonElement;
                               const rect = trigger.getBoundingClientRect();
-                              const estimatedMenuHeight = 156;
+                              // Phones: its bigger rows (max-md: sizes below).
+                              const isPhoneMenu = window.matchMedia("(max-width: 767px)").matches;
+                              const estimatedMenuHeight = isPhoneMenu ? 212 : 156;
                               const hasRoomBelow = rect.bottom + estimatedMenuHeight <= window.innerHeight - 8;
                               const hasRoomAbove = rect.top - estimatedMenuHeight >= 8;
                               const shouldOpenUp = !hasRoomBelow && hasRoomAbove;
-                              const menuWidth = Math.max(120, Math.round(rect.width));
+                              const menuWidth = Math.max(isPhoneMenu ? 170 : 120, Math.round(rect.width));
                               const clampedLeft = Math.min(
                                 Math.max(8, rect.left),
                                 window.innerWidth - menuWidth - 8,
@@ -3880,11 +3882,13 @@ export default function DashboardPage() {
                               }
                               const trigger = e.currentTarget as HTMLButtonElement;
                               const rect = trigger.getBoundingClientRect();
-                              const estimatedMenuHeight = 156;
+                              // Phones: its bigger rows (max-md: sizes below).
+                              const isPhoneMenu = window.matchMedia("(max-width: 767px)").matches;
+                              const estimatedMenuHeight = isPhoneMenu ? 212 : 156;
                               const hasRoomBelow = rect.bottom + estimatedMenuHeight <= window.innerHeight - 8;
                               const hasRoomAbove = rect.top - estimatedMenuHeight >= 8;
                               const shouldOpenUp = !hasRoomBelow && hasRoomAbove;
-                              const menuWidth = Math.max(120, Math.round(rect.width));
+                              const menuWidth = Math.max(isPhoneMenu ? 170 : 120, Math.round(rect.width));
                               const clampedLeft = Math.min(
                                 Math.max(8, rect.left),
                                 window.innerWidth - menuWidth - 8,
@@ -3958,7 +3962,7 @@ export default function DashboardPage() {
                           type="button"
                           disabled={statusUpdatingProjectId === statusMenuProject.id}
                           onClick={() => void onSelectProjectStatus(statusMenuProject, option)}
-                          className="mb-1 block w-full rounded-[8px] px-3 py-2 text-center text-[12px] font-semibold last:mb-0 disabled:opacity-55"
+                          className="mb-1 block w-full rounded-[8px] px-3 py-2 text-center text-[12px] font-semibold last:mb-0 disabled:opacity-55 max-md:rounded-[10px] max-md:py-3 max-md:text-[15px]"
                           style={{
                             backgroundColor: rowColor,
                             color: rowTextColorForFill(rowColor),
@@ -4000,7 +4004,7 @@ export default function DashboardPage() {
                           setIsMobileQuickFilterOpen(false);
                           setMobileQuickFilterPos(null);
                         }}
-                        className="block w-full rounded-[8px] px-3 py-2 text-left text-[12px] font-bold"
+                        className="block w-full rounded-[8px] px-3 py-2 text-left text-[12px] font-bold max-md:rounded-[10px] max-md:px-3.5 max-md:py-3 max-md:text-[15px]"
                         style={{
                           backgroundImage: quickFilter === option.key ? "var(--brand-gradient)" : "none",
                           color: quickFilter === option.key ? "#FFFFFF" : dashboardPalette.text,

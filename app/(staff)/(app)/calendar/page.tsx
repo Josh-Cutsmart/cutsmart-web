@@ -140,6 +140,20 @@ function mobileMonthWeeks(cursor: Date): { weeks: Date[]; starts: [number, numbe
   return { weeks, starts, months: [prev, cur, next] };
 }
 
+// Phones' day / week swipe (onDaySwipeMove), once the view under the finger has changed: the new day (week)
+// placed beside the copy of the one it started on, where the drag has got to — or, after a drag that sprang
+// back, the copy gone now the day (week) it started on is showing again.
+function placeDaySwipeView(wrap: HTMLElement | null, drag: { dir: number; dist: number; dx: number } | undefined, reverted: HTMLElement | null) {
+  const first = wrap?.firstElementChild as HTMLElement | null;
+  const live = first && !first.dataset.calSlideGhost ? first : null;
+  if (drag && live) live.style.transform = `translateX(${drag.dir * drag.dist + drag.dx}px)`;
+  if (reverted) {
+    reverted.remove();
+    if (live) live.style.transform = "";
+    if (wrap) wrap.style.overflow = "";
+  }
+}
+
 function viewRange(view: CalendarView, cursor: Date): { from: Date; to: Date } {
   if (view === "year") {
     // 12 months starting with the cursor's month (a rolling year, like Teamup), plus the 12 either side
@@ -781,13 +795,13 @@ function CalendarPageContent() {
   // is a static copy of the current DOM that slides out while the new one slides in (see the effect below).
   const viewWrapRef = useRef<HTMLDivElement | null>(null);
   const pendingSlideRef = useRef<{ ghost: HTMLElement; axis: "x" | "y"; dir: -1 | 1 } | null>(null);
-  // onPhone: a swipe on a phone (day and week views) slides too — Previous / Next there don't.
-  const beginSlide = (dir: -1 | 1, onPhone = false) => {
+  // A static copy of the current view, laid over it in viewWrapRef: the outgoing side of a slide.
+  const makeSlideGhost = () => {
     const wrap = viewWrapRef.current;
-    if (!wrap || window.matchMedia(onPhone ? "(prefers-reduced-motion: reduce)" : "(max-width: 767px), (prefers-reduced-motion: reduce)").matches) return;
+    if (!wrap) return null;
     wrap.querySelectorAll("[data-cal-slide-ghost]").forEach((el) => el.remove());
     const live = wrap.firstElementChild as HTMLElement | null;
-    if (!live) return;
+    if (!live) return null;
     const ghost = live.cloneNode(true) as HTMLElement;
     // Keep inner scroll positions (e.g. the week grid scrolled to the morning).
     const from = live.querySelectorAll<HTMLElement>("*");
@@ -801,6 +815,14 @@ function CalendarPageContent() {
     Object.assign(ghost.style, { position: "absolute", top: "0", left: "0", width: `${live.offsetWidth}px`, height: `${live.offsetHeight}px`, pointerEvents: "none" });
     wrap.appendChild(ghost);
     ghost.querySelectorAll<HTMLElement>("[data-cal-scroll-top]").forEach((el) => (el.scrollTop = Number(el.dataset.calScrollTop)));
+    return ghost;
+  };
+  // onPhone: a swipe on a phone (day and week views) slides too — Previous / Next there don't.
+  const beginSlide = (dir: -1 | 1, onPhone = false) => {
+    const wrap = viewWrapRef.current;
+    if (!wrap || window.matchMedia(onPhone ? "(prefers-reduced-motion: reduce)" : "(max-width: 767px), (prefers-reduced-motion: reduce)").matches) return;
+    const ghost = makeSlideGhost();
+    if (!ghost) return;
     pendingSlideRef.current = { ghost, axis: view === "month" || view === "year" ? "y" : "x", dir };
   };
   useLayoutEffect(() => {
@@ -846,26 +868,28 @@ function CalendarPageContent() {
       }
     }
     beginSlide(dir, swiped);
-    setCursor((prev) => {
-      if (view === "year") {
-        const x = startOfMonth(prev);
-        x.setMonth(x.getMonth() + 12 * dir);
-        return x;
-      }
-      if (view === "month") {
-        const x = startOfMonth(prev);
-        x.setMonth(x.getMonth() + dir);
-        return x;
-      }
-      if (view === "week") return addDays(prev, 7 * dir);
-      if (view === "day") {
-        // Skips the non-work days when the calendar leaves them out.
-        let next = addDays(prev, dir);
-        for (let i = 0; i < 6 && isLeftOutDay(next); i++) next = addDays(next, dir);
-        return next;
-      }
-      return addDays(prev, LIST_DAYS * dir);
-    });
+    setCursor((prev) => shiftCursor(prev, dir));
+  };
+  // The date one step on (dir 1) or back (-1) in the current view.
+  const shiftCursor = (prev: Date, dir: -1 | 1) => {
+    if (view === "year") {
+      const x = startOfMonth(prev);
+      x.setMonth(x.getMonth() + 12 * dir);
+      return x;
+    }
+    if (view === "month") {
+      const x = startOfMonth(prev);
+      x.setMonth(x.getMonth() + dir);
+      return x;
+    }
+    if (view === "week") return addDays(prev, 7 * dir);
+    if (view === "day") {
+      // Skips the non-work days when the calendar leaves them out.
+      let next = addDays(prev, dir);
+      for (let i = 0; i < 6 && isLeftOutDay(next); i++) next = addDays(next, dir);
+      return next;
+    }
+    return addDays(prev, LIST_DAYS * dir);
   };
   const title = (() => {
     if (view === "year") {
@@ -1427,26 +1451,130 @@ function CalendarPageContent() {
     }
   };
 
-  // Phones, day and week views: a sideways swipe goes to the next or previous day (week) — sliding over,
-  // like Previous / Next do on a computer. Up and down still scrolls the hours; a swipe that starts on an
-  // event is that event being dragged.
-  const daySwipeRef = useRef<{ x: number; y: number; at: number } | null>(null);
-  const onDaySwipeStart = (e: React.TouchEvent<HTMLElement>) => {
-    const target = e.target as HTMLElement | null;
-    daySwipeRef.current =
-      isMobile && e.touches.length === 1 && !target?.closest("[data-cal-event]")
-        ? { x: e.touches[0].clientX, y: e.touches[0].clientY, at: performance.now() }
-        : null;
+  // Phones, day and week views: a sideways drag slides to the next or previous day (week) with the finger —
+  // the one it started on going off with it and the next coming in beside it — and on letting go carries
+  // on over (dragged a quarter of the way, or flicked) or springs back. Up and down still scrolls the hours
+  // (touch-action pan-y — globals.css, data-cal-swipe-area); a drag that starts on an event is that event
+  // being dragged. Pointer events, captured by viewWrapRef once it's going sideways: the view under the
+  // finger is swapped for the next one mid-drag, and the element it started on can go with it.
+  type DaySwipe = {
+    id: number;
+    x: number;
+    y: number;
+    at: number;
+    // The latest move, for how fast it's going on letting go.
+    lastX: number;
+    lastAt: number;
+    v: number;
+    // Once it's going sideways: which way, the copy of the day (week) it started on, that date, how far a
+    // whole slide is, and how far it's been dragged.
+    drag?: { dir: -1 | 1; ghost: HTMLElement; from: Date; dist: number; dx: number };
   };
-  const onDaySwipeEnd = (e: React.TouchEvent<HTMLElement>) => {
-    const start = daySwipeRef.current;
+  const daySwipeRef = useRef<DaySwipe | null>(null);
+  // The settle after letting go, finished at once if another drag starts first.
+  const daySwipeSettleRef = useRef<(() => void) | null>(null);
+  // A drag that sprang back: the copy goes once the day (week) it started on is showing again.
+  const daySwipeRevertRef = useRef<HTMLElement | null>(null);
+  const liveDayView = () => {
+    const live = viewWrapRef.current?.firstElementChild as HTMLElement | null;
+    return live && !live.dataset.calSlideGhost ? live : null;
+  };
+  const placeDaySwipe = (drag: NonNullable<DaySwipe["drag"]>) => {
+    drag.ghost.style.transform = `translateX(${drag.dx}px)`;
+    const live = liveDayView();
+    if (live) live.style.transform = `translateX(${drag.dir * drag.dist + drag.dx}px)`;
+  };
+  // The new day (week) in place under the finger as soon as it renders — before it's painted.
+  useLayoutEffect(() => {
+    const reverted = daySwipeRevertRef.current;
+    daySwipeRevertRef.current = null;
+    placeDaySwipeView(viewWrapRef.current, daySwipeRef.current?.drag, reverted);
+  }, [cursor]);
+  const onDaySwipeDown = (e: React.PointerEvent<HTMLElement>) => {
+    const target = e.target as HTMLElement | null;
+    if (!isMobile || e.pointerType !== "touch" || (view !== "day" && view !== "week") || target?.closest("[data-cal-event]")) return;
+    daySwipeSettleRef.current?.();
+    const now = performance.now();
+    daySwipeRef.current = { id: e.pointerId, x: e.clientX, y: e.clientY, at: now, lastX: e.clientX, lastAt: now, v: 0 };
+  };
+  const onDaySwipeMove = (e: React.PointerEvent<HTMLElement>) => {
+    const swipe = daySwipeRef.current;
+    if (!swipe || e.pointerId !== swipe.id) return;
+    const now = performance.now();
+    if (now > swipe.lastAt) swipe.v = (e.clientX - swipe.lastX) / (now - swipe.lastAt);
+    swipe.lastX = e.clientX;
+    swipe.lastAt = now;
+    const dx = e.clientX - swipe.x;
+    const dy = e.clientY - swipe.y;
+    if (!swipe.drag) {
+      if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) {
+        daySwipeRef.current = null;
+        return;
+      }
+      if (Math.abs(dx) < 10 || Math.abs(dx) < Math.abs(dy) * 1.2) return;
+      // Reduced motion: no sliding — it just changes on letting go (onDaySwipeUp).
+      if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+      const wrap = viewWrapRef.current;
+      const ghost = makeSlideGhost();
+      if (!wrap || !ghost) return;
+      try {
+        wrap.setPointerCapture(e.pointerId);
+      } catch {
+        // The pointer's already gone — its pointerup / pointercancel still ends this.
+      }
+      wrap.style.overflow = "hidden";
+      const dir = dx < 0 ? 1 : -1;
+      swipe.drag = { dir, ghost, from: cursor, dist: wrap.clientWidth + 18, dx: 0 };
+      setCursor((prev) => shiftCursor(prev, dir));
+    }
+    const drag = swipe.drag;
+    // Only the way it started: back past where it began stays there.
+    drag.dx = drag.dir === 1 ? Math.max(-drag.dist, Math.min(0, dx)) : Math.min(drag.dist, Math.max(0, dx));
+    placeDaySwipe(drag);
+  };
+  const onDaySwipeUp = (e: React.PointerEvent<HTMLElement>) => {
+    const swipe = daySwipeRef.current;
+    if (!swipe || e.pointerId !== swipe.id) return;
     daySwipeRef.current = null;
-    const touch = e.changedTouches[0];
-    if (!start || !touch) return;
-    const dx = touch.clientX - start.x;
-    const dy = touch.clientY - start.y;
-    if (Math.abs(dx) < 50 || Math.abs(dx) < Math.abs(dy) * 1.5 || performance.now() - start.at > 900) return;
-    step(dx < 0 ? 1 : -1, true);
+    const drag = swipe.drag;
+    if (!drag) {
+      // Reduced motion: a plain swipe, changing on letting go.
+      const dx = e.clientX - swipe.x;
+      const dy = e.clientY - swipe.y;
+      if (e.type === "pointerup" && Math.abs(dx) >= 50 && Math.abs(dx) >= Math.abs(dy) * 1.5) step(dx < 0 ? 1 : -1, true);
+      return;
+    }
+    const wrap = viewWrapRef.current;
+    const live = liveDayView();
+    const flicked = Math.abs(swipe.v) > 0.35 && Math.sign(swipe.v) === -drag.dir && Math.abs(drag.dx) > 20;
+    const over = e.type === "pointerup" && (Math.abs(drag.dx) > drag.dist * 0.25 || flicked);
+    const toDx = over ? -drag.dir * drag.dist : 0;
+    const timing = { duration: Math.round(Math.max(160, Math.min(360, (Math.abs(toDx - drag.dx) / drag.dist) * 420))), easing: "cubic-bezier(0.22, 0.8, 0.24, 1)" };
+    const ghostAnim = drag.ghost.animate([{ transform: `translateX(${drag.dx}px)` }, { transform: `translateX(${toDx}px)` }], { ...timing, fill: "forwards" });
+    const liveAnim = live?.animate(
+      [{ transform: `translateX(${drag.dir * drag.dist + drag.dx}px)` }, { transform: `translateX(${drag.dir * drag.dist + toDx}px)` }],
+      { ...timing, fill: "forwards" },
+    );
+    let settled = false;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      daySwipeSettleRef.current = null;
+      ghostAnim.cancel();
+      liveAnim?.cancel();
+      if (over) {
+        drag.ghost.remove();
+        if (live) live.style.transform = "";
+        if (wrap) wrap.style.overflow = "";
+      } else {
+        // Back to the day (week) it started on; the copy goes once that's showing (the layout effect above).
+        drag.ghost.style.transform = "";
+        daySwipeRevertRef.current = drag.ghost;
+        setCursor(drag.from);
+      }
+    };
+    daySwipeSettleRef.current = settle;
+    ghostAnim.onfinish = settle;
   };
 
   const timeGrid = () => {
@@ -1459,8 +1587,7 @@ function CalendarPageContent() {
       <div
         className={`flex min-h-0 flex-col overflow-hidden lg:flex-1 ${viewShell.className}`}
         style={viewShell.style}
-        onTouchStart={onDaySwipeStart}
-        onTouchEnd={onDaySwipeEnd}
+        data-cal-swipe-area={isMobile ? "true" : undefined}
       >
         {/* Day headers, then the all-day row (all-day and multi-day events as continuous bars). */}
         {(() => {
@@ -2074,7 +2201,14 @@ function CalendarPageContent() {
             <p className="rounded-[12px] px-3 py-2 text-[12.5px] font-medium" style={{ backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}>{loadError}</p>
           ) : null}
 
-          <div ref={viewWrapRef} className={`relative lg:flex lg:min-h-0 lg:flex-1 lg:flex-col ${fillMonth ? "flex min-h-0 flex-1 flex-col" : ""}`}>
+          <div
+            ref={viewWrapRef}
+            className={`relative lg:flex lg:min-h-0 lg:flex-1 lg:flex-col ${fillMonth ? "flex min-h-0 flex-1 flex-col" : ""}`}
+            onPointerDown={onDaySwipeDown}
+            onPointerMove={onDaySwipeMove}
+            onPointerUp={onDaySwipeUp}
+            onPointerCancel={onDaySwipeUp}
+          >
             {view === "year" ? yearView() : view === "month" ? monthView() : view === "list" ? listView() : timeGrid()}
           </div>
         </div>

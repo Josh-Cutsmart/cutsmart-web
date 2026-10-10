@@ -11,6 +11,13 @@ const MENU_ROW_HEIGHT_PX = 32;
 const MENU_CHROME_PX = 10;
 const MENU_MAX_HEIGHT_PX = 280;
 const MENU_CLEARANCE_PX = 8;
+// Phones: bigger menus, easy to tap — taller rows and bigger text (menuRowClass's max-md: sizes), the
+// p-1.5 padding (menu's max-md:p-1.5), at least this wide, and room for more rows.
+const PHONE_QUERY = "(max-width: 767px)";
+const MENU_ROW_HEIGHT_PHONE_PX = 44;
+const MENU_CHROME_PHONE_PX = 14;
+const MENU_MAX_HEIGHT_PHONE_PX = 380;
+const MENU_MIN_WIDTH_PHONE_PX = 190;
 const MENU_ITEM_SELECTOR = '[role="option"],[role="menuitem"]';
 
 type MenuPosition = {
@@ -21,6 +28,8 @@ type MenuPosition = {
   bottom?: number;
   width: number;
   maxHeight: number;
+  // Each row's height — bigger on phones.
+  rowHeight: number;
 };
 
 // Shared open/position/dismiss behaviour for the glass menus below: a fixed-position menu measured from
@@ -106,12 +115,15 @@ function useAnchoredGlassMenu(options: {
     }
     const rect = triggerRef.current?.getBoundingClientRect();
     if (!rect) return;
+    const phone = window.matchMedia(PHONE_QUERY).matches;
+    const rowHeight = phone ? MENU_ROW_HEIGHT_PHONE_PX : MENU_ROW_HEIGHT_PX;
+    const leastWidth = phone ? Math.max(minWidth, MENU_MIN_WIDTH_PHONE_PX) : minWidth;
     const menuWidth = Math.min(
-      matchTriggerWidth ? Math.max(minWidth, Math.round(rect.width)) : minWidth,
+      matchTriggerWidth ? Math.max(leastWidth, Math.round(rect.width)) : leastWidth,
       window.innerWidth - MENU_CLEARANCE_PX * 2,
     );
-    const contentHeight = rowCount * MENU_ROW_HEIGHT_PX + MENU_CHROME_PX;
-    const wantedHeight = Math.min(contentHeight, MENU_MAX_HEIGHT_PX);
+    const contentHeight = rowCount * rowHeight + (phone ? MENU_CHROME_PHONE_PX : MENU_CHROME_PX);
+    const wantedHeight = Math.min(contentHeight, phone ? MENU_MAX_HEIGHT_PHONE_PX : MENU_MAX_HEIGHT_PX);
     // Measure against the visual viewport so an on-screen keyboard (which shrinks it) is respected.
     const viewport = window.visualViewport;
     const viewportTop = viewport?.offsetTop ?? 0;
@@ -119,14 +131,14 @@ function useAnchoredGlassMenu(options: {
     const roomBelow = viewportBottom - rect.bottom - MENU_CLEARANCE_PX - 4;
     const roomAbove = rect.top - viewportTop - MENU_CLEARANCE_PX - 4;
     const openUp = roomBelow < wantedHeight && roomAbove > roomBelow;
-    const maxHeight = Math.max(MENU_ROW_HEIGHT_PX * 2, Math.min(wantedHeight, openUp ? roomAbove : roomBelow));
+    const maxHeight = Math.max(rowHeight * 2, Math.min(wantedHeight, openUp ? roomAbove : roomBelow));
     const preferredLeft =
       align === "right" ? rect.right - menuWidth : align === "center" ? rect.left + rect.width / 2 - menuWidth / 2 : rect.left;
     const left = Math.min(Math.max(MENU_CLEARANCE_PX, preferredLeft), window.innerWidth - menuWidth - MENU_CLEARANCE_PX);
     setPosition(
       openUp
-        ? { left, bottom: document.documentElement.clientHeight - rect.top + 4, width: menuWidth, maxHeight }
-        : { left, top: rect.bottom + 4, width: menuWidth, maxHeight },
+        ? { left, bottom: document.documentElement.clientHeight - rect.top + 4, width: menuWidth, maxHeight, rowHeight }
+        : { left, top: rect.bottom + 4, width: menuWidth, maxHeight, rowHeight },
     );
   };
 
@@ -173,7 +185,7 @@ function GlassMenuPortal({
       role={role}
       aria-label={ariaLabel}
       data-glass-dropdown-menu="true"
-      className="glass-scroll fixed overflow-y-auto rounded-[10px] border p-1 shadow-[var(--shadow-md)]"
+      className="glass-scroll fixed overflow-y-auto rounded-[10px] border p-1 shadow-[var(--shadow-md)] max-md:rounded-[14px] max-md:p-1.5"
       style={{
         left: position.left,
         top: position.top,
@@ -196,7 +208,7 @@ function GlassMenuPortal({
 }
 
 const menuRowClass =
-  "flex w-full items-center gap-2 rounded-[8px] px-3 text-left text-[12px] font-medium transition-colors hover:bg-[var(--panel-muted)] focus-visible:bg-[var(--panel-muted)] focus-visible:outline-none";
+  "flex w-full items-center gap-2 rounded-[8px] px-3 text-left text-[12px] font-medium transition-colors hover:bg-[var(--panel-muted)] focus-visible:bg-[var(--panel-muted)] focus-visible:outline-none max-md:gap-2.5 max-md:rounded-[10px] max-md:px-3.5 max-md:text-[15px]";
 
 export type GlassDropdownOption = {
   value: string;
@@ -288,7 +300,7 @@ export function GlassDropdown({
                 }}
                 className={menuRowClass}
                 style={{
-                  height: MENU_ROW_HEIGHT_PX,
+                  height: position.rowHeight,
                   backgroundImage: isSelected ? "var(--brand-gradient)" : "none",
                   color: isSelected ? "#FFFFFF" : "var(--text-main)",
                 }}
@@ -382,7 +394,7 @@ export function GlassActionMenu({
                 item.onSelect();
               }}
               className={`${menuRowClass} justify-between`}
-              style={{ height: MENU_ROW_HEIGHT_PX, color: "var(--text-main)" }}
+              style={{ height: position.rowHeight, color: "var(--text-main)" }}
             >
               <span className="min-w-0 truncate">{item.label}</span>
               {item.detail ? (

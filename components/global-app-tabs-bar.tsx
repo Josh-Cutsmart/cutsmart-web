@@ -1446,22 +1446,24 @@ export function GlobalAppTabsBar() {
                 }}
               >
                 <div
-                  className="flex shrink-0 items-center gap-3 border-b px-4 py-3"
+                  className="relative flex shrink-0 items-center border-b px-4 py-3"
                   style={{ borderBottomColor: shellPalette.border }}
                 >
                   {/* Alongside the swipe-to-close gesture — an explicit tap target in the corner
                       the panel will retreat toward (left, since it slides back out to the right;
-                      mirrors the mobile nav drawer's own right-pointing close arrow). */}
+                      mirrors the mobile nav drawer's own right-pointing close arrow). A circle, the
+                      same as the drawer's. */}
                   <button
                     type="button"
                     onClick={() => setIsNotifOpen(false)}
-                    className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px] border"
+                    className="relative z-[1] inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border"
                     style={{ borderColor: shellPalette.border, backgroundColor: shellPalette.panelBg, color: shellPalette.textMuted }}
                     aria-label="Close notifications"
                   >
-                    <ChevronLeft size={18} />
+                    <ChevronLeft size={20} />
                   </button>
-                  <p className="text-[14px] font-bold" style={{ color: shellPalette.text }}>
+                  {/* Centred on the screen, whatever is beside it. */}
+                  <p className="pointer-events-none absolute inset-x-0 text-center text-[19px] font-medium" style={{ color: "var(--text-main)" }}>
                     Notifications
                   </p>
                 </div>

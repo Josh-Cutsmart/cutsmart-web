@@ -4577,28 +4577,28 @@ function DrawerHeightDropdown({
           onClick={(e) => e.stopPropagation()}
         >
           {options.length === 0 ? (
-            <p className="px-2 py-1 text-[11px]" style={{ color: "var(--text-muted)" }}>No heights configured</p>
+            <p className="px-2 py-1 text-[11px] max-md:px-3 max-md:py-2.5 max-md:text-[14px]" style={{ color: "var(--text-muted)" }}>No heights configured</p>
           ) : (
-            <div className="grid items-center gap-x-2 gap-y-1 px-1 py-1" style={{ gridTemplateColumns: "minmax(0,max-content) 24px minmax(14px,max-content) 24px" }}>
+            <div className="grid items-center gap-x-2 gap-y-1 px-1 py-1 [grid-template-columns:minmax(0,max-content)_24px_minmax(14px,max-content)_24px] max-md:gap-x-3 max-md:gap-y-2 max-md:px-2 max-md:py-2 max-md:[grid-template-columns:minmax(0,max-content)_36px_minmax(22px,max-content)_36px]">
               {options.map((opt) => {
                 const count = counts.get(opt.toLowerCase()) ?? 0;
                 return (
                   <Fragment key={opt}>
-                    <span className="truncate text-[11px] font-semibold" style={{ color: "var(--text-main)" }}>{opt}</span>
+                    <span className="truncate text-[11px] font-semibold max-md:text-[15px]" style={{ color: "var(--text-main)" }}>{opt}</span>
                     <button
                       type="button"
                       disabled={count <= 0}
                       onClick={() => onRemove(opt)}
-                      className="inline-flex h-5 w-5 items-center justify-center rounded-[6px] border text-white hover:brightness-95 disabled:opacity-45"
+                      className="inline-flex h-5 w-5 items-center justify-center rounded-[6px] border text-white hover:brightness-95 disabled:opacity-45 max-md:h-9 max-md:w-9 max-md:rounded-[10px]"
                       style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
                     >
                       <Minus size={11} strokeWidth={2.8} />
                     </button>
-                    <span className="flex items-center justify-center text-[10px] font-bold" style={{ color: "var(--text-main)" }}>{count}</span>
+                    <span className="flex items-center justify-center text-[10px] font-bold max-md:text-[15px]" style={{ color: "var(--text-main)" }}>{count}</span>
                     <button
                       type="button"
                       onClick={() => onAdd(opt)}
-                      className="inline-flex h-5 w-5 items-center justify-center rounded-[6px] border font-bold leading-none text-white hover:brightness-95"
+                      className="inline-flex h-5 w-5 items-center justify-center rounded-[6px] border font-bold leading-none text-white hover:brightness-95 max-md:h-9 max-md:w-9 max-md:rounded-[10px]"
                       style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
                     >
                       <Plus size={12} strokeWidth={2.8} />
@@ -4870,7 +4870,7 @@ function CompactPlainDropdown({
           <div
             ref={menuRef}
             data-cutlist-clash-dropdown="1"
-            className="glass-scroll pointer-events-auto fixed max-h-[220px] overflow-auto rounded-[8px] border p-1"
+            className="glass-scroll pointer-events-auto fixed max-h-[220px] overflow-auto rounded-[8px] border p-1 max-md:max-h-[360px] max-md:rounded-[12px] max-md:p-1.5"
             style={{ left: rect.left, top: rect.top, width: rect.width, zIndex: 2147483647, ...GLASS_DROPDOWN_MENU_STYLE }}
             onMouseDown={(e) => e.stopPropagation()}
             onClick={(e) => e.stopPropagation()}
@@ -4893,7 +4893,7 @@ function CompactPlainDropdown({
                   buttonRef.current?.focus();
                 }, 0);
               }}
-              className="flex h-6 w-full items-center rounded-[5px] px-1 text-left text-[11px] text-[var(--text-muted)] hover:bg-[var(--panel-muted)]"
+              className="flex h-6 w-full items-center rounded-[5px] px-1 text-left text-[11px] text-[var(--text-muted)] hover:bg-[var(--panel-muted)] max-md:h-11 max-md:rounded-[8px] max-md:px-3 max-md:text-[15px]"
             >
               <span className="truncate"></span>
             </button>
@@ -4917,7 +4917,7 @@ function CompactPlainDropdown({
                     buttonRef.current?.focus();
                   }, 0);
                 }}
-                className="flex h-6 w-full items-center rounded-[5px] px-1 text-left text-[11px] text-[var(--text-main)] hover:bg-[var(--panel-muted)]"
+                className="flex h-6 w-full items-center rounded-[5px] px-1 text-left text-[11px] text-[var(--text-main)] hover:bg-[var(--panel-muted)] max-md:h-11 max-md:rounded-[8px] max-md:px-3 max-md:text-[15px]"
               >
                 <span className="truncate">{opt}</span>
               </button>
@@ -5137,7 +5137,7 @@ function BoardPillDropdown({
         <div className="fixed inset-0 pointer-events-auto" style={{ zIndex: 2147483647 }}>
           <div
             ref={menuRef}
-            className={`glass-scroll pointer-events-auto fixed overflow-auto border p-1 ${compact ? "max-h-[240px] rounded-[8px]" : "max-h-[280px] rounded-[8px]"}`}
+            className={`glass-scroll pointer-events-auto fixed overflow-auto border p-1 ${compact ? "max-h-[240px] rounded-[8px]" : "max-h-[280px] rounded-[8px]"} max-md:max-h-[380px] max-md:rounded-[12px] max-md:p-1.5`}
             style={{ left: rect.left, top: rect.top, width: rect.width, zIndex: 2147483647, ...GLASS_DROPDOWN_MENU_STYLE }}
             onMouseDown={(e) => e.stopPropagation()}
             onClick={(e) => e.stopPropagation()}
@@ -5155,7 +5155,7 @@ function BoardPillDropdown({
                   setOpen(false);
                   focusTriggerAfterSelection();
                 }}
-                className={`flex w-full items-center text-left text-[var(--text-muted)] hover:bg-[var(--panel-muted)] ${compact ? "h-6 rounded-[5px] px-1 text-[11px]" : "h-8 rounded-[6px] px-2 text-[12px]"}`}
+                className={`flex w-full items-center text-left text-[var(--text-muted)] hover:bg-[var(--panel-muted)] ${compact ? "h-6 rounded-[5px] px-1 text-[11px]" : "h-8 rounded-[6px] px-2 text-[12px]"} max-md:h-11 max-md:rounded-[8px] max-md:px-3 max-md:text-[15px]`}
               >
                 <span className="truncate"></span>
               </button>
@@ -5181,7 +5181,7 @@ function BoardPillDropdown({
                       setOpen(false);
                       focusTriggerAfterSelection();
                     }}
-                   className={`flex w-full items-center text-left text-[var(--text-main)] hover:bg-[var(--panel-muted)] ${compact ? "h-6 rounded-[5px] px-1 text-[11px]" : "h-8 rounded-[6px] px-2 text-[12px]"}`}
+                   className={`flex w-full items-center text-left text-[var(--text-main)] hover:bg-[var(--panel-muted)] ${compact ? "h-6 rounded-[5px] px-1 text-[11px]" : "h-8 rounded-[6px] px-2 text-[12px]"} max-md:h-11 max-md:rounded-[8px] max-md:px-3 max-md:text-[15px]`}
                 >
                   <span className="inline-flex min-w-0 items-center gap-2">
                   {!!sz && (
@@ -5296,7 +5296,7 @@ function GlassSelectDropdown({ value, options, onChange, className, style, disab
       {open && rect && !disabled && typeof document !== "undefined" && createPortal(
         <div
           ref={menuRef}
-          className="glass-scroll fixed z-[2147483647] max-h-[260px] overflow-auto rounded-[8px] border p-1"
+          className="glass-scroll fixed z-[2147483647] max-h-[260px] overflow-auto rounded-[8px] border p-1 max-md:max-h-[380px] max-md:rounded-[12px] max-md:p-1.5"
           style={{ left: rect.left, top: rect.top, minWidth: rect.width, width: "max-content", ...GLASS_DROPDOWN_MENU_STYLE }}
           onMouseDown={(e) => e.stopPropagation()}
         >
@@ -5313,7 +5313,7 @@ function GlassSelectDropdown({ value, options, onChange, className, style, disab
                 }}
                 onMouseEnter={() => setHoveredOption(opt)}
                 onMouseLeave={() => setHoveredOption((prev) => (prev === opt ? null : prev))}
-                className={`flex h-7 w-full items-center rounded-[6px] px-2 text-left text-[12px] ${optionColor ? "" : "hover:bg-[var(--panel-muted)]"}`}
+                className={`flex h-7 w-full items-center rounded-[6px] px-2 text-left text-[12px] max-md:h-11 max-md:rounded-[8px] max-md:px-3 max-md:text-[15px] ${optionColor ? "" : "hover:bg-[var(--panel-muted)]"}`}
                 style={{
                   color: optionColor && isHovered ? (isLightHex(optionColor) ? "#000000" : "#FFFFFF") : "var(--text-main)",
                   backgroundColor: optionColor && isHovered ? optionColor : undefined,
@@ -5492,7 +5492,7 @@ function PartNameSuggestionInput({
         <div className="fixed inset-0 pointer-events-auto" style={{ zIndex: 2147483647 }}>
           <div
             ref={menuRef}
-            className="glass-scroll pointer-events-auto fixed max-h-[240px] overflow-auto rounded-[10px] border p-1"
+            className="glass-scroll pointer-events-auto fixed max-h-[240px] overflow-auto rounded-[10px] border p-1 max-md:max-h-[360px] max-md:rounded-[12px] max-md:p-1.5"
             style={{ left: rect.left, top: rect.top, width: rect.width, zIndex: 2147483647, ...GLASS_DROPDOWN_MENU_STYLE }}
             onMouseDown={(e) => e.stopPropagation()}
             onClick={(e) => e.stopPropagation()}
@@ -5510,7 +5510,7 @@ function PartNameSuggestionInput({
                   }
                   selectOption(option.name);
                 }}
-                className="flex h-8 w-full items-center rounded-[8px] border px-2 text-left transition-colors"
+                className="flex h-8 w-full items-center rounded-[8px] border px-2 text-left transition-colors max-md:h-11 max-md:rounded-[10px] max-md:px-3"
                 style={{
                   backgroundColor: lightenHex(option.color, 0.14),
                   borderColor: darkenHex(option.color, 0.18),
@@ -5523,7 +5523,7 @@ function PartNameSuggestionInput({
                   e.currentTarget.style.backgroundColor = lightenHex(option.color, 0.14);
                 }}
               >
-                <span className="inline-flex w-full min-w-0 items-center text-[11px] font-semibold">
+                <span className="inline-flex w-full min-w-0 items-center text-[11px] font-semibold max-md:text-[15px]">
                   <span className="truncate">{option.name}</span>
                 </span>
               </button>
@@ -7036,6 +7036,16 @@ export default function ProjectDetailsPage() {
     query.addEventListener("change", sync);
     return () => query.removeEventListener("change", sync);
   }, []);
+  // Phones (below md, 768px) — e.g. Settings > Project Permissions as tabs there.
+  const [isPhoneViewport, setIsPhoneViewport] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const query = window.matchMedia("(max-width: 767px)");
+    const sync = () => setIsPhoneViewport(query.matches);
+    sync();
+    query.addEventListener("change", sync);
+    return () => query.removeEventListener("change", sync);
+  }, []);
   // Whether Row 1 is actually pinned in its stuck position right now — used only to show the
   // divider line between it and the tab strip below while they're visually touching, not at rest
   // (where Row 2 still sits between them).
@@ -7171,6 +7181,9 @@ export default function ProjectDetailsPage() {
   });
   const [draggingProjectPermissionUid, setDraggingProjectPermissionUid] = useState("");
   const [projectPermissionDropColumn, setProjectPermissionDropColumn] = useState<"" | "no_access" | "view" | "edit">("");
+  // On a phone (isPhoneViewport), Settings > Project Permissions' three columns are tabs in one row: this
+  // one open, taking the width; the others closed to a narrow strip. Edit to start with.
+  const [openProjectPermissionColumn, setOpenProjectPermissionColumn] = useState<"no_access" | "view" | "edit">("edit");
   const projectPermissionDragGhost = useDragGhost();
   const [projectPermissionColumnOverflow, setProjectPermissionColumnOverflow] = useState<{
     no_access: boolean;
@@ -7218,7 +7231,7 @@ export default function ProjectDetailsPage() {
     if (typeof window === "undefined") return;
     window.addEventListener("resize", measure);
     return () => window.removeEventListener("resize", measure);
-  }, [projectPermissionSearch, draggingProjectPermissionUid, savingProjectPermissionUid, companyMembers.length, project?.projectSettings]);
+  }, [projectPermissionSearch, draggingProjectPermissionUid, savingProjectPermissionUid, companyMembers.length, project?.projectSettings, openProjectPermissionColumn]);
   const [salesNav, setSalesNav] = useState<SalesNav>("overview");
   const [productionNav, setProductionNav] = useState<ProductionNav>("overview");
   const [projectManagementChecklistTemplates, setProjectManagementChecklistTemplates] = useState<ChecklistTemplate[]>([]);
@@ -24870,7 +24883,7 @@ export default function ProjectDetailsPage() {
                   setNestingMachineMenuOpen(false);
                 }}
                 // The machine in use is just shown in blue text.
-                className={`flex h-9 w-full items-center px-3 text-left text-[12px] font-semibold transition-colors hover:bg-[var(--panel-muted)] ${index > 0 ? "border-t" : ""}`}
+                className={`flex h-9 w-full items-center px-3 text-left text-[12px] font-semibold transition-colors hover:bg-[var(--panel-muted)] max-md:h-11 max-md:px-4 max-md:text-[15px] ${index > 0 ? "border-t" : ""}`}
                 style={{
                   borderColor: "var(--glass-border)",
                   color: m.id === selectedNestingMachineId ? "var(--brand-strong)" : "var(--text-main)",
@@ -43452,7 +43465,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 </button>
                 {cncExportMenuOpen && (
                   <div
-                    className="absolute right-0 top-[42px] z-[120] w-[130px] overflow-hidden rounded-[10px] border shadow-[0_12px_30px_rgba(15,23,42,0.14)]"
+                    className="absolute right-0 top-[42px] z-[120] w-[130px] overflow-hidden rounded-[10px] border max-md:w-[180px] max-md:rounded-[14px] shadow-[0_12px_30px_rgba(15,23,42,0.14)]"
                     style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-modal-bg)", backdropFilter: "blur(16px) saturate(200%)", WebkitBackdropFilter: "blur(16px) saturate(200%)" }}
                   >
                     {/* TEMPORARY (testing): the old Google Sheets layout — see onExportCncXlsxOld. */}
@@ -43462,7 +43475,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         void onExportCncXlsxOld();
                         setCncExportMenuOpen(false);
                       }}
-                      className="flex h-9 w-full items-center px-3 text-left text-[12px] font-semibold transition-colors hover:bg-[var(--panel-muted)]"
+                      className="flex h-9 w-full items-center px-3 text-left text-[12px] font-semibold transition-colors hover:bg-[var(--panel-muted)] max-md:h-11 max-md:px-4 max-md:text-[15px]"
                       style={{ color: "var(--text-main)" }}
                     >
                       Old
@@ -43473,7 +43486,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         onExportCncXlsx();
                         setCncExportMenuOpen(false);
                       }}
-                      className="flex h-9 w-full items-center border-t px-3 text-left text-[12px] font-semibold transition-colors hover:bg-[var(--panel-muted)]"
+                      className="flex h-9 w-full items-center border-t px-3 text-left text-[12px] font-semibold transition-colors hover:bg-[var(--panel-muted)] max-md:h-11 max-md:px-4 max-md:text-[15px]"
                       style={{ borderColor: "var(--glass-border)", color: "var(--text-main)" }}
                     >
                       .xlsx
@@ -43484,7 +43497,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         onExportCncPdf();
                         setCncExportMenuOpen(false);
                       }}
-                      className="flex h-9 w-full items-center border-t px-3 text-left text-[12px] font-semibold transition-colors hover:bg-[var(--panel-muted)]"
+                      className="flex h-9 w-full items-center border-t px-3 text-left text-[12px] font-semibold transition-colors hover:bg-[var(--panel-muted)] max-md:h-11 max-md:px-4 max-md:text-[15px]"
                       style={{ borderColor: "var(--glass-border)", color: "var(--text-main)" }}
                     >
                       .pdf
@@ -45719,7 +45732,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       setQuoteDownloadMenuAnchor(null);
                       void onDownloadQuoteGridPdf();
                     }}
-                    className="flex w-full items-center gap-2 whitespace-nowrap rounded-[6px] px-2 py-1.5 text-left text-[12px] font-semibold hover:brightness-95"
+                    className="flex w-full items-center gap-2 whitespace-nowrap rounded-[6px] px-2 py-1.5 text-left text-[12px] font-semibold hover:brightness-95 max-md:rounded-[10px] max-md:px-3 max-md:py-2.5 max-md:text-[15px]"
                     style={{ color: "var(--text-main)" }}
                   >
                     <FileText size={14} />
@@ -47388,7 +47401,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       setSpecsDownloadMenuAnchor(null);
                       void onDownloadSpecificationsSheetPdf();
                     }}
-                    className="flex w-full items-center gap-2 whitespace-nowrap rounded-[6px] px-2 py-1.5 text-left text-[12px] font-semibold hover:brightness-95"
+                    className="flex w-full items-center gap-2 whitespace-nowrap rounded-[6px] px-2 py-1.5 text-left text-[12px] font-semibold hover:brightness-95 max-md:rounded-[10px] max-md:px-3 max-md:py-2.5 max-md:text-[15px]"
                     style={{ color: "var(--text-main)" }}
                   >
                     <FileText size={14} />
@@ -50638,7 +50651,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   type="button"
                                   onMouseDown={(e) => e.preventDefault()}
                                   onClick={() => void onAddTagValue(tag)}
-                                  className="mb-1 block w-full rounded-[8px] px-2 py-1 text-left text-[12px] font-semibold last:mb-0 hover:bg-[var(--panel-muted)]"
+                                  className="mb-1 block w-full rounded-[8px] px-2 py-1 text-left text-[12px] font-semibold last:mb-0 hover:bg-[var(--panel-muted)] max-md:rounded-[10px] max-md:px-3 max-md:py-2.5 max-md:text-[15px]"
                                   style={{ color: projectPalette.textSoft }}
                                 >
                                   {tag}
@@ -50886,7 +50899,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       {isQuickAssignOpen && quickAssignRect && typeof document !== "undefined" && createPortal(
                         <div
                           ref={quickAssignMenuRef}
-                          className="fixed z-[2147483647] flex max-h-[300px] w-[220px] flex-col overflow-hidden rounded-[8px] border"
+                          className="fixed z-[2147483647] flex max-h-[300px] w-[220px] flex-col overflow-hidden rounded-[8px] border max-md:max-h-[420px] max-md:w-[280px] max-md:rounded-[14px]"
                           style={{ left: quickAssignRect.left, top: quickAssignRect.top, ...GLASS_DROPDOWN_MENU_STYLE }}
                           onMouseDown={(e) => e.stopPropagation()}
                         >
@@ -50897,7 +50910,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               value={quickAssignSearch}
                               onChange={(e) => setQuickAssignSearch(e.target.value)}
                               placeholder="Search staff..."
-                              className="h-7 w-full rounded-[6px] border pl-6 pr-2 text-[12px] outline-none"
+                              className="h-7 w-full rounded-[6px] border pl-6 pr-2 text-[12px] outline-none max-md:h-10 max-md:rounded-[10px] max-md:pl-8 max-md:text-[15px]"
                               style={{
                                 borderColor: "var(--glass-border)",
                                 backgroundColor: isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.45)",
@@ -50928,11 +50941,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   void onChangeAssignedProjectUser(member.uid);
                                   setIsQuickAssignOpen(false);
                                 }}
-                                className="flex w-full min-w-0 items-center gap-2 rounded-[6px] px-2 py-1.5 text-left text-[12px] font-semibold transition hover:bg-[var(--panel-muted)]"
+                                className="flex w-full min-w-0 items-center gap-2 rounded-[6px] px-2 py-1.5 text-left text-[12px] font-semibold transition hover:bg-[var(--panel-muted)] max-md:gap-3 max-md:rounded-[10px] max-md:px-3 max-md:py-2.5 max-md:text-[15px]"
                                 style={{ color: "var(--text-main)" }}
                               >
                                 <span
-                                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white"
+                                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white max-md:h-8 max-md:w-8 max-md:text-[11px]"
                                   style={{
                                     backgroundColor:
                                       toStr(staffIconColorByUid[String(member.uid || "")]) ||
@@ -52137,7 +52150,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 className={
                   salesNav === "initial" || salesNav === "items"
                     ? "isolate mt-0 w-full min-h-[calc(100svh-235px)] px-3 sm:px-4 md:px-5 xl:pl-0 xl:pr-5"
-                    : "isolate mt-3 w-full max-w-[1120px] space-y-4 px-3 sm:px-4 md:px-5 xl:mt-5 xl:pl-0 xl:pr-5"
+                    : "isolate mt-3 w-full max-w-[1120px] space-y-4 px-3 pb-4 sm:px-4 md:px-5 xl:mt-5 xl:pl-0 xl:pr-5"
                 }
               >
                 {salesReadOnly && (
@@ -52567,7 +52580,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           ? "xl:pr-[356px]"
                           : "xl:pr-5"
                       }`
-                    : "relative isolate mt-3 w-full max-w-[1120px] space-y-4 px-3 sm:px-4 md:px-5 xl:mt-5 xl:pl-0 xl:pr-5"
+                    : "relative isolate mt-3 w-full max-w-[1120px] space-y-4 px-3 pb-4 sm:px-4 md:px-5 xl:mt-5 xl:pl-0 xl:pr-5"
                 }
               >
                 {productionUnlockRequestsBanner}
@@ -54908,7 +54921,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                               setActiveBoardColourSuggestionsRowId(null);
                                               commitBoardColourChange(row.id, colour, previousColour);
                                             }}
-                                            className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)]"
+                                            className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] max-md:rounded-[8px] max-md:px-3 max-md:py-2.5 max-md:text-[15px]"
                                             style={{ color: "var(--text-main)" }}
                                           >
                                             {colour}
@@ -55008,7 +55021,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                               setActiveBoardEdgingSuggestionsRowId(null);
                                               void onBoardFieldCommit(row.id, { edging }, false, undefined, true, previousEdging);
                                             }}
-                                            className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)]"
+                                            className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] max-md:rounded-[8px] max-md:px-3 max-md:py-2.5 max-md:text-[15px]"
                                             style={{ color: "var(--text-main)" }}
                                           >
                                             {edging}
@@ -55211,7 +55224,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   return createPortal(
                                     <div
                                       data-board-suggestions-menu="true"
-                                      className="fixed max-h-[220px] overflow-auto rounded-[8px] border p-1 shadow-[0_12px_28px_rgba(15,23,42,0.14)]"
+                                      className="fixed max-h-[220px] overflow-auto rounded-[8px] border p-1 shadow-[0_12px_28px_rgba(15,23,42,0.14)] max-md:max-h-[320px] max-md:rounded-[12px] max-md:p-1.5"
                                       style={{
                                         left: boardColourDropdownRect.left,
                                         top: boardColourDropdownRect.top,
@@ -55235,7 +55248,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                             setActiveBoardColourSuggestionsRowId(null);
                                             commitBoardColourChange(row.id, colour, previousColour);
                                           }}
-                                          className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)]"
+                                          className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] max-md:rounded-[8px] max-md:px-3 max-md:py-2.5 max-md:text-[15px]"
                                           style={{ color: "var(--text-main)" }}
                                         >
                                           {colour}
@@ -55323,7 +55336,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   return createPortal(
                                     <div
                                       data-board-suggestions-menu="true"
-                                      className="fixed max-h-[220px] overflow-auto rounded-[8px] border p-1 shadow-[0_12px_28px_rgba(15,23,42,0.14)]"
+                                      className="fixed max-h-[220px] overflow-auto rounded-[8px] border p-1 shadow-[0_12px_28px_rgba(15,23,42,0.14)] max-md:max-h-[320px] max-md:rounded-[12px] max-md:p-1.5"
                                       style={{
                                         left: boardEdgingDropdownRect.left,
                                         top: boardEdgingDropdownRect.top,
@@ -55347,7 +55360,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                             setActiveBoardEdgingSuggestionsRowId(null);
                                             void onBoardFieldCommit(row.id, { edging }, false, undefined, true, previousEdging);
                                           }}
-                                          className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)]"
+                                          className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] max-md:rounded-[8px] max-md:px-3 max-md:py-2.5 max-md:text-[15px]"
                                           style={{ color: "var(--text-main)" }}
                                         >
                                           {edging}
@@ -55616,9 +55629,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   </CardHeader>
                 <CardContent className="px-0 pt-3 text-[12px]">
                   <DragGhostLayer controller={projectPermissionDragGhost} />
-                  <div className="grid gap-0 xl:grid-cols-3">
+                  <div className={isPhoneViewport ? "flex" : "grid grid-cols-3 gap-0"}>
                     {projectPermissionColumns.map((column) => {
+                      const columnKey = column.key as "no_access" | "view" | "edit";
                       const isDropActive = projectPermissionDropColumn === column.key;
+                      // Phones: tabs in one row (openProjectPermissionColumn). The open one takes the width;
+                      // the others close to a narrow strip with just their name and count, sliding aside —
+                      // tap one to slide it open. A dragged card can be dropped straight onto a closed one.
+                      // Tablets and up: the three columns side by side.
+                      const asTab = isPhoneViewport;
+                      const isClosedTab = asTab && openProjectPermissionColumn !== columnKey;
                       return (
                         <div
                           key={column.key}
@@ -55634,17 +55654,44 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             event.preventDefault();
                             void onDropProjectPermissionUser(column.key as "no_access" | "view" | "edit");
                           }}
-                          className="flex h-[468px] flex-col px-4 py-3 transition"
+                          className={`flex h-[468px] flex-col transition ${asTab ? "min-w-0 overflow-hidden" : ""} ${isClosedTab ? "px-0 py-3" : "px-4 py-3"}`}
                           style={{
                             backgroundColor: isDropActive ? (isDarkMode ? "#1f2d40" : "#EEF4FF") : "transparent",
                             borderRight:
                               column.key !== "edit"
                                 ? `1px solid ${projectPalette.border}`
                                 : undefined,
+                            ...(asTab
+                              ? {
+                                  flexGrow: isClosedTab ? 0 : 1,
+                                  flexShrink: 0,
+                                  flexBasis: 52,
+                                  transition: "flex-grow 320ms cubic-bezier(0.22, 1, 0.36, 1), background-color 150ms ease",
+                                }
+                              : {}),
                           }}
                         >
+                          {isClosedTab ? (
+                            <button
+                              type="button"
+                              onClick={() => setOpenProjectPermissionColumn(columnKey)}
+                              className="flex h-full w-full flex-col items-center gap-3"
+                              aria-label={`${column.label} (${column.rows.length})`}
+                            >
+                              <span className="rounded-full border px-2 py-[2px] text-[11px] font-bold" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.textMuted }}>
+                                {column.rows.length}
+                              </span>
+                              <span
+                                className="whitespace-nowrap text-[12px] font-medium uppercase"
+                                style={{ writingMode: "vertical-rl", letterSpacing: "0.12em", color: "var(--text-main)" }}
+                              >
+                                {column.label}
+                              </span>
+                            </button>
+                          ) : (
+                          <>
                           <div className="mb-3 flex items-center justify-between gap-2">
-                            <p className="text-[12px] font-bold uppercase tracking-[0.8px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>{column.label}</p>
+                            <p className="text-[12px] font-medium uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>{column.label}</p>
                             <span className="rounded-full border px-2 py-[2px] text-[11px] font-bold" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.textMuted }}>
                               {column.rows.length}
                             </span>
@@ -55776,6 +55823,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             ) : null}
                             </div>
                           </div>
+                          </>
+                          )}
                         </div>
                       );
                     })}
@@ -55802,7 +55851,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 >
                   <CardTitle className="shrink-0 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Changelog</CardTitle>
                   <div
-                    className="ml-auto flex h-8 w-full max-w-[220px] items-center gap-2 rounded-[8px] border px-2"
+                    className="ml-auto flex h-8 w-full max-w-[220px] items-center gap-2 rounded-full border px-3"
                     style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg }}
                   >
                     <Search size={13} className="shrink-0" style={{ color: projectPalette.textMuted }} />

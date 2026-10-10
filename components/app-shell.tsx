@@ -18,7 +18,6 @@ import {
   LogOut,
   PartyPopper,
   Plus,
-  PlusCircle,
   RefreshCw,
   Save,
   Search,
@@ -3161,11 +3160,11 @@ export function AppShell({
             <button
               type="button"
               onClick={() => setMobileNavOpen(false)}
-              className="absolute right-3 top-3 z-10 inline-flex h-9 w-9 items-center justify-center rounded-[8px] border"
+              className="absolute right-3 top-3 z-10 inline-flex h-10 w-10 items-center justify-center rounded-full border"
               style={{ borderColor: shellPalette.border, backgroundColor: shellPalette.panelBg, color: shellPalette.textMuted }}
               aria-label="Close menu"
             >
-              <ChevronRight size={18} />
+              <ChevronRight size={20} />
             </button>
             <div className="flex items-center border-b border-[var(--panel-border)] px-4 py-3" style={{ borderColor: shellPalette.border }}>
               <div className="flex min-h-[44px] w-full items-center">
@@ -3198,7 +3197,7 @@ export function AppShell({
                   }}
                   className="mb-3 flex h-14 w-full shrink-0 items-center justify-center gap-2 rounded-[12px] bg-[image:var(--brand-gradient)] text-[17px] font-semibold text-white shadow-[var(--shadow-sm)] transition hover:brightness-105"
                 >
-                  <PlusCircle size={20} />
+                  <Plus size={24} strokeWidth={2.5} />
                   New Project
                 </button>
               )}
@@ -3426,7 +3425,7 @@ export function AppShell({
               title={isSidebarIconOnlyContent ? "New Project" : undefined}
               className="mb-3 flex h-10 w-full shrink-0 items-center justify-center gap-2 rounded-[10px] bg-[image:var(--brand-gradient)] text-[13px] font-semibold text-white shadow-[var(--shadow-sm)] transition hover:brightness-105"
             >
-              <PlusCircle size={16} className="shrink-0" />
+              <Plus size={20} strokeWidth={2.5} className="shrink-0" />
               {!isSidebarIconOnlyContent && <span className="sidebar-label-fade-in min-w-0 truncate">New Project</span>}
             </button>
           )}

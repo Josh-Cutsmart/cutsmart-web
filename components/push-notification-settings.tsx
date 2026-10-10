@@ -647,8 +647,16 @@ export function PushNotificationSettings({
     </>
   );
 
-  // What's under the switch shows once it's on and the user's choices are in (so they don't flip after).
-  const showChoices = status === "on" && (prefsLoaded || !db || !uid);
+  // What's under the switch shows once the user's choices are in (so they don't flip after). With push off
+  // on this device it all stays as it was — greyed out and not changeable (choicesOff) — so turning it back
+  // on brings back the same choices, rather than them disappearing.
+  const showChoices = status !== "loading" && (prefsLoaded || !db || !uid);
+  const choicesOff = status !== "on";
+  const choicesOffStyle: CSSProperties = {
+    opacity: choicesOff ? 0.45 : 1,
+    pointerEvents: choicesOff ? "none" : undefined,
+    transition: "opacity 200ms ease",
+  };
   const deviceToggle =
     status === "needs-install" ? null : (
       <span title={status !== "on" && status !== "off" && status !== "loading" ? UNAVAILABLE_REASON[status] : undefined}>
@@ -717,7 +725,11 @@ export function PushNotificationSettings({
     const rowClass = "flex min-h-[52px] items-center gap-3 px-4 py-2.5";
     return (
       <div className="space-y-4">
-        {showChoices ? renderSearchBar("h-10 rounded-[12px]", cardStyle) : null}
+        {showChoices ? (
+          <div inert={choicesOff} style={choicesOffStyle}>
+            {renderSearchBar("h-10 rounded-[12px]", cardStyle)}
+          </div>
+        ) : null}
         <div className={ROWS_CARD_CLASS} style={cardStyle}>
           <div className={rowClass}>
             <Bell size={17} className="shrink-0" style={mutedText} />
@@ -725,7 +737,7 @@ export function PushNotificationSettings({
             {deviceToggle}
           </div>
           {showChoices ? (
-            <div className={rowClass}>
+            <div className={rowClass} inert={choicesOff} style={choicesOffStyle}>
               <Timer size={17} className="shrink-0" style={mutedText} />
               <div className="min-w-0 flex-1">
                 <p className="text-[14px] font-medium leading-tight" style={{ color: "var(--text-main)" }}>Time between notifications</p>
@@ -737,7 +749,7 @@ export function PushNotificationSettings({
         </div>
         {status === "needs-install" ? renderInstallSteps("") : null}
         {showChoices ? (
-          <>
+          <div inert={choicesOff} style={choicesOffStyle}>
             {query ? (
               renderSearchResults("rounded-[18px] p-4", cardStyle)
             ) : (
@@ -764,7 +776,7 @@ export function PushNotificationSettings({
                 })}
               </div>
             )}
-          </>
+          </div>
         ) : null}
         {overlays}
       </div>
@@ -785,6 +797,7 @@ export function PushNotificationSettings({
       {showChoices ? (
         <>
           <div className="mt-4 border-t pt-4" style={{ borderColor: "var(--glass-border)" }}>
+            <div inert={choicesOff} style={choicesOffStyle}>
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2.5 gap-y-1">
                 <p className="text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>Time between notifications</p>
@@ -821,6 +834,7 @@ export function PushNotificationSettings({
                 })}
               </div>
             )}
+            </div>
           </div>
         </>
       ) : null}

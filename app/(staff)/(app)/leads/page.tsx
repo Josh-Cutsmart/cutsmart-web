@@ -3781,6 +3781,10 @@ export default function LeadsPage() {
                     : "inset 0 1px 0 rgba(255,255,255,0.7), inset 0 30px 40px -32px rgba(255,255,255,0.35), var(--shadow-glass)";
                   const columnBadgeBg = themeMode === "dark" ? "rgba(0,0,0,0.35)" : "rgba(255,255,255,0.55)";
                   const columnBadgeText = themeMode === "dark" ? "var(--text-main)" : "#000000";
+                  // The column's name contrasts against its own colour — dark text on a light one, white on a
+                  // dark one — the same as the dashboard's columns (its rowTextColorForFill, same 0.75 cut-off).
+                  // The count badge and buttons keep their fixed light/dark colours.
+                  const columnTitleTextColor = contrastTextForFill(column.color, 0.75);
                   if (isCollapsed) {
                     return (
                       // The frame cuts the column off at the bottom of the screen while the board
@@ -3823,8 +3827,8 @@ export default function LeadsPage() {
                             {column.leads.length}
                           </span>
                           <span
-                            className="shrink-0 whitespace-nowrap text-[14px] font-normal"
-                            style={{ writingMode: "vertical-rl", color: "#000000", letterSpacing: "0.12em" }}
+                            className="shrink-0 whitespace-nowrap text-[20px] font-medium"
+                            style={{ writingMode: "vertical-rl", color: columnTitleTextColor, letterSpacing: "0.12em" }}
                           >
                             {column.name}
                           </span>
@@ -3868,7 +3872,7 @@ export default function LeadsPage() {
                               }
                               buttonStyle={{ color: columnBadgeText, backgroundColor: columnBadgeBg }}
                             />
-                            <p className="truncate text-[15px] font-semibold" style={{ color: "#000000" }}>{column.name}</p>
+                            <p className="truncate text-[15px] font-semibold" style={{ color: columnTitleTextColor }}>{column.name}</p>
                           </div>
                           <div className="flex shrink-0 items-center gap-1.5">
                             <span

@@ -1430,6 +1430,14 @@ main[data-under-bar="true"][data-reduce-top="true"] {
   padding-top: 48px !important;
 }
 
+/* Calendar (phones), day and week views: up and down scrolls the hours as usual, while a sideways drag is
+ * left to the page — it slides to the next or previous day (week) with the finger (onDaySwipeMove in
+ * app/(staff)/(app)/calendar/page.tsx). An event's own touch-action (it's dragged) still wins. */
+[data-cal-swipe-area="true"],
+[data-cal-swipe-area="true"] * {
+  touch-action: pan-y;
+}
+
 /* Project details' dates bar: each line fades away as the title bar above reaches it on scrolling down,
  * and back in on the way up (placeProjectHeaderGlass in app/(staff)/(app)/projects/[projectId]/page.tsx). */
 [data-header-fade] {

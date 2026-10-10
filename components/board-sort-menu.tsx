@@ -17,7 +17,7 @@ const MENU_STYLE: CSSProperties = {
   backdropFilter: "blur(16px) saturate(200%)",
   WebkitBackdropFilter: "blur(16px) saturate(200%)",
 };
-const MENU_CLASS = "fixed z-[2147483647] overflow-hidden rounded-[10px] border shadow-[0_12px_30px_rgba(15,23,42,0.14)]";
+const MENU_CLASS = "fixed z-[2147483647] overflow-hidden rounded-[10px] border shadow-[0_12px_30px_rgba(15,23,42,0.14)] max-md:rounded-[14px]";
 
 type MenuPos = { left: number; top: number };
 
@@ -80,11 +80,11 @@ function SortOptionRows({
             key={mode}
             type="button"
             onClick={() => onPick(mode)}
-            className={`flex h-9 w-full items-center justify-between gap-2 px-3 text-left text-[12px] font-semibold transition-colors hover:bg-[var(--panel-muted)] ${index > 0 ? "border-t" : ""}`}
+            className={`flex h-9 w-full items-center justify-between gap-2 px-3 text-left text-[12px] font-semibold transition-colors hover:bg-[var(--panel-muted)] max-md:h-11 max-md:px-4 max-md:text-[15px] ${index > 0 ? "border-t" : ""}`}
             style={{ borderColor: "var(--glass-border)", color: isActive ? "var(--brand-strong)" : "var(--text-main)" }}
           >
             <span className="truncate">{labelFor(mode)}</span>
-            {isActive ? <Check size={14} className="shrink-0" /> : null}
+            {isActive ? <Check size={14} className="shrink-0 max-md:h-[17px] max-md:w-[17px]" /> : null}
           </button>
         );
       })}

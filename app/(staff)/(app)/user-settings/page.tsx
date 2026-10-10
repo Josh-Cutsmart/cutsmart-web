@@ -1189,13 +1189,17 @@ export default function UserSettingsPage() {
   );
   // The page's bar. On a phone it's fixed under the app's tab bar, so it stays put while the pages slide
   // beneath it (they start below it, at 92px); its button saves and leaves User Settings from any of them.
+  // Nothing scrolls under it there, so it's simply the page's own grey — the same as the top tab bar above
+  // it, as one surface (data-title-bar: the page scrollbar starts below it).
   const headerBar = (
   <div
+    data-title-bar={isPhone ? "true" : undefined}
     className={
       isPhone
-        ? "glass-page-header fixed inset-x-0 top-12 z-[31] flex h-[44px] items-center justify-between px-4"
+        ? "fixed inset-x-0 top-12 z-[31] flex h-[44px] items-center justify-between px-4"
         : "glass-page-header -mx-4 -mt-3 flex h-[44px] shrink-0 items-center justify-between px-4 md:-mx-5 md:-mt-4 md:h-[56px] md:px-5"
     }
+    style={isPhone ? { backgroundColor: "var(--bg-app)" } : undefined}
   >
     <div className="flex min-w-0 items-center gap-5">
       <div className="flex min-w-0 items-center gap-2">

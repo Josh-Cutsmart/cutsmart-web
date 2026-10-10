@@ -189,7 +189,8 @@ function PerPageDropdown({
           }
           const rect = triggerRef.current?.getBoundingClientRect();
           if (rect) {
-            const menuWidth = Math.max(130, rect.width);
+            // Phones: a wider menu, with bigger rows (max-md: sizes below).
+            const menuWidth = Math.max(window.matchMedia("(max-width: 767px)").matches ? 170 : 130, rect.width);
             setPos({
               left: Math.min(Math.max(8, rect.left), window.innerWidth - menuWidth - 8),
               top: rect.bottom + 4,
@@ -228,7 +229,7 @@ function PerPageDropdown({
                 onChange(opt);
                 setOpen(false);
               }}
-              className="block w-full rounded-[8px] px-3 py-2 text-left text-[12px] font-bold"
+              className="block w-full rounded-[8px] px-3 py-2 text-left text-[12px] font-bold max-md:rounded-[10px] max-md:px-3.5 max-md:py-3 max-md:text-[15px]"
               style={{
                 backgroundImage: value === opt ? "var(--brand-gradient)" : "none",
                 color: value === opt ? "#FFFFFF" : "var(--text-main)",
