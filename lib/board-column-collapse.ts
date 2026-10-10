@@ -4,9 +4,9 @@ import { flushSync } from "react-dom";
 
 // Collapsing / expanding a kanban column (Dashboard and Leads boards) as one movement instead of a
 // swap: the column slides between its full width and the collapsed strip (the columns after it
-// sliding along), and its collapse button rides the moving right edge — ending, collapsed, exactly
-// where the sort button was (the strip's own expand button sits there, on the same line as the
-// header's buttons) — its two arrows flipping round on the way (>< to <>; ColumnCollapseChevrons).
+// sliding along). Its collapse button sits at the left of the header — where the strip's own expand
+// button is, on the same line — so it stays put (buttonShift is next to nothing), its two arrows
+// flipping round as it goes (>< to <>; ColumnCollapseChevrons).
 // Everything else in the column fades out as it goes, and the strip's count and status name fade in
 // once it's there; expanding plays the same thing backwards.
 //

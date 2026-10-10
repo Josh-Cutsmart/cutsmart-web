@@ -3854,10 +3854,36 @@ export default function LeadsPage() {
                         }}
                       >
                         <div
-                          className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2"
+                          // pl-[11px]: the collapse button exactly where the collapsed strip centres its own,
+                          // so it doesn't move at all either way.
+                          className="flex shrink-0 items-center justify-between gap-2 border-b py-2 pl-[11px] pr-3"
                           style={{ borderColor: "rgba(0,0,0,0.15)" }}
                         >
                           <div className="flex min-w-0 items-center gap-1.5">
+                            <button
+                              type="button"
+                              // Left of the title — where the collapsed strip's own button sits — so it
+                              // stays put as the column slides into its strip (lib/board-column-collapse.ts).
+                              onClick={(e) =>
+                                collapseBoardColumnAnimated(e.currentTarget, () => setCollapsedStatusColumns((prev) => ({ ...prev, [column.name]: true })))
+                              }
+                              data-column-collapse-button="true"
+                              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition hover:brightness-95"
+                              style={{ color: columnBadgeText, backgroundColor: columnBadgeBg }}
+                              title={`Collapse ${column.name}`}
+                              aria-label={`Collapse ${column.name}`}
+                            >
+                              <ColumnCollapseChevrons size={14} />
+                            </button>
+                            <p className="truncate text-[15px] font-semibold" style={{ color: columnTitleTextColor }}>{column.name}</p>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-1.5">
+                            <span
+                              className="inline-flex h-7 min-w-[28px] items-center justify-center rounded-full px-2 text-[11px] font-bold"
+                              style={{ color: columnBadgeText, backgroundColor: columnBadgeBg }}
+                            >
+                              {column.leads.length}
+                            </span>
                             <BoardColumnSortMenu
                               columnName={column.name}
                               value={leadColumnSorts[column.name] ?? "custom"}
@@ -3872,30 +3898,6 @@ export default function LeadsPage() {
                               }
                               buttonStyle={{ color: columnBadgeText, backgroundColor: columnBadgeBg }}
                             />
-                            <p className="truncate text-[15px] font-semibold" style={{ color: columnTitleTextColor }}>{column.name}</p>
-                          </div>
-                          <div className="flex shrink-0 items-center gap-1.5">
-                            <span
-                              className="inline-flex h-7 min-w-[28px] items-center justify-center rounded-full px-2 text-[11px] font-bold"
-                              style={{ color: columnBadgeText, backgroundColor: columnBadgeBg }}
-                            >
-                              {column.leads.length}
-                            </span>
-                            <button
-                              type="button"
-                              // Slides the column into its strip, this button riding its edge over to
-                              // where the sort button was (lib/board-column-collapse.ts).
-                              onClick={(e) =>
-                                collapseBoardColumnAnimated(e.currentTarget, () => setCollapsedStatusColumns((prev) => ({ ...prev, [column.name]: true })))
-                              }
-                              data-column-collapse-button="true"
-                              className="inline-flex h-7 w-7 items-center justify-center rounded-full transition hover:brightness-95"
-                              style={{ color: columnBadgeText, backgroundColor: columnBadgeBg }}
-                              title={`Collapse ${column.name}`}
-                              aria-label={`Collapse ${column.name}`}
-                            >
-                              <ColumnCollapseChevrons size={14} />
-                            </button>
                           </div>
                         </div>
                         <div className="glass-scroll board-column-scroll flex-1 space-y-2.5 overflow-y-hidden p-2.5" style={{ scrollbarWidth: "none" }}>

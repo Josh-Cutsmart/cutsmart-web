@@ -92,8 +92,8 @@ function SortOptionRows({
   );
 }
 
-// The sort button left of a column's title: Custom order / Oldest – Newest / Newest – Oldest / A – Z /
-// Z – A, for this column. `overriddenBy` is the board-wide sort when one is set (the column's own
+// The sort button at the right of a column's header: Custom order / Oldest – Newest / Newest – Oldest /
+// A – Z / Z – A, for this column. `overriddenBy` is the board-wide sort when one is set (the column's own
 // choice is kept, and applies again once the board sort is back to "Per column").
 export function BoardColumnSortMenu({
   columnName,
@@ -124,7 +124,7 @@ export function BoardColumnSortMenu({
         onClick={(e) => {
           e.stopPropagation();
           if (menuPos) setMenuPos(null);
-          else setMenuPos(menuPosUnder(e.currentTarget));
+          else setMenuPos(menuPosUnder(e.currentTarget, true));
         }}
         className={buttonClassName ?? "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition hover:brightness-95"}
         style={buttonStyle}

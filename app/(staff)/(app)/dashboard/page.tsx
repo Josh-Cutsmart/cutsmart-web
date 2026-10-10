@@ -1972,7 +1972,7 @@ export default function DashboardPage() {
   // both get the exact same collapse affordance/styling from one place.
   const renderColumnHeaderBar = (options: {
     left: React.ReactNode;
-    // The column's sort button, left of its title.
+    // The column's sort button, at the right of its header after the count.
     sortControl?: React.ReactNode;
     count: number;
     badgeBg: string;
@@ -1980,15 +1980,25 @@ export default function DashboardPage() {
     onCollapse: () => void;
     collapseTitle: string;
   }) => (
-    <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2" style={{ borderColor: "rgba(0,0,0,0.15)" }}>
-      {options.sortControl ? (
-        <div className="flex min-w-0 items-center gap-1.5">
-          {options.sortControl}
-          {options.left}
-        </div>
-      ) : (
-        options.left
-      )}
+    // pl-[11px]: the collapse button 12px in from the column's edge (with its 1px border) — exactly where
+    // the collapsed strip centres its own (52px wide), so it doesn't move at all either way.
+    <div className="flex shrink-0 items-center justify-between gap-2 border-b py-2 pl-[11px] pr-3" style={{ borderColor: "rgba(0,0,0,0.15)" }}>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <button
+          type="button"
+          // Left of the title — where the collapsed strip's own button sits — so it stays put as the
+          // column slides into its strip (lib/board-column-collapse.ts).
+          onClick={(e) => collapseBoardColumnAnimated(e.currentTarget, options.onCollapse)}
+          data-column-collapse-button="true"
+          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition hover:brightness-95"
+          style={{ color: options.badgeText, backgroundColor: options.badgeBg }}
+          title={options.collapseTitle}
+          aria-label={options.collapseTitle}
+        >
+          <ColumnCollapseChevrons size={14} />
+        </button>
+        {options.left}
+      </div>
       <div className="flex shrink-0 items-center gap-1.5">
         <span
           className="inline-flex h-7 min-w-[28px] items-center justify-center rounded-full px-2 text-[11px] font-bold"
@@ -1996,19 +2006,7 @@ export default function DashboardPage() {
         >
           {options.count}
         </span>
-        <button
-          type="button"
-          // Slides the column into its strip, this button riding its edge over to where the sort
-          // button was (lib/board-column-collapse.ts).
-          onClick={(e) => collapseBoardColumnAnimated(e.currentTarget, options.onCollapse)}
-          data-column-collapse-button="true"
-          className="inline-flex h-7 w-7 items-center justify-center rounded-full transition hover:brightness-95"
-          style={{ color: options.badgeText, backgroundColor: options.badgeBg }}
-          title={options.collapseTitle}
-          aria-label={options.collapseTitle}
-        >
-          <ColumnCollapseChevrons size={14} />
-        </button>
+        {options.sortControl}
       </div>
     </div>
   );
