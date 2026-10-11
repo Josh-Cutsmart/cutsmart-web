@@ -207,8 +207,10 @@ function GlassMenuPortal({
   );
 }
 
+// A row: hovered / keyboard-focused, a light tint of the text colour — darker than the frosted menu behind it
+// (a near-white highlight, --panel-muted, barely showed on it).
 const menuRowClass =
-  "flex w-full items-center gap-2 rounded-[8px] px-3 text-left text-[12px] font-medium transition-colors hover:bg-[var(--panel-muted)] focus-visible:bg-[var(--panel-muted)] focus-visible:outline-none max-md:gap-2.5 max-md:rounded-[10px] max-md:px-3.5 max-md:text-[15px]";
+  "flex w-full items-center gap-2 rounded-[8px] px-3 text-left text-[12px] font-medium transition-colors hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] focus-visible:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] focus-visible:outline-none max-md:gap-2.5 max-md:rounded-[10px] max-md:px-3.5 max-md:text-[15px]";
 
 export type GlassDropdownOption = {
   value: string;
@@ -231,6 +233,9 @@ type GlassDropdownProps = {
   hideChevron?: boolean;
   // Where the menu sits relative to the trigger (default: left edges aligned).
   menuAlign?: "left" | "center" | "right";
+  // Shown (muted) while the value matches none of the options — e.g. "Choose a category". Without it, the
+  // first option is shown then.
+  placeholder?: string;
 };
 
 // A select-style dropdown: the trigger shows the chosen option (with its colour dot) and a chevron.
@@ -245,6 +250,7 @@ export function GlassDropdown({
   disabled,
   hideChevron,
   menuAlign = "left",
+  placeholder,
 }: GlassDropdownProps) {
   const { position, isOpen, triggerRef, menuRef, toggle, close } = useAnchoredGlassMenu({
     rowCount: options.length,
@@ -253,7 +259,7 @@ export function GlassDropdown({
     matchTriggerWidth: true,
     disabled,
   });
-  const selected = options.find((option) => option.value === value) ?? options[0];
+  const selected = options.find((option) => option.value === value) ?? (placeholder === undefined ? options[0] : undefined);
   const reserveDotSpace = options.some((option) => option.color);
 
   return (
@@ -264,7 +270,7 @@ export function GlassDropdown({
         onClick={toggle}
         disabled={disabled}
         // The accessible name keeps the field's label and the current value (a bare aria-label would hide it).
-        aria-label={ariaLabel ? `${ariaLabel}: ${selected?.label ?? ""}` : undefined}
+        aria-label={ariaLabel ? `${ariaLabel}: ${selected?.label ?? placeholder ?? ""}` : undefined}
         aria-haspopup="listbox"
         aria-expanded={isOpen}
         className={`inline-flex items-center gap-2 text-left disabled:opacity-60 ${triggerClassName ?? ""}`}
@@ -276,7 +282,9 @@ export function GlassDropdown({
             style={{ backgroundColor: selected.color }}
           />
         ) : null}
-        <span className="min-w-0 flex-1 truncate">{selected?.label ?? ""}</span>
+        <span className="min-w-0 flex-1 truncate" style={selected ? undefined : { color: "var(--text-muted)" }}>
+          {selected?.label ?? placeholder ?? ""}
+        </span>
         {hideChevron ? null : (
           <ChevronDown
             size={14}
@@ -329,6 +337,10 @@ export type GlassActionMenuItem = {
   label: string;
   // Right-hand column — e.g. the number/email itself.
   detail?: string;
+  // Shown left of the label.
+  icon?: ReactNode;
+  // A destructive one (e.g. Delete): in red.
+  danger?: boolean;
   onSelect: () => void;
 };
 
@@ -340,6 +352,8 @@ type GlassActionMenuProps = {
   triggerStyle?: CSSProperties;
   ariaLabel: string;
   menuMinWidth?: number;
+  // Open the menu even with one item, rather than running it straight away (e.g. a "…" menu of actions).
+  openWithOneItem?: boolean;
 };
 
 // An icon-button trigger for a "pick one, then do it" menu (e.g. which number to call). With exactly
@@ -352,6 +366,7 @@ export function GlassActionMenu({
   triggerStyle,
   ariaLabel,
   menuMinWidth = 260,
+  openWithOneItem = false,
 }: GlassActionMenuProps) {
   const { position, isOpen, triggerRef, menuRef, toggle, close } = useAnchoredGlassMenu({
     rowCount: items.length,
@@ -367,7 +382,7 @@ export function GlassActionMenu({
         ref={triggerRef}
         type="button"
         onClick={() => {
-          if (items.length === 1) {
+          if (items.length === 1 && !openWithOneItem) {
             items[0].onSelect();
             return;
           }
@@ -375,8 +390,8 @@ export function GlassActionMenu({
         }}
         disabled={items.length === 0}
         aria-label={ariaLabel}
-        aria-haspopup={items.length > 1 ? "menu" : undefined}
-        aria-expanded={items.length > 1 ? isOpen : undefined}
+        aria-haspopup={items.length > 1 || openWithOneItem ? "menu" : undefined}
+        aria-expanded={items.length > 1 || openWithOneItem ? isOpen : undefined}
         className={`disabled:opacity-40 ${triggerClassName ?? ""}`}
         style={triggerStyle}
       >
@@ -394,9 +409,12 @@ export function GlassActionMenu({
                 item.onSelect();
               }}
               className={`${menuRowClass} justify-between`}
-              style={{ height: position.rowHeight, color: "var(--text-main)" }}
+              style={{ height: position.rowHeight, color: item.danger ? "var(--danger-strong)" : "var(--text-main)" }}
             >
-              <span className="min-w-0 truncate">{item.label}</span>
+              <span className="flex min-w-0 items-center gap-2 max-md:gap-2.5">
+                {item.icon ? <span className="inline-flex shrink-0">{item.icon}</span> : null}
+                <span className="min-w-0 truncate">{item.label}</span>
+              </span>
               {item.detail ? (
                 <span className="ml-3 shrink-0 text-[12px]" style={{ color: "var(--text-muted)" }}>
                   {item.detail}

@@ -106,7 +106,9 @@ export function FullscreenImageViewerShell({
     const prevHtmlOverflow = document.documentElement.style.overflow;
     const prevBodyOverflow = document.body.style.overflow;
     document.documentElement.style.overflow = "hidden";
-    document.body.style.overflow = "hidden";
+    // clip, not hidden — a hidden <body> under a hidden <html> becomes a scroll container, and sticky bars
+    // stick to it instead of the window (globals.css, html.cs-scroll-locked body).
+    document.body.style.overflow = "clip";
     return () => {
       document.documentElement.style.overflow = prevHtmlOverflow;
       document.body.style.overflow = prevBodyOverflow;

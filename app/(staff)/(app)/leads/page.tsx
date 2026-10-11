@@ -3279,7 +3279,7 @@ export default function LeadsPage() {
                               void onSelectLeadStatus(lead, option);
                               setCardStatusMenuLeadId("");
                             }}
-                            className="flex w-full items-center gap-2 rounded-[10px] px-2.5 py-1.5 text-left text-[11px] font-bold transition hover:bg-[var(--panel-muted)] disabled:cursor-wait disabled:opacity-60"
+                            className="flex w-full items-center gap-2 rounded-[10px] px-2.5 py-1.5 text-left text-[11px] font-bold transition hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] disabled:cursor-wait disabled:opacity-60"
                             style={{ color: "var(--text-main)", ...(active ? { backgroundColor: "var(--panel-muted)" } : {}) }}
                           >
                             <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: String(leadStatusPillStyle(option).backgroundColor || "") }} />

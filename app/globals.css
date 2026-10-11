@@ -401,6 +401,23 @@ body[data-theme="dark"].cs-app select.bg-white\/15 {
   color: #fff !important;
 }
 
+/* A text box that doesn't style its own focus (no outline-none — the ones that do, keep theirs): the app's thin
+ * brand-blue border, the same as the calendar's event fields (glassFieldClass), not the browser's thick dark focus
+ * ring (e.g. Project details > Production's fields). Not one with no border (border-0 / border-none), where the
+ * ring is its only sign of focus. */
+.cs-app :is(input:not([type="checkbox"], [type="radio"], [type="color"], [type="range"], [type="file"]), textarea, select):not(.outline-none, .border-0, .border-none) {
+  transition: border-color 150ms ease;
+}
+.cs-app :is(input:not([type="checkbox"], [type="radio"], [type="color"], [type="range"], [type="file"]), textarea, select):not(.outline-none, .border-0, .border-none):focus {
+  outline: none;
+  /* !important: many set their border colour inline (style={{ borderColor }}) — this is only while focused. */
+  border-color: var(--brand) !important;
+}
+/* Dark mode: past the blanket dark border above. */
+body[data-theme="dark"].cs-app :is(input:not([type="checkbox"], [type="radio"], [type="color"], [type="range"], [type="file"]), textarea, select):not(.outline-none, .border-0, .border-none):focus {
+  border-color: var(--brand) !important;
+}
+
 /* A field that keeps the fill and border it's given (--field-bg / --field-border) in dark mode too,
    instead of the blanket dark grey above — e.g. the Dashboard's search box, matching the view toggle
    beside it. */
@@ -539,9 +556,15 @@ body[data-theme="dark"].cs-app .notes-rich li {
  * view's own data-app-scroll-root (Quote/Specifications). overflow:hidden keeps the current scroll
  * position, so closing the pop-up leaves the page exactly where it was. The pop-up's own panels are
  * position:fixed, so their internal scrolling is unaffected. */
-html.cs-scroll-locked,
-html.cs-scroll-locked body {
+html.cs-scroll-locked {
   overflow: hidden !important;
+}
+/* clip, not hidden: with <html> already overflow:hidden, a hidden <body> would become a scroll container
+ * of its own — and every sticky bar on the page (the Changelog's title bar, …) would stick to it (never
+ * scrolled) instead of the window, jumping off the top of a scrolled page whenever a pop-up opened. clip
+ * cuts off the same way without being a scroll container. */
+html.cs-scroll-locked body {
+  overflow: clip !important;
 }
 /* <main> only scrolls on phones/tablets (app-shell.tsx's isDesktopViewport = min-width 1024px); on
  * desktop it's overflow:visible and the document scrolls. Locking it there too would turn its
@@ -1430,6 +1453,24 @@ main[data-under-bar="true"][data-reduce-top="true"] {
   padding-top: 48px !important;
 }
 
+/* The bell's unread count (components/global-app-tabs-bar.tsx): the number's line trimmed to the digits
+ * themselves (cap height to baseline), so the pill centres them exactly — not the font's taller line, with
+ * room for letters that hang below it, which sat the digits off-centre. */
+.notif-count-pill {
+  text-box: trim-both cap alphabetic;
+}
+
+/* The computer's Notifications drawer sliding in from the right (components/global-app-tabs-bar.tsx); it
+ * slides back out on a transform transition. */
+@keyframes notif-drawer-in {
+  from {
+    transform: translate3d(100%, 0, 0);
+  }
+  to {
+    transform: translate3d(0, 0, 0);
+  }
+}
+
 /* Calendar (phones), day and week views: up and down scrolls the hours as usual, while a sideways drag is
  * left to the page — it slides to the next or previous day (week) with the finger (onDaySwipeMove in
  * app/(staff)/(app)/calendar/page.tsx). An event's own touch-action (it's dragged) still wins. */
@@ -1467,9 +1508,9 @@ main[data-under-bar="true"][data-reduce-top="true"] {
   visibility: hidden;
 }
 
-/* Project details' header (data-continues-top-bar) has one sheet of glass behind the top tab bar and
- * its own bars together — so the bar's own glass and line are off there. */
-body:has([data-continues-top-bar="true"]) [data-app-top-bar-glass] {
+/* Project details' and Changelog's headers (data-continues-top-bar / data-joins-top-bar) have one sheet of
+ * glass behind the top tab bar and their own bars together — so the bar's own glass and line are off there. */
+body:has([data-continues-top-bar="true"], [data-joins-top-bar="true"]) [data-app-top-bar-glass] {
   display: none;
 }
 

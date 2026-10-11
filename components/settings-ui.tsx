@@ -201,17 +201,24 @@ export function Segmented<T extends string>({
   disabled,
   tone = "neutral",
   pill = false,
+  fill = false,
+  strongText = false,
 }: {
   value: T;
   options: Array<{ value: T; label: ReactNode }>;
   onChange: (next: T) => void;
-  size?: "sm" | "md";
+  // "lg": bigger text and taller options (40px in all) — e.g. the Calendar's view switcher on a phone.
+  size?: "sm" | "md" | "lg";
   disabled?: boolean;
   // Fully rounded ends — the track, the thumb and each option.
   pill?: boolean;
   // "brand": the selected option is the blue brand fill with white text (like the switches), instead
   // of a plain raised white thumb.
   tone?: "neutral" | "brand";
+  // The full width of what it's in, its options sharing it equally.
+  fill?: boolean;
+  // The options not chosen in the main text colour, not muted.
+  strongText?: boolean;
 }) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const [thumb, setThumb] = useState<{ left: number; width: number } | null>(null);
@@ -232,7 +239,7 @@ export function Segmented<T extends string>({
     <div
       ref={wrapRef}
       role="radiogroup"
-      className={`relative inline-flex shrink-0 ${pill ? "rounded-full" : "rounded-[12px]"} border border-[var(--glass-border)] bg-[color-mix(in_srgb,var(--panel-bg)_55%,transparent)] p-[3px] ${disabled ? "opacity-60" : ""}`}
+      className={`relative ${fill ? "flex w-full" : "inline-flex shrink-0"} ${pill ? "rounded-full" : "rounded-[12px]"} border border-[var(--glass-border)] bg-[color-mix(in_srgb,var(--panel-bg)_55%,transparent)] p-[3px] ${disabled ? "opacity-60" : ""}`}
     >
       {thumb ? (
         <span
@@ -260,8 +267,8 @@ export function Segmented<T extends string>({
             data-seg-value={opt.value}
             disabled={disabled}
             onClick={() => onChange(opt.value)}
-            className={`relative z-[1] ${pill ? "rounded-full" : "rounded-[9px]"} font-semibold transition-colors ${size === "sm" ? "h-[26px] px-2.5 text-[12px]" : "h-[30px] px-3.5 text-[12.5px]"}`}
-            style={{ color: on ? (tone === "brand" ? "#FFFFFF" : "var(--text-main)") : "var(--text-muted)" }}
+            className={`relative z-[1] ${fill ? "min-w-0 flex-1" : ""} ${pill ? "rounded-full" : "rounded-[9px]"} font-semibold transition-colors ${size === "sm" ? "h-[26px] px-2.5 text-[12px]" : size === "lg" ? "h-[32px] px-3 text-[14px]" : "h-[30px] px-3.5 text-[12.5px]"}`}
+            style={{ color: on ? (tone === "brand" ? "#FFFFFF" : "var(--text-main)") : strongText ? "var(--text-main)" : "var(--text-muted)" }}
           >
             {opt.label}
           </button>
@@ -640,11 +647,21 @@ export function LengthField({
       <input
         value={draft ?? toDisplay(valueMm)}
         inputMode="decimal"
+        // A measurement — never the browser's autofill (Chrome offered saved number plates here, and ignores
+        // autocomplete="off" for some of its suggestions; a value it doesn't recognise turns them off), nor a
+        // password manager's.
+        autoComplete="cs-length"
+        data-1p-ignore="true"
+        data-lpignore="true"
+        data-bwignore="true"
+        data-form-type="other"
         placeholder={placeholder}
         disabled={disabled}
         onFocus={() => setDraft(toDisplay(valueMm))}
         onChange={(e) => {
-          const text = e.target.value;
+          // Numbers only: digits and one decimal point (inches need it) — anything else typed or pasted is dropped.
+          const [whole, ...rest] = e.target.value.replace(/[^0-9.]/g, "").split(".");
+          const text = rest.length ? `${whole}.${rest.join("")}` : whole;
           setDraft(text);
           const n = Number(text.replace(/,/g, ""));
           if (!text.trim()) onChangeMm("");

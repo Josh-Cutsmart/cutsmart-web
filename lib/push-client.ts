@@ -194,6 +194,17 @@ export function requestPushForNotification(recipientUid: string, notificationId:
   }).catch(() => null);
 }
 
+// "Remind me in…" on one of their own notifications: the scheduled job sends it to their phone/desktop again
+// at that time (app/api/push/remind, flushDueNotificationReminders in lib/push-server.ts).
+export function requestNotificationReminderPush(notificationId: string, dueAtMs: number): void {
+  void authorizedFetch("/api/push/remind", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ notificationId, dueAtMs }),
+    keepalive: true,
+  }).catch(() => null);
+}
+
 // For the app shell: once someone's signed in, keep this device's notifications current, and clear the
 // app icon's unread badge whenever the app is opened or brought back up.
 export function usePushNotificationsOnAppOpen(uid: string | undefined): void {

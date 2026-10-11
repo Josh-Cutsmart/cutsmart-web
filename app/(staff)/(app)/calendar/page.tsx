@@ -11,7 +11,7 @@ import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, use
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { CalendarDays, ChevronLeft, ChevronRight, Clock, ExternalLink, Filter, FolderKanban, Lock, MapPin, Pencil, Plus, Search, Trash2, X } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, Clock, Copy, ExternalLink, Filter, FolderKanban, Lock, MapPin, MoreHorizontal, Pencil, Plus, Search, Trash2, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { fetchCompanyDoc, fetchCompanyMembers, fetchProjects } from "@/lib/firestore-data";
 import { isProjectArchived } from "@/lib/project-archive";
@@ -19,7 +19,7 @@ import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-co
 import { normalizeRoleKey } from "@/lib/company-roles";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { DragGhostLayer, useDragGhost } from "@/lib/use-drag-ghost";
-import { activeDate, useCompanyFormats } from "@/lib/company-formats";
+import { activeDate, activeDateRange, useCompanyFormats } from "@/lib/company-formats";
 import { useAppTabs } from "@/lib/app-tabs-context";
 import { useCalendarAppMode } from "@/lib/calendar-app-mode";
 import {
@@ -32,6 +32,7 @@ import {
   normalizeCalendarRetention,
   normalizeCalendarShowNonWorkdays,
   normalizeCalendarWorkdays,
+  fetchUserCalendarShowNonWorkdays,
   DEFAULT_CALENDAR_WORKDAYS,
   saveCalendarEvent,
   subscribeCalendarEvents,
@@ -39,7 +40,7 @@ import {
   type CalendarCategory,
   type CalendarEvent,
 } from "@/lib/calendar-data";
-import { GlassDropdown } from "@/components/glass-dropdown";
+import { GlassActionMenu, GlassDropdown, type GlassActionMenuItem } from "@/components/glass-dropdown";
 import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
 import {
   GlassSwitch,
@@ -53,8 +54,18 @@ import {
 } from "@/components/settings-ui";
 import type { Project } from "@/lib/types";
 
-// The toolbar's Today and Categories buttons: the small button, with fully rounded ends.
-const pillButtonClass = smallButtonClass.replace("rounded-[10px]", "rounded-full");
+// The toolbar's Today and Categories: fully rounded, and the view switcher's height beside them — 34px, or 40px
+// with bigger text on a phone (Segmented sm / lg).
+const pillButtonClass = `${smallButtonClass.replace("rounded-[10px]", "rounded-full").replace("h-8", "h-[34px]")} max-md:h-10 max-md:gap-2 max-md:px-4 max-md:text-[14px]`;
+// Phones: the toolbar's Previous / Next, either side of the title.
+// Computers: the same, a little smaller, tinted on hover.
+const desktopStepButtonClass =
+  "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--text-main)] transition hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)]";
+// The event pop-up's "…" (beside its X): the same size, tinted on hover rather than red.
+const eventMenuButtonClass =
+  "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] text-[var(--text-muted)] transition hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] hover:text-[var(--text-main)]";
+const mobileStepButtonClass =
+  "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--text-main)] transition active:bg-[color-mix(in_srgb,var(--text-main)_8%,transparent)]";
 
 type CalendarView = "year" | "month" | "week" | "day" | "list";
 
@@ -65,6 +76,15 @@ const UNCATEGORISED: CalendarCategory = { id: "__none", name: "Uncategorised", c
 const VIEW_STORAGE_KEY = "cutsmart_calendar_view";
 const HIDDEN_STORAGE_KEY = "cutsmart_calendar_hidden_categories";
 const LIST_DAYS = 60;
+const CALENDAR_VIEW_OPTIONS: Array<{ value: CalendarView; label: string }> = [
+  { value: "year", label: "Year" },
+  { value: "month", label: "Month" },
+  { value: "week", label: "Week" },
+  { value: "day", label: "Day" },
+  { value: "list", label: "List" },
+];
+// The toolbar search's text, kept for this browser session (sessionStorage) — see openEventSearch.
+const EVENT_SEARCH_STORAGE_KEY = "cutsmart_calendar_event_search";
 
 // ---------------------------------------------------------------- date helpers (local time)
 function startOfDay(d: Date | number): Date {
@@ -337,6 +357,10 @@ type Draft = {
   showToClient: boolean;
   createdByUid: string;
   createdByName: string;
+  createdAtIso: string;
+  updatedAtIso: string;
+  updatedByUid: string;
+  updatedByName: string;
 };
 
 function draftFromEvent(e: CalendarEvent): Draft {
@@ -359,7 +383,16 @@ function draftFromEvent(e: CalendarEvent): Draft {
     showToClient: e.showToClient,
     createdByUid: e.createdByUid,
     createdByName: e.createdByName,
+    createdAtIso: e.createdAtIso,
+    updatedAtIso: e.updatedAtIso,
+    updatedByUid: e.updatedByUid,
+    updatedByName: e.updatedByName,
   };
+}
+
+// Whether any field of two drafts differs (all are plain values).
+function draftsDiffer(a: Draft, b: Draft): boolean {
+  return (Object.keys(a) as Array<keyof Draft>).some((key) => a[key] !== b[key]);
 }
 
 function eventFromDraft(d: Draft): CalendarEvent | null {
@@ -389,8 +422,42 @@ function eventFromDraft(d: Draft): CalendarEvent | null {
     showToClient: Boolean(d.projectId) && d.showToClient,
     createdByUid: d.createdByUid,
     createdByName: d.createdByName,
-    updatedAtIso: "",
+    // A new one is added now; saveCalendarEvent sets updatedAtIso.
+    createdAtIso: d.isNew ? new Date().toISOString() : d.createdAtIso,
+    updatedAtIso: d.updatedAtIso,
+    updatedByUid: d.updatedByUid,
+    updatedByName: d.updatedByName,
   };
+}
+
+// The time now, for event handlers (opening the event pop-up) — a module function, as the React Compiler lint
+// takes a bare Date.now() in the component for a call during render.
+function nowMs(): number {
+  return Date.now();
+}
+
+// How long before asOfMs, for the event pop-up's "Added by" / "Modified by": "just now", then minutes until it's an
+// hour, hours until it's a day, days until it's a week, weeks until it's a month, months until it's a year, then
+// years. "" if unknown.
+function timeAgo(iso: string, asOfMs: number): string {
+  const at = Date.parse(iso);
+  if (!Number.isFinite(at)) return "";
+  const minutes = Math.max(0, Math.floor((asOfMs - at) / 60000));
+  if (minutes < 1) return "just now";
+  const days = Math.floor(minutes / (60 * 24));
+  const [count, unit] =
+    minutes < 60
+      ? [minutes, "minute"]
+      : minutes < 60 * 24
+        ? [Math.floor(minutes / 60), "hour"]
+        : days < 7
+          ? [days, "day"]
+          : days < 30
+            ? [Math.floor(days / 7), "week"]
+            : days < 365
+              ? [Math.max(1, Math.floor(days / 30.44)), "month"]
+              : [Math.floor(days / 365), "year"];
+  return `${count} ${unit}${count === 1 ? "" : "s"} ago`;
 }
 
 const cardStyle: CSSProperties = {
@@ -458,6 +525,22 @@ function CalendarPageContent() {
   const calendarApp = useCalendarAppMode();
   const chromeless = calendarApp && (access.status === "loading" || canView);
   const { setChromeHidden } = useAppTabs();
+  // An event's project (its Open link). On a computer: a new Chrome tab, leaving the calendar here. It's
+  // opened blank and then pointed at the project — with CutSmart installed as an app, Chrome sends a link
+  // that opens one of its pages in a new tab to the app's own window instead ("link capturing"), which
+  // was a whole new window. On a phone: the link as usual, in this tab.
+  const openEventProject = (event: React.MouseEvent<HTMLAnchorElement>, projectId: string) => {
+    if (isMobile || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+    event.preventDefault();
+    const url = `/projects/${projectId}`;
+    const tab = window.open("", "_blank");
+    if (tab) {
+      tab.opener = null;
+      tab.location.href = url;
+    } else {
+      window.open(url, "_blank", "noopener");
+    }
+  };
   // Before paint, so the tab bar and sidebar don't flash up for a frame as the app opens.
   useLayoutEffect(() => {
     if (!chromeless) return;
@@ -472,6 +555,18 @@ function CalendarPageContent() {
   const [workdays, setWorkdays] = useState<number[]>(DEFAULT_CALENDAR_WORKDAYS);
   // Company Settings > Calendar: when off, the month and week views leave the non-work days out.
   const [showNonWorkdays, setShowNonWorkdays] = useState(true);
+  // Their own choice (User Settings > Preferences), over the company's above; null = none.
+  const [myShowNonWorkdays, setMyShowNonWorkdays] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!user?.uid) return;
+    let cancelled = false;
+    void fetchUserCalendarShowNonWorkdays(user.uid).then((value) => {
+      if (!cancelled) setMyShowNonWorkdays(value);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.uid]);
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [loadError, setLoadError] = useState("");
@@ -608,14 +703,75 @@ function CalendarPageContent() {
   const rankOf = useCallback((e: CalendarEvent) => categoryRank.get(e.categoryId) ?? categories.length, [categories.length, categoryRank]);
   // Live preview while dragging in week/day view.
   const [dragPreview, setDragPreview] = useState<{ id: string; startMs: number; endMs: number } | null>(null);
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 767px)");
+    const sync = () => setIsMobile(query.matches);
+    sync();
+    query.addEventListener("change", sync);
+    return () => query.removeEventListener("change", sync);
+  }, []);
+  // The view switcher's height (Segmented lg on a phone, sm otherwise) — the search button beside it is a
+  // circle that size.
+  const searchPillPx = isMobile ? 40 : 34;
+  // The toolbar's search (the round button beside the view switcher): only events whose title, location, notes,
+  // project or category has it — checked after what they can't see is cleared, so it can't find that. Only while
+  // it's open: a tap anywhere else closes it (back to the switcher) and the calendar shows everything again, but
+  // what was typed is kept for when it's opened again — this browser session, even after leaving the calendar
+  // (sessionStorage). Its X clears it.
+  const [isEventSearchOpen, setIsEventSearchOpen] = useState(false);
+  const [eventSearch, setEventSearch] = useState("");
+  const eventSearchInputRef = useRef<HTMLInputElement | null>(null);
+  const eventSearchRowRef = useRef<HTMLDivElement | null>(null);
+  const changeEventSearch = (text: string) => {
+    setEventSearch(text);
+    try {
+      if (text) window.sessionStorage.setItem(EVENT_SEARCH_STORAGE_KEY, text);
+      else window.sessionStorage.removeItem(EVENT_SEARCH_STORAGE_KEY);
+    } catch {
+      // no storage — kept until the page is left
+    }
+  };
+  const openEventSearch = () => {
+    if (!eventSearch) {
+      try {
+        const kept = window.sessionStorage.getItem(EVENT_SEARCH_STORAGE_KEY);
+        if (kept) setEventSearch(kept);
+      } catch {
+        // no storage
+      }
+    }
+    setIsEventSearchOpen(true);
+    // In the tap itself, so a phone brings up its keyboard.
+    eventSearchInputRef.current?.focus({ preventScroll: true });
+  };
+  // Closed by a tap elsewhere (or Escape): what was typed stays. Its X: cleared.
+  const closeEventSearch = (clear: boolean) => {
+    if (clear) changeEventSearch("");
+    setIsEventSearchOpen(false);
+    eventSearchInputRef.current?.blur();
+  };
+  useEffect(() => {
+    if (!isEventSearchOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (eventSearchRowRef.current?.contains(event.target as Node)) return;
+      setIsEventSearchOpen(false);
+      eventSearchInputRef.current?.blur();
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [isEventSearchOpen]);
+  // A phone's search only filters while it's open; a computer's is always open.
+  const eventSearchTerm = isEventSearchOpen || !isMobile ? eventSearch.trim().toLowerCase() : "";
   const visibleEvents = useMemo(
     () =>
       events
         .filter((e) => !hidden.has(categoryOf(e).id) && levelOf(e.categoryId) !== "none" && !(archiveCutoffMs && e.endMs <= archiveCutoffMs))
         .map((e) => (restrictedIds.has(e.id) ? { ...e, location: "", notes: "", projectId: "", projectName: "" } : e))
+        .filter((e) => !eventSearchTerm || `${e.title} ${e.location} ${e.notes} ${e.projectName} ${categoryOf(e).name}`.toLowerCase().includes(eventSearchTerm))
         .map((e) => (dragPreview && dragPreview.id === e.id ? { ...e, startMs: dragPreview.startMs, endMs: dragPreview.endMs } : e))
         .sort((a, b) => rankOf(a) - rankOf(b) || Number(b.allDay) - Number(a.allDay) || a.startMs - b.startMs || b.endMs - a.endMs),
-    [archiveCutoffMs, categoryOf, dragPreview, events, hidden, levelOf, rankOf, restrictedIds],
+    [archiveCutoffMs, categoryOf, dragPreview, eventSearchTerm, events, hidden, levelOf, rankOf, restrictedIds],
   );
 
   // ---------------------------------------------------------------- event pop-up
@@ -625,6 +781,10 @@ function CalendarPageContent() {
   const shouldRenderModal = useGlassModalPopOrigin(Boolean(draft), modalOrigin, modalPanelRef);
   // What the pop-up shows while it animates closed (draft is already null by then).
   const [renderedDraft, setRenderedDraft] = useState<Draft | null>(null);
+  // When the pop-up was opened: its "Added by" / "Modified by" times are as of then, not updated while it's open.
+  const [popupOpenedAtMs, setPopupOpenedAtMs] = useState(0);
+  // A new event (New event or Duplicate) as it was when it opened — to tell whether it's been changed since.
+  const [newDraftStart, setNewDraftStart] = useState<Draft | null>(null);
   const [saving, setSaving] = useState(false);
   const [modalError, setModalError] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -661,7 +821,8 @@ function CalendarPageContent() {
       id: newCalendarId("evt"),
       isNew: true,
       title: "",
-      categoryId: editableCategories.find((c) => !hidden.has(c.id))?.id ?? editableCategories[0]?.id ?? "",
+      // None to start with: they choose one (it's needed to add it).
+      categoryId: "",
       allDay,
       startDate: toDateInput(startMs),
       startTime: toTimeInput(startMs),
@@ -674,9 +835,15 @@ function CalendarPageContent() {
       showToClient: false,
       createdByUid: String(user?.uid || ""),
       createdByName: String(user?.displayName || ""),
+      createdAtIso: "",
+      updatedAtIso: "",
+      updatedByUid: "",
+      updatedByName: "",
     };
     setDraft(next);
     setRenderedDraft(next);
+    setNewDraftStart(next);
+    setPopupOpenedAtMs(nowMs());
   };
   const openExisting = (event: CalendarEvent, e?: ReactMouseEvent<HTMLElement> | ReactPointerEvent<HTMLElement>) => {
     setModalOrigin(e ? captureGlassModalOrigin(e as ReactMouseEvent<HTMLElement>) : null);
@@ -687,8 +854,16 @@ function CalendarPageContent() {
     const next = draftFromEvent(event);
     setDraft(next);
     setRenderedDraft(next);
+    setPopupOpenedAtMs(nowMs());
   };
   const closeModal = () => setDraft(null);
+  // A new event (New event or Duplicate) that's been filled in or changed since it opened (a project search typed
+  // counts too): clicking off it, or Escape, doesn't close it then — only its X or Cancel — so nothing typed is lost
+  // by accident. Changed back to how it opened, it closes on a click off again.
+  const newDraftEdited = Boolean(draft?.isNew && newDraftStart && (projectQuery.trim() !== "" || draftsDiffer(draft, newDraftStart)));
+  const closeModalUnlessEdited = () => {
+    if (!newDraftEdited) closeModal();
+  };
 
   // /calendar?event=<id> (a calendar reminder notification, or the bell's entry for one): go to that
   // event's day and open it, then tidy the address so a reload doesn't open it again.
@@ -710,13 +885,36 @@ function CalendarPageContent() {
       const next = draftFromEvent(event);
       setDraft(next);
       setRenderedDraft(next);
+      setPopupOpenedAtMs(nowMs());
     });
     return () => {
       cancelled = true;
     };
   }, [eventParam, companyId]);
+  // An existing event as changed by them: "Modified by <them>" (saveCalendarEvent stamps the time).
+  const editedByMe = (event: CalendarEvent): CalendarEvent => ({
+    ...event,
+    updatedByUid: String(user?.uid || ""),
+    updatedByName: String(user?.displayName || ""),
+  });
   const submitDraft = async () => {
-    if (!draft || !companyId || !canEditEvent(draft)) return;
+    if (!draft || !companyId) return;
+    // Every event needs a title and a category (adding one or saving changes).
+    const needsTitle = !draft.title.trim();
+    const needsCategory = !draft.categoryId;
+    if (needsTitle || needsCategory) {
+      setModalError(
+        needsCategory && editableCategories.length === 0
+          ? "Add a category in Company Settings > Calendar first."
+          : needsTitle && needsCategory
+            ? "Add a title and choose a category."
+            : needsTitle
+              ? "Add a title."
+              : "Choose a category.",
+      );
+      return;
+    }
+    if (!canEditEvent(draft)) return;
     const event = eventFromDraft(draft);
     if (!event) {
       setModalError("Check the dates and times.");
@@ -724,13 +922,38 @@ function CalendarPageContent() {
     }
     setSaving(true);
     setModalError("");
-    const result = await saveCalendarEvent(companyId, event);
+    const result = await saveCalendarEvent(companyId, draft.isNew ? event : editedByMe(event));
     setSaving(false);
     if (!result.ok) {
       setModalError(result.error === "permission-denied" ? "You don't have permission to save events." : "Couldn't save — try again.");
       return;
     }
     closeModal();
+  };
+  // The event pop-up's … > Duplicate: a new event with this one's details — title, times, location, notes,
+  // project — but no category (they choose one), opened ready to add.
+  const duplicateDraft = () => {
+    if (!draft || !canCreate) return;
+    setModalError("");
+    setConfirmDelete(false);
+    setProjectQuery("");
+    setEventMode("edit");
+    const next: Draft = {
+      ...draft,
+      id: newCalendarId("evt"),
+      isNew: true,
+      categoryId: "",
+      createdByUid: String(user?.uid || ""),
+      createdByName: String(user?.displayName || ""),
+      createdAtIso: "",
+      updatedAtIso: "",
+      updatedByUid: "",
+      updatedByName: "",
+    };
+    setDraft(next);
+    setRenderedDraft(next);
+    setNewDraftStart(next);
+    setPopupOpenedAtMs(nowMs());
   };
   const removeDraft = async () => {
     if (!draft || !companyId || !canEditEvent(draft)) return;
@@ -750,17 +973,17 @@ function CalendarPageContent() {
   useEffect(() => {
     if (!draft) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !document.querySelector('[data-glass-dropdown-menu="true"]')) setDraft(null);
+      if (e.key === "Escape" && !newDraftEdited && !document.querySelector('[data-glass-dropdown-menu="true"]')) setDraft(null);
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [draft]);
+  }, [draft, newDraftEdited]);
 
   // Moving an event to new times (drag in any view).
   const moveEvent = async (event: CalendarEvent, startMs: number, endMs: number) => {
     if (!companyId || !canEditEvent(event)) return;
     setEvents((prev) => prev.map((e) => (e.id === event.id ? { ...e, startMs, endMs } : e)));
-    const result = await saveCalendarEvent(companyId, { ...event, startMs, endMs });
+    const result = await saveCalendarEvent(companyId, editedByMe({ ...event, startMs, endMs }));
     if (!result.ok) setLoadError("Couldn't move that event — try again.");
   };
 
@@ -774,20 +997,27 @@ function CalendarPageContent() {
       setRenderedDraft((prev) => (prev && prev.id === eventId ? { ...prev, showToClient: value } : prev));
     };
     apply(on);
-    const result = await saveCalendarEvent(companyId, { ...event, showToClient: on });
+    const edited = editedByMe({ ...event, showToClient: on });
+    const result = await saveCalendarEvent(companyId, edited);
     if (!result.ok) {
       apply(event.showToClient);
       setModalError("Couldn't update the client portal setting — try again.");
+      return;
     }
+    // The open pop-up's "Modified by" line.
+    const stamp = (prev: Draft | null) =>
+      prev && prev.id === eventId ? { ...prev, updatedByUid: edited.updatedByUid, updatedByName: edited.updatedByName, updatedAtIso: new Date().toISOString() } : prev;
+    setDraft(stamp);
+    setRenderedDraft(stamp);
   };
 
   // The days of the week the month and week views show as columns (offsets from Monday). All seven, unless
   // non-work days are switched off in Company Settings > Calendar (and there's at least one workday).
   const weekCols = useMemo(() => {
-    if (showNonWorkdays) return ALL_WEEK_COLS;
+    if (myShowNonWorkdays ?? showNonWorkdays) return ALL_WEEK_COLS;
     const cols = ALL_WEEK_COLS.filter((i) => workdays.includes((i + 1) % 7));
     return cols.length ? cols : ALL_WEEK_COLS;
-  }, [showNonWorkdays, workdays]);
+  }, [myShowNonWorkdays, showNonWorkdays, workdays]);
   const isLeftOutDay = (day: Date) => !weekCols.includes((day.getDay() + 6) % 7);
 
   // ---------------------------------------------------------------- navigation
@@ -899,12 +1129,12 @@ function CalendarPageContent() {
     }
     if (view === "month") return monthYear(cursor);
     if (view === "week") {
-      // The first and last days shown (Mon – Fri when the weekend is left out).
+      // The first and last days shown (Mon – Fri when the weekend is left out), the year once: "Oct 5 – Oct 9, 2026".
       const s = startOfWeek(cursor);
-      return `${activeDate(addDays(s, weekCols[0]))} – ${activeDate(addDays(s, weekCols[weekCols.length - 1]))}`;
+      return activeDateRange(addDays(s, weekCols[0]), addDays(s, weekCols[weekCols.length - 1]));
     }
     if (view === "day") return `${new Intl.DateTimeFormat(undefined, { weekday: "long" }).format(cursor)} ${activeDate(cursor)}`;
-    return `${activeDate(range.from)} – ${activeDate(addDays(range.to, -1))}`;
+    return activeDateRange(range.from, addDays(range.to, -1));
   })();
 
   // ---------------------------------------------------------------- month view (HTML5 drag between days)
@@ -1186,14 +1416,7 @@ function CalendarPageContent() {
   // next), the scroller snaps to whole months, and once it settles on the previous or next one the
   // cursor moves and the scroller is put back on the middle — so there's always a loaded month on
   // each side and it can never rest between two months.
-  const [isMobile, setIsMobile] = useState(false);
-  useEffect(() => {
-    const query = window.matchMedia("(max-width: 767px)");
-    const sync = () => setIsMobile(query.matches);
-    sync();
-    query.addEventListener("change", sync);
-    return () => query.removeEventListener("change", sync);
-  }, []);
+
   const monthScrollerRef = useRef<HTMLDivElement | null>(null);
   const monthSettleTimerRef = useRef<number | null>(null);
   // Which of the three months (0 prev, 1 current, 2 next) the scroller is nearest to, so the greyed days
@@ -2052,6 +2275,17 @@ function CalendarPageContent() {
     </div>
   );
   const [mobileFilterOpen, setMobileFilterOpen] = useState(false);
+  const toolbarRef = useRef<HTMLDivElement | null>(null);
+  // The phone's category list (in the toolbar) closes on a press anywhere outside the toolbar.
+  useEffect(() => {
+    if (!mobileFilterOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (toolbarRef.current?.contains(event.target as Node)) return;
+      setMobileFilterOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [mobileFilterOpen]);
 
   // ---------------------------------------------------------------- render
   if (access.status === "loading") {
@@ -2074,7 +2308,18 @@ function CalendarPageContent() {
     })
     .slice(0, 8);
   const d = draft ?? renderedDraft;
-  const readOnly = !d || !canEditEvent(d);
+  const readOnly = !d || (d.isNew ? !canCreate : !canEditEvent(d));
+  // The event view's "…" menu: Duplicate (not for an event whose project they can't open — its details are
+  // hidden) and Delete Event (asks first, in the bottom bar).
+  const eventMenuItems: GlassActionMenuItem[] =
+    d && !d.isNew
+      ? [
+          ...(canCreate && !restrictedIds.has(d.id) ? [{ key: "duplicate", label: "Duplicate", icon: <Copy size={14} />, onSelect: duplicateDraft }] : []),
+          ...(!readOnly
+            ? [{ key: "delete", label: "Delete Event", icon: <Trash2 size={14} />, danger: true, onSelect: () => setConfirmDelete(true) }]
+            : []),
+        ]
+      : [];
   const draftCategory = d ? categoryById.get(d.categoryId) ?? UNCATEGORISED : UNCATEGORISED;
   // Existing events open read-only first (and always, for people who can't edit).
   const viewingEvent = Boolean(d && !d.isNew && (eventMode === "view" || readOnly));
@@ -2085,20 +2330,36 @@ function CalendarPageContent() {
   // Phones, month view: the page is laid out to exactly fill the screen, so the month's six weeks fit
   // under the toolbar with 20px clear at the bottom (where the phone's rounded corners cut in).
   const fillMonth = isMobile && view === "month";
-  // "Added by <name>" with the person's emblem — in the bottom bar on desktop, in the body on phones.
-  // compact: just the emblem on phones (the edit form's bottom bar is busy there).
-  const addedBy = (className: string, compact = false) =>
-    d ? (
-      <p className={`flex items-center gap-2 text-[12.5px] font-medium ${className}`} style={{ color: "var(--text-main)" }} title={`Added by ${d.createdByName}`}>
+  // "Added by <name> · <how long ago>" with the person's emblem, and under it "Modified by <name> · <how long ago>"
+  // once someone's changed it (hover either for the date), as of when the pop-up opened — in its bottom bar. compact (the edit
+  // form's bottom bar, which is busy): just the "Added by" line, and on phones just the emblem.
+  const addedBy = (className: string, compact = false) => {
+    if (!d) return null;
+    const auditLine = (label: string, name: string, iso: string) => {
+      const ago = timeAgo(iso, popupOpenedAtMs);
+      return (
+        <span className="min-w-0 truncate" title={`${label} ${name}${ago ? ` on ${activeDate(iso)}` : ""}`}>
+          {label} {name}
+          {ago ? <span> · {ago}</span> : null}
+        </span>
+      );
+    };
+    return (
+      <div className={`flex items-center gap-2 text-[12.5px] font-medium ${className}`} style={{ color: "var(--text-main)" }}>
         <span
           className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white"
           style={{ backgroundColor: (d.createdByUid === user?.uid ? String(user?.userColor || "") : "") || memberColorByUid[d.createdByUid] || "#7D99B3" }}
+          title={`Added by ${d.createdByName}`}
         >
           {d.createdByName.trim().split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]?.toUpperCase() ?? "").join("") || "?"}
         </span>
-        <span className={`min-w-0 truncate ${compact ? "hidden md:inline" : ""}`}>Added by {d.createdByName}</span>
-      </p>
-    ) : null;
+        <span className={`min-w-0 flex-col leading-[1.35] ${compact ? "hidden md:flex" : "flex"}`}>
+          {auditLine("Added by", d.createdByName, d.createdAtIso)}
+          {!compact && d.updatedByUid ? auditLine("Modified by", d.updatedByName || "someone", d.updatedAtIso) : null}
+        </span>
+      </div>
+    );
+  };
 
   return (
     <div
@@ -2160,43 +2421,171 @@ function CalendarPageContent() {
             is the page's main. */}
         <div className={`flex min-w-0 flex-col gap-3 lg:min-h-0 ${fillMonth ? "min-h-0" : ""}`}>
           {/* Toolbar */}
-          <div className="flex flex-wrap items-center gap-2 rounded-[20px] border px-3 py-2.5" style={cardStyle}>
+          <div ref={toolbarRef} className="rounded-[20px] border px-3 py-2.5" style={cardStyle}>
+          {/* A phone wraps the view switcher onto its own row; a computer keeps one row, the search box giving up
+              some width (down to 150px) before the title truncates. */}
+          <div className="flex flex-wrap items-center gap-2 md:flex-nowrap">
             <button type="button" onClick={() => setCursor(startOfDay(new Date()))} className={pillButtonClass}>
               Today
             </button>
-            <div className="flex items-center">
-              <button type="button" onClick={() => step(-1)} className={iconRemoveButtonClass} aria-label="Previous">
-                <ChevronLeft size={18} />
-              </button>
-              <button type="button" onClick={() => step(1)} className={iconRemoveButtonClass} aria-label="Next">
-                <ChevronRight size={18} />
-              </button>
-            </div>
-            <h1 className="min-w-0 flex-1 truncate text-[17px] font-semibold" style={{ color: "var(--text-main)" }}>{title}</h1>
+            {isMobile ? (
+              // Phone: Previous and Next either side of the title, centred between them — big enough to tap easily.
+              <div className="flex min-w-0 flex-1 items-center">
+                <button type="button" onClick={() => step(-1)} className={mobileStepButtonClass} aria-label="Previous">
+                  <ChevronLeft size={24} />
+                </button>
+                <h1 className="min-w-0 flex-1 truncate text-center text-[17px] font-semibold" style={{ color: "var(--text-main)" }}>{title}</h1>
+                <button type="button" onClick={() => step(1)} className={mobileStepButtonClass} aria-label="Next">
+                  <ChevronRight size={24} />
+                </button>
+              </div>
+            ) : (
+              // Computer: Previous and Next either side of the title, the three centred in the space between Today and
+              // the view switcher. It takes the spare width, and gives up almost none while the search box can.
+              <div className="flex min-w-0 flex-[1_0.05_auto] items-center justify-center gap-1">
+                <button type="button" onClick={() => step(-1)} className={desktopStepButtonClass} aria-label="Previous">
+                  <ChevronLeft size={20} />
+                </button>
+                <h1 className="min-w-0 truncate text-center text-[17px] font-semibold" style={{ color: "var(--text-main)" }}>{title}</h1>
+                <button type="button" onClick={() => step(1)} className={desktopStepButtonClass} aria-label="Next">
+                  <ChevronRight size={20} />
+                </button>
+              </div>
+            )}
             <button type="button" onClick={() => setMobileFilterOpen((v) => !v)} className={`${pillButtonClass} lg:hidden`}>
-              <Filter size={14} /> Categories
+              <Filter size={14} className="max-md:h-4 max-md:w-4" /> Categories
             </button>
-            {/* The view in use in the blue fill, so it's clear which it is; fully rounded, like Today. */}
-            <Segmented
-              size="sm"
-              tone="brand"
-              pill
-              value={view}
-              options={[
-                { value: "year", label: "Year" },
-                { value: "month", label: "Month" },
-                { value: "week", label: "Week" },
-                { value: "day", label: "Day" },
-                { value: "list", label: "List" },
-              ]}
-              onChange={changeView}
-            />
-          </div>
-          {mobileFilterOpen ? (
-            <div className="rounded-[20px] border p-2.5 lg:hidden" style={cardStyle}>
-              {categoryFilter}
+            {/* The view in use in the blue fill, so it's clear which it is; fully rounded, like Today. On a phone
+                it's its own row across the toolbar, filling it. At its right, the round search button: tapped, it
+                widens to the left across the row (its search icon riding its left edge), covering the switcher, and
+                is the search box from there; its X (or Escape) closes it back the same way, clearing the search. */}
+{isMobile ? (
+            <div ref={eventSearchRowRef} className={`relative flex items-center gap-2 ${isMobile ? "w-full" : ""}`}>
+              <div className={isMobile ? "min-w-0 flex-1" : ""} inert={isEventSearchOpen}>
+                <Segmented
+                  size={isMobile ? "lg" : "sm"}
+                  tone="brand"
+                  pill
+                  fill={isMobile}
+                  strongText
+                  value={view}
+                  options={CALENDAR_VIEW_OPTIONS}
+                  onChange={changeView}
+                />
+              </div>
+              {/* The search button's own place in the row — a circle the switcher's height (bigger on a phone). */}
+              <span aria-hidden className="shrink-0" style={{ width: searchPillPx, height: searchPillPx }} />
+              <div
+                // z-[2]: over the switcher's options (z-[1]) as it slides across them. Its own outline is only
+                // while it's the round button on its own: once it joins the switcher, the row's outline (below)
+                // is the one outline round both, so its curved edge never shows crossing the switcher.
+                className="peer absolute inset-y-0 right-0 z-[2] flex items-center overflow-hidden rounded-full border"
+                style={{
+                  width: isEventSearchOpen ? "100%" : searchPillPx,
+                  transition: "width 320ms cubic-bezier(0.22, 1, 0.36, 1), border-color 120ms ease",
+                  borderColor: isEventSearchOpen ? "transparent" : "var(--glass-border)",
+                  backgroundColor: "var(--panel-bg)",
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!isEventSearchOpen) openEventSearch();
+                  }}
+                  className="inline-flex h-full shrink-0 items-center justify-center"
+                  style={{ width: searchPillPx - 2, color: isEventSearchOpen ? "var(--text-muted)" : "var(--text-main)", cursor: isEventSearchOpen ? "default" : undefined }}
+                  aria-label="Search events"
+                  title="Search events"
+                  tabIndex={isEventSearchOpen ? -1 : 0}
+                >
+                  <Search size={16} />
+                </button>
+                <input
+                  ref={eventSearchInputRef}
+                  value={eventSearch}
+                  onChange={(e) => changeEventSearch(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") closeEventSearch(false);
+                  }}
+                  placeholder="Search events"
+                  aria-label="Search events"
+                  autoComplete="off"
+                  tabIndex={isEventSearchOpen ? 0 : -1}
+                  className="h-full min-w-0 flex-1 bg-transparent text-[13px] font-medium outline-none max-md:text-[15px]"
+                  style={{ color: "var(--text-main)", opacity: isEventSearchOpen ? 1 : 0, transition: "opacity 180ms ease 120ms" }}
+                />
+                <button
+                  type="button"
+                  onClick={() => closeEventSearch(true)}
+                  className="mr-1 inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full transition hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)]"
+                  style={{ color: "var(--text-muted)", opacity: isEventSearchOpen ? 1 : 0, transition: "opacity 180ms ease 120ms", pointerEvents: isEventSearchOpen ? undefined : "none" }}
+                  aria-label="Clear search"
+                  title="Clear search"
+                  tabIndex={isEventSearchOpen ? 0 : -1}
+                >
+                  <X size={15} />
+                </button>
+              </div>
+              {/* While searching: one outline round the switcher and the search together (blue while typing). */}
+              <span
+                aria-hidden
+                className="pointer-events-none absolute inset-0 z-[3] rounded-full border border-[var(--glass-border)] transition-[opacity,border-color] duration-150 peer-focus-within:border-[var(--brand)]"
+                style={{ opacity: isEventSearchOpen ? 1 : 0 }}
+              />
             </div>
-          ) : null}
+            ) : (
+              // Computer: the view switcher, and right of it the search box — always open.
+              <div className="flex min-w-0 items-center gap-2">
+                <div className="shrink-0">
+                  <Segmented size="sm" tone="brand" pill strongText value={view} options={CALENDAR_VIEW_OPTIONS} onChange={changeView} />
+                </div>
+                <label
+                  className="flex h-[34px] w-[240px] min-w-[150px] items-center gap-2 rounded-full border border-[var(--glass-border)] px-3 transition-colors focus-within:border-[var(--brand)]"
+                  style={{ backgroundColor: "color-mix(in srgb, var(--panel-bg) 55%, transparent)" }}
+                >
+                  <Search size={15} className="shrink-0" style={{ color: "var(--text-muted)" }} />
+                  <input
+                    value={eventSearch}
+                    onChange={(e) => changeEventSearch(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") changeEventSearch("");
+                    }}
+                    placeholder="Search events"
+                    aria-label="Search events"
+                    autoComplete="off"
+                    className="h-full min-w-0 flex-1 bg-transparent text-[13px] font-medium outline-none"
+                    style={{ color: "var(--text-main)" }}
+                  />
+                  {eventSearch ? (
+                    <button
+                      type="button"
+                      onClick={() => changeEventSearch("")}
+                      className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)]"
+                      style={{ color: "var(--text-muted)" }}
+                      aria-label="Clear search"
+                      title="Clear search"
+                    >
+                      <X size={14} />
+                    </button>
+                  ) : null}
+                </label>
+              </div>
+            )}
+          </div>
+          {/* Phones/tablets: Categories opens the category list here, in the toolbar under the view switcher, sliding
+              down (and back up on Categories again, or a press anywhere outside the toolbar). */}
+          <div
+            className="grid transition-[grid-template-rows] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none lg:hidden"
+            style={{ gridTemplateRows: mobileFilterOpen ? "1fr" : "0fr" }}
+            inert={!mobileFilterOpen}
+          >
+            <div className="min-h-0 overflow-hidden">
+              <div className="pt-2.5" style={{ opacity: mobileFilterOpen ? 1 : 0, transition: "opacity 200ms ease" }}>
+                {categoryFilter}
+              </div>
+            </div>
+          </div>
+          </div>
           {loadError ? (
             <p className="rounded-[12px] px-3 py-2 text-[12.5px] font-medium" style={{ backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}>{loadError}</p>
           ) : null}
@@ -2243,7 +2632,7 @@ function CalendarPageContent() {
               // .glass-modal-panel's job (app/globals.css), the same as every other pop-up — in either spot.
               className={`fixed inset-0 z-[1700] flex justify-center px-3 py-3 md:items-center md:px-4 md:py-4 ${d.isNew ? "items-start" : "items-center"}`}
             >
-              <button type="button" aria-label="Close" onClick={closeModal} className="glass-modal-backdrop absolute inset-0" />
+              <button type="button" aria-label="Close" onClick={closeModalUnlessEdited} className="glass-modal-backdrop absolute inset-0" />
               <div
                 ref={modalPanelRef}
                 className="glass-modal-panel relative z-[1701] flex max-h-full w-full max-w-[560px] flex-col overflow-hidden md:max-h-[calc(100svh-32px)]"
@@ -2255,11 +2644,18 @@ function CalendarPageContent() {
                 {viewingEvent && viewEvent ? (
                   <>
                     <div className="relative px-5 pb-4 pt-5">
-                      <button type="button" onClick={closeModal} className={`${iconRemoveButtonClass} absolute right-3 top-3`} aria-label="Close">
-                        <X size={16} />
-                      </button>
+                      <div className="absolute right-3 top-3 flex items-center gap-1">
+                        {eventMenuItems.length ? (
+                          <GlassActionMenu items={eventMenuItems} ariaLabel="More options" openWithOneItem menuMinWidth={180} triggerClassName={eventMenuButtonClass}>
+                            <MoreHorizontal size={16} />
+                          </GlassActionMenu>
+                        ) : null}
+                        <button type="button" onClick={closeModal} className={iconRemoveButtonClass} aria-label="Close">
+                          <X size={16} />
+                        </button>
+                      </div>
                       <span
-                        className="inline-flex max-w-full items-center gap-1.5 truncate rounded-full border px-2.5 py-[3px] text-[12px] font-medium"
+                        className="inline-flex max-w-[calc(100%-64px)] items-center gap-1.5 truncate rounded-full border px-2.5 py-[3px] text-[12px] font-medium"
                         style={{
                           borderColor: `color-mix(in srgb, ${draftCategory.color} 45%, transparent)`,
                           backgroundColor: `color-mix(in srgb, ${draftCategory.color} 18%, transparent)`,
@@ -2269,7 +2665,7 @@ function CalendarPageContent() {
                         <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: draftCategory.color }} />
                         {draftCategory.name}
                       </span>
-                      <h2 className="mt-2.5 pr-8 text-[22px] font-semibold leading-tight" style={{ color: "var(--text-main)" }}>
+                      <h2 className="mt-2.5 pr-16 text-[22px] font-semibold leading-tight" style={{ color: "var(--text-main)" }}>
                         {viewEvent.title || "Untitled event"}
                       </h2>
                       {(() => {
@@ -2284,7 +2680,7 @@ function CalendarPageContent() {
                             </span>
                             <div className="min-w-0">
                               <p className="text-[15px] font-medium" style={{ color: "var(--text-main)" }}>{when.primary}</p>
-                              <p className="text-[13.5px]" style={{ color: "var(--text-muted)" }}>{when.secondary}</p>
+                              <p className="text-[13.5px]" style={{ color: "var(--text-main)" }}>{when.secondary}</p>
                             </div>
                           </div>
                         );
@@ -2292,7 +2688,7 @@ function CalendarPageContent() {
                     </div>
                     <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-5 pb-4">
                       {restrictedIds.has(d.id) ? (
-                        <p className="flex items-center gap-2 rounded-[14px] border px-3 py-2.5 text-[12.5px]" style={{ borderColor: "var(--glass-border)", color: "var(--text-muted)" }}>
+                        <p className="flex items-center gap-2 rounded-[14px] border px-3 py-2.5 text-[12.5px]" style={{ borderColor: "var(--glass-border)", color: "var(--text-main)" }}>
                           <Lock size={14} className="shrink-0" /> Linked to a project you don&apos;t have access to — its details are hidden.
                         </p>
                       ) : null}
@@ -2306,7 +2702,7 @@ function CalendarPageContent() {
                         >
                           <MapPin size={17} className="shrink-0" style={{ color: draftCategory.color }} />
                           <span className="min-w-0 flex-1">
-                            <span className="block text-[11px] font-semibold uppercase tracking-[0.5px]" style={{ color: "var(--text-muted)" }}>Location</span>
+                            <span className="block text-[11px] font-semibold uppercase tracking-[0.5px]" style={{ color: "var(--text-main)" }}>Location</span>
                             <span className="block truncate text-[14px]" style={{ color: "var(--text-main)" }}>{viewEvent.location}</span>
                           </span>
                           <ExternalLink size={14} style={{ color: "var(--text-muted)" }} />
@@ -2317,10 +2713,15 @@ function CalendarPageContent() {
                           className="overflow-hidden rounded-[14px] border"
                           style={{ borderColor: "var(--glass-border)", backgroundColor: "color-mix(in srgb, var(--panel-bg) 55%, transparent)" }}
                         >
-                          <Link href={`/projects/${viewEvent.projectId}`} className="flex items-center gap-3 px-3 py-2.5 transition hover:brightness-95">
+                          {/* On a computer, the project opens in a new Chrome tab (openEventProject). */}
+                          <Link
+                            href={`/projects/${viewEvent.projectId}`}
+                            onClick={(event) => openEventProject(event, viewEvent.projectId)}
+                            className="flex items-center gap-3 px-3 py-2.5 transition hover:brightness-95"
+                          >
                             <FolderKanban size={17} className="shrink-0" style={{ color: draftCategory.color }} />
                             <span className="min-w-0 flex-1">
-                              <span className="block text-[11px] font-semibold uppercase tracking-[0.5px]" style={{ color: "var(--text-muted)" }}>Project</span>
+                              <span className="block text-[11px] font-semibold uppercase tracking-[0.5px]" style={{ color: "var(--text-main)" }}>Project</span>
                               <span className="block truncate text-[14px]" style={{ color: "var(--text-main)" }}>{viewEvent.projectName || "Linked project"}</span>
                             </span>
                             <ChevronRight size={16} style={{ color: "var(--text-muted)" }} />
@@ -2344,23 +2745,50 @@ function CalendarPageContent() {
                       ) : null}
                       {viewEvent.notes.trim() ? (
                         <div className="rounded-[14px] border px-3 py-2.5" style={{ borderColor: "var(--glass-border)", backgroundColor: "color-mix(in srgb, var(--panel-bg) 55%, transparent)" }}>
-                          <p className="text-[11px] font-semibold uppercase tracking-[0.5px]" style={{ color: "var(--text-muted)" }}>Notes</p>
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.5px]" style={{ color: "var(--text-main)" }}>Notes</p>
                           <p className="mt-0.5 whitespace-pre-wrap text-[14px]" style={{ color: "var(--text-main)" }}>{viewEvent.notes}</p>
                         </div>
                       ) : null}
                     </div>
                     <div className="flex items-center justify-end gap-2 border-t px-4 py-3" style={{ borderColor: "var(--glass-border)" }}>
+                      {confirmDelete && !readOnly ? (
+                        // … > Delete Event: asks first.
+                        <>
+                          <p className="mr-auto min-w-0 truncate text-[13.5px] font-medium" style={{ color: "var(--text-main)" }}>
+                            Delete this event?
+                          </p>
+                          <button type="button" onClick={() => setConfirmDelete(false)} disabled={saving} className={secondaryButtonClass}>
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void removeDraft()}
+                            disabled={saving}
+                            className={primaryButtonClass}
+                            style={{ backgroundImage: "var(--danger-gradient)" }}
+                          >
+                            <Trash2 size={14} /> {saving ? "Deleting..." : "Delete"}
+                          </button>
+                        </>
+                      ) : (
+                      <>
                       {d.createdByName ? addedBy("mr-auto min-w-0") : <span className="mr-auto" />}
                       {!readOnly ? (
+                        // On a phone, just the pencil (a square button).
                         <button
                           type="button"
                           onClick={() => setEventMode("edit")}
-                          className={primaryButtonClass}
+                          className={`${primaryButtonClass} max-md:w-9 max-md:px-0`}
                           style={categoryButtonStyle(draftCategory.color)}
+                          aria-label="Edit"
+                          title="Edit"
                         >
-                          <Pencil size={14} /> Edit
+                          <Pencil size={14} className="max-md:h-4 max-md:w-4" />
+                          <span className="max-md:hidden">Edit</span>
                         </button>
                       ) : null}
+                      </>
+                      )}
                     </div>
                   </>
                 ) : (
@@ -2392,7 +2820,10 @@ function CalendarPageContent() {
                       }}
                       readOnly={readOnly}
                       value={d.title}
-                      onChange={(e) => setDraft((prev) => (prev ? { ...prev, title: e.target.value } : prev))}
+                      onChange={(e) => {
+                        setDraft((prev) => (prev ? { ...prev, title: e.target.value } : prev));
+                        setModalError("");
+                      }}
                       placeholder="Event title"
                       className={`${glassFieldClass} h-11 text-[15px]`}
                     />
@@ -2403,12 +2834,18 @@ function CalendarPageContent() {
                           value={d.categoryId}
                           options={[
                             ...editableCategories.map((c) => ({ value: c.id, label: c.name, color: c.color })),
-                            ...(editableCategories.some((c) => c.id === d.categoryId)
+                            // An existing event's category they can't choose (e.g. one deleted since): shown as it
+                            // is. With none, the prompt shows instead.
+                            ...(editableCategories.some((c) => c.id === d.categoryId) || !d.categoryId
                               ? []
                               : [{ value: d.categoryId, label: (categoryById.get(d.categoryId) ?? UNCATEGORISED).name, color: (categoryById.get(d.categoryId) ?? UNCATEGORISED).color }]),
                           ]}
-                          onChange={(next) => setDraft((prev) => (prev ? { ...prev, categoryId: next } : prev))}
+                          onChange={(next) => {
+                            setDraft((prev) => (prev ? { ...prev, categoryId: next } : prev));
+                            setModalError("");
+                          }}
                           ariaLabel="Category"
+                          placeholder={editableCategories.length ? "Choose a category" : "No categories"}
                           disabled={readOnly}
                           triggerClassName={`${glassFieldClass} justify-between`}
                         />
@@ -2421,7 +2858,13 @@ function CalendarPageContent() {
                         <div className="flex items-center gap-2 rounded-[11px] border px-3 py-2" style={{ borderColor: "var(--glass-border)", backgroundColor: "color-mix(in srgb, var(--panel-bg) 55%, transparent)" }}>
                           <FolderKanban size={15} className="transition-colors" style={{ color: themeColor || "var(--brand-strong)" }} />
                           <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{d.projectName || "Linked project"}</span>
-                          <Link href={`/projects/${d.projectId}`} className="inline-flex items-center gap-1 text-[12px] font-semibold" style={{ color: "var(--brand-strong)" }}>
+                          {/* On a computer, the project opens in a new Chrome tab (openEventProject). */}
+                          <Link
+                            href={`/projects/${d.projectId}`}
+                            onClick={(event) => openEventProject(event, d.projectId)}
+                            className="inline-flex items-center gap-1 text-[12px] font-semibold"
+                            style={{ color: "var(--brand-strong)" }}
+                          >
                             Open <ExternalLink size={13} />
                           </Link>
                           {!readOnly ? (

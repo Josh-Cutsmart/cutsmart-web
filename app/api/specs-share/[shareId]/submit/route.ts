@@ -141,10 +141,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     await Promise.all(
       subscriberUids.map((uid) =>
         db.collection("users").doc(uid).collection("notifications").add({
-          title: "Specifications submitted",
+          title: `Specifications Submitted for ${projectName}`,
           message: confirmations.total
-            ? `${name || "The client"} submitted specs for ${projectName} with ${confirmations.accepted}/${confirmations.total} accepted`
-            : `${name || "The client"} submitted specs for ${projectName}`,
+            ? `${name || "The client"} submitted the specifications (${confirmations.accepted}/${confirmations.total}) accepted`
+            : `${name || "The client"} submitted the specifications`,
           type: "specs_submitted",
           projectId: shareDoc.projectId,
           companyId: String(projectData.companyId ?? "") || null,

@@ -7,6 +7,7 @@ import {
   BadgeCheck,
   Bell,
   Building2,
+  CalendarDays,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -46,6 +47,7 @@ import {
   saveUserProfilePatchDetailed,
 } from "@/lib/firestore-data";
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
+import { fetchUserCalendarShowNonWorkdays, normalizeCalendarShowNonWorkdays, saveUserCalendarShowNonWorkdays } from "@/lib/calendar-data";
 import { hedgedAsync } from "@/lib/load-retry";
 import { readThemeMode, saveThemeMode, type ThemeMode } from "@/lib/theme-mode";
 import {
@@ -161,7 +163,8 @@ export default function UserSettingsPage() {
   const [displayName, setDisplayName] = useState(user?.displayName || "");
   const [userColor, setUserColor] = useState(user?.userColor || "");
   const [mobile, setMobile] = useState(user?.mobile || "");
-  const [notifyAsCreator, setNotifyAsCreator] = useState(Boolean(user?.notifyAsCreator));
+  // On unless they've switched it off.
+  const [notifyAsCreator, setNotifyAsCreator] = useState(user?.notifyAsCreator !== false);
   // Per-device UI toggles — localStorage-only (see lib/ui-preferences.ts), not part of the
   // account profile save/dirty tracking above.
   const [mobileTopBarEnabled, setMobileTopBarEnabled] = useState(true);
@@ -223,6 +226,20 @@ export default function UserSettingsPage() {
   const [saveMsg, setSaveMsg] = useState("");
   const [resolvedCompanyId, setResolvedCompanyId] = useState("");
   const [companyName, setCompanyName] = useState("");
+  // Calendar non-work days: the company's setting (Company Settings > Calendar) and their own choice over it
+  // (null = none — the company's applies). Saved straight away.
+  const [companyShowNonWorkdays, setCompanyShowNonWorkdays] = useState(true);
+  const [myShowNonWorkdays, setMyShowNonWorkdays] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!user?.uid) return;
+    let cancelled = false;
+    void fetchUserCalendarShowNonWorkdays(user.uid).then((value) => {
+      if (!cancelled) setMyShowNonWorkdays(value);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.uid]);
   const [companyRoleLabel, setCompanyRoleLabel] = useState("");
   const [companyRoleColor, setCompanyRoleColor] = useState("");
   const [themeMode, setThemeMode] = useState<ThemeMode>("light");
@@ -305,7 +322,7 @@ export default function UserSettingsPage() {
   }, [user?.mobile]);
 
   useEffect(() => {
-    setNotifyAsCreator(Boolean(user?.notifyAsCreator));
+    setNotifyAsCreator(user?.notifyAsCreator !== false);
   }, [user?.notifyAsCreator]);
 
   useEffect(() => {
@@ -317,7 +334,7 @@ export default function UserSettingsPage() {
       displayName: String(user?.displayName || "").trim(),
       userColor: String(user?.userColor || "").trim(),
       mobile: String(user?.mobile || "").trim(),
-      notifyAsCreator: Boolean(user?.notifyAsCreator),
+      notifyAsCreator: user?.notifyAsCreator !== false,
     });
   }, [user?.displayName, user?.mobile, user?.userColor, user?.notifyAsCreator]);
 
@@ -375,6 +392,7 @@ export default function UserSettingsPage() {
         resolvedId = cid;
         const name = String((doc as Record<string, unknown> | null)?.name ?? "").trim();
         if (name) setCompanyName(name);
+        setCompanyShowNonWorkdays(normalizeCalendarShowNonWorkdays((doc as Record<string, unknown> | null)?.calendarShowNonWorkdays));
         const rolesRaw = (doc as Record<string, unknown> | null)?.roles;
         if (Array.isArray(rolesRaw)) resolvedRoles = rolesRaw;
         const themeColor = String((doc as Record<string, unknown> | null)?.themeColor ?? "").trim();
@@ -1002,6 +1020,20 @@ export default function UserSettingsPage() {
       onChange: (next) => {
         setDashboardStatCardsEnabled(next);
         saveDashboardStatCardsEnabled(next);
+      },
+      phone: true,
+    },
+    {
+      // Theirs over the company's; set back to match the company's, it's cleared, so they follow the company again.
+      id: "calendarShowNonWorkdays",
+      icon: CalendarDays,
+      label: "Calendar Non-Work Days",
+      description: `Show non-work days in the Calendar's Month and Week views. Company setting: ${companyShowNonWorkdays ? "shown" : "hidden"}${myShowNonWorkdays === null ? "" : " — yours overrides it"}.`,
+      checked: myShowNonWorkdays ?? companyShowNonWorkdays,
+      onChange: (next) => {
+        const value = next === companyShowNonWorkdays ? null : next;
+        setMyShowNonWorkdays(value);
+        if (user?.uid) void saveUserCalendarShowNonWorkdays(user.uid, value);
       },
       phone: true,
     },

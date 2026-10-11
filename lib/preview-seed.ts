@@ -726,7 +726,6 @@ export async function seedPreviewDatabase(db: Firestore): Promise<void> {
     userColor: TEAM[0].color,
     companyId: PREVIEW_COMPANY_ID,
     verified: true,
-    notifyAsCreator: false,
     updateNoticeSeenVersions: seenVersions,
     updatedAtIso: iso(nowMs),
   });
@@ -898,14 +897,15 @@ export async function seedPreviewDatabase(db: Firestore): Promise<void> {
       createdByUid: PREVIEW_UID,
       createdByName: PREVIEW_NAME,
       showToClient: false,
+      createdAtIso: iso(daysAgo(3 * DAY)),
       updatedAtIso: iso(daysAgo(3 * DAY)),
     });
   });
 
   const notifications = [
-    { title: "Quote accepted", message: "Hannah Brooks accepted the quote for Ridgeway Entertainment Unit.", type: "quote_accepted", job: "prv_job_05", minutesAgo: 35 },
+    { title: "Quote accepted for Ridgeway Entertainment Unit", message: "Hannah Brooks accepted your quote for $18,450.00", type: "quote_accepted", job: "prv_job_05", minutesAgo: 35 },
     { title: "New lead", message: "Aroha Williams sent an enquiry about a kitchen.", type: "lead_new", job: "", minutesAgo: 90 },
-    { title: "Specs submitted", message: "Priya Shah filled in the specs for Bayview Vanity.", type: "specs_submitted", job: "prv_job_03", minutesAgo: 60 * 5 },
+    { title: "Specifications Submitted for Bayview Vanity", message: "Priya Shah submitted the specifications (14/16) accepted", type: "specs_submitted", job: "prv_job_03", minutesAgo: 60 * 5 },
     { title: "Project assigned", message: "Mere assigned you to Marsden Wardrobe.", type: "project_assigned", job: "prv_job_12", minutesAgo: 60 * 26 },
   ];
   const noteTime = fitToMonth(notifications.map((note) => note.minutesAgo * 60_000), nowMs, monthStartMs);

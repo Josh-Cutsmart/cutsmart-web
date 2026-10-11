@@ -35,9 +35,9 @@ const SAMPLE_TEXT: Record<string, [string, string]> = {
   ],
   lead_new: ["New lead", `${CLIENT} came in from Website Contact Form.`],
   lead_access: ["Added to a lead", `${TEAMMATE} added you to the lead "${CLIENT}".`],
-  quote_accepted: ["Quote accepted", `${CLIENT} accepted quote for ${PROJECT}`],
+  quote_accepted: [`Quote accepted for ${PROJECT}`, `${CLIENT} accepted your quote for $18,450.00`],
   quote_declined: ["Quote declined", `${CLIENT} declined quote for ${PROJECT}: "We've decided to go with a different layout."`],
-  specs_submitted: ["Specifications submitted", `${CLIENT} submitted specs for ${PROJECT} with 12/15 accepted`],
+  specs_submitted: [`Specifications Submitted for ${PROJECT}`, `${CLIENT} submitted the specifications (12/15) accepted`],
   quote_sent: ["Quote sent to client", `${TEAMMATE} sent a Quote for "${PROJECT}" to the client.`],
   specs_sent: ["Specifications sent to client", `${TEAMMATE} sent Specifications for "${PROJECT}" to the client.`],
   quote_pending: ["Quote not accepted yet", `${CLIENT} hasn't accepted the quote for ${PROJECT} yet — sent 2 days ago.`],
@@ -46,6 +46,25 @@ const SAMPLE_TEXT: Record<string, [string, string]> = {
   role_change: ["Role updated", `Your role in Taylor Joinery changed from "Staff" to "Manager".`],
   other: ["Test notification", "This is how a CutSmart notification looks on this device."],
 };
+
+// Dev mode's "test in … s" at the top of Notifications (components/global-app-tabs-bar.tsx): a real notification
+// added to the user's own list — one of these kinds, at random, with its made-up title and message.
+export const DEV_TEST_LIST_KINDS: readonly string[] = Object.keys(SAMPLE_TEXT);
+export function devTestListSample(kind: string): { title: string; message: string } | null {
+  const text = SAMPLE_TEXT[kind];
+  return text ? { title: text[0], message: text[1] } : null;
+}
+
+// Whether a notification is one of those tests by its words alone — for ones added before tests were marked
+// (UserNotificationRow.devTest), which are cleared away once seen just the same. Matches only a test's exact title
+// and message (today's, or the quote / specs ones' earlier wording), with its made-up client and project.
+const EARLIER_SAMPLE_TEXT: ReadonlyArray<readonly [string, string]> = [
+  ["Quote accepted", `${CLIENT} accepted quote for ${PROJECT}`],
+  ["Specifications submitted", `${CLIENT} submitted specs for ${PROJECT} with 12/15 accepted`],
+];
+export function isDevTestNotificationText(title: string, message: string): boolean {
+  return [...Object.values(SAMPLE_TEXT), ...EARLIER_SAMPLE_TEXT].some(([sampleTitle, sampleMessage]) => sampleTitle === title && sampleMessage === message);
+}
 
 // A kind's test: its title, its text as a phone shows it, and where tapping it goes (pages that exist —
 // the made-up project doesn't). `appVersion` is the current version, for the New version one.
@@ -85,9 +104,9 @@ export const DEV_TEST_GROUPS: readonly DevTestGroup[] = [
     held: [
       { type: "lead_new", title: "New lead", message: "Liam Brown came in from Website Contact Form." },
       { type: "lead_new", title: "New lead", message: "Olivia Wilson just came in." },
-      { type: "quote_accepted", title: "Quote accepted", message: `${CLIENT} accepted quote for ${PROJECT}` },
+      { type: "quote_accepted", title: `Quote accepted for ${PROJECT}`, message: `${CLIENT} accepted your quote for $18,450.00` },
       { type: "lead_new", title: "New lead", message: "Noah Clarke came in from Facebook." },
-      { type: "specs_submitted", title: "Specifications submitted", message: `${CLIENT} submitted specs for ${PROJECT} with 12/15 accepted` },
+      { type: "specs_submitted", title: `Specifications Submitted for ${PROJECT}`, message: `${CLIENT} submitted the specifications (12/15) accepted` },
     ],
   },
 ];

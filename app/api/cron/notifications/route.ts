@@ -3,7 +3,7 @@ import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
 import { runAppVersionJobs } from "@/lib/app-version-server";
 import { runCalendarReminders } from "@/lib/calendar-reminders-server";
 import { runClientPortalPendingReminders } from "@/lib/client-portal-reminders-server";
-import { flushDuePushDigests } from "@/lib/push-server";
+import { flushDueNotificationReminders, flushDuePushDigests } from "@/lib/push-server";
 
 // The notifications scheduled job — meant to be called every minute or few by a scheduler, with the
 // CRON_SECRET environment variable as `Authorization: Bearer <CRON_SECRET>` (what Vercel Cron sends) or
@@ -12,6 +12,8 @@ import { flushDuePushDigests } from "@/lib/push-server";
 // - "quote not accepted / specifications not submitted yet" reminders (lib/client-portal-reminders-server.ts);
 // - notifications held by people's "time between notifications" whose time is up, grouped into one
 //   (flushDuePushDigests in lib/push-server.ts);
+// - "Remind me in…" reminders people set on a notification, once their time comes
+//   (flushDueNotificationReminders in lib/push-server.ts);
 // - a version a Dev user scheduled to publish, once its time comes — made live, added to the changelog and
 //   (if they asked) announced to everyone — and any announcement that didn't finish (lib/app-version-server.ts).
 
@@ -29,14 +31,18 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ ok: false, error: "missing-firebase-admin-config" }, { status: 500 });
   }
   const siteOrigin = new URL(request.url).origin;
-  const [reminders, clientPortal, groupsSent, versions] = await Promise.all([
+  const [reminders, clientPortal, groupsSent, notificationReminders, versions] = await Promise.all([
     runCalendarReminders({ siteOrigin }),
     runClientPortalPendingReminders({ siteOrigin }),
     flushDuePushDigests(siteOrigin),
+    flushDueNotificationReminders(siteOrigin).catch((error) => {
+      console.error("[cron/notifications] notification reminders failed:", error);
+      return 0;
+    }),
     runAppVersionJobs(siteOrigin).catch((error) => {
       console.error("[cron/notifications] scheduled publish failed:", error);
       return null;
     }),
   ]);
-  return NextResponse.json({ ok: true, reminders, clientPortal, groupsSent, versions });
+  return NextResponse.json({ ok: true, reminders, clientPortal, groupsSent, notificationReminders, versions });
 }

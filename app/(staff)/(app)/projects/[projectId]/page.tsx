@@ -41,6 +41,7 @@ import { clusterPins, computeSpreadPositions, findClusterContainingPin } from "@
 import SpecsGridEditor, { preloadSpecsGridEditor } from "@/components/specs-grid-editor-lazy";
 import { type SpecsGrid, type SpecsGridVersion, type SpecsRowGroup, normalizeSpecsGrid, normalizeSpecsGridVersion, resolveSpecsGridTokens, genSpecsRowId, getExpandedRowGroups, setRowGroupHidden, applyGroupRules, clearAllConfirmableMarks, withCurrentCompanyLogo } from "@/lib/specs-grid-types";
 import { isProjectNotifySubscribed, projectNotifySubscriberUids } from "@/lib/project-notify";
+import { isPreviewMode } from "@/lib/preview-mode";
 import { retryAsync, withTimeout } from "@/lib/load-retry";
 import {
   updateCompanyClientProfile,
@@ -62,6 +63,7 @@ import {
   fetchUserColorMapByUids,
   grantTempProductionAccess,
   markGridVersionSentToClient,
+  unmarkGridVersionSentToClient,
   resyncCompanyProjectTagUsage,
   saveCompanyDocPatch,
   saveProjectStatsContribution,
@@ -4893,7 +4895,7 @@ function CompactPlainDropdown({
                   buttonRef.current?.focus();
                 }, 0);
               }}
-              className="flex h-6 w-full items-center rounded-[5px] px-1 text-left text-[11px] text-[var(--text-muted)] hover:bg-[var(--panel-muted)] max-md:h-11 max-md:rounded-[8px] max-md:px-3 max-md:text-[15px]"
+              className="flex h-6 w-full items-center rounded-[5px] px-1 text-left text-[11px] text-[var(--text-muted)] hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] max-md:h-11 max-md:rounded-[8px] max-md:px-3 max-md:text-[15px]"
             >
               <span className="truncate"></span>
             </button>
@@ -4917,7 +4919,7 @@ function CompactPlainDropdown({
                     buttonRef.current?.focus();
                   }, 0);
                 }}
-                className="flex h-6 w-full items-center rounded-[5px] px-1 text-left text-[11px] text-[var(--text-main)] hover:bg-[var(--panel-muted)] max-md:h-11 max-md:rounded-[8px] max-md:px-3 max-md:text-[15px]"
+                className="flex h-6 w-full items-center rounded-[5px] px-1 text-left text-[11px] text-[var(--text-main)] hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] max-md:h-11 max-md:rounded-[8px] max-md:px-3 max-md:text-[15px]"
               >
                 <span className="truncate">{opt}</span>
               </button>
@@ -5155,7 +5157,7 @@ function BoardPillDropdown({
                   setOpen(false);
                   focusTriggerAfterSelection();
                 }}
-                className={`flex w-full items-center text-left text-[var(--text-muted)] hover:bg-[var(--panel-muted)] ${compact ? "h-6 rounded-[5px] px-1 text-[11px]" : "h-8 rounded-[6px] px-2 text-[12px]"} max-md:h-11 max-md:rounded-[8px] max-md:px-3 max-md:text-[15px]`}
+                className={`flex w-full items-center text-left text-[var(--text-muted)] hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] ${compact ? "h-6 rounded-[5px] px-1 text-[11px]" : "h-8 rounded-[6px] px-2 text-[12px]"} max-md:h-11 max-md:rounded-[8px] max-md:px-3 max-md:text-[15px]`}
               >
                 <span className="truncate"></span>
               </button>
@@ -5181,7 +5183,7 @@ function BoardPillDropdown({
                       setOpen(false);
                       focusTriggerAfterSelection();
                     }}
-                   className={`flex w-full items-center text-left text-[var(--text-main)] hover:bg-[var(--panel-muted)] ${compact ? "h-6 rounded-[5px] px-1 text-[11px]" : "h-8 rounded-[6px] px-2 text-[12px]"} max-md:h-11 max-md:rounded-[8px] max-md:px-3 max-md:text-[15px]`}
+                   className={`flex w-full items-center text-left text-[var(--text-main)] hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] ${compact ? "h-6 rounded-[5px] px-1 text-[11px]" : "h-8 rounded-[6px] px-2 text-[12px]"} max-md:h-11 max-md:rounded-[8px] max-md:px-3 max-md:text-[15px]`}
                 >
                   <span className="inline-flex min-w-0 items-center gap-2">
                   {!!sz && (
@@ -5313,7 +5315,7 @@ function GlassSelectDropdown({ value, options, onChange, className, style, disab
                 }}
                 onMouseEnter={() => setHoveredOption(opt)}
                 onMouseLeave={() => setHoveredOption((prev) => (prev === opt ? null : prev))}
-                className={`flex h-7 w-full items-center rounded-[6px] px-2 text-left text-[12px] max-md:h-11 max-md:rounded-[8px] max-md:px-3 max-md:text-[15px] ${optionColor ? "" : "hover:bg-[var(--panel-muted)]"}`}
+                className={`flex h-7 w-full items-center rounded-[6px] px-2 text-left text-[12px] max-md:h-11 max-md:rounded-[8px] max-md:px-3 max-md:text-[15px] ${optionColor ? "" : "hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)]"}`}
                 style={{
                   color: optionColor && isHovered ? (isLightHex(optionColor) ? "#000000" : "#FFFFFF") : "var(--text-main)",
                   backgroundColor: optionColor && isHovered ? optionColor : undefined,
@@ -6259,6 +6261,9 @@ export default function ProjectDetailsPage() {
     // pending/locked just because SOMETHING is currently sent. See isViewingSentQuoteVersion below.
     quoteSentFromLive: boolean | null;
   } | null>(null);
+  // The project specsShareStatus above has been fetched for (null there means "nothing sent" only once it
+  // has) — Send to Client / Reopen for Editing wait for it, so they're never shown in the wrong state first.
+  const [specsShareStatusLoadedFor, setSpecsShareStatusLoadedFor] = useState("");
 
   // "Send Quote to Client" — the Quote's own version of the Send-to-Client block above, into the
   // SAME hub link (see sendQuoteToClient/reopenQuoteAcceptanceForEditing below). Mirrors every
@@ -24883,7 +24888,7 @@ export default function ProjectDetailsPage() {
                   setNestingMachineMenuOpen(false);
                 }}
                 // The machine in use is just shown in blue text.
-                className={`flex h-9 w-full items-center px-3 text-left text-[12px] font-semibold transition-colors hover:bg-[var(--panel-muted)] max-md:h-11 max-md:px-4 max-md:text-[15px] ${index > 0 ? "border-t" : ""}`}
+                className={`flex h-9 w-full items-center px-3 text-left text-[12px] font-semibold transition-colors hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] max-md:h-11 max-md:px-4 max-md:text-[15px] ${index > 0 ? "border-t" : ""}`}
                 style={{
                   borderColor: "var(--glass-border)",
                   color: m.id === selectedNestingMachineId ? "var(--brand-strong)" : "var(--text-main)",
@@ -27647,7 +27652,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   // Firestore's 1MB per-document limit where even a couple of small extra fields can tip an
   // unrelated future save over the edge.
   const fetchSpecsShareStatus = useCallback(async () => {
-    if (!project || !auth?.currentUser) return;
+    if (!project) return;
+    // The Preview has no server to ask: nothing's sent there.
+    if (isPreviewMode()) {
+      setSpecsShareStatusLoadedFor(project.id);
+      return;
+    }
+    if (!auth?.currentUser) return;
     try {
       const idToken = await auth.currentUser.getIdToken();
       const res = await fetch(`/api/specs-share/${project.id}/status`, {
@@ -27690,8 +27701,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       );
     } catch {
       // Non-critical — the status chip just won't show until the next successful fetch.
+    } finally {
+      // Loaded (or failed — then the server's own already-sent check still stops a second send).
+      setSpecsShareStatusLoadedFor(project.id);
     }
   }, [project]);
+  const isSpecsShareStatusLoaded = Boolean(project?.id) && specsShareStatusLoadedFor === project?.id;
   // This page loads the project ONCE (no realtime listener — see fetchProjectById's own callers),
   // so a client answering a cell via the public app/client/hub/[shareId] page (a write via the
   // admin SDK, straight into the sent version's own specificationsVersions doc — see
@@ -27745,8 +27760,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   useEffect(() => {
     // Fires anywhere in the Design tab — the hub doc's status covers both Specs and Quote in one fetch
     // (whichever opens first populates the chip for both), and the Design tab's own Client Portal
-    // button only shows once there's a portal to open.
-    if (resolvedTab === "sales" && salesAccess.view) {
+    // button only shows once there's a portal to open. Also once as soon as the project opens (any tab), so
+    // it's usually there before the Quote or Specifications window is.
+    if (salesAccess.view && (resolvedTab === "sales" || specsShareStatusLoadedFor !== project?.id)) {
       void fetchSpecsShareStatus();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -27762,7 +27778,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resolvedTab, salesAccess.view, salesNav, sentSpecsVersionId]);
   const sendSpecsToClient = async () => {
-    if (!project || isSendingSpecsToClient || !auth?.currentUser) return;
+    if (!project || isSendingSpecsToClient || !auth?.currentUser || !isSpecsShareStatusLoaded) return;
+    if (specsShareStatus?.versionId) {
+      setSendSpecsToClientError("Another version is already sent to the client — Reopen for Editing first.");
+      return;
+    }
     // No more typing an email in first — use whatever's already on file for this client. Falls
     // back to their name, then a plain placeholder, so there's always something non-empty to
     // label the send with (the create route requires a non-empty clientEmail) even for a project
@@ -27774,6 +27794,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       "the client";
     setIsSendingSpecsToClient(true);
     setSendSpecsToClientError("");
+    // What this send has done before the link is made — undone if the link isn't (e.g. another version was
+    // sent first, from another tab or by a teammate), so no version is left marked sent without being sent.
+    let undoSend: (() => void) | null = null;
     try {
       let sentVersionId: string;
       // Whether this send snapshots the LIVE sheet (true) or marks an ALREADY-SAVED historical
@@ -27788,6 +27811,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           return;
         }
         setSpecsSheetVersions((prev) => prev.map((v) => (v.id === versionId ? { ...v, sentToClient: true } : v)));
+        undoSend = () => {
+          void unmarkGridVersionSentToClient(project, "specificationsVersions", versionId);
+          setSpecsSheetVersions((prev) => prev.map((v) => (v.id === versionId ? { ...v, sentToClient: undefined } : v)));
+        };
         sentVersionId = versionId;
         sentFromLive = false;
       } else {
@@ -27817,6 +27844,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           return;
         }
         setSpecsSheetVersions((prev) => [...prev, saved]);
+        const liveBeforeSend = specsSheetGrid;
+        undoSend = () => {
+          void deleteGridVersion(project, "specificationsVersions", saved.id);
+          setSpecsSheetVersions((prev) => prev.filter((v) => v.id !== saved.id));
+          // The live sheet's confirmable marks (cleared just below) back as they were.
+          onSpecsSheetChange(liveBeforeSend);
+        };
         sentVersionId = saved.id;
         sentFromLive = true;
         // The version just saved above keeps its own confirmable markers exactly as they were —
@@ -27849,13 +27883,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         body?: string;
       };
       if (!data.ok) {
+        undoSend?.();
         setSendSpecsToClientError(
           data.error === "already-sent"
             ? "Another version is already sent to the client — Reopen for Editing first."
             : data.error || "Could not create the confirmation link.",
         );
+        // Whatever's sent now (if that's why), so the buttons show it.
+        void fetchSpecsShareStatus();
         return;
       }
+      undoSend = null;
       // Not emailed automatically — shown as copy-paste-ready text instead (see this state's own
       // comment). The modal stays open, now showing the preview rather than the email-entry form.
       setSendSpecsToClientPreview({ to: clientEmail, subject: data.subject || "", body: data.body || "" });
@@ -27889,6 +27927,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       // Was previously unguarded — a failed getIdToken() refresh (flaky network, clock skew) or
       // any other unexpected error here used to throw uncaught, surfacing as nothing more than a
       // stuck "Creating…" popup rather than a clear, recoverable error message.
+      undoSend?.();
       setSendSpecsToClientError(error instanceof Error ? error.message : "Something went wrong creating the link.");
     } finally {
       setIsSendingSpecsToClient(false);
@@ -27918,18 +27957,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         // (see the reopen route's own comment) — mirror that locally so the Version History
         // bubble's badge/coloring disappears immediately instead of waiting for a refetch, same
         // pattern as reopenQuoteForEditing.
-        const reopenedVersionId = data.reopenedVersionId || "";
-        if (reopenedVersionId) {
-          setSpecsSheetVersions((prev) =>
-            prev.map((v) =>
-              v.id === reopenedVersionId ? { ...v, sentToClient: undefined, submittedAtIso: undefined, submittedByName: undefined } : v,
-            ),
-          );
-          void fetchGridVersion(project, "specificationsVersions", reopenedVersionId).then((fresh) => {
-            if (!fresh) return;
-            setSpecsSheetVersions((prev) => prev.map((v) => (v.id === reopenedVersionId ? fresh : v)));
-          });
-        }
+        // Every version marked sent (the server clears them all — see the reopen route), then the list re-read
+        // so it matches the server exactly.
+        setSpecsSheetVersions((prev) =>
+          prev.map((v) =>
+            v.sentToClient || v.submittedAtIso ? { ...v, sentToClient: undefined, submittedAtIso: undefined, submittedByName: undefined } : v,
+          ),
+        );
+        void fetchGridVersions(project, "specificationsVersions").then(setSpecsSheetVersions);
         logProjectChange("Reopened Specifications for editing");
       }
     } finally {
@@ -27940,7 +27975,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   // sends it to the SAME hub link (kind: "quote"), which the create route merges onto rather than
   // overwriting, so an already-sent Specs tab on this same link is never disturbed.
   const sendQuoteToClient = async () => {
-    if (!project || isSendingQuoteToClient || !auth?.currentUser) return;
+    if (!project || isSendingQuoteToClient || !auth?.currentUser || !isSpecsShareStatusLoaded) return;
+    if (specsShareStatus?.quoteVersionId) {
+      setSendQuoteToClientError("Another version is already sent to the client — Reopen for Editing first.");
+      return;
+    }
     // No more typing an email in first — use whatever's already on file for this client. Falls
     // back to their name, then a plain placeholder, so there's always something non-empty to
     // label the send with (the create route requires a non-empty clientEmail) even for a project
@@ -27952,6 +27991,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       "the client";
     setIsSendingQuoteToClient(true);
     setSendQuoteToClientError("");
+    // Undone if the link isn't made — see sendSpecsToClient's own.
+    let undoSend: (() => void) | null = null;
     try {
       let sentVersionId: string;
       // Whether this send snapshots the LIVE grid (true) or marks an ALREADY-SAVED historical
@@ -27970,6 +28011,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           return;
         }
         setQuoteGridVersions((prev) => prev.map((v) => (v.id === versionId ? { ...v, sentToClient: true } : v)));
+        undoSend = () => {
+          void unmarkGridVersionSentToClient(project, "quoteGridVersions", versionId);
+          setQuoteGridVersions((prev) => prev.map((v) => (v.id === versionId ? { ...v, sentToClient: undefined } : v)));
+        };
         sentVersionId = versionId;
         sentFromLive = false;
       } else {
@@ -27991,6 +28036,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           return;
         }
         setQuoteGridVersions((prev) => [...prev, saved]);
+        undoSend = () => {
+          void deleteGridVersion(project, "quoteGridVersions", saved.id);
+          setQuoteGridVersions((prev) => prev.filter((v) => v.id !== saved.id));
+        };
         sentVersionId = saved.id;
         sentFromLive = true;
       }
@@ -28016,13 +28065,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         body?: string;
       };
       if (!data.ok) {
+        undoSend?.();
         setSendQuoteToClientError(
           data.error === "already-sent"
             ? "Another version is already sent to the client — Reopen for Editing first."
             : data.error || "Could not create the quote link.",
         );
+        void fetchSpecsShareStatus();
         return;
       }
+      undoSend = null;
       setSendQuoteToClientPreview({ to: clientEmail, subject: data.subject || "", body: data.body || "" });
       setSendQuoteToClientCopyFeedback(false);
       logProjectChange(`Sent Quote to client (${clientEmail})`);
@@ -28050,6 +28102,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       // Was previously unguarded — a failed getIdToken() refresh (flaky network, clock skew) or
       // any other unexpected error here used to throw uncaught, surfacing as nothing more than a
       // stuck "Creating…" popup rather than a clear, recoverable error message.
+      undoSend?.();
       setSendQuoteToClientError(error instanceof Error ? error.message : "Something went wrong creating the link.");
     } finally {
       setIsSendingQuoteToClient(false);
@@ -28062,7 +28115,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   // further than Specs'), which also removes the Quote tab from the client's hub link until staff
   // sends a fresh version.
   const reopenQuoteForEditing = async () => {
-    if (isReopeningQuoteAcceptance || !project || !auth?.currentUser) return;
+    // A quote the client has accepted is final (the reopen route refuses it too).
+    if (isReopeningQuoteAcceptance || !project || !auth?.currentUser || specsShareStatus?.quoteAcceptedAt) return;
     setIsReopeningQuoteAcceptance(true);
     try {
       const idToken = await auth.currentUser.getIdToken();
@@ -28073,11 +28127,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       });
       const data = (await res.json().catch(() => ({}))) as { ok?: boolean; reopenedVersionId?: string | null };
       if (data.ok) {
-        // Read from the server's own response, not this page's local specsShareStatus — that can
-        // lag behind Firestore (e.g. right after an outdated-quote "Update"), and trusting a stale
-        // client-side id here was leaving the Version History bubble's "Accepted" badge stuck
-        // showing even though the reopen route had already cleared the real record.
-        const reopenedVersionId = data.reopenedVersionId || "";
         setSpecsShareStatus((prev) =>
           prev
             ? { ...prev, quoteVersionId: null, quoteAcceptedAt: null, quoteAcceptedByName: null, quoteDeclinedAt: null, quoteDeclinedByName: null, quoteDeclineReason: null, quoteSentFromLive: null }
@@ -28087,18 +28136,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         // (see the reopen route's own comment — reopening retracts the send itself, not just the
         // acceptance) — mirror that locally so the Version History bubble's "Sent to Client"/
         // "Accepted" badges disappear immediately instead of waiting for a refetch.
-        if (reopenedVersionId) {
-          setQuoteGridVersions((prev) =>
-            prev.map((v) => (v.id === reopenedVersionId ? { ...v, sentToClient: undefined, acceptedAtIso: undefined, acceptedByName: undefined } : v)),
-          );
-          // Belt-and-braces refetch of that one version doc — guarantees the sidebar bubble matches
-          // whatever the server actually holds even if the optimistic patch above were ever wrong,
-          // rather than trusting the local mutation alone.
-          void fetchGridVersion(project, "quoteGridVersions", reopenedVersionId).then((fresh) => {
-            if (!fresh) return;
-            setQuoteGridVersions((prev) => prev.map((v) => (v.id === reopenedVersionId ? fresh : v)));
-          });
-        }
+        // Every version marked sent goes back to plain, not just that one (the server clears them all — see the
+        // reopen route), then the list is re-read so the sidebar's bubbles match the server exactly.
+        setQuoteGridVersions((prev) =>
+          prev.map((v) =>
+            v.sentToClient || v.acceptedAtIso || v.declinedAtIso
+              ? { ...v, sentToClient: undefined, acceptedAtIso: undefined, acceptedByName: undefined, declinedAtIso: undefined, declinedByName: undefined }
+              : v,
+          ),
+        );
+        void fetchGridVersions(project, "quoteGridVersions").then(setQuoteGridVersions);
         // Forces SpecsGridEditor to fully remount with fresh internal state — isSentToClient
         // flipping true→false without a remount was leaving the sheet rendering blank until a
         // manual page refresh (stale internal state from the editor's readOnly/editable branch
@@ -31352,7 +31399,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   key={template.id}
                                   type="button"
                                   onClick={() => addProjectChecklistFromTemplate(template)}
-                                  className="flex w-full items-center justify-between gap-2 rounded-[8px] px-2.5 py-2 text-left text-[12px] font-semibold transition hover:bg-[var(--panel-muted)]"
+                                  className="flex w-full items-center justify-between gap-2 rounded-[8px] px-2.5 py-2 text-left text-[12px] font-semibold transition hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)]"
                                   style={{ color: "var(--text-main)" }}
                                 >
                                   <span className="truncate">{template.name}</span>
@@ -43475,7 +43522,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         void onExportCncXlsxOld();
                         setCncExportMenuOpen(false);
                       }}
-                      className="flex h-9 w-full items-center px-3 text-left text-[12px] font-semibold transition-colors hover:bg-[var(--panel-muted)] max-md:h-11 max-md:px-4 max-md:text-[15px]"
+                      className="flex h-9 w-full items-center px-3 text-left text-[12px] font-semibold transition-colors hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] max-md:h-11 max-md:px-4 max-md:text-[15px]"
                       style={{ color: "var(--text-main)" }}
                     >
                       Old
@@ -43486,7 +43533,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         onExportCncXlsx();
                         setCncExportMenuOpen(false);
                       }}
-                      className="flex h-9 w-full items-center border-t px-3 text-left text-[12px] font-semibold transition-colors hover:bg-[var(--panel-muted)] max-md:h-11 max-md:px-4 max-md:text-[15px]"
+                      className="flex h-9 w-full items-center border-t px-3 text-left text-[12px] font-semibold transition-colors hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] max-md:h-11 max-md:px-4 max-md:text-[15px]"
                       style={{ borderColor: "var(--glass-border)", color: "var(--text-main)" }}
                     >
                       .xlsx
@@ -43497,7 +43544,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         onExportCncPdf();
                         setCncExportMenuOpen(false);
                       }}
-                      className="flex h-9 w-full items-center border-t px-3 text-left text-[12px] font-semibold transition-colors hover:bg-[var(--panel-muted)] max-md:h-11 max-md:px-4 max-md:text-[15px]"
+                      className="flex h-9 w-full items-center border-t px-3 text-left text-[12px] font-semibold transition-colors hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] max-md:h-11 max-md:px-4 max-md:text-[15px]"
                       style={{ borderColor: "var(--glass-border)", color: "var(--text-main)" }}
                     >
                       .pdf
@@ -45214,21 +45261,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 })()
               : `Accepted by ${specsShareStatus?.quoteAcceptedByName || "client"}`}
           </span>
-          {salesAllowReopenForEditingEnabled ? (
-            <button
-              type="button"
-              disabled={isReopeningQuoteAcceptance}
-              onClick={(e) => {
-                reopenQuoteConfirmOriginElRef.current = e.currentTarget;
-                setReopenQuoteConfirmOrigin(captureGlassModalOrigin(e));
-                setIsReopenQuoteConfirmOpen(true);
-              }}
-              className="inline-flex h-7 shrink-0 items-center rounded-[8px] px-3 text-[11px] font-bold hover:brightness-95 disabled:opacity-60"
-              style={{ borderColor: "var(--success-strong)", backgroundColor: "var(--panel-bg)", color: "var(--success-strong)", borderWidth: "1px", borderStyle: "solid" }}
-            >
-              {isReopeningQuoteAcceptance ? "Reopening…" : "Reopen for editing"}
-            </button>
-          ) : null}
+          {/* No "Reopen for editing" here — an accepted quote is final. */}
         </>
       ),
     } : quoteDeclinedBannerVisible ? {
@@ -45423,7 +45456,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             sent; Reopen for Editing first) reads as clutter, not a real option, so it pops out of
             the pill entirely instead of sitting there greyed out. */}
         <FloatingBarSlot
-          visible={!isQuoteContentLockedForSending && !isQuoteLockedForSending}
+          // Not until what's sent is known (isSpecsShareStatusLoaded), so it never shows and then goes.
+          visible={isSpecsShareStatusLoaded && !isQuoteContentLockedForSending && !isQuoteLockedForSending}
           orientation={isCompactProjectViewport ? "vertical" : "horizontal"}
           bounceStyle={mobileActionsButtonBounceStyle(isCompactProjectViewport, quoteMobileActionsSheet, "actions-send")}
         >
@@ -45461,7 +45495,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             which excludes that case) — that's exactly where "reopen this for editing" is most
             useful, not a case to hide it in. */}
         <FloatingBarSlot
-          visible={isQuoteLockedForSending && salesAllowReopenForEditingEnabled}
+          // Never once the client has accepted it — an accepted quote is final.
+          visible={isQuoteLockedForSending && salesAllowReopenForEditingEnabled && !specsShareStatus?.quoteAcceptedAt}
           orientation={isCompactProjectViewport ? "vertical" : "horizontal"}
           bounceStyle={mobileActionsButtonBounceStyle(isCompactProjectViewport, quoteMobileActionsSheet, "actions-reopen")}
         >
@@ -47126,7 +47161,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         {/* Same reasoning as the Quote tab's identical treatment above — folded into `visible`
             itself instead of just disabling the button. */}
         <FloatingBarSlot
-          visible={!isSpecsContentLockedForSending && !specsShareStatus?.versionId}
+          // Not until what's sent is known (isSpecsShareStatusLoaded), so it never shows and then goes.
+          visible={isSpecsShareStatusLoaded && !isSpecsContentLockedForSending && !specsShareStatus?.versionId}
           orientation={isCompactProjectViewport ? "vertical" : "horizontal"}
           bounceStyle={mobileActionsButtonBounceStyle(isCompactProjectViewport, specsMobileActionsSheet, "specs-actions-send")}
         >
@@ -50651,7 +50687,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   type="button"
                                   onMouseDown={(e) => e.preventDefault()}
                                   onClick={() => void onAddTagValue(tag)}
-                                  className="mb-1 block w-full rounded-[8px] px-2 py-1 text-left text-[12px] font-semibold last:mb-0 hover:bg-[var(--panel-muted)] max-md:rounded-[10px] max-md:px-3 max-md:py-2.5 max-md:text-[15px]"
+                                  className="mb-1 block w-full rounded-[8px] px-2 py-1 text-left text-[12px] font-semibold last:mb-0 hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] max-md:rounded-[10px] max-md:px-3 max-md:py-2.5 max-md:text-[15px]"
                                   style={{ color: projectPalette.textSoft }}
                                 >
                                   {tag}
@@ -50941,7 +50977,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   void onChangeAssignedProjectUser(member.uid);
                                   setIsQuickAssignOpen(false);
                                 }}
-                                className="flex w-full min-w-0 items-center gap-2 rounded-[6px] px-2 py-1.5 text-left text-[12px] font-semibold transition hover:bg-[var(--panel-muted)] max-md:gap-3 max-md:rounded-[10px] max-md:px-3 max-md:py-2.5 max-md:text-[15px]"
+                                className="flex w-full min-w-0 items-center gap-2 rounded-[6px] px-2 py-1.5 text-left text-[12px] font-semibold transition hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] max-md:gap-3 max-md:rounded-[10px] max-md:px-3 max-md:py-2.5 max-md:text-[15px]"
                                 style={{ color: "var(--text-main)" }}
                               >
                                 <span
@@ -54856,6 +54892,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               </button>
                               <div className="relative z-20">
                                 <input
+                                  // No browser autofill — its own suggestions list opens here (an autocomplete value
+                                  // the browser doesn't recognise; "off" isn't always kept to).
+                                  autoComplete="cs-board-field"
                                   ref={(el) => { boardColourInputRefs.current[row.id] = el; }}
                                   disabled={productionReadOnly}
                                   value={row.colour}
@@ -54955,6 +54994,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               />
                               <div className="relative z-20">
                                 <input
+                                  // No browser autofill — its own suggestions list opens here (an autocomplete value
+                                  // the browser doesn't recognise; "off" isn't always kept to).
+                                  autoComplete="cs-board-field"
                                   ref={(el) => { boardEdgingInputRefs.current[row.id] = el; }}
                                   disabled={productionReadOnly}
                                   value={row.edging}
@@ -55182,6 +55224,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             </div>
                             <div className="relative z-20 px-3 pt-1.5">
                               <input
+                                // No browser autofill — its own suggestions list opens here (an autocomplete value
+                                // the browser doesn't recognise; "off" isn't always kept to).
+                                autoComplete="cs-board-field"
                                 ref={(el) => { boardColourInputRefs.current[row.id] = el; }}
                                 disabled={productionReadOnly}
                                 value={row.colour}
@@ -55293,6 +55338,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             </div>
                             <div className="relative z-20 px-3 pt-1.5">
                               <input
+                                // No browser autofill — its own suggestions list opens here (an autocomplete value
+                                // the browser doesn't recognise; "off" isn't always kept to).
+                                autoComplete="cs-board-field"
                                 ref={(el) => { boardEdgingInputRefs.current[row.id] = el; }}
                                 disabled={productionReadOnly}
                                 value={row.edging}

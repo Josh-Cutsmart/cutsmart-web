@@ -227,6 +227,48 @@ export async function flushDuePushDigests(siteOrigin: string): Promise<number> {
   return flushed;
 }
 
+// "Remind me in…" reminders (app/api/push/remind): one per notification, notificationReminders/{uid}_{id}
+// = { uid, notificationId, dueAtMs }. Asking again for the same notification replaces its reminder.
+export const NOTIFICATION_REMINDERS_COLLECTION = "notificationReminders";
+
+// Sends the reminders that are due — called by the scheduled job. Each one goes once (it's deleted as it's
+// claimed), and only if the notification is still there and still set to come back at that time (not
+// cleared, or moved to another time since).
+export async function flushDueNotificationReminders(siteOrigin: string): Promise<number> {
+  if (!adminDb) return 0;
+  const db = adminDb;
+  const now = Date.now();
+  const due = await db.collection(NOTIFICATION_REMINDERS_COLLECTION).where("dueAtMs", "<=", now).limit(200).get();
+  let sent = 0;
+  for (const docSnap of due.docs) {
+    const reminder = await db.runTransaction(async (tx) => {
+      const fresh = await tx.get(docSnap.ref);
+      if (!fresh.exists) return null;
+      const data = (fresh.data() ?? {}) as Record<string, unknown>;
+      if (!(Number(data.dueAtMs) <= now)) return null;
+      tx.delete(docSnap.ref);
+      return { uid: String(data.uid || ""), notificationId: String(data.notificationId || ""), dueAtMs: Number(data.dueAtMs) };
+    });
+    if (!reminder?.uid || !reminder.notificationId) continue;
+    const snap = await db.collection("users").doc(reminder.uid).collection("notifications").doc(reminder.notificationId).get();
+    if (!snap.exists) continue;
+    const data = (snap.data() ?? {}) as Record<string, unknown>;
+    if (Date.parse(String(data.snoozedUntilIso || "")) !== reminder.dueAtMs) continue;
+    await sendPushToUser(
+      reminder.uid,
+      {
+        title: String(data.title || "CutSmart").trim() || "CutSmart",
+        body: pushNotificationBody(data),
+        url: pushNotificationUrl(data),
+        tag: reminder.notificationId,
+      },
+      { type: String(data.type || ""), siteOrigin },
+    ).catch(() => undefined);
+    sent += 1;
+  }
+  return sent;
+}
+
 // Sends a notification that's already in someone's Notifications list (users/{uid}/notifications) to
 // their devices — once: it's stamped pushedAtIso, so asking again does nothing.
 export async function pushStoredNotification(

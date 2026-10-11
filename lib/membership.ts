@@ -359,7 +359,8 @@ export async function fetchUserProfileSummary(uid: string): Promise<UserProfileS
       // Absent field = unverified — never default this to true, a missing doc/field must never
       // read as "trusted."
       verified: Boolean(data.verified),
-      notifyAsCreator: Boolean(data.notifyAsCreator),
+      // "Notifications as Creator" is on unless they've switched it off.
+      notifyAsCreator: data.notifyAsCreator !== false,
     };
   } catch {
     return null;

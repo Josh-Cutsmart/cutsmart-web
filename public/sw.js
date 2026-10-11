@@ -9,7 +9,40 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(self.clients.claim());
 });
 
-// A notification arrives: show it, and put the unread count on the app icon where the device supports it.
+// Whether a CutSmart window on screen shows this notification itself — a computer pops it up in its corner
+// (components/global-app-tabs-bar.tsx), so the system's own notification isn't shown as well. Each window on
+// screen is asked; one that doesn't answer within half a second counts as no. Never on Safari, which wants every
+// push shown as a notification.
+async function shownInOpenWindow(push) {
+  const ua = (self.navigator && self.navigator.userAgent) || "";
+  if (/Safari\//.test(ua) && !/(Chrome|Chromium|CriOS|Edg|Firefox|FxiOS)\//.test(ua)) return false;
+  const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+  const onScreen = windows.filter((client) => client.visibilityState === "visible");
+  if (onScreen.length === 0) return false;
+  const answers = await Promise.all(
+    onScreen.map(
+      (client) =>
+        new Promise((resolve) => {
+          const channel = new MessageChannel();
+          const timer = setTimeout(() => resolve(false), 500);
+          channel.port1.onmessage = (message) => {
+            clearTimeout(timer);
+            resolve(Boolean(message.data && message.data.shownInApp));
+          };
+          try {
+            client.postMessage({ type: "cutsmart-push", push }, [channel.port2]);
+          } catch {
+            clearTimeout(timer);
+            resolve(false);
+          }
+        }),
+    ),
+  );
+  return answers.some(Boolean);
+}
+
+// A notification arrives: show it (unless a computer with CutSmart on screen pops it up itself), and put the
+// unread count on the app icon where the device supports it.
 self.addEventListener("push", (event) => {
   let data = {};
   try {
@@ -27,7 +60,12 @@ self.addEventListener("push", (event) => {
     actions: Array.isArray(data.actions) ? data.actions.slice(0, 2) : undefined,
     data: { url: data.url || "/dashboard", actionUrl: data.actionUrl || "", actionToken: data.actionToken || "" },
   };
-  const tasks = [self.registration.showNotification(title, options)];
+  const tasks = [
+    // What it says, for a window that shows it from the push itself (a dev mode test, which isn't stored).
+    shownInOpenWindow({ title, body: options.body, url: options.data.url, tag: data.tag || "" })
+      .catch(() => false)
+      .then((shownInApp) => (shownInApp ? undefined : self.registration.showNotification(title, options))),
+  ];
   if (typeof data.badgeCount === "number" && self.navigator && "setAppBadge" in self.navigator) {
     tasks.push(
       (data.badgeCount > 0 ? self.navigator.setAppBadge(data.badgeCount) : self.navigator.clearAppBadge()).catch(() => undefined),

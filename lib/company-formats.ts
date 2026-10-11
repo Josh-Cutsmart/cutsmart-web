@@ -212,6 +212,26 @@ export function activeLength(mm: number | string | null | undefined, options?: {
 export function activeDate(value: Date | string | number | null | undefined): string {
   return formatDate(value, getActiveCompanyFormats().dateFormat);
 }
+// Two days as a range in the company's format, the year only once when they share it: "Oct 5 – Oct 9, 2026",
+// "5 Oct – 9 Oct 2026", "05/10 – 09/10/2026", "2026-10-05 – 10-09". Across two years, both in full.
+export function activeDateRange(from: Date, to: Date, separator = " – "): string {
+  const format = getActiveCompanyFormats().dateFormat;
+  if (from.getFullYear() !== to.getFullYear()) return `${formatDate(from, format)}${separator}${formatDate(to, format)}`;
+  const dd = (d: Date) => String(d.getDate()).padStart(2, "0");
+  const mm = (d: Date) => String(d.getMonth() + 1).padStart(2, "0");
+  switch (format) {
+    case "MMM D, YYYY":
+      return `${MONTHS[from.getMonth()]} ${from.getDate()}${separator}${formatDate(to, format)}`;
+    case "D MMM YYYY":
+      return `${from.getDate()} ${MONTHS[from.getMonth()]}${separator}${formatDate(to, format)}`;
+    case "MM/DD/YYYY":
+      return `${mm(from)}/${dd(from)}${separator}${formatDate(to, format)}`;
+    case "YYYY-MM-DD":
+      return `${formatDate(from, format)}${separator}${mm(to)}-${dd(to)}`;
+    default:
+      return `${dd(from)}/${mm(from)}${separator}${formatDate(to, format)}`;
+  }
+}
 // "<date> | 3:05pm" — the date in the company's format, the time in the viewer's own local time.
 export function activeDateTime(value: Date | string | number | null | undefined, separator = " | "): string {
   const date = activeDate(value);

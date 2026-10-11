@@ -6,8 +6,9 @@
 // to local midnight of the day after its last day (end is exclusive), so a one-day all-day event is
 // exactly 24h long and multi-day spans are easy to lay out.
 
-import { collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, query, setDoc, where, writeBatch } from "@/lib/firestore-client";
+import { collection, deleteDoc, deleteField, doc, getDoc, getDocs, onSnapshot, query, setDoc, where, writeBatch } from "@/lib/firestore-client";
 import { db } from "@/lib/firebase";
+import { invalidateUserCache, readUserDocCached } from "@/lib/firestore-cache";
 
 // Per-category access, keyed by normalized role id (normalizeRoleKey). A role with no entry gets View;
 // owners and admins can always edit everything.
@@ -31,7 +32,12 @@ export type CalendarEvent = {
   projectName: string;
   createdByUid: string;
   createdByName: string;
+  // When it was added ("" if unknown), and who last changed it and when (shown as "Added by …" / "Modified
+  // by …" in the event's pop-up). updatedByUid is "" until someone changes it after adding it.
+  createdAtIso: string;
   updatedAtIso: string;
+  updatedByUid: string;
+  updatedByName: string;
   // With a linked project: shown on that project's client portal (Schedule tab).
   showToClient: boolean;
 };
@@ -60,6 +66,16 @@ export function newCalendarId(prefix = "cal") {
   return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 }
 
+// When an id from newCalendarId was made (its first 8 characters after the prefix are the time), as an ISO
+// string — "" if it isn't one. Events saved before createdAtIso was kept use it for theirs.
+function calendarIdCreatedIso(id: string): string {
+  const stamp = id.split("_")[1]?.slice(0, 8) ?? "";
+  const ms = /^[0-9a-z]{8}$/.test(stamp) ? parseInt(stamp, 36) : NaN;
+  // 2020 onwards, and not in the future.
+  if (!Number.isFinite(ms) || ms < Date.UTC(2020, 0, 1) || ms > Date.now() + 24 * 60 * 60 * 1000) return "";
+  return new Date(ms).toISOString();
+}
+
 // Workdays: day-of-week numbers as Date.getDay() gives them (0 = Sunday ... 6 = Saturday). Defaults to
 // Monday–Friday. The other days are shown crossed out (hatched) on the calendar.
 export const DEFAULT_CALENDAR_WORKDAYS = [1, 2, 3, 4, 5];
@@ -72,6 +88,26 @@ export function normalizeCalendarWorkdays(raw: unknown): number[] {
 // them, crossed out).
 export function normalizeCalendarShowNonWorkdays(raw: unknown): boolean {
   return raw !== false;
+}
+
+// User Settings > Preferences > Calendar Non-Work Days: a person's own choice (users/{uid}.calendarShowNonWorkdays),
+// which beats the company's (above) for them; null = none, the company's applies. It's only kept while it differs
+// from the company's — set back to match, it's cleared (saved as null), so they follow the company again.
+export async function fetchUserCalendarShowNonWorkdays(uid: string): Promise<boolean | null> {
+  const data = await readUserDocCached(uid).catch(() => null);
+  const value = data?.calendarShowNonWorkdays;
+  return typeof value === "boolean" ? value : null;
+}
+export async function saveUserCalendarShowNonWorkdays(uid: string, value: boolean | null): Promise<boolean> {
+  const userId = String(uid || "").trim();
+  if (!db || !userId) return false;
+  try {
+    await setDoc(doc(db, "users", userId), { calendarShowNonWorkdays: value === null ? deleteField() : value }, { merge: true });
+    invalidateUserCache(userId);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // Company Settings > Calendar > "Archive events after": events that ended longer ago than this are
@@ -143,7 +179,10 @@ function toEvent(id: string, data: Record<string, unknown>): CalendarEvent | nul
     projectName: String(data.projectName ?? "").trim(),
     createdByUid: String(data.createdByUid ?? "").trim(),
     createdByName: String(data.createdByName ?? "").trim(),
+    createdAtIso: String(data.createdAtIso ?? "") || calendarIdCreatedIso(id),
     updatedAtIso: String(data.updatedAtIso ?? ""),
+    updatedByUid: String(data.updatedByUid ?? "").trim(),
+    updatedByName: String(data.updatedByName ?? "").trim(),
     showToClient: data.showToClient === true,
   };
 }

@@ -76,6 +76,10 @@ export type SpecsCell = {
   confirmedYes?: boolean;
   // ISO timestamp of the most recent answer write.
   confirmedAt?: string;
+  // Quote only — on the cell a quote template's {{quote_total}} / {{total_price}} went into, the total it
+  // showed then (set by resolveSpecsGridTokens). Read by quoteGridTotalText, e.g. for the "accepted your quote
+  // for <price>" notification.
+  quoteTotalText?: string;
 };
 
 // Cell objects without their own .runs (any cell never touched by rich-text editing — plain text
@@ -690,6 +694,7 @@ export function normalizeSpecsGrid(raw: unknown): SpecsGrid | null {
       const confirmableAllowed = typeof cell.confirmableAllowed === "boolean" ? cell.confirmableAllowed : undefined;
       const confirmedYes = typeof cell.confirmedYes === "boolean" ? cell.confirmedYes : undefined;
       const confirmedAt = typeof cell.confirmedAt === "string" && cell.confirmedAt ? cell.confirmedAt : undefined;
+      const quoteTotalText = typeof cell.quoteTotalText === "string" && cell.quoteTotalText ? cell.quoteTotalText : undefined;
       if (
         clampedRowSpan !== cell.rowSpan ||
         clampedColSpan !== cell.colSpan ||
@@ -697,7 +702,8 @@ export function normalizeSpecsGrid(raw: unknown): SpecsGrid | null {
         confirmable !== cell.confirmable ||
         confirmableAllowed !== cell.confirmableAllowed ||
         confirmedYes !== cell.confirmedYes ||
-        confirmedAt !== cell.confirmedAt
+        confirmedAt !== cell.confirmedAt ||
+        quoteTotalText !== cell.quoteTotalText
       ) {
         // Firestore's setDoc rejects a literal `undefined` property value outright — every optional
         // field here (including rowSpan/colSpan, absent on any cell that was never part of a merge)
@@ -714,6 +720,7 @@ export function normalizeSpecsGrid(raw: unknown): SpecsGrid | null {
           ...(typeof confirmableAllowed === "boolean" ? { confirmableAllowed } : {}),
           ...(typeof confirmedYes === "boolean" ? { confirmedYes } : {}),
           ...(confirmedAt ? { confirmedAt } : {}),
+          ...(quoteTotalText ? { quoteTotalText } : {}),
         });
       } else {
         normalizedCells.push(cell);
@@ -970,16 +977,40 @@ export function pruneEmptySpecsRows(grid: SpecsGrid): SpecsGrid {
   return working;
 }
 
+// A quote template's total: {{quote_total}} or {{total_price}}.
+const QUOTE_TOTAL_TOKEN = /\{\{\s*(?:quote_total|total_price)\s*\}\}/;
+
+// The total a quote grid shows — the cell its template's {{quote_total}} / {{total_price}} went into (marked
+// with it then: SpecsCell.quoteTotalText). If that cell's been edited since and no longer shows it, whatever
+// amount it shows now. "" when there's none marked (a quote generated before the mark was kept).
+export function quoteGridTotalText(grid: SpecsGrid): string {
+  for (const row of grid.rows) {
+    for (const cell of row.cells) {
+      const total = cell?.quoteTotalText?.trim();
+      if (!cell || !total) continue;
+      if (cell.text.includes(total)) return total;
+      return cell.text.match(/(?:[^\s\d.,()]{1,3}\s?)?\d(?:[\d,.\s]*\d)?/)?.[0].trim() ?? "";
+    }
+  }
+  return "";
+}
+
 // Direct analogue of the old Univer-based resolveSpecsTemplateSnapshot — deep-clones the template,
 // resolves every {{token}} in every cell's text against the current project's real data, and
 // regenerates row ids so this becomes a genuinely independent copy, not a live-bound reference back
 // to the template. Resolved exactly once, at the moment a project's own specs sheet is first cloned.
 export function resolveSpecsGridTokens(template: SpecsGrid, replacements: Record<string, string>): SpecsGrid {
   const cloned = JSON.parse(JSON.stringify(template)) as SpecsGrid;
+  // The quote's total (one formatting of it — both tokens give the same).
+  const quoteTotal = String(replacements.quote_total || replacements.total_price || "").trim();
   for (const row of cloned.rows) {
     row.id = genSpecsRowId();
     for (const cell of row.cells) {
       if (!cell) continue;
+      // The cell the total goes into: marked with it (see SpecsCell.quoteTotalText).
+      const holdsTotal = [cell.text, ...(cell.runs ?? []).map((run) => run.text)].some((text) => QUOTE_TOTAL_TOKEN.test(String(text ?? "")));
+      if (holdsTotal && quoteTotal) cell.quoteTotalText = quoteTotal;
+      else delete cell.quoteTotalText;
       if (typeof cell.text === "string") {
         cell.text = interpolateQuoteTemplateText(cell.text, replacements);
       }

@@ -82,6 +82,13 @@ function applyOriginArrival(panel: HTMLElement, el: HTMLElement, dx: number, dy:
     el.style.zIndex = previousZIndex;
   }, ORIGIN_ARRIVAL_HOLD_MS);
 
+  bounceOriginElement(el, dx, dy);
+}
+
+// The nudge an origin element (a button) gives as a pop-up lands back in it: pushed a little the way the pop-up
+// was travelling (dx, dy), then settling. Also used on its own — e.g. the bell, as a notification's corner pop-up
+// shrinks back into it (components/global-app-tabs-bar.tsx).
+export function bounceOriginElement(el: HTMLElement, dx: number, dy: number) {
   const distance = Math.hypot(dx, dy);
   if (distance < 1) return;
   const nx = dx / distance;

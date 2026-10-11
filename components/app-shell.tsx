@@ -10,7 +10,7 @@ import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage
 import {
   Archive,
   CalendarDays,
-  ChevronRight,
+  ChevronLeft,
   GripVertical,
   ImagePlus,
   Inbox,
@@ -2228,7 +2228,9 @@ export function AppShell({
     const prevHtmlOverflow = document.documentElement.style.overflow;
     const prevBodyOverflow = document.body.style.overflow;
     document.documentElement.style.overflow = "hidden";
-    document.body.style.overflow = "hidden";
+    // clip, not hidden — a hidden <body> under a hidden <html> becomes a scroll container, and sticky bars
+    // stick to it instead of the window (globals.css, html.cs-scroll-locked body).
+    document.body.style.overflow = "clip";
     return () => {
       document.documentElement.style.overflow = prevHtmlOverflow;
       document.body.style.overflow = prevBodyOverflow;
@@ -2921,11 +2923,10 @@ export function AppShell({
         cutlistJson: { rows: [] },
         projectSettings,
         sales,
-        // "Notifications as Creator" (User Settings) — off by default (see
-        // lib/project-notify.ts's isProjectNotifySubscribed), only written here at all when the
-        // creator has opted in, so a project's stored overrides stay empty/absent for everyone
-        // who hasn't touched this setting.
-        ...(user?.notifyAsCreator && user?.uid ? { notifySubscriptionOverrides: { [user.uid]: true } } : {}),
+        // "Notifications as Creator" (User Settings) — on unless the creator has switched it off: they're
+        // subscribed to the project's notifications (lib/project-notify.ts's isProjectNotifySubscribed), the same
+        // as tapping its bell. Nothing's written when it's off, so the project's stored overrides stay empty.
+        ...(user?.notifyAsCreator !== false && user?.uid ? { notifySubscriptionOverrides: { [user.uid]: true } } : {}),
         // Lead custom fields not already captured by a fixed field above — see
         // lib/new-project-bridge.ts and buildLeadProjectPrefill in leads/page.tsx. Absent (not an
         // empty array) when this project wasn't created from a lead, or its lead had none.
@@ -3155,8 +3156,8 @@ export function AppShell({
               transform: "translateX(-100%)",
             }}
           >
-            {/* Alongside the swipe-to-close gesture — an explicit tap target in the corner the
-                drawer will retreat toward (right, since it slides back out to the left). */}
+            {/* Alongside the swipe-to-close gesture — an explicit tap target in the top-right corner, its arrow
+                pointing the way the drawer goes (left, since it slides back out to the left). */}
             <button
               type="button"
               onClick={() => setMobileNavOpen(false)}
@@ -3164,7 +3165,7 @@ export function AppShell({
               style={{ borderColor: shellPalette.border, backgroundColor: shellPalette.panelBg, color: shellPalette.textMuted }}
               aria-label="Close menu"
             >
-              <ChevronRight size={20} />
+              <ChevronLeft size={20} />
             </button>
             <div className="flex items-center border-b border-[var(--panel-border)] px-4 py-3" style={{ borderColor: shellPalette.border }}>
               <div className="flex min-h-[44px] w-full items-center">

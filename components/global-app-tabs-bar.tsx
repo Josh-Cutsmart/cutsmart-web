@@ -1,21 +1,58 @@
 "use client";
 
-import { activeDateTime } from "@/lib/company-formats";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type ReactNode, type TouchEvent as ReactTouchEvent } from "react";
+import { activeDate, activeDateTime } from "@/lib/company-formats";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type ReactNode, type RefObject, type TouchEvent as ReactTouchEvent } from "react";
 import { createPortal } from "react-dom";
 import { usePathname, useRouter } from "next/navigation";
-import { Bell, ChevronLeft, LayoutDashboard, Menu, X } from "lucide-react";
+import {
+  Bell,
+  CalendarDays,
+  Check,
+  CheckCheck,
+  ChevronRight,
+  ClipboardList,
+  DollarSign,
+  FolderKanban,
+  Globe,
+  Inbox,
+  KeyRound,
+  LayoutDashboard,
+  Lock,
+  Mail,
+  Menu,
+  Minus,
+  Plus,
+  RefreshCw,
+  Shield,
+  Sparkles,
+  Trash2,
+  Unlock,
+  UserMinus,
+  Users,
+  X,
+  type LucideIcon,
+} from "lucide-react";
+import { requestNotificationReminderPush } from "@/lib/push-client";
+import { pushNotificationCategoryOf } from "@/lib/push-notification-types";
+import { devButtonClass, useDevModeOn } from "@/lib/dev-mode";
+import { DEV_TEST_LIST_KINDS, devTestListSample, isDevTestNotificationText } from "@/lib/push-dev-test";
 import { useSwipeToClose } from "@/lib/use-swipe-to-close";
 import { openWhatsNew } from "@/components/whats-new-sheet";
 import { swallowNextClick } from "@/lib/swallow-dismiss-click";
+import { bounceOriginElement } from "@/lib/use-glass-modal-pop-origin";
+import { GlassDropdown } from "@/components/glass-dropdown";
 import { useAppTabs, type AppWorkspaceTab } from "@/lib/app-tabs-context";
 import { applyThemeMode, readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
 import { useAuth } from "@/lib/auth-context";
 import { prefetchProjectById } from "@/lib/firestore-data";
 import {
+  addUserNotification,
+  deleteUserNotification,
   fetchUserNotifications,
   markUserNotificationRead,
   setAllUserNotificationsRead,
+  setUserNotificationRead,
+  snoozeUserNotification,
   type UserNotificationRow,
 } from "@/lib/firestore-data";
 
@@ -24,6 +61,253 @@ const NOTIF_POLL_INTERVAL_MS = 50000;
 // "<date> | 8:57pm" — the date in the company's date format, the time in the viewer's own local time.
 function formatNotificationTime(iso: string) {
   return activeDateTime(iso);
+}
+
+// A notification's time, short: "Now", "5m", "2h", "3d" — then its date (the company's date format).
+function relativeNotifTime(iso: string) {
+  const at = Date.parse(iso);
+  if (!Number.isFinite(at)) return "";
+  const minutes = Math.floor((Date.now() - at) / 60000);
+  if (minutes < 1) return "Now";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d`;
+  return activeDate(iso);
+}
+
+// Each notification's icon: the one the app uses for what it's about —
+const NOTIF_TYPE_ICONS: Record<string, LucideIcon> = {
+  // a project's access (Company Settings > Production access), the "Assigned" in a project's header, removing
+  // someone (Company Settings), and Production's Unlock Edit (locked / unlocked)
+  project_access: KeyRound,
+  project_assigned: Users,
+  project_unassigned: UserMinus,
+  production_unlock_request: Lock,
+  production_unlock_response: Unlock,
+  // Leads (the sidebar's)
+  lead_new: Inbox,
+  lead_access: Inbox,
+  // Design's Quote and Specifications tabs
+  quote_accepted: DollarSign,
+  quote_declined: DollarSign,
+  quote_sent: DollarSign,
+  quote_pending: DollarSign,
+  specs_submitted: ClipboardList,
+  specs_sent: ClipboardList,
+  specs_pending: ClipboardList,
+  // Calendar (the sidebar's)
+  calendar_reminder: CalendarDays,
+  // a new version: an update (arrows in a circle); a role (Company Settings > Roles)
+  app_version: RefreshCw,
+  role_change: Shield,
+};
+// — or, for a kind not listed there, its category's (the same icons as User Settings > Notifications).
+const NOTIF_CATEGORY_ICONS: Record<string, LucideIcon> = {
+  projects: FolderKanban,
+  leads: Inbox,
+  client_portal: Globe,
+  calendar: CalendarDays,
+  cutsmart: Sparkles,
+};
+// "Remind me in…" (a notification's menu): minutes, hours or days — how long one is, the most you can pick (the
+// server takes 1 minute to 60 days — app/api/push/remind), and how far − / + move it (minutes go in fives).
+type RemindUnit = "minutes" | "hours" | "days";
+const REMIND_UNITS: Record<RemindUnit, { ms: number; max: number; step: number; one: string; many: string }> = {
+  minutes: { ms: 60 * 1000, max: 59, step: 5, one: "minute", many: "minutes" },
+  hours: { ms: 60 * 60 * 1000, max: 24, step: 1, one: "hour", many: "hours" },
+  days: { ms: 24 * 60 * 60 * 1000, max: 30, step: 1, one: "day", many: "days" },
+};
+const REMIND_UNIT_OPTIONS = [
+  { value: "minutes", label: "Minutes" },
+  { value: "hours", label: "Hours" },
+  { value: "days", label: "Days" },
+];
+// One step of − / + from `value`: by `step`, landing on its multiples (1 → 5 → 10 for minutes), within 1–max.
+function stepRemindAmount(value: number, unit: RemindUnit, direction: 1 | -1): number {
+  const { step, max } = REMIND_UNITS[unit];
+  const next = direction > 0 ? Math.floor(value / step) * step + step : Math.ceil(value / step) * step - step;
+  return Math.min(max, Math.max(1, next));
+}
+
+// The soft circle behind a notification's icon (and the empty list's bell).
+const NOTIF_ICON_BG = "color-mix(in srgb, var(--text-main) 7%, transparent)";
+
+// A new notification pops up in the top-right corner on a computer (1024px and up, like the Notifications
+// drawer) while CutSmart is on screen. Phones and tablets get the system's own notifications instead.
+function canPopUpNotifications(): boolean {
+  if (typeof window === "undefined" || typeof document === "undefined") return false;
+  return window.matchMedia("(min-width: 1024px)").matches && document.visibilityState === "visible";
+}
+// How long one stays up (while the pointer's on it, it waits).
+const NOTIF_TOAST_MS = 5000;
+// A dev mode test notification (the "test in … s" at the top of Notifications) — marked as one, or, if it was
+// added before they were marked, one of the tests' exact words. Cleared away once it's been seen.
+function isDevTestNotification(row: UserNotificationRow): boolean {
+  return Boolean(row.devTest) || isDevTestNotificationText(row.title, row.message);
+}
+// A pop-up: a notification from the list — or a dev mode test (lib/push-dev-test.ts), which isn't stored, so
+// it's made from the push itself, and opens where the push would (testUrl).
+type NotifToastItem = UserNotificationRow & { testUrl?: string };
+// Popping out of the bell and back into it — the same as the app's other pop-ups (lib/use-glass-modal-pop-origin.ts):
+// a little overshoot coming out, a smooth shrink going back.
+const NOTIF_TOAST_POP_MS = 320;
+const NOTIF_TOAST_POP_EASING = "cubic-bezier(0.34, 1.56, 0.64, 1)";
+const NOTIF_TOAST_SHRINK_EASING = "cubic-bezier(0.34, 1, 0.64, 1)";
+// From a pop-up to the bell: how far its centre moves, and the transform that shrinks it onto the bell.
+function notifToastPathToBell(el: HTMLElement, bell: HTMLElement | null): { dx: number; dy: number; transform: string } | null {
+  if (!bell || !bell.isConnected || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return null;
+  const from = el.getBoundingClientRect();
+  const to = bell.getBoundingClientRect();
+  if (!from.width || !to.width) return null;
+  const dx = to.left + to.width / 2 - (from.left + from.width / 2);
+  const dy = to.top + to.height / 2 - (from.top + from.height / 2);
+  const scaleX = Math.max(to.width / from.width, 0.02);
+  const scaleY = Math.max(to.height / from.height, 0.02);
+  return { dx, dy, transform: `translate(${dx}px, ${dy}px) scale(${scaleX}, ${scaleY})` };
+}
+
+// One pop-up: its icon, title and message, like its row in the list. Clicking it opens what it's about; its X
+// (shown on hover) just closes it. It pops out of the bell (bellRef), and when it's done shrinks back into it,
+// the bell giving a little nudge as it lands — like the app's other pop-ups and the buttons they open from.
+function NotifToast({
+  icon: Icon,
+  title,
+  message,
+  bellRef,
+  onOpen,
+  onDone,
+}: {
+  icon: LucideIcon;
+  title: string;
+  message: string;
+  bellRef: RefObject<HTMLElement | null>;
+  onOpen: () => void;
+  onDone: () => void;
+}) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const [leaving, setLeaving] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  // The time it has left — kept across hovering, so the pointer resting on it pauses it rather than restarting it.
+  const remainingMsRef = useRef(NOTIF_TOAST_MS);
+  const onDoneRef = useRef(onDone);
+  useEffect(() => {
+    onDoneRef.current = onDone;
+  });
+  useEffect(() => {
+    if (hovered || leaving) return;
+    const startedAt = Date.now();
+    const timer = window.setTimeout(() => setLeaving(true), remainingMsRef.current);
+    return () => {
+      window.clearTimeout(timer);
+      remainingMsRef.current = Math.max(1000, remainingMsRef.current - (Date.now() - startedAt));
+    };
+  }, [hovered, leaving]);
+  // Coming in: out of the bell (just fading in, with reduced motion).
+  useLayoutEffect(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    const path = notifToastPathToBell(el, bellRef.current);
+    const animation = path
+      ? el.animate(
+          [
+            { transform: path.transform, opacity: 0 },
+            { opacity: 1, offset: 0.3 },
+            { transform: "translate(0px, 0px) scale(1, 1)", opacity: 1 },
+          ],
+          { duration: NOTIF_TOAST_POP_MS, easing: NOTIF_TOAST_POP_EASING },
+        )
+      : el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 200, easing: "ease" });
+    return () => animation.cancel();
+  }, [bellRef]);
+  // Going: back into the bell, which nudges as it lands — then it's gone.
+  useEffect(() => {
+    if (!leaving) return;
+    const el = rootRef.current;
+    if (!el) {
+      onDoneRef.current();
+      return;
+    }
+    // Still popping out (closed straight away)? Stopped first, so it's measured where it really sits.
+    for (const running of el.getAnimations()) running.cancel();
+    const bell = bellRef.current;
+    const path = notifToastPathToBell(el, bell);
+    const animation = path
+      ? el.animate(
+          [
+            { transform: "translate(0px, 0px) scale(1, 1)", opacity: 1 },
+            { opacity: 1, offset: 0.55 },
+            { transform: path.transform, opacity: 0 },
+          ],
+          { duration: NOTIF_TOAST_POP_MS, easing: NOTIF_TOAST_SHRINK_EASING, fill: "forwards" },
+        )
+      : el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 200, easing: "ease", fill: "forwards" });
+    let landed = false;
+    const land = () => {
+      if (landed) return;
+      landed = true;
+      if (path && bell?.isConnected) bounceOriginElement(bell, path.dx, path.dy);
+      onDoneRef.current();
+    };
+    animation.onfinish = land;
+    // In case the browser holds the animation's end back (e.g. a tab in the background).
+    const fallback = window.setTimeout(land, NOTIF_TOAST_POP_MS + 250);
+    return () => {
+      window.clearTimeout(fallback);
+      animation.onfinish = null;
+      animation.cancel();
+    };
+  }, [leaving, bellRef]);
+  return (
+    <div
+      ref={rootRef}
+      role="status"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      className="group pointer-events-auto relative w-full overflow-hidden rounded-[16px] border"
+      style={{
+        borderColor: "var(--glass-border)",
+        backgroundColor: "var(--glass-bg-strong)",
+        backdropFilter: "blur(20px) saturate(180%)",
+        WebkitBackdropFilter: "blur(20px) saturate(180%)",
+        boxShadow: "inset 0 1px 0 var(--glass-highlight), var(--shadow-glass)",
+      }}
+    >
+      <button
+        type="button"
+        onClick={() => {
+          onOpen();
+          setLeaving(true);
+        }}
+        className="flex w-full items-start gap-3 px-3 py-3 pr-9 text-left transition-colors hover:bg-[color-mix(in_srgb,var(--text-main)_4%,transparent)]"
+      >
+        <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full" style={{ backgroundColor: NOTIF_ICON_BG, color: "var(--text-main)" }}>
+          <Icon size={16} />
+        </span>
+        <span className="min-w-0 flex-1 pt-0.5">
+          <span className="block truncate text-[13.5px] font-semibold" style={{ color: "var(--text-main)" }}>
+            {title}
+          </span>
+          {message ? (
+            <span className="mt-0.5 line-clamp-2 block text-[12.5px] leading-snug" style={{ color: "var(--text-muted)" }}>
+              {message}
+            </span>
+          ) : null}
+        </span>
+      </button>
+      <button
+        type="button"
+        onClick={() => setLeaving(true)}
+        className="absolute right-2 top-2 inline-flex h-6 w-6 items-center justify-center rounded-full opacity-0 transition hover:bg-[color-mix(in_srgb,var(--text-main)_8%,transparent)] focus-visible:opacity-100 group-hover:opacity-100"
+        style={{ color: "var(--text-muted)" }}
+        aria-label="Dismiss notification"
+        title="Dismiss"
+      >
+        <X size={14} />
+      </button>
+    </div>
+  );
 }
 
 let pendingActiveAppTabKeyMemory = "";
@@ -75,6 +359,57 @@ export function GlobalAppTabsBar() {
   const notifBtnRef = useRef<HTMLButtonElement | null>(null);
   const notifDropdownRef = useRef<HTMLDivElement | null>(null);
   const notifUnreadCount = notifRows.filter((row) => !row.read).length;
+  // Which person and company the list was last loaded for — until it has been for these, it isn't "all caught
+  // up", just not loaded yet (renderNotifRows shows placeholders then).
+  const notifListKey = `${String(user?.uid || "")}|${activeCompanyId}`;
+  const [notifsLoadedKey, setNotifsLoadedKey] = useState("");
+  const isNotifListLoaded = notifsLoadedKey === notifListKey;
+  // New notifications popped up in the corner (computers — see canPopUpNotifications): newest on top, three
+  // at most at once.
+  const [notifToasts, setNotifToasts] = useState<NotifToastItem[]>([]);
+  // The notifications the last check found (null before the first: those were already there, so none of
+  // them pops up). One that wasn't there before is new — including one a "Remind me" brings back.
+  const seenNotifIdsRef = useRef<Set<string> | null>(null);
+  // Checks for new notifications straight away (set by the polling below) — e.g. when a push arrives.
+  const loadNotifsNowRef = useRef<(() => void) | null>(null);
+  const isNotifOpenRef = useRef(isNotifOpen);
+  useEffect(() => {
+    isNotifOpenRef.current = isNotifOpen;
+  }, [isNotifOpen]);
+  // Dev mode's test notifications (the "test in … s" below) are for testing only: once one's been seen it's
+  // removed for good — when its pop-up is done, or when Notifications is closed after it was in the list.
+  const removeDevTestNotification = (id: string) => {
+    const uid = user?.uid;
+    if (!uid) return;
+    void deleteUserNotification(uid, id).then(() => setNotifRows((prev) => prev.filter((item) => item.id !== id)));
+  };
+  const notifRowsRef = useRef(notifRows);
+  useEffect(() => {
+    notifRowsRef.current = notifRows;
+  }, [notifRows]);
+  const wasNotifOpenRef = useRef(false);
+  useEffect(() => {
+    const wasOpen = wasNotifOpenRef.current;
+    wasNotifOpenRef.current = isNotifOpen;
+    const uid = user?.uid;
+    if (!wasOpen || isNotifOpen || !uid) return;
+    for (const row of notifRowsRef.current) {
+      if (!isDevTestNotification(row)) continue;
+      void deleteUserNotification(uid, row.id).then(() => setNotifRows((prev) => prev.filter((item) => item.id !== row.id)));
+    }
+  }, [isNotifOpen, user?.uid]);
+  // Dev mode: "test in … s" at the top of Notifications (renderDevNotifTest) — how many seconds, and while one's
+  // on its way, how many are left.
+  const isDevModeOn = useDevModeOn();
+  const [devTestSecondsText, setDevTestSecondsText] = useState("5");
+  const [devTestSecondsLeft, setDevTestSecondsLeft] = useState<number | null>(null);
+  const devTestTimerRef = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (devTestTimerRef.current) window.clearTimeout(devTestTimerRef.current);
+    },
+    [],
+  );
   const [notifBellWobbleKey, setNotifBellWobbleKey] = useState(0);
   // Matches app-shell.tsx's own breakpoint (min-width: 1024px) — below it, opening notifications
   // shows a full-screen slide-out panel (same treatment as the mobile nav drawer) instead of the
@@ -90,6 +425,19 @@ export function GlobalAppTabsBar() {
     query.addEventListener("change", sync);
     return () => query.removeEventListener("change", sync);
   }, []);
+  // Computer: Notifications is a drawer down the whole right side, sliding in and out (the same as a
+  // contact's on Contacts) — kept mounted while it slides back out.
+  const [isNotifDrawerMounted, setIsNotifDrawerMounted] = useState(false);
+  if (isNotifOpen && isDesktopViewport && !isNotifDrawerMounted) setIsNotifDrawerMounted(true);
+  // A notification's own menu — right-click it, or press and hold on a phone: Mark as read / unread, Clear,
+  // Remind me in… (how many hours or days, kept for next time).
+  const [notifMenu, setNotifMenu] = useState<{ row: UserNotificationRow; left: number; top: number; width: number } | null>(null);
+  const notifMenuRef = useRef<HTMLDivElement | null>(null);
+  const [remindAmount, setRemindAmount] = useState(1);
+  const [remindUnit, setRemindUnit] = useState<RemindUnit>("days");
+  const notifLongPressRef = useRef<{ timer: number; x: number; y: number } | null>(null);
+  // The row a press-and-hold opened the menu on: the tap its release fires doesn't also open it.
+  const suppressNotifClickRef = useRef("");
   const mobileNotifPanelRef = useRef<HTMLDivElement | null>(null);
   // This component lives outside AppShell's own tree (see app/(staff)/layout.tsx), so the page
   // content it pushes in sync with the panel's slide has to be found by query rather than a ref
@@ -398,7 +746,14 @@ export function GlobalAppTabsBar() {
       // header's close button, the backdrop tap, the swipe-to-close drag) or genuinely tapping
       // outside it, not from this desktop-oriented outside-click check.
       const isInsideMobileNotifPanel = mobileNotifPanelRef.current?.contains(targetNode);
-      if (isNotifOpen && !isInsideTopBar && !isInsideNotifDropdown && !isInsideMobileNotifPanel) {
+      // A notification's menu is its own portal — a press in it is still inside Notifications. So is one in a
+      // dropdown's list opened from it (Remind me in's minutes / hours / days), which is a portal of its own.
+      const isInsideNotifMenu =
+        notifMenuRef.current?.contains(targetNode) || Boolean((targetNode as Element | null)?.closest?.('[data-glass-dropdown-menu="true"]'));
+      // The bell toggles it itself; anywhere else — the rest of the top bar included (a tab, an empty part) —
+      // is off it, and closes it.
+      const isOnNotifBell = notifBtnRef.current?.contains(targetNode);
+      if (isNotifOpen && !isOnNotifBell && !isInsideNotifDropdown && !isInsideMobileNotifPanel && !isInsideNotifMenu) {
         setIsNotifOpen(false);
         // That press only closes notifications — it doesn't also act on whatever it landed on.
         swallowNextClick();
@@ -408,6 +763,48 @@ export function GlobalAppTabsBar() {
     return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [isNotifOpen, setIsNotifOpen]);
 
+  // A notification's menu closes on a press outside it (that press doing nothing else), Escape, a scroll or
+  // a resize.
+  useEffect(() => {
+    if (!notifMenu) return;
+    const close = () => setNotifMenu(null);
+    const onPointerDown = (event: PointerEvent) => {
+      if (notifMenuRef.current?.contains(event.target as Node)) return;
+      // Its unit dropdown's list (a portal of its own) is part of it.
+      if ((event.target as Element | null)?.closest?.('[data-glass-dropdown-menu="true"]')) return;
+      close();
+      swallowNextClick();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      close();
+    };
+    const onScroll = (event: Event) => {
+      if (notifMenuRef.current && event.target instanceof Node && notifMenuRef.current.contains(event.target)) return;
+      close();
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    document.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", close);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      document.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", close);
+    };
+  }, [notifMenu]);
+  // Escape closes the computer's drawer (a notification's open menu takes it first, above).
+  useEffect(() => {
+    if (!isNotifOpen || !isDesktopViewport) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIsNotifOpen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [isNotifOpen, isDesktopViewport, setIsNotifOpen]);
+
   useEffect(() => {
     const uid = String(user?.uid || "").trim();
     if (!uid) {
@@ -416,26 +813,85 @@ export function GlobalAppTabsBar() {
     }
     let cancelled = false;
     let lastSignature = "";
+    seenNotifIdsRef.current = null;
     const load = async () => {
       // A hidden tab doesn't need fresh notifications; it catches up on the next poll after it's shown.
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       const rows = await fetchUserNotifications(uid, activeCompanyId);
       if (cancelled) return;
+      setNotifsLoadedKey(`${uid}|${activeCompanyId}`);
+      // Any unread one that wasn't there last time pops up in the corner (on a computer, while the list
+      // itself isn't open).
+      const seen = seenNotifIdsRef.current;
+      seenNotifIdsRef.current = new Set(rows.map((row) => row.id));
+      if (seen && !isNotifOpenRef.current && canPopUpNotifications()) {
+        const fresh = rows.filter((row) => !row.read && !seen.has(row.id));
+        if (fresh.length > 0) {
+          setNotifToasts((prev) => [...fresh, ...prev.filter((toast) => !fresh.some((row) => row.id === toast.id))].slice(0, 3));
+        }
+      }
       // Only update (and so re-render the top bar) when something actually changed.
       const signature = JSON.stringify(rows);
       if (signature === lastSignature) return;
       lastSignature = signature;
       setNotifRows(rows);
     };
-    // The first load waits a moment, so it doesn't compete with the page's own data on open.
+    // The first load waits a moment, so it doesn't compete with the page's own data on open (opening
+    // Notifications before then loads it straight away — see below).
     const firstLoadTimer = window.setTimeout(() => void load(), 2000);
     const intervalId = window.setInterval(() => void load(), NOTIF_POLL_INTERVAL_MS);
+    // Coming back to the tab: caught up straight away, not at the next poll (a hidden tab skips them).
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") void load();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    loadNotifsNowRef.current = () => void load();
     return () => {
       cancelled = true;
       window.clearTimeout(firstLoadTimer);
       window.clearInterval(intervalId);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      loadNotifsNowRef.current = null;
     };
   }, [activeCompanyId, user?.uid]);
+  // Opening Notifications loads the list straight away — so it's never waiting on the first load or the next poll.
+  useEffect(() => {
+    if (isNotifOpen) loadNotifsNowRef.current?.();
+  }, [isNotifOpen]);
+  // A push arriving while CutSmart's open: the service worker asks first (public/sw.js). On a computer, with it on
+  // screen, it's shown here (popped up, or in the open list) instead of as the system's notification — so not
+  // twice — and the list is checked straight away rather than at the next poll.
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
+    const onMessage = (event: MessageEvent) => {
+      const data = event.data as { type?: string; push?: { title?: string; body?: string; url?: string; tag?: string } } | null;
+      if (data?.type !== "cutsmart-push") return;
+      // A dev mode test isn't in the list, so it pops up from the push itself (even with the list open).
+      const tag = String(data.push?.tag || "");
+      if (tag.startsWith("dev-test-")) {
+        const showHere = canPopUpNotifications();
+        event.ports[0]?.postMessage({ shownInApp: showHere });
+        if (!showHere) return;
+        const test: NotifToastItem = {
+          id: tag,
+          // Its kind is in its tag: dev-test-<kind>-<time>.
+          type: tag.slice("dev-test-".length).replace(/-\d+$/, ""),
+          title: String(data.push?.title || "CutSmart"),
+          message: String(data.push?.body || ""),
+          read: false,
+          createdAtIso: new Date().toISOString(),
+          testUrl: String(data.push?.url || "") || "/dashboard",
+        };
+        setNotifToasts((prev) => [test, ...prev.filter((toast) => toast.id !== test.id)].slice(0, 3));
+        return;
+      }
+      const load = loadNotifsNowRef.current;
+      event.ports[0]?.postMessage({ shownInApp: Boolean(load) && canPopUpNotifications() });
+      load?.();
+    };
+    navigator.serviceWorker.addEventListener("message", onMessage);
+    return () => navigator.serviceWorker.removeEventListener("message", onMessage);
+  }, []);
 
   const blurTopTabTarget = (target?: EventTarget | null) => {
     const element = target instanceof HTMLElement ? target : null;
@@ -1054,63 +1510,283 @@ export function GlobalAppTabsBar() {
   // here; it's parsed back out of the title (created as `New version ${version}`) rather than
   // needing a schema change, so this also cleans up historical notifications already in Firestore.
   const appVersionFromNotifTitle = (title: string) => String(title || "").replace(/^New version\s*/i, "").trim();
+  // Its icon (see NOTIF_TYPE_ICONS) and title — a new version's as "New version 1.2.3".
+  const notifIconOf = (row: UserNotificationRow): LucideIcon =>
+    NOTIF_TYPE_ICONS[String(row.type ?? "")] ?? NOTIF_CATEGORY_ICONS[pushNotificationCategoryOf(row.type)] ?? Bell;
+  const notifTitleOf = (row: UserNotificationRow) =>
+    row.type === "app_version" ? `New version ${appVersionFromNotifTitle(row.title)}` : row.title || "Notification";
+  // Opening one (its row in the list, or its pop-up): it's read, and to what it's about.
+  const openNotification = (row: UserNotificationRow) => {
+    if (!user?.uid) return;
+    setNotifRows((prev) => prev.map((item) => (item.id === row.id ? { ...item, read: true } : item)));
+    void markUserNotificationRead(user.uid, row.id);
+    setIsNotifOpen(false);
+    if (row.type === "app_version") {
+      // Straight to that version's What's New page, over whatever page this is.
+      openWhatsNew(appVersionFromNotifTitle(row.title));
+    } else if (row.type === "calendar_reminder" && row.eventId) {
+      router.push(`/calendar?event=${encodeURIComponent(row.eventId)}`);
+    } else if (row.projectId) {
+      router.push(`/projects/${row.projectId}`);
+    } else if (String(row.type || "").startsWith("lead_")) {
+      router.push("/leads");
+    }
+  };
+
+  // ---- A notification's menu.
+  // Where it opens: at the pointer / finger, kept on screen (a phone's or tablet's is a little bigger).
+  function openNotifMenu(row: UserNotificationRow, x: number, y: number) {
+    const big = window.matchMedia("(max-width: 1023px)").matches;
+    const width = big ? 272 : 244;
+    const height = big ? 330 : 270;
+    const left = Math.max(8, Math.min(x, window.innerWidth - width - 8));
+    const top = y + height > window.innerHeight - 8 ? Math.max(8, y - height) : y;
+    setNotifMenu({ row, left, top, width });
+  }
+  function startNotifLongPress(row: UserNotificationRow, event: ReactTouchEvent) {
+    const touch = event.touches[0];
+    if (!touch || event.touches.length !== 1) return;
+    const x = touch.clientX;
+    const y = touch.clientY;
+    const timer = window.setTimeout(() => {
+      notifLongPressRef.current = null;
+      suppressNotifClickRef.current = row.id;
+      openNotifMenu(row, x, y);
+    }, 480);
+    notifLongPressRef.current = { timer, x, y };
+  }
+  function moveNotifLongPress(event: ReactTouchEvent) {
+    const press = notifLongPressRef.current;
+    const touch = event.touches[0];
+    if (!press || !touch) return;
+    if (Math.hypot(touch.clientX - press.x, touch.clientY - press.y) > 10) endNotifLongPress();
+  }
+  function endNotifLongPress() {
+    const press = notifLongPressRef.current;
+    if (press) window.clearTimeout(press.timer);
+    notifLongPressRef.current = null;
+  }
+  function setNotifRead(row: UserNotificationRow, read: boolean) {
+    setNotifMenu(null);
+    if (!user?.uid) return;
+    setNotifRows((prev) => prev.map((item) => (item.id === row.id ? { ...item, read } : item)));
+    void setUserNotificationRead(user.uid, row.id, read);
+  }
+  function clearNotif(row: UserNotificationRow) {
+    setNotifMenu(null);
+    if (!user?.uid) return;
+    setNotifRows((prev) => prev.filter((item) => item.id !== row.id));
+    void deleteUserNotification(user.uid, row.id);
+  }
+  // Remind me in…: gone from the list until then, then back as new and unread — and sent to their
+  // phone/desktop again then (the scheduled job).
+  function remindNotifLater(row: UserNotificationRow) {
+    setNotifMenu(null);
+    const uid = user?.uid;
+    if (!uid) return;
+    const dueAtMs = Date.now() + remindAmount * REMIND_UNITS[remindUnit].ms;
+    setNotifRows((prev) => prev.filter((item) => item.id !== row.id));
+    // Gone until it's due, so it pops up as new then (see the polling's seenNotifIdsRef).
+    seenNotifIdsRef.current?.delete(row.id);
+    void snoozeUserNotification(uid, row.id, new Date(dueAtMs).toISOString()).then((ok) => {
+      if (ok) requestNotificationReminderPush(row.id, dueAtMs);
+    });
+  }
+  const remindMax = REMIND_UNITS[remindUnit].max;
+  const remindLabel = `${remindAmount} ${remindAmount === 1 ? REMIND_UNITS[remindUnit].one : REMIND_UNITS[remindUnit].many}`;
+
+  // Each one: its category's icon, its title, its message (two lines at most) and how long ago under them,
+  // and a blue dot on the right while it's unread — no lines between them; a soft rounded highlight on hover.
+  // Phones and tablets (the full-screen panel, below lg) get them a little bigger.
+  // Dev mode only — "test in [5] s": after that many seconds, a real notification (a random kind, with made-up
+  // details — lib/push-dev-test.ts) is added to their own list, the same way any other one is: on the bell, in
+  // the list, popped up on a computer, and to their phone/desktop if that's on. Counts down meanwhile (closing
+  // Notifications doesn't stop it — on a computer, close it to see the pop-up). Marked as a test, so it's gone
+  // once it's been seen (removeDevTestNotification).
+  function startDevNotifTest() {
+    const uid = user?.uid;
+    if (!uid) return;
+    if (devTestTimerRef.current) window.clearTimeout(devTestTimerRef.current);
+    let secondsLeft = Math.min(600, Number.parseInt(devTestSecondsText, 10) || 0);
+    const tick = () => {
+      if (secondsLeft <= 0) {
+        devTestTimerRef.current = null;
+        setDevTestSecondsLeft(null);
+        const kind = DEV_TEST_LIST_KINDS[Math.floor(Math.random() * DEV_TEST_LIST_KINDS.length)] ?? "other";
+        const sample = devTestListSample(kind);
+        if (!sample) return;
+        void addUserNotification(uid, { ...sample, type: kind, companyId: activeCompanyId || undefined, devTest: true }).then((ok) => {
+          // Straight into the list (and popped up), rather than at the next check.
+          if (ok) loadNotifsNowRef.current?.();
+        });
+        return;
+      }
+      setDevTestSecondsLeft(secondsLeft);
+      secondsLeft -= 1;
+      devTestTimerRef.current = window.setTimeout(tick, 1000);
+    };
+    tick();
+  }
+  function renderDevNotifTest() {
+    if (!isDevModeOn) return null;
+    const waiting = devTestSecondsLeft !== null;
+    const devStyle = { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" };
+    return (
+      <div className="mx-4 mb-1 flex shrink-0 items-center gap-1.5 text-[11px] font-semibold" style={{ color: "var(--text-muted)" }}>
+        <span>dev · test in</span>
+        <input
+          type="text"
+          inputMode="numeric"
+          value={devTestSecondsText}
+          onChange={(e) => setDevTestSecondsText(e.target.value.replace(/[^0-9]/g, "").slice(0, 3))}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !waiting) {
+              e.preventDefault();
+              startDevNotifTest();
+            }
+          }}
+          disabled={waiting}
+          aria-label="Test notification in how many seconds"
+          className={`w-[38px] text-center outline-none ${devButtonClass(true)}`}
+          style={devStyle}
+        />
+        <span>s</span>
+        <button type="button" onClick={startDevNotifTest} disabled={waiting} className={devButtonClass(true)} style={devStyle}>
+          {waiting ? `in ${devTestSecondsLeft}s` : "send"}
+        </button>
+      </div>
+    );
+  }
 
   function renderNotifRows() {
-    if (notifRows.length === 0) {
+    // Still loading: a few faint rows the shape of the real ones.
+    if (!isNotifListLoaded && notifRows.length === 0) {
       return (
-        <p className="px-3 py-6 text-center text-[12px]" style={{ color: shellPalette.textMuted }}>
-          No notifications yet.
-        </p>
+        <div className="space-y-0.5 p-2" aria-busy="true" aria-label="Loading notifications">
+          {[0, 1, 2].map((index) => (
+            <div key={index} className="flex items-start gap-3 rounded-[14px] px-2.5 py-2.5 max-lg:px-3 max-lg:py-3">
+              <span className="h-9 w-9 shrink-0 animate-pulse rounded-full max-lg:h-10 max-lg:w-10" style={{ backgroundColor: NOTIF_ICON_BG }} />
+              <span className="min-w-0 flex-1 space-y-2 pt-1.5">
+                <span className="block h-3 w-3/5 animate-pulse rounded-full" style={{ backgroundColor: NOTIF_ICON_BG }} />
+                <span className="block h-2.5 w-4/5 animate-pulse rounded-full" style={{ backgroundColor: NOTIF_ICON_BG }} />
+              </span>
+            </div>
+          ))}
+        </div>
       );
     }
-    return notifRows.slice(0, 10).map((row) => {
+    if (notifRows.length === 0) {
+      return (
+        <div className="flex flex-col items-center px-6 py-10 text-center">
+          <span className="mb-3 inline-flex h-11 w-11 items-center justify-center rounded-full" style={{ backgroundColor: NOTIF_ICON_BG, color: "var(--text-muted)" }}>
+            <Bell size={18} />
+          </span>
+          <p className="text-[14px] font-medium" style={{ color: "var(--text-main)" }}>You&apos;re all caught up</p>
+          <p className="mt-1 text-[12.5px]" style={{ color: "var(--text-muted)" }}>New notifications will show up here.</p>
+        </div>
+      );
+    }
+    return (
+      <div className="space-y-0.5 p-2">
+        {notifRows.slice(0, 50).map((row) => {
       const isAppVersion = row.type === "app_version";
       const appVersion = isAppVersion ? appVersionFromNotifTitle(row.title) : "";
+      const Icon = notifIconOf(row);
       return (
         <button
           key={row.id}
           type="button"
           onMouseDown={handleAuxButtonMouseDown}
-          onClick={() => {
-            if (!user?.uid) return;
-            setNotifRows((prev) => prev.map((item) => (item.id === row.id ? { ...item, read: true } : item)));
-            void markUserNotificationRead(user.uid, row.id);
-            setIsNotifOpen(false);
-            if (isAppVersion) {
-              // Straight to that version's What's New page, over whatever page this is.
-              openWhatsNew(appVersion);
-            } else if (row.type === "calendar_reminder" && row.eventId) {
-              router.push(`/calendar?event=${encodeURIComponent(row.eventId)}`);
-            } else if (row.projectId) {
-              router.push(`/projects/${row.projectId}`);
-            } else if (String(row.type || "").startsWith("lead_")) {
-              router.push("/leads");
-            }
+          onContextMenu={(event) => {
+            event.preventDefault();
+            endNotifLongPress();
+            openNotifMenu(row, event.clientX, event.clientY);
           }}
-          className="block w-full border-b px-3 py-2 text-left transition-colors last:border-b-0 hover:bg-[var(--panel-muted)]"
+          onTouchStart={(event) => startNotifLongPress(row, event)}
+          onTouchMove={moveNotifLongPress}
+          onTouchEnd={endNotifLongPress}
+          onTouchCancel={endNotifLongPress}
+          onClick={() => {
+            // Letting go of a press-and-hold (its menu's open) isn't a tap on it.
+            if (suppressNotifClickRef.current === row.id) {
+              suppressNotifClickRef.current = "";
+              return;
+            }
+            openNotification(row);
+          }}
+          className="flex w-full items-start gap-3 rounded-[14px] px-2.5 py-2.5 text-left transition-colors hover:bg-[color-mix(in_srgb,var(--text-main)_5%,transparent)] max-lg:px-3 max-lg:py-3"
+          // Press and hold opens its menu, not the phone's own text selection / callout.
           style={{
-            borderBottomColor: shellPalette.border,
-            backgroundColor: row.read ? "transparent" : "var(--brand-soft)",
+            WebkitTouchCallout: "none",
+            WebkitUserSelect: "none",
+            userSelect: "none",
+            backgroundColor: notifMenu?.row.id === row.id ? "color-mix(in srgb, var(--text-main) 6%, transparent)" : undefined,
           }}
         >
-          <p className="text-[12px] font-bold" style={{ color: shellPalette.text }}>
-            {isAppVersion ? `New App Version ${appVersion}` : row.title || "Notification"}
-          </p>
-          {isAppVersion ? null : (
-            <p className="mt-[2px] truncate text-[11px]" style={{ color: shellPalette.textMuted }}>
-              {row.message || ""}
-            </p>
-          )}
-          <p className="mt-[2px] text-[10px]" style={{ color: shellPalette.textMuted }}>
-            {formatNotificationTime(row.createdAtIso)}
-          </p>
+          <span
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full max-lg:h-10 max-lg:w-10"
+            style={{ backgroundColor: NOTIF_ICON_BG, color: "var(--text-main)" }}
+          >
+            <Icon size={16} />
+          </span>
+          <span className="min-w-0 flex-1 pt-0.5">
+            <span
+              className={`block truncate text-[13.5px] max-lg:text-[15px] ${row.read ? "font-medium" : "font-semibold"}`}
+              style={{ color: "var(--text-main)" }}
+            >
+              {!row.read ? <span className="sr-only">Unread: </span> : null}
+              {isAppVersion ? `New version ${appVersion}` : row.title || "Notification"}
+            </span>
+            {!isAppVersion && row.message ? (
+              <span className="mt-0.5 line-clamp-2 block text-[12.5px] leading-snug max-lg:text-[13.5px]" style={{ color: "var(--text-muted)" }}>
+                {row.message}
+              </span>
+            ) : null}
+            {/* How long ago, under the text. */}
+            <span className="mt-1 block text-[11.5px] max-lg:text-[12.5px]" style={{ color: "var(--text-muted)", opacity: 0.8 }} title={formatNotificationTime(row.createdAtIso)}>
+              {relativeNotifTime(row.createdAtIso)}
+            </span>
+          </span>
+          {/* Unread: a blue dot on the right, centred on the row. */}
+          <span
+            aria-hidden="true"
+            className="h-2.5 w-2.5 shrink-0 self-center rounded-full"
+            style={{ backgroundColor: row.read ? "transparent" : "var(--brand)" }}
+          />
         </button>
       );
-    });
+        })}
+      </div>
+    );
   }
 
   return (
     <>
+      {notifToasts.length > 0 && typeof document !== "undefined"
+        ? createPortal(
+            <div aria-live="polite" className="pointer-events-none fixed right-4 top-[60px] z-[1500] flex w-[340px] flex-col gap-2">
+              {notifToasts.map((row) => (
+                <NotifToast
+                  key={row.id}
+                  icon={notifIconOf(row)}
+                  title={notifTitleOf(row)}
+                  message={row.type === "app_version" ? "" : row.message || ""}
+                  bellRef={notifBtnRef}
+                  onOpen={() => {
+                    if (row.testUrl) router.push(row.testUrl);
+                    else openNotification(row);
+                  }}
+                  onDone={() => {
+                    setNotifToasts((prev) => prev.filter((toast) => toast.id !== row.id));
+                    // A test, seen now — gone.
+                    if (!row.testUrl && isDevTestNotification(row)) removeDevTestNotification(row.id);
+                  }}
+                />
+              ))}
+            </div>,
+            document.body,
+          )
+        : null}
       <div
         data-app-top-bar="true"
         className="app-top-bar-sidebar-offset fixed left-0 right-0 top-0 z-[95] h-12 px-2"
@@ -1339,6 +2015,11 @@ export function GlobalAppTabsBar() {
             <button
               type="button"
               ref={notifBtnRef}
+              // On a computer, the pointer reaching the bell starts loading the list if it hasn't yet — a head
+              // start on the click.
+              onPointerEnter={(event) => {
+                if (event.pointerType === "mouse" && !isNotifListLoaded) loadNotifsNowRef.current?.();
+              }}
               onMouseDown={handleAuxButtonMouseDown}
               onClick={(event) => {
                 if (isNotifOpen) {
@@ -1347,7 +2028,7 @@ export function GlobalAppTabsBar() {
                 }
                 const rect = event.currentTarget.getBoundingClientRect();
                 const viewportWidth = Math.max(120, document.documentElement?.clientWidth || window.innerWidth);
-                const width = Math.min(340, Math.max(240, viewportWidth - 16));
+                const width = Math.min(380, Math.max(240, viewportWidth - 16));
                 setNotifPos({
                   left: Math.min(Math.max(8, rect.right - width), Math.max(8, viewportWidth - width - 8)),
                   top: rect.bottom + 6,
@@ -1368,52 +2049,75 @@ export function GlobalAppTabsBar() {
                 <Bell size={16} />
               </span>
               {notifUnreadCount > 0 ? (
+                // How many are unread, on a small pill in the solid red of the app's red X buttons
+                // (--danger-gradient, white text). notif-count-pill (globals.css) centres the number exactly.
                 <span
-                  className="absolute right-[6px] top-[6px] h-[9px] w-[9px] rounded-full border-2"
-                  style={{ backgroundColor: "var(--danger)", borderColor: shellPalette.stripBg }}
-                />
+                  className="notif-count-pill pointer-events-none absolute right-[3px] top-[4px] inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-full px-[3.5px] text-[9px] font-semibold leading-none text-white tabular-nums"
+                  style={{ backgroundImage: "var(--danger-gradient)" }}
+                  aria-label={`${notifUnreadCount} unread`}
+                >
+                  {notifUnreadCount > 99 ? "99+" : notifUnreadCount}
+                </span>
               ) : null}
             </button>
           ) : null}
         </div>
       </div>
-      {isNotifOpen && notifPos && isDesktopViewport && typeof document !== "undefined"
+      {isNotifDrawerMounted && isDesktopViewport && typeof document !== "undefined"
         ? createPortal(
             <div
               ref={notifDropdownRef}
-              className="fixed z-[210] flex max-h-[420px] flex-col overflow-hidden rounded-[12px] border"
+              // Slides in from the right (notif-drawer-in, globals.css) and back out (the transform below),
+              // unmounting once it's gone.
+              className="fixed inset-y-0 right-0 z-[210] flex w-[400px] max-w-[calc(100vw-16px)] flex-col overflow-hidden border-l motion-reduce:!animate-none"
               style={{
-                left: notifPos.left,
-                top: notifPos.top,
-                width: notifPos.width,
                 borderColor: "var(--glass-border)",
-                backgroundColor: "var(--glass-bg-strong)",
-                backdropFilter: "blur(24px) saturate(180%)",
-                WebkitBackdropFilter: "blur(24px) saturate(180%)",
-                boxShadow: "var(--shadow-glass)",
+                backgroundColor: "var(--bg-app)",
+                boxShadow: "-16px 0 48px rgba(15, 23, 42, 0.18)",
+                ...(isNotifOpen
+                  ? { animation: "notif-drawer-in 260ms cubic-bezier(0.32, 0.72, 0, 1)" }
+                  : { transform: "translate3d(100%, 0, 0)", transition: "transform 260ms cubic-bezier(0.32, 0.72, 0, 1)" }),
               }}
+              onTransitionEnd={(event) => {
+                if (event.target === event.currentTarget && !isNotifOpen) setIsNotifDrawerMounted(false);
+              }}
+              aria-hidden={!isNotifOpen}
+              inert={!isNotifOpen}
             >
-              <div
-                className="flex shrink-0 items-center justify-between border-b px-3 py-2"
-                style={{ borderBottomColor: shellPalette.border }}
-              >
-                <p className="text-[12px] font-bold uppercase tracking-[0.5px]" style={{ color: shellPalette.text }}>
+              <div className="flex shrink-0 items-center gap-3 px-5 pb-2 pt-4">
+                {/* The bell, then the title. */}
+                <p className="flex min-w-0 flex-1 items-center gap-2 text-[18px] font-medium" style={{ color: "var(--text-main)" }}>
+                  <Bell size={18} className="shrink-0" aria-hidden="true" />
                   Notifications
                 </p>
+                {/* Only while there's something unread. */}
+                {notifUnreadCount > 0 ? (
+                  <button
+                    type="button"
+                    onMouseDown={handleAuxButtonMouseDown}
+                    onClick={async () => {
+                      if (!user?.uid) return;
+                      setNotifRows((prev) => prev.map((row) => ({ ...row, read: true })));
+                      await setAllUserNotificationsRead(user.uid, true, activeCompanyId);
+                    }}
+                    className="text-[12px] font-medium transition-opacity hover:opacity-75"
+                    style={{ color: "var(--brand-strong)" }}
+                  >
+                    Mark all read
+                  </button>
+                ) : null}
                 <button
                   type="button"
-                  onMouseDown={handleAuxButtonMouseDown}
-                  onClick={async () => {
-                    if (!user?.uid) return;
-                    setNotifRows((prev) => prev.map((row) => ({ ...row, read: true })));
-                    await setAllUserNotificationsRead(user.uid, true, activeCompanyId);
-                  }}
-                  className="text-[11px] font-bold transition-colors hover:opacity-80"
-                  style={{ color: "var(--brand)" }}
+                  onClick={() => setIsNotifOpen(false)}
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border transition hover:brightness-95"
+                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
+                  aria-label="Close notifications"
+                  title="Close"
                 >
-                  Mark all read
+                  <X size={15} />
                 </button>
               </div>
+              {renderDevNotifTest()}
               <div className="min-h-0 flex-1 overflow-auto">{renderNotifRows()}</div>
             </div>,
             document.body,
@@ -1445,14 +2149,11 @@ export function GlobalAppTabsBar() {
                   touchAction: "pan-y",
                 }}
               >
-                <div
-                  className="relative flex shrink-0 items-center border-b px-4 py-3"
-                  style={{ borderBottomColor: shellPalette.border }}
-                >
-                  {/* Alongside the swipe-to-close gesture — an explicit tap target in the corner
-                      the panel will retreat toward (left, since it slides back out to the right;
-                      mirrors the mobile nav drawer's own right-pointing close arrow). A circle, the
-                      same as the drawer's. */}
+                <div className="relative flex shrink-0 items-center px-4 py-3">
+                  {/* Alongside the swipe-to-close gesture — an explicit tap target in the top-left corner, its
+                      arrow pointing the way the panel goes (right, since it slides back out to the right;
+                      mirrors the mobile nav drawer's own left-pointing close arrow). A circle, the same as
+                      the drawer's. */}
                   <button
                     type="button"
                     onClick={() => setIsNotifOpen(false)}
@@ -1460,28 +2161,135 @@ export function GlobalAppTabsBar() {
                     style={{ borderColor: shellPalette.border, backgroundColor: shellPalette.panelBg, color: shellPalette.textMuted }}
                     aria-label="Close notifications"
                   >
-                    <ChevronLeft size={20} />
+                    <ChevronRight size={20} />
                   </button>
-                  {/* Centred on the screen, whatever is beside it. */}
-                  <p className="pointer-events-none absolute inset-x-0 text-center text-[19px] font-medium" style={{ color: "var(--text-main)" }}>
+                  {/* The bell, then the title — the two centred on the screen, whatever is beside them. */}
+                  <p className="pointer-events-none absolute inset-x-0 flex items-center justify-center gap-2 text-[19px] font-medium" style={{ color: "var(--text-main)" }}>
+                    <Bell size={19} className="shrink-0" aria-hidden="true" />
                     Notifications
                   </p>
+                  {/* Mark all read, opposite the back button — only while there's something unread. */}
+                  {notifUnreadCount > 0 ? (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (!user?.uid) return;
+                        setNotifRows((prev) => prev.map((row) => ({ ...row, read: true })));
+                        await setAllUserNotificationsRead(user.uid, true, activeCompanyId);
+                      }}
+                      className="relative z-[1] ml-auto inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border"
+                      style={{ borderColor: shellPalette.border, backgroundColor: shellPalette.panelBg, color: "var(--brand-strong)" }}
+                      aria-label="Mark all read"
+                      title="Mark all read"
+                    >
+                      <CheckCheck size={19} />
+                    </button>
+                  ) : null}
                 </div>
-                <div className="flex shrink-0 items-center justify-end border-b px-4 py-2" style={{ borderBottomColor: shellPalette.border }}>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      if (!user?.uid) return;
-                      setNotifRows((prev) => prev.map((row) => ({ ...row, read: true })));
-                      await setAllUserNotificationsRead(user.uid, true, activeCompanyId);
-                    }}
-                    className="text-[12px] font-bold transition-colors hover:opacity-80"
-                    style={{ color: "var(--brand)" }}
-                  >
-                    Mark all read
-                  </button>
-                </div>
+                {renderDevNotifTest()}
                 <div className="min-h-0 flex-1 overflow-auto">{renderNotifRows()}</div>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
+      {/* A notification's menu (right-click, or press and hold on a phone). */}
+      {notifMenu && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              ref={notifMenuRef}
+              role="menu"
+              aria-label="Notification"
+              className="fixed z-[2147483647] rounded-[14px] border p-1.5 shadow-[var(--shadow-md)] max-lg:rounded-[16px]"
+              style={{
+                left: notifMenu.left,
+                top: notifMenu.top,
+                width: notifMenu.width,
+                borderColor: "var(--glass-border)",
+                backgroundColor: "var(--glass-modal-bg)",
+                backdropFilter: "blur(16px) saturate(200%)",
+                WebkitBackdropFilter: "blur(16px) saturate(200%)",
+              }}
+            >
+              {notifMenu.row.read ? (
+                <button type="button" role="menuitem" onClick={() => setNotifRead(notifMenu.row, false)} className="flex h-9 w-full items-center gap-2.5 rounded-[10px] px-2.5 text-left text-[13px] font-medium transition-colors hover:bg-[color-mix(in_srgb,var(--text-main)_6%,transparent)] max-lg:h-11 max-lg:text-[15px]" style={{ color: "var(--text-main)" }}>
+                  <Mail size={16} className="shrink-0" style={{ color: "var(--text-muted)" }} />
+                  Mark as unread
+                </button>
+              ) : (
+                <button type="button" role="menuitem" onClick={() => setNotifRead(notifMenu.row, true)} className="flex h-9 w-full items-center gap-2.5 rounded-[10px] px-2.5 text-left text-[13px] font-medium transition-colors hover:bg-[color-mix(in_srgb,var(--text-main)_6%,transparent)] max-lg:h-11 max-lg:text-[15px]" style={{ color: "var(--text-main)" }}>
+                  <Check size={16} className="shrink-0" style={{ color: "var(--text-muted)" }} />
+                  Mark as read
+                </button>
+              )}
+              <button type="button" role="menuitem" onClick={() => clearNotif(notifMenu.row)} className="flex h-9 w-full items-center gap-2.5 rounded-[10px] px-2.5 text-left text-[13px] font-medium transition-colors hover:bg-[color-mix(in_srgb,var(--text-main)_6%,transparent)] max-lg:h-11 max-lg:text-[15px]" style={{ color: "var(--danger)" }}>
+                <Trash2 size={16} className="shrink-0" />
+                Clear
+              </button>
+              <div className="mx-1 my-1.5 h-px" style={{ backgroundColor: "var(--glass-border)" }} />
+              {/* Remind me in: how many (- / +, or typed), minutes, hours or days (a dropdown), then the button that sets it. */}
+              <div className="px-2.5 pb-1 pt-1">
+                <p className="text-[12px] font-medium max-lg:text-[13.5px]" style={{ color: "var(--text-muted)" }}>Remind me in</p>
+                <div className="mt-2 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      disabled={remindAmount <= 1}
+                      onClick={() => setRemindAmount((value) => stepRemindAmount(value, remindUnit, -1))}
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-full border disabled:opacity-40 max-lg:h-9 max-lg:w-9"
+                      style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                      aria-label="Fewer"
+                    >
+                      <Minus size={14} />
+                    </button>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={String(remindAmount)}
+                      onFocus={(e) => e.currentTarget.select()}
+                      onChange={(e) => {
+                        const typed = Number.parseInt(e.target.value.replace(/[^0-9]/g, ""), 10);
+                        setRemindAmount(Math.min(remindMax, Math.max(1, Number.isFinite(typed) ? typed : 1)));
+                      }}
+                      aria-label="Remind me in how many"
+                      className="h-8 w-9 rounded-[8px] bg-transparent text-center text-[15px] font-medium tabular-nums outline-none focus:bg-[color-mix(in_srgb,var(--text-main)_6%,transparent)] max-lg:h-9 max-lg:text-[16px]"
+                      style={{ color: "var(--text-main)" }}
+                    />
+                    <button
+                      type="button"
+                      disabled={remindAmount >= remindMax}
+                      onClick={() => setRemindAmount((value) => stepRemindAmount(value, remindUnit, 1))}
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-full border disabled:opacity-40 max-lg:h-9 max-lg:w-9"
+                      style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                      aria-label="More"
+                    >
+                      <Plus size={14} />
+                    </button>
+                  </div>
+                  <GlassDropdown
+                    value={remindUnit}
+                    options={REMIND_UNIT_OPTIONS}
+                    onChange={(next) => {
+                      const unit = next as RemindUnit;
+                      setRemindUnit(unit);
+                      setRemindAmount((value) => Math.min(value, REMIND_UNITS[unit].max));
+                    }}
+                    ariaLabel="Remind me in minutes, hours or days"
+                    menuMinWidth={110}
+                    menuAlign="right"
+                    triggerClassName="h-8 min-w-[100px] justify-between rounded-full border px-3 text-[12.5px] font-medium max-lg:h-9 max-lg:min-w-[112px] max-lg:text-[14px]"
+                    triggerStyle={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                  />
+                </div>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => remindNotifLater(notifMenu.row)}
+                  className="mt-2.5 h-9 w-full rounded-full text-[13px] font-medium text-white transition hover:brightness-105 max-lg:h-11 max-lg:text-[15px]"
+                  style={{ backgroundImage: "var(--brand-gradient)" }}
+                >
+                  Remind me in {remindLabel}
+                </button>
               </div>
             </div>,
             document.body,

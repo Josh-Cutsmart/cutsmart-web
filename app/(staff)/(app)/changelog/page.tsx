@@ -335,6 +335,17 @@ export default function ChangelogPage() {
   }, []);
   const titleBarRef = useRef<HTMLDivElement | null>(null);
   const pageHeaderRef = useRef<HTMLDivElement | null>(null);
+  // Whether the page has scrolled under its bars (the window on a computer, <main> on a phone/tablet) — the
+  // header's glass shows then (see the header markup).
+  const [isScrolledUnderHeader, setIsScrolledUnderHeader] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mainEl = document.querySelector("main");
+    const sync = () => setIsScrolledUnderHeader(window.scrollY > 0 || (mainEl ? mainEl.scrollTop > 0 : false));
+    sync();
+    window.addEventListener("scroll", sync, { capture: true, passive: true });
+    return () => window.removeEventListener("scroll", sync, { capture: true });
+  }, []);
   const [buttonsBarHeight, setButtonsBarHeight] = useState(0);
   useLayoutEffect(() => {
     if (typeof ResizeObserver === "undefined") return;
@@ -656,6 +667,11 @@ export default function ChangelogPage() {
     };
   }, [visibleEntries]);
 
+  // Where the header ends on screen: the bottom of its lowest bar — the controls row on a phone/tablet,
+  // the title bar on a computer (pinned under the top tab bar) — what a version's container scrolls up to.
+  const headerBottomNow = () =>
+    (pageHeaderRef.current ?? titleBarRef.current)?.getBoundingClientRect().bottom ?? DESKTOP_TAB_BAR_HEIGHT + HEADER_HEIGHT;
+
   useEffect(() => {
     if (typeof window === "undefined" || showDevReports || !visibleEntries.length) return;
 
@@ -671,7 +687,7 @@ export default function ChangelogPage() {
         return;
       }
 
-      const headerBottom = pageHeaderRef.current?.getBoundingClientRect().bottom ?? HEADER_HEIGHT;
+      const headerBottom = headerBottomNow();
       const anchorY = headerBottom + 72;
       let nextActive = visibleEntries[0]?.version || "";
       let bestDistance = Number.POSITIVE_INFINITY;
@@ -712,7 +728,8 @@ export default function ChangelogPage() {
     suppressScrollSyncTimeoutRef.current = setTimeout(() => {
       suppressScrollSyncRef.current = false;
     }, 700);
-    const headerBottom = pageHeaderRef.current?.getBoundingClientRect().bottom ?? HEADER_HEIGHT;
+    // Its top just under the header (the top tab bar and the title bar), with a little room.
+    const headerBottom = headerBottomNow();
     const targetRect = target.getBoundingClientRect();
     const nextTop = window.scrollY + targetRect.top - headerBottom - 16;
     window.scrollTo({ top: Math.max(0, nextTop), behavior: "smooth" });
@@ -925,6 +942,23 @@ export default function ChangelogPage() {
   };
   return (
     <>
+        {/* The header as one bar with the top tab bar above it (the same as Project details): one sheet of the
+            top tab bar's glass behind it and this page's title bar (and, on a phone/tablet, the controls row
+            under that) — the bars themselves clear, with no lines between them — on the moment the page
+            scrolls under them (no fade), with its line along the bottom. The top tab bar's own glass is off on this page
+            (globals.css, data-joins-top-bar); z-[93], under the bars (z-94/95). */}
+        <div
+          aria-hidden="true"
+          className="app-top-bar-sidebar-offset pointer-events-none fixed left-0 right-0 top-0 z-[93]"
+          style={{
+            height: DESKTOP_TAB_BAR_HEIGHT + HEADER_HEIGHT + (isCompactChangelogViewport ? buttonsBarHeight : 0),
+            backgroundColor: "color-mix(in srgb, var(--bg-app) 40%, transparent)",
+            backdropFilter: "blur(12px) saturate(220%)",
+            WebkitBackdropFilter: "blur(12px) saturate(220%)",
+            boxShadow: "inset 0 -1px 0 var(--glass-border)",
+            opacity: isScrolledUnderHeader ? 1 : 0,
+          }}
+        />
         <div
           className="flex flex-col bg-transparent"
           style={{
@@ -934,6 +968,9 @@ export default function ChangelogPage() {
         >
           <div
             ref={titleBarRef}
+            data-joins-top-bar="true"
+            // Clear, over the header's glass (above), with no line under it.
+            style={{ background: "transparent", backdropFilter: "none", WebkitBackdropFilter: "none", borderBottom: "none" }}
             className={
               isCompactChangelogViewport
                 ? "glass-page-header sticky top-0 z-[95] flex h-[56px] shrink-0 items-center gap-5 px-4 md:px-5 lg:top-[48px]"
@@ -1032,8 +1069,9 @@ export default function ChangelogPage() {
           {isCompactChangelogViewport && (
             <div
               ref={pageHeaderRef}
-              className="glass-page-header sticky top-[56px] z-[94] flex flex-wrap items-center gap-3 border-t px-4 py-2.5 md:px-5"
-              style={{ borderColor: "var(--glass-border)" }}
+              className="glass-page-header sticky top-[56px] z-[94] flex flex-wrap items-center gap-3 px-4 py-2.5 md:px-5"
+              // Clear, over the header's glass, with no lines between it and the title bar.
+              style={{ background: "transparent", backdropFilter: "none", WebkitBackdropFilter: "none", borderBottom: "none" }}
             >
               <PerPageDropdown value={entriesPerPage} options={PAGE_SIZE_OPTIONS} onChange={onChangeEntriesPerPage} />
               {isDevUser && (

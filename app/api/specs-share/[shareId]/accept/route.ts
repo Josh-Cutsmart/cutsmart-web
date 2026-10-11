@@ -7,7 +7,7 @@ import {
   SHARE_LINK_INACTIVE_ERROR,
   type SpecsShareLinkDoc,
 } from "@/lib/specs-share";
-import { normalizeSpecsGrid } from "@/lib/specs-grid-types";
+import { normalizeSpecsGrid, quoteGridTotalText } from "@/lib/specs-grid-types";
 import { projectNotifySubscriberUids } from "@/lib/project-notify";
 import { pushStoredNotification } from "@/lib/push-server";
 
@@ -102,12 +102,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       notifySubscriptionOverrides: (projectData.notifySubscriptionOverrides ?? {}) as Record<string, boolean>,
     });
     const projectName = String(projectData.name ?? "a project");
+    // The total on the version they accepted ("" for a quote generated before its total cell was marked).
+    const price = quoteGridTotalText(grid);
     const db = adminDb;
     await Promise.all(
       subscriberUids.map((uid) =>
         db.collection("users").doc(uid).collection("notifications").add({
-          title: "Quote accepted",
-          message: `${name || "The client"} accepted quote for ${projectName}`,
+          title: `Quote accepted for ${projectName}`,
+          message: price ? `${name || "The client"} accepted your quote for ${price}` : `${name || "The client"} accepted your quote`,
           type: "quote_accepted",
           projectId: shareDoc.projectId,
           companyId: String(projectData.companyId ?? "") || null,

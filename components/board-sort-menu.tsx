@@ -80,7 +80,7 @@ function SortOptionRows({
             key={mode}
             type="button"
             onClick={() => onPick(mode)}
-            className={`flex h-9 w-full items-center justify-between gap-2 px-3 text-left text-[12px] font-semibold transition-colors hover:bg-[var(--panel-muted)] max-md:h-11 max-md:px-4 max-md:text-[15px] ${index > 0 ? "border-t" : ""}`}
+            className={`flex h-9 w-full items-center justify-between gap-2 px-3 text-left text-[12px] font-semibold transition-colors hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] max-md:h-11 max-md:px-4 max-md:text-[15px] ${index > 0 ? "border-t" : ""}`}
             style={{ borderColor: "var(--glass-border)", color: isActive ? "var(--brand-strong)" : "var(--text-main)" }}
           >
             <span className="truncate">{labelFor(mode)}</span>

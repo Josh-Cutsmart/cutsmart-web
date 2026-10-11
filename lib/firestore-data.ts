@@ -1373,6 +1373,11 @@ export interface UserNotificationRow {
   companyId?: string;
   // A calendar reminder's event.
   eventId?: string;
+  // "Remind me in…" (the notification's menu): hidden until then, and shown as new from that time.
+  snoozedUntilIso?: string;
+  // Dev mode's test notification (the "test in … s" at the top of Notifications) — for testing only, so it's
+  // removed once it's been seen.
+  devTest?: boolean;
 }
 
 export type AppReportKind = "issue" | "feature";
@@ -2191,6 +2196,19 @@ export async function markGridVersionSentToClient(project: Project, kind: GridVe
     return true;
   } catch (error) {
     console.warn(`[markGridVersionSentToClient] ${kind}/${versionId} write failed:`, error);
+    return false;
+  }
+}
+
+// markGridVersionSentToClient undone — e.g. when sending it to the client then fails.
+export async function unmarkGridVersionSentToClient(project: Project, kind: GridVersionKind, versionId: string): Promise<boolean> {
+  const ref = await resolveProjectDocRef(project);
+  if (!ref) return false;
+  try {
+    await updateDoc(doc(ref, kind, versionId), { sentToClient: deleteField() });
+    return true;
+  } catch (error) {
+    console.warn(`[unmarkGridVersionSentToClient] ${kind}/${versionId} write failed:`, error);
     return false;
   }
 }
@@ -4767,10 +4785,19 @@ export async function fetchUserNotifications(uid: string, companyId?: string): P
         projectId: String(data.projectId ?? "").trim() || undefined,
         companyId: String(data.companyId ?? "").trim() || undefined,
         eventId: String(data.eventId ?? "").trim() || undefined,
+        snoozedUntilIso: String(data.snoozedUntilIso ?? "").trim() || undefined,
+        devTest: data.devTest === true ? true : undefined,
       };
     });
-    if (!scopeCompanyId) return rows;
-    return rows.filter((row) => row.companyId === scopeCompanyId);
+    // One someone asked to be reminded about (snoozeUserNotification) stays hidden until its time, then
+    // shows as new from then — at the top, timed from when it came back.
+    const now = Date.now();
+    const shown = rows
+      .filter((row) => !(row.snoozedUntilIso && Date.parse(row.snoozedUntilIso) > now))
+      .map((row) => (row.snoozedUntilIso ? { ...row, createdAtIso: row.snoozedUntilIso } : row))
+      .sort((a, b) => (Date.parse(b.createdAtIso) || 0) - (Date.parse(a.createdAtIso) || 0));
+    if (!scopeCompanyId) return shown;
+    return shown.filter((row) => row.companyId === scopeCompanyId);
   } catch {
     return [];
   }
@@ -4802,7 +4829,7 @@ export async function setAllUserNotificationsRead(uid: string, read: boolean, co
 // this silently no-ops rather than breaking the underlying save/send.
 export async function addUserNotification(
   uid: string,
-  input: { title: string; message: string; type: string; projectId?: string; companyId?: string },
+  input: { title: string; message: string; type: string; projectId?: string; companyId?: string; devTest?: boolean },
 ): Promise<boolean> {
   const userId = String(uid || "").trim();
   if (!db || !userId) return false;
@@ -4817,6 +4844,7 @@ export async function addUserNotification(
       read: false,
       createdAt: serverTimestamp(),
       createdAtIso: new Date().toISOString(),
+      ...(input.devTest ? { devTest: true } : {}),
     });
     // ...and to their phone/desktop, if they've turned that on (lib/push-client.ts).
     void import("@/lib/push-client")
@@ -4830,11 +4858,49 @@ export async function addUserNotification(
 }
 
 export async function markUserNotificationRead(uid: string, notificationId: string): Promise<boolean> {
+  return setUserNotificationRead(uid, notificationId, true);
+}
+
+// A notification's menu (the top bar's Notifications): Mark as read / Mark as unread.
+export async function setUserNotificationRead(uid: string, notificationId: string, read: boolean): Promise<boolean> {
   const userId = String(uid || "").trim();
   const id = String(notificationId || "").trim();
   if (!db || !userId || !id) return false;
   try {
-    await updateDoc(doc(db, "users", userId, "notifications", id), { read: true });
+    await updateDoc(doc(db, "users", userId, "notifications", id), { read: Boolean(read) });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// A notification's menu: Clear — gone from their list for good.
+export async function deleteUserNotification(uid: string, notificationId: string): Promise<boolean> {
+  const userId = String(uid || "").trim();
+  const id = String(notificationId || "").trim();
+  if (!db || !userId || !id) return false;
+  try {
+    await deleteDoc(doc(db, "users", userId, "notifications", id));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// A notification's menu: Remind me in… — hidden from their list until `untilIso`, then back as new and
+// unread (fetchUserNotifications). Their phone/desktop is sent it again then too, by the scheduled job
+// (requestNotificationReminderPush in lib/push-client.ts).
+export async function snoozeUserNotification(uid: string, notificationId: string, untilIso: string): Promise<boolean> {
+  const userId = String(uid || "").trim();
+  const id = String(notificationId || "").trim();
+  if (!db || !userId || !id || !Number.isFinite(Date.parse(untilIso))) return false;
+  try {
+    await updateDoc(doc(db, "users", userId, "notifications", id), {
+      read: false,
+      snoozedUntilIso: untilIso,
+      updatedAt: serverTimestamp(),
+      updatedAtIso: new Date().toISOString(),
+    });
     return true;
   } catch {
     return false;

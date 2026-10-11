@@ -261,7 +261,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         userColor: profile?.userColor,
         mobile: profile?.mobile,
         verified: Boolean(profile?.verified),
-        notifyAsCreator: Boolean(profile?.notifyAsCreator),
+        // On unless they've switched it off.
+        notifyAsCreator: profile?.notifyAsCreator !== false,
         permissions: membership?.permissionKeys ?? [],
       };
       saveLastKnown(LAST_ACCOUNT_KEY, firebaseUser.uid, account);
