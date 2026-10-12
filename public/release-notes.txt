@@ -1,71 +1,71 @@
-Version: v0.5.5
+Version: v0.5.6
 
 highlights: [
-A new log in page | A simple log in box with CutSmart's features sliding by beside it — then create or join a company with its code, and set a PIN to get back in quickly | /whats-new/v0.5.5/login.svg
-Try CutSmart without an account | The CutSmart Preview opens a demo company to look around and edit — nothing is saved, and it starts fresh every time | /whats-new/v0.5.5/preview.svg
-Join codes you can take back | Your company's master code, plus one-person codes you can revoke at any time — in Company Settings | /whats-new/v0.5.5/join-codes.svg
-A cleaner Dashboard | One flat colour from the top bar down, pill-shaped buttons, and rows that fade out at each end | /whats-new/v0.5.5/dashboard.svg
-Columns that slide shut | Collapse a column and it slides into its strip, its button riding across to where the sort button was | /whats-new/v0.5.5/collapse-columns.svg
+A new Notifications panel | It slides in from the right, shows what you haven't read, and can remind you about any notification later | /whats-new/v0.5.6/notifications.svg
+Reminders for each calendar category | Choose how long before each kind of event you're reminded, and at what time | /whats-new/v0.5.6/category-reminders.svg
+Duplicate events | Copy an event from its … menu, and see who added or last changed it | /whats-new/v0.5.6/events.svg
+Notes you just click into | Click any Notes to type, click away to save — and Design has its own Notes now | /whats-new/v0.5.6/notes.svg
+A glass pill for project tabs | The selected tab sits in a glass pill that slides across, magnifying the tab inside it | /whats-new/v0.5.6/tab-pill.svg
 ]
 
 whatsNew: [
-<u><b>Log In &amp; Sign Up</b></u>
+<u><b>Notifications</b></u>
 <ul>
-<li>A new log in page: just a log in box — on a computer, with CutSmart's features sliding by beside it; on a phone, full screen</li>
-<li>Every step slides on to the next: log in or create an account, verify your email, then create or join a company</li>
-<li>After you log in, <b>create a company</b> or <b>join one with its code</b> — if you're already in a company, it opens straight away</li>
-<li>Company invites you've been sent show up after you log in, to accept or decline</li>
-<li>After creating an account you can set a 4-digit <b>PIN</b> (or skip it) — CutSmart then stays signed in on that device and asks for your PIN when you come back to it</li>
-<li>CutSmart only keeps you signed in if you tick <b>Remember me</b> (or have a PIN)</li>
-<li>Creating a company: its name and code no longer fill themselves in</li>
+<li>A new <b>Notifications</b> panel that slides in from the right on a computer</li>
+<li>The bell shows how many you haven't read</li>
+<li>Each kind of notification has its own icon</li>
+<li>Right-click (or press and hold) a notification to mark it read, clear it, or be <b>reminded later</b></li>
+<li>New ones pop up in the corner for a few seconds on a computer</li>
+<li>Clearer messages — an accepted quote shows its price</li>
+<li>Shows the last 2 weeks, with <b>Load more</b> for older ones</li>
+<li>Projects you created now notify you by default</li>
 </ul>
 
-<u><b>CutSmart Preview</b></u>
+<u><b>Calendar</b></u>
 <ul>
-<li>New: <b>Try the CutSmart Preview</b> on the log in page — a demo company with projects, leads, a calendar, rooms, items and cutlists already filled in, to look around and edit without an account</li>
-<li>Nothing in the Preview is saved: close it and it starts fresh next time. Printing, PDFs and exports are turned off</li>
-<li>Its dates always fall in the current month, and its Changelog is CutSmart's real one</li>
+<li>Set your own reminders for each calendar category, in <b>User Settings › Notifications</b></li>
+<li>Events show who added and last changed them</li>
+<li>New <b>…</b> menu on an event: <b>Duplicate</b> or <b>Delete</b></li>
+<li>New events need a title and a category</li>
+<li>Search also finds events by location, notes, project and category</li>
+<li>Phones: swipe between days and weeks</li>
+<li>Show or hide non-work days just for you, in <b>User Settings</b></li>
+<li>A tidier toolbar on computers and phones</li>
+</ul>
+
+<u><b>Projects</b></u>
+<ul>
+<li>The selected tab sits in a glass pill that slides between tabs</li>
+<li>Notes: click to type, click away to save</li>
+<li>Design has its own <b>Notes</b> now</li>
+<li>Client Details: the edit pencil shows when you point at it, and <b>Create Contact</b> sits beside the client's name</li>
+<li>Choosing the creator or assigned user shows their badge, with a search</li>
+<li><b>Reopen for edit</b> takes the quote or specifications back from the client</li>
+<li>A quote can't be reopened once it's been accepted</li>
+<li>Projects open faster from the top bar</li>
+</ul>
+
+<u><b>Dashboard &amp; Leads</b></u>
+<ul>
+<li>Cards glide into place when you drop them</li>
+<li>Tidier column buttons: collapse on the left, sort on the right</li>
+<li>Leads column names stay easy to read on dark colours</li>
 </ul>
 
 <u><b>Company Settings</b></u>
 <ul>
-<li>Your company's name, ID and plan are now in the <b>Company</b> tab (they were at the bottom of the sidebar)</li>
-<li>New <b>Join key</b> button: shows your company's master code, with <b>Change</b> — changing it doesn't remove anyone already in the company</li>
-<li><b>Temporary codes</b>: make a code for one person to join with, and revoke it at any time. Revoking one that's been used first asks what to do with that person's work, the same as removing a staff member — so they can't just rejoin with the master code</li>
-<li>Each staff member shows the join code they used</li>
-<li>New <b>Invited</b> list under Staff: everyone you've invited who hasn't joined yet, with <b>Cancel invite</b></li>
-</ul>
-
-<u><b>Dashboard</b></u>
-<ul>
-<li>A cleaner look: the page, its toolbar, the project list and the top bar are all one flat colour, in light and dark mode, with no lines between them</li>
-<li>The lines between projects fade out at each end, and so does the highlight on the one you're pointing at (in dark mode it's darker, not lighter)</li>
-<li>The search bar and every toolbar button have fully rounded ends, and line up with the stat cards and the list</li>
-<li>The stat cards' shadows are no longer cut off</li>
-<li>Switching between list and board: the buttons that belong to each pop in and out</li>
-<li>Mobile: search is a round button that opens into the full search bar, and Sort is a round button too</li>
-<li>Dark mode: the search bar matches the buttons beside it</li>
-</ul>
-
-<u><b>Kanban Boards</b></u>
-<ul>
-<li>Dashboard and Leads: as the board scrolls into place, its columns grow smoothly with it, their bottoms staying just above the bottom of the screen</li>
-<li>Scrolled all the way, the columns stop as far below the top bar as they sit above the bottom of the screen, with the toolbar tucked away under the top bar</li>
-<li>Collapsing a column slides it into its narrow strip, its button riding across to where the sort button was and flipping round on the way — expanding slides it back out</li>
-<li>Bigger sort, count and collapse buttons on each column</li>
-<li>Searching slides the board to the first column with a match — press <b>Enter</b> to go on to the next — and the card glows so it's easy to spot</li>
-<li>The columns' shadows are no longer cut off along their tops</li>
+<li>Inviting someone also gives them a one-person join code</li>
+<li>Item categories: drag items to put them in order</li>
+<li>Deleting a category or an item asks first</li>
+<li>A new logo shows on quotes and specifications you've already sent</li>
 </ul>
 
 <u><b>App-Wide</b></u>
 <ul>
-<li>Top bar: each tab is as wide as its project's name, with fully rounded ends</li>
-<li>Top bar: see-through at the top of a page — its glass fades in once the page scrolls under it</li>
-<li>Pointing at a tab gives it a faint blue outline (which turns red over its X), and the project you're in keeps its outline</li>
-<li>Closing a tab pops it away, and the tabs after it slide over</li>
-<li>Dragging a tab: it follows you straight away, the others move aside as soon as it passes them, and it slides into its place when you let go</li>
-<li>The sidebar's page names are no longer bold</li>
-<li>Mobile: the pull-down menu matches the Dashboard's colours</li>
-<li>The What's New page is calmer — its lists of changes stay put instead of floating</li>
+<li>One background colour on every page</li>
+<li>Phones: bigger buttons and menus, and menus slide over the page</li>
+<li>Text boxes show a thin blue outline while you type</li>
+<li>Company Settings is now below Archive in the sidebar</li>
+<li>Faster — CutSmart's server is now in Sydney</li>
 </ul>
 ]

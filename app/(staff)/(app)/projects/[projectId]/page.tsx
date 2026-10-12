@@ -165,6 +165,94 @@ function hashQuoteSnapshotContent(input: string): string {
 const greatVibesFont = Great_Vibes({ subsets: ["latin"], weight: "400" });
 void greatVibesFont;
 
+// The selected project tab (General / Design / Production / Settings) has a glass pill around it, fitted to the tab,
+// that slides from tab to tab and is a lens: whatever is inside it shows this much bigger, so a name only grows where
+// the pill passes over it (see .project-tab-strip in globals.css).
+const PROJECT_TAB_MAGNIFY = 1.08;
+// The row of tabs — the plain one, and the magnified copy of it inside the pill — laid out exactly alike. On a phone
+// the four share the width by the space around each name (not equal columns, which left Production's pill crowding
+// Settings). From md it's inset enough that General's pill lines up with the cards' left edge below, rather than
+// reaching the sidebar.
+const PROJECT_TAB_ROW_CLASS = "flex items-end justify-around sm:justify-start sm:gap-4 sm:px-1 md:gap-10 md:px-5";
+const PROJECT_TAB_CLASS =
+  "shrink-0 whitespace-nowrap border-b-2 border-transparent pb-[10px] pt-[10px] text-center text-[16px] font-semibold transition sm:text-left sm:text-[18px] md:text-[20px]";
+type ProjectTabPill = {
+  // In the tab strip's own coordinates.
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  // The row of tabs' width, for the copy of it inside the pill.
+  rowWidth: number;
+  // Off for its first placement (it just appears there), on after that (it slides).
+  animate: boolean;
+};
+// Where the pill goes, around the selected tab's label — to the fraction of a px (whole-px offset* measurements left
+// the name visibly off-centre in it).
+function projectTabPillFor(
+  labels: Record<string, HTMLElement | null>,
+  activeTab: string,
+  strip: HTMLElement,
+  row: HTMLElement,
+): Omit<ProjectTabPill, "animate"> | null {
+  const label = labels[activeTab];
+  if (!label) return null;
+  const labelRect = label.getBoundingClientRect();
+  const stripRect = strip.getBoundingClientRect();
+  // Room around the name — either side, as much as the gap to the next tab allows (a phone's four tabs share the
+  // width, and a small tablet's sit 16px apart; from md they're 40px apart).
+  const padX = window.matchMedia("(min-width: 768px)").matches ? 18 : 12;
+  // A phone's is a little taller too.
+  const padY = window.matchMedia("(min-width: 640px)").matches ? 5 : 8;
+  // Around the label at its magnified size (with Production's unlock countdown, while one runs, inside too).
+  const width = labelRect.width * PROJECT_TAB_MAGNIFY + padX * 2;
+  const height = labelRect.height * PROJECT_TAB_MAGNIFY + padY * 2;
+  let left = labelRect.left - stripRect.left + labelRect.width / 2 - width / 2;
+  // Kept inside the header bar the strip sits in (a small tablet's first and last tabs are close to its edges).
+  const bar = strip.offsetParent as HTMLElement | null;
+  if (bar) {
+    const barLeft = bar.getBoundingClientRect().left + bar.clientLeft;
+    const min = 2 + barLeft - stripRect.left;
+    const max = min - 4 + bar.clientWidth - width;
+    left = Math.min(Math.max(left, min), Math.max(min, max));
+  }
+  const px = (value: number) => Math.round(value * 100) / 100;
+  return {
+    left: px(left),
+    top: px(labelRect.top - stripRect.top + labelRect.height / 2 - height / 2),
+    width: px(width),
+    height: px(height),
+    rowWidth: px(row.getBoundingClientRect().width),
+  };
+}
+// Re-measures the pill — only setting state when it actually has to move.
+function updateProjectTabPill(
+  labels: Record<string, HTMLElement | null>,
+  activeTab: string,
+  strip: HTMLElement | null,
+  row: HTMLElement | null,
+  setPill: (update: (prev: ProjectTabPill | null) => ProjectTabPill | null) => void,
+) {
+  if (!strip || !row) return;
+  const next = projectTabPillFor(labels, activeTab, strip, row);
+  if (!next) return;
+  setPill((prev) =>
+    prev &&
+    prev.left === next.left &&
+    prev.top === next.top &&
+    prev.width === next.width &&
+    prev.height === next.height &&
+    prev.rowWidth === next.rowWidth
+      ? prev
+      : { ...next, animate: prev !== null },
+  );
+}
+// The pill's shape, for cutting it out of the plain tabs (the magnified copy shows through there instead).
+const projectTabPillMask = (width: number, height: number) =>
+  `url("data:image/svg+xml,${encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none"><rect width="${width}" height="${height}" rx="${height / 2}"/></svg>`,
+  )}")`;
+
 const tabItems = [
   { value: "general", label: "General" },
   { value: "sales", label: "Design" },
@@ -744,6 +832,7 @@ const PROJECT_CHANGE_VALUE_FIELD_LABELS: Partial<Record<keyof Project, string>> 
 // Long-form/rich-text Project fields — too long to show as "old → new", just noted as updated.
 const PROJECT_CHANGE_CONTENT_FIELD_LABELS: Partial<Record<keyof Project, string>> = {
   notes: "Notes",
+  designNotes: "Design Notes",
   productionNotes: "Production Notes",
   remedials: "Remedials",
 };
@@ -5218,6 +5307,211 @@ type GlassSelectDropdownProps = {
   noTruncate?: boolean;
 };
 
+type StaffPickerMember = { uid: string; displayName: string; color: string };
+
+// Picks a staff member: a field showing who's picked (their emblem and name) that opens the same glass menu as the
+// title bar's "Assign" button — a search box, then everyone with their emblem. Settings › Project Assignment.
+function StaffPickerDropdown({
+  value,
+  members,
+  onChange,
+  disabled,
+  emptyLabel,
+  fallbackLabel,
+  ariaLabel,
+  triggerStyle,
+}: {
+  value: string;
+  members: StaffPickerMember[];
+  onChange: (uid: string) => void;
+  disabled?: boolean;
+  // Offered above everyone, for picking no one (e.g. "Unassigned"); left out where someone has to be picked.
+  emptyLabel?: string;
+  // Shown when the picked uid isn't one of the members (e.g. someone who has since left the company).
+  fallbackLabel?: string;
+  ariaLabel?: string;
+  triggerStyle?: React.CSSProperties;
+}) {
+  const [open, setOpen] = useState(false);
+  // anchorTop: the field's own top edge, for when the menu has to move above it.
+  const [rect, setRect] = useState<{ left: number; top: number; width: number; anchorTop: number } | null>(null);
+  const [search, setSearch] = useState("");
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  // The search box opens the on-screen keyboard — keep the menu above it.
+  useKeepAnchoredPopoverAboveKeyboard(menuRef, open && rect ? { preferredTop: rect.top, anchorTop: rect.anchorTop, gap: 6 } : null);
+  const rowCount = members.length + (emptyLabel ? 1 : 0);
+
+  useEffect(() => {
+    if (!open) return;
+    const refreshRect = () => {
+      const button = buttonRef.current;
+      if (!button) return;
+      const r = button.getBoundingClientRect();
+      const phone = window.matchMedia("(max-width: 767.98px)").matches;
+      // About the title bar's menu's width (220px, or 280px on a phone) — a wide field doesn't make a wide list.
+      const width = phone ? Math.min(280, window.innerWidth - 16) : Math.max(220, Math.min(r.width, 300));
+      // Below the field — or above it, when only there has room. (Its height, before it's open: from its rows.)
+      const height = menuRef.current?.offsetHeight ?? Math.min(phone ? 420 : 300, (phone ? 60 : 44) + rowCount * (phone ? 52 : 36));
+      const below = r.bottom + 6;
+      const above = r.top - 6 - height;
+      setRect({
+        left: Math.max(8, Math.min(r.left, window.innerWidth - 8 - width)),
+        top: below + height > window.innerHeight - 8 && above >= 8 ? above : below,
+        width,
+        anchorTop: r.top,
+      });
+    };
+    refreshRect();
+    // A press outside only closes the menu — it doesn't also act on what it landed on.
+    const onDocDown = (e: PointerEvent) => {
+      const target = e.target as Node | null;
+      if (!target) return;
+      if (!buttonRef.current?.contains(target) && !menuRef.current?.contains(target)) {
+        setOpen(false);
+        swallowNextClick();
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", onDocDown);
+    document.addEventListener("keydown", onKeyDown);
+    window.addEventListener("resize", refreshRect);
+    window.addEventListener("scroll", refreshRect, true);
+    return () => {
+      document.removeEventListener("pointerdown", onDocDown);
+      document.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("resize", refreshRect);
+      window.removeEventListener("scroll", refreshRect, true);
+    };
+  }, [open, rowCount]);
+
+  const picked = members.find((member) => member.uid === value) ?? null;
+  const pickedName = picked?.displayName || (value ? fallbackLabel || "" : "");
+  const pick = (uid: string) => {
+    setOpen(false);
+    if (uid !== value) onChange(uid);
+  };
+  const q = search.trim().toLowerCase();
+  const filteredMembers = q ? members.filter((member) => member.displayName.toLowerCase().includes(q)) : members;
+  const rowClass =
+    "flex w-full min-w-0 items-center gap-2 rounded-[6px] px-2 py-1.5 text-left text-[12px] font-semibold transition hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] max-md:gap-3 max-md:rounded-[10px] max-md:px-3 max-md:py-2.5 max-md:text-[15px]";
+  const pickedRowStyle = { backgroundColor: "color-mix(in srgb, var(--brand) 10%, transparent)" };
+  const pickedCheck = <Check size={14} className="ml-auto shrink-0" style={{ color: "var(--brand)" }} />;
+  const emblemClass =
+    "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white max-md:h-8 max-md:w-8 max-md:text-[11px]";
+  const noOneEmblemClass = "inline-flex h-6 w-6 shrink-0 rounded-full border border-dashed max-md:h-8 max-md:w-8";
+
+  return (
+    <div className="min-w-0">
+      <button
+        ref={buttonRef}
+        type="button"
+        disabled={disabled}
+        aria-label={ariaLabel}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => {
+          setSearch("");
+          setOpen((prev) => !prev);
+        }}
+        className="flex h-9 w-full min-w-0 items-center gap-2 rounded-[8px] border px-2.5 text-left text-[12px] outline-none transition disabled:cursor-not-allowed disabled:opacity-60"
+        style={triggerStyle}
+      >
+        {pickedName ? (
+          <>
+            <span
+              className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white"
+              style={{ backgroundColor: picked?.color || "#7D99B3" }}
+            >
+              {initials(pickedName)}
+            </span>
+            <span className="min-w-0 truncate font-medium" style={{ color: "var(--text-main)" }}>{pickedName}</span>
+          </>
+        ) : (
+          <>
+            <span className="inline-flex h-5 w-5 shrink-0 rounded-full border border-dashed" style={{ borderColor: "var(--text-muted)" }} />
+            <span className="min-w-0 truncate" style={{ color: "var(--text-muted)" }}>{emptyLabel || "No one"}</span>
+          </>
+        )}
+        <ChevronDown size={13} className="ml-auto shrink-0" style={{ color: "var(--text-muted)" }} />
+      </button>
+      {open && rect && !disabled && typeof document !== "undefined" && createPortal(
+        <div
+          ref={menuRef}
+          role="listbox"
+          aria-label={ariaLabel}
+          className="fixed z-[2147483647] flex max-h-[300px] flex-col overflow-hidden rounded-[8px] border max-md:max-h-[420px] max-md:rounded-[14px]"
+          style={{ left: rect.left, top: rect.top, width: rect.width, ...GLASS_DROPDOWN_MENU_STYLE }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <div className="relative shrink-0 border-b p-1" style={{ borderColor: "var(--glass-border)" }}>
+            <Search size={12} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }} />
+            <input
+              autoFocus
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search staff..."
+              className="h-7 w-full rounded-[6px] border pl-6 pr-2 text-[12px] outline-none max-md:h-10 max-md:rounded-[10px] max-md:pl-8 max-md:text-[15px]"
+              style={{
+                borderColor: "var(--glass-border)",
+                backgroundColor: "color-mix(in srgb, var(--panel-bg) 45%, transparent)",
+                backdropFilter: "blur(6px)",
+                WebkitBackdropFilter: "blur(6px)",
+                color: "var(--text-main)",
+              }}
+            />
+          </div>
+          <div className="glass-scroll min-h-0 flex-1 overflow-auto p-1">
+            {emptyLabel && !q ? (
+              <button
+                type="button"
+                role="option"
+                aria-selected={!value}
+                onClick={() => pick("")}
+                className={rowClass}
+                style={{ color: "var(--text-main)", ...(!value ? pickedRowStyle : null) }}
+              >
+                <span className={noOneEmblemClass} style={{ borderColor: "var(--text-muted)" }} />
+                <span className="min-w-0 truncate">{emptyLabel}</span>
+                {!value ? pickedCheck : null}
+              </button>
+            ) : null}
+            {filteredMembers.length ? (
+              filteredMembers.map((member) => {
+                const isPicked = member.uid === value;
+                return (
+                  <button
+                    key={member.uid}
+                    type="button"
+                    role="option"
+                    aria-selected={isPicked}
+                    onClick={() => pick(member.uid)}
+                    className={rowClass}
+                    style={{ color: "var(--text-main)", ...(isPicked ? pickedRowStyle : null) }}
+                  >
+                    <span className={emblemClass} style={{ backgroundColor: member.color }}>
+                      {initials(member.displayName)}
+                    </span>
+                    <span className="min-w-0 truncate">{member.displayName}</span>
+                    {isPicked ? pickedCheck : null}
+                  </button>
+                );
+              })
+            ) : (
+              <div className="px-2 py-3 text-[11px]" style={{ color: "var(--text-muted)" }}>
+                {members.length ? "No staff found." : "No staff members found."}
+              </div>
+            )}
+          </div>
+        </div>,
+        document.body,
+      )}
+    </div>
+  );
+}
+
 // A plain single-select dropdown (no search, no per-option colors unless getOptionColor is given)
 // styled with the same glass panel as every other custom dropdown in the app
 // (GLASS_DROPDOWN_MENU_STYLE) — used in place of a native <select>, whose own OS-drawn option
@@ -6738,6 +7032,7 @@ export default function ProjectDetailsPage() {
   const [isImagesExpandedMobile, setIsImagesExpandedMobile] = useState(false);
   const [isFilesExpandedMobile, setIsFilesExpandedMobile] = useState(false);
   const [isEditingProductionNotes, setIsEditingProductionNotes] = useState(false);
+  const [isEditingDesignNotes, setIsEditingDesignNotes] = useState(false);
   const [isProductionNotesPanelOpen, setIsProductionNotesPanelOpen] = useState(false);
   const [isContractorsPanelOpen, setIsContractorsPanelOpen] = useState(false);
   const [activeContractorTab, setActiveContractorTab] = useState("");
@@ -6854,6 +7149,7 @@ export default function ProjectDetailsPage() {
   const [isSavingGeneralDetails, setIsSavingGeneralDetails] = useState(false);
   const [notesEditorInitialValue, setNotesEditorInitialValue] = useState("");
   const [productionNotesEditorInitialValue, setProductionNotesEditorInitialValue] = useState("");
+  const [designNotesEditorInitialValue, setDesignNotesEditorInitialValue] = useState("");
   const [productionNotesDraft, setProductionNotesDraft] = useState("");
   const [generalDetailsDraft, setGeneralDetailsDraft] = useState({
     customer: "",
@@ -7124,6 +7420,7 @@ export default function ProjectDetailsPage() {
   const [isRestoreArchivedConfirmOpen, setIsRestoreArchivedConfirmOpen] = useState(false);
   const [notesToolbarHost, setNotesToolbarHost] = useState<HTMLDivElement | null>(null);
   const [productionNotesToolbarHost, setProductionNotesToolbarHost] = useState<HTMLDivElement | null>(null);
+  const [designNotesToolbarHost, setDesignNotesToolbarHost] = useState<HTMLDivElement | null>(null);
   const [productionUnlockExpiryTick, setProductionUnlockExpiryTick] = useState(0);
   const [isGrantingUnlock, setIsGrantingUnlock] = useState(false);
   // Production unlock requests (lib/production-unlock-server.ts): asking for one, and answering one.
@@ -7592,6 +7889,12 @@ export default function ProjectDetailsPage() {
   const wasNestingFullscreenRef = useRef(false);
   const [isCompactProjectViewport, setIsCompactProjectViewport] = useState(false);
   const [projectViewportWidth, setProjectViewportWidth] = useState(0);
+  // A touch screen (no hover): Client Details' edit pencil stays showing instead of appearing on hover, and an empty
+  // Notes card says "Tap to add notes" rather than "Click".
+  const [isCoarsePointer, setIsCoarsePointer] = useState(false);
+  // What's typed into a Notes card between clicking it and its editor being ready (that takes a moment), held so
+  // none of it is lost — added once the editor is up (renderEditableNotesBody).
+  const notesTypeAheadRef = useRef<{ text: string; stop: () => void } | null>(null);
   // Mobile-only action bars for Quote/Specifications — a small floating card of buttons that rises
   // above a fixed "Actions" trigger (see useMobileFloatingActionSheet's own comment for why this
   // isn't the same full-screen slide-up Nesting/CNC's own mobile Visibility overlay uses). The
@@ -8222,8 +8525,10 @@ export default function ProjectDetailsPage() {
   const clientDetailsContainerRef = useRef<HTMLDivElement | null>(null);
   const notesContainerRef = useRef<HTMLDivElement | null>(null);
   const productionNotesContainerRef = useRef<HTMLDivElement | null>(null);
+  const designNotesContainerRef = useRef<HTMLDivElement | null>(null);
   const notesEditorDraftRef = useRef("");
   const productionNotesEditorDraftRef = useRef("");
+  const designNotesEditorDraftRef = useRef("");
   useEffect(() => {
     setThemeMode(readThemeMode());
     if (typeof window === "undefined") return;
@@ -8250,6 +8555,7 @@ export default function ProjectDetailsPage() {
     const syncCompactViewport = () => {
       const width = Math.max(window.innerWidth || 0, document.documentElement?.clientWidth || 0);
       setProjectViewportWidth(width);
+      setIsCoarsePointer(coarsePointerQuery.matches);
       setIsCompactProjectViewport(width < 1280 || (coarsePointerQuery.matches && width < 1440));
     };
     syncCompactViewport();
@@ -9682,34 +9988,57 @@ export default function ProjectDetailsPage() {
         ? "project-tab-slide-from-left 420ms cubic-bezier(0.22,1,0.36,1)"
         : undefined;
 
-  const projectTabStripRef = useRef<HTMLDivElement | null>(null);
-  const projectTabButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
-  const [projectTabUnderlineRect, setProjectTabUnderlineRect] = useState<{ left: number; width: number } | null>(null);
+  // The tab strip (held in state, as it only appears once the project has loaded — the pill is placed then), the plain
+  // row of tabs in it, and each tab's label (the pill goes around the selected one's).
+  const [projectTabStrip, setProjectTabStrip] = useState<HTMLDivElement | null>(null);
+  const projectTabRowRef = useRef<HTMLDivElement | null>(null);
+  const projectTabLabelRefs = useRef<Record<string, HTMLSpanElement | null>>({});
+  const [projectTabPill, setProjectTabPill] = useState<ProjectTabPill | null>(null);
   useLayoutEffect(() => {
-    const activeButton = projectTabButtonRefs.current[resolvedTab];
-    const container = projectTabStripRef.current;
-    if (!activeButton || !container) return;
-    const containerRect = container.getBoundingClientRect();
-    const buttonRect = activeButton.getBoundingClientRect();
-    setProjectTabUnderlineRect({
-      left: buttonRect.left - containerRect.left,
-      width: buttonRect.width,
+    updateProjectTabPill(projectTabLabelRefs.current, resolvedTab, projectTabStrip, projectTabRowRef.current, setProjectTabPill);
+  }, [projectTabStrip, resolvedTab, tabItemsWithAccess]);
+  // And again whenever the strip or a tab's label changes size (the window resized, a phone turned, the fonts came in).
+  useEffect(() => {
+    const strip = projectTabStrip;
+    if (!strip || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      updateProjectTabPill(projectTabLabelRefs.current, resolvedTab, strip, projectTabRowRef.current, setProjectTabPill);
     });
-  }, [resolvedTab, tabItemsWithAccess]);
+    observer.observe(strip);
+    for (const label of Object.values(projectTabLabelRefs.current)) {
+      if (label) observer.observe(label);
+    }
+    return () => observer.disconnect();
+  }, [projectTabStrip, resolvedTab, tabItemsWithAccess]);
   // The Production tab's unlock pill counts down inside its own component without re-rendering this
   // page (so without re-running the effect above), and reports each label change here instead — its
-  // width changing would otherwise leave the underline a few px off under Production, or under
-  // Settings beside it. Only sets state when the underline actually has to move.
+  // width changing would otherwise leave the selected tab's pill a few px off around Production, or around
+  // Settings beside it.
   const onProductionUnlockPillChange = () => {
-    const activeButton = projectTabButtonRefs.current[resolvedTab];
-    const container = projectTabStripRef.current;
-    if (!activeButton || !container) return;
-    const containerRect = container.getBoundingClientRect();
-    const buttonRect = activeButton.getBoundingClientRect();
-    const left = buttonRect.left - containerRect.left;
-    const width = buttonRect.width;
-    setProjectTabUnderlineRect((prev) => (prev && prev.left === left && prev.width === width ? prev : { left, width }));
+    updateProjectTabPill(projectTabLabelRefs.current, resolvedTab, projectTabStrip, projectTabRowRef.current, setProjectTabPill);
   };
+  // A tab's label: its name, plus Production's unlock countdown while one is running. Drawn twice — the plain tab
+  // (whose countdown re-places the pill as it changes), and its magnified copy inside the pill.
+  const projectTabLabelContent = (item: (typeof tabItemsWithAccess)[number], onLabelChange?: () => void) => (
+    <>
+      <span>{item.label}</span>
+      {"hasUnlockCountdown" in item && item.hasUnlockCountdown ? (
+        <ProductionUnlockCountdown project={project} uid={user?.uid} onLabelChange={onLabelChange}>
+          {(unlockLabel) => (
+            <span className="inline-flex h-6 items-center gap-1 rounded-full border px-2 text-[11px] font-bold sm:h-7 sm:px-3 sm:text-[12px]" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted, color: projectPalette.textSoft }}>
+              <img
+                src="/unlock.png"
+                alt=""
+                aria-hidden="true"
+                className="h-[11px] w-[11px] object-contain sm:h-[12px] sm:w-[12px]"
+              />
+              {unlockLabel}
+            </span>
+          )}
+        </ProductionUnlockCountdown>
+      ) : null}
+    </>
+  );
 
   // The slide itself (projectTabSlideAnimation, on the outer wrapper below) is untouched — this
   // is a second, separate animation on top of it. Every glass "container" (<section>) plus that
@@ -13251,6 +13580,21 @@ export default function ProjectDetailsPage() {
     if (explicitAssignedUid) return explicitAssignedUid;
     return "";
   }, [project?.assignedToUid]);
+  // Everyone in the company with their emblem colour, for Settings › Project Assignment's pickers.
+  const staffPickerMembers = useMemo<StaffPickerMember[]>(
+    () =>
+      companyMembers.map((member) => ({
+        uid: member.uid,
+        displayName: member.displayName,
+        color:
+          toStr(staffIconColorByUid[String(member.uid || "")]) ||
+          toStr(member.badgeColor) ||
+          toStr(member.userColor) ||
+          toStr((companyDoc as Record<string, unknown> | null)?.themeColor) ||
+          "#7D99B3",
+      })),
+    [companyMembers, staffIconColorByUid, companyDoc],
+  );
   const canChangeProjectCreator = useMemo(() => {
     const roleKey = String(effectiveRole || "").trim().toLowerCase();
     if (roleKey === "owner" || roleKey === "admin") {
@@ -17719,6 +18063,40 @@ export default function ProjectDetailsPage() {
     }
   };
 
+  const commitDesignNotesDetails = async () => {
+    if (!project || salesReadOnly) return;
+    const nextNotes = String((isEditingDesignNotes ? designNotesEditorDraftRef.current : project.designNotes) ?? "");
+    if (nextNotes !== String(project.designNotes ?? "")) {
+      await saveGeneralDetailsPatch({ designNotes: nextNotes });
+    }
+  };
+
+  // Opening a Notes card for editing (double-click it, or tap it on a touch screen) — saved again on a click anywhere
+  // outside it (the pointerdown effect below).
+  const startEditingNotes = () => {
+    if (!project || !generalAccess.edit || isSavingGeneralDetails) return;
+    const nextNotesValue = notesToDisplayHtml(project.notes || "");
+    notesEditorDraftRef.current = nextNotesValue;
+    setNotesEditorInitialValue(nextNotesValue);
+    setGeneralDetailsDraft((prev) => ({ ...prev, notes: nextNotesValue }));
+    setIsEditingNotes(true);
+  };
+  const startEditingProductionNotes = () => {
+    if (!project || productionReadOnly || isSavingGeneralDetails) return;
+    const nextNotesValue = notesToDisplayHtml(project.productionNotes || "");
+    productionNotesEditorDraftRef.current = nextNotesValue;
+    setProductionNotesEditorInitialValue(nextNotesValue);
+    setProductionNotesDraft(nextNotesValue);
+    setIsEditingProductionNotes(true);
+  };
+  const startEditingDesignNotes = () => {
+    if (!project || salesReadOnly || isSavingGeneralDetails) return;
+    const nextNotesValue = notesToDisplayHtml(project.designNotes || "");
+    designNotesEditorDraftRef.current = nextNotesValue;
+    setDesignNotesEditorInitialValue(nextNotesValue);
+    setIsEditingDesignNotes(true);
+  };
+
   const openProductionNotesPanel = () => {
     const nextNotesValue = notesToDisplayHtml(project?.productionNotes || "");
     productionNotesEditorDraftRef.current = nextNotesValue;
@@ -17793,7 +18171,7 @@ export default function ProjectDetailsPage() {
   };
 
   useEffect(() => {
-    if (!isEditingClientDetails && !isEditingNotes && !isEditingProductionNotes) return;
+    if (!isEditingClientDetails && !isEditingNotes && !isEditingProductionNotes && !isEditingDesignNotes) return;
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target as Node | null;
       if (!target) return;
@@ -17821,6 +18199,14 @@ export default function ProjectDetailsPage() {
           setIsEditingProductionNotes(false);
         }
       }
+
+      if (isEditingDesignNotes) {
+        const root = designNotesContainerRef.current;
+        if (root && !root.contains(target)) {
+          void commitDesignNotesDetails();
+          setIsEditingDesignNotes(false);
+        }
+      }
     };
 
     document.addEventListener("pointerdown", onPointerDown, true);
@@ -17829,9 +18215,11 @@ export default function ProjectDetailsPage() {
     isEditingClientDetails,
     isEditingNotes,
     isEditingProductionNotes,
+    isEditingDesignNotes,
     commitClientDetails,
     commitNotesDetails,
     commitProductionNotesDetails,
+    commitDesignNotesDetails,
   ]);
 
   useEffect(() => {
@@ -31867,6 +32255,45 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           </div>
         </section>
 
+      </div>
+
+      {/* Design's own notes — set out as General's and Production's Notes cards. */}
+      <div ref={designNotesContainerRef}>
+        <section
+          className="overflow-hidden rounded-[18px] border"
+          style={{
+            borderColor: "var(--glass-border)",
+            backgroundColor: "var(--glass-bg-strong)",
+            backdropFilter: "blur(20px) saturate(180%)",
+            WebkitBackdropFilter: "blur(20px) saturate(180%)",
+            boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
+          }}
+        >
+          <div
+            className="flex h-[50px] items-center justify-between overflow-hidden border-b px-4"
+            style={{ borderBottomColor: "var(--glass-border)", backgroundColor: isDarkMode ? "rgba(255,255,255,0.04)" : "rgba(15,23,42,0.025)" }}
+          >
+            <p className="text-[14px] font-medium tracking-[1px]" style={{ color: "var(--text-main)" }}>NOTES</p>
+            <div
+              ref={setDesignNotesToolbarHost}
+              className={`${isEditingDesignNotes && !salesReadOnly ? "shrink-0 overflow-hidden" : "hidden"}`}
+            />
+          </div>
+          <div className="min-h-[155px] px-4 pb-4 pt-3 text-[13px]" style={{ color: "var(--text-main)" }}>
+            {renderEditableNotesBody({
+              editorKey: "design-notes",
+              value: project?.designNotes || "",
+              isEditing: isEditingDesignNotes,
+              canEdit: !salesReadOnly,
+              editorInitialValue: designNotesEditorInitialValue,
+              toolbarHost: designNotesToolbarHost,
+              onStartEditing: startEditingDesignNotes,
+              onDraftChange: (nextValue) => {
+                designNotesEditorDraftRef.current = nextValue;
+              },
+            })}
+          </div>
+        </section>
       </div>
 
       {quotes.length > 0 && (
@@ -50275,6 +50702,96 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     );
   }
 
+  // A Notes card's body (General, Design and Production's): no Edit button — like a contact's Notes, click it (tap,
+  // on a touch screen) and type, and click anywhere outside the card to save. Its formatting toolbar sits in the
+  // card's header (toolbarHost) while editing.
+  function renderEditableNotesBody(opts: {
+    editorKey: string;
+    value: string;
+    isEditing: boolean;
+    canEdit: boolean;
+    editorInitialValue: string;
+    toolbarHost: HTMLDivElement | null;
+    onStartEditing: () => void;
+    onDraftChange: (value: string) => void;
+  }) {
+    if (opts.isEditing && opts.canEdit) {
+      return (
+        <QuoteDocumentEditor
+          key={opts.editorKey}
+          mode="embedded"
+          toolbarPlacement="inline"
+          toolbarHost={opts.toolbarHost}
+          embeddedChrome="flat"
+          embeddedMinHeight={53}
+          embeddedEditableMinHeight={23}
+          value={opts.editorInitialValue}
+          readOnly={isSavingGeneralDetails}
+          autoFocus
+          // Ready to carry on typing: the cursor at the end of what's there, after anything typed while it started.
+          onEditorReady={(editor) => {
+            const typeAhead = notesTypeAheadRef.current;
+            notesTypeAheadRef.current = null;
+            typeAhead?.stop();
+            const root = editor?.model.document.getRoot();
+            if (!editor || !root) return;
+            editor.model.change((writer) => writer.setSelection(root, "end"));
+            if (typeAhead?.text) {
+              editor.model.change((writer) => {
+                editor.model.insertContent(writer.createText(typeAhead.text), editor.model.document.selection);
+              });
+              // (The editor only reports changes from here on, so this one's passed on by hand.)
+              opts.onDraftChange(editor.getData());
+            }
+          }}
+          onChange={opts.onDraftChange}
+        />
+      );
+    }
+    const isEmpty = !stripHtmlToPlainText(opts.value).trim();
+    const startEditing = (e: React.MouseEvent<HTMLDivElement>) => {
+      // A link in the notes still just opens.
+      if ((e.target as HTMLElement).closest("a")) return;
+      // Nor when this click was the end of selecting some of the text (to copy it).
+      const selection = window.getSelection();
+      if (selection && !selection.isCollapsed && e.currentTarget.contains(selection.anchorNode)) return;
+      // Typing straight away: held until the editor's ready (see onEditorReady above).
+      notesTypeAheadRef.current?.stop();
+      const typeAhead = { text: "", stop: () => {} };
+      const onKeyDown = (event: KeyboardEvent) => {
+        if (event.ctrlKey || event.metaKey || event.altKey) return;
+        if (event.key === "Backspace" && typeAhead.text) {
+          event.preventDefault();
+          typeAhead.text = typeAhead.text.slice(0, -1);
+        } else if (event.key.length === 1) {
+          event.preventDefault();
+          typeAhead.text += event.key;
+        }
+      };
+      window.addEventListener("keydown", onKeyDown, true);
+      typeAhead.stop = () => window.removeEventListener("keydown", onKeyDown, true);
+      notesTypeAheadRef.current = typeAhead;
+      // Not left listening if the editor never comes up.
+      window.setTimeout(() => {
+        if (notesTypeAheadRef.current !== typeAhead) return;
+        typeAhead.stop();
+        notesTypeAheadRef.current = null;
+      }, 5000);
+      opts.onStartEditing();
+    };
+    return (
+      <div className={`min-h-[130px] ${opts.canEdit ? "cursor-text" : ""}`} onClick={opts.canEdit ? startEditing : undefined}>
+        {isEmpty ? (
+          opts.canEdit ? (
+            <p style={{ color: "var(--text-muted)" }}>{isCoarsePointer ? "Tap to add notes" : "Click to add notes"}</p>
+          ) : null
+        ) : (
+          <div className="notes-rich leading-[20px]" dangerouslySetInnerHTML={{ __html: notesToDisplayHtml(opts.value) }} />
+        )}
+      </div>
+    );
+  }
+
   function renderProductionNotesCard(panelMode: "overview" | "sidebar" = "overview") {
     if (panelMode === "sidebar") {
       return (
@@ -50313,7 +50830,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               className={`${!productionReadOnly ? "mt-2 min-w-0 overflow-hidden" : "hidden"}`}
             />
           </div>
-          <div className="glass-scroll flex min-h-0 flex-1 flex-col overflow-auto px-4 pb-4 pt-3" style={{ color: projectPalette.textSoft }}>
+          <div className="glass-scroll flex min-h-0 flex-1 flex-col overflow-auto px-4 pb-4 pt-3" style={{ color: "var(--text-main)" }}>
             {!productionReadOnly ? (
               <QuoteDocumentEditor
                 key="production-notes-sidebar"
@@ -50381,71 +50898,27 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             >
               Notes
             </CardTitle>
-            <div className="flex items-center justify-end gap-2">
-              <div
-                ref={setProductionNotesToolbarHost}
-                className={`${isEditingProductionNotes && !productionReadOnly ? "shrink-0 overflow-hidden" : "hidden"}`}
-              />
-              <button
-                type="button"
-                disabled={productionReadOnly || isSavingGeneralDetails}
-                onClick={() => {
-                  if (isEditingProductionNotes) {
-                    void commitProductionNotesDetails();
-                  } else {
-                    const nextNotesValue = notesToDisplayHtml(project?.productionNotes || "");
-                    productionNotesEditorDraftRef.current = nextNotesValue;
-                    setProductionNotesEditorInitialValue(nextNotesValue);
-                    setProductionNotesDraft(nextNotesValue);
-                  }
-                  setIsEditingProductionNotes((prev) => !prev);
-                }}
-                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95 disabled:opacity-60"
-                style={
-                  isEditingProductionNotes
-                    ? { backgroundColor: "#16A34A", borderColor: "#166534" }
-                    : { backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }
-                }
-                title={isEditingProductionNotes ? "Save changes" : "Edit notes"}
-              >
-                <img
-                  src={isEditingProductionNotes ? "/tick.png" : "/edit.png"}
-                  alt={isEditingProductionNotes ? "Save" : "Edit"}
-                  className="block object-contain"
-                  style={{ width: 16, height: 16, filter: "brightness(0) invert(1)" }}
-                  onError={(e) => {
-                    e.currentTarget.src = "/file.svg";
-                  }}
-                />
-              </button>
-            </div>
+            <div
+              ref={setProductionNotesToolbarHost}
+              className={`${isEditingProductionNotes && !productionReadOnly ? "shrink-0 overflow-hidden" : "hidden"}`}
+            />
           </CardHeader>
           <CardContent
             className="min-h-[155px] pt-3 text-[13px]"
-            style={{ color: projectPalette.textSoft }}
+            style={{ color: "var(--text-main)" }}
           >
-            {isEditingProductionNotes && !productionReadOnly ? (
-              <QuoteDocumentEditor
-                key="production-notes-overview"
-                mode="embedded"
-                toolbarPlacement="inline"
-                toolbarHost={productionNotesToolbarHost}
-                embeddedChrome="flat"
-                embeddedMinHeight={53}
-                embeddedEditableMinHeight={23}
-                value={productionNotesEditorInitialValue}
-                readOnly={isSavingGeneralDetails || productionReadOnly}
-                autoFocus
-                onChange={(nextValue) => {
-                  productionNotesEditorDraftRef.current = nextValue;
-                }}
-              />
-            ) : (
-              <div
-                className="min-h-[130px] notes-rich leading-[20px]"
-                dangerouslySetInnerHTML={{ __html: notesToDisplayHtml(project?.productionNotes || "") }}
-              />
-            )}
+            {renderEditableNotesBody({
+              editorKey: "production-notes-overview",
+              value: project?.productionNotes || "",
+              isEditing: isEditingProductionNotes,
+              canEdit: !productionReadOnly,
+              editorInitialValue: productionNotesEditorInitialValue,
+              toolbarHost: productionNotesToolbarHost,
+              onStartEditing: startEditingProductionNotes,
+              onDraftChange: (nextValue) => {
+                productionNotesEditorDraftRef.current = nextValue;
+              },
+            })}
           </CardContent>
         </section>
       </div>
@@ -51037,58 +51510,72 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           >
             <div className="px-4 md:px-5">
               <div className="flex flex-col md:flex-row md:items-center md:justify-between md:gap-6">
-                <div ref={projectTabStripRef} className="relative grid grid-cols-4 items-end gap-1 sm:-mx-1 sm:flex sm:gap-4 sm:overflow-x-auto sm:px-1 md:mx-0 md:flex-1 md:gap-10 md:px-2">
-                {tabItemsWithAccess.map((item) => {
-                  const active = resolvedTab === item.value;
-                  return (
-                    <button
-                      key={item.value}
-                      ref={(node) => {
-                        projectTabButtonRefs.current[item.value] = node;
-                      }}
-                      type="button"
-                      title={"title" in item ? item.title : undefined}
-                      disabled={"disabled" in item ? item.disabled : false}
-                      onClick={() => onChangeTab(item.value)}
-                      className={`w-full border-b-2 border-transparent pb-[10px] pt-[10px] text-center text-[16px] font-semibold transition sm:w-auto sm:shrink-0 sm:whitespace-nowrap sm:text-left sm:text-[18px] md:text-[20px] ${
-                        active ? "" : "hover:text-[var(--brand)]"
-                      } disabled:cursor-not-allowed disabled:opacity-50`}
-                      style={{
-                        color: active ? "var(--brand)" : projectPalette.textMuted,
-                      }}
-                    >
-                      <span className="inline-flex items-center gap-2">
-                        <span>{item.label}</span>
-                        {"hasUnlockCountdown" in item && item.hasUnlockCountdown ? (
-                          <ProductionUnlockCountdown project={project} uid={user?.uid} onLabelChange={onProductionUnlockPillChange}>
-                            {(unlockLabel) => (
-                              <span className="inline-flex h-6 items-center gap-1 rounded-full border px-2 text-[11px] font-bold sm:h-7 sm:px-3 sm:text-[12px]" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted, color: projectPalette.textSoft }}>
-                                <img
-                                  src="/unlock.png"
-                                  alt=""
-                                  aria-hidden="true"
-                                  className="h-[11px] w-[11px] object-contain sm:h-[12px] sm:w-[12px]"
-                                />
-                                {unlockLabel}
-                              </span>
-                            )}
-                          </ProductionUnlockCountdown>
-                        ) : null}
-                      </span>
-                    </button>
-                  );
-                })}
-                {projectTabUnderlineRect ? (
-                  <div
-                    className="pointer-events-none absolute bottom-0 h-[2px] rounded-full"
-                    style={{
-                      left: projectTabUnderlineRect.left,
-                      width: projectTabUnderlineRect.width,
-                      backgroundColor: "var(--brand)",
-                      transition: "left 220ms ease, width 220ms ease",
-                    }}
-                  />
-                ) : null}
+                {/* The tabs, and the selected one's pill — the custom properties here place it (see .project-tab-strip in
+                    globals.css). No sideways scrolling, so the pill is never clipped at the ends. */}
+                <div
+                  ref={setProjectTabStrip}
+                  className="project-tab-strip relative sm:-mx-1 md:mx-0 md:flex-1"
+                  data-pill-animate={projectTabPill?.animate ? "true" : undefined}
+                  style={
+                    projectTabPill
+                      ? ({
+                          "--project-tab-pill-x": `${projectTabPill.left}px`,
+                          "--project-tab-pill-y": `${projectTabPill.top}px`,
+                          "--project-tab-pill-w": `${projectTabPill.width}px`,
+                          "--project-tab-pill-h": `${projectTabPill.height}px`,
+                          "--project-tab-pill-mask": projectTabPillMask(projectTabPill.width, projectTabPill.height),
+                          "--project-tab-magnify": PROJECT_TAB_MAGNIFY,
+                        } as React.CSSProperties)
+                      : undefined
+                  }
+                >
+                  <div ref={projectTabRowRef} className={`project-tab-row ${PROJECT_TAB_ROW_CLASS}`}>
+                    {tabItemsWithAccess.map((item) => {
+                      const active = resolvedTab === item.value;
+                      return (
+                        <button
+                          key={item.value}
+                          type="button"
+                          title={"title" in item ? item.title : undefined}
+                          disabled={"disabled" in item ? item.disabled : false}
+                          onClick={() => onChangeTab(item.value)}
+                          className={`${PROJECT_TAB_CLASS} ${active ? "" : "hover:text-[var(--brand)]"} disabled:cursor-not-allowed disabled:opacity-50`}
+                          style={{
+                            color: active ? "var(--brand)" : projectPalette.textMuted,
+                          }}
+                        >
+                          <span
+                            ref={(node) => {
+                              projectTabLabelRefs.current[item.value] = node;
+                            }}
+                            className="inline-flex items-center gap-2"
+                          >
+                            {projectTabLabelContent(item, onProductionUnlockPillChange)}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {projectTabPill ? (
+                    // The pill: glass, the tabs again inside it (magnified), and its outline on top.
+                    <div aria-hidden="true" className="project-tab-lens pointer-events-none absolute left-0 top-0 overflow-hidden rounded-full">
+                      <div className={`project-tab-lens-row absolute left-0 top-0 ${PROJECT_TAB_ROW_CLASS}`} style={{ width: projectTabPill.rowWidth }}>
+                        {tabItemsWithAccess.map((item) => (
+                          <div
+                            key={item.value}
+                            className={PROJECT_TAB_CLASS}
+                            style={{
+                              color: resolvedTab === item.value ? "var(--brand)" : projectPalette.textMuted,
+                              opacity: "disabled" in item && item.disabled ? 0.5 : undefined,
+                            }}
+                          >
+                            <span className="inline-flex items-center gap-2">{projectTabLabelContent(item)}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="project-tab-lens-outline absolute inset-0 rounded-full border" />
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </div>
@@ -51182,7 +51669,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           icon circles in their contact category's colour (no ambient wash, no category name) (neutral when they
                           have no category, or no contact card yet). */}
                       <section
-                        className="overflow-hidden rounded-[18px] border"
+                        className="group/client overflow-hidden rounded-[18px] border"
                         style={{
                           ["--ambient-color" as string]: clientCardAmbientColor,
                           transition: "--ambient-color 800ms ease-in-out",
@@ -51205,19 +51692,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             Client Details
                           </CardTitle>
                           <div className="flex shrink-0 items-center gap-2">
-                          {/* No contact card for this client on this user's Contacts page -> offer to make one
-                              from the project's client details (attaches to an existing record if one matches). */}
-                          {projectContact === null && hasProjectClientInfo ? (
-                            <button
-                              type="button"
-                              onClick={openCreateContactModal}
-                              className="glass-nav-arrow inline-flex h-8 items-center gap-1.5 rounded-[10px] px-2.5 text-[12px] font-medium transition hover:brightness-95"
-                              title="Add this client to your Contacts"
-                            >
-                              <UserPlus size={14} />
-                              Create Contact
-                            </button>
-                          ) : null}
                           {/* "Update contact card?" — glass modal (see offerContactCardUpdate). */}
                           {shouldRenderContactCardPrompt && renderedContactCardPrompt && typeof document !== "undefined"
                             ? createPortal(
@@ -51408,33 +51882,28 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 document.body,
                               )
                             : null}
-                          <button
-                            type="button"
-                            disabled={!generalAccess.edit || isSavingGeneralDetails}
-                            onClick={() => {
-                              if (isEditingClientDetails) {
-                                void commitClientDetails();
-                              }
-                              setIsEditingClientDetails((prev) => !prev);
-                            }}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] border hover:brightness-95 disabled:opacity-60"
-                            style={
-                              isEditingClientDetails
-                                ? { backgroundColor: "#16A34A", borderColor: "#166534" }
-                                : { backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }
-                            }
-                            title={isEditingClientDetails ? "Save changes" : "Edit client details"}
-                          >
-                            <img
-                              src={isEditingClientDetails ? "/tick.png" : "/edit.png"}
-                              alt={isEditingClientDetails ? "Save" : "Edit"}
-                              className="block object-contain"
-                              style={{ width: 16, height: 16, filter: "brightness(0) invert(1)" }}
-                              onError={(e) => {
-                                e.currentTarget.src = "/file.svg";
+                          {/* The same plain pencil as the project name's, appearing on hover of the card (always there
+                              on a touch screen); a tick while editing, which saves (as does clicking outside the card). */}
+                          {generalAccess.edit ? (
+                            <button
+                              type="button"
+                              disabled={isSavingGeneralDetails}
+                              onClick={() => {
+                                if (isEditingClientDetails) {
+                                  void commitClientDetails();
+                                }
+                                setIsEditingClientDetails((prev) => !prev);
                               }}
-                            />
-                          </button>
+                              className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] transition-opacity hover:bg-[var(--panel-muted)] focus-visible:opacity-100 disabled:opacity-60 ${
+                                isEditingClientDetails || isCoarsePointer ? "opacity-100" : "opacity-0 group-hover/client:opacity-100"
+                              }`}
+                              style={{ color: "var(--text-muted)" }}
+                              title={isEditingClientDetails ? "Save changes" : "Edit client details"}
+                              aria-label={isEditingClientDetails ? "Save changes" : "Edit client details"}
+                            >
+                              {isEditingClientDetails ? <Check size={16} /> : <Pencil size={16} />}
+                            </button>
+                          ) : null}
                           </div>
                         </CardHeader>
                         <CardContent className="pt-1 text-[13px] text-[#1F2937]">
@@ -51480,6 +51949,21 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 />
                               ) : null}
                             </div>
+                            {/* No contact card for this client on this user's Contacts page -> offer to make one from the
+                                project's client details (attaches to an existing record if one matches). Green, like
+                                Production's add (+) buttons. */}
+                            {projectContact === null && hasProjectClientInfo ? (
+                              <button
+                                type="button"
+                                onClick={openCreateContactModal}
+                                className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-[12px] font-medium text-white transition hover:brightness-95"
+                                style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
+                                title="Add this client to your Contacts"
+                              >
+                                <UserPlus size={14} />
+                                Create Contact
+                              </button>
+                            ) : null}
                           </div>
                           {[
                             { icon: Phone, key: "clientPhone" as const, value: project.clientPhone || "-", href: project.clientPhone ? `tel:${project.clientPhone}` : "" },
@@ -51600,72 +52084,25 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             <FileText size={14} style={{ color: projectPalette.textMuted }} />
                             Notes
                           </CardTitle>
-                          <div className="flex items-center justify-end gap-2">
-                            <div
-                              ref={setNotesToolbarHost}
-                              className={`${isEditingNotes && generalAccess.edit ? "shrink-0 overflow-hidden" : "hidden"}`}
-                            />
-                            <button
-                              type="button"
-                              disabled={!generalAccess.edit || isSavingGeneralDetails}
-                              onClick={() => {
-                                if (isEditingNotes) {
-                                  void commitNotesDetails();
-                                } else {
-                                  const nextNotesValue = notesToDisplayHtml(project?.notes || "");
-                                  notesEditorDraftRef.current = nextNotesValue;
-                                  setNotesEditorInitialValue(nextNotesValue);
-                                  setGeneralDetailsDraft((prev) => ({
-                                    ...prev,
-                                    notes: nextNotesValue,
-                                  }));
-                                }
-                                setIsEditingNotes((prev) => !prev);
-                              }}
-                              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95 disabled:opacity-60"
-                              style={
-                                isEditingNotes
-                                  ? { backgroundColor: "#16A34A", borderColor: "#166534" }
-                                  : { backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }
-                              }
-                              title={isEditingNotes ? "Save changes" : "Edit notes"}
-                            >
-                              <img
-                                src={isEditingNotes ? "/tick.png" : "/edit.png"}
-                                alt={isEditingNotes ? "Save" : "Edit"}
-                                className="block object-contain"
-                                style={{ width: 16, height: 16, filter: "brightness(0) invert(1)" }}
-                                onError={(e) => {
-                                  e.currentTarget.src = "/file.svg";
-                                }}
-                              />
-                            </button>
-                          </div>
+                          <div
+                            ref={setNotesToolbarHost}
+                            className={`${isEditingNotes && generalAccess.edit ? "shrink-0 overflow-hidden" : "hidden"}`}
+                          />
                         </CardHeader>
                         {(isEditingNotes || Boolean(String(project.notes || "").trim()) || isLgUpViewport || isNotesExpandedMobile) && (
-                        <CardContent className="min-h-[155px] pt-3 text-[13px]" style={{ color: projectPalette.textSoft }}>
-                          {isEditingNotes && generalAccess.edit ? (
-                            <QuoteDocumentEditor
-                              key="editing-notes"
-                              mode="embedded"
-                              toolbarPlacement="inline"
-                              toolbarHost={notesToolbarHost}
-                              embeddedChrome="flat"
-                              embeddedMinHeight={53}
-                              embeddedEditableMinHeight={23}
-                              value={notesEditorInitialValue}
-                              readOnly={isSavingGeneralDetails || !generalAccess.edit}
-                              autoFocus
-                              onChange={(nextValue) => {
-                                notesEditorDraftRef.current = nextValue;
-                              }}
-                            />
-                          ) : (
-                            <div
-                              className="notes-rich min-h-[130px] leading-[20px]"
-                              dangerouslySetInnerHTML={{ __html: notesToDisplayHtml(project.notes || "") }}
-                            />
-                          )}
+                        <CardContent className="min-h-[155px] pt-3 text-[13px]" style={{ color: "var(--text-main)" }}>
+                          {renderEditableNotesBody({
+                            editorKey: "editing-notes",
+                            value: project.notes || "",
+                            isEditing: isEditingNotes,
+                            canEdit: generalAccess.edit,
+                            editorInitialValue: notesEditorInitialValue,
+                            toolbarHost: notesToolbarHost,
+                            onStartEditing: startEditingNotes,
+                            onDraftChange: (nextValue) => {
+                              notesEditorDraftRef.current = nextValue;
+                            },
+                          })}
                         </CardContent>
                         )}
                       </section>
@@ -55563,36 +56000,28 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   <CardContent className="space-y-3 pt-3 text-[12px]">
                   <div className="grid grid-cols-[120px_minmax(0,1fr)] items-center gap-3">
                     <p className="font-semibold" style={{ color: projectPalette.textSoft }}>Project Creator</p>
-                    <select
+                    <StaffPickerDropdown
                       value={String(project.createdByUid ?? "").trim()}
-                      onChange={(e) => void onChangeProjectCreatorUser(e.target.value)}
+                      members={staffPickerMembers}
+                      onChange={(uid) => void onChangeProjectCreatorUser(uid)}
                       disabled={!canChangeProjectCreator || isSavingGeneralDetails}
-                      className="h-9 min-w-0 rounded-[8px] border px-3 text-[12px] outline-none disabled:opacity-60"
-                      style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
-                    >
-                      {companyMembers.map((member) => (
-                        <option key={member.uid} value={member.uid}>
-                          {member.displayName}
-                        </option>
-                      ))}
-                    </select>
+                      fallbackLabel={creatorDisplayName}
+                      ariaLabel="Project creator"
+                      triggerStyle={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
+                    />
                   </div>
                   <div className="grid grid-cols-[120px_minmax(0,1fr)] items-center gap-3">
                     <p className="font-semibold" style={{ color: projectPalette.textSoft }}>Assigned User</p>
-                    <select
+                    <StaffPickerDropdown
                       value={effectiveAssignedSelectionUid}
-                      onChange={(e) => void onChangeAssignedProjectUser(e.target.value)}
+                      members={staffPickerMembers}
+                      onChange={(uid) => void onChangeAssignedProjectUser(uid)}
                       disabled={!settingsAccess.edit || isSavingGeneralDetails}
-                      className="h-9 min-w-0 rounded-[8px] border px-3 text-[12px] outline-none disabled:opacity-60"
-                      style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
-                    >
-                      <option value="">Unassigned</option>
-                      {companyMembers.map((member) => (
-                        <option key={member.uid} value={member.uid}>
-                          {member.displayName}
-                        </option>
-                      ))}
-                    </select>
+                      emptyLabel="Unassigned"
+                      fallbackLabel={assignedDisplayName}
+                      ariaLabel="Assigned user"
+                      triggerStyle={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
+                    />
                     </div>
                   </CardContent>
                 </section>

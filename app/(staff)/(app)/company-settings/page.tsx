@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, Building2, CheckCircle2, ChevronDown, CircleDollarSign, CircleHelp, ClipboardList, Clock3, DatabaseBackup, Download, GripVertical, HardHat, Layers3, LayoutDashboard, Link2, Loader2, Package2, Plus, RotateCcw, Search, Settings, Upload, Users, Wrench, X } from "lucide-react";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
@@ -120,6 +121,14 @@ type BoardEdgingMemoryRow = { value: string; count: string };
 type BoardColourMemoryRow = { value: string; count: string; edgings: BoardEdgingMemoryRow[] };
 type DashboardLegendRow = { id: string; name: string; color: string };
 type TagUsageRow = { value: string; count: string };
+// Every pop-up on this page is put on the page's top level (document.body), not inside the settings content it's
+// written in — inside it, it sat in <main>, the page's scroll area: focusing a field in a pop-up scrolled the settings
+// page behind it (and back again on saving), and a drag or swipe in it could reach the page underneath.
+function ModalPortal({ children }: { children: React.ReactNode }) {
+  if (typeof document === "undefined") return null;
+  return createPortal(children, document.body);
+}
+
 type ItemCategoryItemRow = { name: string; description: string; subcategory: string; price: string; markupPercent: string };
 type ItemCategoryRow = { name: string; color: string; subcategories: string; items: ItemCategoryItemRow[] };
 // Company-wide categories for Contacts-page contacts — kept here (not per-user) so staff stay
@@ -1615,6 +1624,9 @@ export default function CompanySettingsPage() {
   const specsTemplateFileInputRef = useRef<HTMLInputElement | null>(null);
   const quoteTemplateFileInputRef = useRef<HTMLInputElement | null>(null);
   const hasPendingBlurSaveRef = useRef(false);
+  // A row (a category, an item, a status…) is being dragged: the list reorders live as it moves, but nothing is
+  // saved until it's dropped (endRowDrag) — not each in-between order.
+  const isRowDraggingRef = useRef(false);
   const saveQueuedWhileBusyRef = useRef(false);
   const skipFirstDirtyEffectRef = useRef(true);
   const skipFirstZapierPersistEffectRef = useRef(true);
@@ -1713,6 +1725,20 @@ export default function CompanySettingsPage() {
   const [itemCategoryExpanded, setItemCategoryExpanded] = useState<Record<number, boolean>>({});
   const [itemCategoryDragIndex, setItemCategoryDragIndex] = useState<number | null>(null);
   const [itemCategoryDragOverIndex, setItemCategoryDragOverIndex] = useState<number | null>(null);
+  // Item categories: the category waiting on "Delete item category?" (its row, name and how many items it has) — or,
+  // with itemIndex, one of its items waiting on "Delete item?".
+  const [pendingItemCategoryDelete, setPendingItemCategoryDelete] = useState<{
+    index: number;
+    name: string;
+    itemCount: number;
+    itemIndex?: number;
+    itemName?: string;
+  } | null>(null);
+  const [itemCategoryDeleteOrigin, setItemCategoryDeleteOrigin] = useState<GlassModalOrigin>(null);
+  const itemCategoryDeletePanelRef = useRef<HTMLDivElement | null>(null);
+  const itemCategoryDeleteOriginElRef = useRef<HTMLElement | null>(null);
+  // An item being dragged up or down within its own category (Item categories' item rows).
+  const [itemCategoryItemDrag, setItemCategoryItemDrag] = useState<{ catIndex: number; itemIndex: number } | null>(null);
   const [isItemCategoriesModalOpen, setIsItemCategoriesModalOpen] = useState(false);
   const [itemCategoriesModalOrigin, setItemCategoriesModalOrigin] = useState<GlassModalOrigin>(null);
   const itemCategoriesModalPanelRef = useRef<HTMLDivElement | null>(null);
@@ -2961,6 +2987,13 @@ export default function CompanySettingsPage() {
       return prev.map((m) => (m.type === target.type ? { ...m, isDefaultForType: m.id === id } : m));
     });
   };
+  const shouldRenderItemCategoryDeleteModal = useGlassModalPopOrigin(
+    Boolean(pendingItemCategoryDelete),
+    itemCategoryDeleteOrigin,
+    itemCategoryDeletePanelRef,
+    undefined,
+    itemCategoryDeleteOriginElRef,
+  );
   const shouldRenderTagDeleteModal = useGlassModalPopOrigin(
     Boolean(pendingTagDelete),
     tagDeleteOrigin,
@@ -3682,6 +3715,8 @@ export default function CompanySettingsPage() {
     if (!isHydrated || isLoading || !activeCompanyId || !canEditCompanySettings) {
       return;
     }
+    // Mid-drag: waits for the drop (the change stays pending — endRowDrag saves it).
+    if (isRowDraggingRef.current) return;
     if (!hasPendingBlurSaveRef.current) {
       return;
     }
@@ -3724,12 +3759,19 @@ export default function CompanySettingsPage() {
   // dragEnter logic is unchanged.
   const rowDragGhost = useDragGhost();
   const startRowDrag = (e: React.DragEvent<HTMLElement>, originId: string, label: string, color?: string) => {
+    isRowDraggingRef.current = true;
     e.dataTransfer.effectAllowed = "move";
     const img = rowDragGhost.transparentImageRef.current;
     if (img) e.dataTransfer.setDragImage(img, 0, 0);
     rowDragGhost.spawn(e, originId, { label: label.trim() || "Untitled", color: color || "var(--brand)" });
   };
-  const endRowDrag = () => rowDragGhost.end();
+  // Dropped (or let go anywhere): the new order is saved now, once.
+  const endRowDrag = () => {
+    rowDragGhost.end();
+    if (!isRowDraggingRef.current) return;
+    isRowDraggingRef.current = false;
+    if (hasPendingBlurSaveRef.current) triggerBlurAutoSaveRef.current();
+  };
   const ask = useGlassPrompt();
 
   // The company's chosen unit/currency, for every length and price shown on this page.
@@ -4220,7 +4262,10 @@ export default function CompanySettingsPage() {
                       <h1 className="text-[24px] font-bold leading-tight tracking-[-0.2px]" style={{ color: "var(--text-main)" }}>{current.label}</h1>
                       <p className="mt-0.5 text-[13px]" style={{ color: "var(--text-muted)" }}>{current.description}</p>
                     </div>
-                    <div className="flex items-center gap-2">
+                    {/* The save status keeps one size whatever it says — "Save now" coming and going used to squeeze the
+                        title onto more lines (on a phone, a word a line), moving the whole page up and down on every
+                        edit. A phone: its own line under the title. Wider: a fixed slot at the right. */}
+                    <div className="flex min-h-9 items-center gap-2 max-md:w-full md:w-[270px] md:shrink-0 md:justify-end">
                       <span
                         className="inline-flex items-center gap-1.5 rounded-full px-3 py-[7px] text-[12px] font-semibold"
                         style={
@@ -4833,6 +4878,7 @@ export default function CompanySettingsPage() {
                     </div>
                   </Panel>
                   {shouldRenderAddMachineModal ? (
+                    <ModalPortal>
                     <div className="fixed inset-0 z-[1700] flex items-center justify-center px-4 py-4">
                       <button type="button" aria-label="Cancel" onClick={() => setNewMachineTypePickerOpen(false)} className="glass-modal-backdrop absolute inset-0" />
                       <div ref={addMachinePanelRef} className="glass-modal-panel relative z-[1701] w-full max-w-[520px] overflow-hidden">
@@ -4889,8 +4935,10 @@ export default function CompanySettingsPage() {
                         </div>
                       </div>
                     </div>
+                    </ModalPortal>
                   ) : null}
                   {shouldRenderMachineModal ? (
+                    <ModalPortal>
                     <div className="fixed inset-0 z-[1700] flex items-center justify-center px-4 py-4">
                       <button
                         type="button"
@@ -5188,6 +5236,7 @@ export default function CompanySettingsPage() {
                         </div>
                       </div>
                     </div>
+                    </ModalPortal>
                   ) : null}
                 </div>
               )}
@@ -5706,6 +5755,7 @@ export default function CompanySettingsPage() {
                     </div>
                   </Panel>
                   {shouldRenderRoleModal ? (
+                    <ModalPortal>
                     <div className="fixed inset-0 z-[1600] flex items-center justify-center px-4 py-4">
                       <button type="button" aria-label="Close role permissions" onClick={() => setActiveRoleModalIndex(null)} className="glass-modal-backdrop absolute inset-0" />
                       <div ref={roleModalPanelRef} className="glass-modal-panel relative z-[1601] flex max-h-[calc(100svh-32px)] w-full max-w-[820px] flex-col overflow-hidden">
@@ -5793,8 +5843,10 @@ export default function CompanySettingsPage() {
                         </div>
                       </div>
                     </div>
+                    </ModalPortal>
                   ) : null}
                   {shouldRenderOwnerTransferModal ? (
+                    <ModalPortal>
                     <div className="fixed inset-0 z-[1700] flex items-center justify-center px-4 py-4">
                       <button
                         type="button"
@@ -5866,8 +5918,10 @@ export default function CompanySettingsPage() {
                         </div>
                       </div>
                     </div>
+                    </ModalPortal>
                   ) : null}
                   {shouldRenderStaffRemovalModal ? (
+                    <ModalPortal>
                     <div className="fixed inset-0 z-[1725] flex items-center justify-center px-4 py-4">
                       <button
                         type="button"
@@ -6086,6 +6140,7 @@ export default function CompanySettingsPage() {
                         </div>
                       </div>
                     </div>
+                    </ModalPortal>
                   ) : null}
                 </div>
               )}
@@ -6483,6 +6538,7 @@ export default function CompanySettingsPage() {
                     </div>
                   </Panel>
                   {shouldRenderTagDeleteModal && pendingTagDelete ? (
+                    <ModalPortal>
                     <div className="fixed inset-0 z-[1700] flex items-center justify-center px-4 py-4">
                       <button
                         type="button"
@@ -6533,6 +6589,7 @@ export default function CompanySettingsPage() {
                         </div>
                       </div>
                     </div>
+                    </ModalPortal>
                   ) : null}
                   <Panel
                     title="Finished projects"
@@ -6729,6 +6786,7 @@ export default function CompanySettingsPage() {
                     </div>
                   </Panel>
                   {shouldRenderCalendarAccessModal && activeCalendarCategory ? (
+                    <ModalPortal>
                     <div className="fixed inset-0 z-[1750] flex items-center justify-center px-4 py-4">
                       <button type="button" aria-label="Close category access" onClick={() => setCalendarAccessIndex(null)} className="glass-modal-backdrop absolute inset-0" />
                       <div ref={calendarAccessPanelRef} role="dialog" className="glass-modal-panel relative z-[1751] flex max-h-[calc(100svh-32px)] w-full max-w-[560px] flex-col overflow-hidden">
@@ -6790,6 +6848,7 @@ export default function CompanySettingsPage() {
                         </div>
                       </div>
                     </div>
+                    </ModalPortal>
                   ) : null}
                 </div>
               )}
@@ -6851,7 +6910,77 @@ export default function CompanySettingsPage() {
                       })}
                     </div>
                   </Panel>
+                  {shouldRenderItemCategoryDeleteModal && pendingItemCategoryDelete ? (
+                    // "Delete item category?" — over the Item categories pop-up it opens from (z-1800 > its 1750).
+                    <ModalPortal>
+                    <div className="fixed inset-0 z-[1800] flex items-center justify-center px-4 py-4">
+                      <button
+                        type="button"
+                        aria-label="Close delete item category popup"
+                        onClick={() => setPendingItemCategoryDelete(null)}
+                        className="glass-modal-backdrop absolute inset-0"
+                      />
+                      <div ref={itemCategoryDeletePanelRef} className="glass-modal-panel relative z-[1801] flex w-full max-w-[440px] flex-col overflow-hidden">
+                        <div className="glass-modal-header flex items-center justify-between px-4 py-3">
+                          <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
+                            {pendingItemCategoryDelete.itemIndex === undefined ? "Delete item category?" : "Delete item?"}
+                          </p>
+                          <button type="button" onClick={() => setPendingItemCategoryDelete(null)} className={dangerIconButtonClass} aria-label="Close">
+                            <X size={16} />
+                          </button>
+                        </div>
+                        <div className="space-y-2 px-4 py-4">
+                          <p className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
+                            {pendingItemCategoryDelete.itemIndex === undefined
+                              ? `“${pendingItemCategoryDelete.name || "Untitled category"}”${
+                                  pendingItemCategoryDelete.itemCount > 0
+                                    ? ` and its ${pendingItemCategoryDelete.itemCount} ${pendingItemCategoryDelete.itemCount === 1 ? "item" : "items"} will be removed`
+                                    : " will be removed"
+                                } from the Sales item picker.`
+                              : `“${pendingItemCategoryDelete.itemName || "Untitled item"}” will be removed from “${
+                                  pendingItemCategoryDelete.name || "Untitled category"
+                                }” in the Sales item picker.`}
+                          </p>
+                          <p className="text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>
+                            This can&apos;t be undone.
+                          </p>
+                        </div>
+                        <div className="flex items-center justify-end gap-2 border-t px-4 py-3" style={{ borderColor: "var(--glass-border)" }}>
+                          <button type="button" onClick={() => setPendingItemCategoryDelete(null)} className={secondaryButtonClass}>
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const target = pendingItemCategoryDelete;
+                              setPendingItemCategoryDelete(null);
+                              // Matched by position and name, in case the list changed while this was open.
+                              if (target.itemIndex !== undefined) {
+                                const itemIndex = target.itemIndex;
+                                setItemCategories((prev) =>
+                                  prev.map((row, i) =>
+                                    i === target.index && (row.items ?? [])[itemIndex]?.name.trim() === target.itemName
+                                      ? { ...row, items: (row.items ?? []).filter((_, j) => j !== itemIndex) }
+                                      : row,
+                                  ),
+                                );
+                                return;
+                              }
+                              setItemCategories((prev) => prev.filter((row, i) => !(i === target.index && row.name.trim() === target.name)));
+                              setItemCategoryExpanded({});
+                            }}
+                            className="inline-flex h-9 items-center justify-center rounded-[10px] border px-4 text-[12px] font-medium text-white transition hover:brightness-95"
+                            style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                    </ModalPortal>
+                  ) : null}
                   {shouldRenderItemCategoriesModal ? (
+                    <ModalPortal>
                     <div className="fixed inset-0 z-[1750] flex items-center justify-center px-4 py-4">
                       <button
                         type="button"
@@ -6925,7 +7054,24 @@ export default function CompanySettingsPage() {
                                   >
                                     <GripVertical size={15} />
                                   </button>
-                                  <button type="button" onClick={() => setItemCategories((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} title="Remove category"><X size={15} /></button>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      const itemCount = (row.items ?? []).length;
+                                      // A blank new one (no name, no items) just goes; anything else asks first.
+                                      if (!row.name.trim() && itemCount === 0) {
+                                        setItemCategories((prev) => prev.filter((_, i) => i !== idx));
+                                        return;
+                                      }
+                                      itemCategoryDeleteOriginElRef.current = e.currentTarget;
+                                      setItemCategoryDeleteOrigin(captureGlassModalOrigin(e));
+                                      setPendingItemCategoryDelete({ index: idx, name: row.name.trim(), itemCount });
+                                    }}
+                                    className={dangerIconButtonClass}
+                                    title="Remove category"
+                                  >
+                                    <X size={15} />
+                                  </button>
                                   <button
                                     type="button"
                                     onClick={() => toggleItemCategoryExpanded(idx)}
@@ -6972,9 +7118,10 @@ export default function CompanySettingsPage() {
                                     style={{ backgroundColor: `color-mix(in srgb, ${row.color || "#7D99B3"} 8%, transparent)`, borderColor: "var(--glass-border)" }}
                                   >
                                     <div
-                                      className="grid grid-cols-[30px_1fr_2.2fr_130px_110px_100px_110px] items-center gap-2 border-b px-4 py-1.5 text-[10.5px] font-bold uppercase tracking-[0.6px]"
+                                      className="grid grid-cols-[30px_30px_1fr_2.2fr_130px_110px_100px_110px] items-center gap-2 border-b px-4 py-1.5 text-[10.5px] font-bold uppercase tracking-[0.6px]"
                                       style={{ borderColor: "var(--glass-border)", color: "var(--text-muted)" }}
                                     >
+                                      <p></p>
                                       <p></p>
                                       <p>Name</p>
                                       <p>Description</p>
@@ -6989,12 +7136,73 @@ export default function CompanySettingsPage() {
                                       return (
                                         <div
                                           key={`${idx}_item_${itemIdx}`}
-                                          className={`grid grid-cols-[30px_1fr_2.2fr_130px_110px_100px_110px] items-center gap-2 px-4 py-1.5 ${isLastItem ? "" : "border-b"}`}
-                                          style={{ borderColor: "var(--glass-border)" }}
+                                          id={`settings_item_category_${idx}_item_${itemIdx}`}
+                                          className={`grid grid-cols-[30px_30px_1fr_2.2fr_130px_110px_100px_110px] items-center gap-2 px-4 py-1.5 ${isLastItem ? "" : "border-b"}`}
+                                          style={{
+                                            borderColor: "var(--glass-border)",
+                                            opacity: itemCategoryItemDrag?.catIndex === idx && itemCategoryItemDrag.itemIndex === itemIdx ? 0.45 : 1,
+                                          }}
+                                          // Up and down within its own category only — another category's items aren't a drop place.
+                                          onDragOver={(e) => {
+                                            if (itemCategoryItemDrag?.catIndex !== idx) return;
+                                            e.preventDefault();
+                                            e.dataTransfer.dropEffect = "move";
+                                          }}
+                                          onDragEnter={(e) => {
+                                            if (itemCategoryItemDrag?.catIndex !== idx) return;
+                                            e.preventDefault();
+                                            const from = itemCategoryItemDrag.itemIndex;
+                                            if (from === itemIdx) return;
+                                            setItemCategories((prev) =>
+                                              prev.map((cat, i) => (i === idx ? { ...cat, items: moveRowTo(cat.items ?? [], from, itemIdx) } : cat)),
+                                            );
+                                            setItemCategoryItemDrag({ catIndex: idx, itemIndex: itemIdx });
+                                          }}
+                                          onDrop={(e) => {
+                                            if (itemCategoryItemDrag?.catIndex !== idx) return;
+                                            e.preventDefault();
+                                            setItemCategoryItemDrag(null);
+                                            endRowDrag();
+                                            triggerAutosaveAfterRowDrop();
+                                          }}
                                         >
                                           <button
                                             type="button"
-                                            onClick={() => removeItemCategoryItem(idx, itemIdx)}
+                                            draggable
+                                            onDragStart={(e) => {
+                                              setItemCategoryItemDrag({ catIndex: idx, itemIndex: itemIdx });
+                                              e.dataTransfer.setData("text/plain", `itemcat_${idx}_item_${itemIdx}`);
+                                              startRowDrag(e, `settings_item_category_${idx}_item_${itemIdx}`, itemRow.name, row.color);
+                                            }}
+                                            onDragEnd={() => {
+                                              setItemCategoryItemDrag(null);
+                                              endRowDrag();
+                                            }}
+                                            className={gripClass}
+                                            title="Drag to reorder"
+                                            aria-label="Drag to reorder this item"
+                                          >
+                                            <GripVertical size={15} />
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              // A blank new one (nothing filled in) just goes; anything else asks first.
+                                              const filled = [itemRow.name, itemRow.description, itemRow.price, itemRow.markupPercent].some((v) => String(v ?? "").trim());
+                                              if (!filled) {
+                                                removeItemCategoryItem(idx, itemIdx);
+                                                return;
+                                              }
+                                              itemCategoryDeleteOriginElRef.current = e.currentTarget;
+                                              setItemCategoryDeleteOrigin(captureGlassModalOrigin(e));
+                                              setPendingItemCategoryDelete({
+                                                index: idx,
+                                                name: row.name.trim(),
+                                                itemCount: (row.items ?? []).length,
+                                                itemIndex: itemIdx,
+                                                itemName: itemRow.name.trim(),
+                                              });
+                                            }}
                                             className={dangerIconButtonClass}
                                             title="Delete item"
                                           >
@@ -7068,6 +7276,7 @@ export default function CompanySettingsPage() {
                         </div>
                       </div>
                     </div>
+                    </ModalPortal>
                   ) : null}
                   {isSpecsLayoutModalOpen ? (
                     <div data-specs-layout-modal="true" className="fixed inset-0 z-[1000] flex flex-col bg-[var(--bg-app)]">
@@ -7189,6 +7398,7 @@ export default function CompanySettingsPage() {
                     </div>
                   ) : null}
                   {shouldRenderSpecsTemplateResetConfirmModal ? (
+                    <ModalPortal>
                     <div className="fixed inset-0 z-[1010] flex items-center justify-center px-4 py-4">
                       <button
                         type="button"
@@ -7225,6 +7435,7 @@ export default function CompanySettingsPage() {
                         </div>
                       </div>
                     </div>
+                    </ModalPortal>
                   ) : null}
                   {isQuoteLayoutModalOpen ? (
                     <div data-quote-layout-modal="true" className="fixed inset-0 z-[1000] flex flex-col bg-[var(--bg-app)]">
@@ -7344,6 +7555,7 @@ export default function CompanySettingsPage() {
                     </div>
                   ) : null}
                   {shouldRenderQuoteTemplateResetConfirmModal ? (
+                    <ModalPortal>
                     <div className="fixed inset-0 z-[1010] flex items-center justify-center px-4 py-4">
                       <button
                         type="button"
@@ -7380,6 +7592,7 @@ export default function CompanySettingsPage() {
                         </div>
                       </div>
                     </div>
+                    </ModalPortal>
                   ) : null}
                   <Panel className="xl:col-span-2" title="Products" icon={Box} description="Your products (job types), their type and per-sheet pricing. Drag to set the order they appear in." allowOverflow>
                     <div className="space-y-1.5">
@@ -8358,6 +8571,7 @@ export default function CompanySettingsPage() {
         </div>
         )}
         {shouldRenderZapierHelp ? (
+          <ModalPortal>
           <div className="fixed inset-0 z-[1750] flex items-center justify-center px-4 py-4">
             <button type="button" aria-label="Close" onClick={() => setShowZapierHelp(false)} className="glass-modal-backdrop absolute inset-0" />
             <div ref={zapierHelpPanelRef} className="glass-modal-panel relative z-[1751] flex max-h-[calc(100svh-32px)] w-full max-w-[640px] flex-col overflow-hidden">
@@ -8424,8 +8638,10 @@ export default function CompanySettingsPage() {
               </div>
             </div>
           </div>
+          </ModalPortal>
         ) : null}
         {shouldRenderLeadFieldsCustomize ? (
+          <ModalPortal>
           <div className="fixed inset-0 z-[1750] flex items-center justify-center px-4 py-4">
             <button type="button" aria-label="Close" onClick={() => setShowLeadFieldsCustomize(false)} className="glass-modal-backdrop absolute inset-0" />
             <div ref={leadFieldsPanelRef} className="glass-modal-panel relative z-[1751] flex h-[min(760px,calc(100svh-32px))] w-full max-w-[860px] flex-col overflow-hidden">
@@ -8585,6 +8801,7 @@ export default function CompanySettingsPage() {
               </div>
             </div>
           </div>
+          </ModalPortal>
         ) : null}
         <DragGhostLayer controller={rowDragGhost} />
         {ask.element}

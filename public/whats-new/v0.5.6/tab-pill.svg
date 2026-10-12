@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" width="640" height="360" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title>A project's tabs: the selected one sits in a glass pill that slides across, magnifying only the text inside it</title>
+  <style>
+    .cursor { animation: cursor 7s ease-in-out infinite both; }
+    @keyframes cursor {
+      0%, 2% { transform: translate(560px, 330px); opacity: 0; }
+      6% { opacity: 1; }
+      12%, 16% { transform: translate(262px, 196px); opacity: 1; }
+      32%, 36% { transform: translate(392px, 196px); opacity: 1; }
+      52%, 56% { transform: translate(524px, 196px); opacity: 1; }
+      71%, 76% { transform: translate(146px, 196px); opacity: 1; }
+      88%, 100% { transform: translate(320px, 340px); opacity: 0; }
+    }
+  </style>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#EEF3FB"/>
+      <stop offset="1" stop-color="#E1E9F7"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity=".95"/>
+      <stop offset=".55" stop-color="#EEF4FF" stop-opacity=".9"/>
+      <stop offset="1" stop-color="#F7FAFF" stop-opacity=".95"/>
+    </linearGradient>
+    <filter id="pop" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#0F172A" flood-opacity=".14"/>
+    </filter>
+    <filter id="glow" x="-30%" y="-40%" width="160%" height="200%">
+      <feDropShadow dx="0" dy="2" stdDeviation="5" flood-color="#2563EB" flood-opacity=".2"/>
+    </filter>
+    <!-- The pill: one set of moves, repeated on each of its parts so they stay together. -->
+    <mask id="outside" maskUnits="userSpaceOnUse" x="0" y="0" width="640" height="360">
+      <rect width="640" height="360" fill="#FFFFFF"/>
+      <rect y="171" height="44" rx="22" fill="#000000" x="80" width="120">
+        <animate attributeName="x" dur="7s" repeatCount="indefinite" calcMode="spline" keyTimes="0;0.15;0.22;0.35;0.42;0.55;0.62;0.75;0.84;1" values="80;80;204;204;314;314;459;459;80;80" keySplines="0 0 1 1;.45 0 .2 1;0 0 1 1;.45 0 .2 1;0 0 1 1;.45 0 .2 1;0 0 1 1;.45 0 .2 1;0 0 1 1"/>
+        <animate attributeName="width" dur="7s" repeatCount="indefinite" calcMode="spline" keyTimes="0;0.15;0.22;0.35;0.42;0.55;0.62;0.75;0.84;1" values="120;120;107;107;147;147;122;122;120;120" keySplines="0 0 1 1;.45 0 .2 1;0 0 1 1;.45 0 .2 1;0 0 1 1;.45 0 .2 1;0 0 1 1;.45 0 .2 1;0 0 1 1"/>
+      </rect>
+    </mask>
+    <clipPath id="inside">
+      <rect y="171" height="44" rx="22" x="80" width="120">
+        <animate attributeName="x" dur="7s" repeatCount="indefinite" calcMode="spline" keyTimes="0;0.15;0.22;0.35;0.42;0.55;0.62;0.75;0.84;1" values="80;80;204;204;314;314;459;459;80;80" keySplines="0 0 1 1;.45 0 .2 1;0 0 1 1;.45 0 .2 1;0 0 1 1;.45 0 .2 1;0 0 1 1;.45 0 .2 1;0 0 1 1"/>
+        <animate attributeName="width" dur="7s" repeatCount="indefinite" calcMode="spline" keyTimes="0;0.15;0.22;0.35;0.42;0.55;0.62;0.75;0.84;1" values="120;120;107;107;147;147;122;122;120;120" keySplines="0 0 1 1;.45 0 .2 1;0 0 1 1;.45 0 .2 1;0 0 1 1;.45 0 .2 1;0 0 1 1;.45 0 .2 1;0 0 1 1"/>
+      </rect>
+    </clipPath>
+  </defs>
+  <rect width="640" height="360" fill="url(#bg)"/>
+
+  <rect x="48" y="80" width="544" height="200" rx="22" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+  <text x="80" y="128" font-size="24" font-weight="600" fill="#0F172A">Ridgeway Entertainment Unit</text>
+  <circle cx="88" cy="150" r="7" fill="#2563EB"/>
+  <text x="88" y="152.5" text-anchor="middle" font-size="6.5" font-weight="700" fill="#FFFFFF">AM</text>
+  <text x="101" y="154" font-size="11" fill="#64748B">Alex Morgan</text>
+  <path d="M80 238 H560" stroke="#EEF2F7"/>
+  <rect x="80" y="252" width="150" height="10" rx="5" fill="#EEF2F7"/>
+  <rect x="246" y="252" width="110" height="10" rx="5" fill="#EEF2F7"/>
+
+  <!-- the tabs, outside the pill -->
+  <g mask="url(#outside)" font-size="20" font-weight="600" fill="#8A97A8" text-anchor="middle">
+    <text x="140" y="200">General</text>
+    <text x="258" y="200">Design</text>
+    <text x="388" y="200">Production</text>
+    <text x="520" y="200">Settings</text>
+  </g>
+
+  <!-- the pill's glass -->
+  <rect y="171" height="44" rx="22" fill="url(#glass)" filter="url(#glow)" x="80" width="120">
+    <animate attributeName="x" dur="7s" repeatCount="indefinite" calcMode="spline" keyTimes="0;0.15;0.22;0.35;0.42;0.55;0.62;0.75;0.84;1" values="80;80;204;204;314;314;459;459;80;80" keySplines="0 0 1 1;.45 0 .2 1;0 0 1 1;.45 0 .2 1;0 0 1 1;.45 0 .2 1;0 0 1 1;.45 0 .2 1;0 0 1 1"/>
+    <animate attributeName="width" dur="7s" repeatCount="indefinite" calcMode="spline" keyTimes="0;0.15;0.22;0.35;0.42;0.55;0.62;0.75;0.84;1" values="120;120;107;107;147;147;122;122;120;120" keySplines="0 0 1 1;.45 0 .2 1;0 0 1 1;.45 0 .2 1;0 0 1 1;.45 0 .2 1;0 0 1 1;.45 0 .2 1;0 0 1 1"/>
+  </rect>
+
+  <!-- the tabs again, magnified, inside the pill -->
+  <g clip-path="url(#inside)" font-size="20" font-weight="600" fill="#2563EB" text-anchor="middle">
+    <text x="140" y="200" transform="translate(140 193) scale(1.08) translate(-140 -193)">General</text>
+    <text x="258" y="200" transform="translate(258 193) scale(1.08) translate(-258 -193)">Design</text>
+    <text x="388" y="200" transform="translate(388 193) scale(1.08) translate(-388 -193)">Production</text>
+    <text x="520" y="200" transform="translate(520 193) scale(1.08) translate(-520 -193)">Settings</text>
+  </g>
+
+  <!-- its outline -->
+  <rect y="171.5" height="43" rx="21.5" fill="none" stroke="#2563EB" stroke-width="1" x="80" width="120">
+    <animate attributeName="x" dur="7s" repeatCount="indefinite" calcMode="spline" keyTimes="0;0.15;0.22;0.35;0.42;0.55;0.62;0.75;0.84;1" values="80;80;204;204;314;314;459;459;80;80" keySplines="0 0 1 1;.45 0 .2 1;0 0 1 1;.45 0 .2 1;0 0 1 1;.45 0 .2 1;0 0 1 1;.45 0 .2 1;0 0 1 1"/>
+    <animate attributeName="width" dur="7s" repeatCount="indefinite" calcMode="spline" keyTimes="0;0.15;0.22;0.35;0.42;0.55;0.62;0.75;0.84;1" values="120;120;107;107;147;147;122;122;120;120" keySplines="0 0 1 1;.45 0 .2 1;0 0 1 1;.45 0 .2 1;0 0 1 1;.45 0 .2 1;0 0 1 1;.45 0 .2 1;0 0 1 1"/>
+  </rect>
+
+  <g class="cursor">
+    <path d="M0 0 l0 20 l5 -5 l4 9 l3.4 -1.5 l-4 -9 l7 0 z" fill="#0F172A" stroke="#FFFFFF" stroke-width="1.4" stroke-linejoin="round"/>
+  </g>
+</svg>

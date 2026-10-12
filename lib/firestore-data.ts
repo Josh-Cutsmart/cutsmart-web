@@ -13,6 +13,7 @@ import {
   query,
   serverTimestamp,
   setDoc,
+  Timestamp,
   type QueryDocumentSnapshot,
   updateDoc,
   where,
@@ -352,6 +353,7 @@ function normalizeProject(id: string, data: Record<string, unknown>, options?: {
     pickFirstString(clientBlock, ["address", "clientAddress", "projectAddress"]);
   const notes = pickFirstString(data, ["notes", "projectNotes", "description"]) ||
     pickFirstString(clientBlock, ["notes", "projectNotes", "description"]);
+  const designNotes = pickFirstString(data, ["designNotes"]);
   const productionNotes = pickFirstString(data, ["productionNotes"]);
   const remedials = pickFirstString(data, ["remedials"]);
   const contractorNotesRaw = asRecord(data.contractorNotes);
@@ -410,6 +412,7 @@ function normalizeProject(id: string, data: Record<string, unknown>, options?: {
     assignedTo: pickFirstString(data, ["assignedTo", "assignedToName", "assignedName"]) || createdByName || "Unknown",
     tags: Array.isArray(data.tags) ? data.tags.map(String) : [],
     notes,
+    designNotes,
     productionNotes,
     remedials,
     contractorNotes,
@@ -4756,50 +4759,139 @@ export async function removeTagsFromCompanyProjects(companyId: string, tagsToRem
   }
 }
 
-// companyId is optional only for callers that genuinely want everything (there are none left in
-// this codebase — every real caller passes the currently active company). When provided, rows
-// from other companies (and legacy rows written before this field existed, which can't be safely
-// attributed to any company) are filtered out client-side rather than in the query itself — a
-// `where("companyId", "==", ...)` alongside the existing `orderBy("createdAt")` would need a new
-// Firestore composite index that doesn't exist yet in production, and a missing index fails the
-// whole query (silently, via this function's own catch) rather than just skipping the filter.
-export async function fetchUserNotifications(uid: string, companyId?: string): Promise<UserNotificationRow[]> {
+// The Notifications list is loaded two weeks at a time: the last two weeks to begin with (re-checked by its
+// polling), then another two weeks further back for each "Load more".
+export const NOTIFICATIONS_PAGE_MS = 14 * 24 * 60 * 60 * 1000;
+// A ceiling on one page's reads, for an unusually busy fortnight — the next page then carries on from the oldest
+// one loaded.
+const NOTIFICATIONS_PAGE_CAP = 300;
+
+function userNotificationFromDoc(docSnap: QueryDocumentSnapshot): UserNotificationRow {
+  const data = (docSnap.data() ?? {}) as Record<string, unknown>;
+  return {
+    id: String(data.id ?? docSnap.id),
+    title: String(data.title ?? ""),
+    message: String(data.message ?? ""),
+    type: String(data.type ?? "info"),
+    read: Boolean(data.read),
+    createdAtIso: toIsoString(data.createdAtIso ?? data.createdAt, ""),
+    projectId: String(data.projectId ?? "").trim() || undefined,
+    companyId: String(data.companyId ?? "").trim() || undefined,
+    eventId: String(data.eventId ?? "").trim() || undefined,
+    snoozedUntilIso: String(data.snoozedUntilIso ?? "").trim() || undefined,
+    devTest: data.devTest === true ? true : undefined,
+  };
+}
+
+// One someone asked to be reminded about (snoozeUserNotification) stays hidden until its time, then shows as new
+// from then — at the top, timed from when it came back. Newest first; only this company's when companyId is given.
+//
+// companyId is optional only for callers that genuinely want everything (there are none left in this codebase —
+// every real caller passes the currently active company). When provided, rows from other companies (and legacy
+// rows written before this field existed, which can't be safely attributed to any company) are filtered out
+// client-side rather than in the query itself — a `where("companyId", "==", ...)` alongside the
+// `orderBy("createdAt")` would need a new Firestore composite index that doesn't exist yet in production, and a
+// missing index fails the whole query (silently, via the callers' own catch) rather than just skipping the filter.
+function shownUserNotifications(rows: UserNotificationRow[], companyId: string): UserNotificationRow[] {
+  const now = Date.now();
+  const shown = rows
+    .filter((row) => !(row.snoozedUntilIso && Date.parse(row.snoozedUntilIso) > now))
+    .map((row) => (row.snoozedUntilIso ? { ...row, createdAtIso: row.snoozedUntilIso } : row))
+    .sort((a, b) => (Date.parse(b.createdAtIso) || 0) - (Date.parse(a.createdAtIso) || 0));
+  return companyId ? shown.filter((row) => row.companyId === companyId) : shown;
+}
+
+// When the newest notification older than beforeMs was created (null: there isn't one).
+async function newestUserNotificationBeforeMs(userId: string, beforeMs: number): Promise<number | null> {
+  if (!db) return null;
+  const snap = await getDocs(
+    query(
+      collection(db, "users", userId, "notifications"),
+      where("createdAt", "<", Timestamp.fromMillis(beforeMs)),
+      orderBy("createdAt", "desc"),
+      limit(1),
+    ),
+  );
+  const first = snap.docs[0];
+  if (!first) return null;
+  const createdAt = (first.data() as Record<string, unknown>).createdAt;
+  return createdAt instanceof Timestamp ? createdAt.toMillis() : Date.parse(toIsoString(createdAt, "")) || null;
+}
+
+// The newest notifications, back to sinceMs (the last two weeks, from when the list first loaded), plus any a
+// "Remind me" has brought back since then. hasOlder: whether there are any before sinceMs ("Load more").
+export async function fetchUserNotifications(
+  uid: string,
+  companyId: string | undefined,
+  sinceMs: number,
+): Promise<{ rows: UserNotificationRow[]; hasOlder: boolean }> {
   const userId = String(uid || "").trim();
   if (!db || !userId) {
-    return [];
+    return { rows: [], hasOlder: false };
   }
-  const scopeCompanyId = String(companyId || "").trim();
   try {
-    const snap = await getDocs(
-      query(collection(db, "users", userId, "notifications"), orderBy("createdAt", "desc"), limit(200)),
-    );
-    const rows = snap.docs.map((docSnap) => {
-      const data = (docSnap.data() ?? {}) as Record<string, unknown>;
-      return {
-        id: String(data.id ?? docSnap.id),
-        title: String(data.title ?? ""),
-        message: String(data.message ?? ""),
-        type: String(data.type ?? "info"),
-        read: Boolean(data.read),
-        createdAtIso: toIsoString(data.createdAtIso ?? data.createdAt, ""),
-        projectId: String(data.projectId ?? "").trim() || undefined,
-        companyId: String(data.companyId ?? "").trim() || undefined,
-        eventId: String(data.eventId ?? "").trim() || undefined,
-        snoozedUntilIso: String(data.snoozedUntilIso ?? "").trim() || undefined,
-        devTest: data.devTest === true ? true : undefined,
-      };
-    });
-    // One someone asked to be reminded about (snoozeUserNotification) stays hidden until its time, then
-    // shows as new from then — at the top, timed from when it came back.
-    const now = Date.now();
-    const shown = rows
-      .filter((row) => !(row.snoozedUntilIso && Date.parse(row.snoozedUntilIso) > now))
-      .map((row) => (row.snoozedUntilIso ? { ...row, createdAtIso: row.snoozedUntilIso } : row))
-      .sort((a, b) => (Date.parse(b.createdAtIso) || 0) - (Date.parse(a.createdAtIso) || 0));
-    if (!scopeCompanyId) return shown;
-    return shown.filter((row) => row.companyId === scopeCompanyId);
+    const notifications = collection(db, "users", userId, "notifications");
+    const [recentSnap, remindedSnap, olderMs] = await Promise.all([
+      getDocs(
+        query(notifications, where("createdAt", ">=", Timestamp.fromMillis(sinceMs)), orderBy("createdAt", "desc"), limit(NOTIFICATIONS_PAGE_CAP)),
+      ),
+      // An older one someone asked to be reminded about, back (or coming back) in these two weeks.
+      getDocs(query(notifications, where("snoozedUntilIso", ">=", new Date(sinceMs).toISOString()), limit(50))),
+      newestUserNotificationBeforeMs(userId, sinceMs),
+    ]);
+    const byId = new Map<string, UserNotificationRow>();
+    for (const docSnap of [...recentSnap.docs, ...remindedSnap.docs]) {
+      const row = userNotificationFromDoc(docSnap);
+      byId.set(row.id, row);
+    }
+    return {
+      rows: shownUserNotifications([...byId.values()], String(companyId || "").trim()),
+      hasOlder: olderMs !== null,
+    };
   } catch {
-    return [];
+    return { rows: [], hasOlder: false };
+  }
+}
+
+// "Load more": the two weeks before beforeMs — counted from the newest notification before it, so a quiet spell
+// doesn't load an empty page. sinceMs: where these reach back to (the next "Load more" carries on before it).
+export async function fetchOlderUserNotifications(
+  uid: string,
+  companyId: string | undefined,
+  beforeMs: number,
+): Promise<{ rows: UserNotificationRow[]; sinceMs: number; hasOlder: boolean } | null> {
+  const userId = String(uid || "").trim();
+  if (!db || !userId) {
+    return null;
+  }
+  try {
+    const newestMs = await newestUserNotificationBeforeMs(userId, beforeMs);
+    if (newestMs === null) return { rows: [], sinceMs: beforeMs, hasOlder: false };
+    let sinceMs = Math.min(beforeMs, newestMs + 1) - NOTIFICATIONS_PAGE_MS;
+    const snap = await getDocs(
+      query(
+        collection(db, "users", userId, "notifications"),
+        where("createdAt", ">=", Timestamp.fromMillis(sinceMs)),
+        where("createdAt", "<", Timestamp.fromMillis(beforeMs)),
+        orderBy("createdAt", "desc"),
+        limit(NOTIFICATIONS_PAGE_CAP),
+      ),
+    );
+    const rows = snap.docs.map(userNotificationFromDoc);
+    if (snap.docs.length >= NOTIFICATIONS_PAGE_CAP) {
+      // A full page: the next one carries on from the oldest of these.
+      const oldest = (snap.docs[snap.docs.length - 1].data() as Record<string, unknown>).createdAt;
+      const oldestMs = oldest instanceof Timestamp ? oldest.toMillis() : Date.parse(toIsoString(oldest, ""));
+      if (Number.isFinite(oldestMs)) sinceMs = oldestMs;
+    }
+    const olderMs = await newestUserNotificationBeforeMs(userId, sinceMs);
+    return {
+      rows: shownUserNotifications(rows, String(companyId || "").trim()),
+      sinceMs,
+      hasOlder: olderMs !== null,
+    };
+  } catch {
+    return null;
   }
 }
 

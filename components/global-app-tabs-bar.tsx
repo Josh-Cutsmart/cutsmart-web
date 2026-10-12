@@ -48,7 +48,9 @@ import { prefetchProjectById } from "@/lib/firestore-data";
 import {
   addUserNotification,
   deleteUserNotification,
+  fetchOlderUserNotifications,
   fetchUserNotifications,
+  NOTIFICATIONS_PAGE_MS,
   markUserNotificationRead,
   setAllUserNotificationsRead,
   setUserNotificationRead,
@@ -372,6 +374,26 @@ export function GlobalAppTabsBar() {
   const seenNotifIdsRef = useRef<Set<string> | null>(null);
   // Checks for new notifications straight away (set by the polling below) — e.g. when a push arrives.
   const loadNotifsNowRef = useRef<(() => void) | null>(null);
+  // The list loads two weeks at a time (lib/firestore-data.ts): the last two weeks — from notifSinceMsRef, two weeks
+  // before it first loaded, on — kept current by the polling; then each "Load more" at the bottom of the list adds
+  // the two weeks before notifOldestMsRef (where what's loaded reaches back to).
+  const notifSinceMsRef = useRef<number | null>(null);
+  const notifOldestMsRef = useRef<number | null>(null);
+  const [notifHasOlder, setNotifHasOlder] = useState(false);
+  const [isLoadingOlderNotifs, setIsLoadingOlderNotifs] = useState(false);
+  const loadOlderNotifs = async () => {
+    const uid = String(user?.uid || "").trim();
+    const beforeMs = notifOldestMsRef.current;
+    if (!uid || beforeMs === null || isLoadingOlderNotifs) return;
+    setIsLoadingOlderNotifs(true);
+    const page = await fetchOlderUserNotifications(uid, activeCompanyId, beforeMs);
+    setIsLoadingOlderNotifs(false);
+    // (Not if the list has started over since — another person or company.)
+    if (!page || notifOldestMsRef.current !== beforeMs) return;
+    notifOldestMsRef.current = page.sinceMs;
+    setNotifHasOlder(page.hasOlder);
+    setNotifRows((prev) => [...prev, ...page.rows.filter((row) => !prev.some((item) => item.id === row.id))]);
+  };
   const isNotifOpenRef = useRef(isNotifOpen);
   useEffect(() => {
     isNotifOpenRef.current = isNotifOpen;
@@ -813,12 +835,22 @@ export function GlobalAppTabsBar() {
     }
     let cancelled = false;
     let lastSignature = "";
+    let isFirstLoad = true;
     seenNotifIdsRef.current = null;
+    notifSinceMsRef.current = null;
+    notifOldestMsRef.current = null;
     const load = async () => {
       // A hidden tab doesn't need fresh notifications; it catches up on the next poll after it's shown.
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
-      const rows = await fetchUserNotifications(uid, activeCompanyId);
+      if (notifSinceMsRef.current === null) {
+        notifSinceMsRef.current = Date.now() - NOTIFICATIONS_PAGE_MS;
+        notifOldestMsRef.current = notifSinceMsRef.current;
+      }
+      const sinceMs = notifSinceMsRef.current;
+      const { rows, hasOlder } = await fetchUserNotifications(uid, activeCompanyId, sinceMs);
       if (cancelled) return;
+      // Until "Load more" has been used: whether there's anything before these two weeks.
+      if (notifOldestMsRef.current === sinceMs) setNotifHasOlder(hasOlder);
       setNotifsLoadedKey(`${uid}|${activeCompanyId}`);
       // Any unread one that wasn't there last time pops up in the corner (on a computer, while the list
       // itself isn't open).
@@ -834,7 +866,16 @@ export function GlobalAppTabsBar() {
       const signature = JSON.stringify(rows);
       if (signature === lastSignature) return;
       lastSignature = signature;
-      setNotifRows(rows);
+      if (isFirstLoad) {
+        isFirstLoad = false;
+        setNotifRows(rows);
+        return;
+      }
+      // What "Load more" added (older than these two weeks) stays as it is.
+      setNotifRows((prev) => [
+        ...rows,
+        ...prev.filter((row) => (Date.parse(row.createdAtIso) || 0) < sinceMs && !rows.some((item) => item.id === row.id)),
+      ]);
     };
     // The first load waits a moment, so it doesn't compete with the page's own data on open (opening
     // Notifications before then loads it straight away — see below).
@@ -1683,12 +1724,13 @@ export function GlobalAppTabsBar() {
           </span>
           <p className="text-[14px] font-medium" style={{ color: "var(--text-main)" }}>You&apos;re all caught up</p>
           <p className="mt-1 text-[12.5px]" style={{ color: "var(--text-muted)" }}>New notifications will show up here.</p>
+          {renderLoadOlderNotifs()}
         </div>
       );
     }
     return (
       <div className="space-y-0.5 p-2">
-        {notifRows.slice(0, 50).map((row) => {
+        {notifRows.map((row) => {
       const isAppVersion = row.type === "app_version";
       const appVersion = isAppVersion ? appVersionFromNotifTitle(row.title) : "";
       const Icon = notifIconOf(row);
@@ -1756,6 +1798,26 @@ export function GlobalAppTabsBar() {
         </button>
       );
         })}
+        {renderLoadOlderNotifs()}
+      </div>
+    );
+  }
+
+  // At the bottom of the list, while there are older notifications than it reaches back to: the two weeks before.
+  function renderLoadOlderNotifs() {
+    if (!notifHasOlder) return null;
+    return (
+      <div className="flex justify-center px-2 pb-2 pt-3">
+        <button
+          type="button"
+          onMouseDown={handleAuxButtonMouseDown}
+          onClick={() => void loadOlderNotifs()}
+          disabled={isLoadingOlderNotifs}
+          className="inline-flex h-9 items-center justify-center rounded-full border px-4 text-[12.5px] font-medium transition hover:brightness-95 disabled:opacity-60 max-lg:h-10 max-lg:text-[13.5px]"
+          style={{ borderColor: "var(--glass-border)", backgroundColor: NOTIF_ICON_BG, color: "var(--text-main)" }}
+        >
+          {isLoadingOlderNotifs ? "Loading…" : "Load more"}
+        </button>
       </div>
     );
   }

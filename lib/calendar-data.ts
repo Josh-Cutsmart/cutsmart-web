@@ -10,14 +10,17 @@ import { collection, deleteDoc, deleteField, doc, getDoc, getDocs, onSnapshot, q
 import { db } from "@/lib/firebase";
 import { invalidateUserCache, readUserDocCached } from "@/lib/firestore-cache";
 
-// Per-category access, keyed by normalized role id (normalizeRoleKey). A role with no entry gets View;
-// owners and admins can always edit everything.
-export type CalendarAccessLevel = "edit" | "view" | "none";
-export type CalendarCategory = { id: string; name: string; color: string; access?: Record<string, CalendarAccessLevel> };
-
-export function isCalendarAccessLevel(value: unknown): value is CalendarAccessLevel {
-  return value === "edit" || value === "view" || value === "none";
-}
+// The categories themselves (names, colours, who can see them) — kept with no Firestore in them, so the server
+// shares them (lib/calendar-categories.ts).
+export {
+  calendarCategoryLevel,
+  DEFAULT_CALENDAR_CATEGORIES,
+  isCalendarAccessLevel,
+  normalizeCalendarCategories,
+  type CalendarAccessLevel,
+  type CalendarCategory,
+  type CalendarViewer,
+} from "@/lib/calendar-categories";
 
 export type CalendarEvent = {
   id: string;
@@ -54,13 +57,6 @@ export type ClientScheduleEvent = {
   color: string;
 };
 
-export const DEFAULT_CALENDAR_CATEGORIES: CalendarCategory[] = [
-  { id: "installs", name: "Installs", color: "#16A34A" },
-  { id: "measures", name: "Measures", color: "#2F6BFF" },
-  { id: "deliveries", name: "Deliveries", color: "#F2A33C" },
-  { id: "meetings", name: "Meetings", color: "#8B5CF6" },
-  { id: "leave", name: "Leave", color: "#DC2626" },
-];
 
 export function newCalendarId(prefix = "cal") {
   return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -136,28 +132,6 @@ export function calendarRetentionCutoffMs(retention: CalendarRetention, now = Da
   else if (retention === "1y") d.setFullYear(d.getFullYear() - 1);
   else d.setFullYear(d.getFullYear() - 2);
   return d.getTime();
-}
-
-export function normalizeCalendarCategories(raw: unknown): CalendarCategory[] {
-  if (!Array.isArray(raw)) return DEFAULT_CALENDAR_CATEGORIES;
-  const seen = new Set<string>();
-  return raw
-    .filter((item) => item && typeof item === "object")
-    .map((item) => {
-      const row = item as Record<string, unknown>;
-      const name = String(row.name ?? "").trim();
-      let id = String(row.id ?? "").trim() || name.toLowerCase().replace(/[^a-z0-9]+/g, "_");
-      while (id && seen.has(id)) id = `${id}_2`;
-      if (id) seen.add(id);
-      const access: Record<string, CalendarAccessLevel> = {};
-      if (row.access && typeof row.access === "object") {
-        for (const [roleKey, level] of Object.entries(row.access as Record<string, unknown>)) {
-          if (roleKey && isCalendarAccessLevel(level)) access[roleKey] = level;
-        }
-      }
-      return { id, name, color: String(row.color ?? "").trim() || "#7D99B3", ...(Object.keys(access).length ? { access } : {}) };
-    })
-    .filter((row) => row.id && row.name);
 }
 
 function toEvent(id: string, data: Record<string, unknown>): CalendarEvent | null {

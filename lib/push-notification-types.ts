@@ -60,7 +60,11 @@ export const PUSH_NOTIFICATION_CATEGORIES: readonly PushNotificationCategory[] =
     id: "calendar",
     label: "Calendar",
     types: [
-      { type: "calendar_reminder", label: "Upcoming project events", description: "An event for a project assigned to you is coming up — choose how far ahead below (add as many as you like)." },
+      {
+        type: "calendar_reminder",
+        label: "Upcoming project events",
+        description: "An event for a project assigned to you is coming up — choose which calendar categories, and how far ahead for each, below.",
+      },
     ],
   },
   {
@@ -84,10 +88,17 @@ export function pushNotificationTypeKey(type: unknown): string {
   return KNOWN_TYPES.has(key) ? key : OTHER_PUSH_NOTIFICATION_TYPE;
 }
 
+// Kinds with no switch of their own: their whole category's switch (and, for calendar reminders, each calendar
+// category's — users/{uid}.calendarReminderCategories) decides instead. One turned off before its switch went is on.
+const KINDS_WITHOUT_OWN_SWITCH = new Set(["calendar_reminder"]);
+export function hasOwnPushNotificationSwitch(type: unknown): boolean {
+  return !KINDS_WITHOUT_OWN_SWITCH.has(pushNotificationTypeKey(type));
+}
+
 // A user's choices are stored as { [type]: false } for the kinds they've turned off — every kind is on
 // until they turn it off.
 export function isPushNotificationTypeEnabled(choices: unknown, type: unknown): boolean {
-  if (!choices || typeof choices !== "object") return true;
+  if (!choices || typeof choices !== "object" || !hasOwnPushNotificationSwitch(type)) return true;
   return (choices as Record<string, unknown>)[pushNotificationTypeKey(type)] !== false;
 }
 
@@ -140,36 +151,16 @@ export function pushNotificationBody(input: { type?: unknown; message?: unknown 
   return text.length > 180 ? `${text.slice(0, 177).trimEnd()}…` : text;
 }
 
-// ---- Calendar reminders: how far ahead each user wants to hear about events for their projects — as
-// many times as they like, for timed events and for all-day events (which only go by days, weeks or
-// months). Stored on their profile as users/{uid}.calendarReminderLead = { timedMinutes: [...],
-// allDayDays: [...] } (a single number each, from before there could be several, still reads).
+// ---- Calendar reminders: how far ahead each user wants to hear about events for their projects — as many
+// reminders as they like, each their own: any number of minutes, hours, days, weeks or months before. Minutes and
+// hours: exactly that long before a timed event (an all-day event, with no time of its own: 8:00am on the day).
+// Days, weeks and months: on that day before the event, at the reminder's own time (`at` — 8:00am unless they pick
+// another), in the company's time zone. Stored on their profile as users/{uid}.calendarReminderLead =
+// { reminders: [{ amount, unit, at }] } — or, from before, { reminders: [{ minutes, at }] } or two lists
+// ({ timedMinutes, allDayDays }, or a single number each), which still read.
 
 export type ReminderLeadOption = { value: number; label: string };
 
-export const TIMED_EVENT_REMINDER_OPTIONS: readonly ReminderLeadOption[] = [
-  { value: 30, label: "30 minutes before" },
-  { value: 60, label: "1 hour before" },
-  { value: 120, label: "2 hours before" },
-  { value: 240, label: "4 hours before" },
-  { value: 24 * 60, label: "1 day before" },
-  { value: 2 * 24 * 60, label: "2 days before" },
-  { value: 7 * 24 * 60, label: "1 week before" },
-  { value: 14 * 24 * 60, label: "2 weeks before" },
-  { value: 30 * 24 * 60, label: "1 month before" },
-];
-
-export const ALL_DAY_EVENT_REMINDER_OPTIONS: readonly ReminderLeadOption[] = [
-  { value: 1, label: "1 day before" },
-  { value: 2, label: "2 days before" },
-  { value: 3, label: "3 days before" },
-  { value: 7, label: "1 week before" },
-  { value: 14, label: "2 weeks before" },
-  { value: 30, label: "1 month before" },
-];
-
-export const DEFAULT_TIMED_REMINDER_MINUTES = 60;
-export const DEFAULT_ALL_DAY_REMINDER_DAYS = 1;
 // The most reminder times one list can have.
 export const MAX_REMINDER_ROWS = 6;
 
@@ -180,14 +171,142 @@ function normalizeChoiceList(raw: unknown, options: readonly ReminderLeadOption[
   return unique.length ? unique : [fallback];
 }
 
-export type CalendarReminderLead = { timedMinutes: number[]; allDayDays: number[] };
+export type CalendarReminderUnit = "minutes" | "hours" | "days" | "weeks" | "months";
+// Each unit, its words, and the most of it a reminder can be — 1 month ahead at most, as far as the scheduled
+// job looks (lib/calendar-reminders-server.ts).
+export const CALENDAR_REMINDER_UNITS: readonly { value: CalendarReminderUnit; one: string; many: string; max: number }[] = [
+  { value: "minutes", one: "minute", many: "minutes", max: 120 },
+  { value: "hours", one: "hour", many: "hours", max: 48 },
+  { value: "days", one: "day", many: "days", max: 30 },
+  { value: "weeks", one: "week", many: "weeks", max: 4 },
+  { value: "months", one: "month", many: "months", max: 1 },
+];
+// Days, weeks and months come at a time of day (their `at`).
+export function isDayReminderUnit(unit: CalendarReminderUnit): boolean {
+  return unit === "days" || unit === "weeks" || unit === "months";
+}
+
+// The time a day-based reminder comes at: any half hour of the day ("HH:MM", 24-hour) — picked as a 12-hour time
+// and am / pm.
+export const DEFAULT_REMINDER_AT = "08:00";
+export const REMINDER_AT_OPTIONS: readonly { value: string; label: string }[] = Array.from({ length: 48 }, (_, index) => {
+  const totalMinutes = index * 30;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = String(totalMinutes % 60).padStart(2, "0");
+  return { value: `${String(hours).padStart(2, "0")}:${minutes}`, label: `${hours % 12 || 12}:${minutes}${hours < 12 ? "am" : "pm"}` };
+});
+
+export type CalendarReminderRow = { amount: number; unit: CalendarReminderUnit; at: string };
+export type CalendarReminderLead = { reminders: CalendarReminderRow[] };
+
+// Their usual reminders until they change them: 1 hour before, and 1 day before at 8:00am.
+export const DEFAULT_CALENDAR_REMINDERS: readonly CalendarReminderRow[] = [
+  { amount: 1, unit: "hours", at: DEFAULT_REMINDER_AT },
+  { amount: 1, unit: "days", at: DEFAULT_REMINDER_AT },
+];
+
+function reminderUnit(raw: unknown): CalendarReminderUnit | null {
+  return CALENDAR_REMINDER_UNITS.find((unit) => unit.value === raw)?.value ?? null;
+}
+function normalizeReminderAt(raw: unknown): string {
+  const value = String(raw ?? "");
+  return REMINDER_AT_OPTIONS.some((option) => option.value === value) ? value : DEFAULT_REMINDER_AT;
+}
+// A reminder kept within its unit's range (1 to its most), a whole number.
+export function clampCalendarReminder(reminder: CalendarReminderRow): CalendarReminderRow {
+  const max = CALENDAR_REMINDER_UNITS.find((unit) => unit.value === reminder.unit)?.max ?? 1;
+  const amount = Math.min(max, Math.max(1, Math.round(Number(reminder.amount) || 1)));
+  return { amount, unit: reminder.unit, at: normalizeReminderAt(reminder.at) };
+}
+// An older reminder kept in minutes, in its largest whole unit (e.g. 10080 → 1 week).
+function reminderFromMinutes(minutes: number, at: unknown): CalendarReminderRow | null {
+  if (!Number.isFinite(minutes) || minutes <= 0) return null;
+  const units: Array<[number, CalendarReminderUnit]> = [
+    [30 * 24 * 60, "months"],
+    [7 * 24 * 60, "weeks"],
+    [24 * 60, "days"],
+    [60, "hours"],
+    [1, "minutes"],
+  ];
+  const [size, unit] = units.find(([unitSize]) => minutes % unitSize === 0) ?? [1, "minutes"];
+  return clampCalendarReminder({ amount: minutes / size, unit, at: normalizeReminderAt(at) });
+}
+
+// A saved list of reminders (today's, or any of the earlier shapes) — no repeats, in order. undefined if none.
+function savedReminderRows(row: Record<string, unknown>): CalendarReminderRow[] | undefined {
+  let rows: Array<CalendarReminderRow | null>;
+  if (Array.isArray(row.reminders)) {
+    rows = row.reminders
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+      .map((item) => {
+        const unit = reminderUnit(item.unit);
+        if (unit) return clampCalendarReminder({ amount: Number(item.amount), unit, at: String(item.at ?? "") });
+        return reminderFromMinutes(Number(item.minutes), item.at);
+      });
+  } else if (row.timedMinutes !== undefined || row.allDayDays !== undefined) {
+    const timed = (Array.isArray(row.timedMinutes) ? row.timedMinutes : [row.timedMinutes]).map(Number);
+    const allDay = (Array.isArray(row.allDayDays) ? row.allDayDays : [row.allDayDays]).map((days) => Number(days) * 24 * 60);
+    rows = [...timed, ...allDay].map((minutes) => reminderFromMinutes(minutes, DEFAULT_REMINDER_AT));
+  } else {
+    return undefined;
+  }
+  const seen = new Set<string>();
+  const unique = rows
+    .filter((reminder): reminder is CalendarReminderRow => {
+      if (!reminder) return false;
+      const key = `${reminder.amount}_${reminder.unit}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, MAX_REMINDER_ROWS);
+  return unique.length ? unique : undefined;
+}
 
 export function normalizeCalendarReminderLead(raw: unknown): CalendarReminderLead {
   const row = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
-  return {
-    timedMinutes: normalizeChoiceList(row.timedMinutes, TIMED_EVENT_REMINDER_OPTIONS, DEFAULT_TIMED_REMINDER_MINUTES),
-    allDayDays: normalizeChoiceList(row.allDayDays, ALL_DAY_EVENT_REMINDER_OPTIONS, DEFAULT_ALL_DAY_REMINDER_DAYS),
-  };
+  return { reminders: savedReminderRows(row) ?? DEFAULT_CALENDAR_REMINDERS.map((reminder) => ({ ...reminder })) };
+}
+
+// "1 hour before", "2 days before at 9:00am" — a reminder, in words.
+export function calendarReminderLabel(reminder: CalendarReminderRow): string {
+  const unit = CALENDAR_REMINDER_UNITS.find((option) => option.value === reminder.unit);
+  if (!unit) return "";
+  const before = `${reminder.amount} ${reminder.amount === 1 ? unit.one : unit.many} before`;
+  if (!isDayReminderUnit(reminder.unit)) return before;
+  const at = REMINDER_AT_OPTIONS.find((option) => option.value === reminder.at)?.label ?? "";
+  return at ? `${before} at ${at}` : before;
+}
+
+// ---- Calendar reminders per calendar category: each one on or off, and its own reminders. Stored on their
+// profile as users/{uid}.calendarReminderCategories = { [categoryId]: { off?: true, reminders?: [{ amount, unit,
+// at }] } } (or one of the earlier shapes). A category they haven't changed is on, with their usual reminders
+// (calendarReminderLead above); one switched off gets no reminders at all.
+
+export type CalendarCategoryReminder = { off: boolean; reminders?: CalendarReminderRow[] };
+export type CalendarCategoryReminders = Record<string, CalendarCategoryReminder>;
+
+export function normalizeCalendarCategoryReminders(raw: unknown): CalendarCategoryReminders {
+  const out: CalendarCategoryReminders = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const [categoryId, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!categoryId || !value || typeof value !== "object") continue;
+    const row = value as Record<string, unknown>;
+    const reminders = savedReminderRows(row);
+    out[categoryId] = { off: row.off === true, ...(reminders ? { reminders } : {}) };
+  }
+  return out;
+}
+
+// The reminders for a category's events — its own, or their usual ones — or null when it's switched off.
+export function calendarReminderLeadForCategory(
+  categoryReminders: CalendarCategoryReminders,
+  categoryId: string,
+  usual: CalendarReminderLead,
+): CalendarReminderLead | null {
+  const own = categoryReminders[categoryId];
+  if (own?.off) return null;
+  return { reminders: own?.reminders ?? usual.reminders };
 }
 
 // ---- A quote / specifications sent to a client and still not accepted / submitted: after how many

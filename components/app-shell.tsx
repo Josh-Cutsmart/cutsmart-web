@@ -16,7 +16,6 @@ import {
   Inbox,
   LayoutDashboard,
   LogOut,
-  PartyPopper,
   Plus,
   RefreshCw,
   Save,
@@ -142,11 +141,13 @@ const topNav = [
   { href: "/leads", label: "Leads", icon: Inbox },
   { href: "/contacts", label: "Contacts", icon: Users },
   { href: "/calendar", label: "Calendar", icon: CalendarDays },
-  { href: "/wrapped", label: "Company Wrapped", icon: PartyPopper },
-  { href: "/company-settings", label: "Company Settings", icon: Settings },
+  // Company Wrapped (/wrapped) is hidden from the sidebar for now — the page is still there, and its year's stats keep
+  // being tallied. To bring it back: { href: "/wrapped", label: "Company Wrapped", icon: PartyPopper } here (and
+  // PartyPopper back in the lucide-react import above).
   // Archived leads, projects and contacts — what used to be Recently Deleted (/recently-deleted now
   // redirects here). Every Delete/Archive button in the app files things here.
   { href: "/archived", label: "Archive", icon: Archive },
+  { href: "/company-settings", label: "Company Settings", icon: Settings },
   // Last on purpose — rendered with a divider above it (see visibleTopNav.map below) to set it
   // apart from the rest of the main tabs above it.
   { href: "/changelog", label: "Changelog", icon: Search },
@@ -3342,6 +3343,8 @@ export function AppShell({
           <div
             role="separator"
             aria-orientation="vertical"
+            // Hidden while a pop-up is open (app/globals.css) — it's on the very top layer, so it would show over it.
+            data-sidebar-resize-handle="true"
             aria-label={isSidebarResizeLocked ? "Sidebar resizing is locked" : isSidebarIconOnly ? "Expand sidebar" : "Collapse sidebar"}
             title={isSidebarResizeLocked ? "Sidebar resizing is locked — unlock it in User Settings" : isSidebarIconOnly ? "Expand sidebar" : "Collapse sidebar"}
             onPointerDown={(e) => {

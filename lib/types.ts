@@ -72,6 +72,8 @@ export interface Project {
   assignedTo: string;
   tags: string[];
   notes?: string;
+  // The Design tab's own notes (General has notes, Production productionNotes).
+  designNotes?: string;
   productionNotes?: string;
   remedials?: string;
   // Archiving (lib/project-archive.ts): a project archived by hand, or left in a completed status past

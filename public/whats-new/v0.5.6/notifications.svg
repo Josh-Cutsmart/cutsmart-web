@@ -1,0 +1,128 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" width="640" height="360" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title>The bell opens the Notifications panel from the right; a notification is right-clicked and set to remind later</title>
+  <style>
+    .bell { transform-box: fill-box; transform-origin: 50% 20%; animation: bell 7s ease-in-out infinite both; }
+    @keyframes bell { 0%, 10% { transform: rotate(0); } 12% { transform: rotate(-14deg); } 14% { transform: rotate(10deg); } 16%, 100% { transform: rotate(0); } }
+    .drawer { animation: drawer 7s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes drawer { 0%, 13% { transform: translateX(270px); } 22%, 86% { transform: translateX(0); } 94%, 100% { transform: translateX(270px); } }
+    .menu { transform-box: fill-box; transform-origin: 0 0; animation: menu 7s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes menu { 0%, 35% { opacity: 0; transform: scale(.9); } 39%, 57% { opacity: 1; transform: scale(1); } 61%, 100% { opacity: 0; transform: scale(.96); } }
+    .remindHi { animation: remindHi 7s ease-in-out infinite both; }
+    @keyframes remindHi { 0%, 45% { opacity: 0; } 48%, 60% { opacity: 1; } 63%, 100% { opacity: 0; } }
+    .row1 { animation: row1 7s ease-in-out infinite both; }
+    @keyframes row1 { 0%, 60% { opacity: 1; } 66%, 96% { opacity: 0; } 100% { opacity: 1; } }
+    .rest { animation: rest 7s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes rest { 0%, 64% { transform: translateY(0); } 72%, 96% { transform: translateY(-54px); } 100% { transform: translateY(0); } }
+    .count3 { animation: count3 7s steps(1) infinite both; }
+    @keyframes count3 { 0%, 65% { opacity: 1; } 66%, 99% { opacity: 0; } 100% { opacity: 1; } }
+    .count2 { animation: count2 7s steps(1) infinite both; }
+    @keyframes count2 { 0%, 65% { opacity: 0; } 66%, 99% { opacity: 1; } 100% { opacity: 0; } }
+    .cursor { animation: cursor 7s ease-in-out infinite both; }
+    @keyframes cursor {
+      0%, 2% { transform: translate(470px, 330px); opacity: 0; }
+      5% { opacity: 1; }
+      10%, 13% { transform: translate(580px, 50px); opacity: 1; }
+      32%, 37% { transform: translate(470px, 136px); opacity: 1; }
+      47%, 56% { transform: translate(492px, 208px); opacity: 1; }
+      66%, 100% { transform: translate(560px, 330px); opacity: 0; }
+    }
+  </style>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#EEF3FB"/>
+      <stop offset="1" stop-color="#E1E9F7"/>
+    </linearGradient>
+    <filter id="pop" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#0F172A" flood-opacity=".16"/>
+    </filter>
+    <filter id="side" x="-30%" y="-10%" width="140%" height="120%">
+      <feDropShadow dx="-6" dy="0" stdDeviation="10" flood-color="#0F172A" flood-opacity=".14"/>
+    </filter>
+    <clipPath id="win"><rect x="24" y="24" width="592" height="312" rx="18"/></clipPath>
+  </defs>
+  <rect width="640" height="360" fill="url(#bg)"/>
+
+  <!-- the app -->
+  <rect x="24" y="24" width="592" height="312" rx="18" fill="#F4F6FA" stroke="#D9E2F1" filter="url(#pop)"/>
+  <g clip-path="url(#win)">
+    <rect x="44" y="36" width="96" height="26" rx="13" fill="#FFFFFF" stroke="#E2E8F0"/>
+    <text x="92" y="53" text-anchor="middle" font-size="11" font-weight="600" fill="#334155">Dashboard</text>
+    <g class="bell">
+      <path d="M572 58 h18 l-2.5 -3 v-6 a6.5 6.5 0 0 0 -13 0 v6 z M578 60 a3 3 0 0 0 6 0" fill="none" stroke="#334155" stroke-width="1.7" stroke-linejoin="round"/>
+    </g>
+    <rect x="584" y="36" width="18" height="14" rx="7" fill="#EF4444"/>
+    <text class="count3" x="593" y="46.5" text-anchor="middle" font-size="9.5" font-weight="700" fill="#FFFFFF">3</text>
+    <text class="count2" x="593" y="46.5" text-anchor="middle" font-size="9.5" font-weight="700" fill="#FFFFFF">2</text>
+
+    <path d="M24 70 H616" stroke="#E2E8F0"/>
+    <!-- the page behind -->
+    <rect x="44" y="80" width="170" height="64" rx="14" fill="#FFFFFF"/>
+    <rect x="226" y="80" width="170" height="64" rx="14" fill="#FFFFFF"/>
+    <rect x="58" y="96" width="60" height="8" rx="4" fill="#CBD5E1"/>
+    <rect x="58" y="114" width="34" height="16" rx="5" fill="#E2E8F0"/>
+    <rect x="240" y="96" width="60" height="8" rx="4" fill="#CBD5E1"/>
+    <rect x="240" y="114" width="34" height="16" rx="5" fill="#E2E8F0"/>
+    <rect x="44" y="160" width="552" height="158" rx="14" fill="#FFFFFF"/>
+    <rect x="62" y="182" width="140" height="8" rx="4" fill="#E2E8F0"/>
+    <rect x="62" y="212" width="180" height="8" rx="4" fill="#E2E8F0"/>
+    <rect x="62" y="242" width="120" height="8" rx="4" fill="#E2E8F0"/>
+    <rect x="62" y="272" width="160" height="8" rx="4" fill="#E2E8F0"/>
+
+    <!-- the panel -->
+    <g class="drawer">
+      <rect x="352" y="70" width="270" height="270" fill="#FFFFFF" filter="url(#side)"/>
+      <path d="M368 95 h13 l-2 -2.4 v-4.6 a4.5 4.5 0 0 0 -9 0 v4.6 z M372.5 96.5 a2 2 0 0 0 4 0" fill="none" stroke="#0F172A" stroke-width="1.5" stroke-linejoin="round"/>
+      <text x="388" y="96" font-size="14" font-weight="700" fill="#0F172A">Notifications</text>
+      <text x="572" y="95" text-anchor="end" font-size="10" font-weight="600" fill="#2563EB">Mark all read</text>
+
+      <!-- quote accepted -->
+      <g class="row1">
+        <circle cx="384" cy="130" r="14" fill="#EEF2F7"/>
+        <text x="384" y="135" text-anchor="middle" font-size="13" font-weight="700" fill="#334155">$</text>
+        <text x="406" y="126" font-size="11" font-weight="700" fill="#0F172A">Quote accepted</text>
+        <text x="406" y="140" font-size="9.5" fill="#64748B">Hannah accepted $18,450.00</text>
+        <text x="406" y="153" font-size="9" fill="#94A3B8">5m</text>
+        <circle cx="596" cy="130" r="4" fill="#2563EB"/>
+      </g>
+
+      <g class="rest">
+        <!-- new lead -->
+        <circle cx="384" cy="184" r="14" fill="#EEF2F7"/>
+        <path d="M377 183 l3 -6 h8 l3 6 v6 h-14 z M377 183 h4 l1.5 2.5 h3 l1.5 -2.5 h4" fill="none" stroke="#334155" stroke-width="1.4" stroke-linejoin="round"/>
+        <text x="406" y="180" font-size="11" font-weight="700" fill="#0F172A">New lead</text>
+        <text x="406" y="194" font-size="9.5" fill="#64748B">Aroha sent an enquiry</text>
+        <text x="406" y="207" font-size="9" fill="#94A3B8">1h</text>
+        <circle cx="596" cy="184" r="4" fill="#2563EB"/>
+
+        <!-- specifications -->
+        <circle cx="384" cy="238" r="14" fill="#EEF2F7"/>
+        <rect x="378" y="231" width="12" height="15" rx="2" fill="none" stroke="#334155" stroke-width="1.4"/>
+        <path d="M381 236 h6 M381 240 h6" stroke="#334155" stroke-width="1.3" stroke-linecap="round"/>
+        <text x="406" y="234" font-size="11" font-weight="700" fill="#0F172A">Specifications submitted</text>
+        <text x="406" y="248" font-size="9.5" fill="#64748B">Priya accepted (14/16)</text>
+        <text x="406" y="261" font-size="9" fill="#94A3B8">3h</text>
+        <circle cx="596" cy="238" r="4" fill="#2563EB"/>
+
+        <!-- new version -->
+        <circle cx="384" cy="292" r="14" fill="#EEF2F7"/>
+        <path d="M389 288 a6 6 0 1 0 1 6 M389 283 v5 h-5" fill="none" stroke="#334155" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+        <text x="406" y="288" font-size="11" font-weight="500" fill="#334155">New version v0.5.6</text>
+        <text x="406" y="302" font-size="9.5" fill="#64748B">See what's new</text>
+        <text x="406" y="315" font-size="9" fill="#94A3B8">1d</text>
+      </g>
+
+      <!-- right-click menu -->
+      <g class="menu">
+        <rect x="470" y="136" width="132" height="96" rx="12" fill="#FFFFFF" stroke="#E2E8F0" filter="url(#pop)"/>
+        <text x="484" y="160" font-size="10.5" font-weight="500" fill="#0F172A">Mark as read</text>
+        <text x="484" y="184" font-size="10.5" font-weight="500" fill="#0F172A">Clear</text>
+        <rect class="remindHi" x="476" y="196" width="120" height="26" rx="8" fill="#EEF2FF"/>
+        <text x="484" y="213" font-size="10.5" font-weight="500" fill="#0F172A">Remind me in…</text>
+      </g>
+    </g>
+  </g>
+
+  <g class="cursor">
+    <path d="M0 0 l0 20 l5 -5 l4 9 l3.4 -1.5 l-4 -9 l7 0 z" fill="#0F172A" stroke="#FFFFFF" stroke-width="1.4" stroke-linejoin="round"/>
+  </g>
+</svg>

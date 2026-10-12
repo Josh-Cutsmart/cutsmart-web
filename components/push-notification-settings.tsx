@@ -20,24 +20,38 @@ import { DevTestButton } from "@/components/dev-mode";
 import { GlassSwitch, iconRemoveButtonClass } from "@/components/settings-ui";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import {
-  ALL_DAY_EVENT_REMINDER_OPTIONS,
+  CALENDAR_REMINDER_UNITS,
+  calendarReminderLabel,
+  clampCalendarReminder,
   CLIENT_PORTAL_PENDING_OPTIONS,
+  DEFAULT_REMINDER_AT,
+  hasOwnPushNotificationSwitch,
+  isDayReminderUnit,
   isPushNotificationCategoryEnabled,
   isPushNotificationTypeEnabled,
   MAX_REMINDER_ROWS,
+  calendarReminderLeadForCategory,
+  normalizeCalendarCategoryReminders,
   normalizeCalendarReminderLead,
   normalizeClientPortalReminderDays,
   normalizePushQuietMinutes,
   PUSH_NOTIFICATION_CATEGORIES,
   PUSH_QUIET_INTERVAL_OPTIONS,
-  TIMED_EVENT_REMINDER_OPTIONS,
+  type CalendarCategoryReminder,
+  type CalendarCategoryReminders,
   type CalendarReminderLead,
+  type CalendarReminderRow,
+  type CalendarReminderUnit,
   type ClientPortalReminderDays,
   type PushNotificationCategory,
   type PushNotificationTypeOption,
   type ReminderLeadOption,
 } from "@/lib/push-notification-types";
 import { useDevModeOn } from "@/lib/dev-mode";
+import { calendarCategoryLevel, normalizeCalendarCategories, type CalendarCategory } from "@/lib/calendar-categories";
+import { normalizeRoleKey } from "@/lib/company-roles";
+import { fetchCompanyDoc } from "@/lib/firestore-data";
+import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
 import {
   confirmPushDeviceStatus,
   disablePushOnThisDevice,
@@ -51,7 +65,9 @@ import {
 // category) that opens as a pop-up on a computer, or slides the page over to it on a phone (swipe right
 // or Back to return, like a contact in Contacts), plus a search across every kind. Those choices are the
 // user's own, stored on their profile (users/{uid}.pushNotificationTypes / pushNotificationCategories /
-// calendarReminderLead / clientPortalReminderDays / pushQuietMinutes), and apply to all their devices.
+// calendarReminderLead / calendarReminderCategories / clientPortalReminderDays / pushQuietMinutes), and apply to
+// all their devices. Calendar's "Upcoming project events" lists the company's calendar categories (only those
+// they can see — at least View): each on or off, opening to its own page of reminder times.
 
 // The small text under titles here — a stronger shade than the usual muted grey (closer to the main text,
 // so darker in light mode and brighter in dark).
@@ -155,6 +171,135 @@ function ReminderTimesList({
   );
 }
 
+// A day-based reminder's time, picked as a 12-hour time (every half hour, 12:00 to 11:30) and am / pm.
+const REMINDER_CLOCK_OPTIONS = Array.from({ length: 24 }, (_, index) => {
+  const label = `${Math.floor(index / 2) || 12}:${index % 2 ? "30" : "00"}`;
+  return { value: label, label };
+});
+const REMINDER_AM_PM_OPTIONS = [
+  { value: "am", label: "am" },
+  { value: "pm", label: "pm" },
+];
+
+// Calendar reminders (lib/push-notification-types.ts): each row "<number> <minutes / hours / days / weeks / months>
+// before", and for days, weeks and months "at <time> <am / pm>" too; X to remove a row (there's always one), + to add
+// another. The number is typed (only digits), kept within its unit's range.
+function CalendarRemindersList({ rows, onChange }: { rows: CalendarReminderRow[]; onChange: (next: CalendarReminderRow[]) => void }) {
+  const update = (index: number, patch: Partial<CalendarReminderRow>) =>
+    onChange(rows.map((row, i) => (i === index ? clampCalendarReminder({ ...row, ...patch }) : row)));
+  // A new row: the first of these not already there.
+  const nextRow = (
+    [
+      { amount: 1, unit: "days", at: DEFAULT_REMINDER_AT },
+      { amount: 1, unit: "hours", at: DEFAULT_REMINDER_AT },
+      { amount: 1, unit: "weeks", at: DEFAULT_REMINDER_AT },
+      { amount: 2, unit: "days", at: DEFAULT_REMINDER_AT },
+      { amount: 30, unit: "minutes", at: DEFAULT_REMINDER_AT },
+      { amount: 1, unit: "months", at: DEFAULT_REMINDER_AT },
+    ] as CalendarReminderRow[]
+  ).find((candidate) => !rows.some((row) => row.amount === candidate.amount && row.unit === candidate.unit));
+  const fieldClass = "flex h-9 w-full items-center justify-between rounded-[9px] border px-3 text-[12px] font-medium";
+  const fieldStyle = { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" };
+  return (
+    <div className="space-y-2">
+      {rows.map((row, index) => (
+        <div key={index} className="flex items-start gap-1.5">
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+            <input
+              type="text"
+              inputMode="numeric"
+              value={String(row.amount)}
+              onFocus={(e) => e.currentTarget.select()}
+              onChange={(e) => update(index, { amount: Number.parseInt(e.target.value.replace(/[^0-9]/g, ""), 10) || 1 })}
+              aria-label={`Reminder ${index + 1}: how many`}
+              className="h-9 w-14 rounded-[9px] border px-2 text-center text-[12px] font-medium tabular-nums"
+              style={fieldStyle}
+            />
+            <div className="w-[104px]">
+              <GlassDropdown
+                value={row.unit}
+                options={CALENDAR_REMINDER_UNITS.map((unit) => ({ value: unit.value, label: row.amount === 1 ? unit.one : unit.many }))}
+                onChange={(next) => update(index, { unit: next as CalendarReminderUnit })}
+                ariaLabel={`Reminder ${index + 1}: minutes, hours, days, weeks or months`}
+                triggerClassName={fieldClass}
+                triggerStyle={fieldStyle}
+              />
+            </div>
+            <span className="text-[12px] font-medium" style={{ color: SUB_TEXT_COLOR }}>
+              before
+            </span>
+            {isDayReminderUnit(row.unit)
+              ? (() => {
+                  // "at [8:00] [am]" — the 12-hour time and am / pm as two dropdowns (one long list of every time was
+                  // too much), saved together as one 24-hour time.
+                  const [hours24 = 8, minutes = 0] = row.at.split(":").map(Number);
+                  const isPm = hours24 >= 12;
+                  const atTime = (hours12: number, mins: number, pm: boolean) =>
+                    `${String((hours12 % 12) + (pm ? 12 : 0)).padStart(2, "0")}:${String(mins).padStart(2, "0")}`;
+                  return (
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="text-[12px] font-medium" style={{ color: SUB_TEXT_COLOR }}>
+                        at
+                      </span>
+                      <div className="w-[86px]">
+                        <GlassDropdown
+                          value={`${hours24 % 12 || 12}:${String(minutes).padStart(2, "0")}`}
+                          options={REMINDER_CLOCK_OPTIONS}
+                          onChange={(next) => {
+                            const [hours12, mins] = next.split(":").map(Number);
+                            update(index, { at: atTime(hours12, mins, isPm) });
+                          }}
+                          ariaLabel={`Reminder ${index + 1}: the time it comes at`}
+                          triggerClassName={fieldClass}
+                          triggerStyle={fieldStyle}
+                        />
+                      </div>
+                      <div className="w-[76px]">
+                        <GlassDropdown
+                          value={isPm ? "pm" : "am"}
+                          options={REMINDER_AM_PM_OPTIONS}
+                          onChange={(next) => update(index, { at: atTime(hours24 % 12, minutes, next === "pm") })}
+                          ariaLabel={`Reminder ${index + 1}: am or pm`}
+                          menuAlign="right"
+                          triggerClassName={fieldClass}
+                          triggerStyle={fieldStyle}
+                        />
+                      </div>
+                    </span>
+                  );
+                })()
+              : null}
+          </div>
+          <button
+            type="button"
+            disabled={rows.length <= 1}
+            onClick={() => onChange(rows.filter((_, i) => i !== index))}
+            className={`${iconRemoveButtonClass} mt-1`}
+            aria-label="Remove this reminder"
+            title="Remove"
+          >
+            <X size={16} />
+          </button>
+        </div>
+      ))}
+      {rows.length < MAX_REMINDER_ROWS && nextRow ? (
+        <button
+          type="button"
+          onClick={() => onChange([...rows, nextRow])}
+          className="inline-flex h-8 items-center gap-1 rounded-[9px] border px-2.5 text-[11.5px] font-semibold transition hover:brightness-95"
+          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--brand-strong)" }}
+        >
+          <Plus size={13} /> Add another
+        </button>
+      ) : null}
+      <p className="pt-0.5 text-[11px] leading-snug" style={{ color: SUB_TEXT_COLOR }}>
+        Minutes and hours: that long before (all-day events: 8:00am on the day). Days, weeks and months: on that day, at the time
+        shown. Up to 1 month ahead.
+      </p>
+    </div>
+  );
+}
+
 // Why the switch can't be turned on here (its tooltip) — the card itself has no status text.
 const UNAVAILABLE_REASON: Partial<Record<PushDeviceStatus, string>> = {
   blocked: "Notifications are blocked for CutSmart in this browser's or phone's settings — allow them there first.",
@@ -170,6 +315,7 @@ type SavedPushPrefs = {
   choices: Record<string, unknown>;
   categoryChoices: Record<string, unknown>;
   reminderLead: CalendarReminderLead;
+  categoryReminders: CalendarCategoryReminders;
   pendingDays: ClientPortalReminderDays;
   quietMinutes: number;
 };
@@ -217,7 +363,12 @@ export function PushNotificationSettings({
   // Whole categories turned off (their kinds' own switches are kept, just overridden).
   const [categoryChoices, setCategoryChoices] = useState<Record<string, unknown>>(() => lastPrefsFor(uid)?.categoryChoices ?? {});
   const [search, setSearch] = useState(initialSearch);
-  const [reminderLead, setReminderLead] = useState(() => lastPrefsFor(uid)?.reminderLead ?? normalizeCalendarReminderLead(null));
+  // (What was last shown is read through the same check as what's saved — so it's always in today's shape.)
+  const [reminderLead, setReminderLead] = useState(() => normalizeCalendarReminderLead(lastPrefsFor(uid)?.reminderLead));
+  // Each calendar category's reminders: on or off, and its own times (else their usual ones, above).
+  const [categoryReminders, setCategoryReminders] = useState<CalendarCategoryReminders>(() =>
+    normalizeCalendarCategoryReminders(lastPrefsFor(uid)?.categoryReminders),
+  );
   // After how many days a quote / specifications still waiting on the client reminds them.
   const [pendingDays, setPendingDays] = useState(() => lastPrefsFor(uid)?.pendingDays ?? normalizeClientPortalReminderDays(null));
   // Time between notifications (users/{uid}.pushQuietMinutes — see lib/push-server.ts).
@@ -243,8 +394,8 @@ export function PushNotificationSettings({
     if (status !== "loading") lastDeviceStatus = status;
   }, [status]);
   useEffect(() => {
-    if (prefsLoaded && uid) lastPrefs = { uid, choices, categoryChoices, reminderLead, pendingDays, quietMinutes };
-  }, [prefsLoaded, uid, choices, categoryChoices, reminderLead, pendingDays, quietMinutes]);
+    if (prefsLoaded && uid) lastPrefs = { uid, choices, categoryChoices, reminderLead, categoryReminders, pendingDays, quietMinutes };
+  }, [prefsLoaded, uid, choices, categoryChoices, reminderLead, categoryReminders, pendingDays, quietMinutes]);
 
   useEffect(() => {
     if (!db || !uid) return;
@@ -257,6 +408,7 @@ export function PushNotificationSettings({
         const savedCategories = snap.data()?.pushNotificationCategories;
         setCategoryChoices(savedCategories && typeof savedCategories === "object" ? (savedCategories as Record<string, unknown>) : {});
         setReminderLead(normalizeCalendarReminderLead(snap.data()?.calendarReminderLead));
+        setCategoryReminders(normalizeCalendarCategoryReminders(snap.data()?.calendarReminderCategories));
         setPendingDays(normalizeClientPortalReminderDays(snap.data()?.clientPortalReminderDays));
         setQuietMinutes(normalizePushQuietMinutes(snap.data()?.pushQuietMinutes));
         setPrefsLoaded(true);
@@ -305,6 +457,14 @@ export function PushNotificationSettings({
     setReminderLead(next);
     if (db && uid) void setDoc(doc(db, "users", uid), { calendarReminderLead: next }, { mergeFields: ["calendarReminderLead"] }).catch(() => undefined);
   };
+  // One calendar category's: on/off or one of its lists — saved into its own entry (lists whole).
+  const onCategoryReminderChange = (categoryId: string, patch: Partial<CalendarCategoryReminder>) => {
+    const nextEntry: CalendarCategoryReminder = { ...(categoryReminders[categoryId] ?? { off: false }), ...patch };
+    setCategoryReminders((prev) => ({ ...prev, [categoryId]: nextEntry }));
+    if (db && uid) {
+      void setDoc(doc(db, "users", uid), { calendarReminderCategories: { [categoryId]: nextEntry } }, { merge: true }).catch(() => undefined);
+    }
+  };
   const onPendingDaysChange = (patch: Partial<ClientPortalReminderDays>) => {
     const next = { ...pendingDays, ...patch };
     setPendingDays(next);
@@ -322,6 +482,40 @@ export function PushNotificationSettings({
   const devModeOn = useDevModeOn();
 
   const isPhone = useSyncExternalStore(subscribePhone, readPhone, () => false);
+
+  // The company's calendar categories they can see (at least View — the Calendar's own rule,
+  // lib/calendar-categories.ts); null until they've loaded.
+  const companyAccess = useCompanyAccess();
+  const [companyCalendarCategories, setCompanyCalendarCategories] = useState<CalendarCategory[] | null>(null);
+  useEffect(() => {
+    const companyId = companyAccess.companyId;
+    if (!companyId) return;
+    let cancelled = false;
+    void fetchCompanyDoc(companyId).then((companyDoc) => {
+      if (!cancelled) setCompanyCalendarCategories(normalizeCalendarCategories(companyDoc?.calendarCategories));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [companyAccess.companyId]);
+  const visibleCalendarCategories = (() => {
+    if (companyAccess.status !== "ready" || !companyCalendarCategories) return null;
+    const isAdmin = isOwnerOrAdmin(companyAccess.role);
+    const viewer = {
+      isAdmin,
+      roleKey: normalizeRoleKey(companyAccess.roleId || companyAccess.role),
+      canViewCalendar:
+        isAdmin || hasPermissionKey(companyAccess.permissionKeys, "calendar.view") || hasPermissionKey(companyAccess.permissionKeys, "calendar.edit"),
+    };
+    return companyCalendarCategories.filter((category) => calendarCategoryLevel(category, viewer) !== "none");
+  })();
+  // A calendar category's own page (its reminder times), within Calendar's pop-up / page — "" for Calendar itself.
+  // On a phone it's a page of its own: opening it pushes a history entry, so Back (and the phone's back) returns.
+  const [calendarCategoryPageId, setCalendarCategoryPageId] = useState("");
+  const pushedCalendarPageRef = useRef(false);
+  const calendarCategoryPage = calendarCategoryPageId
+    ? visibleCalendarCategories?.find((category) => category.id === calendarCategoryPageId) ?? null
+    : null;
   // The category being shown (kept while it animates closed), and whether it's open.
   const [openCategoryId, setOpenCategoryId] = useState("");
   const [isCategoryOpen, setIsCategoryOpen] = useState(false);
@@ -351,6 +545,7 @@ export function PushNotificationSettings({
       closeTimerRef.current = null;
     }
     setOpenCategoryId(categoryId);
+    setCalendarCategoryPageId("");
     if (isPhone) {
       window.history.pushState({ ...(window.history.state ?? {}), pushCategory: categoryId }, "");
       pushedEntryRef.current = true;
@@ -375,6 +570,23 @@ export function PushNotificationSettings({
       if (pageRef?.current) pageRef.current.style.transition = "";
     }, 320);
   };
+  // A calendar category's page: from Calendar's list (or from search, which opens Calendar first).
+  const openCalendarCategoryPage = (categoryId: string, event: ReactMouseEvent<HTMLElement>) => {
+    if (!(isCategoryOpen && openCategoryId === "calendar")) showCategory("calendar", event);
+    setCalendarCategoryPageId(categoryId);
+    if (isPhone) {
+      window.history.pushState({ ...(window.history.state ?? {}), pushCalendarCategory: categoryId }, "");
+      pushedCalendarPageRef.current = true;
+    }
+  };
+  const closeCalendarCategoryPage = () => {
+    if (isPhone && pushedCalendarPageRef.current) {
+      // Back through the entry opening it pushed — popstate (below) closes it.
+      window.history.back();
+      return;
+    }
+    setCalendarCategoryPageId("");
+  };
   const closeCategory = () => {
     if (isPhone && pushedEntryRef.current) {
       // Back through the entry opening it pushed — popstate (below) closes it.
@@ -385,6 +597,12 @@ export function PushNotificationSettings({
   };
   useEffect(() => {
     const onPopState = () => {
+      // A calendar category's page goes back to Calendar first.
+      if (pushedCalendarPageRef.current) {
+        pushedCalendarPageRef.current = false;
+        setCalendarCategoryPageId("");
+        return;
+      }
       if (!pushedEntryRef.current) return;
       pushedEntryRef.current = false;
       finishClosing();
@@ -431,7 +649,7 @@ export function PushNotificationSettings({
   };
   const onPaneTouchStart = (event: ReactTouchEvent<HTMLDivElement>) => {
     const touch = event.touches[0];
-    if (!isCategoryOpen || !touch || event.touches.length > 1 || document.querySelector('[data-glass-dropdown-menu="true"]')) {
+    if (!isCategoryOpen || calendarCategoryPageId || !touch || event.touches.length > 1 || document.querySelector('[data-glass-dropdown-menu="true"]')) {
       swipeRef.current = null;
       return;
     }
@@ -471,37 +689,40 @@ export function PushNotificationSettings({
   // and for reminders, how far ahead / after how long.
   const renderTypeRow = (option: PushNotificationTypeOption, categoryOn: boolean, categoryLabel?: string) => {
     const isOn = isPushNotificationTypeEnabled(choices, option.type);
+    // Upcoming project events has no switch of its own — Calendar's (and each calendar category's) does it.
+    const hasOwnSwitch = hasOwnPushNotificationSwitch(option.type);
+    // In Calendar's own pop-up / page it's all there is, so it goes straight to its categories — no name or words
+    // of its own (search results, mixing every kind, keep them; dev mode keeps its test button).
+    const showHeading = hasOwnSwitch || Boolean(categoryLabel);
     return (
       <div key={option.type} style={{ opacity: categoryOn ? 1 : 0.5 }}>
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            {categoryLabel ? (
-              <p className="text-[10.5px] font-bold uppercase tracking-[0.6px]" style={subText}>{categoryLabel}</p>
-            ) : null}
-            <p className="text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>{option.label}</p>
-            <p className="text-[11px]" style={subText}>{option.description}</p>
+        {!showHeading ? (
+          devModeOn ? (
+            <div className="mb-2 flex justify-end">
+              <DevTestButton sample={option.type} />
+            </div>
+          ) : null
+        ) : (
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              {categoryLabel ? (
+                <p className="text-[10.5px] font-bold uppercase tracking-[0.6px]" style={subText}>{categoryLabel}</p>
+              ) : null}
+              <p className="text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>{option.label}</p>
+              <p className="text-[11px]" style={subText}>{option.description}</p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2.5">
+              {devModeOn ? <DevTestButton sample={option.type} /> : null}
+              {hasOwnSwitch ? <Toggle checked={isOn} onChange={(next) => onToggleType(option.type, next)} disabled={!categoryOn} /> : null}
+            </div>
           </div>
-          <div className="flex shrink-0 items-center gap-2.5">
-            {devModeOn ? <DevTestButton sample={option.type} /> : null}
-            <Toggle checked={isOn} onChange={(next) => onToggleType(option.type, next)} disabled={!categoryOn} />
-          </div>
-        </div>
-        {option.type === "calendar_reminder" && isOn && categoryOn ? (
-          // How far ahead, as many as they like: timed events by minutes to months, all-day events by days
-          // to months.
-          <div className="mt-2.5 grid gap-3 sm:grid-cols-2">
-            <ReminderTimesList
-              label="Timed events"
-              values={reminderLead.timedMinutes}
-              options={TIMED_EVENT_REMINDER_OPTIONS}
-              onChange={(next) => onReminderLeadChange({ timedMinutes: next })}
-            />
-            <ReminderTimesList
-              label="All-day events"
-              values={reminderLead.allDayDays}
-              options={ALL_DAY_EVENT_REMINDER_OPTIONS}
-              onChange={(next) => onReminderLeadChange({ allDayDays: next })}
-            />
+        )}
+        {option.type === "calendar_reminder" && isOn && categoryOn && visibleCalendarCategories?.length ? (
+          renderCalendarCategoryList(showHeading ? "mt-2.5" : "")
+        ) : option.type === "calendar_reminder" && isOn && categoryOn && visibleCalendarCategories ? (
+          // No categories to choose between: their usual reminders, for every event.
+          <div className={showHeading ? "mt-2.5" : ""}>
+            <CalendarRemindersList rows={reminderLead.reminders} onChange={(next) => onReminderLeadChange({ reminders: next })} />
           </div>
         ) : null}
         {(option.type === "quote_pending" || option.type === "specs_pending") && isOn && categoryOn ? (
@@ -523,8 +744,75 @@ export function PushNotificationSettings({
       </div>
     );
   };
-  // A category's kinds, in its pop-up / page.
+  // "1 hour before, 1 day before at 8:00am" — a calendar category's reminders, in its row.
+  const reminderSummary = (lead: CalendarReminderLead) => lead.reminders.map(calendarReminderLabel).filter(Boolean).join(", ");
+  // Calendar's categories (the ones they can see): each one's colour, name and times, on or off, and opening to
+  // its own page.
+  function renderCalendarCategoryList(className = "") {
+    // Straight in the pop-up / page — no box around them, just a line between each.
+    return (
+      <div className={`divide-y divide-[var(--glass-border)] ${className}`}>
+        {(visibleCalendarCategories ?? []).map((category) => {
+          const lead = calendarReminderLeadForCategory(categoryReminders, category.id, reminderLead);
+          return (
+            <div key={category.id} className="flex min-h-[48px] items-center gap-2.5 py-2">
+              <button
+                type="button"
+                onClick={(e) => openCalendarCategoryPage(category.id, e)}
+                className="flex min-w-0 flex-1 items-center gap-2.5 self-stretch text-left"
+              >
+                <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: category.color }} />
+                <span className="min-w-0 flex-1" style={{ opacity: lead ? 1 : 0.55 }}>
+                  <span className="block truncate text-[13px] font-semibold max-md:text-[14px]" style={{ color: "var(--text-main)" }}>{category.name}</span>
+                  <span className="block truncate text-[11px] max-md:text-[12px]" style={subText}>{lead ? reminderSummary(lead) : "Off"}</span>
+                </span>
+                <ChevronRight size={15} className="shrink-0" style={mutedText} />
+              </button>
+              <Toggle checked={Boolean(lead)} onChange={(next) => onCategoryReminderChange(category.id, { off: !next })} />
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+  // A calendar category's reminders (its own, or their usual ones until changed) — or, while it's off, that it's off.
+  const renderCalendarCategoryTimes = (category: CalendarCategory) => {
+    const lead = calendarReminderLeadForCategory(categoryReminders, category.id, reminderLead);
+    return lead ? (
+      <CalendarRemindersList rows={lead.reminders} onChange={(next) => onCategoryReminderChange(category.id, { reminders: next })} />
+    ) : (
+      <p className="text-[12px]" style={subText}>
+        Off — no reminders for {category.name} events.
+      </p>
+    );
+  };
+  const renderCalendarCategoryPage = (category: CalendarCategory) => {
+    const lead = calendarReminderLeadForCategory(categoryReminders, category.id, reminderLead);
+    return (
+      <div className="space-y-4">
+        <button
+          type="button"
+          onClick={closeCalendarCategoryPage}
+          className="inline-flex items-center gap-1 text-[12.5px] font-semibold transition-opacity hover:opacity-75"
+          style={{ color: "var(--brand-strong)" }}
+        >
+          <ChevronLeft size={15} /> Calendar
+        </button>
+        <div className="flex items-center gap-3">
+          <span className="h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: category.color }} />
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[15px] font-semibold" style={{ color: "var(--text-main)" }}>{category.name}</p>
+            <p className="text-[11.5px]" style={subText}>Reminders for {category.name} events on projects assigned to you.</p>
+          </div>
+          <Toggle checked={Boolean(lead)} onChange={(next) => onCategoryReminderChange(category.id, { off: !next })} />
+        </div>
+        {renderCalendarCategoryTimes(category)}
+      </div>
+    );
+  };
+  // A category's kinds, in its pop-up / page — or, in Calendar, one of its categories' own page.
   const renderCategoryBody = (category: PushNotificationCategory) => {
+    if (category.id === "calendar" && calendarCategoryPage) return renderCalendarCategoryPage(calendarCategoryPage);
     const categoryOn = isPushNotificationCategoryEnabled(categoryChoices, category.id);
     return <div className="space-y-4">{category.types.map((option) => renderTypeRow(option, categoryOn))}</div>;
   };
@@ -533,14 +821,18 @@ export function PushNotificationSettings({
   const renderCategoryRowsPage = (category: PushNotificationCategory) => {
     const categoryOn = isPushNotificationCategoryEnabled(categoryChoices, category.id);
     const Icon = PUSH_CATEGORY_ICONS[category.id] ?? Bell;
+    // Calendar with one of its categories open: Calendar's title card stays at the top (its Back then goes back to
+    // Calendar's list), and the category's own card sits under it — its colour, name and switch, then its reminders.
+    const calendarPage = category.id === "calendar" ? calendarCategoryPage : null;
+    const calendarPageLead = calendarPage ? calendarReminderLeadForCategory(categoryReminders, calendarPage.id, reminderLead) : null;
     return (
       <div className="space-y-4">
         <div className="flex items-center gap-3 rounded-[18px] border p-4" style={cardStyle}>
           <button
             type="button"
-            onClick={closeCategory}
+            onClick={calendarPage ? closeCalendarCategoryPage : closeCategory}
             className="glass-nav-arrow inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full"
-            aria-label="Back"
+            aria-label={calendarPage ? "Back to Calendar" : "Back"}
           >
             <ChevronLeft size={18} />
           </button>
@@ -553,13 +845,31 @@ export function PushNotificationSettings({
           <p className="min-w-0 flex-1 truncate text-[20px] font-semibold leading-tight" style={{ color: "var(--text-main)" }}>{category.label}</p>
           <Toggle checked={categoryOn} onChange={(next) => onToggleCategory(category.id, next)} />
         </div>
-        <div className={ROWS_CARD_CLASS} style={cardStyle}>
-          {category.types.map((option) => (
-            <div key={option.type} className="px-4 py-3">
-              {renderTypeRow(option, categoryOn)}
+        {calendarPage ? (
+          <div className="overflow-hidden rounded-[18px] border" style={cardStyle}>
+            <div className="flex items-center gap-3 px-4 py-3">
+              <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full" style={{ backgroundColor: "var(--panel-muted)" }}>
+                <span className="h-3 w-3 rounded-full" style={{ backgroundColor: calendarPage.color }} />
+              </span>
+              <p className="min-w-0 flex-1 truncate text-[17px] font-semibold leading-tight" style={{ color: "var(--text-main)" }}>
+                {calendarPage.name}
+              </p>
+              <Toggle checked={Boolean(calendarPageLead)} onChange={(next) => onCategoryReminderChange(calendarPage.id, { off: !next })} />
             </div>
-          ))}
-        </div>
+            <div className="space-y-3 border-t px-4 py-3" style={{ borderColor: "var(--glass-border)" }}>
+              <p className="text-[12px]" style={subText}>Reminders for {calendarPage.name} events on projects assigned to you.</p>
+              {renderCalendarCategoryTimes(calendarPage)}
+            </div>
+          </div>
+        ) : (
+          <div className={ROWS_CARD_CLASS} style={cardStyle}>
+            {category.types.map((option) => (
+              <div key={option.type} className="px-4 py-3">
+                {renderTypeRow(option, categoryOn)}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     );
   };

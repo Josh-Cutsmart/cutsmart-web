@@ -498,6 +498,92 @@ body[data-theme="dark"].cs-app .notes-rich li {
   }
 }
 
+/* Project details' tabs (General / Design / Production / Settings): the selected one's pill. Where it is and its size
+ * are custom properties on the strip, registered so that one transition on them slides everything together, frame for
+ * frame — the pill's outline, the magnified copy of the tabs inside it, and the pill-shaped gap cut in the plain tabs
+ * for that copy to show through. So only what's inside the pill is magnified, wherever it is on its way. */
+@property --project-tab-pill-x {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
+@property --project-tab-pill-y {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
+@property --project-tab-pill-w {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
+@property --project-tab-pill-h {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
+.project-tab-strip[data-pill-animate="true"] {
+  transition:
+    --project-tab-pill-x 220ms ease,
+    --project-tab-pill-y 220ms ease,
+    --project-tab-pill-w 220ms ease,
+    --project-tab-pill-h 220ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .project-tab-strip[data-pill-animate="true"] {
+    transition: none;
+  }
+}
+/* The plain tabs, with the pill cut out of them. */
+.project-tab-strip > .project-tab-row {
+  -webkit-mask-image: var(--project-tab-pill-mask), linear-gradient(#000, #000);
+  mask-image: var(--project-tab-pill-mask), linear-gradient(#000, #000);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-size: var(--project-tab-pill-w) var(--project-tab-pill-h), 100% 100%;
+  mask-size: var(--project-tab-pill-w) var(--project-tab-pill-h), 100% 100%;
+  -webkit-mask-position: var(--project-tab-pill-x) var(--project-tab-pill-y), 0 0;
+  mask-position: var(--project-tab-pill-x) var(--project-tab-pill-y), 0 0;
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+}
+/* The pill — a lens of glass: the glass fill with a faint brand tint, brighter across its top like light catching
+ * it (all under the text), and a soft brand glow beneath. */
+.project-tab-lens {
+  width: var(--project-tab-pill-w);
+  height: var(--project-tab-pill-h);
+  transform: translate(var(--project-tab-pill-x), var(--project-tab-pill-y));
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.7) 0%, rgba(255, 255, 255, 0.12) 55%, rgba(255, 255, 255, 0.3) 100%),
+    color-mix(in srgb, var(--brand) 8%, var(--glass-bg));
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--brand) 16%, transparent);
+}
+/* Its outline, with a thin highlight just inside the top edge. */
+.project-tab-lens-outline {
+  border-color: var(--brand);
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.85);
+}
+body[data-theme="dark"] .project-tab-lens {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.14) 0%, rgba(255, 255, 255, 0.02) 55%, rgba(255, 255, 255, 0.06) 100%),
+    color-mix(in srgb, var(--brand) 12%, var(--glass-bg));
+  box-shadow: 0 2px 12px color-mix(in srgb, var(--brand) 22%, transparent);
+}
+body[data-theme="dark"] .project-tab-lens-outline {
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.14);
+}
+/* Inside it, the tabs again, magnified about the pill's centre — lined up so that, unmagnified, they would sit exactly
+ * on the plain ones. */
+.project-tab-lens-row {
+  transform-origin: 0 0;
+  transform: translate(calc(var(--project-tab-pill-w) / 2), calc(var(--project-tab-pill-h) / 2))
+    scale(var(--project-tab-magnify))
+    translate(
+      calc(-1 * var(--project-tab-pill-x) - var(--project-tab-pill-w) / 2),
+      calc(-1 * var(--project-tab-pill-y) - var(--project-tab-pill-h) / 2)
+    );
+}
+
 /* A plain fade/settle-in, no overshoot — each container/sub-nav button gets its own randomized
  * animation-delay (re-rolled on every tab switch, not a fixed CSS stagger) so they arrive at
  * slightly different moments instead of all appearing at once. --project-tab-enter-x is set per
@@ -582,9 +668,30 @@ html.cs-scroll-locked [data-app-scroll-root="true"] {
   overflow-y: hidden !important;
   overscroll-behavior: none;
 }
-/* Scrolling inside a pop-up stops at its own ends instead of carrying on to whatever's behind. */
+/* The sidebar's resize handle (components/app-shell.tsx) sits on the very top layer, so it's never behind the page —
+ * which would put it over a pop-up too. While one is open (every pop-up has a .glass-modal-backdrop), it's hidden. */
+body:has(.glass-modal-backdrop) [data-sidebar-resize-handle="true"] {
+  display: none !important;
+}
+
+/* Scrolling inside a pop-up stops at its own ends instead of carrying on to whatever's behind — on the pop-up and
+ * the parts of it that scroll, not on every element in it: an element that only clips (overflow: hidden — a rounded
+ * list, truncated text) is a scroll container too, and with contain on it, a wheel over it went nowhere (it can't
+ * scroll itself, and wouldn't pass it on to the part that does). */
 .glass-modal-panel,
-.glass-modal-panel * {
+.glass-modal-panel
+  :is(
+    .overflow-auto,
+    .overflow-y-auto,
+    .overflow-x-auto,
+    .overflow-scroll,
+    .overflow-y-scroll,
+    .glass-scroll,
+    [style*="overflow: auto"],
+    [style*="overflow-y: auto"],
+    [style*="overflow: scroll"],
+    [style*="overflow-y: scroll"]
+  ) {
   overscroll-behavior: contain;
 }
 /* Pop-up and drawer backdrops reach below the bottom of the layout viewport by the keyboard's height

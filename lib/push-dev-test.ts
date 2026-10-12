@@ -42,7 +42,8 @@ const SAMPLE_TEXT: Record<string, [string, string]> = {
   specs_sent: ["Specifications sent to client", `${TEAMMATE} sent Specifications for "${PROJECT}" to the client.`],
   quote_pending: ["Quote not accepted yet", `${CLIENT} hasn't accepted the quote for ${PROJECT} yet — sent 2 days ago.`],
   specs_pending: ["Specifications not submitted yet", `${CLIENT} hasn't submitted the specifications for ${PROJECT} yet — sent 2 days ago.`],
-  calendar_reminder: ["Upcoming: Install", `"Install" for ${PROJECT} is in 1 hour.`],
+  // An event's own name, as a real one shows it (not just "Install", which reads like its category).
+  calendar_reminder: ["Upcoming: Benchtop install", `"Benchtop install" for ${PROJECT} is in 1 hour.`],
   role_change: ["Role updated", `Your role in Taylor Joinery changed from "Staff" to "Manager".`],
   other: ["Test notification", "This is how a CutSmart notification looks on this device."],
 };
@@ -57,8 +58,9 @@ export function devTestListSample(kind: string): { title: string; message: strin
 
 // Whether a notification is one of those tests by its words alone — for ones added before tests were marked
 // (UserNotificationRow.devTest), which are cleared away once seen just the same. Matches only a test's exact title
-// and message (today's, or the quote / specs ones' earlier wording), with its made-up client and project.
+// and message (today's, or the earlier wording of the quote / specs / calendar ones), with its made-up client and project.
 const EARLIER_SAMPLE_TEXT: ReadonlyArray<readonly [string, string]> = [
+  ["Upcoming: Install", `"Install" for ${PROJECT} is in 1 hour.`],
   ["Quote accepted", `${CLIENT} accepted quote for ${PROJECT}`],
   ["Specifications submitted", `${CLIENT} submitted specs for ${PROJECT} with 12/15 accepted`],
 ];

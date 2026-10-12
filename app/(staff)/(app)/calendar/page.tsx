@@ -36,6 +36,7 @@ import {
   DEFAULT_CALENDAR_WORKDAYS,
   saveCalendarEvent,
   subscribeCalendarEvents,
+  calendarCategoryLevel,
   type CalendarAccessLevel,
   type CalendarCategory,
   type CalendarEvent,
@@ -671,14 +672,10 @@ function CalendarPageContent() {
   // otherwise the category's setting for this role, or View when it hasn't been set.
   const isAdmin = access.status === "ready" && isOwnerOrAdmin(access.role);
   const roleKey = normalizeRoleKey(access.roleId || access.role);
+  // The same rule as Notifications' calendar reminders and the server's (lib/calendar-categories.ts).
   const levelOf = useCallback(
-    (categoryId: string): CalendarAccessLevel => {
-      if (isAdmin) return "edit";
-      const category = categoryById.get(categoryId);
-      if (category) return category.access?.[roleKey] ?? (canView ? "view" : "none");
-      // Category deleted since: only owners/admins (handled above) can change these.
-      return canView ? "view" : "none";
-    },
+    (categoryId: string): CalendarAccessLevel =>
+      calendarCategoryLevel(categoryById.get(categoryId), { isAdmin, roleKey, canViewCalendar: canView }),
     [canView, categoryById, isAdmin, roleKey],
   );
   // Events linked to a project this person can't open (fetchProjects only returns the ones they can) show
@@ -2452,8 +2449,16 @@ function CalendarPageContent() {
                 </button>
               </div>
             )}
-            <button type="button" onClick={() => setMobileFilterOpen((v) => !v)} className={`${pillButtonClass} lg:hidden`}>
-              <Filter size={14} className="max-md:h-4 max-md:w-4" /> Categories
+            {/* On a phone, just the filter icon (a round button, as tall as Today). */}
+            <button
+              type="button"
+              onClick={() => setMobileFilterOpen((v) => !v)}
+              className={`${pillButtonClass} max-md:w-10 max-md:px-0 lg:hidden`}
+              aria-label="Categories"
+              title="Categories"
+            >
+              <Filter size={14} className="max-md:h-4 max-md:w-4" />
+              <span className="max-md:hidden">Categories</span>
             </button>
             {/* The view in use in the blue fill, so it's clear which it is; fully rounded, like Today. On a phone
                 it's its own row across the toolbar, filling it. At its right, the round search button: tapped, it

@@ -3155,7 +3155,8 @@ export default function DashboardPage() {
                     aria-hidden={!showSubBoardBackButton}
                     tabIndex={showSubBoardBackButton ? 0 : -1}
                     title="Back"
-                    className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] border"
+                    // A circle, like the app's other round buttons (and, on a phone, the search button beside it).
+                    className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border"
                     style={{
                       borderColor: dashboardPalette.border,
                       backgroundColor: dashboardPalette.panelBg,
