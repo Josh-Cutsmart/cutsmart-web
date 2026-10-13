@@ -1,10 +1,10 @@
 "use client";
 
-import { Fragment, startTransition, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type FocusEvent as ReactFocusEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type TouchEvent as ReactTouchEvent, type WheelEvent as ReactWheelEvent } from "react";
+import { Fragment, startTransition, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type FocusEvent as ReactFocusEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, type TouchEvent as ReactTouchEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { createPortal } from "react-dom";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Great_Vibes } from "next/font/google";
-import { ArrowLeft, ArrowLeftRight, ArrowRight, Bell, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, File as FileIcon, FileSpreadsheet, FileText, GitBranch, GripVertical, HardHat, Image as ImageIcon, Info, Link2, ListChecks, Lock, Mail, MapPin, Minus, NotebookPen, Pencil, Phone, Plus, Printer, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, Unlock, User, UserPlus, Users, Wrench, X } from "lucide-react";
+import { ArrowLeft, ArrowLeftRight, ArrowRight, Bell, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, File as FileIcon, FileSpreadsheet, FileText, GitBranch, GripVertical, HardHat, Image as ImageIcon, Import as ImportIcon, Info, Link2, ListChecks, Lock, Mail, MapPin, Minus, NotebookPen, Pencil, Phone, Plus, Printer, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, Unlock, User, UserPlus, Users, Wrench, X } from "lucide-react";
 import type { DecoupledEditor, ModelWriter } from "ckeditor5";
 import type { RichText as ExcelRichText } from "exceljs";
 import type { CellInput as AutoTableCellInput, RowInput as AutoTableRowInput } from "jspdf-autotable";
@@ -34,6 +34,19 @@ import { swallowNextClick } from "@/lib/swallow-dismiss-click";
 import { RestoreDialog, restoreStatusOptionsFrom } from "@/components/restore-dialog";
 import { authorizedFetch } from "@/lib/api-fetch";
 import { useKeepAnchoredPopoverAboveKeyboard } from "@/lib/use-keep-anchored-popover-above-keyboard";
+import { useKeepMenuInView } from "@/lib/use-keep-menu-in-view";
+import { RoomNameCombobox } from "@/components/room-name-combobox";
+import { normalizeBoardFinishes, normalizeHardwareRows, normalizeMmOptions, normalizeSheetSizes, type HardwareTypeRow } from "@/lib/production-hardware";
+import { GlassSwitch } from "@/components/settings-ui";
+import {
+  cutlistTemplateBoardLabel,
+  cutlistTemplateDrawerLabel,
+  cutlistTemplateHeightText,
+  cutlistTemplateSheetBase,
+  parseCutlistTemplateWorkbook,
+  spreadsheetCellText,
+  type CutlistTemplateParsed,
+} from "@/lib/cutlist-template";
 import { useMobileFloatingActionSheet } from "@/lib/use-mobile-floating-action-sheet";
 import { useLongPress } from "@/lib/use-long-press";
 import { useDragGhost, DragGhostLayer } from "@/lib/use-drag-ghost";
@@ -615,20 +628,6 @@ function quoteSafePixelString(value: string | undefined): string | undefined {
   return `${num}px`;
 }
 
-type DrawerHeightOption = { token: string; value: string };
-type HardwareDrawerType = {
-  name: string;
-  isDefault: boolean;
-  heightLetters: string[];
-  heightOptions: DrawerHeightOption[];
-  bottomsWidthMinus: number | null;
-  bottomsDepthMinus: number | null;
-  backsWidthMinus: number | null;
-  hardwareLengths: number[];
-  spaceRequirement: number | null;
-};
-type HardwareTypeRow = { name: string; color: string; isDefault: boolean; drawers: HardwareDrawerType[]; hinges: string[]; other: string[] };
-type SheetSizeOption = { h: string; w: string; isDefault: boolean };
 type BoardEdgingMemoryRow = { value: string; count: number };
 type BoardColourMemoryRow = { value: string; count: number; edgings?: BoardEdgingMemoryRow[] };
 type ProductionBoardRow = {
@@ -642,6 +641,16 @@ type ProductionBoardRow = {
   sheetSize: string;
   sheets: string;
   edgetape: string;
+};
+// Production > Hardware: a hardware brand (its Company Settings category), drawer type, hinges and handles. The
+// project has one (`hardware`); a room can have its own instead (`roomHardware`, by room name — rooms without one use
+// the project's). Drawer maths (backs, bottoms, heights, hardware lengths) follows each row's room's.
+type ProductionHardwareSettings = {
+  hardwareCategory: string;
+  newDrawerType: string;
+  hingeType: string;
+  standardHandles: boolean;
+  wrapOverHandles: boolean;
 };
 type ProductionFormState = {
   existing: {
@@ -658,13 +667,8 @@ type ProductionFormState = {
     hobSide: string;
     topScribers: boolean;
   };
-  hardware: {
-    hardwareCategory: string;
-    newDrawerType: string;
-    hingeType: string;
-    standardHandles: boolean;
-    wrapOverHandles: boolean;
-  };
+  hardware: ProductionHardwareSettings;
+  roomHardware: Record<string, ProductionHardwareSettings>;
   boardTypes: ProductionBoardRow[];
 };
 // Changelog field labels for persistProductionForm, the single funnel every board/existing/
@@ -2558,16 +2562,54 @@ function anchoredGlassPanelStyle(isDarkMode: boolean): React.CSSProperties {
   };
 }
 
-// Focuses a pop-up's text box the moment it mounts, without the browser also scrolling toward it.
-// These pop-ups grow out of the button that opened them, so at that instant the box is still a tiny
-// copy of itself sitting over that button — often low on the screen, right where the keyboard is about
-// to open — and a plain autoFocus could send the page (on iPhone, the whole visible area) scrolling
-// toward that spot. The finished pop-up is already centred in the space above the keyboard
-// (.glass-modal-panel in app/globals.css), so nothing needs scrolling. Module-level so it stays one
-// stable function: React calls a ref callback again whenever its identity changes, which would re-focus
-// the box on every render.
-function focusOnMountWithoutScrolling(el: HTMLInputElement | null) {
-  el?.focus({ preventScroll: true });
+// The cutlist screen's Notes / Contractors: a glass drawer down the right (under the screen's top bar), over the page
+// rather than pushing it, sliding in and out from the right like the Contacts page's contact. Stays mounted while it
+// slides out, so it doesn't empty mid-slide.
+const CUTLIST_DRAWER_SLIDE_MS = 260;
+// The cutlist screen's sidebar buttons (Add Room, Notes, Contractors, Import): rounded ends, icon and label centred.
+const CUTLIST_SIDEBAR_BUTTON_CLASS =
+  "inline-flex w-full items-center justify-center gap-2 rounded-full border px-3 py-2.5 text-[13px] font-medium text-white transition hover:brightness-95 disabled:opacity-55";
+function CutlistSideDrawer({
+  open,
+  label,
+  isDarkMode,
+  panelRef,
+  children,
+}: {
+  open: boolean;
+  label: string;
+  isDarkMode: boolean;
+  panelRef?: RefObject<HTMLElement | null>;
+  children: ReactNode;
+}) {
+  const [present, setPresent] = useState(open);
+  if (open && !present) setPresent(true);
+  useEffect(() => {
+    if (open) return;
+    const timer = window.setTimeout(() => setPresent(false), CUTLIST_DRAWER_SLIDE_MS + 60);
+    return () => window.clearTimeout(timer);
+  }, [open]);
+  if (!present || typeof document === "undefined") return null;
+  return createPortal(
+    <aside
+      ref={panelRef as RefObject<HTMLElement>}
+      aria-label={label}
+      aria-hidden={!open}
+      inert={!open}
+      className={`fixed bottom-0 right-0 top-[56px] z-[1450] flex w-[min(440px,100vw)] flex-col overflow-hidden transition-transform duration-[260ms] ease-[cubic-bezier(0.32,0.72,0,1)] starting:translate-x-full motion-reduce:transition-none ${
+        open ? "translate-x-0" : "translate-x-full"
+      }`}
+      style={{
+        ...anchoredGlassPanelStyle(isDarkMode),
+        borderRadius: "22px 0 0 22px",
+        borderRight: "none",
+        boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.07)" : "rgba(255,255,255,0.55)"}, -16px 0 48px rgba(15, 23, 42, ${isDarkMode ? 0.45 : 0.18})`,
+      }}
+    >
+      {children}
+    </aside>,
+    document.body,
+  );
 }
 
 function formatDoorFrontHeightValue(value: number): string {
@@ -3999,175 +4041,64 @@ function autoClashByDominant(primary: number, secondary: number): { clashLeft: s
   return primary > secondary ? { clashLeft: "1L", clashRight: "" } : { clashLeft: "", clashRight: "1S" };
 }
 
-function normalizeMmOptions(raw: unknown): string[] {
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .map((v) => String(v ?? "").replace(/mm$/i, "").trim())
-    .filter(Boolean);
-}
-
-function normalizeBoardFinishes(raw: unknown): string[] {
-  if (!Array.isArray(raw)) return [];
-  return raw.map((v) => String(v ?? "").trim()).filter(Boolean);
-}
-
-function normalizeSheetSizes(raw: unknown): SheetSizeOption[] {
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((row) => row && typeof row === "object")
-    .map((row) => {
-      const item = row as Record<string, unknown>;
-      const h = toStr(item.h ?? item.height);
-      const w = toStr(item.w ?? item.width);
-      const isDefault = Boolean(item.isDefault ?? item.default);
-      return { h, w, isDefault };
-    })
-    .filter((row) => row.h && row.w);
-}
-
-function normalizeDrawerTypes(raw: unknown): HardwareDrawerType[] {
-  if (!Array.isArray(raw)) return [];
-  const out: HardwareDrawerType[] = [];
-  const extractDrawerHeightLabel = (value: unknown): string => {
-    if (value == null) return "";
-    const rawText =
-      typeof value === "string"
-        ? value
-        : toStr(
-            (value as Record<string, unknown>)?.letter ??
-            (value as Record<string, unknown>)?.label ??
-            (value as Record<string, unknown>)?.code ??
-            (value as Record<string, unknown>)?.name ??
-            (value as Record<string, unknown>)?.value,
-          );
-    const raw = toStr(rawText);
-    if (!raw) return "";
-    const withoutTrailingNumber = raw.replace(/\s*\d+(\.\d+)?\s*$/g, "").trim();
-    const cleaned = withoutTrailingNumber.replace(/[:|,\-]+$/g, "").trim();
-    return cleaned || raw;
+// A drawer type's maths (Company Settings > Hardware): how much narrower/shallower the bottoms and backs are, the
+// runner lengths, the space it needs behind, and what each height letter is in mm. `category` / `drawerType` blank:
+// the category's default drawer.
+function drawerBreakdownForDrawer(hardwareRows: HardwareTypeRow[], category: string, drawerType: string) {
+  const categoryRow = hardwareRows.find((row) => row.name.toLowerCase() === category.toLowerCase());
+  const drawerOptions = categoryRow?.drawers ?? [];
+  const categoryDefaultDrawer = drawerOptions.find((row) => row.isDefault)?.name ?? drawerOptions[0]?.name ?? "";
+  const selectedDrawer = String(drawerType || categoryDefaultDrawer).trim();
+  const drawerRow =
+    drawerOptions.find((row) => row.name.toLowerCase() === selectedDrawer.toLowerCase()) ??
+    drawerOptions.find((row) => row.isDefault) ??
+    drawerOptions[0];
+  const letterValueMap: Record<string, string> = {};
+  for (const opt of drawerRow?.heightOptions ?? []) {
+    const token = String(opt.token || "").trim();
+    if (!token) continue;
+    const key = token.toLowerCase();
+    letterValueMap[key] = sanitizeDerivedValue(opt.value) || token;
+  }
+  return {
+    bottomsWidthMinus: drawerRow?.bottomsWidthMinus ?? null,
+    bottomsDepthMinus: drawerRow?.bottomsDepthMinus ?? null,
+    backsWidthMinus: drawerRow?.backsWidthMinus ?? null,
+    hardwareLengths: (drawerRow?.hardwareLengths ?? []).slice().sort((a, b) => a - b),
+    spaceRequirement: drawerRow?.spaceRequirement ?? null,
+    letterValueMap,
   };
-  const extractDrawerHeightValue = (value: unknown, label: string): string => {
-    if (value == null) return "";
-    if (typeof value === "string") {
-      const raw = toStr(value);
-      if (!raw) return "";
-      const prefix = String(label || "").trim();
-      if (!prefix) return "";
-      const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const remaining = raw.replace(new RegExp(`^\\s*${escaped}\\s*`, "i"), "").trim();
-      return remaining;
-    }
-    return toStr(
-      (value as Record<string, unknown>)?.value ??
-      (value as Record<string, unknown>)?.height ??
-      (value as Record<string, unknown>)?.mm ??
-      (value as Record<string, unknown>)?.size,
-    );
-  };
-  for (const row of raw) {
-    if (typeof row === "string") {
-      const name = row.trim();
-      if (name) {
-        out.push({
-          name,
-          isDefault: false,
-          heightLetters: [],
-          heightOptions: [],
-          bottomsWidthMinus: null,
-          bottomsDepthMinus: null,
-          backsWidthMinus: null,
-          hardwareLengths: [],
-          spaceRequirement: null,
-        });
+}
+type DrawerBreakdown = ReturnType<typeof drawerBreakdownForDrawer>;
+
+// The height letters a drawer type offers (its drawer rows' Height picker).
+function drawerHeightLettersForDrawer(hardwareRows: HardwareTypeRow[], category: string, drawerType: string): string[] {
+  const categoryRow = hardwareRows.find((row) => row.name.toLowerCase() === category.toLowerCase());
+  const categoryDrawerOptions = categoryRow?.drawers ?? [];
+  const categoryDefaultDrawer = categoryDrawerOptions.find((row) => row.isDefault)?.name ?? categoryDrawerOptions[0]?.name ?? "";
+  const selectedDrawer = String(drawerType || categoryDefaultDrawer).trim();
+  const categories = category ? hardwareRows.filter((row) => row.name.toLowerCase() === category.toLowerCase()) : hardwareRows;
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const cat of categories) {
+    for (const drawer of cat.drawers ?? []) {
+      const name = String(drawer?.name ?? "").trim();
+      if (selectedDrawer && name.toLowerCase() !== selectedDrawer.toLowerCase()) {
+        continue;
       }
-      continue;
+      const letters = Array.isArray(drawer.heightLetters) ? drawer.heightLetters : [];
+      for (const letterItem of letters) {
+        const letter = String(letterItem ?? "").trim();
+        if (!letter) continue;
+        const key = letter.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(letter);
+      }
+      if (selectedDrawer) return out;
     }
-    if (!row || typeof row !== "object") continue;
-    const item = row as Record<string, unknown>;
-    const name = toStr(item.name ?? item.type ?? item.label);
-    if (!name) continue;
-    const bottoms = item.bottoms && typeof item.bottoms === "object" ? (item.bottoms as Record<string, unknown>) : {};
-    const backs = item.backs && typeof item.backs === "object" ? (item.backs as Record<string, unknown>) : {};
-    const heightRows = Array.isArray(backs.heights)
-      ? backs.heights
-      : Array.isArray(backs.letters)
-        ? backs.letters
-        : [];
-    const heightLetters: string[] = [];
-    const heightOptions: DrawerHeightOption[] = [];
-    const seen = new Set<string>();
-    for (const rawHeight of heightRows) {
-      const label = extractDrawerHeightLabel(rawHeight);
-      if (!label) continue;
-      const key = label.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      heightLetters.push(label);
-      const value = extractDrawerHeightValue(rawHeight, label);
-      heightOptions.push({ token: label, value });
-    }
-    const bottomsWidthMinus = toNum(bottoms.widthMinus ?? item.widthMinus);
-    const bottomsDepthMinus = toNum(bottoms.depthMinus ?? item.depthMinus);
-    const backsWidthMinus = toNum(backs.widthMinus);
-    const hardwareLengths = Array.isArray(item.hardwareLengths)
-      ? (item.hardwareLengths as unknown[])
-          .map((v) => toNum(v))
-          .filter((v) => Number.isFinite(v) && v > 0)
-      : [];
-    const spaceParsed = toNum(item.spaceRequirement ?? item.clearance);
-    const spaceRequirement = Number.isFinite(spaceParsed) && spaceParsed > 0 ? spaceParsed : null;
-    out.push({
-      name,
-      isDefault: Boolean(item.default ?? item.isDefault),
-      heightLetters,
-      heightOptions,
-      bottomsWidthMinus: bottomsWidthMinus > 0 ? bottomsWidthMinus : null,
-      bottomsDepthMinus: bottomsDepthMinus > 0 ? bottomsDepthMinus : null,
-      backsWidthMinus: backsWidthMinus > 0 ? backsWidthMinus : null,
-      hardwareLengths,
-      spaceRequirement,
-    });
   }
   return out;
-}
-
-function normalizeHardwareRows(raw: unknown): HardwareTypeRow[] {
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((row) => row && typeof row === "object")
-    .map((row) => {
-      const item = row as Record<string, unknown>;
-      const name = toStr(item.name);
-      const hingesRaw = Array.isArray(item.hinges) ? item.hinges : [];
-      const hinges = hingesRaw
-        .map((entry) => {
-          if (typeof entry === "string") return entry.trim();
-          if (entry && typeof entry === "object") {
-            return toStr((entry as Record<string, unknown>).name ?? (entry as Record<string, unknown>).label);
-          }
-          return "";
-        })
-        .filter(Boolean);
-      const otherRaw = Array.isArray(item.other) ? item.other : [];
-      const other = otherRaw
-        .map((entry) => {
-          if (typeof entry === "string") return entry.trim();
-          if (entry && typeof entry === "object") {
-            return toStr((entry as Record<string, unknown>).name ?? (entry as Record<string, unknown>).label);
-          }
-          return "";
-        })
-        .filter(Boolean);
-      return {
-        name,
-        color: toStr(item.color),
-        isDefault: Boolean(item.default),
-        drawers: normalizeDrawerTypes(item.drawers),
-        hinges,
-        other,
-      };
-    })
-    .filter((row) => row.name);
 }
 
 function normalizeBoardEdgingMemory(raw: unknown): BoardEdgingMemoryRow[] {
@@ -4307,6 +4238,173 @@ function splitClashing(raw: string): { left: string; right: string } {
 
 function joinClashing(left: string, right: string): string {
   return [String(left || "").trim(), String(right || "").trim()].filter(Boolean).join(" ");
+}
+
+// Production › Cutlist › Import: a spreadsheet laid out like the old cutlist sheet — its headings on row 3 (Job
+// Section, Part Type, Board Type, Part Name, Height, Width, Depth, Qty, Clashing, Information, Grain) and the parts
+// from row 4 down. Column A (the sheet's own errors column) is ignored.
+type CutlistImportField = "room" | "partType" | "board" | "name" | "height" | "width" | "depth" | "quantity" | "clashing" | "information" | "grain";
+type CutlistImportSheetRow = {
+  sheetRow: number;
+  room: string;
+  partType: string;
+  board: string;
+  name: string;
+  height: string;
+  width: string;
+  depth: string;
+  quantity: string;
+  clashLeft: string;
+  clashRight: string;
+  information: string;
+  grain: string;
+  // The template's cabinetry columns (lib/cutlist-template.ts).
+  cabinetryKind?: string;
+  fixedShelf?: string;
+  fixedShelfDrilling?: string;
+  adjustableShelf?: string;
+  adjustableShelfDrilling?: string;
+  cabinetryClashBottom?: string;
+  cabinetryFullTop?: string;
+};
+type CutlistImportColumn = { field: CutlistImportField; from: number; to: number };
+// A room in an imported file, as the import holds it — a cutlist template's room sheet (with parts in it), or one of an
+// old cutlist sheet's rooms: the room it goes to (`name`), its Drawer Type (a template's, where it has drawers), and —
+// when it could be one of several rooms in the project (a "Misc" sheet with "Misc: Desk" and "Misc: TV Cabinet" in the
+// project, or two sheets of the same name) — needsMatch, with the project's rooms of that name to pick from (the import
+// pop-up's Rooms, where any of them can also be switched off).
+type CutlistImportSheet = {
+  key: string;
+  // "Sheet "Room 1"" — a template's; an old cutlist sheet's rooms have none.
+  sheetLabel: string;
+  name: string;
+  parts: number;
+  drawerType: { label: string; hardwareCategory: string; newDrawerType: string } | null;
+  needsMatch: boolean;
+  matchOptions: string[];
+};
+// The import's Rooms: "a new room" (named in its own field) rather than one of the project's.
+const CUTLIST_IMPORT_NEW_ROOM = "__new_room__";
+// The parts of an import that can each be switched off: a template's Global Job Selections, its new boards, the cutlist
+// (its rooms and parts), its Order lists and its notes.
+type CutlistImportPart = "settings" | "boards" | "cutlist" | "order" | "notes";
+const CUTLIST_IMPORT_ALL_PARTS: Record<CutlistImportPart, boolean> = { settings: true, boards: true, cutlist: true, order: true, notes: true };
+const CUTLIST_IMPORT_HEADINGS: Record<string, CutlistImportField> = {
+  jobsection: "room",
+  section: "room",
+  room: "room",
+  parttype: "partType",
+  type: "partType",
+  boardtype: "board",
+  board: "board",
+  material: "board",
+  partname: "name",
+  name: "name",
+  height: "height",
+  width: "width",
+  depth: "depth",
+  qty: "quantity",
+  quantity: "quantity",
+  clashing: "clashing",
+  clash: "clashing",
+  information: "information",
+  info: "information",
+  notes: "information",
+  grain: "grain",
+};
+// The old sheet's own columns (1-based), for one whose headings can't be found: B Job Section, C Part Type, D–F
+// Board Type, G–I Part Name, J Height, K Width, L Depth, M Qty, N–O Clashing, P–T Information, U Grain.
+const CUTLIST_IMPORT_DEFAULT_COLUMNS: CutlistImportColumn[] = [
+  { field: "room", from: 2, to: 2 },
+  { field: "partType", from: 3, to: 3 },
+  { field: "board", from: 4, to: 6 },
+  { field: "name", from: 7, to: 9 },
+  { field: "height", from: 10, to: 10 },
+  { field: "width", from: 11, to: 11 },
+  { field: "depth", from: 12, to: 12 },
+  { field: "quantity", from: 13, to: 13 },
+  { field: "clashing", from: 14, to: 15 },
+  { field: "information", from: 16, to: 20 },
+  { field: "grain", from: 21, to: 21 },
+];
+
+// grid[row][column]: the sheet's cells as text, both 1-based (grid[0], and each row's [0], unused).
+function parseCutlistImportGrid(grid: string[][]): { rows: CutlistImportSheetRow[]; foundHeadings: boolean } {
+  // Each heading's columns: from where it is to just before the next heading (a merged heading — Board Type over
+  // D–F, Clashing over N–O — can read in each of its cells, so a run of the same one counts once).
+  let headingRow = 0;
+  let columns = CUTLIST_IMPORT_DEFAULT_COLUMNS;
+  for (let r = 1; r < Math.min(grid.length, 16) && !headingRow; r += 1) {
+    const cells = grid[r] ?? [];
+    const found: Array<{ field: CutlistImportField; col: number }> = [];
+    for (let c = 2; c < cells.length; c += 1) {
+      const field = CUTLIST_IMPORT_HEADINGS[String(cells[c] ?? "").toLowerCase().replace(/[^a-z]/g, "")];
+      if (field) found.push({ field, col: c });
+    }
+    const fields = new Set(found.map((item) => item.field));
+    if (fields.size < 3 || !(fields.has("name") || fields.has("partType"))) continue;
+    const runs: Array<{ field: CutlistImportField; from: number; last: number }> = [];
+    for (const item of found) {
+      const previous = runs[runs.length - 1];
+      if (previous && previous.field === item.field && previous.last === item.col - 1) previous.last = item.col;
+      else runs.push({ field: item.field, from: item.col, last: item.col });
+    }
+    headingRow = r;
+    columns = runs.map((run, index) => ({
+      field: run.field,
+      from: run.from,
+      to: index + 1 < runs.length ? runs[index + 1].from - 1 : run.field === "clashing" ? run.from + 1 : run.last,
+    }));
+  }
+  const firstPartRow = headingRow ? headingRow + 1 : 4;
+  const rows: CutlistImportSheetRow[] = [];
+  for (let r = firstPartRow; r < grid.length; r += 1) {
+    const cells = grid[r] ?? [];
+    const textsOf = (column: CutlistImportColumn) => {
+      const out: string[] = [];
+      for (let c = column.from; c <= column.to; c += 1) out.push(String(cells[c] ?? "").trim());
+      return out;
+    };
+    const valueOf = (field: CutlistImportField) => {
+      const column = columns.find((item) => item.field === field);
+      return column ? textsOf(column).find(Boolean) ?? "" : "";
+    };
+    // Clashing: its long edges (1L / 2L) and short edges (1S / 2S) — a bare 1 or 2 is long edges in its first
+    // column and short edges in its second.
+    let clashLeft = "";
+    let clashRight = "";
+    const clashColumn = columns.find((item) => item.field === "clashing");
+    (clashColumn ? textsOf(clashColumn) : []).forEach((text, index) => {
+      const upper = text.toUpperCase().replace(/\s+/g, "");
+      if (!upper) return;
+      const long = upper.match(/([12])L/);
+      const short = upper.match(/([12])S/);
+      if (long && !clashLeft) clashLeft = `${long[1]}L`;
+      if (short && !clashRight) clashRight = `${short[1]}S`;
+      const bare = !long && !short ? upper.match(/^([12])$/) : null;
+      if (bare && index === 0 && !clashLeft) clashLeft = `${bare[1]}L`;
+      else if (bare && index > 0 && !clashRight) clashRight = `${bare[1]}S`;
+    });
+    const row: CutlistImportSheetRow = {
+      sheetRow: r,
+      room: valueOf("room"),
+      partType: valueOf("partType"),
+      board: valueOf("board"),
+      name: valueOf("name"),
+      height: valueOf("height"),
+      width: valueOf("width"),
+      depth: valueOf("depth"),
+      quantity: valueOf("quantity"),
+      clashLeft,
+      clashRight,
+      information: valueOf("information"),
+      grain: valueOf("grain"),
+    };
+    // Rows with nothing to cut (the sheet's empty rows, with only their dropdowns) are left out.
+    if (!row.name && !row.partType && !row.height && !row.width) continue;
+    rows.push(row);
+  }
+  return { rows, foundHeadings: Boolean(headingRow) };
 }
 
 function normalizeDrillingValue(value: unknown): "No" | "Even Spacing" | "Centre" {
@@ -4493,6 +4591,9 @@ function normalizeProjectTagUsage(raw: unknown): Array<{ value: string; count: n
 type DrawerHeightDropdownProps = {
   value: string;
   options: string[];
+  // Each height's size (its drawer type's back height, Company Settings > Hardware), by lower-case letter — shown in a
+  // pill beside the letter.
+  optionValues?: Record<string, string>;
   disabled?: boolean;
   bg: string;
   border: string;
@@ -4508,6 +4609,7 @@ type DrawerHeightDropdownProps = {
 function DrawerHeightDropdown({
   value,
   options,
+  optionValues,
   disabled,
   bg,
   border,
@@ -4534,6 +4636,8 @@ function DrawerHeightDropdown({
     const r = buttonRef.current.getBoundingClientRect();
     setMenuRect({ left: r.left, top: r.bottom + 2, width: r.width });
   };
+  // Opens above instead when there's no room for it below (lib/use-keep-menu-in-view.ts).
+  useKeepMenuInView(open && Boolean(menuRect), menuRef, buttonRef);
 
   useEffect(() => {
     if (!open) return;
@@ -4675,24 +4779,41 @@ function DrawerHeightDropdown({
                 const count = counts.get(opt.toLowerCase()) ?? 0;
                 return (
                   <Fragment key={opt}>
-                    <span className="truncate text-[11px] font-semibold max-md:text-[15px]" style={{ color: "var(--text-main)" }}>{opt}</span>
+                    <span className="flex min-w-0 items-center gap-1.5 max-md:gap-2">
+                      <span className="truncate text-[11px] font-semibold max-md:text-[15px]" style={{ color: "var(--text-main)" }}>{opt}</span>
+                      {(() => {
+                        const size = String(optionValues?.[opt.toLowerCase()] ?? "").trim();
+                        return size && size.toLowerCase() !== opt.toLowerCase() ? (
+                          <span
+                            className="inline-flex h-[18px] shrink-0 items-center rounded-full border px-1.5 text-[10px] font-bold max-md:h-6 max-md:px-2 max-md:text-[12px]"
+                            style={{
+                              borderColor: "color-mix(in srgb, var(--brand) 35%, transparent)",
+                              backgroundColor: "color-mix(in srgb, var(--brand) 12%, transparent)",
+                              color: "var(--text-main)",
+                            }}
+                          >
+                            {size}
+                          </span>
+                        ) : null;
+                      })()}
+                    </span>
                     <button
                       type="button"
                       disabled={count <= 0}
                       onClick={() => onRemove(opt)}
-                      className="inline-flex h-5 w-5 items-center justify-center rounded-[6px] border text-white hover:brightness-95 disabled:opacity-45 max-md:h-9 max-md:w-9 max-md:rounded-[10px]"
+                      className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border p-0 leading-none text-white hover:brightness-95 disabled:opacity-45 max-md:h-9 max-md:w-9"
                       style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
                     >
-                      <Minus size={11} strokeWidth={2.8} />
+                      <Minus size={12} strokeWidth={2.8} className="shrink-0" />
                     </button>
                     <span className="flex items-center justify-center text-[10px] font-bold max-md:text-[15px]" style={{ color: "var(--text-main)" }}>{count}</span>
                     <button
                       type="button"
                       onClick={() => onAdd(opt)}
-                      className="inline-flex h-5 w-5 items-center justify-center rounded-[6px] border font-bold leading-none text-white hover:brightness-95 max-md:h-9 max-md:w-9 max-md:rounded-[10px]"
+                      className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border p-0 font-bold leading-none text-white hover:brightness-95 max-md:h-9 max-md:w-9"
                       style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
                     >
-                      <Plus size={12} strokeWidth={2.8} />
+                      <Plus size={12} strokeWidth={2.8} className="shrink-0" />
                     </button>
                   </Fragment>
                 );
@@ -4872,6 +4993,8 @@ function CompactPlainDropdown({
     const r = buttonRef.current.getBoundingClientRect();
     setRect({ left: r.left, top: r.bottom + 2, width: r.width });
   };
+  // Opens above instead when there's no room for it below (lib/use-keep-menu-in-view.ts).
+  useKeepMenuInView(open && Boolean(rect), menuRef, buttonRef);
 
   useEffect(() => {
     return () => {
@@ -5092,6 +5215,8 @@ function BoardPillDropdown({
     const r = buttonRef.current.getBoundingClientRect();
     setRect({ left: r.left, top: r.bottom + 2, width: r.width });
   };
+  // Opens above instead when there's no room for it below (lib/use-keep-menu-in-view.ts).
+  useKeepMenuInView(open && Boolean(rect), menuRef, buttonRef);
 
   useEffect(() => {
     return () => {
@@ -5532,6 +5657,8 @@ function GlassSelectDropdown({ value, options, onChange, className, style, disab
     const r = buttonRef.current.getBoundingClientRect();
     setRect({ left: r.left, top: r.bottom + 2, width: r.width });
   };
+  // Opens above instead when there's no room for it below (lib/use-keep-menu-in-view.ts).
+  useKeepMenuInView(open && Boolean(rect) && !disabled, menuRef, buttonRef);
 
   useEffect(() => {
     if (!open) return;
@@ -5677,6 +5804,8 @@ function PartNameSuggestionInput({
     const r = inputRef.current.getBoundingClientRect();
     setRect({ left: r.left, top: r.bottom + 2, width: r.width });
   };
+  // Opens above instead when there's no room for it below (lib/use-keep-menu-in-view.ts).
+  useKeepMenuInView(open && Boolean(rect), menuRef, inputRef);
 
   const filteredOptions = useMemo(() => {
     const normalizedValue = String(value ?? "").trim().toLowerCase();
@@ -7039,26 +7168,14 @@ export default function ProjectDetailsPage() {
   const [contractorNotesEditorInitialValue, setContractorNotesEditorInitialValue] = useState("");
   const contractorNotesEditorDraftRef = useRef("");
   const [contractorsToolbarHost, setContractorsToolbarHost] = useState<HTMLDivElement | null>(null);
-  const [productionNotesModalOrigin, setProductionNotesModalOrigin] = useState<GlassModalOrigin>(null);
-  const productionNotesModalPanelRef = useRef<HTMLDivElement | null>(null);
-  const productionNotesModalOriginElRef = useRef<HTMLElement | null>(null);
-  const shouldRenderProductionNotesModal = useGlassModalPopOrigin(
-    isProductionNotesPanelOpen,
-    productionNotesModalOrigin,
-    productionNotesModalPanelRef,
-    undefined,
-    productionNotesModalOriginElRef,
-  );
-  const [contractorsModalOrigin, setContractorsModalOrigin] = useState<GlassModalOrigin>(null);
-  const contractorsModalPanelRef = useRef<HTMLDivElement | null>(null);
-  const contractorsModalOriginElRef = useRef<HTMLElement | null>(null);
-  const shouldRenderContractorsModal = useGlassModalPopOrigin(
-    isContractorsPanelOpen,
-    contractorsModalOrigin,
-    contractorsModalPanelRef,
-    undefined,
-    contractorsModalOriginElRef,
-  );
+  // The cutlist screen's Contractors drawer (a click anywhere outside it saves the contractor's note).
+  const contractorsDrawerRef = useRef<HTMLElement | null>(null);
+  // The cutlist sidebar's Contractors menu (pick a contractor → their notes in the drawer); its left / width when
+  // open (its top: useKeepMenuInView, below the button or above it).
+  const [contractorsMenuRect, setContractorsMenuRect] = useState<{ left: number; width: number } | null>(null);
+  const contractorsMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const contractorsMenuRef = useRef<HTMLDivElement | null>(null);
+  useKeepMenuInView(Boolean(contractorsMenuRect), contractorsMenuRef, contractorsMenuButtonRef, 6);
   // Remedials — same standalone glass-popup pattern as Contractors above, just a single project-
   // wide text field (no per-contractor tabs) saved through saveGeneralDetailsPatch like Notes.
   const [isRemedialsPanelOpen, setIsRemedialsPanelOpen] = useState(false);
@@ -7610,6 +7727,12 @@ export default function ProjectDetailsPage() {
       window.visualViewport?.removeEventListener("scroll", refreshBoardColourDropdownRect);
     };
   }, [activeBoardColourSuggestionsRowId]);
+  // Opens above instead when there's no room for it below (lib/use-keep-menu-in-view.ts).
+  useKeepMenuInView(
+    Boolean(activeBoardColourSuggestionsRowId && boardColourDropdownRect),
+    () => document.querySelector<HTMLElement>('[data-board-suggestions-menu="true"]'),
+    () => boardColourInputRefs.current[activeBoardColourSuggestionsRowId ?? ""] ?? null,
+  );
   // Same combo-box pattern as Colour above, but suggestions are ranked per the row's OWN colour
   // (see boardEdgingSuggestionsForColour) rather than globally.
   const boardEdgingEditStartRef = useRef<Record<string, string>>({});
@@ -7641,6 +7764,11 @@ export default function ProjectDetailsPage() {
       window.visualViewport?.removeEventListener("scroll", refreshBoardEdgingDropdownRect);
     };
   }, [activeBoardEdgingSuggestionsRowId]);
+  useKeepMenuInView(
+    Boolean(activeBoardEdgingSuggestionsRowId && boardEdgingDropdownRect),
+    () => document.querySelector<HTMLElement>('[data-board-suggestions-menu="true"]'),
+    () => boardEdgingInputRefs.current[activeBoardEdgingSuggestionsRowId ?? ""] ?? null,
+  );
   // The Colour/Edging suggestion lists follow the same outside-press rule as every other dropdown
   // here: a press anywhere but the list or its own text box closes it without also acting on what it
   // landed on. (Pressing another row's box still moves into that box — focus isn't a click.)
@@ -7894,7 +8022,9 @@ export default function ProjectDetailsPage() {
   const [isCoarsePointer, setIsCoarsePointer] = useState(false);
   // What's typed into a Notes card between clicking it and its editor being ready (that takes a moment), held so
   // none of it is lost — added once the editor is up (renderEditableNotesBody).
-  const notesTypeAheadRef = useRef<{ text: string; stop: () => void } | null>(null);
+  // On a touch screen it also holds the stand-in text box that has the keyboard until then (see startEditing in
+  // renderEditableNotesBody), and what was typed into it.
+  const notesTypeAheadRef = useRef<{ text: string; stand: HTMLInputElement | null; stop: () => void } | null>(null);
   // Mobile-only action bars for Quote/Specifications — a small floating card of buttons that rises
   // above a fixed "Actions" trigger (see useMobileFloatingActionSheet's own comment for why this
   // isn't the same full-screen slide-up Nesting/CNC's own mobile Visibility overlay uses). The
@@ -7976,6 +8106,72 @@ export default function ProjectDetailsPage() {
   const [selectedNestingMachineIdRaw, setSelectedNestingMachineIdRaw] = useState<string | null>(null);
   const [cutlistEntryRoom, setCutlistEntryRoom] = useState("Project Cutlist");
   const [cutlistEntry, setCutlistEntry] = useState<Omit<CutlistRow, "id" | "room">>(createEmptyCutlistEntry());
+  // Cutlist › Import: the spreadsheet chosen (its file picker), and what was read from it — shown in a pop-up to
+  // add to (or replace) the cutlist. Kept while the pop-up closes, so it doesn't empty as it goes.
+  const cutlistImportInputRef = useRef<HTMLInputElement | null>(null);
+  const [cutlistImport, setCutlistImport] = useState<{
+    fileName: string;
+    rows: CutlistRow[];
+    rooms: string[];
+    unknownBoards: string[];
+    unknownPartTypes: string[];
+    grainSkipped: number;
+    error: string;
+    // From a cutlist template (Production › Downloads): its boards not yet in Board Settings, the rooms whose Drawer
+    // Type it changes (scope "" the project's; hasDrawers: the cutlist already has drawers there — only changed when
+    // replacing), and its notes.
+    newBoards: ProductionBoardRow[];
+    sheets: CutlistImportSheet[];
+    // The sheet (room) each row came from, by index.
+    rowSheets: string[];
+    notes: CutlistTemplateParsed["notes"] | null;
+    // A template's Global Job Selections that differ from the project's (the production form's parts to change, and
+    // what they are, for the pop-up) — its hardware's brand and drawer type only when replacing, while drawers follow
+    // the project's hardware.
+    settings: {
+      existing: Partial<ProductionFormState["existing"]>;
+      cabinetry: Partial<ProductionFormState["cabinetry"]>;
+      hardware: Partial<ProductionHardwareSettings>;
+      summary: string[];
+      hardwareHasDrawers: boolean;
+    } | null;
+    // Its Order Section: the hinges, other items and misc (for the hardware it's on).
+    order: CutlistTemplateParsed["order"] | null;
+  } | null>(null);
+  // The import's Rooms: the room picked for each one (by sheet key) — any of the project's rooms (a custom-named one
+  // too), or CUTLIST_IMPORT_NEW_ROOM with its name in cutlistImportNewRoomNames; none picked: its own name (or, for one
+  // that has to be matched, still to pick).
+  const [cutlistImportRoomChoices, setCutlistImportRoomChoices] = useState<Record<string, string>>({});
+  const [cutlistImportNewRoomNames, setCutlistImportNewRoomNames] = useState<Record<string, string>>({});
+  // The import's rooms switched off (by sheet key) — left out altogether.
+  const [cutlistImportSkippedSheets, setCutlistImportSkippedSheets] = useState<Record<string, boolean>>({});
+  // The import's parts switched on (all, to start with).
+  const [cutlistImportParts, setCutlistImportParts] = useState<Record<CutlistImportPart, boolean>>(CUTLIST_IMPORT_ALL_PARTS);
+  const [isCutlistImportOpen, setIsCutlistImportOpen] = useState(false);
+  // Board Settings: a board renamed (its colour, thickness, finish or sheet size changed) while cutlist rows still use
+  // its old name — asks whether to move them onto the new one (offerBoardChangeForCutlist). Kept while it closes.
+  const [boardChangePrompt, setBoardChangePrompt] = useState<{
+    oldValues: string[];
+    newKey: string;
+    oldLabel: string;
+    newLabel: string;
+    rowCount: number;
+  } | null>(null);
+  const [isBoardChangePromptOpen, setIsBoardChangePromptOpen] = useState(false);
+  const [isApplyingBoardChange, setIsApplyingBoardChange] = useState(false);
+  const boardChangePromptPanelRef = useRef<HTMLDivElement | null>(null);
+  const shouldRenderBoardChangePrompt = useGlassModalPopOrigin(isBoardChangePromptOpen, null, boardChangePromptPanelRef);
+  const [isApplyingCutlistImport, setIsApplyingCutlistImport] = useState(false);
+  const [cutlistImportOrigin, setCutlistImportOrigin] = useState<GlassModalOrigin>(null);
+  const cutlistImportPanelRef = useRef<HTMLDivElement | null>(null);
+  const cutlistImportOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderCutlistImportModal = useGlassModalPopOrigin(
+    isCutlistImportOpen,
+    cutlistImportOrigin,
+    cutlistImportPanelRef,
+    undefined,
+    cutlistImportOriginElRef,
+  );
   const [activeCutlistPartType, setActiveCutlistPartType] = useState("");
   const [cutlistDraftRows, setCutlistDraftRows] = useState<CutlistDraftRow[]>([]);
   const [cutlistDraftInitialized, setCutlistDraftInitialized] = useState(false);
@@ -8466,6 +8662,7 @@ export default function ProjectDetailsPage() {
       standardHandles: false,
       wrapOverHandles: false,
     },
+    roomHardware: {},
     boardTypes: [],
   });
   const [orderMiscDraftByCategory, setOrderMiscDraftByCategory] = useState<Record<string, Record<string, OrderMiscDraftRow>>>({});
@@ -10137,37 +10334,18 @@ export default function ProjectDetailsPage() {
     return options[0]?.name ?? "";
   };
 
-  const drawerHeightLetterOptions = useMemo(() => {
-    const selectedCategory = String(productionForm.hardware.hardwareCategory || defaultHardwareCategory()).trim();
-    const categoryRow = hardwareRows.find((row) => row.name.toLowerCase() === selectedCategory.toLowerCase());
-    const categoryDrawerOptions = categoryRow?.drawers ?? [];
-    const categoryDefaultDrawer = categoryDrawerOptions.find((row) => row.isDefault)?.name ?? categoryDrawerOptions[0]?.name ?? "";
-    const selectedDrawer = String(productionForm.hardware.newDrawerType || categoryDefaultDrawer).trim();
-    const categories = selectedCategory
-      ? hardwareRows.filter((row) => row.name.toLowerCase() === selectedCategory.toLowerCase())
-      : hardwareRows;
-    const out: string[] = [];
-    const seen = new Set<string>();
-    for (const cat of categories) {
-      for (const drawer of cat.drawers ?? []) {
-        const name = String(drawer?.name ?? "").trim();
-        if (selectedDrawer && name.toLowerCase() !== selectedDrawer.toLowerCase()) {
-          continue;
-        }
-        const letters = Array.isArray(drawer.heightLetters) ? drawer.heightLetters : [];
-        for (const letterItem of letters) {
-          const letter = String(letterItem ?? "").trim();
-          if (!letter) continue;
-          const key = letter.toLowerCase();
-          if (seen.has(key)) continue;
-          seen.add(key);
-          out.push(letter);
-        }
-        if (selectedDrawer) return out;
-      }
-    }
-    return out;
-  }, [hardwareRows, productionForm.hardware.hardwareCategory, productionForm.hardware.newDrawerType]);
+  // The project's hardware's drawer height letters (rows in a room with its own hardware: drawerHeightLetterOptionsForRoom).
+  const drawerHeightLetterOptions = useMemo(
+    () =>
+      drawerHeightLettersForDrawer(
+        hardwareRows,
+        String(productionForm.hardware.hardwareCategory || defaultHardwareCategory()).trim(),
+        productionForm.hardware.newDrawerType,
+      ),
+    // defaultHardwareCategory only reads hardwareRows.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [hardwareRows, productionForm.hardware.hardwareCategory, productionForm.hardware.newDrawerType],
+  );
 
   const defaultSheetSize = () => {
     const marked = sheetSizeOptions.find((row) => row.isDefault);
@@ -10209,6 +10387,12 @@ export default function ProjectDetailsPage() {
       .filter(Boolean);
     return parsed.length ? parsed : ["Cabinet", "Drawer", "Panel", "Front"];
   }, [companyDoc?.partTypes]);
+  // The company's room names (Company Settings › Sales / Production › Rooms) — the add-room pop-ups' dropdown, and the
+  // offline cutlist template's Room dropdown.
+  const companyRoomNameOptions = useMemo(() => {
+    const raw = Array.isArray(companyDoc?.roomNames) ? companyDoc.roomNames : [];
+    return Array.from(new Set(raw.map((v) => toStr(v)).filter(Boolean)));
+  }, [companyDoc?.roomNames]);
   const contractorOptions = useMemo(() => {
     const raw = Array.isArray(companyDoc?.contractors) ? companyDoc.contractors : [];
     return raw.map((v) => toStr(v)).filter(Boolean);
@@ -12208,42 +12392,76 @@ export default function ProjectDetailsPage() {
     setExpandedCabinetryRows((prev) => ({ ...prev, [rowId]: !prev[rowId] }));
   };
 
-  const selectedDrawerBreakdown = useMemo(() => {
-    const selectedCategory = String(productionForm.hardware.hardwareCategory || defaultHardwareCategory()).trim();
-    const categoryRow = hardwareRows.find((row) => row.name.toLowerCase() === selectedCategory.toLowerCase());
-    const drawerOptions = categoryRow?.drawers ?? [];
-    const categoryDefaultDrawer = drawerOptions.find((row) => row.isDefault)?.name ?? drawerOptions[0]?.name ?? "";
-    const selectedDrawer = String(productionForm.hardware.newDrawerType || categoryDefaultDrawer).trim();
-    const drawerRow =
-      drawerOptions.find((row) => row.name.toLowerCase() === selectedDrawer.toLowerCase()) ??
-      drawerOptions.find((row) => row.isDefault) ??
-      drawerOptions[0];
-    const letterValueMap: Record<string, string> = {};
-    for (const opt of drawerRow?.heightOptions ?? []) {
-      const token = String(opt.token || "").trim();
-      if (!token) continue;
-      const key = token.toLowerCase();
-      letterValueMap[key] = sanitizeDerivedValue(opt.value) || token;
-    }
-    return {
-      bottomsWidthMinus: drawerRow?.bottomsWidthMinus ?? null,
-      bottomsDepthMinus: drawerRow?.bottomsDepthMinus ?? null,
-      backsWidthMinus: drawerRow?.backsWidthMinus ?? null,
-      hardwareLengths: (drawerRow?.hardwareLengths ?? []).slice().sort((a, b) => a - b),
-      spaceRequirement: drawerRow?.spaceRequirement ?? null,
-      letterValueMap,
-    };
-  }, [
-    hardwareRows,
-    productionForm.hardware.hardwareCategory,
-    productionForm.hardware.newDrawerType,
-  ]);
-  const hasDrawerRowsInUse = useMemo(
-    () => cutlistRows.some((row) => isDrawerPartType(String(row.partType || ""))),
-    [cutlistRows, isDrawerPartType],
+  // The project's hardware's drawer maths (a row in a room with its own hardware: drawerBreakdownForRoom).
+  const selectedDrawerBreakdown = useMemo(
+    () =>
+      drawerBreakdownForDrawer(
+        hardwareRows,
+        String(productionForm.hardware.hardwareCategory || defaultHardwareCategory()).trim(),
+        productionForm.hardware.newDrawerType,
+      ),
+    // defaultHardwareCategory only reads hardwareRows.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [hardwareRows, productionForm.hardware.hardwareCategory, productionForm.hardware.newDrawerType],
   );
+  // ---- Hardware per room. A "scope" is "" for the project's hardware, or a room's name for that room's own.
+  const hardwareForRoom = (room: unknown): ProductionHardwareSettings => {
+    const key = String(room ?? "").trim();
+    return (key && productionForm.roomHardware[key]) || productionForm.hardware;
+  };
+  const hardwareForScope = (scope: string): ProductionHardwareSettings =>
+    (scope && productionForm.roomHardware[scope]) || productionForm.hardware;
+  const categoryOfHardware = (hardware: ProductionHardwareSettings) =>
+    String(hardware.hardwareCategory || defaultHardwareCategory()).trim();
+  const drawerBreakdownForRoom = (room: unknown): DrawerBreakdown => {
+    const key = String(room ?? "").trim();
+    if (!key || !productionForm.roomHardware[key]) return selectedDrawerBreakdown;
+    const hardware = productionForm.roomHardware[key];
+    return drawerBreakdownForDrawer(hardwareRows, categoryOfHardware(hardware), hardware.newDrawerType);
+  };
+  const drawerHeightLetterOptionsForRoom = (room: unknown): string[] => {
+    const key = String(room ?? "").trim();
+    if (!key || !productionForm.roomHardware[key]) return drawerHeightLetterOptions;
+    const hardware = productionForm.roomHardware[key];
+    return drawerHeightLettersForDrawer(hardwareRows, categoryOfHardware(hardware), hardware.newDrawerType);
+  };
+  // The drawer rows a scope's hardware is used for: the project's — rows in rooms without their own; a room's — its rows.
+  const drawerRowsForScope = (scope: string) =>
+    cutlistRows.filter((row) => {
+      if (!isDrawerPartType(String(row.partType || ""))) return false;
+      const room = String(row.room || "").trim();
+      return scope ? room === scope : !productionForm.roomHardware[room];
+    });
+  // A scope's hardware pop-up (Production > Hardware, with more than one room: "Global" or a room); null: none.
+  const [hardwareRoomPopup, setHardwareRoomPopup] = useState<string | null>(null);
+  const [isHardwareRoomPopupOpen, setIsHardwareRoomPopupOpen] = useState(false);
+  const [hardwareRoomPopupOrigin, setHardwareRoomPopupOrigin] = useState<GlassModalOrigin>(null);
+  const hardwareRoomPopupPanelRef = useRef<HTMLDivElement | null>(null);
+  const hardwareRoomPopupOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderHardwareRoomPopup = useGlassModalPopOrigin(
+    isHardwareRoomPopupOpen,
+    hardwareRoomPopupOrigin,
+    hardwareRoomPopupPanelRef,
+    undefined,
+    hardwareRoomPopupOriginElRef,
+  );
+  // A brand / drawer type change while drawers use it: staged here until its drawers' heights are checked against
+  // the new drawer type (the "Update Drawers" pop-up) — saved together, or not at all. `useProject`: a room going back
+  // to the project's hardware.
+  const [pendingHardwareChange, setPendingHardwareChange] = useState<{
+    scope: string;
+    next: ProductionHardwareSettings;
+    useProject: boolean;
+    heights: Record<string, string>;
+  } | null>(null);
+  const [isPendingHardwareChangeOpen, setIsPendingHardwareChangeOpen] = useState(false);
+  const [isSavingPendingHardwareChange, setIsSavingPendingHardwareChange] = useState(false);
+  const pendingHardwareChangePanelRef = useRef<HTMLDivElement | null>(null);
+  const shouldRenderPendingHardwareChange = useGlassModalPopOrigin(isPendingHardwareChangeOpen, null, pendingHardwareChangePanelRef);
 
   const buildDrawerDerivedPieces = (row: CutlistRow): DrawerDerivedPiece[] => {
+    // Its room's hardware (or the project's).
+    const drawerBreakdown = drawerBreakdownForRoom(row.room);
     const widthVal = toNum(row.width);
     const depthVal = toNum(row.depth);
     const rawHeight = String(row.height || "").trim();
@@ -12255,30 +12473,30 @@ export default function ProjectDetailsPage() {
     let depthBase: number | null = depthVal > 0 ? depthVal : null;
     if (depthBase != null) {
       let depthForHardware = depthBase;
-      if (selectedDrawerBreakdown.spaceRequirement != null) {
-        depthForHardware = Math.max(0, depthForHardware - selectedDrawerBreakdown.spaceRequirement);
+      if (drawerBreakdown.spaceRequirement != null) {
+        depthForHardware = Math.max(0, depthForHardware - drawerBreakdown.spaceRequirement);
       }
       let roundedHardwareDepth = depthForHardware;
-      if (selectedDrawerBreakdown.hardwareLengths.length) {
-        const candidates = selectedDrawerBreakdown.hardwareLengths.filter((v) => v <= depthForHardware);
+      if (drawerBreakdown.hardwareLengths.length) {
+        const candidates = drawerBreakdown.hardwareLengths.filter((v) => v <= depthForHardware);
         if (candidates.length) roundedHardwareDepth = Math.max(...candidates);
       }
       depthBase = roundedHardwareDepth;
     }
 
     const bottomW =
-      widthVal > 0 && selectedDrawerBreakdown.bottomsWidthMinus != null
-        ? widthVal - selectedDrawerBreakdown.bottomsWidthMinus
+      widthVal > 0 && drawerBreakdown.bottomsWidthMinus != null
+        ? widthVal - drawerBreakdown.bottomsWidthMinus
         : widthVal > 0
           ? widthVal
           : null;
     const bottomD =
-      depthBase != null && selectedDrawerBreakdown.bottomsDepthMinus != null
-        ? depthBase - selectedDrawerBreakdown.bottomsDepthMinus
+      depthBase != null && drawerBreakdown.bottomsDepthMinus != null
+        ? depthBase - drawerBreakdown.bottomsDepthMinus
         : depthBase;
     const backW =
-      widthVal > 0 && selectedDrawerBreakdown.backsWidthMinus != null
-        ? widthVal - selectedDrawerBreakdown.backsWidthMinus
+      widthVal > 0 && drawerBreakdown.backsWidthMinus != null
+        ? widthVal - drawerBreakdown.backsWidthMinus
         : widthVal > 0
           ? widthVal
           : null;
@@ -12304,7 +12522,7 @@ export default function ProjectDetailsPage() {
     for (const [token, count] of Object.entries(grouped)) {
       const tokenClean = sanitizeDerivedValue(token);
       const mappedFromSettings = sanitizeDerivedValue(
-        selectedDrawerBreakdown.letterValueMap[tokenClean.toLowerCase()],
+        drawerBreakdown.letterValueMap[tokenClean.toLowerCase()],
       );
       const mappedHeight = mappedFromSettings || tokenClean;
       const backHNum = toNum(mappedFromSettings || tokenClean);
@@ -12351,7 +12569,7 @@ export default function ProjectDetailsPage() {
     const resolvedBetweenGap =
       mode === "door"
         ? projectGapAllowancesDraft.tallVerticalGapDoorsPanels
-        : productionForm.hardware.wrapOverHandles
+        : hardwareForRoom(row.room).wrapOverHandles
           ? projectGapAllowancesDraft.baseHorizontalGapWrapOverHandles
           : projectGapAllowancesDraft.baseHorizontalGapNormalHandles;
 
@@ -14851,6 +15069,8 @@ export default function ProjectDetailsPage() {
   useEffect(() => {
     if (productionNav !== "cutlist") {
       setIsProductionNotesPanelOpen(false);
+      setIsContractorsPanelOpen(false);
+      setContractorsMenuRect(null);
     }
   }, [productionNav]);
 
@@ -16593,6 +16813,23 @@ export default function ProjectDetailsPage() {
       const resolvedHinge = toStr(raw.hingeType) || resolvedCategory;
       const standardHandles = Boolean(raw.standardHandles ?? raw.standardHandle ?? false);
       const wrapOverHandles = Boolean(raw.wrapOverHandles ?? raw.wrapOverHandle ?? false);
+      // Rooms with their own hardware (Production > Hardware > a room).
+      const roomHardware: Record<string, ProductionHardwareSettings> = {};
+      if (raw.roomHardware && typeof raw.roomHardware === "object" && !Array.isArray(raw.roomHardware)) {
+        for (const [roomName, value] of Object.entries(raw.roomHardware as Record<string, unknown>)) {
+          const room = String(roomName || "").trim();
+          if (!room || !value || typeof value !== "object") continue;
+          const item = value as Record<string, unknown>;
+          const category = toStr(item.hardwareCategory) || resolvedCategory;
+          roomHardware[room] = {
+            hardwareCategory: category,
+            newDrawerType: toStr(item.newDrawerType) || defaultDrawerForCategory(category),
+            hingeType: toStr(item.hingeType) || category,
+            standardHandles: Boolean(item.standardHandles),
+            wrapOverHandles: Boolean(item.wrapOverHandles),
+          };
+        }
+      }
 
     setProductionForm({
       existing: {
@@ -16616,6 +16853,7 @@ export default function ProjectDetailsPage() {
           standardHandles,
           wrapOverHandles,
         },
+      roomHardware,
       boardTypes: boardRows,
     });
 
@@ -18107,8 +18345,10 @@ export default function ProjectDetailsPage() {
   };
 
   const closeProductionNotesPanel = async () => {
-    if (isEditingProductionNotes) {
-      await commitProductionNotesDetails();
+    // The drawer's editor is always live (not only after a click into it), so whatever's in it is saved.
+    if (project && !productionReadOnly) {
+      const nextNotes = String(productionNotesEditorDraftRef.current ?? "");
+      if (nextNotes !== String(project.productionNotes ?? "")) await saveGeneralDetailsPatch({ productionNotes: nextNotes });
     }
     setIsEditingProductionNotes(false);
     setIsProductionNotesPanelOpen(false);
@@ -18129,21 +18369,50 @@ export default function ProjectDetailsPage() {
     setContractorNotesEditorInitialValue(nextValue);
   };
 
-  const openContractorsPanel = () => {
-    const nextTab = activeContractorTab && contractorTabOptions.includes(activeContractorTab)
-      ? activeContractorTab
-      : contractorTabOptions[0] || "";
-    setActiveContractorTab(nextTab);
-    loadContractorTabIntoEditor(nextTab);
+  // One contractor's notes in the drawer (picked from the sidebar's menu): the one open before is saved first, and
+  // the Notes drawer makes way.
+  const openContractorNotes = async (name: string) => {
+    setContractorsMenuRect(null);
+    if (isContractorsPanelOpen && name === activeContractorTab) return;
+    if (isContractorsPanelOpen) await commitContractorNoteForTab(activeContractorTab, contractorNotesEditorDraftRef.current);
+    if (isProductionNotesPanelOpen) void closeProductionNotesPanel();
+    setActiveContractorTab(name);
+    loadContractorTabIntoEditor(name);
     setIsContractorsPanelOpen(true);
   };
 
-  const selectContractorTab = async (name: string) => {
-    if (name === activeContractorTab) return;
-    await commitContractorNoteForTab(activeContractorTab, contractorNotesEditorDraftRef.current);
-    setActiveContractorTab(name);
-    loadContractorTabIntoEditor(name);
+  const toggleContractorsMenu = () => {
+    if (contractorsMenuRect) {
+      setContractorsMenuRect(null);
+      return;
+    }
+    const button = contractorsMenuButtonRef.current;
+    if (!button) return;
+    const r = button.getBoundingClientRect();
+    const width = Math.max(r.width, 220);
+    setContractorsMenuRect({ left: Math.max(8, Math.min(r.left, window.innerWidth - 8 - width)), width });
   };
+
+  useEffect(() => {
+    if (!contractorsMenuRect) return;
+    const onDocDown = (e: PointerEvent) => {
+      const target = e.target as Node | null;
+      if (!target) return;
+      if (!contractorsMenuButtonRef.current?.contains(target) && !contractorsMenuRef.current?.contains(target)) {
+        setContractorsMenuRect(null);
+        swallowNextClick();
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setContractorsMenuRect(null);
+    };
+    document.addEventListener("pointerdown", onDocDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onDocDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [contractorsMenuRect]);
 
   const closeContractorsPanel = async () => {
     await commitContractorNoteForTab(activeContractorTab, contractorNotesEditorDraftRef.current);
@@ -18171,7 +18440,7 @@ export default function ProjectDetailsPage() {
   };
 
   useEffect(() => {
-    if (!isEditingClientDetails && !isEditingNotes && !isEditingProductionNotes && !isEditingDesignNotes) return;
+    if (!isEditingClientDetails && !isEditingNotes && !isEditingProductionNotes && !isEditingDesignNotes && !isContractorsPanelOpen) return;
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target as Node | null;
       if (!target) return;
@@ -18196,7 +18465,15 @@ export default function ProjectDetailsPage() {
         const root = productionNotesContainerRef.current;
         if (root && !root.contains(target)) {
           void commitProductionNotesDetails();
-          setIsEditingProductionNotes(false);
+          // The cutlist's Notes drawer stays open (and editable) while the cutlist's worked on beside it.
+          if (!isProductionNotesPanelOpen) setIsEditingProductionNotes(false);
+        }
+      }
+
+      if (isContractorsPanelOpen) {
+        const root = contractorsDrawerRef.current;
+        if (root && !root.contains(target) && !contractorsMenuRef.current?.contains(target)) {
+          void commitContractorNoteForTab(activeContractorTab, contractorNotesEditorDraftRef.current);
         }
       }
 
@@ -18216,6 +18493,10 @@ export default function ProjectDetailsPage() {
     isEditingNotes,
     isEditingProductionNotes,
     isEditingDesignNotes,
+    isProductionNotesPanelOpen,
+    isContractorsPanelOpen,
+    activeContractorTab,
+    commitContractorNoteForTab,
     commitClientDetails,
     commitNotesDetails,
     commitProductionNotesDetails,
@@ -18700,10 +18981,25 @@ export default function ProjectDetailsPage() {
     });
   };
 
-  const persistProductionForm = async (next: ProductionFormState) => {
-    if (!project) return false;
-    const currentSettings = (project.projectSettings ?? {}) as Record<string, unknown>;
-    const boardTypes = next.boardTypes.map((row) => ({
+  // A production form's fields as projectSettings holds them.
+  const productionSettingsFields = (next: ProductionFormState): Record<string, unknown> => ({
+    carcassThickness: next.existing.carcassThickness,
+    panelThickness: next.existing.panelThickness,
+    frontsThickness: next.existing.frontsThickness,
+    baseCabHeight: next.cabinetry.baseCabHeight,
+    footDistanceBack: next.cabinetry.footDistanceBack,
+    tallCabHeight: next.cabinetry.tallCabHeight,
+    footHeight: next.cabinetry.footHeight,
+    hobCentre: next.cabinetry.hobCentre,
+    hobSide: next.cabinetry.hobSide,
+    topScribers: Boolean(next.cabinetry.topScribers),
+    hardwareCategory: next.hardware.hardwareCategory,
+    newDrawerType: next.hardware.newDrawerType,
+    hingeType: next.hardware.hingeType,
+    standardHandles: Boolean(next.hardware.standardHandles),
+    wrapOverHandles: Boolean(next.hardware.wrapOverHandles),
+    roomHardware: next.roomHardware,
+    boardTypes: next.boardTypes.map((row) => ({
       colour: row.colour,
       thickness: row.thickness,
       finish: row.finish,
@@ -18713,56 +19009,54 @@ export default function ProjectDetailsPage() {
       sheetSize: row.sheetSize,
       sheets: row.sheets,
       edgetape: row.edgetape,
-    }));
-    const nextSettings: Record<string, unknown> = {
-      ...currentSettings,
-      carcassThickness: next.existing.carcassThickness,
-      panelThickness: next.existing.panelThickness,
-      frontsThickness: next.existing.frontsThickness,
-      baseCabHeight: next.cabinetry.baseCabHeight,
-      footDistanceBack: next.cabinetry.footDistanceBack,
-        tallCabHeight: next.cabinetry.tallCabHeight,
-        footHeight: next.cabinetry.footHeight,
-        hobCentre: next.cabinetry.hobCentre,
-        hobSide: next.cabinetry.hobSide,
-        topScribers: Boolean(next.cabinetry.topScribers),
-        hardwareCategory: next.hardware.hardwareCategory,
-        newDrawerType: next.hardware.newDrawerType,
-        hingeType: next.hardware.hingeType,
-        standardHandles: Boolean(next.hardware.standardHandles),
-        wrapOverHandles: Boolean(next.hardware.wrapOverHandles),
-        boardTypes,
-      };
-
+    })),
+  });
+  // Each settings group and each board row logs as its OWN changelog entry — even when several change in the same
+  // save (e.g. adding/removing multiple boards at once), so the history reads as individual events rather than one
+  // bundled "N changes" line.
+  const logProductionFormChanges = (prev: ProductionFormState, next: ProductionFormState) => {
+    const existingDesc = describeFieldChanges(prev.existing, next.existing, PRODUCTION_EXISTING_FIELD_LABELS);
+    if (existingDesc) logProjectChange(existingDesc);
+    const cabinetryDesc = describeFieldChanges(prev.cabinetry, next.cabinetry, PRODUCTION_CABINETRY_FIELD_LABELS);
+    if (cabinetryDesc) logProjectChange(cabinetryDesc);
+    const hardwareDesc = describeFieldChanges(prev.hardware, next.hardware, PRODUCTION_HARDWARE_FIELD_LABELS);
+    if (hardwareDesc) logProjectChange(hardwareDesc);
+    for (const room of new Set([...Object.keys(prev.roomHardware), ...Object.keys(next.roomHardware)])) {
+      const before = prev.roomHardware[room];
+      const after = next.roomHardware[room];
+      if (!before && after) logProjectChange(`Hardware (${room}) — its own hardware`);
+      else if (before && !after) logProjectChange(`Hardware (${room}) — back to Global`);
+      else if (before && after) {
+        const roomDesc = describeFieldChanges(before, after, PRODUCTION_HARDWARE_FIELD_LABELS);
+        if (roomDesc) logProjectChange(`Hardware (${room}) — ${roomDesc}`);
+      }
+    }
+    const prevBoardsById = new Map(prev.boardTypes.map((row) => [row.id, row]));
+    const nextBoardsById = new Map(next.boardTypes.map((row) => [row.id, row]));
+    for (const [boardId, nextRow] of nextBoardsById) {
+      const prevRow = prevBoardsById.get(boardId);
+      if (!prevRow) {
+        logProjectChange(`Board added: ${nextRow.colour || "Untitled"}`);
+        continue;
+      }
+      const rowDesc = describeFieldChanges(prevRow, nextRow, PRODUCTION_BOARD_ROW_FIELD_LABELS);
+      if (rowDesc) logProjectChange(`Board (${nextRow.colour || prevRow.colour || "Untitled"}) — ${rowDesc}`);
+    }
+    for (const [boardId, prevRow] of prevBoardsById) {
+      if (!nextBoardsById.has(boardId)) logProjectChange(`Board removed: ${prevRow.colour || "Untitled"}`);
+    }
+  };
+  const persistProductionForm = async (next: ProductionFormState) => {
+    if (!project) return false;
+    const currentSettings = (project.projectSettings ?? {}) as Record<string, unknown>;
+    const nextSettings: Record<string, unknown> = { ...currentSettings, ...productionSettingsFields(next) };
     const ok = await updateProjectPatch(project, {
       projectSettings: nextSettings,
       projectSettingsJson: JSON.stringify(nextSettings),
     });
     if (ok) {
       setProject({ ...project, projectSettings: nextSettings });
-      // Each settings group and each board row logs as its OWN changelog entry — even when
-      // several change in the same save (e.g. adding/removing multiple boards at once), so the
-      // history reads as individual events rather than one bundled "N changes" line.
-      const existingDesc = describeFieldChanges(productionForm.existing, next.existing, PRODUCTION_EXISTING_FIELD_LABELS);
-      if (existingDesc) logProjectChange(existingDesc);
-      const cabinetryDesc = describeFieldChanges(productionForm.cabinetry, next.cabinetry, PRODUCTION_CABINETRY_FIELD_LABELS);
-      if (cabinetryDesc) logProjectChange(cabinetryDesc);
-      const hardwareDesc = describeFieldChanges(productionForm.hardware, next.hardware, PRODUCTION_HARDWARE_FIELD_LABELS);
-      if (hardwareDesc) logProjectChange(hardwareDesc);
-      const prevBoardsById = new Map(productionForm.boardTypes.map((row) => [row.id, row]));
-      const nextBoardsById = new Map(next.boardTypes.map((row) => [row.id, row]));
-      for (const [boardId, nextRow] of nextBoardsById) {
-        const prevRow = prevBoardsById.get(boardId);
-        if (!prevRow) {
-          logProjectChange(`Board added: ${nextRow.colour || "Untitled"}`);
-          continue;
-        }
-        const rowDesc = describeFieldChanges(prevRow, nextRow, PRODUCTION_BOARD_ROW_FIELD_LABELS);
-        if (rowDesc) logProjectChange(`Board (${nextRow.colour || prevRow.colour || "Untitled"}) — ${rowDesc}`);
-      }
-      for (const [boardId, prevRow] of prevBoardsById) {
-        if (!nextBoardsById.has(boardId)) logProjectChange(`Board removed: ${prevRow.colour || "Untitled"}`);
-      }
+      logProductionFormChanges(productionForm, next);
     }
     return ok;
   };
@@ -19175,51 +19469,105 @@ export default function ProjectDetailsPage() {
     await persistProductionForm(productionForm);
   };
 
-  const onHardwareCategoryChange = async (category: string) => {
-    if (hasDrawerRowsInUse) return;
-    const drawer = defaultDrawerForCategory(category);
-      const next = {
-        ...productionForm,
-        hardware: {
-          ...productionForm.hardware,
-          hardwareCategory: category,
-          newDrawerType: drawer,
-          hingeType: category,
-        },
-      };
+  // Production > Hardware. `scope`: "" the project's hardware, or a room's name for that room's own.
+  // Saves it — for a room, null takes its own away (it uses the project's again).
+  const saveHardwareForScope = async (scope: string, nextHardware: ProductionHardwareSettings | null) => {
+    const roomHardware = { ...productionForm.roomHardware };
+    if (scope) {
+      if (nextHardware) roomHardware[scope] = nextHardware;
+      else delete roomHardware[scope];
+    }
+    const next = scope
+      ? { ...productionForm, roomHardware }
+      : { ...productionForm, hardware: nextHardware ?? productionForm.hardware };
     setProductionForm(next);
-    await persistProductionForm(next);
+    return persistProductionForm(next);
   };
-
-  const onChangeDrawerType = async (value: string) => {
-    if (hasDrawerRowsInUse) return;
-    const next = {
-      ...productionForm,
-      hardware: { ...productionForm.hardware, newDrawerType: value },
-    };
-    setProductionForm(next);
-    await persistProductionForm(next);
+  // A change that alters its drawers' maths (brand or drawer type) while drawers use it first opens "Update Drawers"
+  // (pendingHardwareChange) — its drawers, by room: their heights are checked against the new drawer type, and saved
+  // with it — or neither is.
+  const changeHardwareForScope = (scope: string, nextHardware: ProductionHardwareSettings | null) => {
+    if (productionReadOnly) return;
+    const before = hardwareForScope(scope);
+    const after = nextHardware ?? productionForm.hardware;
+    const changesDrawerMaths =
+      categoryOfHardware(before) !== categoryOfHardware(after) ||
+      String(before.newDrawerType || "").trim() !== String(after.newDrawerType || "").trim();
+    const drawers = drawerRowsForScope(scope).filter((row) => isClassicDrawerRowLike(row));
+    if (changesDrawerMaths && drawers.length) {
+      setPendingHardwareChange({
+        scope,
+        next: after,
+        useProject: !nextHardware,
+        heights: Object.fromEntries(drawers.map((row) => [row.id, String(row.height || "")])),
+      });
+      setIsPendingHardwareChangeOpen(true);
+      return;
+    }
+    void saveHardwareForScope(scope, nextHardware);
   };
-
-  const onToggleHardwareHandle = async (
-    key: keyof Pick<ProductionFormState["hardware"], "standardHandles" | "wrapOverHandles">,
-  ) => {
-    const nextChecked = !productionForm.hardware[key];
-    const resetHandles = {
-      standardHandles: false,
-      wrapOverHandles: false,
-    };
-    const next = {
-      ...productionForm,
-      hardware: {
-        ...productionForm.hardware,
-        ...resetHandles,
-        [key]: nextChecked,
-      },
-    };
-    setProductionForm(next);
-    await persistProductionForm(next);
+  const onHardwareCategoryChange = (scope: string, category: string) =>
+    changeHardwareForScope(scope, {
+      ...hardwareForScope(scope),
+      hardwareCategory: category,
+      newDrawerType: defaultDrawerForCategory(category),
+      hingeType: category,
+    });
+  const onChangeDrawerType = (scope: string, value: string) =>
+    changeHardwareForScope(scope, { ...hardwareForScope(scope), newDrawerType: value });
+  // Front Fixed / Profile: one or the other (or neither).
+  const onToggleHardwareHandle = (scope: string, key: "standardHandles" | "wrapOverHandles") => {
+    const hardware = hardwareForScope(scope);
+    changeHardwareForScope(scope, { ...hardware, standardHandles: false, wrapOverHandles: false, [key]: !hardware[key] });
   };
+  // A room: its own hardware (starting as a copy of the project's), or the project's.
+  const setRoomHasOwnHardware = (room: string, own: boolean) => {
+    if (own) {
+      if (!productionForm.roomHardware[room]) void saveHardwareForScope(room, { ...productionForm.hardware });
+    } else if (productionForm.roomHardware[room]) {
+      changeHardwareForScope(room, null);
+    }
+  };
+  const openHardwareRoomPopup = (room: string, e: ReactMouseEvent<HTMLElement>) => {
+    hardwareRoomPopupOriginElRef.current = e.currentTarget;
+    setHardwareRoomPopupOrigin(captureGlassModalOrigin(e));
+    setHardwareRoomPopup(room);
+    setIsHardwareRoomPopupOpen(true);
+  };
+  // "Update Drawers": a drawer's heights the new drawer type doesn't offer (plain numbers are fine as they are).
+  const drawerHeightsNotIn = (height: string, letters: string[]) =>
+    parseDrawerHeightTokens(height).filter(
+      (token) => !/^\d+(?:\.\d+)?$/.test(token) && !letters.some((letter) => letter.toLowerCase() === token.toLowerCase()),
+    );
+  const applyPendingHardwareChange = async () => {
+    const pending = pendingHardwareChange;
+    if (!pending || isSavingPendingHardwareChange) return;
+    setIsSavingPendingHardwareChange(true);
+    const ok = await saveHardwareForScope(pending.scope, pending.useProject ? null : pending.next);
+    if (!ok) {
+      setIsSavingPendingHardwareChange(false);
+      setLockMessage("Could not save the hardware.");
+      return;
+    }
+    let changed = 0;
+    const nextRows = cutlistRows.map((row) => {
+      const height = pending.heights[row.id];
+      if (height === undefined || height === String(row.height || "")) return row;
+      changed += 1;
+      // A drawer row's quantity is how many heights it lists.
+      return { ...row, height, quantity: String(Math.max(1, parseDrawerHeightTokens(height).length)) };
+    });
+    if (changed) {
+      setCutlistRows(nextRows);
+      await persistCutlistRows(nextRows);
+      const drawerLabel = String(pending.next.newDrawerType || "").trim() || categoryOfHardware(pending.next);
+      logCutlistActivity(`${changed} ${changed === 1 ? "drawer" : "drawers"} updated for ${drawerLabel}`);
+    }
+    setIsSavingPendingHardwareChange(false);
+    setIsPendingHardwareChangeOpen(false);
+  };
+  // The rooms that can have their own hardware (the Hardware container lists them when there's more than one).
+  const hardwareRoomNames = cutlistAddedRoomTabs.map((tab) => tab.filter);
 
   const onAddBoardRow = async () => {
     const next = {
@@ -19271,6 +19619,7 @@ export default function ProjectDetailsPage() {
     };
     setProductionForm(next);
     const ok = await persistProductionForm(next);
+    if (ok) offerBoardChangeForCutlist(id, prevRows, next.boardTypes);
     if (ok && bumpColour) {
       const oldColour = String(previousColourRaw ?? prevRows.find((row) => row.id === id)?.colour ?? "").trim();
       const newColour = String(patch.colour ?? "").trim();
@@ -19286,6 +19635,58 @@ export default function ProjectDetailsPage() {
         await syncBoardEdgingMemorySingleChange(rowColour, oldEdging, newEdging);
       }
     }
+  };
+
+  // After a Board Settings row is saved: if that changed its name (colour, thickness, finish or sheet size) and cutlist
+  // rows are still on the old one, ask whether to move them onto the new one. Not when another board row still has
+  // the old name (they aren't left without a board), or for rows that only name the board without its sheet size
+  // while that still matches a board.
+  const offerBoardChangeForCutlist = (rowId: string, prevBoards: ProductionBoardRow[], nextBoards: ProductionBoardRow[]) => {
+    const before = prevBoards.find((row) => row.id === rowId);
+    const after = nextBoards.find((row) => row.id === rowId);
+    if (!before || !after) return;
+    const oldKey = boardKeyFromRow(before);
+    const newKey = boardKeyFromRow(after);
+    if (!oldKey || !newKey || oldKey === newKey) return;
+    if (nextBoards.some((row) => row.id !== rowId && boardKeyFromRow(row) === oldKey)) return;
+    const oldLabel = boardBaseLabelFromRow(before);
+    const oldValues = [oldKey];
+    if (oldLabel && oldLabel !== oldKey && !nextBoards.some((row) => boardBaseLabelFromRow(row) === oldLabel)) oldValues.push(oldLabel);
+    const isOld = (value: unknown) => oldValues.includes(String(value ?? "").trim());
+    const rowCount = cutlistRows.filter(
+      (row) => isOld(row.board) || (Array.isArray(row.doorFrontBoards) && row.doorFrontBoards.some(isOld)),
+    ).length;
+    if (!rowCount) return;
+    setBoardChangePrompt({ oldValues, newKey, oldLabel: oldLabel || oldKey, newLabel: boardBaseLabelFromRow(after) || newKey, rowCount });
+    setIsBoardChangePromptOpen(true);
+  };
+  const applyBoardChangeToCutlist = async () => {
+    const prompt = boardChangePrompt;
+    if (!prompt || isApplyingBoardChange) return;
+    const isOld = (value: unknown) => prompt.oldValues.includes(String(value ?? "").trim());
+    let changed = 0;
+    const next = cutlistRows.map((row) => {
+      const boardIsOld = isOld(row.board);
+      const fronts = Array.isArray(row.doorFrontBoards) ? row.doorFrontBoards : null;
+      const frontsAreOld = Boolean(fronts?.some(isOld));
+      if (!boardIsOld && !frontsAreOld) return row;
+      changed += 1;
+      return {
+        ...row,
+        board: boardIsOld ? prompt.newKey : row.board,
+        ...(fronts && frontsAreOld ? { doorFrontBoards: fronts.map((value) => (isOld(value) ? prompt.newKey : value)) } : {}),
+      };
+    });
+    setIsApplyingBoardChange(true);
+    setCutlistRows(next);
+    const ok = await persistCutlistRows(next);
+    setIsApplyingBoardChange(false);
+    if (!ok) {
+      setLockMessage("Could not update the cutlist's boards.");
+      return;
+    }
+    logCutlistActivity(`${changed} ${changed === 1 ? "row" : "rows"} moved from ${prompt.oldLabel} to ${prompt.newLabel}`);
+    setIsBoardChangePromptOpen(false);
   };
 
   // Shared by every Colour-field commit site (mobile/desktop x blur/suggestion-click): also
@@ -19392,14 +19793,15 @@ export default function ProjectDetailsPage() {
       if (!width) errors.push({ field: "width", message: `${rowLabel}: Width is required for drawer parts.` });
       if (!depth) errors.push({ field: "depth", message: `${rowLabel}: Depth is required for drawer parts.` });
       if (!drawerTokens.length) errors.push({ field: "height", message: `${rowLabel}: Height selection is required for drawer parts.` });
+      const rowDrawerBreakdown = drawerBreakdownForRoom(row.room);
       const compareDepth = depth == null
         ? null
-        : Math.max(0, Number(depth) - Number(selectedDrawerBreakdown.spaceRequirement ?? 0));
+        : Math.max(0, Number(depth) - Number(rowDrawerBreakdown.spaceRequirement ?? 0));
       const hasValidHardwareDepth =
         compareDepth != null &&
         (
-          !selectedDrawerBreakdown.hardwareLengths.length ||
-          selectedDrawerBreakdown.hardwareLengths.some((opt) => Number(opt) <= compareDepth)
+          !rowDrawerBreakdown.hardwareLengths.length ||
+          rowDrawerBreakdown.hardwareLengths.some((opt) => Number(opt) <= compareDepth)
         );
       if (compareDepth != null && !hasValidHardwareDepth) {
         errors.push({ field: "depth", message: `${rowLabel}: Depth is too small for selected drawer hardware.` });
@@ -20011,6 +20413,615 @@ export default function ProjectDetailsPage() {
     await persistCutlistRows(next);
   };
 
+  // Cutlist › Import: the button opens the file picker; the file chosen is read into cutlistImport.
+  const openCutlistImport = (e: ReactMouseEvent<HTMLElement>) => {
+    if (productionReadOnly) return;
+    cutlistImportOriginElRef.current = e.currentTarget;
+    setCutlistImportOrigin(captureGlassModalOrigin(e));
+    cutlistImportInputRef.current?.click();
+  };
+  // A drawer type as the template names it ("Blum · Legrabox"): a hardware's chosen drawer, or its default.
+  const templateDrawerLabelFor = (hardware: ProductionHardwareSettings) => {
+    const category = categoryOfHardware(hardware);
+    const categoryRow = hardwareRows.find((row) => row.name.toLowerCase() === category.toLowerCase());
+    const drawer =
+      String(hardware.newDrawerType || "").trim() ||
+      categoryRow?.drawers.find((row) => row.isDefault)?.name ||
+      categoryRow?.drawers[0]?.name ||
+      "";
+    return cutlistTemplateDrawerLabel(categoryRow?.name ?? category, drawer);
+  };
+  const readCutlistImportFile = async (file: File) => {
+    const fail = (error: string) => {
+      setCutlistImport({
+        fileName: file.name,
+        rows: [],
+        rooms: [],
+        unknownBoards: [],
+        unknownPartTypes: [],
+        grainSkipped: 0,
+        error,
+        newBoards: [],
+        sheets: [],
+        rowSheets: [],
+        notes: null,
+        settings: null,
+        order: null,
+      });
+      setIsCutlistImportOpen(true);
+    };
+    let parsed: { rows: CutlistImportSheetRow[]; foundHeadings: boolean } = { rows: [], foundHeadings: false };
+    // A cutlist template (Production › Downloads): its rooms' sheets, boards and notes.
+    let template: CutlistTemplateParsed | null = null;
+    try {
+      const { Workbook } = await import("exceljs");
+      const workbook = new Workbook();
+      await workbook.xlsx.load(await file.arrayBuffer());
+      template = parseCutlistTemplateWorkbook(workbook);
+      // Otherwise: the first sheet with the cutlist's headings (a workbook can also hold its dropdowns' lists), or
+      // the first with any parts.
+      for (const sheet of template ? [] : workbook.worksheets) {
+        const grid: string[][] = [[]];
+        const lastRow = Math.min(sheet.rowCount, 5000);
+        const lastColumn = Math.min(Math.max(sheet.columnCount, 21), 40);
+        for (let r = 1; r <= lastRow; r += 1) {
+          const row = sheet.getRow(r);
+          const cells = [""];
+          for (let c = 1; c <= lastColumn; c += 1) cells.push(spreadsheetCellText(row.getCell(c).value));
+          grid.push(cells);
+        }
+        const result = parseCutlistImportGrid(grid);
+        if (result.foundHeadings) {
+          parsed = result;
+          break;
+        }
+        if (!parsed.rows.length && result.rows.length) parsed = result;
+      }
+    } catch {
+      fail("This file couldn't be read. Save it as an Excel workbook (.xlsx) and try again.");
+      return;
+    }
+    // Matched to what's already here regardless of capitals: rooms, Part Types (Company Settings) and boards (Board
+    // Settings, by name). Anything else is kept as written.
+    const sameText = (a: string, b: string) => a.trim().toLowerCase().replace(/\s+/g, " ") === b.trim().toLowerCase().replace(/\s+/g, " ");
+    const roomOf = (text: string) => {
+      if (!text.trim()) return "Project Cutlist";
+      return cutlistRoomTabs.find((tab) => sameText(tab.filter, text))?.filter ?? text.trim();
+    };
+    // A template's sheets are its rooms: its Room at the top, or else its sheet's name (a room's name as Excel allows
+    // it) — matched to the project's rooms.
+    const roomNamed = (name: string) =>
+      cutlistRoomTabs.find((tab) => sameText(tab.filter, name) || sameText(cutlistTemplateSheetBase(tab.filter), name))?.filter ??
+      name.trim();
+    const roomOfSheet = (room: CutlistTemplateParsed["rooms"][number]) => roomNamed(room.roomName);
+    // Its boards: matched to Board Settings' (colour, thickness, finish and sheet size) — the rest are added to it.
+    const newBoards: ProductionBoardRow[] = [];
+    const templateBoardKeyByLabel = new Map<string, string>();
+    const newBoardGrain: Record<string, boolean> = {};
+    (template?.boards ?? []).forEach((board, index) => {
+      const label = cutlistTemplateBoardLabel(board).toLowerCase().replace(/\s+/g, " ");
+      // No sheet size: the project's board of that name, if it has one.
+      const existingByLabel = cutlistBoardOptions.find((key) => sameText(boardMetaByKey[key]?.label ?? "", label));
+      if (!board.sheetSize && existingByLabel) {
+        if (!templateBoardKeyByLabel.has(label)) templateBoardKeyByLabel.set(label, existingByLabel);
+        return;
+      }
+      const blank = newBoardRow();
+      const row: ProductionBoardRow = {
+        ...blank,
+        id: `${Date.now()}_${index}_${Math.random().toString(36).slice(2, 7)}`,
+        colour: board.colour,
+        thickness: board.thickness,
+        finish: board.finish,
+        sheetSize: board.sheetSize || blank.sheetSize,
+        edging: board.edging || "Matching",
+        grain: board.grain,
+        lacquer: board.lacquer,
+        edgetape: board.edgeTape,
+        sheets: board.sheets,
+      };
+      const key = boardKeyFromRow(row);
+      if (!key) return;
+      if (!templateBoardKeyByLabel.has(label)) templateBoardKeyByLabel.set(label, key);
+      if (!boardMetaByKey[key] && !newBoards.some((other) => boardKeyFromRow(other) === key)) {
+        newBoards.push(row);
+        newBoardGrain[key] = board.grain;
+      }
+    });
+    if (template) {
+      parsed = {
+        foundHeadings: true,
+        rows: template.rooms.flatMap((room) =>
+          room.rows.map((row) => {
+            const clash = (text: string, edge: "L" | "S") => {
+              const n = text.toUpperCase().match(/[12]/)?.[0];
+              return n ? `${n}${edge}` : "";
+            };
+            return {
+              sheetRow: row.sheetRow,
+              room: roomOfSheet(room),
+              partType: row.partType,
+              board: row.board,
+              name: row.name,
+              height: row.height,
+              width: row.width,
+              depth: row.depth,
+              quantity: row.quantity,
+              clashLeft: clash(row.clashLong, "L"),
+              clashRight: clash(row.clashShort, "S"),
+              information: row.information,
+              grain: row.grain,
+              cabinetryKind: row.cabinet,
+              fixedShelf: row.fixedShelves,
+              fixedShelfDrilling: row.fixedDrilling,
+              adjustableShelf: row.adjustableShelves,
+              adjustableShelfDrilling: row.adjustableDrilling,
+              cabinetryClashBottom: row.clashBottom,
+              cabinetryFullTop: row.fullTop,
+            };
+          }),
+        ),
+      };
+    }
+    // Its room sheets (with parts): the room each goes to, its Drawer Type (for those with drawers), and whether it has to
+    // be matched — a name that could be several of the project's rooms (the same name before its colon: "Misc" with
+    // "Misc: Desk" and "Misc: TV Cabinet" here), or one more than one sheet has. One room of that name: picked for it.
+    const baseOfRoom = (name: string) => name.split(":")[0].trim().toLowerCase().replace(/\s+/g, " ");
+    const projectRoomNames = cutlistAddedRoomTabs.map((tab) => tab.filter);
+    const templateRooms = (template?.rooms ?? []).filter((room) => room.rows.length);
+    const sheetCountByName = new Map<string, number>();
+    templateRooms.forEach((room) => {
+      const key = roomOfSheet(room).toLowerCase();
+      sheetCountByName.set(key, (sheetCountByName.get(key) ?? 0) + 1);
+    });
+    const roomChoices: Record<string, string> = {};
+    // A drawer type as a template names it ("Blum · Legrabox"), as the company's hardware has it.
+    const templateDrawerType = (label: string): CutlistImportSheet["drawerType"] => {
+      for (const hardware of label ? hardwareRows : []) {
+        const drawer = hardware.drawers.find((item) => sameText(cutlistTemplateDrawerLabel(hardware.name, item.name), label));
+        if (drawer) return { label: cutlistTemplateDrawerLabel(hardware.name, drawer.name), hardwareCategory: hardware.name, newDrawerType: drawer.name };
+      }
+      return null;
+    };
+    // A room as the import lists it: matched to the project's (one of exactly its name, or its only one of that name,
+    // picked for it), its section's own drawer type.
+    const importRoom = (key: string, sheetLabel: string, name: string, parts: number, drawerType: string, shared: boolean): CutlistImportSheet => {
+      const exact = name === "Project Cutlist" || projectRoomNames.some((other) => sameText(other, name));
+      const sameName = projectRoomNames.filter((other) => baseOfRoom(other) === baseOfRoom(name));
+      const needsMatch = shared || (!exact && sameName.length > 0);
+      if (needsMatch && !shared && sameName.length === 1) roomChoices[key] = sameName[0];
+      // A room of exactly its name here: picked for it.
+      const exactRoom = projectRoomNames.find((other) => sameText(other, name));
+      if (exactRoom) roomChoices[key] = exactRoom;
+      return { key, sheetLabel, name, parts, drawerType: templateDrawerType(drawerType), needsMatch, matchOptions: sameName };
+    };
+    const sheets: CutlistImportSheet[] = templateRooms.map((room) =>
+      importRoom(
+        room.sheetName,
+        `Sheet "${room.sheetName}"`,
+        roomOfSheet(room),
+        room.rows.reduce((sum, row) => sum + (Number.parseInt(row.quantity.replace(/[^\d]/g, ""), 10) || 1), 0),
+        room.drawerType,
+        (sheetCountByName.get(roomOfSheet(room).toLowerCase()) ?? 0) > 1,
+      ),
+    );
+    // Project Sections' rooms without a sheet of parts: added as rooms (with their drawer types) too.
+    for (const section of template?.sections ?? []) {
+      const name = roomNamed(section.name);
+      if (sheets.some((sheet) => sameText(sheet.name, name))) continue;
+      sheets.push(importRoom(`section:${section.name}`, "Project Sections", name, 0, section.drawerType, false));
+    }
+    const rowSheets = (template?.rooms ?? []).flatMap((room) => room.rows.map(() => room.sheetName));
+    const unknownBoards = new Set<string>();
+    const unknownPartTypes = new Set<string>();
+    let grainSkipped = 0;
+    const stamp = Date.now();
+    const rows = parsed.rows.map((sheetRow, index) => {
+      const partType = partTypeOptions.find((option) => sameText(option, sheetRow.partType)) ?? sheetRow.partType;
+      if (sheetRow.partType && !partTypeOptions.some((option) => sameText(option, sheetRow.partType))) unknownPartTypes.add(sheetRow.partType);
+      const boardKey =
+        templateBoardKeyByLabel.get(sheetRow.board.trim().toLowerCase().replace(/\s+/g, " ")) ??
+        cutlistBoardOptions.find((key) => sameText(key, sheetRow.board)) ??
+        cutlistBoardOptions.find((key) => sameText(boardMetaByKey[key]?.label ?? "", sheetRow.board)) ??
+        sheetRow.board;
+      if (sheetRow.board && !cutlistBoardOptions.includes(boardKey) && !(boardKey in newBoardGrain)) unknownBoards.add(sheetRow.board);
+      const quantity = Number.parseInt(sheetRow.quantity.replace(/[^\d]/g, ""), 10);
+      // A drawer row's quantity is how many heights it lists (140, 140, 200 — three drawers), so the sheet's "140,
+      // Qty 3" is that height three times.
+      // (A template's drawer heights read "A · 140mm" — just the letter's kept.)
+      const heightText = isDrawerPartType(partType) ? cutlistTemplateHeightText(sheetRow.height) : sheetRow.height;
+      const drawerHeights = parseDrawerHeightTokens(heightText);
+      const height = normalizeStoredCutlistHeightValue(
+        partType,
+        "",
+        isClassicDrawerRowLike({ partType }) && drawerHeights.length === 1 && quantity > 1
+          ? formatDrawerHeightTokens(Array.from({ length: Math.min(quantity, 50) }, () => drawerHeights[0]))
+          : heightText,
+      );
+      const width = normalizeCutlistDimensionValue(sheetRow.width);
+      const depth = normalizeCutlistDimensionValue(sheetRow.depth);
+      // Grain: "Long" runs along the part's longest dimension, "Short" its shortest (as the old sheet had it) — on
+      // a board that has grain.
+      let grainValue = "";
+      const grainText = sheetRow.grain.trim().toLowerCase();
+      if (grainText) {
+        const dims = (
+          [
+            ["H", height],
+            ["W", width],
+            ["D", depth],
+          ] as const
+        )
+          .map(([axis, value]) => ({ axis, value, size: Number.parseFloat(value) }))
+          .filter((dim) => Number.isFinite(dim.size) && dim.size > 0);
+        const along = grainText.startsWith("l")
+          ? dims.reduce<(typeof dims)[number] | null>((best, dim) => (!best || dim.size > best.size ? dim : best), null)
+          : grainText.startsWith("s")
+            ? dims.reduce<(typeof dims)[number] | null>((best, dim) => (!best || dim.size < best.size ? dim : best), null)
+            : null;
+        if (along && (productionBoardAllowsGrainForValue(boardKey) || newBoardGrain[boardKey])) grainValue = `${along.axis}:${along.value}`;
+        else if (along) grainSkipped += 1;
+      }
+      return buildEffectiveProductionCutlistRow(
+        {
+          ...createEmptyCutlistEntry(),
+          partType,
+          board: boardKey,
+          name: sheetRow.name,
+          height,
+          width,
+          depth,
+          quantity: Number.isFinite(quantity) && quantity > 0 ? String(quantity) : "1",
+          clashLeft: sheetRow.clashLeft,
+          clashRight: sheetRow.clashRight,
+          clashing: joinClashing(sheetRow.clashLeft, sheetRow.clashRight),
+          information: sheetRow.information,
+          grain: Boolean(grainValue),
+          grainValue,
+          ...(() => {
+            // A wall cabinet clashes its bottom unless told otherwise (as picking Wall does in the cutlist).
+            const kind = normalizeCabinetryKindValue(sheetRow.cabinetryKind);
+            const clashText = String(sheetRow.cabinetryClashBottom ?? "").trim().toLowerCase().replace(/\s+/g, "");
+            const clashBottom = clashText === "top/bottom" ? "Top/Bottom" : clashText === "bottom" ? "Bottom" : "";
+            return {
+              cabinetryKind: kind || undefined,
+              fixedShelf: String(sheetRow.fixedShelf ?? "").replace(/[^\d]/g, ""),
+              adjustableShelf: String(sheetRow.adjustableShelf ?? "").replace(/[^\d]/g, ""),
+              fixedShelfDrilling: normalizeDrillingValue(sheetRow.fixedShelfDrilling),
+              adjustableShelfDrilling: normalizeDrillingValue(sheetRow.adjustableShelfDrilling),
+              cabinetryClashBottom: clashBottom || (kind === "wall" ? "Bottom" : ""),
+              cabinetryClashBottomManual: Boolean(clashBottom) && !(kind === "wall" && clashBottom === "Bottom"),
+              cabinetryFullTop: /^(y|yes|true|1)$/i.test(String(sheetRow.cabinetryFullTop ?? "").trim()),
+            };
+          })(),
+        },
+        roomOf(sheetRow.room),
+        `${stamp}_import_${index}_${Math.random().toString(36).slice(2, 7)}`,
+      );
+    });
+    const templateNotes =
+      template && (template.notes.production || Object.keys(template.notes.contractors).length) ? template.notes : null;
+    // Its Global Job Selections: those filled in and different from the project's.
+    let settings: NonNullable<typeof cutlistImport>["settings"] = null;
+    if (template) {
+      const global = template.global;
+      const existing: Partial<ProductionFormState["existing"]> = {};
+      const cabinetry: Partial<ProductionFormState["cabinetry"]> = {};
+      const hardware: Partial<ProductionHardwareSettings> = {};
+      const summary: string[] = [];
+      const mm = (text: string) => numericOnlyText(text.replace(/mm$/i, ""));
+      for (const [key, label] of [
+        ["carcassThickness", "Carcass Thickness"],
+        ["panelThickness", "Panel Thickness"],
+        ["frontsThickness", "Fronts Thickness"],
+      ] as const) {
+        const next = mm(global[key]);
+        if (next && next !== productionForm.existing[key]) {
+          existing[key] = next;
+          summary.push(`${label} ${next}`);
+        }
+      }
+      for (const [key, label] of [
+        ["baseCabHeight", "Base Cab Height"],
+        ["tallCabHeight", "Tall Cab Height"],
+        ["footHeight", "Foot Height"],
+        ["footDistanceBack", "Foot Distance Back"],
+        ["hobCentre", "Hob Centre"],
+      ] as const) {
+        const next = mm(global[key]);
+        if (next && next !== productionForm.cabinetry[key]) {
+          cabinetry[key] = next;
+          summary.push(`${label} ${next}`);
+        }
+      }
+      const hobSide = global.hobSide.trim().toUpperCase();
+      if ((hobSide === "RH" || hobSide === "LH") && hobSide !== productionForm.cabinetry.hobSide) {
+        cabinetry.hobSide = hobSide;
+        summary.push(`Hob Centre From ${hobSide}`);
+      }
+      if (global.topScribers.trim()) {
+        const on = /^(y|yes|true|1)$/i.test(global.topScribers.trim());
+        if (on !== Boolean(productionForm.cabinetry.topScribers)) {
+          cabinetry.topScribers = on;
+          summary.push(`Top Scribers ${on ? "on" : "off"}`);
+        }
+      }
+      // Its hardware (and drawer type — its brand's default, if it doesn't say).
+      const brand = hardwareRows.find((row) => sameText(row.name, global.hardware));
+      const category = brand?.name ?? categoryOfHardware(productionForm.hardware);
+      const categoryRow = hardwareRows.find((row) => sameText(row.name, category));
+      const drawer = categoryRow?.drawers.find((row) => sameText(row.name, global.drawerType))?.name ?? (brand ? defaultDrawerForCategory(category) : "");
+      if (brand && !sameText(brand.name, categoryOfHardware(productionForm.hardware))) hardware.hardwareCategory = brand.name;
+      if (drawer && !sameText(drawer, productionForm.hardware.newDrawerType)) hardware.newDrawerType = drawer;
+      if (hardware.hardwareCategory || hardware.newDrawerType) summary.push(`Drawer Type ${cutlistTemplateDrawerLabel(category, drawer || productionForm.hardware.newDrawerType)}`);
+      const hinge = hardwareRows.find((row) => sameText(row.name, global.hingeType))?.name ?? (hardware.hardwareCategory ? category : "");
+      if (hinge && !sameText(hinge, productionForm.hardware.hingeType)) {
+        hardware.hingeType = hinge;
+        summary.push(`Hinge Type ${hinge}`);
+      }
+      const handles = global.handles.trim().toLowerCase();
+      if (handles === "front fixed" || handles === "profile") {
+        const standard = handles === "front fixed";
+        if (standard !== Boolean(productionForm.hardware.standardHandles) || !standard !== Boolean(productionForm.hardware.wrapOverHandles)) {
+          hardware.standardHandles = standard;
+          hardware.wrapOverHandles = !standard;
+          summary.push(`Handles ${standard ? "Front Fixed" : "Profile"}`);
+        }
+      }
+      if (summary.length) settings = { existing, cabinetry, hardware, summary, hardwareHasDrawers: drawerRowsForScope("").length > 0 };
+    }
+    const templateOrder =
+      template && (template.order.hinges.length || template.order.other.length || template.order.misc.length) ? template.order : null;
+    if (
+      !rows.length &&
+      !(template && (newBoards.length || templateNotes || settings || templateOrder || sheets.length))
+    ) {
+      fail(
+        template
+          ? "Nothing's been filled in on the template yet."
+          : parsed.foundHeadings
+          ? "No parts were found under the headings."
+          : "No parts were found. The cutlist is read from row 4 down, under its headings on row 3 (Job Section, Part Type, Board Type, Part Name, Height, Width, Depth, Qty, Clashing, Information, Grain).",
+      );
+      return;
+    }
+    setCutlistImport({
+      fileName: file.name,
+      rows,
+      rooms: Array.from(new Set(rows.map((row) => row.room))),
+      unknownBoards: [...unknownBoards],
+      unknownPartTypes: [...unknownPartTypes],
+      grainSkipped,
+      error: "",
+      newBoards,
+      // (An old cutlist sheet's rooms: one each, by name.)
+      sheets: template
+        ? sheets
+        : Array.from(new Set(rows.map((row) => row.room))).map((name) => ({
+            key: `room:${name}`,
+            sheetLabel: "",
+            name,
+            parts: rows.filter((row) => row.room === name).reduce((sum, row) => sum + (Number(row.quantity) || 0), 0),
+            drawerType: null,
+            needsMatch: false,
+            matchOptions: [],
+          })),
+      rowSheets: template ? rowSheets : rows.map((row) => `room:${row.room}`),
+      notes: templateNotes,
+      settings,
+      order: templateOrder,
+    });
+    // (An old cutlist sheet's rooms of exactly a room's name here: picked for them too.)
+    if (!template) {
+      for (const name of new Set(rows.map((row) => row.room))) {
+        const exactRoom = projectRoomNames.find((other) => sameText(other, name));
+        if (exactRoom) roomChoices[`room:${name}`] = exactRoom;
+      }
+    }
+    setCutlistImportSkippedSheets({});
+    setCutlistImportParts(CUTLIST_IMPORT_ALL_PARTS);
+    setCutlistImportRoomChoices(roomChoices);
+    setCutlistImportNewRoomNames(Object.fromEntries(sheets.map((sheet) => [sheet.key, sheet.name])));
+    setIsCutlistImportOpen(true);
+  };
+  const isCutlistImportPartOn = (part: CutlistImportPart) => cutlistImportParts[part] !== false;
+  const isCutlistImportSheetSkipped = (sheet: CutlistImportSheet) => Boolean(cutlistImportSkippedSheets[sheet.key]);
+  // An imported room's room here: the one picked for it (the pop-up's Rooms), or else its own name ("" for one that has
+  // to be matched).
+  const cutlistImportSheetRoom = (sheet: CutlistImportSheet) => {
+    const choice = cutlistImportRoomChoices[sheet.key] ?? "";
+    if (choice === CUTLIST_IMPORT_NEW_ROOM) return String(cutlistImportNewRoomNames[sheet.key] ?? "").trim();
+    if (choice) return choice;
+    return sheet.needsMatch ? "" : sheet.name;
+  };
+  // Still a sheet to match (the import waits for it).
+  const cutlistImportHasUnmatchedRooms = (imported: NonNullable<typeof cutlistImport>) =>
+    isCutlistImportPartOn("cutlist") &&
+    imported.sheets.some((sheet) => sheet.needsMatch && !isCutlistImportSheetSkipped(sheet) && !cutlistImportSheetRoom(sheet));
+  // The rows, each in its sheet's room — those in rooms switched off left out.
+  const cutlistImportRowsInRooms = (imported: NonNullable<typeof cutlistImport>) => {
+    if (!isCutlistImportPartOn("cutlist")) return [];
+    if (!imported.rowSheets.length) return imported.rows;
+    const sheetByKey = new Map(imported.sheets.map((sheet) => [sheet.key, sheet]));
+    return imported.rows.flatMap((row, index) => {
+      const sheet = sheetByKey.get(imported.rowSheets[index]);
+      if (sheet && isCutlistImportSheetSkipped(sheet)) return [];
+      return [sheet ? { ...row, room: cutlistImportSheetRoom(sheet) || row.room } : row];
+    });
+  };
+  // Nothing left to bring in (every room switched off, and no boards or notes).
+  const cutlistImportIsEmpty = (imported: NonNullable<typeof cutlistImport>) =>
+    !cutlistImportRowsInRooms(imported).length &&
+    !(isCutlistImportPartOn("boards") && imported.newBoards.length) &&
+    !(isCutlistImportPartOn("notes") && imported.notes) &&
+    !(isCutlistImportPartOn("settings") && imported.settings) &&
+    !(isCutlistImportPartOn("order") && imported.order) &&
+    !(isCutlistImportPartOn("cutlist") && imported.sheets.some((sheet) => !isCutlistImportSheetSkipped(sheet)));
+  // Its rooms' own Drawer Types (Project Sections'), where the room doesn't already have that one of its own — set as
+  // its own even when it's the project's now, as the project's may change with the import ("Project Cutlist": the
+  // project's, where it differs).
+  const cutlistImportDrawerTypeChanges = (imported: NonNullable<typeof cutlistImport>) => {
+    const out: Array<{ scope: string; label: string; hardwareCategory: string; newDrawerType: string; hasDrawers: boolean }> = [];
+    if (!isCutlistImportPartOn("cutlist")) return out;
+    const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+    for (const sheet of imported.sheets) {
+      const room = sheet.drawerType && !isCutlistImportSheetSkipped(sheet) ? cutlistImportSheetRoom(sheet) : "";
+      if (!sheet.drawerType || !room) continue;
+      const scope = room === "Project Cutlist" ? "" : room;
+      if (out.some((change) => same(change.scope, scope))) continue;
+      const current = scope ? productionForm.roomHardware[scope] : productionForm.hardware;
+      if (current && same(sheet.drawerType.label, templateDrawerLabelFor(current))) continue;
+      out.push({ scope, ...sheet.drawerType, hasDrawers: drawerRowsForScope(scope).length > 0 });
+    }
+    return out;
+  };
+  const applyCutlistImport = async (mode: "add" | "replace") => {
+    if (!cutlistImport || cutlistImport.error || isApplyingCutlistImport || productionReadOnly || !project) return;
+    if (cutlistImportHasUnmatchedRooms(cutlistImport) || cutlistImportIsEmpty(cutlistImport)) return;
+    setIsApplyingCutlistImport(true);
+    const fail = (message: string) => {
+      setIsApplyingCutlistImport(false);
+      setLockMessage(message);
+    };
+
+    // The Production tab's settings (Global Job Selections), boards (added to Board Settings), rooms' drawer types,
+    // and Order lists — in one save. The project's hardware brand / drawer type, and a room's, only change while it
+    // has no drawers in the cutlist, unless they're being replaced.
+    const settings = isCutlistImportPartOn("settings") ? cutlistImport.settings : null;
+    let nextForm: ProductionFormState = productionForm;
+    if (settings) {
+      const keepHardware = mode === "add" && settings.hardwareHasDrawers;
+      const { hardwareCategory, newDrawerType, ...otherHardware } = settings.hardware;
+      nextForm = {
+        ...nextForm,
+        existing: { ...nextForm.existing, ...settings.existing },
+        cabinetry: { ...nextForm.cabinetry, ...settings.cabinetry },
+        hardware: {
+          ...nextForm.hardware,
+          ...otherHardware,
+          ...(keepHardware ? {} : { ...(hardwareCategory ? { hardwareCategory } : {}), ...(newDrawerType ? { newDrawerType } : {}) }),
+        },
+      };
+    }
+    if (isCutlistImportPartOn("boards") && cutlistImport.newBoards.length) {
+      nextForm = { ...nextForm, boardTypes: [...nextForm.boardTypes, ...cutlistImport.newBoards] };
+    }
+    for (const change of cutlistImportDrawerTypeChanges(cutlistImport).filter((item) => mode === "replace" || !item.hasDrawers)) {
+      const patch = { hardwareCategory: change.hardwareCategory, newDrawerType: change.newDrawerType };
+      nextForm = change.scope
+        ? {
+            ...nextForm,
+            roomHardware: { ...nextForm.roomHardware, [change.scope]: { ...(nextForm.roomHardware[change.scope] ?? nextForm.hardware), ...patch } },
+          }
+        : { ...nextForm, hardware: { ...nextForm.hardware, ...patch } };
+    }
+    const formChanged = nextForm !== productionForm;
+    // The Order lists, for the hardware the project's on (after the above): added to (or, replacing, in place of).
+    const order = isCutlistImportPartOn("order") ? cutlistImport.order : null;
+    const orderCategory = String(nextForm.hardware.hardwareCategory || defaultHardwareCategory()).trim().toLowerCase();
+    const orderHardware = hardwareRows.find((row) => row.name.toLowerCase() === orderCategory);
+    const named = (name: string, options: string[]) => options.find((option) => option.trim().toLowerCase() === name.trim().toLowerCase()) ?? name.trim();
+    const qtyOf = (text: string) => numericOnlyText(text) || "1";
+    const stamp = Date.now();
+    const nextHinges = { ...orderHingeRowsByCategoryRef.current };
+    const nextOther = { ...orderOtherRowsByCategoryRef.current };
+    const nextMisc = { ...orderMiscDraftByCategoryRef.current };
+    if (order) {
+      const hinges = order.hinges.map((line, index) => ({ id: `ord_hinge_${stamp}_${index}`, name: named(line.name, orderHardware?.hinges ?? []), qty: qtyOf(line.qty) }));
+      const other = order.other.map((line, index) => ({ id: `ord_other_${stamp}_${index}`, name: named(line.name, orderHardware?.other ?? []), qty: qtyOf(line.qty) }));
+      if (hinges.length || mode === "replace") nextHinges[orderCategory] = [...(mode === "replace" ? [] : nextHinges[orderCategory] ?? []), ...hinges];
+      if (other.length || mode === "replace") nextOther[orderCategory] = [...(mode === "replace" ? [] : nextOther[orderCategory] ?? []), ...other];
+      if (order.misc.length || mode === "replace") {
+        nextMisc[orderCategory] = {
+          ...(mode === "replace" ? {} : nextMisc[orderCategory] ?? {}),
+          ...Object.fromEntries(
+            order.misc.map((line, index) => [
+              `misc_custom_${stamp}_${String(index).padStart(3, "0")}`,
+              { name: line.name, notes: "", qty: qtyOf(line.qty) },
+            ]),
+          ),
+        };
+      }
+    }
+    if (formChanged || order) {
+      const nextSettings: Record<string, unknown> = {
+        ...orderSettingsWithLatestLists((project.projectSettings ?? {}) as Record<string, unknown>),
+        ...(formChanged ? productionSettingsFields(nextForm) : {}),
+        ...(order ? { orderHingeRowsByCategory: nextHinges, orderOtherRowsByCategory: nextOther, orderMiscDraftByCategory: nextMisc } : {}),
+      };
+      const ok = await updateProjectPatch(project, { projectSettings: nextSettings, projectSettingsJson: JSON.stringify(nextSettings) });
+      if (!ok) {
+        fail("Could not save the imported production settings.");
+        return;
+      }
+      setProject((prev) => (prev ? { ...prev, projectSettings: nextSettings } : prev));
+      if (formChanged) {
+        logProductionFormChanges(productionForm, nextForm);
+        setProductionForm(nextForm);
+      }
+      if (order) {
+        setOrderHingeRowsByCategory(nextHinges);
+        setOrderOtherRowsByCategory(nextOther);
+        setOrderMiscDraftByCategory(nextMisc);
+        const lines = order.hinges.length + order.other.length + order.misc.length;
+        logProjectChange(`Order (${orderHardware?.name || orderCategory}) — ${lines} ${lines === 1 ? "line" : "lines"} imported from ${cutlistImport.fileName}`);
+      }
+    }
+
+    // Its rooms that aren't the project's yet (sheets with parts, and Project Sections') — added as rooms.
+    const knownRooms = new Set(salesRoomRows.map((row) => String(row.name || "").trim().toLowerCase()));
+    const newRoomNames = Array.from(
+      new Set(
+        (isCutlistImportPartOn("cutlist") ? cutlistImport.sheets : [])
+          .filter((sheet) => !isCutlistImportSheetSkipped(sheet))
+          .map((sheet) => cutlistImportSheetRoom(sheet))
+          .filter((name) => name && name !== "Project Cutlist" && !knownRooms.has(name.toLowerCase())),
+      ),
+    );
+    if (newRoomNames.length) {
+      await persistSalesPatch({
+        ...salesPayload,
+        rooms: [
+          ...persistedSalesItemsRooms,
+          ...newRoomNames.map((name) => ({ id: createSalesItemsRoomId(), name, included: true, totalPrice: "0.00", items: [] })),
+        ],
+      } as Record<string, unknown>);
+    }
+
+    // The cutlist.
+    const imported = cutlistImportRowsInRooms(cutlistImport);
+    if (imported.length) {
+      const next = mode === "replace" ? imported : [...cutlistRows, ...imported];
+      setCutlistRows(next);
+      const ok = await persistCutlistRows(next);
+      if (!ok) {
+        fail("Could not save the imported cutlist.");
+        return;
+      }
+    }
+    // Its notes: added to the project's (or, replacing, in place of them).
+    const notes = isCutlistImportPartOn("notes") ? cutlistImport.notes : null;
+    if (notes) {
+      const toHtml = (text: string) => `<p>${escapeHtml(text).replace(/\n/g, "<br />")}</p>`;
+      const combine = (existing: unknown, text: string) =>
+        mode === "replace" || !String(existing ?? "").trim() ? toHtml(text) : `${notesToDisplayHtml(existing)}${toHtml(text)}`;
+      const patch: Partial<Project> = {};
+      if (notes.production) patch.productionNotes = combine(project.productionNotes, notes.production);
+      const contractorEntries = Object.entries(notes.contractors);
+      if (contractorEntries.length) {
+        patch.contractorNotes = {
+          ...(project.contractorNotes || {}),
+          ...Object.fromEntries(contractorEntries.map(([name, text]) => [name, combine(project.contractorNotes?.[name], text)])),
+        };
+      }
+      await saveGeneralDetailsPatch(patch);
+    }
+    setIsApplyingCutlistImport(false);
+    const parts = imported.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0);
+    logCutlistActivity(`Imported ${imported.length} ${imported.length === 1 ? "row" : "rows"} (${parts} ${parts === 1 ? "part" : "parts"}) from ${cutlistImport.fileName}`);
+    setIsCutlistImportOpen(false);
+  };
+
   const addDraftRowForPartType = (partType: string) => {
     setActiveCutlistPartType(partType);
     setCutlistDraftRows((prev) => {
@@ -20107,10 +21118,10 @@ export default function ProjectDetailsPage() {
   // baked into the row's own doorTopGap/doorBetweenGap fields — from that
   // point on the row carries its own concrete gaps and won't silently shift
   // if the handle toggle changes later ("locked" per the confirmed behavior).
-  const resolveDrawerBankGaps = () => ({
+  const resolveDrawerBankGaps = (room?: unknown) => ({
     topGap: numericOnlyText(projectGapAllowancesDraft.baseBelowBenchToTopOfDoorDrawer),
     betweenGap: numericOnlyText(
-      productionForm.hardware.wrapOverHandles
+      hardwareForRoom(room).wrapOverHandles
         ? projectGapAllowancesDraft.baseHorizontalGapWrapOverHandles
         : projectGapAllowancesDraft.baseHorizontalGapNormalHandles,
     ),
@@ -20135,7 +21146,7 @@ export default function ProjectDetailsPage() {
       const last = [...prev].reverse().find((row) => String(row.room || "") === String(currentRoom)) ?? prev[prev.length - 1];
       const board = last?.board ?? cutlistBoardOptions[0] ?? "";
       const baseHeight = resolvedProductionBaseCabHeight;
-      const { topGap, betweenGap } = resolveDrawerBankGaps();
+      const { topGap, betweenGap } = resolveDrawerBankGaps(currentRoom);
       const seamCount = Math.max(0, n - 1);
       const betweenGaps = Array.from({ length: seamCount }, () => betweenGap);
       const initialHeights = normalizeDoorFrontHeights([], n);
@@ -20186,7 +21197,7 @@ export default function ProjectDetailsPage() {
       if (mainIndex < 0) return prev;
       const mainRow = prev[mainIndex];
       const baseHeight = String(mainRow.height || "").trim();
-      const { topGap, betweenGap } = resolveDrawerBankGaps();
+      const { topGap, betweenGap } = resolveDrawerBankGaps(mainRow.room);
       const seamCount = Math.max(0, n - 1);
       const betweenGaps = Array.from({ length: seamCount }, () => betweenGap);
       const initialHeights = normalizeDoorFrontHeights([], n);
@@ -20693,7 +21704,7 @@ export default function ProjectDetailsPage() {
     const nextBetweenGap =
       mode === "door"
         ? projectGapAllowancesDraft.tallVerticalGapDoorsPanels
-        : productionForm.hardware.wrapOverHandles
+        : hardwareForRoom(cutlistEntryRoom).wrapOverHandles
           ? projectGapAllowancesDraft.baseHorizontalGapWrapOverHandles
           : projectGapAllowancesDraft.baseHorizontalGapNormalHandles;
     const nextSideGap = numericDecimalText(projectGapAllowancesDraft.baseVerticalGapDoorsPanels);
@@ -20787,7 +21798,7 @@ export default function ProjectDetailsPage() {
     const nextBetweenGap =
       mode === "door"
         ? projectGapAllowancesDraft.tallVerticalGapDoorsPanels
-        : productionForm.hardware.wrapOverHandles
+        : hardwareForRoom(cutlistDraftRows.find((row) => row.id === id)?.room).wrapOverHandles
           ? projectGapAllowancesDraft.baseHorizontalGapWrapOverHandles
           : projectGapAllowancesDraft.baseHorizontalGapNormalHandles;
     const nextSideGap = numericDecimalText(projectGapAllowancesDraft.baseVerticalGapDoorsPanels);
@@ -27385,26 +28396,21 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <div className="space-y-4 px-5 py-4">
                 <div className="space-y-2">
                   <p className="text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>Room Name</p>
-                  <input
-                    ref={focusOnMountWithoutScrolling}
+                  <RoomNameCombobox
+                    autoFocus
                     value={addRoomName}
-                    onChange={(e) => {
-                      setAddRoomName(e.target.value);
+                    options={companyRoomNameOptions}
+                    onChange={(next) => {
+                      setAddRoomName(next);
                       if (addRoomError) setAddRoomError("");
                     }}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        void onConfirmAddCutlistRoom();
-                      }
-                      if (e.key === "Escape") {
-                        e.preventDefault();
-                        setIsAddRoomModalOpen(false);
-                        setAddRoomName("");
-                        setAddRoomError("");
-                      }
+                    onEnter={() => void onConfirmAddCutlistRoom()}
+                    onEscape={() => {
+                      setIsAddRoomModalOpen(false);
+                      setAddRoomName("");
+                      setAddRoomError("");
                     }}
-                    placeholder="Enter room name"
+                    placeholder={companyRoomNameOptions.length ? "Pick a room or type a name" : "Enter room name"}
                     className="h-10 w-full rounded-[10px] border px-3 text-[13px] outline-none"
                     style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
                   />
@@ -27602,7 +28608,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               style={{ zIndex: 2147483647 }}
             >
               <div
-                className="glass-modal-header shrink-0 px-5 py-4"
+                className="glass-modal-header relative z-[2] shrink-0 px-5 py-4"
                 style={{
                   backgroundColor: "color-mix(in srgb, var(--panel-muted) 35%, transparent)",
                   backdropFilter: "blur(6px)",
@@ -27625,7 +28631,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   </button>
                 </div>
                 {!productionReadOnly ? (
-                  <div ref={setRemedialsToolbarHost} className="mt-2 min-w-0 overflow-hidden" />
+                  <div ref={setRemedialsToolbarHost} className="mt-2 min-w-0" />
                 ) : null}
               </div>
               <div className="glass-scroll flex min-h-0 flex-1 flex-col overflow-auto px-5 py-4">
@@ -30504,22 +31510,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 <p className="mt-1 text-[12px]" style={{ color: "var(--text-main)" }}>Create a room to start assigning items.</p>
               </div>
               <div className="space-y-4 px-5 py-5">
-                <input
-                  ref={focusOnMountWithoutScrolling}
+                <RoomNameCombobox
+                  autoFocus
                   value={itemsAddRoomName}
-                  onChange={(e) => setItemsAddRoomName(e.currentTarget.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      confirmAddItemsRoom();
-                    }
-                    if (e.key === "Escape") {
-                      e.preventDefault();
-                      setIsItemsAddRoomModalOpen(false);
-                      setItemsAddRoomName("");
-                    }
+                  options={companyRoomNameOptions}
+                  onChange={setItemsAddRoomName}
+                  onEnter={() => confirmAddItemsRoom()}
+                  onEscape={() => {
+                    setIsItemsAddRoomModalOpen(false);
+                    setItemsAddRoomName("");
                   }}
-                  placeholder="Enter room name"
+                  placeholder={companyRoomNameOptions.length ? "Pick a room or type a name" : "Enter room name"}
                   className="h-11 w-full rounded-[10px] border px-3 text-[13px] outline-none"
                   style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
                 />
@@ -32270,13 +33271,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           }}
         >
           <div
-            className="flex h-[50px] items-center justify-between overflow-hidden border-b px-4"
+            className="relative z-[2] flex h-[50px] items-center justify-between border-b px-4"
             style={{ borderBottomColor: "var(--glass-border)", backgroundColor: isDarkMode ? "rgba(255,255,255,0.04)" : "rgba(15,23,42,0.025)" }}
           >
             <p className="text-[14px] font-medium tracking-[1px]" style={{ color: "var(--text-main)" }}>NOTES</p>
             <div
               ref={setDesignNotesToolbarHost}
-              className={`${isEditingDesignNotes && !salesReadOnly ? "shrink-0 overflow-hidden" : "hidden"}`}
+              className={`${isEditingDesignNotes && !salesReadOnly ? "shrink-0" : "hidden"}`}
             />
           </div>
           <div className="min-h-[155px] px-4 pb-4 pt-3 text-[13px]" style={{ color: "var(--text-main)" }}>
@@ -32663,11 +33664,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       backHeight: string;
       total: number;
     };
-    const selectedCategory = String(productionForm.hardware.hardwareCategory || defaultHardwareCategory()).trim() || "Unassigned";
-    const selectedDrawerType = String(productionForm.hardware.newDrawerType || "").trim() || "Unassigned";
     const groups: Record<string, Group> = {};
 
     for (const row of orderDrawerRows) {
+      // Its room's hardware (or the project's).
+      const rowHardware = hardwareForRoom(row.room);
+      const selectedCategory = categoryOfHardware(rowHardware) || "Unassigned";
+      const selectedDrawerType = String(rowHardware.newDrawerType || "").trim() || "Unassigned";
+      const selectedDrawerBreakdown = drawerBreakdownForRoom(row.room);
       const depthVal = toNum(row.depth);
       let hardwareDepthLabel = "-";
       if (depthVal > 0) {
@@ -32732,6 +33736,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       });
   })();
   const orderDrawerQtyTotal = orderDrawerGroupedRows.reduce((sum, group) => sum + group.total, 0);
+  // The hardware kinds ("Brand · Drawer type") the cutlist's drawers are on — more than one when rooms have their own.
+  const orderDrawerHardwareKinds = Array.from(new Set(orderDrawerGroupedRows.map((group) => `${group.hardware} · ${group.drawerType}`)));
   const orderSelectedHardwareCategoryKey = String(
     productionForm.hardware.hardwareCategory || defaultHardwareCategory(),
   )
@@ -36451,7 +37457,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
                   {orderHardwarePart({
                     title: "Drawers",
-                    badge: orderDrawerType || undefined,
+                    // Rooms can have their own hardware: with drawers on more than one kind, each kind is its own group.
+                    badge:
+                      orderDrawerHardwareKinds.length === 1
+                        ? orderDrawerGroupedRows[0]?.drawerType || undefined
+                        : orderDrawerHardwareKinds.length > 1
+                          ? `${orderDrawerHardwareKinds.length} types`
+                          : orderDrawerType || undefined,
                     qtyTotal: orderDrawerQtyTotal,
                     first: true,
                     children:
@@ -36464,20 +37476,29 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             <p>Back Height</p>
                             <p className="text-center">Qty</p>
                           </div>
-                          {orderDrawerGroupedRows.map((group) => (
-                            <div
-                              key={`order_drawer_row_${group.key}`}
-                              className="grid min-h-9 items-center gap-2 rounded-[10px] border px-3 py-1.5 text-[12px]"
-                              style={{ ...orderReadRowStyle, gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr) 56px" }}
-                            >
-                              <p className="truncate font-medium">{group.hardwareLength || "-"}</p>
-                              <p className="truncate">{group.backHeight || "-"}</p>
-                              <p className="text-center">
-                                <span className="inline-flex min-w-[32px] justify-center rounded-[8px] border px-2 py-[1px] font-bold" style={orderHwPillStyle}>
-                                  {group.total}
-                                </span>
-                              </p>
-                            </div>
+                          {orderDrawerHardwareKinds.map((kind) => (
+                            <Fragment key={`order_drawer_kind_${kind}`}>
+                              {orderDrawerHardwareKinds.length > 1 ? (
+                                <p className="px-1 pt-1 text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: projectPalette.textMuted }}>{kind}</p>
+                              ) : null}
+                              {orderDrawerGroupedRows
+                                .filter((group) => `${group.hardware} · ${group.drawerType}` === kind)
+                                .map((group) => (
+                                  <div
+                                    key={`order_drawer_row_${group.key}`}
+                                    className="grid min-h-9 items-center gap-2 rounded-[10px] border px-3 py-1.5 text-[12px]"
+                                    style={{ ...orderReadRowStyle, gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr) 56px" }}
+                                  >
+                                    <p className="truncate font-medium">{group.hardwareLength || "-"}</p>
+                                    <p className="truncate">{group.backHeight || "-"}</p>
+                                    <p className="text-center">
+                                      <span className="inline-flex min-w-[32px] justify-center rounded-[8px] border px-2 py-[1px] font-bold" style={orderHwPillStyle}>
+                                        {group.total}
+                                      </span>
+                                    </p>
+                                  </div>
+                                ))}
+                            </Fragment>
                           ))}
                         </div>
                       ),
@@ -38359,8 +39380,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     </p>
                   </div>
                   <div className="ml-auto flex flex-wrap items-center justify-end gap-2 pr-1">
-                    <input value={initialCutlistSearch} onChange={(e) => setInitialCutlistSearch(e.target.value)} placeholder="Search part name or board" className="h-8 w-[180px] rounded-[8px] border px-2 text-[12px] sm:w-[240px] md:w-[280px]" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }} />
-                    <select value={initialCutlistPartTypeFilter} onChange={(e) => setInitialCutlistPartTypeFilter(e.target.value)} className="h-8 rounded-[8px] border px-2 text-[12px]" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}>
+                    <div className="relative">
+                      <Search size={13} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }} />
+                      <input value={initialCutlistSearch} onChange={(e) => setInitialCutlistSearch(e.target.value)} placeholder="Search part name or board" className="h-8 w-[180px] rounded-full border pl-8 pr-3 text-[12px] sm:w-[240px] md:w-[280px]" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }} />
+                    </div>
+                    <select value={initialCutlistPartTypeFilter} onChange={(e) => setInitialCutlistPartTypeFilter(e.target.value)} className="h-8 rounded-full border px-3 text-[12px]" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}>
                       <option>All Part Types</option>
                       {initialMeasurePartTypeOptions.map((v) => (
                         <option key={`im_full_filter_${v}`} value={v}>{v}</option>
@@ -38790,6 +39814,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       return (
         <ProtectedRoute>
           <div className="flex h-[100svh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
+            {renderCutlistImportUi()}
             {/* Split into a fixed backdrop + content pair — see Initial Measure's own identical
                 mobile-branch comment for the full reasoning. */}
             <div
@@ -39593,7 +40618,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       <div ref={registerCutlistWarnCellRef(draft.id, "height")}>
                                       <DrawerHeightDropdown
                                         value={String(draft.height || "")}
-                                        options={drawerHeightLetterOptions}
+                                        options={drawerHeightLetterOptionsForRoom(draft.room)}
+                                        optionValues={drawerBreakdownForRoom(draft.room).letterValueMap}
                                         disabled={productionReadOnly}
                                         title={heightWarn || undefined}
                                         className={warningClassForCell(draft.id, "height")}
@@ -40289,7 +41315,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       isDrawerPartType(row.partType) ? (
                                         <DrawerHeightDropdown
                                           value={String(editingCellValue || "")}
-                                          options={drawerHeightLetterOptions}
+                                          options={drawerHeightLetterOptionsForRoom(row.room)}
+                                          optionValues={drawerBreakdownForRoom(row.room).letterValueMap}
                                           compact
                                           title={warningForCell(row.id, "height") || undefined}
                                           className={warningClassForCell(row.id, "height")}
@@ -41320,45 +42347,52 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     type="button"
                     disabled={!salesAccess.edit || isSavingSalesRooms}
                     onClick={(e) => { addRoomPilotOriginElRef.current = e.currentTarget; addRoomFullscreenOriginElRef.current = e.currentTarget; setRoomModalOrigin(captureGlassModalOrigin(e)); void onAddCutlistRoom(); }}
-                    className="relative z-[1] mt-2 w-full rounded-[9px] border px-2 py-2 text-left text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-55"
+                    className={`relative z-[1] mt-2 ${CUTLIST_SIDEBAR_BUTTON_CLASS}`}
                     style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
                   >
-                    + Add Room
+                    <Plus size={16} strokeWidth={2.6} className="shrink-0" />
+                    Add Room
                   </button>
                 </div>
+                  {/* Notes / Contractors: drawers down the right (one at a time); pressed again, closed. */}
                   <button
                     type="button"
-                    onClick={(e) => {
-                      productionNotesModalOriginElRef.current = e.currentTarget;
+                    aria-pressed={isProductionNotesPanelOpen}
+                    onClick={() => {
                       if (isProductionNotesPanelOpen) {
                         void closeProductionNotesPanel();
                         return;
                       }
-                      setProductionNotesModalOrigin(captureGlassModalOrigin(e));
+                      if (isContractorsPanelOpen) void closeContractorsPanel();
                       openProductionNotesPanel();
                     }}
-                    className="mt-2 inline-flex w-full items-center gap-2 rounded-[9px] border px-2 py-2 text-left text-[12px] font-bold text-white hover:brightness-95"
-                    style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                    className={`mt-2 ${CUTLIST_SIDEBAR_BUTTON_CLASS}`}
+                    style={{
+                      backgroundImage: "var(--brand-gradient)",
+                      borderColor: "var(--brand-strong)",
+                      boxShadow: isProductionNotesPanelOpen ? "inset 0 0 0 2px rgba(255,255,255,0.6)" : undefined,
+                    }}
                   >
-                    <NotebookPen size={13} />
+                    <NotebookPen size={16} className="shrink-0" />
                     Notes
                   </button>
+                  {/* Contractors: a menu of the company's contractors — the one picked, its notes in the drawer. */}
                   <button
+                    ref={contractorsMenuButtonRef}
                     type="button"
-                    onClick={(e) => {
-                      contractorsModalOriginElRef.current = e.currentTarget;
-                      if (isContractorsPanelOpen) {
-                        void closeContractorsPanel();
-                        return;
-                      }
-                      setContractorsModalOrigin(captureGlassModalOrigin(e));
-                      openContractorsPanel();
+                    aria-haspopup="menu"
+                    aria-expanded={Boolean(contractorsMenuRect)}
+                    onClick={toggleContractorsMenu}
+                    className={`mt-2 ${CUTLIST_SIDEBAR_BUTTON_CLASS}`}
+                    style={{
+                      backgroundImage: "var(--brand-gradient)",
+                      borderColor: "var(--brand-strong)",
+                      boxShadow: isContractorsPanelOpen || contractorsMenuRect ? "inset 0 0 0 2px rgba(255,255,255,0.6)" : undefined,
                     }}
-                    className="mt-2 inline-flex w-full items-center gap-2 rounded-[9px] border px-2 py-2 text-left text-[12px] font-bold text-white hover:brightness-95"
-                    style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
                   >
-                    <HardHat size={13} />
+                    <HardHat size={16} className="shrink-0" />
                     Contractors
+                    <ChevronDown size={14} className={`shrink-0 transition-transform ${contractorsMenuRect ? "rotate-180" : ""}`} />
                   </button>
                 </div>
               </div>
@@ -42035,7 +43069,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             <div ref={registerCutlistWarnCellRef(draft.id, "height")} style={{ ...cutlistEntryCellStyle("height"), display: "flex", alignItems: "center", marginLeft: isSubPartDraft ? -4 : undefined, width: isSubPartDraft ? "100%" : undefined }}>
                             <DrawerHeightDropdown
                               value={String(draft.height || "")}
-                              options={drawerHeightLetterOptions}
+                              options={drawerHeightLetterOptionsForRoom(draft.room)}
+                              optionValues={drawerBreakdownForRoom(draft.room).letterValueMap}
                               disabled={productionReadOnly}
                               title={heightWarn || undefined}
                               compact={isSubPartDraft}
@@ -42374,19 +43409,22 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     </p>
                   </div>
                   <div className="ml-auto flex items-center gap-2 pr-1">
-                    <input
-                      value={cutlistSearch}
-                      onChange={(e) => setCutlistSearch(e.target.value)}
-                      placeholder="Search part name or board"
-                      className="h-8 w-[280px] rounded-[8px] border px-2 text-[12px]"
-                      style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                    />
+                    <div className="relative">
+                      <Search size={13} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }} />
+                      <input
+                        value={cutlistSearch}
+                        onChange={(e) => setCutlistSearch(e.target.value)}
+                        placeholder="Search part name or board"
+                        className="h-8 w-[280px] rounded-full border pl-8 pr-3 text-[12px]"
+                        style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                      />
+                    </div>
                     <GlassSelectDropdown
                       value={cutlistPartTypeFilter}
                       onChange={setCutlistPartTypeFilter}
                       options={["All Part Types", ...partTypeOptions]}
                       getOptionColor={(opt) => partTypeColors[opt]}
-                      className="h-8 rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px] text-[var(--text-main)]"
+                      className="h-8 rounded-full border border-[var(--glass-border)] bg-[var(--panel-bg)] pl-3 pr-2.5 text-[12px] text-[var(--text-main)]"
                     />
                   </div>
                 </div>
@@ -42797,7 +43835,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                             rowIsDrawer ? (
                                               <DrawerHeightDropdown
                                                 value={String(editingCellValue || "")}
-                                                options={drawerHeightLetterOptions}
+                                                options={drawerHeightLetterOptionsForRoom(row.room)}
+                                                optionValues={drawerBreakdownForRoom(row.room).letterValueMap}
                                                 compact
                                                 title={cellWarn || undefined}
                                                 className={cellWarnClass}
@@ -43463,42 +44502,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           {cutlistFieldWarningBubblesPortal}
           {addRoomModalPortal}
           {unlockEditModalPortal}
-          {shouldRenderProductionNotesModal && typeof document !== "undefined"
-            ? createPortal(
-                <div className="fixed inset-0 flex items-center justify-center px-4 py-4" style={{ zIndex: 2147483647 }}>
-                  <button
-                    type="button"
-                    aria-label="Close notes dialog backdrop"
-                    onClick={() => void closeProductionNotesPanel()}
-                    className="glass-modal-backdrop absolute inset-0"
-                  />
-                  <div
-                    ref={productionNotesModalPanelRef}
-                    className="glass-modal-panel relative flex h-[min(640px,90vh)] w-[min(560px,96vw)] flex-col overflow-hidden"
-                    style={{ zIndex: 2147483647 }}
-                  >
-                    {renderProductionNotesCard("sidebar")}
-                  </div>
-                </div>,
-                document.body,
-              )
-            : null}
-          {shouldRenderContractorsModal && typeof document !== "undefined"
-            ? createPortal(
-                <div className="fixed inset-0 flex items-center justify-center px-4 py-4" style={{ zIndex: 2147483647 }}>
-                  <button
-                    type="button"
-                    aria-label="Close contractors dialog backdrop"
-                    onClick={() => void closeContractorsPanel()}
-                    className="glass-modal-backdrop absolute inset-0"
-                  />
-                  <div
-                    ref={contractorsModalPanelRef}
-                    className="glass-modal-panel relative flex h-[min(640px,90vh)] w-[min(560px,96vw)] flex-col overflow-hidden"
-                    style={{ zIndex: 2147483647 }}
-                  >
+          {/* Notes and Contractors: drawers down the right, over the cutlist (CutlistSideDrawer). */}
+          <CutlistSideDrawer open={isProductionNotesPanelOpen} label="Notes" isDarkMode={isDarkMode}>
+            {renderProductionNotesCard("sidebar")}
+          </CutlistSideDrawer>
+          <CutlistSideDrawer open={isContractorsPanelOpen} label="Contractors" isDarkMode={isDarkMode} panelRef={contractorsDrawerRef}>
                     <div
-                      className="glass-modal-header shrink-0 px-5 py-4"
+                      className="glass-modal-header relative z-[2] shrink-0 px-5 py-4"
                       style={{
                         backgroundColor: "color-mix(in srgb, var(--panel-muted) 35%, transparent)",
                         backdropFilter: "blur(6px)",
@@ -43507,8 +44517,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       }}
                     >
                       <div className="flex items-center justify-between gap-2">
-                        <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                          Contractors
+                        <p className="flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                          <HardHat size={15} className="shrink-0" style={{ color: "var(--text-muted)" }} />
+                          <span className="min-w-0 truncate">{activeContractorTab}</span>
                         </p>
                         <button
                           type="button"
@@ -43517,92 +44528,88 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                           title="Close"
                         >
-                          <X size={16} />
+                          <ChevronRight size={18} strokeWidth={1.75} />
                         </button>
                       </div>
-                      {contractorTabOptions.length > 0 ? (
-                        <div className="mt-2 flex gap-1.5">
-                          {contractorTabOptions.map((name) => {
-                            const active = activeContractorTab === name;
-                            return (
-                              <button
-                                key={name}
-                                type="button"
-                                onClick={() => void selectContractorTab(name)}
-                                className="flex-1 min-w-0 truncate rounded-[9px] border px-3 py-1.5 text-[12px] font-bold transition hover:brightness-105"
-                                style={
-                                  active
-                                    ? {
-                                        backgroundImage: "var(--brand-gradient)",
-                                        borderColor: "var(--brand-strong)",
-                                        color: "#FFFFFF",
-                                        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.45)",
-                                      }
-                                    : {
-                                        backgroundColor: "color-mix(in srgb, var(--panel-bg) 32%, transparent)",
-                                        backdropFilter: "blur(12px) saturate(180%)",
-                                        WebkitBackdropFilter: "blur(12px) saturate(180%)",
-                                        borderColor: "var(--glass-border)",
-                                        color: "var(--text-main)",
-                                        boxShadow: "inset 0 1px 0 var(--glass-highlight)",
-                                      }
-                                }
-                              >
-                                {name}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      ) : null}
-                      {contractorTabOptions.length > 0 && !productionReadOnly ? (
-                        <div ref={setContractorsToolbarHost} className="mt-2 min-w-0 overflow-hidden" />
-                      ) : null}
+                      {!productionReadOnly ? <div ref={setContractorsToolbarHost} className="mt-2 min-w-0" /> : null}
                     </div>
-                    {contractorTabOptions.length === 0 ? (
-                      <div className="glass-scroll flex-1 overflow-auto px-5 py-4">
-                        <p className="text-[12px] font-semibold" style={{ color: "var(--text-muted)" }}>
-                          No contractors configured yet — add some in Company Settings → Production → Contractors.
-                        </p>
-                      </div>
-                    ) : (
-                        <div className="glass-scroll flex min-h-0 flex-1 flex-col overflow-auto px-5 py-4">
-                          {!productionReadOnly ? (
-                            <QuoteDocumentEditor
-                              key={`contractor-notes-${activeContractorTab}`}
-                              mode="embedded"
-                              toolbarPlacement="inline"
-                              toolbarHost={contractorsToolbarHost}
-                              toolbarDensity="compact"
-                              embeddedChrome="card"
-                              embeddedMinHeight={180}
-                              embeddedEditableMinHeight={120}
-                              value={contractorNotesEditorInitialValue}
-                              readOnly={isSavingGeneralDetails || productionReadOnly}
-                              autoFocus
-                              fillHeight
-                              toolbarGlassStyle
-                              shellClassName="flex flex-col rounded-[10px] border"
-                              shellStyle={{
-                                borderColor: "var(--panel-border)",
-                                backgroundColor: "color-mix(in srgb, var(--panel-muted) 35%, transparent)",
-                                backdropFilter: "blur(6px)",
-                                WebkitBackdropFilter: "blur(6px)",
-                              }}
-                              onChange={(nextValue) => {
-                                contractorNotesEditorDraftRef.current = nextValue;
-                              }}
-                            />
-                          ) : (
-                            <div
-                              className="min-h-[180px] notes-rich leading-[20px]"
-                              dangerouslySetInnerHTML={{
-                                __html: notesToDisplayHtml(project?.contractorNotes?.[activeContractorTab] || ""),
-                              }}
-                            />
-                          )}
-                        </div>
-                    )}
-                  </div>
+                    <div className="glass-scroll flex min-h-0 flex-1 flex-col overflow-auto px-5 py-4">
+                      {!productionReadOnly ? (
+                        <QuoteDocumentEditor
+                          key={`contractor-notes-${activeContractorTab}`}
+                          mode="embedded"
+                          toolbarPlacement="inline"
+                          toolbarHost={contractorsToolbarHost}
+                          toolbarDensity="compact"
+                          embeddedChrome="card"
+                          embeddedMinHeight={180}
+                          embeddedEditableMinHeight={120}
+                          value={contractorNotesEditorInitialValue}
+                          readOnly={isSavingGeneralDetails || productionReadOnly}
+                          autoFocus
+                          fillHeight
+                          toolbarGlassStyle
+                          shellClassName="flex flex-col rounded-[10px] border"
+                          shellStyle={{
+                            borderColor: "var(--panel-border)",
+                            backgroundColor: "color-mix(in srgb, var(--panel-muted) 35%, transparent)",
+                            backdropFilter: "blur(6px)",
+                            WebkitBackdropFilter: "blur(6px)",
+                          }}
+                          onChange={(nextValue) => {
+                            contractorNotesEditorDraftRef.current = nextValue;
+                          }}
+                        />
+                      ) : (
+                        <div
+                          className="min-h-[180px] notes-rich leading-[20px]"
+                          dangerouslySetInnerHTML={{
+                            __html: notesToDisplayHtml(project?.contractorNotes?.[activeContractorTab] || ""),
+                          }}
+                        />
+                      )}
+                    </div>
+          </CutlistSideDrawer>
+          {contractorsMenuRect && typeof document !== "undefined"
+            ? createPortal(
+                <div
+                  ref={contractorsMenuRef}
+                  role="menu"
+                  aria-label="Contractors"
+                  className="fixed z-[2147483647] flex max-h-[360px] flex-col overflow-y-auto rounded-[12px] border p-1"
+                  style={{ left: contractorsMenuRect.left, width: contractorsMenuRect.width, ...GLASS_DROPDOWN_MENU_STYLE }}
+                >
+                  {contractorTabOptions.length ? (
+                    contractorTabOptions.map((name) => {
+                      const open = isContractorsPanelOpen && name === activeContractorTab;
+                      const hasNotes = Boolean(
+                        String(project?.contractorNotes?.[name] ?? "")
+                          .replace(/<[^>]*>/g, "")
+                          .replace(/&nbsp;/g, " ")
+                          .trim(),
+                      );
+                      return (
+                        <button
+                          key={name}
+                          type="button"
+                          role="menuitem"
+                          onClick={() => void openContractorNotes(name)}
+                          className="flex w-full min-w-0 items-center gap-2 rounded-[8px] px-2.5 py-2 text-left text-[13px] font-medium transition hover:bg-[color-mix(in_srgb,var(--brand)_12%,transparent)]"
+                          style={{ color: "var(--text-main)", ...(open ? { backgroundColor: "color-mix(in srgb, var(--brand) 10%, transparent)" } : {}) }}
+                        >
+                          <span className="min-w-0 truncate">{name}</span>
+                          {hasNotes ? (
+                            <span title="Has notes" className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: "var(--brand)" }} />
+                          ) : null}
+                          {open ? <Check size={14} className="ml-auto shrink-0" style={{ color: "var(--brand)" }} /> : null}
+                        </button>
+                      );
+                    })
+                  ) : (
+                    <p className="px-2.5 py-2 text-[12px]" style={{ color: "var(--text-muted)" }}>
+                      No contractors yet — add them in Company Settings → Production → Contractors.
+                    </p>
+                  )}
                 </div>,
                 document.body,
               )
@@ -43856,6 +44863,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               )
             : null}
         </div>
+        {renderCutlistImportUi()}
         <GlassScrollbarThumb scrollRef={productionCutlistFullscreenScrollRef} />
       </ProtectedRoute>
     );
@@ -50702,6 +51710,422 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     );
   }
 
+  // Cutlist › Import's file picker (opened by its buttons — emptied after each pick, so the same file can be picked
+  // again) and its pop-up. Rendered by both cutlist screens (phone/tablet and computer).
+  function renderCutlistImportUi() {
+    return (
+      <>
+          <input
+            ref={cutlistImportInputRef}
+            type="file"
+            accept=".xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (file) void readCutlistImportFile(file);
+            }}
+          />
+          {shouldRenderCutlistImportModal && cutlistImport && typeof document !== "undefined"
+            ? createPortal(
+                <div className="fixed inset-0 flex items-center justify-center px-4 py-4" style={{ zIndex: 2147483647 }}>
+                  <button
+                    type="button"
+                    aria-label="Close cutlist import"
+                    onClick={() => (isApplyingCutlistImport ? null : setIsCutlistImportOpen(false))}
+                    className="glass-modal-backdrop absolute inset-0"
+                  />
+                  <div
+                    ref={cutlistImportPanelRef}
+                    className="glass-modal-panel relative flex max-h-[min(760px,92vh)] w-[min(520px,96vw)] flex-col overflow-hidden"
+                    style={{ zIndex: 2147483647 }}
+                  >
+                    <div className="glass-modal-header flex shrink-0 items-center gap-2 px-5 py-4">
+                      <FileSpreadsheet size={16} style={{ color: "var(--text-main)" }} />
+                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Import</p>
+                    </div>
+                    {/* The parts (scrolling, when there's a lot), then the buttons, always in view. */}
+                    <div className="glass-scroll min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4 text-[12.5px]" style={{ color: "var(--text-main)" }}>
+                      {cutlistImport.error ? (
+                        <>
+                          <p className="font-medium">{cutlistImport.fileName}</p>
+                          <p style={{ color: "var(--text-muted)" }}>{cutlistImport.error}</p>
+                        </>
+                      ) : (
+                        (() => {
+                          const included = cutlistImportRowsInRooms(cutlistImport);
+                          const includedParts = included.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0);
+                          const roomsOn = cutlistImport.sheets.filter((sheet) => !isCutlistImportSheetSkipped(sheet)).length;
+                          const hasCutlist = cutlistImport.rows.length > 0 || cutlistImport.sheets.length > 0;
+                          const partsInFile: Array<[CutlistImportPart, boolean]> = [
+                            ["settings", Boolean(cutlistImport.settings)],
+                            ["boards", cutlistImport.newBoards.length > 0],
+                            ["cutlist", hasCutlist],
+                            ["order", Boolean(cutlistImport.order)],
+                            ["notes", Boolean(cutlistImport.notes)],
+                          ];
+                          // Switches only when there's more than one part to choose from.
+                          const switchable = partsInFile.filter(([, present]) => present).length > 1;
+                          const part = (key: CutlistImportPart, title: string, detail: ReactNode, children?: ReactNode) => {
+                            const on = isCutlistImportPartOn(key);
+                            return (
+                              <div
+                                key={key}
+                                className="space-y-2.5 rounded-[10px] border px-3 py-2.5"
+                                style={{ borderColor: "var(--glass-border)", backgroundColor: "color-mix(in srgb, var(--panel-bg) 45%, transparent)" }}
+                              >
+                                <div className="flex items-start gap-2.5">
+                                  {switchable ? (
+                                    <span className="pt-0.5">
+                                      <GlassSwitch
+                                        size="sm"
+                                        checked={on}
+                                        onChange={(next) => setCutlistImportParts((prev) => ({ ...prev, [key]: next }))}
+                                        ariaLabel={`Import ${title}`}
+                                        title={on ? `Leave ${title} out` : `Import ${title}`}
+                                      />
+                                    </span>
+                                  ) : null}
+                                  <div className={`min-w-0 flex-1 transition-opacity ${on ? "" : "opacity-50"}`}>
+                                    <p className="font-semibold">{title}</p>
+                                    <div className="text-[11.5px]" style={{ color: "var(--text-muted)" }}>
+                                      {on ? detail : "Not imported"}
+                                    </div>
+                                  </div>
+                                </div>
+                                {on ? children : null}
+                              </div>
+                            );
+                          };
+                          return (
+                            <>
+                              <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
+                                From <span className="font-semibold" style={{ color: "var(--text-main)" }}>{cutlistImport.fileName}</span>
+                                {switchable ? " — switch off anything you don't want to bring in." : ""}
+                              </p>
+                              {cutlistImport.settings
+                                ? part(
+                                    "settings",
+                                    "Job Selections",
+                                    <>
+                                      {cutlistImport.settings.summary.join(", ")}
+                                      {cutlistImport.settings.hardwareHasDrawers &&
+                                      (cutlistImport.settings.hardware.hardwareCategory || cutlistImport.settings.hardware.newDrawerType)
+                                        ? " (its drawer type only with Replace All — the cutlist already has drawers)"
+                                        : ""}
+                                    </>,
+                                  )
+                                : null}
+                              {cutlistImport.newBoards.length
+                                ? part(
+                                    "boards",
+                                    "Boards",
+                                    `Added to Board Settings: ${cutlistImport.newBoards.map((board) => boardBaseLabelFromRow(board)).join(", ")}`,
+                                  )
+                                : null}
+                              {hasCutlist
+                                ? part(
+                                    "cutlist",
+                                    "Cutlist",
+                                    <>
+                                      {`${included.length} ${included.length === 1 ? "row" : "rows"} (${includedParts} ${includedParts === 1 ? "part" : "parts"})`}
+                                      {cutlistImport.sheets.length
+                                        ? ` · ${roomsOn} of ${cutlistImport.sheets.length} ${cutlistImport.sheets.length === 1 ? "room" : "rooms"}`
+                                        : ""}
+                                      {cutlistRows.length && included.length
+                                        ? ` · the cutlist has ${cutlistRows.length} ${cutlistRows.length === 1 ? "row" : "rows"} already`
+                                        : ""}
+                                    </>,
+                                    <>
+                                      {cutlistImport.sheets.length ? (
+                                        <div className="space-y-2.5 border-t pt-2.5" style={{ borderColor: "var(--glass-border)" }}>
+                                          {cutlistImport.sheets.some((sheet) => sheet.needsMatch && !isCutlistImportSheetSkipped(sheet)) ? (
+                                            <p className="text-[11.5px]" style={{ color: "var(--brand-strong)" }}>
+                                              Some could be more than one room — pick the room each one goes to.
+                                            </p>
+                                          ) : null}
+                                          {cutlistImport.sheets.map((sheet) => {
+                                            const included = !isCutlistImportSheetSkipped(sheet);
+                                            const choice = cutlistImportRoomChoices[sheet.key] ?? "";
+                                            // The project's rooms — those of the same name first (one of exactly its name comes
+                                            // picked) — then a new one. Its own name as a new room, too, when there's no room of it here.
+                                            const projectRooms = cutlistAddedRoomTabs.map((tab) => tab.filter);
+                                            const ownExists = projectRooms.some((room) => room.trim().toLowerCase() === sheet.name.trim().toLowerCase());
+                                            const roomOptions = [
+                                              ...(sheet.needsMatch || ownExists ? [] : [""]),
+                                              ...sheet.matchOptions,
+                                              ...projectRooms.filter((room) => !sheet.matchOptions.includes(room)),
+                                              CUTLIST_IMPORT_NEW_ROOM,
+                                            ];
+                                            return (
+                                              <div key={sheet.key} className="space-y-1.5">
+                                                <div className="flex items-center gap-2.5">
+                                                  <GlassSwitch
+                                                    size="sm"
+                                                    checked={included}
+                                                    onChange={(on) => setCutlistImportSkippedSheets((prev) => ({ ...prev, [sheet.key]: !on }))}
+                                                    ariaLabel={`Import ${sheet.name}`}
+                                                    title={included ? "Leave this room out" : "Import this room"}
+                                                  />
+                                                  <div className={`min-w-0 flex-1 transition-opacity ${included ? "" : "opacity-50"}`}>
+                                                    <p className="truncate font-medium">{sheet.name}</p>
+                                                    <p className="truncate text-[11px]" style={{ color: "var(--text-muted)" }}>
+                                                      {[sheet.sheetLabel, sheet.parts ? `${sheet.parts} ${sheet.parts === 1 ? "part" : "parts"}` : "no parts", included ? "" : "not imported"]
+                                                        .filter(Boolean)
+                                                        .join(" · ")}
+                                                    </p>
+                                                  </div>
+                                                  {included ? (
+                                                    <GlassSelectDropdown
+                                                      value={choice}
+                                                      options={roomOptions}
+                                                      getLabel={(option) =>
+                                                        option === CUTLIST_IMPORT_NEW_ROOM
+                                                          ? "New room…"
+                                                          : option ||
+                                                            (sheet.needsMatch ? "Choose a room…" : ownExists ? sheet.name : `${sheet.name} (new room)`)
+                                                      }
+                                                      onChange={(next) => setCutlistImportRoomChoices((prev) => ({ ...prev, [sheet.key]: next }))}
+                                                      className="h-8 w-[190px] rounded-full border border-[var(--glass-border)] bg-[var(--panel-bg)] pl-3 pr-2.5 text-[12px] text-[var(--text-main)]"
+                                                    />
+                                                  ) : null}
+                                                </div>
+                                                {included && choice === CUTLIST_IMPORT_NEW_ROOM ? (
+                                                  <RoomNameCombobox
+                                                    value={cutlistImportNewRoomNames[sheet.key] ?? ""}
+                                                    options={companyRoomNameOptions}
+                                                    onChange={(next) => setCutlistImportNewRoomNames((prev) => ({ ...prev, [sheet.key]: next }))}
+                                                    placeholder="The new room's name"
+                                                    className="h-9 w-full rounded-[10px] border px-3 text-[12.5px] outline-none"
+                                                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+                                                  />
+                                                ) : null}
+                                              </div>
+                                            );
+                                          })}
+                                        </div>
+                                      ) : null}
+                                      {cutlistImport.unknownBoards.length || cutlistImport.unknownPartTypes.length || cutlistImport.grainSkipped ? (
+                                        <div
+                                          className="space-y-1 rounded-[10px] border px-3 py-2"
+                                          style={{
+                                            borderColor: "color-mix(in srgb, var(--accent-amber) 45%, transparent)",
+                                            backgroundColor: "color-mix(in srgb, var(--accent-amber) 12%, transparent)",
+                                          }}
+                                        >
+                                          {cutlistImport.unknownBoards.length ? (
+                                            <p>Not in Board Settings (imported as written): {cutlistImport.unknownBoards.join(", ")}</p>
+                                          ) : null}
+                                          {cutlistImport.unknownPartTypes.length ? (
+                                            <p>Not one of your Part Types (imported as written): {cutlistImport.unknownPartTypes.join(", ")}</p>
+                                          ) : null}
+                                          {cutlistImport.grainSkipped ? (
+                                            <p>
+                                              {`Grain left off ${cutlistImport.grainSkipped} ${cutlistImport.grainSkipped === 1 ? "row" : "rows"} — ${
+                                                cutlistImport.grainSkipped === 1 ? "its board doesn't" : "their boards don't"
+                                              } have grain in Board Settings.`}
+                                            </p>
+                                          ) : null}
+                                        </div>
+                                      ) : null}
+                                      {cutlistImportDrawerTypeChanges(cutlistImport).map((change) => (
+                                        <p key={change.scope || "__project"} className="text-[11.5px]">
+                                          <span className="font-semibold">{change.scope || "Project"} drawers:</span> {change.label}
+                                          {change.hasDrawers ? (
+                                            <span style={{ color: "var(--text-muted)" }}> (only with Replace All — it already has drawers)</span>
+                                          ) : null}
+                                        </p>
+                                      ))}
+                                    </>,
+                                  )
+                                : null}
+                              {cutlistImport.order
+                                ? part(
+                                    "order",
+                                    "Order",
+                                    [
+                                      [cutlistImport.order.hinges.length, "hinge"],
+                                      [cutlistImport.order.other.length, "other item"],
+                                      [cutlistImport.order.misc.length, "misc item"],
+                                    ]
+                                      .filter(([count]) => Number(count) > 0)
+                                      .map(([count, noun]) => `${count} ${noun}${Number(count) === 1 ? "" : "s"}`)
+                                      .join(", "),
+                                  )
+                                : null}
+                              {cutlistImport.notes
+                                ? part(
+                                    "notes",
+                                    "Notes",
+                                    [cutlistImport.notes.production ? "Notes" : "", ...Object.keys(cutlistImport.notes.contractors)].filter(Boolean).join(", "),
+                                  )
+                                : null}
+                              {switchable || cutlistRows.length ? (
+                                <p className="text-[11.5px]" style={{ color: "var(--text-muted)" }}>
+                                  Add puts these with what&apos;s there; Replace All replaces the cutlist, order lists and notes switched on (Job
+                                  Selections and boards apply either way).
+                                </p>
+                              ) : null}
+                            </>
+                          );
+                        })()
+                      )}
+                    </div>
+                      <div className="flex shrink-0 items-center justify-end gap-2 border-t px-5 py-3" style={{ borderColor: "var(--glass-border)" }}>
+                        <button
+                          type="button"
+                          disabled={isApplyingCutlistImport}
+                          onClick={() => setIsCutlistImportOpen(false)}
+                          className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95 disabled:opacity-55"
+                          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+                        >
+                          {cutlistImport.error ? "Close" : "Cancel"}
+                        </button>
+                        {!cutlistImport.error &&
+                        ((cutlistRows.length && cutlistImport.rows.length) || cutlistImport.order || cutlistImport.notes) ? (
+                          <button
+                            type="button"
+                            disabled={
+                              isApplyingCutlistImport ||
+                              cutlistImportHasUnmatchedRooms(cutlistImport) ||
+                              !(
+                                cutlistImportRowsInRooms(cutlistImport).length ||
+                                (isCutlistImportPartOn("order") && cutlistImport.order) ||
+                                (isCutlistImportPartOn("notes") && cutlistImport.notes)
+                              )
+                            }
+                            onClick={() => void applyCutlistImport("replace")}
+                            className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95 disabled:opacity-55"
+                            style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
+                          >
+                            Replace All
+                          </button>
+                        ) : null}
+                        {!cutlistImport.error ? (
+                          <button
+                            type="button"
+                            disabled={isApplyingCutlistImport || cutlistImportHasUnmatchedRooms(cutlistImport) || cutlistImportIsEmpty(cutlistImport)}
+                            onClick={() => void applyCutlistImport("add")}
+                            className="h-9 rounded-[9px] border px-4 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-55"
+                            style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                          >
+                            {isApplyingCutlistImport
+                              ? "Importing…"
+                              : (cutlistRows.length && cutlistImport.rows.length) || cutlistImport.order || cutlistImport.notes
+                                ? "Add"
+                                : "Import"}
+                          </button>
+                        ) : null}
+                      </div>
+                  </div>
+                </div>,
+                document.body,
+              )
+            : null}
+
+      </>
+    );
+  }
+
+  // A hardware brand and its drawer type as pills in the brand's colour (Company Settings > Hardware): the brand filled,
+  // its drawer type a tint of it. They wrap onto another line rather than squash.
+  function renderHardwarePills(hardware: ProductionHardwareSettings, align: "start" | "end" = "end") {
+    const category = categoryOfHardware(hardware);
+    const drawer = String(hardware.newDrawerType || "").trim();
+    const color =
+      normalizeHexColor(hardwareRows.find((row) => row.name.toLowerCase() === category.toLowerCase())?.color) ?? "#7D99B3";
+    if (!category && !drawer) return <span className="truncate">Not set</span>;
+    return (
+      <span className={`flex min-w-0 flex-wrap items-center gap-1 ${align === "end" ? "justify-end" : "justify-start"}`}>
+        {category ? (
+          <span
+            className="inline-block h-5 max-w-full truncate rounded-full px-2 text-[10.5px] font-bold leading-5"
+            style={{ backgroundColor: color, color: isLightHex(color) ? "#1F2937" : "#FFFFFF" }}
+          >
+            {category}
+          </span>
+        ) : null}
+        {drawer ? (
+          <span
+            className="inline-block h-5 max-w-full truncate rounded-full border px-2 text-[10.5px] font-bold leading-[18px]"
+            style={{ borderColor: color, backgroundColor: `color-mix(in srgb, ${color} 18%, transparent)`, color: "var(--text-main)" }}
+          >
+            {drawer}
+          </span>
+        ) : null}
+      </span>
+    );
+  }
+
+  // Production > Hardware's settings for a scope ("" Global, the project's, or a room's own): brand, drawer type, hinges, handles.
+  function renderHardwareFields(scope: string, disabled: boolean) {
+    const hardware = hardwareForScope(scope);
+    return (
+      <div className="space-y-3 text-[12px]">
+        <div className="flex flex-wrap items-center gap-3">
+          {hardwareRows.map((row) => (
+            <label key={row.name} className="inline-flex items-center gap-1 font-semibold" style={{ color: "var(--text-main)" }}>
+              <input
+                disabled={disabled}
+                type="checkbox"
+                checked={hardware.hardwareCategory === row.name}
+                onChange={() => onHardwareCategoryChange(scope, row.name)}
+              />
+              {row.name}
+            </label>
+          ))}
+        </div>
+        <div className="grid grid-cols-[92px_1fr] items-center gap-2">
+          <p className="font-semibold" style={{ color: "var(--text-main)" }}>New Drawer Type</p>
+          <GlassSelectDropdown
+            fullWidth
+            disabled={disabled}
+            value={hardware.newDrawerType}
+            options={["", ...drawerOptionsForCategory(hardware.hardwareCategory).map((row) => row.name)]}
+            onChange={(next) => onChangeDrawerType(scope, next)}
+            className="h-7 rounded-[8px] border px-2 text-[12px]"
+            style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
+          />
+        </div>
+        <div className="grid grid-cols-[92px_1fr] items-center gap-2">
+          <p className="font-semibold" style={{ color: "var(--text-main)" }}>Hinge Type</p>
+          <GlassSelectDropdown
+            fullWidth
+            disabled
+            value={hardware.hardwareCategory}
+            options={[hardware.hardwareCategory]}
+            onChange={() => {}}
+            className="h-7 rounded-[8px] border px-2 text-[12px]"
+            style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted, color: "var(--text-main)" }}
+          />
+        </div>
+        <div className="grid grid-cols-[92px_1fr] items-start gap-2">
+          <p className="font-semibold" style={{ color: "var(--text-main)" }}>Handles</p>
+          <div className="flex flex-col items-start gap-2 pt-[1px]">
+            <label className="inline-flex items-center gap-2" style={{ color: "var(--text-main)" }}>
+              <input
+                disabled={disabled}
+                type="checkbox"
+                checked={Boolean(hardware.standardHandles)}
+                onChange={() => onToggleHardwareHandle(scope, "standardHandles")}
+              />
+              <span>Front Fixed</span>
+            </label>
+            <label className="inline-flex items-center gap-2" style={{ color: "var(--text-main)" }}>
+              <input
+                disabled={disabled}
+                type="checkbox"
+                checked={Boolean(hardware.wrapOverHandles)}
+                onChange={() => onToggleHardwareHandle(scope, "wrapOverHandles")}
+              />
+              <span>Profile</span>
+            </label>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // A Notes card's body (General, Design and Production's): no Edit button — like a contact's Notes, click it (tap,
   // on a touch screen) and type, and click anywhere outside the card to save. Its formatting toolbar sits in the
   // card's header (toolbarHost) while editing.
@@ -50732,17 +52156,27 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           onEditorReady={(editor) => {
             const typeAhead = notesTypeAheadRef.current;
             notesTypeAheadRef.current = null;
-            typeAhead?.stop();
             const root = editor?.model.document.getRoot();
-            if (!editor || !root) return;
+            if (!editor || !root) {
+              typeAhead?.stop();
+              return;
+            }
+            const typed = `${typeAhead?.text ?? ""}${typeAhead?.stand?.value ?? ""}`;
             editor.model.change((writer) => writer.setSelection(root, "end"));
-            if (typeAhead?.text) {
+            if (typed) {
               editor.model.change((writer) => {
-                editor.model.insertContent(writer.createText(typeAhead.text), editor.model.document.selection);
+                editor.model.insertContent(writer.createText(typed), editor.model.document.selection);
               });
               // (The editor only reports changes from here on, so this one's passed on by hand.)
               opts.onDraftChange(editor.getData());
             }
+            // Into the editor before the stand-in text box goes, so a phone's keyboard stays up.
+            try {
+              editor.editing.view.focus();
+            } catch {
+              // focused again by autoFocus
+            }
+            typeAhead?.stop();
           }}
           onChange={opts.onDraftChange}
         />
@@ -50757,7 +52191,33 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       if (selection && !selection.isCollapsed && e.currentTarget.contains(selection.anchorNode)) return;
       // Typing straight away: held until the editor's ready (see onEditorReady above).
       notesTypeAheadRef.current?.stop();
-      const typeAhead = { text: "", stop: () => {} };
+      const typeAhead: { text: string; stand: HTMLInputElement | null; stop: () => void } = { text: "", stand: null, stop: () => {} };
+      // A phone only brings its keyboard up for something focused in the tap itself — the editor, which takes a
+      // moment to start, would come up without it (so it took a second tap). So an invisible stand-in text box,
+      // where the tap was, takes the focus (and the keyboard) until the editor's ready.
+      if (isCoarsePointer) {
+        const stand = document.createElement("input");
+        stand.type = "text";
+        stand.tabIndex = -1;
+        stand.setAttribute("aria-hidden", "true");
+        stand.autocomplete = "off";
+        Object.assign(stand.style, {
+          position: "fixed",
+          left: `${Math.round(e.clientX)}px`,
+          top: `${Math.round(e.clientY)}px`,
+          width: "1px",
+          height: "1px",
+          opacity: "0",
+          border: "0",
+          padding: "0",
+          // 16px, so an iPhone doesn't zoom in on it.
+          fontSize: "16px",
+          pointerEvents: "none",
+        });
+        document.body.appendChild(stand);
+        stand.focus({ preventScroll: true });
+        typeAhead.stand = stand;
+      }
       const onKeyDown = (event: KeyboardEvent) => {
         if (event.ctrlKey || event.metaKey || event.altKey) return;
         if (event.key === "Backspace" && typeAhead.text) {
@@ -50769,7 +52229,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         }
       };
       window.addEventListener("keydown", onKeyDown, true);
-      typeAhead.stop = () => window.removeEventListener("keydown", onKeyDown, true);
+      typeAhead.stop = () => {
+        window.removeEventListener("keydown", onKeyDown, true);
+        typeAhead.stand?.remove();
+        typeAhead.stand = null;
+      };
       notesTypeAheadRef.current = typeAhead;
       // Not left listening if the editor never comes up.
       window.setTimeout(() => {
@@ -50801,7 +52265,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               header bar was hardcoded to fixed light-mode hex values, so it never matched in dark
               mode (or the rest of Production's containers, which are all theme-var-driven). */}
           <div
-            className="glass-modal-header shrink-0 overflow-hidden px-4 py-2"
+            className="glass-modal-header relative z-[2] shrink-0 px-4 py-2"
             style={{
               backdropFilter: "blur(6px)",
               WebkitBackdropFilter: "blur(6px)",
@@ -50822,12 +52286,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                 title="Save and close notes"
               >
-                <X size={16} />
+                <ChevronRight size={18} strokeWidth={1.75} />
               </button>
             </div>
             <div
               ref={setProductionNotesToolbarHost}
-              className={`${!productionReadOnly ? "mt-2 min-w-0 overflow-hidden" : "hidden"}`}
+              className={`${!productionReadOnly ? "mt-2 min-w-0" : "hidden"}`}
             />
           </div>
           <div className="glass-scroll flex min-h-0 flex-1 flex-col overflow-auto px-4 pb-4 pt-3" style={{ color: "var(--text-main)" }}>
@@ -50889,7 +52353,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           }}
         >
           <CardHeader
-            className="flex h-[50px] flex-row items-center justify-between overflow-hidden border-b px-4 py-2"
+            className="relative z-[2] flex h-[50px] flex-row items-center justify-between border-b px-4 py-2"
             style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}
           >
             <CardTitle
@@ -50900,7 +52364,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             </CardTitle>
             <div
               ref={setProductionNotesToolbarHost}
-              className={`${isEditingProductionNotes && !productionReadOnly ? "shrink-0 overflow-hidden" : "hidden"}`}
+              className={`${isEditingProductionNotes && !productionReadOnly ? "shrink-0" : "hidden"}`}
             />
           </CardHeader>
           <CardContent
@@ -51581,6 +53045,264 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             </div>
           </div>
 
+          {shouldRenderHardwareRoomPopup && hardwareRoomPopup !== null && typeof document !== "undefined"
+            ? createPortal(
+                (() => {
+                  // "" Global, the project's hardware (no "Global" switch), or a room's.
+                  const room = hardwareRoomPopup;
+                  const own = !room || Boolean(productionForm.roomHardware[room]);
+                  return (
+                    <div className="fixed inset-0 flex items-center justify-center px-4 py-4" style={{ zIndex: 2147483000 }}>
+                      <button
+                        type="button"
+                        aria-label="Close room hardware"
+                        onClick={() => setIsHardwareRoomPopupOpen(false)}
+                        className="glass-modal-backdrop absolute inset-0"
+                      />
+                      <div ref={hardwareRoomPopupPanelRef} className="glass-modal-panel relative w-[min(400px,96vw)] overflow-hidden" style={{ zIndex: 2147483000 }}>
+                        <div className="glass-modal-header flex items-center justify-between gap-2 px-5 py-4">
+                          <p className="min-w-0 truncate text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                            Hardware · {room || "Global"}
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => setIsHardwareRoomPopupOpen(false)}
+                            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition hover:bg-[var(--panel-muted)]"
+                            style={{ color: "var(--text-muted)" }}
+                            aria-label="Close"
+                          >
+                            <X size={16} />
+                          </button>
+                        </div>
+                        <div className="space-y-3 px-5 pb-5 pt-3 text-[12px]">
+                          {!room ? (
+                            <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>Used by every room that doesn&apos;t have its own hardware.</p>
+                          ) : null}
+                          <div className={`flex items-center justify-between gap-3 ${room ? "" : "hidden"}`}>
+                            <div className="min-w-0">
+                              <p className="font-semibold" style={{ color: "var(--text-main)" }}>Global</p>
+                            </div>
+                            <QuoteExtraToggleSwitch
+                              checked={!own}
+                              disabled={productionReadOnly}
+                              onChange={(useProject) => setRoomHasOwnHardware(room, !useProject)}
+                            />
+                          </div>
+                          <div className="relative overflow-hidden rounded-[12px] border p-3" style={{ borderColor: "var(--glass-border)" }}>
+                            {/* Editable while it uses Global too: a change gives the room its own hardware (saveHardwareForScope),
+                                which turns Global off. */}
+                            {renderHardwareFields(room, productionReadOnly)}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })(),
+                document.body,
+              )
+            : null}
+          {shouldRenderPendingHardwareChange && pendingHardwareChange && typeof document !== "undefined"
+            ? createPortal(
+                (() => {
+                  const pending = pendingHardwareChange;
+                  const nextCategory = categoryOfHardware(pending.next);
+                  const nextDrawer = String(pending.next.newDrawerType || "").trim();
+                  const letters = drawerHeightLettersForDrawer(hardwareRows, nextCategory, nextDrawer);
+                  const breakdown = drawerBreakdownForDrawer(hardwareRows, nextCategory, nextDrawer);
+                  const rows = cutlistRows.filter((row) => pending.heights[row.id] !== undefined);
+                  const rooms = Array.from(new Set(rows.map((row) => String(row.room || "").trim() || "Project Cutlist")));
+                  const checks = new Map(
+                    rows.map((row) => {
+                      const height = pending.heights[row.id] ?? "";
+                      const notOffered = drawerHeightsNotIn(height, letters);
+                      const depthLeft = toNum(row.depth) - Number(breakdown.spaceRequirement ?? 0);
+                      const tooShallow =
+                        toNum(row.depth) > 0 &&
+                        breakdown.hardwareLengths.length > 0 &&
+                        !breakdown.hardwareLengths.some((length) => Number(length) <= depthLeft);
+                      return [row.id, { notOffered, empty: !parseDrawerHeightTokens(height).length, tooShallow }] as const;
+                    }),
+                  );
+                  const blocked = [...checks.values()].some((check) => check.notOffered.length > 0 || check.empty);
+                  const setHeights = (rowId: string, tokens: string[]) =>
+                    setPendingHardwareChange((prev) =>
+                      prev ? { ...prev, heights: { ...prev.heights, [rowId]: formatDrawerHeightTokens(tokens) } } : prev,
+                    );
+                  return (
+                    <div className="fixed inset-0 flex items-center justify-center px-4 py-4" style={{ zIndex: 2147483647 }}>
+                      <button
+                        type="button"
+                        aria-label="Cancel the hardware change"
+                        onClick={() => (isSavingPendingHardwareChange ? null : setIsPendingHardwareChangeOpen(false))}
+                        className="glass-modal-backdrop absolute inset-0"
+                      />
+                      <div
+                        ref={pendingHardwareChangePanelRef}
+                        className="glass-modal-panel relative flex max-h-[calc(100svh-32px)] w-[min(560px,96vw)] flex-col overflow-hidden"
+                        style={{ zIndex: 2147483647 }}
+                      >
+                        <div className="glass-modal-header px-5 py-4">
+                          <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Update Drawers</p>
+                          <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>
+                            <span>{pending.scope || "Global"}:</span>
+                            {nextCategory || nextDrawer ? renderHardwarePills(pending.next, "start") : <span>No hardware</span>}
+                          </div>
+                        </div>
+                        <div className="glass-scroll min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4 text-[12px]" style={{ color: "var(--text-main)" }}>
+                          <div
+                            className="rounded-[10px] border px-3 py-2 font-medium"
+                            style={{ borderColor: "#F2D06B", backgroundColor: "#FFF4BF", color: "#7A5600" }}
+                          >
+                            This changes how these drawers are worked out. Check each one&apos;s heights for the new drawer type before saving
+                            {letters.length ? ` (it has ${letters.join(", ")})` : ""}.
+                          </div>
+                          {rooms.map((room) => (
+                            <div key={room} className="space-y-1.5">
+                              {rooms.length > 1 ? (
+                                <p className="text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>{room}</p>
+                              ) : null}
+                              {rows
+                                .filter((row) => (String(row.room || "").trim() || "Project Cutlist") === room)
+                                .map((row) => {
+                                  const check = checks.get(row.id);
+                                  const height = pending.heights[row.id] ?? "";
+                                  const tokens = parseDrawerHeightTokens(height);
+                                  const hasProblem = Boolean(check && (check.notOffered.length || check.empty));
+                                  return (
+                                    <div
+                                      key={row.id}
+                                      className="rounded-[10px] border px-3 py-2"
+                                      style={{
+                                        borderColor: hasProblem ? "var(--danger-border)" : "var(--glass-border)",
+                                        backgroundColor: hasProblem ? "var(--danger-soft)" : "var(--panel-bg)",
+                                      }}
+                                    >
+                                      <div className="flex items-center gap-3">
+                                        <div className="min-w-0 flex-1">
+                                          <p className="truncate font-semibold">{row.name || "Drawer"}</p>
+                                          <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                                            {[row.width, row.depth].map((v) => String(v || "").trim() || "-").join(" × ")}
+                                          </p>
+                                        </div>
+                                        <div className="w-[170px] shrink-0">
+                                          <DrawerHeightDropdown
+                                            value={height}
+                                            options={letters}
+                                            optionValues={breakdown.letterValueMap}
+                                            disabled={isSavingPendingHardwareChange}
+                                            bg="var(--panel-bg)"
+                                            border="var(--glass-border)"
+                                            text="var(--text-main)"
+                                            onAdd={(token) => setHeights(row.id, [...tokens, String(token || "").trim()].filter(Boolean))}
+                                            onRemove={(token) => {
+                                              const next = [...tokens];
+                                              const at = next.findIndex((item) => item.toLowerCase() === String(token || "").trim().toLowerCase());
+                                              if (at >= 0) next.splice(at, 1);
+                                              setHeights(row.id, next);
+                                            }}
+                                          />
+                                        </div>
+                                      </div>
+                                      {check?.notOffered.length ? (
+                                        // The picker only offers the new drawer type's heights, so the old ones come out here.
+                                        <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] font-semibold" style={{ color: "var(--danger-strong)" }}>
+                                          <span>{`Not in ${nextDrawer || "this drawer type"}: ${check.notOffered.join(", ")} — pick its heights for it.`}</span>
+                                          <button
+                                            type="button"
+                                            disabled={isSavingPendingHardwareChange}
+                                            onClick={() => setHeights(row.id, tokens.filter((token) => !check.notOffered.includes(token)))}
+                                            className="inline-flex h-6 items-center rounded-full border px-2.5 text-[11px] font-bold transition hover:brightness-95"
+                                            style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--panel-bg)", color: "var(--danger-strong)" }}
+                                          >
+                                            {`Remove ${check.notOffered.join(", ")}`}
+                                          </button>
+                                        </p>
+                                      ) : check?.empty ? (
+                                        <p className="mt-1 text-[11px] font-semibold" style={{ color: "var(--danger-strong)" }}>Pick its heights.</p>
+                                      ) : null}
+                                      {check?.tooShallow ? (
+                                        <p className="mt-1 text-[11px] font-semibold" style={{ color: "#7A5600" }}>
+                                          Too shallow for this drawer type&apos;s runners — change its depth in the cutlist.
+                                        </p>
+                                      ) : null}
+                                    </div>
+                                  );
+                                })}
+                            </div>
+                          ))}
+                        </div>
+                        <div className="flex items-center justify-end gap-2 border-t px-5 py-3" style={{ borderColor: "var(--glass-border)" }}>
+                          <button
+                            type="button"
+                            disabled={isSavingPendingHardwareChange}
+                            onClick={() => setIsPendingHardwareChangeOpen(false)}
+                            className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95 disabled:opacity-55"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            disabled={blocked || isSavingPendingHardwareChange}
+                            onClick={() => void applyPendingHardwareChange()}
+                            className="h-9 rounded-[9px] border px-4 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-55"
+                            style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                          >
+                            {isSavingPendingHardwareChange ? "Saving…" : "Save Changes"}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })(),
+                document.body,
+              )
+            : null}
+          {shouldRenderBoardChangePrompt && boardChangePrompt && typeof document !== "undefined"
+            ? createPortal(
+                <div className="fixed inset-0 flex items-center justify-center px-4 py-4" style={{ zIndex: 2147483647 }}>
+                  {/* No way out but its two buttons: clicking off it does nothing — the rows on the old board have to be
+                      kept or changed. */}
+                  <div aria-hidden className="glass-modal-backdrop absolute inset-0" />
+                  <div ref={boardChangePromptPanelRef} role="alertdialog" aria-modal="true" className="glass-modal-panel relative w-[min(440px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
+                    <div className="glass-modal-header px-5 py-4">
+                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Update the Cutlist?</p>
+                    </div>
+                    <div className="space-y-4 px-5 py-4 text-[12.5px]" style={{ color: "var(--text-main)" }}>
+                      <p>
+                        {`${boardChangePrompt.rowCount} ${boardChangePrompt.rowCount === 1 ? "row" : "rows"} in the cutlist ${
+                          boardChangePrompt.rowCount === 1 ? "uses" : "use"
+                        } `}
+                        <span className="font-semibold">{boardChangePrompt.oldLabel}</span>. Change {boardChangePrompt.rowCount === 1 ? "it" : "them"} to{" "}
+                        <span className="font-semibold">{boardChangePrompt.newLabel}</span>?
+                      </p>
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          disabled={isApplyingBoardChange}
+                          onClick={() => setIsBoardChangePromptOpen(false)}
+                          className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95 disabled:opacity-55"
+                          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+                        >
+                          Keep as Is
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isApplyingBoardChange}
+                          onClick={() => void applyBoardChangeToCutlist()}
+                          className="h-9 rounded-[9px] border px-4 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-55"
+                          style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                        >
+                          {isApplyingBoardChange ? "Changing…" : `Change ${boardChangePrompt.rowCount} ${boardChangePrompt.rowCount === 1 ? "Row" : "Rows"}`}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>,
+                document.body,
+              )
+            : null}
+
           {project &&
             projectStatusMenuPos &&
             createPortal(
@@ -52073,7 +53795,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             if (isLgUpViewport || isEditingNotes || Boolean(String(project.notes || "").trim())) return;
                             setIsNotesExpandedMobile((prev) => !prev);
                           }}
-                          className="flex h-[50px] flex-row items-center justify-between overflow-hidden border-b px-4 py-2"
+                          className="relative z-[2] flex h-[50px] flex-row items-center justify-between border-b px-4 py-2"
                           style={{
                             cursor: !isLgUpViewport && !isEditingNotes && !String(project.notes || "").trim() ? "pointer" : undefined,
                             borderBottomColor: "var(--glass-border)",
@@ -52086,7 +53808,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           </CardTitle>
                           <div
                             ref={setNotesToolbarHost}
-                            className={`${isEditingNotes && generalAccess.edit ? "shrink-0 overflow-hidden" : "hidden"}`}
+                            className={`${isEditingNotes && generalAccess.edit ? "shrink-0" : "hidden"}`}
                           />
                         </CardHeader>
                         {(isEditingNotes || Boolean(String(project.notes || "").trim()) || isLgUpViewport || isNotesExpandedMobile) && (
@@ -52979,13 +54701,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   { label: "Order", icon: ShoppingCart, key: "order" as const },
                   { label: "Remedials", icon: Wrench, key: "remedials" as const },
                   { label: "Print", icon: Printer, key: "print" as const },
+                  { label: "Import", icon: ImportIcon, key: "import" as const },
                   ...(canRequestProductionUnlock
                     ? [{ label: "Unlock Edit", icon: Lock, key: "unlock" as const }]
                     : []),
                 ].map((item) => {
                   const Icon = item.icon;
                   const active =
-                    item.key === "unlock" || item.key === "print" || item.key === "remedials"
+                    item.key === "unlock" || item.key === "print" || item.key === "remedials" || item.key === "import"
                       ? false
                       : productionNav === item.key;
                   return (
@@ -53004,6 +54727,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             printModalOriginElRef.current = e.currentTarget;
                             setPrintModalOrigin(captureGlassModalOrigin(e));
                             openProductionPrintModal();
+                            return;
+                          }
+                          // A production workbook (Production › Downloads) in: the whole Production tab from it.
+                          if (item.key === "import") {
+                            openCutlistImport(e);
                             return;
                           }
                           if (item.key === "remedials") {
@@ -53891,7 +55619,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               <div ref={registerCutlistWarnCellRef("single", "height")} style={{ ...cutlistEntryCellStyle("height"), display: "flex", alignItems: "center" }}>
                                 <DrawerHeightDropdown
                                   value={String(cutlistEntry.height || "")}
-                                  options={drawerHeightLetterOptions}
+                                  options={drawerHeightLetterOptionsForRoom(cutlistEntryRoom)}
+                                  optionValues={drawerBreakdownForRoom(cutlistEntryRoom).letterValueMap}
                                   disabled={productionReadOnly}
                                   title={warningForCell("single", "height") || undefined}
                                   className={warningClassForCell("single", "height")}
@@ -55136,82 +56865,49 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
                     }}
                   >
-                    <div className="flex h-[50px] items-center border-b px-4" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
-                      <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Hardware</p>
-                    </div>
-                    <div className="space-y-3 p-3 text-[12px]">
-                      <div className="flex items-center gap-3">
-                        {hardwareRows.map((row) => (
-                            <label
-                              key={row.name}
-                              className="inline-flex items-center gap-1 font-semibold"
-                              style={{ color: "var(--text-main)" }}
-                              title={hasDrawerRowsInUse ? "Locked while drawer rows exist in cutlist" : undefined}
-                            >
-                            <input
-                              disabled={productionReadOnly || hasDrawerRowsInUse}
-                              type="checkbox"
-                              checked={productionForm.hardware.hardwareCategory === row.name}
-                              onChange={() => void onHardwareCategoryChange(row.name)}
-                            />
-                            {row.name}
-                          </label>
-                        ))}
+                    {/* With more than one room, the container is a list — "Global", then each room (which can have
+                        its own) — each opening its settings in a pop-up. Otherwise, the project's settings right here. */}
+                    <div className="relative">
+                      <div className="flex h-[50px] items-center border-b px-4" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
+                        <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Hardware</p>
                       </div>
-                      <div className="grid grid-cols-[92px_1fr] items-center gap-2">
-                          <p className="font-semibold" style={{ color: "var(--text-main)" }}>New Drawer Type</p>
-                          <GlassSelectDropdown
-                            fullWidth
-                            disabled={productionReadOnly || hasDrawerRowsInUse}
-                            value={productionForm.hardware.newDrawerType}
-                            options={["", ...drawerOptionsForCategory(productionForm.hardware.hardwareCategory).map((row) => row.name)]}
-                            onChange={(next) => void onChangeDrawerType(next)}
-                            title={hasDrawerRowsInUse ? "Locked while drawer rows exist in cutlist" : undefined}
-                            className="h-7 rounded-[8px] border px-2 text-[12px]"
-                            style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
-                          />
-                      </div>
-                      {hasDrawerRowsInUse && (
-                        <p className="text-[11px] font-semibold text-[var(--danger-strong)]">
-                          Hardware and drawer type are locked while drawer rows exist in cutlist.
-                        </p>
+                      {hardwareRoomNames.length > 1 ? (
+                        <div className="p-2 text-[12px]">
+                          {["", ...hardwareRoomNames].map((scope) => {
+                            const own = scope ? productionForm.roomHardware[scope] : productionForm.hardware;
+                            return (
+                              <button
+                                key={scope || "__project"}
+                                type="button"
+                                onClick={(e) => openHardwareRoomPopup(scope, e)}
+                                className="flex w-full items-center justify-between gap-2 rounded-[8px] px-2 py-2 text-left transition hover:bg-[color-mix(in_srgb,var(--brand)_12%,transparent)]"
+                              >
+                                <span className="max-w-[60%] shrink-0 truncate font-semibold" style={{ color: "var(--text-main)" }}>{scope || "Global"}</span>
+                                <span className="flex min-w-0 flex-1 items-center justify-end gap-1 text-[11px]" style={{ color: projectPalette.textMuted }}>
+                                  {own ? (
+                                    renderHardwarePills(own)
+                                  ) : (
+                                    // Linked to Global (no hardware of its own).
+                                    <span
+                                      className="inline-flex h-5 shrink-0 items-center gap-1 rounded-full px-2 text-[10.5px] font-bold"
+                                      style={{ backgroundColor: "#16A34A", color: "#FFFFFF" }}
+                                    >
+                                      <Link2 size={14} strokeWidth={2.5} className="shrink-0" />
+                                      Global
+                                    </span>
+                                  )}
+                                  <ChevronRight size={13} className="shrink-0" />
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <>
+                          <div className="p-3">{renderHardwareFields("", productionReadOnly)}</div>
+                        </>
                       )}
-                        <div className="grid grid-cols-[92px_1fr] items-center gap-2">
-                            <p className="font-semibold" style={{ color: "var(--text-main)" }}>Hinge Type</p>
-                            <GlassSelectDropdown
-                              fullWidth
-                              disabled
-                              value={productionForm.hardware.hardwareCategory}
-                              options={[productionForm.hardware.hardwareCategory]}
-                              onChange={() => {}}
-                              className="h-7 rounded-[8px] border px-2 text-[12px]"
-                              style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted, color: "var(--text-main)" }}
-                            />
-                        </div>
-                        <div className="grid grid-cols-[92px_1fr] items-start gap-2">
-                          <p className="font-semibold" style={{ color: "var(--text-main)" }}>Handles</p>
-                          <div className="flex flex-col items-start gap-2 pt-[1px]">
-                            <label className="inline-flex items-center gap-2" style={{ color: "var(--text-main)" }}>
-                              <input
-                                disabled={productionReadOnly}
-                                type="checkbox"
-                                checked={Boolean(productionForm.hardware.standardHandles)}
-                                onChange={() => void onToggleHardwareHandle("standardHandles")}
-                              />
-                              <span>Front Fixed</span>
-                            </label>
-                            <label className="inline-flex items-center gap-2" style={{ color: "var(--text-main)" }}>
-                              <input
-                                disabled={productionReadOnly}
-                                type="checkbox"
-                                checked={Boolean(productionForm.hardware.wrapOverHandles)}
-                                onChange={() => void onToggleHardwareHandle("wrapOverHandles")}
-                              />
-                              <span>Profile</span>
-                            </label>
-                          </div>
-                        </div>
-                      </div>
+                    </div>
                     </section>
                 </div>
 
@@ -56549,26 +58245,21 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 <div className="space-y-4 px-5 py-4">
                   <div className="space-y-2">
                     <p className="text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>Room Name</p>
-                    <input
-                      ref={focusOnMountWithoutScrolling}
+                    <RoomNameCombobox
+                      autoFocus
                       value={addRoomName}
-                      onChange={(e) => {
-                        setAddRoomName(e.target.value);
+                      options={companyRoomNameOptions}
+                      onChange={(next) => {
+                        setAddRoomName(next);
                         if (addRoomError) setAddRoomError("");
                       }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          void onConfirmAddCutlistRoom();
-                        }
-                        if (e.key === "Escape") {
-                          e.preventDefault();
-                          setIsAddRoomModalOpen(false);
-                          setAddRoomName("");
-                          setAddRoomError("");
-                        }
+                      onEnter={() => void onConfirmAddCutlistRoom()}
+                      onEscape={() => {
+                        setIsAddRoomModalOpen(false);
+                        setAddRoomName("");
+                        setAddRoomError("");
                       }}
-                      placeholder="Enter room name"
+                      placeholder={companyRoomNameOptions.length ? "Pick a room or type a name" : "Enter room name"}
                       className="h-10 w-full rounded-[10px] border px-3 text-[13px] outline-none"
                       style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
                     />
@@ -57746,6 +59437,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             />
           ) : null}
           {productionPrintModalPortal}
+          {renderCutlistImportUi()}
           {unlockEditModalPortal}
           {remedialsModalPortal}
           {/* Always rendered now (not gated on showInitialMeasureCloseSummary here) — the

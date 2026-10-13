@@ -11,6 +11,7 @@ import {
   Archive,
   CalendarDays,
   ChevronLeft,
+  Download,
   GripVertical,
   ImagePlus,
   Inbox,
@@ -26,6 +27,7 @@ import {
   Users,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
+import { DownloadsModal } from "@/components/downloads-modal";
 import { authorizedFetch } from "@/lib/api-fetch";
 import { useAppTabs } from "@/lib/app-tabs-context";
 import { MOBILE_TOP_BAR_UPDATED_EVENT, readMobileTopBarEnabled, readSidebarResizeLockEnabled, SIDEBAR_RESIZE_LOCK_UPDATED_EVENT } from "@/lib/ui-preferences";
@@ -82,6 +84,8 @@ import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
 import { isPreviewMode } from "@/lib/preview-mode";
 import { flatPageBg, isFlatPage, startsUnderTopBar } from "@/lib/flat-page";
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
+// The sidebar's Downloads button and the gap below it, above the account row.
+const SIDEBAR_DOWNLOADS_ROW_HEIGHT = 46;
 const COMPANY_BRANDING_CACHE_KEY_PREFIX = "cutsmart_company_branding_";
 const COMPANY_ACCESS_CACHE_KEY_PREFIX = "cutsmart_company_access_";
 const UPDATE_NOTICE_SEEN_STORAGE_KEY_PREFIX = "cutsmart_update_notice_seen_";
@@ -382,6 +386,11 @@ export function AppShell({
     newProjectModalOriginElRef,
   );
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  // The sidebar's Downloads (above the account row): its pop-up, and the company it's for (read as it opens).
+  const [showDownloads, setShowDownloads] = useState(false);
+  const [downloadsOrigin, setDownloadsOrigin] = useState<GlassModalOrigin>(null);
+  const downloadsOriginElRef = useRef<HTMLElement | null>(null);
+  const [downloadsCompanyId, setDownloadsCompanyId] = useState("");
   const [logoutConfirmOrigin, setLogoutConfirmOrigin] = useState<GlassModalOrigin>(null);
   const logoutConfirmPanelRef = useRef<HTMLDivElement | null>(null);
   // Prototype site for the "push" nudge on the origin element itself (see
@@ -3083,7 +3092,8 @@ export function AppShell({
   // when open — the nav list never gets pushed up or scrolls to make room for it; the white bar
   // just overlays on top of whichever tabs it grows tall enough to cover, the same way it already
   // visually stacks above the nav list via z-index.
-  const navListMarginBottom = restContentHeight ?? 0;
+  // (…and the Downloads button's row, just above it — which the settings panel covers too as it grows.)
+  const navListMarginBottom = (restContentHeight ?? 0) + SIDEBAR_DOWNLOADS_ROW_HEIGHT;
 
   // The small (rest) row and the full panel are grid-stacked in the same box, so
   // exactly one of them is shown at a time via a simple opacity crossfade — the
@@ -3482,6 +3492,31 @@ export function AppShell({
                 </Fragment>
               );
             })}
+          </div>
+
+          {/* Downloads: just above the account row, under it (z-1 vs its z-5) — so the settings panel covers it as it
+              slides up. */}
+          <div className="absolute inset-x-3 z-[1]" style={{ bottom: (restContentHeight ?? 0) + 4 }}>
+            <button
+              type="button"
+              onClick={(e) => {
+                downloadsOriginElRef.current = e.currentTarget;
+                setDownloadsOrigin(captureGlassModalOrigin(e));
+                setDownloadsCompanyId(
+                  String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim() || String(user?.companyId || "").trim(),
+                );
+                setShowDownloads(true);
+              }}
+              title={isSidebarIconOnlyContent ? "Downloads" : undefined}
+              className={cn(
+                "flex w-full items-center gap-2.5 rounded-[10px] py-2.5 text-[13px] font-medium transition-colors hover:bg-[var(--panel-muted)]",
+                isSidebarIconOnlyContent ? "justify-center px-0" : "px-3",
+              )}
+              style={{ color: shellPalette.textMuted }}
+            >
+              <Download size={17} className="shrink-0" />
+              {!isSidebarIconOnlyContent && <span className="sidebar-label-fade-in min-w-0 truncate">Downloads</span>}
+            </button>
           </div>
 
           {/* Bottom section: bottom-anchored overlay whose height animates between the measured
@@ -4522,6 +4557,13 @@ export function AppShell({
           </div>
         </div>
       )}
+      <DownloadsModal
+        open={showDownloads}
+        origin={downloadsOrigin}
+        originElRef={downloadsOriginElRef}
+        companyId={downloadsCompanyId}
+        onClose={() => setShowDownloads(false)}
+      />
       {shouldRenderLogoutConfirmModal && (
         <div className="fixed inset-0 z-[9100] flex items-center justify-center px-4">
           <button

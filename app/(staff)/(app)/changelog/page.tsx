@@ -32,6 +32,7 @@ import {
   useReleaseCountdown,
   type WaitingPublish,
 } from "@/components/whats-new-sheet";
+import { useKeepMenuInView } from "@/lib/use-keep-menu-in-view";
 type ReportDeviceType = "desktop" | "tablet" | "mobile";
 const HEADER_HEIGHT = 56;
 const DESKTOP_TAB_BAR_HEIGHT = 48;
@@ -161,6 +162,13 @@ function PerPageDropdown({
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ left: number; top: number; width: number } | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
+  // Opens above instead when there's no room for it below — it's at the foot of the page.
+  useKeepMenuInView(
+    open && Boolean(pos),
+    () => document.querySelector<HTMLElement>('[data-per-page-menu="true"]'),
+    triggerRef,
+    4,
+  );
 
   useEffect(() => {
     if (!open) return;

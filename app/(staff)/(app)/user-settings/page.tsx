@@ -48,6 +48,7 @@ import {
 } from "@/lib/firestore-data";
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
 import { fetchUserCalendarShowNonWorkdays, normalizeCalendarShowNonWorkdays, saveUserCalendarShowNonWorkdays } from "@/lib/calendar-data";
+import { GlassDropdown } from "@/components/glass-dropdown";
 import { hedgedAsync } from "@/lib/load-retry";
 import { readThemeMode, saveThemeMode, type ThemeMode } from "@/lib/theme-mode";
 import {
@@ -986,7 +987,17 @@ export default function UserSettingsPage() {
     </>
   );
   // Per-device ones (lib/ui-preferences.ts) save straight away; Notifications as Creator is part of the profile.
-  const preferenceRows: Array<{ id: string; icon: LucideIcon; label: string; description: string; checked: boolean; onChange: (next: boolean) => void; phone: boolean }> = [
+  // A row's switch — or, with `control`, that instead (e.g. a dropdown of choices).
+  const preferenceRows: Array<{
+    id: string;
+    icon: LucideIcon;
+    label: string;
+    description: string;
+    checked: boolean;
+    onChange: (next: boolean) => void;
+    control?: ReactNode;
+    phone: boolean;
+  }> = [
     {
       id: "notifyAsCreator",
       icon: Bell,
@@ -1024,17 +1035,36 @@ export default function UserSettingsPage() {
       phone: true,
     },
     {
-      // Theirs over the company's; set back to match the company's, it's cleared, so they follow the company again.
+      // Their own Show / Hide always beats the company's; "Company setting" follows the company's (saved as none).
       id: "calendarShowNonWorkdays",
       icon: CalendarDays,
       label: "Calendar Non-Work Days",
-      description: `Show non-work days in the Calendar's Month and Week views. Company setting: ${companyShowNonWorkdays ? "shown" : "hidden"}${myShowNonWorkdays === null ? "" : " — yours overrides it"}.`,
+      description: "Show non-work days in the Calendar's Month and Week views — or follow the company's setting.",
       checked: myShowNonWorkdays ?? companyShowNonWorkdays,
       onChange: (next) => {
-        const value = next === companyShowNonWorkdays ? null : next;
-        setMyShowNonWorkdays(value);
-        if (user?.uid) void saveUserCalendarShowNonWorkdays(user.uid, value);
+        setMyShowNonWorkdays(next);
+        if (user?.uid) void saveUserCalendarShowNonWorkdays(user.uid, next);
       },
+      control: (
+        <div className="w-[170px] shrink-0 max-md:w-[160px]">
+          <GlassDropdown
+            value={myShowNonWorkdays === null ? "company" : myShowNonWorkdays ? "show" : "hide"}
+            options={[
+              { value: "company", label: `Company (${companyShowNonWorkdays ? "Shown" : "Hidden"})` },
+              { value: "show", label: "Show" },
+              { value: "hide", label: "Hide" },
+            ]}
+            onChange={(next) => {
+              const value = next === "company" ? null : next === "show";
+              setMyShowNonWorkdays(value);
+              if (user?.uid) void saveUserCalendarShowNonWorkdays(user.uid, value);
+            }}
+            ariaLabel="Calendar non-work days"
+            menuAlign="right"
+            triggerClassName="flex h-9 w-full items-center justify-between rounded-[9px] border px-3 text-[12px] font-medium"
+          />
+        </div>
+      ),
       phone: true,
     },
     {
@@ -1066,7 +1096,7 @@ export default function UserSettingsPage() {
                 </p>
               </div>
             </div>
-            <SettingsToggleSwitch checked={row.checked} onChange={row.onChange} />
+            {row.control ?? <SettingsToggleSwitch checked={row.checked} onChange={row.onChange} />}
           </div>
         );
       })}
@@ -1428,7 +1458,7 @@ export default function UserSettingsPage() {
         .filter((row) => row.phone)
         .map((row) => (
           <MobileSettingsRow key={row.id} icon={row.icon} label={row.label} detail={row.description}>
-            <SettingsToggleSwitch checked={row.checked} onChange={row.onChange} />
+            {row.control ?? <SettingsToggleSwitch checked={row.checked} onChange={row.onChange} />}
           </MobileSettingsRow>
         ))}
     </div>

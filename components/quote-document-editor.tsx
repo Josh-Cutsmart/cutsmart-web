@@ -372,6 +372,54 @@ export function QuoteDocumentEditor({
         body[data-theme="dark"] .cutsmart-quote-document-shell[data-mode="embedded"]:not([data-embedded-card-square="true"]) .ck.ck-content {
           color: inherit;
         }
+        /* A toolbar portaled outside the shell (toolbarHost: the Notes cards, Contractors…) misses the shell's
+           rules above and fell back to CKEditor's square, solid bar — rounded glass here (the shell's own
+           rules, more specific, still win inside it). */
+        body .cutsmart-quote-document-toolbar .ck.ck-toolbar {
+          border: 1px solid var(--glass-border);
+          border-radius: 12px;
+          background: color-mix(in srgb, var(--panel-bg) 55%, transparent);
+          -webkit-backdrop-filter: blur(12px) saturate(180%);
+          backdrop-filter: blur(12px) saturate(180%);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+        }
+        body[data-theme="dark"] .cutsmart-quote-document-toolbar .ck.ck-toolbar {
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+        }
+        /* Its dropdowns (Alignment…): rounded glass to match the bar — not CKEditor's white box with a square
+           corner under the button, and the bar's own look not repeated on the toolbar inside the dropdown. */
+        body .cutsmart-quote-document-toolbar .ck.ck-dropdown__panel {
+          border: 1px solid var(--glass-border);
+          border-radius: 12px;
+          overflow: hidden;
+          background: color-mix(in srgb, var(--panel-bg) 82%, transparent);
+          -webkit-backdrop-filter: blur(12px) saturate(180%);
+          backdrop-filter: blur(12px) saturate(180%);
+          box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+        }
+        body[data-theme="dark"] .cutsmart-quote-document-toolbar .ck.ck-dropdown__panel {
+          box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+        }
+        body .cutsmart-quote-document-toolbar .ck-dropdown__panel .ck.ck-toolbar,
+        body .cutsmart-quote-document-toolbar .ck-dropdown__panel .ck.ck-list {
+          border: none;
+          border-radius: 0;
+          background: transparent;
+          -webkit-backdrop-filter: none;
+          backdrop-filter: none;
+          box-shadow: none;
+        }
+        /* ...its options rounded too, inset from the dropdown's edge so the selected one's blue focus ring
+           isn't cut off square by the dropdown's rounded corners. */
+        body .cutsmart-quote-document-toolbar .ck-dropdown__panel .ck.ck-toolbar {
+          padding: 4px;
+        }
+        body .cutsmart-quote-document-toolbar .ck-dropdown__panel .ck.ck-toolbar .ck-toolbar__items {
+          gap: 3px;
+        }
+        body .cutsmart-quote-document-toolbar .ck-dropdown__panel .ck.ck-toolbar .ck-toolbar__items > .ck.ck-button {
+          border-radius: 8px;
+        }
         .cutsmart-quote-document-shell .ck.ck-toolbar .ck-toolbar__items {
           flex-wrap: wrap;
         }

@@ -86,9 +86,8 @@ export function normalizeCalendarShowNonWorkdays(raw: unknown): boolean {
   return raw !== false;
 }
 
-// User Settings > Preferences > Calendar Non-Work Days: a person's own choice (users/{uid}.calendarShowNonWorkdays),
-// which beats the company's (above) for them; null = none, the company's applies. It's only kept while it differs
-// from the company's — set back to match, it's cleared (saved as null), so they follow the company again.
+// User Settings > Preferences > Calendar Non-Work Days: a person's own choice (users/{uid}.calendarShowNonWorkdays) —
+// Show or Hide, which beats the company's (above) for them — or null, "Company setting": the company's applies.
 export async function fetchUserCalendarShowNonWorkdays(uid: string): Promise<boolean | null> {
   const data = await readUserDocCached(uid).catch(() => null);
   const value = data?.calendarShowNonWorkdays;

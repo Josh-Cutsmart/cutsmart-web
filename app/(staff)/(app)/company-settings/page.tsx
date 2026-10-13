@@ -83,7 +83,7 @@ import {
 import { FileText, Lightbulb } from "lucide-react";
 import { Box, FileInput, FolderTree, LayoutTemplate, Lock, Percent, Receipt, Shield, ShieldCheck, UserMinus, UserPlus } from "lucide-react";
 import { isStaffContactCategory, withStaffContactCategory } from "@/lib/staff-contacts";
-import { Archive, Award, CalendarDays, CircleDashed, Cog, Columns3, Contact, Copy, Cpu, DoorClosed, Eye, Factory, Globe2, HardHat as TradeIcon, ImageUp, Inbox, KanbanSquare, KeyRound, Palette, PanelLeft, RefreshCw, Ruler, Shapes, SlidersHorizontal, Star, Tags, Trash2 } from "lucide-react";
+import { Archive, Award, CalendarDays, CircleDashed, Cog, Columns3, Contact, Copy, Cpu, DoorClosed, DoorOpen, Eye, Factory, Globe2, HardHat as TradeIcon, ImageUp, Inbox, KanbanSquare, KeyRound, Palette, PanelLeft, RefreshCw, Ruler, Shapes, SlidersHorizontal, Star, Tags, Trash2 } from "lucide-react";
 import {
   ColorCircle,
   GlassSwitch,
@@ -1682,6 +1682,11 @@ export default function CompanySettingsPage() {
   // non-workdays out (the Year view always shows every day). Saved as calendarShowNonWorkdays; on by default.
   const [calendarShowNonWorkdays, setCalendarShowNonWorkdays] = useState(true);
   const [contractors, setContractors] = useState<string[]>([]);
+  // Room names (roomNames): one list, shown in both Sales and Production — offered when adding a room to a project, and
+  // in the offline cutlist template.
+  const [roomNames, setRoomNames] = useState<string[]>([]);
+  // The room row being dragged (its order is the dropdown's).
+  const [roomNameDragIndex, setRoomNameDragIndex] = useState<number | null>(null);
   const [roles, setRoles] = useState<RoleRow[]>([]);
   // Fed to both the Specs and Quote grid builders' group-editor modal ("Allow Editable By") — the
   // actual enforcement of it only happens in a project's own live window (see that page's own
@@ -2020,6 +2025,7 @@ export default function CompanySettingsPage() {
         setCalendarShowToClientDefault((doc as Record<string, unknown>).calendarShowToClientDefault === true);
         setCalendarShowNonWorkdays((doc as Record<string, unknown>).calendarShowNonWorkdays !== false);
         setContractors(normalizeStringList(doc.contractors, []));
+        setRoomNames(normalizeStringList((doc as Record<string, unknown>).roomNames, []));
         setRoles(normalizeRoles(doc.roles));
         setItemCategories(normalizeItemCategories(doc.itemCategories));
         setSpecsTemplateGrid(normalizeSpecsGrid(doc.specsTemplateGrid));
@@ -3406,6 +3412,7 @@ export default function CompanySettingsPage() {
       boardThicknesses: boardThicknesses.map((v) => Number(v)).filter((v) => Number.isFinite(v) && v > 0),
       boardFinishes: boardFinishes.map((v) => toStr(v)).filter(Boolean),
       contractors: contractors.map((v) => toStr(v)).filter(Boolean),
+      roomNames: Array.from(new Set(roomNames.map((v) => toStr(v)).filter(Boolean))),
       sheetSizes: sheetSizes
         .map((r) => ({ h: Number(r.h), w: Number(r.w), isDefault: r.isDefault }))
         .filter((r) => Number.isFinite(r.h) && Number.isFinite(r.w) && r.h > 0 && r.w > 0),
@@ -3632,6 +3639,7 @@ export default function CompanySettingsPage() {
         boardThicknesses,
         boardFinishes,
         contractors,
+        roomNames,
         sheetSizes,
         partTypes,
         nestingSettings: nesting,
@@ -4050,6 +4058,7 @@ export default function CompanySettingsPage() {
     boardThicknesses,
     boardFinishes,
     contractors,
+    roomNames,
     sheetSizes,
     partTypes,
     roles,
@@ -4075,6 +4084,77 @@ export default function CompanySettingsPage() {
     unlockSuffix,
     unlockHours,
   ]);
+
+  // Sales › Rooms and Production › Rooms: the same list in both.
+  const renderRoomNamesPanel = () => (
+    <Panel
+      title="Rooms"
+      icon={DoorOpen}
+      description="Room names to pick from when adding a room to a project, and in the offline cutlist template — drag to set their order. Shared by Sales and Production."
+    >
+      <div className="space-y-1.5">
+        {roomNames.map((value, idx) => (
+          <div
+            key={`room_name_${idx}`}
+            id={`settings_room_name_${idx}`}
+            className="flex items-center gap-2"
+            style={{ opacity: roomNameDragIndex === idx ? 0.45 : 1 }}
+            onDragOver={(e) => {
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "move";
+            }}
+            onDragEnter={(e) => {
+              e.preventDefault();
+              if (roomNameDragIndex == null || roomNameDragIndex === idx) return;
+              setRoomNames((prev) => moveRowTo(prev, roomNameDragIndex, idx));
+              setRoomNameDragIndex(idx);
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              setRoomNameDragIndex(null);
+              endRowDrag();
+              triggerAutosaveAfterRowDrop();
+            }}
+          >
+            <button
+              type="button"
+              draggable
+              onDragStart={(e) => {
+                setRoomNameDragIndex(idx);
+                startRowDrag(e, `settings_room_name_${idx}`, value || "Room", "#64748B");
+              }}
+              onDragEnd={() => {
+                setRoomNameDragIndex(null);
+                endRowDrag();
+              }}
+              className={gripClass}
+              title="Drag to reorder"
+            >
+              <GripVertical size={15} />
+            </button>
+            <input
+              value={value}
+              placeholder="e.g. Kitchen"
+              onChange={(e) => setRoomNames((prev) => prev.map((v, i) => (i === idx ? e.target.value : v)))}
+              className={fieldInputClass}
+            />
+            <button
+              type="button"
+              onClick={() => setRoomNames((prev) => prev.filter((_, i) => i !== idx))}
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
+              style={{ color: "var(--text-muted)" }}
+              title="Remove"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        ))}
+        <button type="button" onClick={() => setRoomNames((prev) => [...prev, ""])} className={chipAddClass}>
+          <Plus size={14} /> Add room
+        </button>
+      </div>
+    </Panel>
+  );
 
   return (
     <>
@@ -5357,6 +5437,7 @@ export default function CompanySettingsPage() {
                         </button>
                       </div>
                     </Panel>
+                    {renderRoomNamesPanel()}
                   </div>
                   {/* Edgebanding used to be its own panel here — it now lives inside each Edge Bander
                       machine's own settings pop-up (Machining tab). */}
@@ -6910,6 +6991,7 @@ export default function CompanySettingsPage() {
                       })}
                     </div>
                   </Panel>
+                  {renderRoomNamesPanel()}
                   {shouldRenderItemCategoryDeleteModal && pendingItemCategoryDelete ? (
                     // "Delete item category?" — over the Item categories pop-up it opens from (z-1800 > its 1750).
                     <ModalPortal>

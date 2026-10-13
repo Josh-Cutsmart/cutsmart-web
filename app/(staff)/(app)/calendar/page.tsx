@@ -556,7 +556,7 @@ function CalendarPageContent() {
   const [workdays, setWorkdays] = useState<number[]>(DEFAULT_CALENDAR_WORKDAYS);
   // Company Settings > Calendar: when off, the month and week views leave the non-work days out.
   const [showNonWorkdays, setShowNonWorkdays] = useState(true);
-  // Their own choice (User Settings > Preferences), over the company's above; null = none.
+  // Their own choice (User Settings > Preferences), over the company's above; null = "Company setting".
   const [myShowNonWorkdays, setMyShowNonWorkdays] = useState<boolean | null>(null);
   useEffect(() => {
     if (!user?.uid) return;
@@ -713,9 +713,10 @@ function CalendarPageContent() {
   const searchPillPx = isMobile ? 40 : 34;
   // The toolbar's search (the round button beside the view switcher): only events whose title, location, notes,
   // project or category has it — checked after what they can't see is cleared, so it can't find that. Only while
-  // it's open: a tap anywhere else closes it (back to the switcher) and the calendar shows everything again, but
-  // what was typed is kept for when it's opened again — this browser session, even after leaving the calendar
-  // (sessionStorage). Its X clears it.
+  // it's open. With something typed it stays open, so the calendar can be browsed for what was found: a tap
+  // anywhere else just puts the keyboard away. Its X clears and closes it; once it's empty (the X, or the text
+  // deleted), a tap anywhere else closes it. What was typed is kept for when it's opened again — this browser
+  // session, even after leaving the calendar (sessionStorage).
   const [isEventSearchOpen, setIsEventSearchOpen] = useState(false);
   const [eventSearch, setEventSearch] = useState("");
   const eventSearchInputRef = useRef<HTMLInputElement | null>(null);
@@ -742,18 +743,26 @@ function CalendarPageContent() {
     // In the tap itself, so a phone brings up its keyboard.
     eventSearchInputRef.current?.focus({ preventScroll: true });
   };
-  // Closed by a tap elsewhere (or Escape): what was typed stays. Its X: cleared.
+  // Its X: cleared and closed. A tap elsewhere (or Escape): closed if it's empty — with something in it, it stays
+  // open (and searching), just without the keyboard.
   const closeEventSearch = (clear: boolean) => {
     if (clear) changeEventSearch("");
     setIsEventSearchOpen(false);
     eventSearchInputRef.current?.blur();
   };
+  const leaveEventSearch = () => {
+    if (eventSearch.trim()) eventSearchInputRef.current?.blur();
+    else closeEventSearch(false);
+  };
+  const leaveEventSearchRef = useRef(leaveEventSearch);
+  useEffect(() => {
+    leaveEventSearchRef.current = leaveEventSearch;
+  });
   useEffect(() => {
     if (!isEventSearchOpen) return;
     const onPointerDown = (event: PointerEvent) => {
       if (eventSearchRowRef.current?.contains(event.target as Node)) return;
-      setIsEventSearchOpen(false);
-      eventSearchInputRef.current?.blur();
+      leaveEventSearchRef.current();
     };
     document.addEventListener("pointerdown", onPointerDown, true);
     return () => document.removeEventListener("pointerdown", onPointerDown, true);
@@ -2449,21 +2458,23 @@ function CalendarPageContent() {
                 </button>
               </div>
             )}
-            {/* On a phone, just the filter icon (a round button, as tall as Today). */}
+            {/* On a phone, just the filter icon (a round button, as tall as Today), the size of the search button's.
+                (Without the pill's phone padding, which squeezed the icon to a sliver.) */}
             <button
               type="button"
               onClick={() => setMobileFilterOpen((v) => !v)}
-              className={`${pillButtonClass} max-md:w-10 max-md:px-0 lg:hidden`}
+              className={`${pillButtonClass.replace("max-md:px-4", "max-md:px-0")} max-md:w-10 lg:hidden`}
               aria-label="Categories"
               title="Categories"
             >
-              <Filter size={14} className="max-md:h-4 max-md:w-4" />
+              <Filter size={14} className="shrink-0 max-md:h-4 max-md:w-4" />
               <span className="max-md:hidden">Categories</span>
             </button>
             {/* The view in use in the blue fill, so it's clear which it is; fully rounded, like Today. On a phone
                 it's its own row across the toolbar, filling it. At its right, the round search button: tapped, it
                 widens to the left across the row (its search icon riding its left edge), covering the switcher, and
-                is the search box from there; its X (or Escape) closes it back the same way, clearing the search. */}
+                is the search box from there; its X closes it back the same way, clearing the search (a tap elsewhere
+                only does once it's empty — see leaveEventSearch). */}
 {isMobile ? (
             <div ref={eventSearchRowRef} className={`relative flex items-center gap-2 ${isMobile ? "w-full" : ""}`}>
               <div className={isMobile ? "min-w-0 flex-1" : ""} inert={isEventSearchOpen}>
@@ -2510,7 +2521,7 @@ function CalendarPageContent() {
                   value={eventSearch}
                   onChange={(e) => changeEventSearch(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === "Escape") closeEventSearch(false);
+                    if (e.key === "Escape") leaveEventSearch();
                   }}
                   placeholder="Search events"
                   aria-label="Search events"
