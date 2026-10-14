@@ -13,7 +13,9 @@ import { forwardRef, useImperativeHandle, useRef, useState, type RefObject } fro
 // gets the whole card instead of the pill: a see-through copy of it, hanging from the cursor by its
 // top edge with a slight tilt, lifted straight off the card's own spot and swinging the same way.
 
-export type DragGhostContent = { label: string; color: string } | null;
+// badge: shown in a green circle on the pill's top-left corner (e.g. how many of an item are being dragged). tint: the
+// pill washed with a light tint of this colour (as the row it was picked up from), instead of plain glass.
+export type DragGhostContent = { label: string; color: string; badge?: string; tint?: string } | null;
 
 type DragGhostHandle = {
   getEl: () => HTMLDivElement | null;
@@ -43,15 +45,24 @@ const DragGhostPill = forwardRef<DragGhostHandle>(function DragGhostPill(_props,
     >
       {content ? (
         <div
-          className="flex items-center gap-2 rounded-[10px] border px-3 py-2"
+          className="relative flex items-center gap-2 rounded-[10px] border px-3 py-2"
           style={{
             borderColor: "var(--glass-border)",
-            backgroundColor: "var(--glass-modal-bg)",
+            backgroundColor: content.tint ? `color-mix(in srgb, ${content.tint} 16%, var(--panel-bg))` : "var(--glass-modal-bg)",
             backdropFilter: "blur(12px) saturate(220%)",
             WebkitBackdropFilter: "blur(12px) saturate(220%)",
             boxShadow: "var(--shadow-glass)",
           }}
         >
+          {content.badge ? (
+            // Centred on the corner, so half of it sits off the pill — green, as the app's + buttons.
+            <span
+              className="absolute left-0 top-0 inline-flex h-5 min-w-5 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border px-1 text-[10.5px] font-bold text-white"
+              style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
+            >
+              {content.badge}
+            </span>
+          ) : null}
           <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: content.color }} />
           <span className="whitespace-nowrap text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>{content.label}</span>
         </div>
@@ -81,7 +92,7 @@ export type DragGhostController = {
   // `originElId` is the id of the on-screen element the ghost should visibly
   // grow out of (the FLIP "pick-up" pop); falls back to growing in place if
   // that element can't be found.
-  spawn: (event: { clientX: number; clientY: number }, originElId: string, content: { label: string; color: string }) => void;
+  spawn: (event: { clientX: number; clientY: number }, originElId: string, content: { label: string; color: string; badge?: string; tint?: string }) => void;
   // Call from onDragEnd. landOnCardId: a board card's id — its copy then glides onto that card's own spot
   // (where it was dropped, or back where it started if the drag was cancelled) and hands over to it,
   // instead of fading out where it was let go.

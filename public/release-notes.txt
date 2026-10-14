@@ -1,71 +1,74 @@
-Version: v0.5.6
+Version: v0.5.7
 
 highlights: [
-A new Notifications panel | It slides in from the right, shows what you haven't read, and can remind you about any notification later | /whats-new/v0.5.6/notifications.svg
-Reminders for each calendar category | Choose how long before each kind of event you're reminded, and at what time | /whats-new/v0.5.6/category-reminders.svg
-Duplicate events | Copy an event from its … menu, and see who added or last changed it | /whats-new/v0.5.6/events.svg
-Notes you just click into | Click any Notes to type, click away to save — and Design has its own Notes now | /whats-new/v0.5.6/notes.svg
-A glass pill for project tabs | The selected tab sits in a glass pill that slides across, magnifying the tab inside it | /whats-new/v0.5.6/tab-pill.svg
+A new Items window | Your item library sorted by category and sub-category in their own colours, and each room a column like the Dashboard's | /whats-new/v0.5.7/items.svg
+Cutlists in Excel | Download the Production Cutlist from Downloads, fill it in offline, and Import it straight into a project | /whats-new/v0.5.7/import.svg
+Hardware for each room | Give a room its own brand, drawer type and handles — changing them shows the drawers it affects first | /whats-new/v0.5.7/room-hardware.svg
+Staff on events | Add staff to a calendar event and they get its reminders — a project's creator and assigned person are added for you | /whats-new/v0.5.7/event-staff.svg
+Custom prices | Set an item to a custom price, and staff enter its price each time it's added to a room | /whats-new/v0.5.7/custom-price.svg
 ]
 
 whatsNew: [
-<u><b>Notifications</b></u>
+<u><b>Items</b></u>
 <ul>
-<li>A new <b>Notifications</b> panel that slides in from the right on a computer</li>
-<li>The bell shows how many you haven't read</li>
-<li>Each kind of notification has its own icon</li>
-<li>Right-click (or press and hold) a notification to mark it read, clear it, or be <b>reminded later</b></li>
-<li>New ones pop up in the corner for a few seconds on a computer</li>
-<li>Clearer messages — an accepted quote shows its price</li>
-<li>Shows the last 2 weeks, with <b>Load more</b> for older ones</li>
-<li>Projects you created now notify you by default</li>
-</ul>
-
-<u><b>Calendar</b></u>
-<ul>
-<li>Set your own reminders for each calendar category, in <b>User Settings › Notifications</b></li>
-<li>Events show who added and last changed them</li>
-<li>New <b>…</b> menu on an event: <b>Duplicate</b> or <b>Delete</b></li>
-<li>New events need a title and a category</li>
-<li>Search also finds events by location, notes, project and category</li>
-<li>Phones: swipe between days and weeks</li>
-<li>Show or hide non-work days just for you, in <b>User Settings</b></li>
-<li>A tidier toolbar on computers and phones</li>
+<li>The item library groups each category's items by sub-category, under bars in their own colours</li>
+<li>Click a category or sub-category to fold it away — it stays the way you left it</li>
+<li>Searching opens the groups with a match</li>
+<li>Type a quantity on an item before you click or drag it in — an <b>Added</b> pill shows it went in</li>
+<li>Each room is a column like the Dashboard's: collapse it, see its count, and use its <b>…</b> menu to Rename, Duplicate, Clear or Delete</li>
+<li>Drag a room by its header to put your rooms in order</li>
+<li>A room's items sit under coloured bars like the library, with − and + when you point at them</li>
+<li>Removing an item (or taking it down from 1) asks first</li>
+<li>The Summary floats on the right, with <b>Add Room</b> under it</li>
+<li>A tidier <b>Add Item</b> pop-up with its own search</li>
+<li>Phones: rooms are cards down the page (hold a card's header to move it), and Add Item fills the screen</li>
+<li>Two items with the same name no longer cause errors</li>
 </ul>
 
 <u><b>Projects</b></u>
 <ul>
-<li>The selected tab sits in a glass pill that slides between tabs</li>
-<li>Notes: click to type, click away to save</li>
-<li>Design has its own <b>Notes</b> now</li>
-<li>Client Details: the edit pencil shows when you point at it, and <b>Create Contact</b> sits beside the client's name</li>
-<li>Choosing the creator or assigned user shows their badge, with a search</li>
-<li><b>Reopen for edit</b> takes the quote or specifications back from the client</li>
-<li>A quote can't be reopened once it's been accepted</li>
-<li>Projects open faster from the top bar</li>
+<li>New <b>Schedule</b> button in Design: the Calendar's events for the project, in a list</li>
+<li>New <b>Specifications</b> button in Production: the specifications the client confirmed — or the latest, marked <b>Unconfirmed</b></li>
+<li>Adding a room offers your company's room names, and you can still type your own</li>
+<li>The Product box in Design widens to fit long product names</li>
+<li><b>Specifications</b> and <b>Upgrades</b> have swapped places in Design</li>
+<li>Phones: Notes bring the keyboard up on the first tap</li>
 </ul>
 
-<u><b>Dashboard &amp; Leads</b></u>
+<u><b>Production</b></u>
 <ul>
-<li>Cards glide into place when you drop them</li>
-<li>Tidier column buttons: collapse on the left, sort on the right</li>
-<li>Leads column names stay easy to read on dark colours</li>
+<li>New <b>Import</b>: bring in the Excel cutlist (or an older cutlist sheet), choose which parts and rooms, then add to or replace what's there</li>
+<li>Rooms can have their own hardware — the Hardware box lists Global, then each room</li>
+<li>Changing a brand or drawer type shows the drawers it affects first, with quick fixes</li>
+<li>Drawer heights show their size in mm</li>
+<li>Notes open in a drawer on the right that stays open while you work</li>
+<li><b>Contractors</b> is now a menu — pick one to open their notes</li>
+<li>Changing a board in Board Settings asks whether to update the cutlist rows using it</li>
+<li>Order groups drawers by brand and drawer type when rooms differ</li>
+</ul>
+
+<u><b>Calendar</b></u>
+<ul>
+<li>Add staff to an event — they get its reminders</li>
+<li>Linking a project adds its creator and assigned person</li>
+<li>Search stays open while there's something in it</li>
+<li>Phones: the Categories button's icon no longer gets squashed</li>
 </ul>
 
 <u><b>Company Settings</b></u>
 <ul>
-<li>Inviting someone also gives them a one-person join code</li>
-<li>Item categories: drag items to put them in order</li>
-<li>Deleting a category or an item asks first</li>
-<li>A new logo shows on quotes and specifications you've already sent</li>
+<li>New <b>Rooms</b> list (in Sales and Production): the room names offered when adding a room</li>
+<li>Item categories: a <b>Custom</b> price — staff enter it each time it's added, with your markup on top</li>
+<li>The sidebar's resize bar no longer shows over Item Categories and the layout builders</li>
 </ul>
 
 <u><b>App-Wide</b></u>
 <ul>
-<li>One background colour on every page</li>
-<li>Phones: bigger buttons and menus, and menus slide over the page</li>
-<li>Text boxes show a thin blue outline while you type</li>
-<li>Company Settings is now below Archive in the sidebar</li>
-<li>Faster — CutSmart's server is now in Sydney</li>
+<li>New <b>Downloads</b> in the sidebar, with the Production Cutlist for Excel</li>
+<li>Menus open upwards when there's no room below them</li>
+<li>User Settings: Non-Work Days can be Company, Show or Hide</li>
+<li>Contacts: badges show letters only</li>
+<li>Dashboard: the faint line near the bottom of the columns is gone</li>
+<li>A rounded glass formatting toolbar in Notes</li>
 </ul>
 ]

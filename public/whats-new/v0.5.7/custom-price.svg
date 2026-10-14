@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" width="640" height="360" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title>An item set to Custom price in Item Categories; adding it to a room asks for its price, and the room shows the price entered</title>
+  <style>
+    .sheet { transform-box: fill-box; transform-origin: center; animation: sheet 7s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes sheet { 0%, 14% { opacity: 0; transform: scale(.92); } 19%, 52% { opacity: 1; transform: scale(1); } 57%, 100% { opacity: 0; transform: scale(.94); } }
+    .caret { animation: caret 7s linear infinite both; }
+    @keyframes caret {
+      0%, 22% { opacity: 0; transform: translateX(0); }
+      23%, 26% { opacity: 1; transform: translateX(0); }
+      38%, 52% { opacity: 1; transform: translateX(16px); }
+      53%, 100% { opacity: 0; transform: translateX(16px); }
+    }
+    .press { transform-box: fill-box; transform-origin: center; animation: press 7s ease-in-out infinite both; }
+    @keyframes press { 0%, 46% { transform: scale(1); } 49% { transform: scale(.92); } 52%, 100% { transform: scale(1); } }
+    .newRow { animation: newRow 7s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes newRow { 0%, 54% { opacity: 0; transform: translateY(-6px); } 60%, 92% { opacity: 1; transform: translateY(0); } 97%, 100% { opacity: 0; transform: translateY(0); } }
+    .cursor { animation: cursor 7s ease-in-out infinite both; }
+    @keyframes cursor {
+      0%, 3% { transform: translate(600px, 340px); opacity: 0; }
+      7% { opacity: 1; }
+      13%, 16% { transform: translate(266px, 307px); opacity: 1; }
+      40%, 50% { transform: translate(546px, 286px); opacity: 1; }
+      64%, 100% { transform: translate(600px, 340px); opacity: 0; }
+    }
+  </style>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#EEF3FB"/>
+      <stop offset="1" stop-color="#E1E9F7"/>
+    </linearGradient>
+    <filter id="pop" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#0F172A" flood-opacity=".16"/>
+    </filter>
+    <clipPath id="typed">
+      <rect x="363" y="232" height="24" width="0">
+        <animate attributeName="width" dur="7s" repeatCount="indefinite" values="0;0;18;18" keyTimes="0;0.23;0.38;1"/>
+      </rect>
+    </clipPath>
+    <clipPath id="kit"><rect x="36" y="128" width="250" height="124" rx="18"/></clipPath>
+  </defs>
+  <rect width="640" height="360" fill="url(#bg)"/>
+
+  <!-- Company Settings › Item Categories -->
+  <rect x="36" y="30" width="568" height="78" rx="18" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+  <text x="56" y="56" font-size="9.5" font-weight="700" letter-spacing=".6" fill="#334155">NAME</text>
+  <text x="250" y="56" font-size="9.5" font-weight="700" letter-spacing=".6" fill="#334155">PRICE</text>
+  <text x="392" y="56" font-size="9.5" font-weight="700" letter-spacing=".6" fill="#334155">MARKUP %</text>
+  <text x="484" y="56" font-size="9.5" font-weight="700" letter-spacing=".6" fill="#334155">OUTPUT PRICE</text>
+  <text x="56" y="86" font-size="12" font-weight="600" fill="#0F172A">Feature panel install</text>
+  <rect x="250" y="72" width="84" height="22" rx="11" fill="#DBEAFE" stroke="#2563EB"/>
+  <text x="292" y="87" text-anchor="middle" font-size="10.5" font-weight="600" fill="#1D4ED8">Custom price</text>
+  <text x="392" y="87" font-size="12" font-weight="600" fill="#0F172A">15</text>
+  <text x="484" y="87" font-size="12" font-weight="600" fill="#0F172A">Entered + 15%</text>
+
+  <!-- Items: the library row and the Kitchen -->
+  <rect x="36" y="128" width="250" height="124" rx="18" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+  <g clip-path="url(#kit)">
+    <rect x="36" y="128" width="250" height="34" fill="#EFF6FF"/>
+    <text x="52" y="150" font-size="13" font-weight="600" fill="#1D4ED8">Kitchen</text>
+    <rect x="36" y="162" width="250" height="22" fill="#8B5CF6"/>
+    <text x="50" y="177" font-size="11" font-weight="500" fill="#FFFFFF">Extra Labour</text>
+    <rect x="36" y="184" width="250" height="26" fill="#EEE7FE"/>
+    <text x="50" y="201" font-size="10.5" font-weight="600" fill="#0F172A">1 man hour</text>
+    <text x="270" y="201" text-anchor="end" font-size="10.5" font-weight="700" fill="#0F172A">3</text>
+    <g class="newRow">
+      <rect x="36" y="210" width="250" height="28" fill="#EEE7FE"/>
+      <path d="M36 210 H286" stroke="#DDD0FB"/>
+      <text x="50" y="228" font-size="10.5" font-weight="600" fill="#0F172A">Feature panel install</text>
+      <rect x="170" y="216" width="50" height="17" rx="8.5" fill="#FFFFFF" stroke="#DDD0FB"/>
+      <text x="195" y="228" text-anchor="middle" font-size="10" font-weight="600" fill="#0F172A">$40.00</text>
+      <text x="270" y="228" text-anchor="end" font-size="10.5" font-weight="700" fill="#0F172A">1</text>
+    </g>
+  </g>
+  <text x="40" y="282" font-size="9.5" font-weight="700" letter-spacing=".6" fill="#334155">ITEM LIBRARY</text>
+  <rect x="36" y="290" width="250" height="34" rx="12" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+  <rect x="48" y="300" width="3" height="14" rx="1.5" fill="#8B5CF6"/>
+  <text x="60" y="311" font-size="10.5" font-weight="600" fill="#0F172A">Feature panel install</text>
+  <circle cx="266" cy="307" r="9" fill="#16A34A"/>
+  <path d="M262 307 h8 m-4 -4 v8" stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round"/>
+
+  <!-- Custom price -->
+  <g class="sheet">
+    <rect x="320" y="146" width="284" height="170" rx="20" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+    <text x="342" y="176" font-size="14" font-weight="700" fill="#0F172A">Custom price</text>
+    <text x="342" y="195" font-size="10.5" font-weight="500" fill="#0F172A">Feature panel install · Kitchen</text>
+    <text x="342" y="222" font-size="10.5" font-weight="500" fill="#0F172A">Price</text>
+    <rect x="342" y="230" width="240" height="30" rx="9" fill="#FFFFFF" stroke="#2563EB"/>
+    <text x="352" y="250" font-size="12.5" font-weight="500" fill="#0F172A">$</text>
+    <text x="364" y="250" font-size="12.5" font-weight="500" fill="#0F172A" clip-path="url(#typed)">40</text>
+    <rect class="caret" x="364" y="238" width="1.5" height="15" fill="#2563EB"/>
+    <rect x="452" y="274" width="62" height="28" rx="9" fill="#F1F5F9"/>
+    <text x="483" y="292" text-anchor="middle" font-size="11" font-weight="700" fill="#0F172A">Cancel</text>
+    <g class="press">
+      <rect x="520" y="274" width="62" height="28" rx="9" fill="#16A34A"/>
+      <text x="551" y="292" text-anchor="middle" font-size="11" font-weight="700" fill="#FFFFFF">Add</text>
+    </g>
+  </g>
+
+  <g class="cursor">
+    <path d="M0 0 l0 20 l5 -5 l4 9 l3.4 -1.5 l-4 -9 l7 0 z" fill="#0F172A" stroke="#FFFFFF" stroke-width="1.4" stroke-linejoin="round"/>
+  </g>
+</svg>

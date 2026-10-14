@@ -12,9 +12,10 @@ import {
 } from "@/lib/push-notification-types";
 import { isCompanyMemberUid, pushStoredNotification } from "@/lib/push-server";
 
-// Calendar reminders: "<event> for <project> is in 2 days". An event linked to a project reminds the
-// person that project is assigned to, as far ahead as they chose (User Settings > Phone & Desktop
-// Notifications > Upcoming project events) — each calendar category's own reminders, or their usual ones
+// Calendar reminders: "<event> for <project> is in 2 days" ("<event> is in 2 days" with no project). An event
+// reminds each of its staff (staffUids — linking a project puts that project's creator and assignee on it; an event
+// saved before events had staff: its linked project's assignee and creator), as far ahead as they chose (User
+// Settings > Phone & Desktop Notifications > Upcoming events) — each calendar category's own reminders, or their usual ones
 // (users/{uid}.calendarReminderCategories / calendarReminderLead), one list for timed and all-day events: minutes
 // and hours exactly that long before a timed event (an all-day event: 8am on the day); days, weeks and months on
 // that day before the event at the reminder's own time — local time, the company's time zone (Company Settings). Not for a category they've switched off,
@@ -116,7 +117,7 @@ export function timeUntilPhrase(msUntil: number, allDay: boolean): string {
   return plural(Math.max(1, Math.round(msUntil / MINUTE_MS)), "minute");
 }
 
-type ProjectInfo = { assigneeUid: string; name: string; closed: boolean } | null;
+type ProjectInfo = { assigneeUid: string; creatorUid: string; name: string; closed: boolean } | null;
 
 export type CalendarReminderRunResult = { companies: number; events: number; sent: number };
 
@@ -209,6 +210,7 @@ export async function runCalendarReminders(options: { siteOrigin: string; compan
       const info: ProjectInfo = data
         ? {
             assigneeUid: PROJECT_ASSIGNEE_FIELDS.map((field) => str(data![field])).find(Boolean) ?? "",
+            creatorUid: str(data.createdByUid ?? data.ownerUid),
             name: str(data.name),
             closed: data.isArchived === true || data.isDeleted === true,
           }
@@ -221,67 +223,79 @@ export async function runCalendarReminders(options: { siteOrigin: string; compan
       const event = eventSnap.data() as Record<string, unknown>;
       const projectId = str(event.projectId);
       const startMs = Number(event.startMs);
-      if (!projectId || event.archived === true || !Number.isFinite(startMs)) continue;
+      if (event.archived === true || !Number.isFinite(startMs)) continue;
       const allDay = event.allDay === true;
       // Once it's started, a timed event gets no more reminders — nor does an all-day one once its day is over.
       if (allDay ? now >= startMs + DAY_MS : startMs <= now) continue;
-      const project = await projectFor(projectId);
-      if (!project || project.closed || !project.assigneeUid) continue;
-      const uid = project.assigneeUid;
-      const categoryId = str(event.categoryId);
-      const prefs = await prefsFor(uid);
-      // Its category's times (or their usual ones) — none if they've switched that category off.
-      const lead = calendarReminderLeadForCategory(prefs.categories, categoryId, prefs.usual);
-      if (!lead) continue;
-      // Each of their reminders for this event: its key, and when it's due — once an all-day event's day has begun,
-      // only ones for that day itself.
-      const { timeZone } = await loadCompanyInfo();
-      const times = reminderTimes(uid, startMs, allDay, lead.reminders, timeZone).filter(
-        (time) => !(allDay && now >= startMs && time.remindAt < startMs),
+      // Linked to a project that's gone, archived or deleted: none.
+      const project = projectId ? await projectFor(projectId) : null;
+      if (projectId && (!project || project.closed)) continue;
+      // Its staff — or, saved before events had staff, its project's assignee and creator.
+      const staffUids = Array.from(
+        new Set((Array.isArray(event.staffUids) ? event.staffUids.map(str) : [project?.assigneeUid ?? "", project?.creatorUid ?? ""]).filter(Boolean)),
       );
+      if (!staffUids.length) continue;
+      const categoryId = str(event.categoryId);
       const sentMap = (event.remindersSent as Record<string, unknown> | undefined) ?? {};
-      const due = times.filter((time) => now >= time.remindAt && sentMap[time.key] !== startMs);
-      if (!due.length) continue;
-      result.events += 1;
-      if (!(await isCompanyMemberUid(companyId, uid))) continue;
-      // Not for a category they can't see.
-      if (!(await canSeeCategory(uid, categoryId))) continue;
-      const legacySent = sentMap[uid] === startMs;
-
-      // Claim them first (so two runs at once can't both send), then send the nearest one.
-      const claimed = await db.runTransaction(async (tx) => {
-        const fresh = await tx.get(eventSnap.ref);
-        if (!fresh.exists) return false;
-        const current = (fresh.data()?.remindersSent as Record<string, unknown> | undefined) ?? {};
-        const stillDue = due.filter((time) => current[time.key] !== startMs);
-        if (!stillDue.length) return false;
-        const [first, ...rest] = stillDue;
-        tx.update(
-          eventSnap.ref,
-          new FieldPath("remindersSent", first.key),
-          startMs,
-          ...rest.flatMap((time) => [new FieldPath("remindersSent", time.key), startMs]),
+      let counted = false;
+      for (const uid of staffUids) {
+        const prefs = await prefsFor(uid);
+        // Its category's times (or their usual ones) — none if they've switched that category off.
+        const lead = calendarReminderLeadForCategory(prefs.categories, categoryId, prefs.usual);
+        if (!lead) continue;
+        // Each of their reminders for this event: its key, and when it's due — once an all-day event's day has begun,
+        // only ones for that day itself.
+        const { timeZone } = await loadCompanyInfo();
+        const times = reminderTimes(uid, startMs, allDay, lead.reminders, timeZone).filter(
+          (time) => !(allDay && now >= startMs && time.remindAt < startMs),
         );
-        return true;
-      });
-      if (!claimed || legacySent) continue;
+        const due = times.filter((time) => now >= time.remindAt && sentMap[time.key] !== startMs);
+        if (!due.length) continue;
+        if (!counted) {
+          counted = true;
+          result.events += 1;
+        }
+        if (!(await isCompanyMemberUid(companyId, uid))) continue;
+        // Not for a category they can't see.
+        if (!(await canSeeCategory(uid, categoryId))) continue;
+        const legacySent = sentMap[uid] === startMs;
 
-      const title = str(event.title) || "Event";
-      const projectName = project.name || str(event.projectName) || "your project";
-      const nowIso = new Date().toISOString();
-      const notificationRef = await db.collection("users").doc(uid).collection("notifications").add({
-        title: `Upcoming: ${title}`,
-        message: `"${title}" for ${projectName} is ${timeUntilPhrase(startMs - now, allDay)}.`,
-        type: "calendar_reminder",
-        projectId,
-        companyId,
-        eventId: eventSnap.id,
-        read: false,
-        createdAt: new Date(nowIso),
-        createdAtIso: nowIso,
-      });
-      await pushStoredNotification(uid, notificationRef.id, options.siteOrigin).catch(() => undefined);
-      result.sent += 1;
+        // Claim them first (so two runs at once can't both send), then send the nearest one.
+        const claimed = await db.runTransaction(async (tx) => {
+          const fresh = await tx.get(eventSnap.ref);
+          if (!fresh.exists) return false;
+          const current = (fresh.data()?.remindersSent as Record<string, unknown> | undefined) ?? {};
+          const stillDue = due.filter((time) => current[time.key] !== startMs);
+          if (!stillDue.length) return false;
+          const [first, ...rest] = stillDue;
+          tx.update(
+            eventSnap.ref,
+            new FieldPath("remindersSent", first.key),
+            startMs,
+            ...rest.flatMap((time) => [new FieldPath("remindersSent", time.key), startMs]),
+          );
+          return true;
+        });
+        if (!claimed || legacySent) continue;
+
+        const title = str(event.title) || "Event";
+        const projectName = project ? project.name || str(event.projectName) || "your project" : "";
+        const when = timeUntilPhrase(startMs - now, allDay);
+        const nowIso = new Date().toISOString();
+        const notificationRef = await db.collection("users").doc(uid).collection("notifications").add({
+          title: `Upcoming: ${title}`,
+          message: projectName ? `"${title}" for ${projectName} is ${when}.` : `"${title}" is ${when}.`,
+          type: "calendar_reminder",
+          ...(projectId ? { projectId } : {}),
+          companyId,
+          eventId: eventSnap.id,
+          read: false,
+          createdAt: new Date(nowIso),
+          createdAtIso: nowIso,
+        });
+        await pushStoredNotification(uid, notificationRef.id, options.siteOrigin).catch(() => undefined);
+        result.sent += 1;
+      }
     }
   }
   return result;

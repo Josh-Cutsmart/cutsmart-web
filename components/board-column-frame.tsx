@@ -13,12 +13,12 @@ import type { HTMLAttributes, ReactNode } from "react";
 //  - the lift (data-board-column-lift): moved up by however much of the column is past the bottom of
 //    the screen. It holds:
 //    - the window (.board-column-window in globals.css): shows only what's above its bottom edge —
-//      with room around the top and sides for the column's shadow, and the column's own rounded
-//      corners along the bottom — so it's where the column is cut off.
+//      with room around the top and sides for the column's shadow (fading out near the bottom), and the
+//      column's own rounded corners along the bottom — so it's where the column is cut off.
 //      - the body (data-board-column-drop): the column itself (children), moved back down by the same
 //        amount, so it doesn't move at all — only where it's cut off does.
-//    - the cap (.board-column-cap): the column's shadow along that bottom edge (the window cuts off
-//      the body's own there).
+//    - the cap (.board-column-cap): the column's shadow along that bottom edge and up its sides near
+//      it (fading in as the window fades the body's own out).
 //
 // Once the board is in place nothing is moved and the column shows whole.
 //
@@ -47,7 +47,9 @@ export function BoardColumnFrame({
             {children}
           </div>
         </div>
-        <div aria-hidden="true" className="board-column-cap pointer-events-none absolute inset-0 rounded-[16px]" style={{ boxShadow: outerShadowsOnly(shadow) }} />
+        <div aria-hidden="true" className="board-column-cap pointer-events-none absolute -bottom-12 -left-12 -right-12 top-0">
+          <div className="absolute bottom-12 left-12 right-12 top-0 rounded-[16px]" style={{ boxShadow: outerShadowsOnly(shadow) }} />
+        </div>
       </div>
     </div>
   );

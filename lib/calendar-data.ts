@@ -43,7 +43,17 @@ export type CalendarEvent = {
   updatedByName: string;
   // With a linked project: shown on that project's client portal (Schedule tab).
   showToClient: boolean;
+  // The staff on it (uids) — each is reminded before it (lib/calendar-reminders-server.ts). Linking a project puts
+  // that project's creator and assignee on it. null: saved before events had staff — a linked project's creator and
+  // assignee count as its staff then (projectEventStaffUids), and it's saved with them the next time it's edited.
+  staffUids: string[] | null;
 };
+
+// A project's people who go on an event linked to it as its staff: whoever it's assigned to, and whoever made it.
+export function projectEventStaffUids(project: { assignedToUid?: string; createdByUid?: string } | null | undefined): string[] {
+  if (!project) return [];
+  return Array.from(new Set([String(project.assignedToUid ?? "").trim(), String(project.createdByUid ?? "").trim()].filter(Boolean)));
+}
 
 // What the client portal's Schedule tab gets for one event (app/api/specs-share/[shareId]/schedule) —
 // never the location, notes or who added it.
@@ -157,6 +167,9 @@ function toEvent(id: string, data: Record<string, unknown>): CalendarEvent | nul
     updatedByUid: String(data.updatedByUid ?? "").trim(),
     updatedByName: String(data.updatedByName ?? "").trim(),
     showToClient: data.showToClient === true,
+    staffUids: Array.isArray(data.staffUids)
+      ? Array.from(new Set(data.staffUids.map((uid) => String(uid ?? "").trim()).filter(Boolean)))
+      : null,
   };
 }
 
@@ -194,6 +207,34 @@ export function subscribeCalendarEvents(
   );
 }
 
+// Live-updating events linked to one project (archived ones left out), earliest first — a project's Schedule (its
+// Design tab). Returns an unsubscribe function.
+export function subscribeProjectCalendarEvents(
+  companyId: string,
+  projectId: string,
+  onEvents: (events: CalendarEvent[]) => void,
+  onError?: (error: unknown) => void,
+): () => void {
+  const cid = String(companyId || "").trim();
+  const pid = String(projectId || "").trim();
+  if (!db || !cid || !pid) {
+    onEvents([]);
+    return () => {};
+  }
+  const q = query(collection(db, "companies", cid, "calendarEvents"), where("projectId", "==", pid));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const events = snap.docs
+        .map((d) => toEvent(d.id, (d.data() ?? {}) as Record<string, unknown>))
+        .filter((e): e is CalendarEvent => Boolean(e))
+        .sort((a, b) => a.startMs - b.startMs);
+      onEvents(events);
+    },
+    (error) => onError?.(error),
+  );
+}
+
 // One event (null if it's gone or archived) — e.g. to open it from a calendar reminder notification.
 export async function fetchCalendarEvent(companyId: string, eventId: string): Promise<CalendarEvent | null> {
   if (!db || !companyId || !eventId) return null;
@@ -208,8 +249,14 @@ export async function fetchCalendarEvent(companyId: string, eventId: string): Pr
 export async function saveCalendarEvent(companyId: string, event: CalendarEvent): Promise<{ ok: boolean; error?: string }> {
   const cid = String(companyId || "").trim();
   if (!db || !cid || !event.id) return { ok: false, error: "missing-company" };
+  // An event from before staff (staffUids null) keeps none saved — its project's people still count (see staffUids).
+  const { staffUids, ...fields } = event;
   try {
-    await setDoc(doc(db, "companies", cid, "calendarEvents", event.id), { ...event, companyId: cid, updatedAtIso: new Date().toISOString() }, { merge: true });
+    await setDoc(
+      doc(db, "companies", cid, "calendarEvents", event.id),
+      { ...fields, ...(staffUids ? { staffUids } : {}), companyId: cid, updatedAtIso: new Date().toISOString() },
+      { merge: true },
+    );
     return { ok: true };
   } catch (error) {
     return { ok: false, error: String((error as { code?: string })?.code || "save-failed") };

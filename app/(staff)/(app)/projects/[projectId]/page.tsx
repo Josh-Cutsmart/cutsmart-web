@@ -4,13 +4,15 @@ import { Fragment, startTransition, useCallback, useDeferredValue, useEffect, us
 import { createPortal } from "react-dom";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Great_Vibes } from "next/font/google";
-import { ArrowLeft, ArrowLeftRight, ArrowRight, Bell, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, File as FileIcon, FileSpreadsheet, FileText, GitBranch, GripVertical, HardHat, Image as ImageIcon, Import as ImportIcon, Info, Link2, ListChecks, Lock, Mail, MapPin, Minus, NotebookPen, Pencil, Phone, Plus, Printer, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, Unlock, User, UserPlus, Users, Wrench, X } from "lucide-react";
+import { ArrowLeft, ArrowLeftRight, ArrowRight, Bell, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, File as FileIcon, FileSpreadsheet, FileText, GitBranch, Eraser, GripVertical, HardHat, Image as ImageIcon, Import as ImportIcon, Info, Link2, ListChecks, Lock, Mail, MapPin, Minus, MoreHorizontal, NotebookPen, Pencil, Phone, Plus, Printer, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, Unlock, User, UserPlus, Users, Wrench, X } from "lucide-react";
 import type { DecoupledEditor, ModelWriter } from "ckeditor5";
 import type { RichText as ExcelRichText } from "exceljs";
 import type { CellInput as AutoTableCellInput, RowInput as AutoTableRowInput } from "jspdf-autotable";
 import { deleteObject, getBlob, getDownloadURL, ref as storageRef, uploadBytesResumable } from "firebase/storage";
 import { FullscreenImageViewerShell } from "@/components/fullscreen-image-viewer-shell";
-import { GlassDropdown } from "@/components/glass-dropdown";
+import { GlassActionMenu, GlassDropdown, type GlassActionMenuItem } from "@/components/glass-dropdown";
+import { BoardColumnFrame, ColumnCollapseChevrons } from "@/components/board-column-frame";
+import { collapseBoardColumnAnimated, expandBoardColumnAnimated } from "@/lib/board-column-collapse";
 import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
 import { InitialMeasureCloseSummaryModal } from "@/components/initial-measure-close-summary-modal";
 import { ProductionCutlistCloseSummaryModal } from "@/components/production-cutlist-close-summary-modal";
@@ -36,8 +38,9 @@ import { authorizedFetch } from "@/lib/api-fetch";
 import { useKeepAnchoredPopoverAboveKeyboard } from "@/lib/use-keep-anchored-popover-above-keyboard";
 import { useKeepMenuInView } from "@/lib/use-keep-menu-in-view";
 import { RoomNameCombobox } from "@/components/room-name-combobox";
+import { contrastTextForFill } from "@/lib/user-profile-format";
 import { normalizeBoardFinishes, normalizeHardwareRows, normalizeMmOptions, normalizeSheetSizes, type HardwareTypeRow } from "@/lib/production-hardware";
-import { GlassSwitch } from "@/components/settings-ui";
+import { GlassSwitch, iconRemoveButtonClass } from "@/components/settings-ui";
 import {
   cutlistTemplateBoardLabel,
   cutlistTemplateDrawerLabel,
@@ -50,6 +53,7 @@ import {
 import { useMobileFloatingActionSheet } from "@/lib/use-mobile-floating-action-sheet";
 import { useLongPress } from "@/lib/use-long-press";
 import { useDragGhost, DragGhostLayer } from "@/lib/use-drag-ghost";
+import { withBoardDropPreview } from "@/lib/board-drop-order";
 import { clusterPins, computeSpreadPositions, findClusterContainingPin } from "@/lib/pin-clustering";
 import SpecsGridEditor, { preloadSpecsGridEditor } from "@/components/specs-grid-editor-lazy";
 import { type SpecsGrid, type SpecsGridVersion, type SpecsRowGroup, normalizeSpecsGrid, normalizeSpecsGridVersion, resolveSpecsGridTokens, genSpecsRowId, getExpandedRowGroups, setRowGroupHidden, applyGroupRules, clearAllConfirmableMarks, withCurrentCompanyLogo } from "@/lib/specs-grid-types";
@@ -107,7 +111,9 @@ import { useProjectCutlistRaw } from "@/lib/use-project-cutlist";
 import { useProjectChecklists } from "@/lib/use-project-checklists";
 import { useProjectSalesGrid } from "@/lib/use-project-sales-grid";
 import { useProjectMedia } from "@/lib/use-project-media";
-import { normalizeRoles } from "@/lib/company-roles";
+import { normalizeRoleKey, normalizeRoles } from "@/lib/company-roles";
+import { ProjectScheduleModal } from "@/components/project-schedule-modal";
+import { ProductionSpecificationsModal } from "@/components/production-specifications-modal";
 import { getFirebaseStorageQuotaExceededMessage, isFirebaseStorageQuotaExceeded } from "@/lib/firebase-storage-errors";
 import { readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
 import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
@@ -260,11 +266,6 @@ function updateProjectTabPill(
       : { ...next, animate: prev !== null },
   );
 }
-// The pill's shape, for cutting it out of the plain tabs (the magnified copy shows through there instead).
-const projectTabPillMask = (width: number, height: number) =>
-  `url("data:image/svg+xml,${encodeURIComponent(
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none"><rect width="${width}" height="${height}" rx="${height / 2}"/></svg>`,
-  )}")`;
 
 const tabItems = [
   { value: "general", label: "General" },
@@ -792,8 +793,31 @@ type CncDisplayRow = CutlistRow & {
 };
 type SalesRoomRow = { name: string; included: boolean; totalPrice: string };
 type SalesProductRow = { name: string; selected: boolean };
-type ItemCategoryItemRow = { name: string; description: string; subcategory: string; price: string; markupPercent: string };
-type SalesItemCategoryRow = { id: string; name: string; color: string; items: ItemCategoryItemRow[] };
+// id: the item's own, unique in its category (normalizeSalesItemCategories) — two items can share a name.
+// customPrice: Company Settings › Item Categories' "Custom" — no set price; staff enter one each time it's added (its
+// markup going on top).
+type ItemCategoryItemRow = {
+  id: string;
+  name: string;
+  description: string;
+  subcategory: string;
+  price: string;
+  markupPercent: string;
+  customPrice: boolean;
+};
+// subcategoryColors: each sub-category's own colour, by lower-case name (Company Settings › Item Categories);
+// subcategoryOrder: their lower-case names in the order Company Settings lists them.
+type SalesItemCategoryRow = {
+  id: string;
+  name: string;
+  color: string;
+  subcategoryColors: Record<string, string>;
+  subcategoryOrder: string[];
+  items: ItemCategoryItemRow[];
+};
+// customPrice: added at a price staff entered (an item with a custom price) — kept as it is, never replaced by the
+// library's. Its price is what that comes to with the item's markup (what the room's total adds up); enteredPrice is
+// what they entered (all its row shows).
 type SalesRoomItemSelection = {
   itemId: string;
   name: string;
@@ -802,6 +826,19 @@ type SalesRoomItemSelection = {
   categoryColor: string;
   price: string;
   quantity: number;
+  customPrice?: boolean;
+  enteredPrice?: string;
+};
+// Design › Items' custom price pop-up: an item with a custom price on its way into a room (add: its library item), or a
+// room's line at a custom price having its price changed (editItemId) — and the markup going on top.
+type SalesItemsCustomPricePending = {
+  roomId: string;
+  roomName: string;
+  name: string;
+  markupPercent: string;
+  quantity: number;
+  add?: { category: SalesItemCategoryRow; item: ItemCategoryItemRow };
+  editItemId?: string;
 };
 type SalesItemsRoomBoardRow = {
   id: string;
@@ -4488,6 +4525,77 @@ function DrillingArrowIcon({ color }: { color: string }) {
   );
 }
 
+// A scroll area whose scrollbar floats over its content (Design › Items' desktop room columns) — the app's glass thumb
+// (6px, 2px in from the right edge), drawn inside the area itself so it moves with it (a column sliding open / shut,
+// the board scrolling sideways) — instead of the browser's own, which takes its width out of the content: rows
+// tinted right across stop short of it. Drag the thumb to scroll. className: the area's place in its parent;
+// contentClassName: its scrolling content's padding etc.
+function OverlayScrollArea({ className = "", contentClassName = "", children }: { className?: string; contentClassName?: string; children: React.ReactNode }) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const [thumb, setThumb] = useState<{ top: number; height: number } | null>(null);
+  const dragRef = useRef<{ startY: number; startScroll: number; scrollPerPx: number } | null>(null);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const update = () => {
+      const { scrollTop, scrollHeight, clientHeight } = el;
+      if (scrollHeight <= clientHeight + 1) {
+        setThumb((prev) => (prev === null ? prev : null));
+        return;
+      }
+      const track = clientHeight - 4;
+      const height = Math.max(24, (track * clientHeight) / scrollHeight);
+      const top = 2 + (track - height) * (scrollTop / (scrollHeight - clientHeight));
+      setThumb((prev) => (prev && Math.abs(prev.top - top) < 0.5 && Math.abs(prev.height - height) < 0.5 ? prev : { top, height }));
+    };
+    el.addEventListener("scroll", update, { passive: true });
+    // Fires once straight away (its first measure), then whenever the area or what's in it changes size.
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    if (contentRef.current) ro.observe(contentRef.current);
+    return () => {
+      el.removeEventListener("scroll", update);
+      ro.disconnect();
+    };
+  }, []);
+  return (
+    <div className={`relative ${className}`}>
+      <div ref={scrollRef} className={`hide-native-scrollbar h-full overflow-y-auto ${contentClassName}`}>
+        <div ref={contentRef}>{children}</div>
+      </div>
+      {thumb ? (
+        <div
+          // "grab", as GlassScrollbarThumb's — the app's text-selection guard knows a drag handle by it.
+          className="absolute right-[2px] z-[5] w-[6px] rounded-full transition-colors"
+          style={{ top: thumb.top, height: thumb.height, backgroundColor: "var(--custom-scrollbar-thumb)", cursor: "grab" }}
+          onMouseEnter={(event) => { event.currentTarget.style.backgroundColor = "var(--custom-scrollbar-thumb-hover)"; }}
+          onMouseLeave={(event) => { event.currentTarget.style.backgroundColor = "var(--custom-scrollbar-thumb)"; }}
+          onClick={(event) => event.stopPropagation()}
+          onPointerDown={(event) => {
+            const el = scrollRef.current;
+            if (!el) return;
+            event.preventDefault();
+            event.stopPropagation();
+            event.currentTarget.setPointerCapture(event.pointerId);
+            const track = el.clientHeight - 4;
+            const travel = Math.max(1, track - thumb.height);
+            dragRef.current = { startY: event.clientY, startScroll: el.scrollTop, scrollPerPx: (el.scrollHeight - el.clientHeight) / travel };
+          }}
+          onPointerMove={(event) => {
+            const drag = dragRef.current;
+            const el = scrollRef.current;
+            if (!drag || !el) return;
+            el.scrollTop = drag.startScroll + (event.clientY - drag.startY) * drag.scrollPerPx;
+          }}
+          onPointerUp={() => { dragRef.current = null; }}
+          onPointerCancel={() => { dragRef.current = null; }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
 function TintedAngleDownIcon({
   color,
   size = 12,
@@ -5980,6 +6088,13 @@ function normalizeSalesRooms(raw: unknown): SalesRoomRow[] {
   return out;
 }
 
+// A custom-priced room item's id: its library item's id, this, then its price in cents — one line per price.
+const SALES_ITEMS_CUSTOM_PRICE_ID_MARK = "~custom~";
+// The library item a room item came from (a custom-priced one's id carries its price too).
+function salesItemsLibraryIdOf(itemId: string) {
+  return String(itemId || "").split(SALES_ITEMS_CUSTOM_PRICE_ID_MARK)[0];
+}
+
 function slugifySalesItemsValue(value: string) {
   return String(value || "")
     .trim()
@@ -6002,6 +6117,84 @@ function createSalesItemsRoomCopyName(baseName: string, existingNames: string[])
   return `${normalizedBase} Copy ${idx}`;
 }
 
+// Design › Items' library (desktop): how a category, sub-category or item description slides open / shut.
+const SALES_ITEMS_LIBRARY_SLIDE = "grid-template-rows 280ms cubic-bezier(0.22, 1, 0.36, 1)";
+// ...and how many item descriptions can be open at once (opening another shuts the one opened longest ago).
+const SALES_ITEMS_LIBRARY_MAX_OPEN_DESCRIPTIONS = 3;
+// Design › Items: moving a room among the others — its drop preview (the boards' own look, lib/board-drop-order.ts, with
+// a brand-coloured outline for the light page), and on a phone, how long a card's header is held to pick it up and how
+// far a finger can move before that's a scroll instead (as Leads' cards).
+const SALES_ITEMS_ROOM_DROP_PREVIEW_STYLE: React.CSSProperties = {
+  opacity: 0.55,
+  animation: "board-drop-preview-in 160ms ease-out",
+  outline: "2px dashed var(--brand-strong)",
+  outlineOffset: 2,
+  borderRadius: 16,
+};
+const SALES_ITEMS_ROOM_LONG_PRESS_MS = 450;
+const SALES_ITEMS_ROOM_MOVE_CANCEL_PX = 10;
+// The item library's visible area (desktop): its top is just under the Items window's bars (105px), its bubbles
+// sitting 12px in from that and from the bottom.
+const SALES_ITEMS_LIBRARY_VIEW_TOP = 105 + 12;
+const SALES_ITEMS_LIBRARY_VIEW_BOTTOM_GAP = 12;
+// ...and how long an item's "Added" pill shows once it's been added.
+const SALES_ITEMS_LIBRARY_ADDED_MS = 5000;
+
+// Design › Items (desktop): what someone has collapsed in a project ({ [id]: true }) — the library's categories
+// (salesItemsLibraryCollapsedKey) or the room columns (salesItemsRoomsCollapsedKey) — as saved in this browser under
+// their own key; {} without one, or if it can't be read.
+function readSalesItemsLibraryCollapsed(storageKey: string): Record<string, boolean> {
+  if (!storageKey || typeof window === "undefined") return {};
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(storageKey) || "{}") as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(Object.entries(parsed as Record<string, unknown>).filter(([, on]) => on === true).map(([id]) => [id, true]));
+  } catch {
+    return {};
+  }
+}
+
+// Design › Items: the categories with just the items a search matches (by name, sub-category or category) — the
+// categories with none left out. No search: all of them.
+function filterSalesItemCategoriesBySearch<T extends { name: string; items: Array<{ name: string; subcategory: string }> }>(
+  categories: T[],
+  searchText: string,
+): T[] {
+  const search = String(searchText || "").trim().toLowerCase();
+  return categories
+    .map((category) => {
+      const items = category.items.filter((item) => {
+        if (!search) return true;
+        return (
+          item.name.toLowerCase().includes(search) ||
+          item.subcategory.toLowerCase().includes(search) ||
+          category.name.toLowerCase().includes(search)
+        );
+      });
+      return { ...category, items };
+    })
+    .filter((category) => category.items.length > 0);
+}
+
+// A category's items by sub-category, for Design › Items' library (desktop): those with none first (no heading),
+// then each sub-category in the order Company Settings lists them (any it doesn't list after, as they come) — each
+// group's items in their own order.
+function groupSalesItemsBySubcategory(category: SalesItemCategoryRow): Array<{ name: string; items: ItemCategoryItemRow[] }> {
+  const groups = new Map<string, { name: string; items: ItemCategoryItemRow[] }>();
+  for (const item of category.items) {
+    const key = item.subcategory.trim().toLowerCase();
+    const group = groups.get(key) ?? { name: item.subcategory.trim(), items: [] };
+    group.items.push(item);
+    groups.set(key, group);
+  }
+  const rank = (key: string) => {
+    if (!key) return -1;
+    const index = category.subcategoryOrder.indexOf(key);
+    return index < 0 ? category.subcategoryOrder.length : index;
+  };
+  return [...groups.entries()].sort((a, b) => rank(a[0]) - rank(b[0])).map(([, group]) => group);
+}
+
 function normalizeSalesItemCategories(raw: unknown): SalesItemCategoryRow[] {
   if (!Array.isArray(raw)) return [];
   return raw
@@ -6012,21 +6205,51 @@ function normalizeSalesItemCategories(raw: unknown): SalesItemCategoryRow[] {
       const categoryId = String(row.id ?? "").trim() || `cat_${slugifySalesItemsValue(categoryName || String(categoryIndex))}`;
       const items = Array.isArray(row.items)
         ? (row.items as Array<Record<string, unknown>>)
-            .map((entry) => ({
-              name: String(entry?.name ?? "").trim(),
-              description: String(entry?.description ?? "").trim(),
-              subcategory: String(entry?.subcategory ?? "").trim(),
-              price:
-                String(entry?.outputPrice ?? "").trim() ||
-                computeSalesItemsOutputPrice(entry?.price, entry?.markupPercent),
-              markupPercent: String(entry?.markupPercent ?? "").trim(),
-            }))
+            .map((entry) => {
+              const customPrice = Boolean(entry?.customPrice);
+              return {
+                id: "",
+                name: String(entry?.name ?? "").trim(),
+                description: String(entry?.description ?? "").trim(),
+                subcategory: String(entry?.subcategory ?? "").trim(),
+                // A custom price has none of its own — staff enter it each time it's added.
+                price: customPrice
+                  ? ""
+                  : String(entry?.outputPrice ?? "").trim() || computeSalesItemsOutputPrice(entry?.price, entry?.markupPercent),
+                markupPercent: String(entry?.markupPercent ?? "").trim(),
+                customPrice,
+              };
+            })
             .filter((entry) => entry.name)
         : [];
+      // Each item's id: its category's id and its name (as it's always been made, so rooms already holding it still find
+      // it). A second item with the same name gets its sub-category added too, and a count if that's the same as well —
+      // two items with one name are still two items.
+      const usedItemIds = new Set<string>();
+      for (const entry of items) {
+        const base = `${categoryId}__${slugifySalesItemsValue(entry.name)}`;
+        let id = usedItemIds.has(base.toLowerCase()) ? `${base}__${slugifySalesItemsValue(entry.subcategory || "none")}` : base;
+        const stem = id;
+        for (let n = 2; usedItemIds.has(id.toLowerCase()); n += 1) id = `${stem}__${n}`;
+        usedItemIds.add(id.toLowerCase());
+        entry.id = id;
+      }
+      const subcategoryColors: Record<string, string> = {};
+      const subcategoryOrder: string[] = [];
+      for (const sub of Array.isArray(row.subcategories) ? (row.subcategories as unknown[]) : []) {
+        const subRow = sub && typeof sub === "object" ? (sub as Record<string, unknown>) : null;
+        const subName = String(subRow ? subRow.name ?? "" : sub ?? "").trim().toLowerCase();
+        if (!subName) continue;
+        if (!subcategoryOrder.includes(subName)) subcategoryOrder.push(subName);
+        const subColor = String(subRow?.color ?? "").trim();
+        if (subColor) subcategoryColors[subName] = subColor;
+      }
       return {
         id: categoryId,
         name: categoryName,
         color: String(row.color ?? "#7D99B3").trim() || "#7D99B3",
+        subcategoryColors,
+        subcategoryOrder,
         items,
       };
     })
@@ -6054,6 +6277,8 @@ function normalizeSalesRoomItemSelections(raw: unknown): SalesRoomItemSelection[
       categoryColor: String(item.categoryColor ?? "#7D99B3").trim() || "#7D99B3",
       price: String(item.price ?? item.outputPrice ?? "").trim(),
       quantity: Number.isFinite(quantityRaw) && quantityRaw > 0 ? Math.round(quantityRaw) : 1,
+      ...(item.customPrice ? { customPrice: true } : {}),
+      ...(item.customPrice && String(item.enteredPrice ?? "").trim() ? { enteredPrice: String(item.enteredPrice).trim() } : {}),
     });
   }
   return out;
@@ -7063,6 +7288,14 @@ export default function ProjectDetailsPage() {
     projectCostBreakdownModalOriginElRef,
   );
   const [expandedProjectCostBreakdownRooms, setExpandedProjectCostBreakdownRooms] = useState<Record<string, boolean>>({});
+  // Production › Specifications: the client-confirmed Specifications, in a pop-up (components/production-specifications-modal.tsx).
+  const [isProductionSpecsModalOpen, setIsProductionSpecsModalOpen] = useState(false);
+  const [productionSpecsModalOrigin, setProductionSpecsModalOrigin] = useState<GlassModalOrigin>(null);
+  const productionSpecsModalOriginElRef = useRef<HTMLElement | null>(null);
+  // Design › Schedule: the Calendar's events linked to this project, in a pop-up (components/project-schedule-modal.tsx).
+  const [isProjectScheduleModalOpen, setIsProjectScheduleModalOpen] = useState(false);
+  const [projectScheduleModalOrigin, setProjectScheduleModalOrigin] = useState<GlassModalOrigin>(null);
+  const projectScheduleModalOriginElRef = useRef<HTMLElement | null>(null);
   const [isProjectManagementModalOpen, setIsProjectManagementModalOpen] = useState(false);
   const [projectManagementModalOrigin, setProjectManagementModalOrigin] = useState<GlassModalOrigin>(null);
   const projectManagementModalPanelRef = useRef<HTMLDivElement | null>(null);
@@ -7302,7 +7535,6 @@ export default function ProjectDetailsPage() {
   }, []);
   const [activeBoardColourSuggestionsRowId, setActiveBoardColourSuggestionsRowId] = useState<string | null>(null);
   const [hoveredBoardRemoveRowId, setHoveredBoardRemoveRowId] = useState<string>("");
-  const [hoveredItemsRoomDeleteId, setHoveredItemsRoomDeleteId] = useState<string>("");
   const [hoveredSalesRoomDeleteName, setHoveredSalesRoomDeleteName] = useState<string>("");
   // Tracks the room row itself (not just its delete button) — mouseenter/mouseleave never refire
   // for a child within the same element (unlike mouseover/mouseout), so this stays true the whole
@@ -7353,9 +7585,95 @@ export default function ProjectDetailsPage() {
   const [salesItemsBoardRooms, setSalesItemsBoardRooms] = useState<SalesItemsRoomBoardRow[]>([]);
   const [activeSalesItemsRoomId, setActiveSalesItemsRoomId] = useState("");
   const [salesItemsSearch, setSalesItemsSearch] = useState("");
-  const [isSalesItemsSearchExpanded, setIsSalesItemsSearchExpanded] = useState(false);
-  const [collapsedSalesItemCategories, setCollapsedSalesItemCategories] = useState<Record<string, boolean>>({});
-  const [expandedSalesItemDescriptions, setExpandedSalesItemDescriptions] = useState<Record<string, boolean>>({});
+  // The Add Item pop-up's own search — apart from the item library's, so searching in it leaves the library behind it
+  // as it was.
+  const [salesItemsAddSearch, setSalesItemsAddSearch] = useState("");
+  // While searching: the groups shut during that search (just for it — how each was left is kept as it was). The
+  // pop-up's are its "add:" keys.
+  const [salesItemsSearchCollapsed, setSalesItemsSearchCollapsed] = useState<Record<string, boolean>>({});
+  // Design › Items (desktop): the item library floats down the left over the page, shown / hidden from the bar's Item
+  // Library toggle with the same slide in / out as Nesting's Visibility panel.
+  const [isSalesItemsLibraryOpen, setIsSalesItemsLibraryOpen] = useState(true);
+  const [isSalesItemsLibraryClosing, setIsSalesItemsLibraryClosing] = useState(false);
+  const [isSalesItemsLibraryJustOpened, setIsSalesItemsLibraryJustOpened] = useState(false);
+  const salesItemsLibraryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const salesItemsLibraryScrollRef = useRef<HTMLElement | null>(null);
+  const toggleSalesItemsLibrary = useCallback(() => {
+    if (salesItemsLibraryTimeoutRef.current) clearTimeout(salesItemsLibraryTimeoutRef.current);
+    setIsSalesItemsLibraryOpen((wasOpen) => {
+      if (!wasOpen) {
+        setIsSalesItemsLibraryClosing(false);
+        setIsSalesItemsLibraryJustOpened(true);
+        salesItemsLibraryTimeoutRef.current = setTimeout(() => setIsSalesItemsLibraryJustOpened(false), 800);
+        return true;
+      }
+      setIsSalesItemsLibraryClosing(true);
+      salesItemsLibraryTimeoutRef.current = setTimeout(() => {
+        setIsSalesItemsLibraryOpen(false);
+        setIsSalesItemsLibraryClosing(false);
+      }, 360);
+      return true;
+    });
+  }, []);
+  // ...and the Summary floats down the right the same way, from the bar's Summary toggle (the same slide, from the right).
+  const [isSalesItemsSummaryOpen, setIsSalesItemsSummaryOpen] = useState(true);
+  const [isSalesItemsSummaryClosing, setIsSalesItemsSummaryClosing] = useState(false);
+  const [isSalesItemsSummaryJustOpened, setIsSalesItemsSummaryJustOpened] = useState(false);
+  const salesItemsSummaryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const salesItemsSummaryScrollRef = useRef<HTMLElement | null>(null);
+  const toggleSalesItemsSummary = useCallback(() => {
+    if (salesItemsSummaryTimeoutRef.current) clearTimeout(salesItemsSummaryTimeoutRef.current);
+    setIsSalesItemsSummaryOpen((wasOpen) => {
+      if (!wasOpen) {
+        setIsSalesItemsSummaryClosing(false);
+        setIsSalesItemsSummaryJustOpened(true);
+        salesItemsSummaryTimeoutRef.current = setTimeout(() => setIsSalesItemsSummaryJustOpened(false), 800);
+        return true;
+      }
+      setIsSalesItemsSummaryClosing(true);
+      salesItemsSummaryTimeoutRef.current = setTimeout(() => {
+        setIsSalesItemsSummaryOpen(false);
+        setIsSalesItemsSummaryClosing(false);
+      }, 360);
+      return true;
+    });
+  }, []);
+  // Design › Items' library (desktop): the items whose description is open, oldest first — at most three
+  // (SALES_ITEMS_LIBRARY_MAX_OPEN_DESCRIPTIONS); opening another shuts the oldest.
+  const [openSalesItemDescriptions, setOpenSalesItemDescriptions] = useState<string[]>([]);
+  // ...and the quantity typed against an item (its box shows on hover, and stays once there's one in it): clicking
+  // the item, or dragging it to a room, adds that many instead of 1.
+  const [salesItemsLibraryQuantities, setSalesItemsLibraryQuantities] = useState<Record<string, string>>({});
+  const salesItemsLibraryQuantityFor = (itemKey: string) => Math.max(1, Number.parseInt(salesItemsLibraryQuantities[itemKey] || "", 10) || 1);
+  // Once an item's been added (clicked, or dragged to a room): its quantity box empties, and an "Added" pill pops up in
+  // the middle of its row for 5 seconds, then pops away — the Quote window's bottom-bar bubbles' pop in / out. Each
+  // item has its own (n: a fresh pop each time it's added again while showing).
+  const [salesItemsLibraryAddedPills, setSalesItemsLibraryAddedPills] = useState<Record<string, { leaving: boolean; n: number }>>({});
+  const salesItemsLibraryAddedTimersRef = useRef<Record<string, Array<ReturnType<typeof setTimeout>>>>({});
+  const onSalesItemsLibraryItemAdded = (itemKey: string) => {
+    setSalesItemsLibraryQuantities((prev) => {
+      if (!(itemKey in prev)) return prev;
+      const next = { ...prev };
+      delete next[itemKey];
+      return next;
+    });
+    (salesItemsLibraryAddedTimersRef.current[itemKey] ?? []).forEach((timer) => clearTimeout(timer));
+    setSalesItemsLibraryAddedPills((prev) => ({ ...prev, [itemKey]: { leaving: false, n: (prev[itemKey]?.n ?? 0) + 1 } }));
+    salesItemsLibraryAddedTimersRef.current[itemKey] = [
+      setTimeout(() => {
+        setSalesItemsLibraryAddedPills((prev) => (prev[itemKey] ? { ...prev, [itemKey]: { ...prev[itemKey], leaving: true } } : prev));
+      }, SALES_ITEMS_LIBRARY_ADDED_MS),
+      // ...gone once its pop-away (floating-bar-slot-pop, 180ms) has played.
+      setTimeout(() => {
+        setSalesItemsLibraryAddedPills((prev) => {
+          const next = { ...prev };
+          delete next[itemKey];
+          return next;
+        });
+        delete salesItemsLibraryAddedTimersRef.current[itemKey];
+      }, SALES_ITEMS_LIBRARY_ADDED_MS + 200),
+    ];
+  };
   const [isItemsAddRoomModalOpen, setIsItemsAddRoomModalOpen] = useState(false);
   const [itemsAddRoomName, setItemsAddRoomName] = useState("");
   const itemsAddRoomPanelRef = useRef<HTMLDivElement | null>(null);
@@ -7374,6 +7692,28 @@ export default function ProjectDetailsPage() {
   const itemsRoomDeleteOriginElRef = useRef<HTMLElement | null>(null);
   const shouldRenderItemsRoomDeleteModal = useGlassModalPopOrigin(Boolean(itemsRoomPendingDeleteId), itemsRoomDeleteOrigin, itemsRoomDeleteModalPanelRef, undefined, itemsRoomDeleteOriginElRef);
   const [salesItemsDragTargetRoomId, setSalesItemsDragTargetRoomId] = useState("");
+  // Design › Items: a room being moved among the others (desktop: dragged by its column's header; phone: its card's
+  // header pressed and held), and where it would go — how many of the others come before it (its drop preview's place).
+  const [salesItemsDraggingRoomId, setSalesItemsDraggingRoomId] = useState("");
+  const [salesItemsRoomDropIndex, setSalesItemsRoomDropIndex] = useState<number | null>(null);
+  // The phone's press-and-hold drag, as it goes.
+  const salesItemsRoomTouchRef = useRef<{
+    roomId: string;
+    listEl: HTMLElement | null;
+    startX: number;
+    startY: number;
+    lastX: number;
+    lastY: number;
+    timer: ReturnType<typeof setTimeout> | null;
+    dragging: boolean;
+    eligible: boolean;
+    dropIndex: number | null;
+    blockScroll: ((event: TouchEvent) => void) | null;
+    edgeFrame: number;
+  } | null>(null);
+  // The room just dropped (phone) — the tap some browsers send after the finger lifts is ignored, so it doesn't also
+  // collapse it.
+  const suppressNextSalesItemsRoomTapRef = useRef("");
   const salesItemsBoardRoomsRef = useRef<SalesItemsRoomBoardRow[]>([]);
   const lastSyncedSalesItemsRoomsRef = useRef<string | null>(null);
   const [clearSalesItemsConfirmKind, setClearSalesItemsConfirmKind] = useState<"room" | "all" | "">("");
@@ -7384,15 +7724,6 @@ export default function ProjectDetailsPage() {
   const [editingSalesItemsQuantityKey, setEditingSalesItemsQuantityKey] = useState("");
   const [editingSalesItemsQuantityDraft, setEditingSalesItemsQuantityDraft] = useState("");
   const suppressSalesItemsQuantityBlurRef = useRef(false);
-  const [salesItemsJustAddedKey, setSalesItemsJustAddedKey] = useState("");
-  const salesItemsJustAddedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const flashSalesItemsJustAdded = (key: string) => {
-    if (salesItemsJustAddedTimeoutRef.current) clearTimeout(salesItemsJustAddedTimeoutRef.current);
-    setSalesItemsJustAddedKey(key);
-    salesItemsJustAddedTimeoutRef.current = setTimeout(() => setSalesItemsJustAddedKey(""), 1200);
-  };
-  const [expandedSalesItemLibraryModalDescriptions, setExpandedSalesItemLibraryModalDescriptions] = useState<Record<string, boolean>>({});
-  const [salesItemsAddQuantityDrafts, setSalesItemsAddQuantityDrafts] = useState<Record<string, string>>({});
   const [itemsRemovePendingItem, setItemsRemovePendingItem] = useState<{ roomId: string; roomName: string; itemId: string; name: string; quantity: number } | null>(null);
   const [itemsRemoveConfirmOrigin, setItemsRemoveConfirmOrigin] = useState<GlassModalOrigin>(null);
   const itemsRemoveConfirmPanelRef = useRef<HTMLDivElement | null>(null);
@@ -7401,6 +7732,16 @@ export default function ProjectDetailsPage() {
   const lastItemsRemovePendingItemRef = useRef<{ roomId: string; roomName: string; itemId: string; name: string; quantity: number } | null>(null);
   if (itemsRemovePendingItem) lastItemsRemovePendingItemRef.current = itemsRemovePendingItem;
   const displayItemsRemovePendingItem = itemsRemovePendingItem ?? lastItemsRemovePendingItemRef.current;
+  // An item with a custom price waiting on its price, and the price being typed.
+  const [salesItemsCustomPricePending, setSalesItemsCustomPricePending] = useState<SalesItemsCustomPricePending | null>(null);
+  const [salesItemsCustomPriceDraft, setSalesItemsCustomPriceDraft] = useState("");
+  const [salesItemsCustomPriceOrigin, setSalesItemsCustomPriceOrigin] = useState<GlassModalOrigin>(null);
+  const salesItemsCustomPricePanelRef = useRef<HTMLDivElement | null>(null);
+  const salesItemsCustomPriceOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderSalesItemsCustomPriceModal = useGlassModalPopOrigin(Boolean(salesItemsCustomPricePending), salesItemsCustomPriceOrigin, salesItemsCustomPricePanelRef, undefined, salesItemsCustomPriceOriginElRef);
+  const lastSalesItemsCustomPricePendingRef = useRef<SalesItemsCustomPricePending | null>(null);
+  if (salesItemsCustomPricePending) lastSalesItemsCustomPricePendingRef.current = salesItemsCustomPricePending;
+  const displaySalesItemsCustomPricePending = salesItemsCustomPricePending ?? lastSalesItemsCustomPricePendingRef.current;
   const salesItemsDragGhost = useDragGhost();
   const [notifyBellWobbleKey, setNotifyBellWobbleKey] = useState(0);
   const projectNameHeadingRef = useRef<HTMLHeadingElement | null>(null);
@@ -7620,6 +7961,18 @@ export default function ProjectDetailsPage() {
   // app shell. Shares use-company-access's module-level cache, so navigating between projects (or
   // back to this same one) within the same company no longer re-pays this round trip every time.
   const companyAccess = useCompanyAccess(project ? project.companyId : null);
+  // The Calendar's own rule for who sees which categories (app/(staff)/(app)/calendar/page.tsx) — for Design › Schedule.
+  const projectScheduleViewer = useMemo(() => {
+    const isAdmin = companyAccess.status === "ready" && isOwnerOrAdmin(companyAccess.role);
+    return {
+      isAdmin,
+      roleKey: normalizeRoleKey(companyAccess.roleId || companyAccess.role),
+      canViewCalendar:
+        isAdmin ||
+        (companyAccess.status === "ready" &&
+          (hasPermissionKey(companyAccess.permissionKeys, "calendar.view") || hasPermissionKey(companyAccess.permissionKeys, "calendar.edit"))),
+    };
+  }, [companyAccess.status, companyAccess.role, companyAccess.roleId, companyAccess.permissionKeys]);
   // Re-render when the company's currency / unit / date format changes (lib/company-formats.ts).
   useCompanyFormats();
   const [companyDoc, setCompanyDoc] = useState<Record<string, unknown> | null>(null);
@@ -9251,10 +9604,12 @@ export default function ProjectDetailsPage() {
     for (const category of companyItemCategories) {
       const categoryId = String(category.id || "").trim();
       for (const item of category.items) {
-        const itemId = `${categoryId}__${slugifySalesItemsValue(item.name)}`.toLowerCase();
+        // A custom price's is "" — no library price: a room's line keeps its own.
+        const itemId = item.id.toLowerCase();
         const fallbackKey = `${categoryId}::${String(item.name || "").trim().toLowerCase()}`;
         if (itemId) byItemId[itemId] = item.price;
-        if (fallbackKey) byCategoryAndName[fallbackKey] = item.price;
+        // Two with one name: the first's (the one its old id meant).
+        if (fallbackKey && !(fallbackKey in byCategoryAndName)) byCategoryAndName[fallbackKey] = item.price;
       }
     }
     return { byItemId, byCategoryAndName };
@@ -10787,6 +11142,106 @@ export default function ProjectDetailsPage() {
     if (!project?.id) return "";
     return `cutsmart.web.cutlist.ui.${user?.uid ?? "anon"}.${project.id}`;
   }, [project?.id, user?.uid]);
+  // Design › Items' library (desktop): which categories (by id) and sub-categories ("<category id>::<sub-category>")
+  // are collapsed stays as each person left it in each project (saved in this browser, by person and project) until
+  // they change it. Read from storage until they first toggle one here; from then on, what they've set (saved as
+  // they go).
+  const salesItemsLibraryCollapsedKey = project?.id ? `cutsmart.web.items.library.collapsed.${user?.uid ?? "anon"}.${project.id}` : "";
+  const [salesItemsLibraryCollapsedState, setSalesItemsLibraryCollapsedState] = useState<{ key: string; collapsed: Record<string, boolean> }>({
+    key: "",
+    collapsed: {},
+  });
+  const salesItemsLibraryCollapsed =
+    salesItemsLibraryCollapsedState.key === salesItemsLibraryCollapsedKey
+      ? salesItemsLibraryCollapsedState.collapsed
+      : readSalesItemsLibraryCollapsed(salesItemsLibraryCollapsedKey);
+  // ...and which room columns are collapsed (kept the same way: per person, per project, in this browser).
+  const salesItemsRoomsCollapsedKey = project?.id ? `cutsmart.web.items.rooms.collapsed.${user?.uid ?? "anon"}.${project.id}` : "";
+  const [salesItemsRoomsCollapsedState, setSalesItemsRoomsCollapsedState] = useState<{ key: string; collapsed: Record<string, boolean> }>({
+    key: "",
+    collapsed: {},
+  });
+  const salesItemsRoomsCollapsed =
+    salesItemsRoomsCollapsedState.key === salesItemsRoomsCollapsedKey
+      ? salesItemsRoomsCollapsedState.collapsed
+      : readSalesItemsLibraryCollapsed(salesItemsRoomsCollapsedKey);
+  const setSalesItemsRoomCollapsed = (roomId: string, collapsed: boolean) => {
+    const next = { ...salesItemsRoomsCollapsed };
+    if (collapsed) next[roomId] = true;
+    else delete next[roomId];
+    setSalesItemsRoomsCollapsedState({ key: salesItemsRoomsCollapsedKey, collapsed: next });
+    if (!salesItemsRoomsCollapsedKey) return;
+    try {
+      window.localStorage.setItem(salesItemsRoomsCollapsedKey, JSON.stringify(next));
+    } catch {
+      // Storage unavailable — it just won't be remembered.
+    }
+  };
+  const toggleSalesItemsLibraryCollapsed = (key: string) => {
+    const next = { ...salesItemsLibraryCollapsed };
+    if (next[key]) delete next[key];
+    else next[key] = true;
+    setSalesItemsLibraryCollapsedState({ key: salesItemsLibraryCollapsedKey, collapsed: next });
+    if (!salesItemsLibraryCollapsedKey) return;
+    try {
+      window.localStorage.setItem(salesItemsLibraryCollapsedKey, JSON.stringify(next));
+    } catch {
+      // Storage unavailable — it just won't be remembered.
+    }
+  };
+
+  // Design › Items' item library and Add Item pop-up (each with its own search): while there's a search, every group
+  // with a match in it (the only ones showing) is open — without touching how each was left. One can still be shut
+  // while searching (until that search changes); clear the search and they're all back as they were.
+  const isSalesItemsSearchingFor = (key: string) =>
+    (key.startsWith("add:") ? salesItemsAddSearch : salesItemsSearch).trim().length > 0;
+  const onSalesItemsSearchChange = (value: string, scope: "library" | "add") => {
+    if (scope === "add") setSalesItemsAddSearch(value);
+    else setSalesItemsSearch(value);
+    // Only that search's own shut groups start over.
+    setSalesItemsSearchCollapsed((prev) =>
+      Object.fromEntries(Object.entries(prev).filter(([key]) => key.startsWith("add:") !== (scope === "add"))),
+    );
+  };
+  const isSalesItemsLibraryGroupCollapsed = (key: string) =>
+    isSalesItemsSearchingFor(key) ? (salesItemsSearchCollapsed[key] ?? false) : (salesItemsLibraryCollapsed[key] ?? false);
+  const toggleSalesItemsLibraryGroupCollapsed = (key: string) => {
+    if (!isSalesItemsSearchingFor(key)) {
+      toggleSalesItemsLibraryCollapsed(key);
+      return;
+    }
+    setSalesItemsSearchCollapsed((prev) => {
+      const next = { ...prev };
+      if (next[key]) delete next[key];
+      else next[key] = true;
+      return next;
+    });
+  };
+
+  // The item library (desktop): opening a category or sub-category low down scrolls the library along with its slide,
+  // just enough to bring what opened into view — but no further than its own bar reaching the top of the library's
+  // visible area (just under the bars), so the bar is never pushed out of sight.
+  const followSalesItemsLibraryExpand = (el: HTMLElement | null) => {
+    const scroller = salesItemsLibraryScrollRef.current;
+    if (!el || !scroller) return;
+    const started = performance.now();
+    const settle = () => {
+      const box = el.getBoundingClientRect();
+      const view = scroller.getBoundingClientRect();
+      const hiddenBelow = box.bottom + SALES_ITEMS_LIBRARY_VIEW_BOTTOM_GAP - view.bottom;
+      const roomAbove = box.top - (view.top + SALES_ITEMS_LIBRARY_VIEW_TOP);
+      const by = Math.min(hiddenBelow, roomAbove);
+      if (by > 0.5) scroller.scrollTop += by;
+    };
+    // Every frame for as long as it's sliding open (SALES_ITEMS_LIBRARY_SLIDE, 280ms), and a little more...
+    const step = () => {
+      settle();
+      if (performance.now() - started < 360) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+    // ...and once more at the end, in case frames weren't coming (a tab in the background).
+    window.setTimeout(settle, 400);
+  };
 
   const partTypeCabinetryMap = useMemo(() => {
     const out: Record<string, boolean> = {};
@@ -11424,22 +11879,14 @@ export default function ProjectDetailsPage() {
     () => salesItemsBoardRooms.find((room) => room.id === activeSalesItemsRoomId) ?? null,
     [activeSalesItemsRoomId, salesItemsBoardRooms],
   );
-  const salesItemsFilteredCategories = useMemo(() => {
-    const search = String(salesItemsSearch || "").trim().toLowerCase();
-    return companyItemCategories
-      .map((category) => {
-        const items = category.items.filter((item) => {
-          if (!search) return true;
-          return (
-            item.name.toLowerCase().includes(search) ||
-            item.subcategory.toLowerCase().includes(search) ||
-            category.name.toLowerCase().includes(search)
-          );
-        });
-        return { ...category, items };
-      })
-      .filter((category) => category.items.length > 0);
-  }, [companyItemCategories, salesItemsSearch]);
+  const salesItemsFilteredCategories = useMemo(
+    () => filterSalesItemCategoriesBySearch(companyItemCategories, salesItemsSearch),
+    [companyItemCategories, salesItemsSearch],
+  );
+  const salesItemsAddFilteredCategories = useMemo(
+    () => filterSalesItemCategoriesBySearch(companyItemCategories, salesItemsAddSearch),
+    [companyItemCategories, salesItemsAddSearch],
+  );
   const salesItemsCategoryOrderIndex = useMemo(() => {
     const map: Record<string, number> = {};
     companyItemCategories.forEach((category, index) => {
@@ -11477,12 +11924,17 @@ export default function ProjectDetailsPage() {
     const roomsWithResolvedPrices = nextRooms.map((room) => ({
       ...room,
       items: room.items.map((item) => {
-        const byId =
-          salesItemsLibraryPriceLookup.byItemId[String(item.itemId || "").trim().toLowerCase()] ?? "";
+        // Added at a price staff entered: kept as it is.
+        if (item.customPrice) return item;
+        const byIdEntry = salesItemsLibraryPriceLookup.byItemId[String(item.itemId || "").trim().toLowerCase()];
+        const byId = byIdEntry ?? "";
+        // By name only when its id isn't one the library has (an older line) — one whose item is there keeps to it.
         const byCategoryAndName =
-          salesItemsLibraryPriceLookup.byCategoryAndName[
-            `${String(item.categoryId || "").trim()}::${String(item.name || "").trim().toLowerCase()}`
-          ] ?? "";
+          byIdEntry === undefined
+            ? salesItemsLibraryPriceLookup.byCategoryAndName[
+                `${String(item.categoryId || "").trim()}::${String(item.name || "").trim().toLowerCase()}`
+              ] ?? ""
+            : "";
         const resolvedPrice = String(byId || byCategoryAndName || item.price || "").trim();
         return resolvedPrice === String(item.price || "").trim() ? item : { ...item, price: resolvedPrice };
       }),
@@ -11503,6 +11955,7 @@ export default function ProjectDetailsPage() {
           categoryColor: item.categoryColor,
           price: item.price,
           quantity: item.quantity,
+          ...(item.customPrice ? { customPrice: true, enteredPrice: item.enteredPrice ?? item.price } : {}),
         })),
       })),
     } as Record<string, unknown>;
@@ -11635,14 +12088,38 @@ export default function ProjectDetailsPage() {
     }));
   };
 
-  const onAddSalesItemsLibraryItem = (category: SalesItemCategoryRow, item: ItemCategoryItemRow, quantity: number = 1) => {
-    if (!activeSalesItemsRoomId) return;
+  // Puts a library item in a room — the selected one, or opts.roomId's (where it was dropped). One with a custom price
+  // asks for its price first (its pop-up, growing out of opts.originEl) and goes in from there. Returns whether it went
+  // in now.
+  const onAddSalesItemsLibraryItem = (
+    category: SalesItemCategoryRow,
+    item: ItemCategoryItemRow,
+    quantity: number = 1,
+    opts: { roomId?: string; originEl?: HTMLElement | null } = {},
+  ) => {
+    const roomId = opts.roomId || activeSalesItemsRoomId;
+    if (!roomId) return false;
+    if (item.customPrice) {
+      const rect = opts.originEl?.getBoundingClientRect();
+      salesItemsCustomPriceOriginElRef.current = opts.originEl ?? null;
+      setSalesItemsCustomPriceOrigin(rect ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height } : null);
+      setSalesItemsCustomPriceDraft("");
+      setSalesItemsCustomPricePending({
+        roomId,
+        roomName: salesItemsBoardRooms.find((room) => room.id === roomId)?.name ?? "",
+        name: item.name,
+        markupPercent: item.markupPercent,
+        quantity: Math.max(1, quantity),
+        add: { category, item },
+      });
+      return false;
+    }
     setSalesItemsBoardRooms((prev) =>
       addItemToSalesItemsRoom(
         prev,
-        activeSalesItemsRoomId,
+        roomId,
         {
-          itemId: `${category.id}__${slugifySalesItemsValue(item.name)}`,
+          itemId: item.id,
           name: item.name,
           categoryId: category.id,
           categoryName: category.name,
@@ -11652,6 +12129,88 @@ export default function ProjectDetailsPage() {
         Math.max(1, quantity),
       ),
     );
+    return true;
+  };
+  // The custom price pop-up's Add / Save: the price entered, plus the item's markup (as a set price has its markup added)
+  // for the line's price — the room's total — and the price entered kept to show. Lines go by item and entered price:
+  // the same item at the same price adds to that line, at another price it's a line of its own (a line changed to a
+  // price one of its room's lines already has joins that one).
+  const confirmSalesItemsCustomPrice = () => {
+    const pending = salesItemsCustomPricePending;
+    if (!pending || !salesItemsCustomPriceDraft.trim()) return;
+    const entered = Math.max(0, parseCurrencyNumber(salesItemsCustomPriceDraft));
+    const price = formatCurrencyValue(entered * (1 + parseCurrencyNumber(pending.markupPercent) / 100));
+    const enteredPrice = formatCurrencyValue(entered);
+    const enteredCents = Math.round(entered * 100);
+    if (pending.add) {
+      const { category, item } = pending.add;
+      setSalesItemsBoardRooms((prev) =>
+        addItemToSalesItemsRoom(
+          prev,
+          pending.roomId,
+          {
+            itemId: `${item.id}${SALES_ITEMS_CUSTOM_PRICE_ID_MARK}${enteredCents}`,
+            name: item.name,
+            categoryId: category.id,
+            categoryName: category.name,
+            categoryColor: category.color,
+            price,
+            customPrice: true,
+            enteredPrice,
+          },
+          pending.quantity,
+        ),
+      );
+      onSalesItemsLibraryItemAdded(item.id.toLowerCase());
+    } else if (pending.editItemId) {
+      const editItemId = pending.editItemId;
+      setSalesItemsBoardRooms((prev) =>
+        syncSalesItemsRoomTotals(
+          prev.map((room) => {
+            if (room.id !== pending.roomId) return room;
+            const line = room.items.find((row) => row.itemId === editItemId);
+            if (!line) return room;
+            const nextItemId = `${salesItemsLibraryIdOf(line.itemId)}${SALES_ITEMS_CUSTOM_PRICE_ID_MARK}${enteredCents}`;
+            const joining = room.items.find((row) => row !== line && row.itemId === nextItemId);
+            if (joining) {
+              return {
+                ...room,
+                items: room.items
+                  .filter((row) => row !== line)
+                  .map((row) => (row === joining ? { ...row, quantity: row.quantity + line.quantity, price, enteredPrice } : row)),
+              };
+            }
+            return { ...room, items: room.items.map((row) => (row === line ? { ...row, itemId: nextItemId, price, enteredPrice } : row)) };
+          }),
+        ),
+      );
+    }
+    setSalesItemsCustomPricePending(null);
+  };
+  // A room's line at a custom price: clicking its price opens the pop-up again to change it — its markup the item's
+  // (Company Settings), or, with the item gone from there, what the line's had.
+  const openSalesItemsCustomPriceEdit = (room: SalesItemsRoomBoardRow, line: SalesRoomItemSelection, originEl: HTMLElement) => {
+    const libraryId = salesItemsLibraryIdOf(line.itemId).toLowerCase();
+    const libraryItem = companyItemCategories
+      .find((category) => category.id.toLowerCase() === line.categoryId.trim().toLowerCase())
+      ?.items.find((row) => row.id.toLowerCase() === libraryId);
+    const entered = parseCurrencyNumber(line.enteredPrice ?? line.price);
+    const output = parseCurrencyNumber(line.price);
+    const markupPercent = libraryItem
+      ? libraryItem.markupPercent
+      : entered > 0 ? String(Math.round((output / entered - 1) * 10000) / 100) : "0";
+    const rect = originEl.getBoundingClientRect();
+    salesItemsCustomPriceOriginElRef.current = originEl;
+    setSalesItemsCustomPriceOrigin({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+    setSalesItemsCustomPriceDraft(String(entered));
+    setSalesItemsCustomPricePending({
+      roomId: room.id,
+      roomName: room.name,
+      name: line.name,
+      markupPercent,
+      quantity: line.quantity,
+      editItemId: line.itemId,
+    });
   };
 
   const startEditingItemsRoom = (roomId: string, roomName: string) => {
@@ -11784,8 +12343,10 @@ export default function ProjectDetailsPage() {
       "application/json",
       JSON.stringify({
         kind: "library-item",
+        // How many to add: the quantity typed against it, or 1.
+        quantity: salesItemsLibraryQuantityFor(item.id.toLowerCase()),
         item: {
-          itemId: `${category.id}__${slugifySalesItemsValue(item.name)}`,
+          itemId: item.id,
           name: item.name,
           categoryId: category.id,
           categoryName: category.name,
@@ -11797,14 +12358,32 @@ export default function ProjectDetailsPage() {
     if (salesItemsDragGhost.transparentImageRef.current) {
       event.dataTransfer.setDragImage(salesItemsDragGhost.transparentImageRef.current, 0, 0);
     }
-    const itemKey = `${category.id}__${item.name}`.toLowerCase();
-    salesItemsDragGhost.spawn(event, `sales-lib-name-${itemKey}`, { label: item.name, color: category.color });
+    const itemKey = item.id.toLowerCase();
+    salesItemsDragGhost.spawn(event, `sales-lib-name-${itemKey}`, {
+      label: item.name,
+      color: category.subcategoryColors[item.subcategory.toLowerCase()] || category.color,
+      // How many it'll add (the quantity typed against it, or 1).
+      badge: String(salesItemsLibraryQuantityFor(itemKey)),
+    });
   };
 
   const onSalesItemsLibraryDragEnd = () => {
     salesItemsDragGhost.end();
   };
 
+  // A room item's colour, as its row in a room column shows it: its sub-category's (the library's — a room keeps only
+  // its category), else its category's.
+  const salesItemsRoomItemColor = (item: SalesRoomItemSelection) => {
+    const categoryKey = String(item.categoryId || "").trim().toLowerCase();
+    const category = companyItemCategories.find((row) => String(row.id || "").trim().toLowerCase() === categoryKey);
+    if (!category) return item.categoryColor;
+    const libraryId = salesItemsLibraryIdOf(item.itemId).toLowerCase();
+    const libraryItem =
+      category.items.find((row) => row.id.toLowerCase() === libraryId) ??
+      category.items.find((row) => row.name.trim().toLowerCase() === item.name.trim().toLowerCase());
+    const subcategory = libraryItem?.subcategory.trim().toLowerCase() ?? "";
+    return (subcategory && category.subcategoryColors[subcategory]) || category.color || item.categoryColor;
+  };
   const onSalesItemsRoomItemDragStart = (
     event: ReactDragEvent<HTMLElement>,
     roomId: string,
@@ -11826,7 +12405,9 @@ export default function ProjectDetailsPage() {
     salesItemsDragGhost.spawn(
       event,
       `sales-room-name-${opts.interactive ? "desktop" : "mobile"}-${roomId}-${item.itemId}`,
-      { label: item.name, color: item.categoryColor },
+      // Its row's colour (sub-category, else category) — the dot, and the pill washed with it as the row is; the badge:
+      // how many are moving (the whole line goes, at its quantity).
+      { label: item.name, color: salesItemsRoomItemColor(item), tint: salesItemsRoomItemColor(item), badge: String(item.quantity) },
     );
   };
 
@@ -11847,6 +12428,16 @@ export default function ProjectDetailsPage() {
       const payload = JSON.parse(raw) as Record<string, unknown>;
       if (payload.kind === "library-item" && payload.item && typeof payload.item === "object") {
         const item = payload.item as Record<string, unknown>;
+        const quantity = Math.max(1, Math.round(Number(payload.quantity) || 1));
+        // Its library item (as adding it any other way does — a custom price asks for its price first).
+        const category = companyItemCategories.find((row) => row.id === String(item.categoryId ?? "").trim());
+        const libraryItem = category?.items.find((row) => row.id === String(item.itemId ?? "").trim());
+        if (category && libraryItem) {
+          if (onAddSalesItemsLibraryItem(category, libraryItem, quantity, { roomId, originEl: event.currentTarget })) {
+            onSalesItemsLibraryItemAdded(libraryItem.id.toLowerCase());
+          }
+          return;
+        }
         setSalesItemsBoardRooms((prev) =>
           addItemToSalesItemsRoom(prev, roomId, {
             itemId: String(item.itemId ?? "").trim(),
@@ -11855,8 +12446,10 @@ export default function ProjectDetailsPage() {
             categoryName: String(item.categoryName ?? "").trim(),
             categoryColor: String(item.categoryColor ?? "#7D99B3").trim() || "#7D99B3",
             price: String(item.price ?? "").trim(),
-          }),
+          }, quantity),
         );
+        // Its row in the library (keyed as the library keys it — its id): quantity cleared, "Added" shown.
+        onSalesItemsLibraryItemAdded(String(item.itemId ?? "").trim().toLowerCase());
         return;
       }
       if (payload.kind === "room-item") {
@@ -11874,244 +12467,818 @@ export default function ProjectDetailsPage() {
     }
   };
 
-  const renderSalesItemsRoomCard = (room: SalesItemsRoomBoardRow, opts: { interactive: boolean }) => {
-    const isActive = room.id === activeSalesItemsRoomId;
-    const sortedRoomItems = [...room.items].sort((a, b) => {
+  // A room's items, in the order their categories are listed in Company Settings.
+  const sortedSalesItemsRoomItems = (room: SalesItemsRoomBoardRow) =>
+    [...room.items].sort((a, b) => {
       const orderA = salesItemsCategoryOrderIndex[String(a.categoryId || "").trim().toLowerCase()] ?? Number.MAX_SAFE_INTEGER;
       const orderB = salesItemsCategoryOrderIndex[String(b.categoryId || "").trim().toLowerCase()] ?? Number.MAX_SAFE_INTEGER;
       return orderA - orderB;
     });
-    const isDragTarget = opts.interactive && salesItemsDragTargetRoomId === room.id;
-    const dragTargetProps = opts.interactive
-      ? {
-          onDragOver: (event: ReactDragEvent<HTMLDivElement>) => {
-            event.preventDefault();
-            if (salesItemsDragTargetRoomId !== room.id) {
-              setSalesItemsDragTargetRoomId(room.id);
-            }
-          },
-          onDragLeave: (event: ReactDragEvent<HTMLDivElement>) => {
-            const related = event.relatedTarget as Node | null;
-            if (related && event.currentTarget.contains(related)) return;
-            if (salesItemsDragTargetRoomId === room.id) {
-              setSalesItemsDragTargetRoomId("");
-            }
-          },
-          onDrop: (event: ReactDragEvent<HTMLDivElement>) => onSalesItemsRoomDrop(event, room.id),
+  // A room's items laid out as the item library lays them out (Design › Items' desktop room columns): by category, in
+  // Company Settings' order (any it no longer has after); in each, those with no sub-category first, then each
+  // sub-category in its order there (as groupSalesItemsBySubcategory) — each item in its place in the library. An
+  // item's sub-category is the library's (a room keeps only its category).
+  const groupSalesItemsRoomItems = (room: SalesItemsRoomBoardRow) => {
+    const categoryById = new Map(companyItemCategories.map((category) => [String(category.id || "").trim().toLowerCase(), category]));
+    const byCategory = new Map<string, { key: string; name: string; category: SalesItemCategoryRow | undefined; items: SalesRoomItemSelection[] }>();
+    for (const item of room.items) {
+      const categoryKey = String(item.categoryId || "").trim().toLowerCase() || `name:${item.categoryName.trim().toLowerCase()}`;
+      const entry = byCategory.get(categoryKey) ?? { key: categoryKey, name: item.categoryName, category: categoryById.get(categoryKey), items: [] };
+      entry.items.push(item);
+      byCategory.set(categoryKey, entry);
+    }
+    const categoryRank = (key: string) => salesItemsCategoryOrderIndex[key] ?? Number.MAX_SAFE_INTEGER;
+    return [...byCategory.values()]
+      .sort((a, b) => categoryRank(a.key) - categoryRank(b.key))
+      .map((entry) => {
+        const libraryItems = entry.category?.items ?? [];
+        // The library's own item for a room item: by its id (a custom-priced one's, less its price), else by its name.
+        const libraryIndexOf = (item: SalesRoomItemSelection) => {
+          const libraryId = salesItemsLibraryIdOf(item.itemId).toLowerCase();
+          const byId = libraryItems.findIndex((libraryItem) => libraryItem.id.toLowerCase() === libraryId);
+          return byId >= 0 ? byId : libraryItems.findIndex((libraryItem) => libraryItem.name.trim().toLowerCase() === item.name.trim().toLowerCase());
+        };
+        const groups = new Map<string, { name: string; items: Array<{ item: SalesRoomItemSelection; order: number }> }>();
+        for (const item of entry.items) {
+          const index = libraryIndexOf(item);
+          const subcategory = index >= 0 ? libraryItems[index].subcategory.trim() : "";
+          const groupKey = subcategory.toLowerCase();
+          const group = groups.get(groupKey) ?? { name: subcategory, items: [] };
+          group.items.push({ item, order: index >= 0 ? index : Number.MAX_SAFE_INTEGER });
+          groups.set(groupKey, group);
         }
-      : {};
+        const subcategoryOrder = entry.category?.subcategoryOrder ?? [];
+        const groupRank = (key: string) => {
+          if (!key) return -1;
+          const index = subcategoryOrder.indexOf(key);
+          return index < 0 ? subcategoryOrder.length : index;
+        };
+        return {
+          key: entry.key,
+          name: entry.category?.name || entry.name || "Other",
+          color: entry.category?.color || entry.items[0]?.categoryColor || "#7D99B3",
+          subcategoryColors: entry.category?.subcategoryColors ?? {},
+          groups: [...groups.entries()]
+            .sort((a, b) => groupRank(a[0]) - groupRank(b[0]))
+            .map(([, group]) => ({ name: group.name, items: group.items.sort((a, b) => a.order - b.order).map((row) => row.item) })),
+        };
+      });
+  };
+  // Design › Items: one item in a room, on one line — its remove button, then (dragged by its grip or name, on a computer)
+  // its name, then its − quantity +. Tinted across its room with a light wash of `color` (its sub-category's, or its
+  // category's). touch (the phone's room cards): no dragging (no grip), and − / + always showing, bigger to tap — a
+  // computer's show while the row's hovered.
+  const renderSalesItemsRoomItemCompactRow = (
+    room: SalesItemsRoomBoardRow,
+    item: SalesRoomItemSelection,
+    itemIndex: number,
+    color: string,
+    opts: { touch?: boolean } = {},
+  ) => {
+    const touch = Boolean(opts.touch);
+    const dragProps = touch
+      ? {}
+      : {
+          draggable: true,
+          onDragStart: (event: ReactDragEvent<HTMLDivElement>) => onSalesItemsRoomItemDragStart(event, room.id, item, { interactive: true }),
+          onDragEnd: onSalesItemsLibraryDragEnd,
+        };
+    const stepButtonClass = touch
+      ? "inline-flex h-7 w-7 items-center justify-center rounded-full disabled:opacity-60"
+      : "inline-flex h-5 w-5 items-center justify-center rounded-full opacity-0 transition-opacity group-hover/roomitem:opacity-100 focus-visible:opacity-100 disabled:opacity-0 disabled:group-hover/roomitem:opacity-60";
     return (
       <div
-        key={`sales_items_room_${opts.interactive ? "desktop" : "mobile"}_${room.id}`}
-        onClick={() => setActiveSalesItemsRoomId(room.id)}
-        {...dragTargetProps}
-        className={`row-glow-anchor relative flex min-h-[220px] cursor-pointer flex-col overflow-hidden rounded-[16px] p-3 transition${opts.interactive ? " h-full w-[300px] shrink-0" : ""}`}
+        key={`sales_room_item_${room.id}_${item.itemId}`}
+        className={`group/roomitem -mx-3 flex items-center px-3 ${touch ? "gap-2 py-1.5" : "gap-1.5 py-1"}`}
         style={{
-          backgroundColor: isActive ? "var(--brand-soft)" : "var(--panel-bg)",
-          boxShadow: isDragTarget ? "0 0 0 2px var(--brand-strong)" : "0 1px 3px rgba(15,23,42,0.06)",
+          borderTop: itemIndex > 0 ? "1px solid var(--glass-border)" : undefined,
+          backgroundColor: `color-mix(in srgb, ${color} 16%, var(--panel-bg))`,
         }}
       >
-        {/* Same row-glow-anchor/row-glow pattern Board Settings uses on its own delete button — the
-            card's own overflow-hidden clips row-glow's usual slight bleed past the edges, but it
-            still reads as the same full-card hover highlight on delete. */}
-        <div className="row-glow" data-active={hoveredItemsRoomDeleteId === room.id} />
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0 flex-1">
-            {editingItemsRoomId === room.id ? (
-              <input
-                autoFocus
-                value={editingItemsRoomDraftName}
-                onChange={(e) => setEditingItemsRoomDraftName(e.currentTarget.value)}
-                onBlur={commitEditingItemsRoom}
-                onClick={(e) => e.stopPropagation()}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") { e.preventDefault(); commitEditingItemsRoom(); }
-                  if (e.key === "Escape") { e.preventDefault(); cancelEditingItemsRoom(); }
-                }}
-                className="h-9 w-full rounded-[8px] border px-2 text-[13px] font-semibold outline-none"
-                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-              />
-            ) : (
-              <>
-                <p className="truncate text-[14px] font-bold" style={{ color: "var(--text-main)" }}>{room.name}</p>
-                <p className="mt-0.5 text-[11px]" style={{ color: "var(--text-muted)" }}>
-                  {room.items.reduce((sum, item) => sum + item.quantity, 0)} items
-                </p>
-              </>
-            )}
-          </div>
-          <div className="flex shrink-0 items-center gap-0.5">
-            <button
-              type="button"
-              disabled={salesReadOnly}
-              onClick={(e) => { e.stopPropagation(); startEditingItemsRoom(room.id, room.name); }}
-              className="inline-flex h-7 w-7 items-center justify-center rounded-[7px] transition hover:brightness-95 disabled:opacity-50"
-              style={{ backgroundColor: "transparent", color: "var(--text-muted)" }}
-              onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--panel-muted)"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
-              title="Rename room"
-            >
-              <Pencil size={12} />
-            </button>
-            <button
-              type="button"
-              disabled={salesReadOnly}
-              onClick={(e) => { e.stopPropagation(); duplicateItemsRoom(room.id); }}
-              className="inline-flex h-7 w-7 items-center justify-center rounded-[7px] transition hover:brightness-95 disabled:opacity-50"
-              style={{ backgroundColor: "transparent", color: "var(--text-muted)" }}
-              onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--panel-muted)"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
-              title="Duplicate room"
-            >
-              <Copy size={12} />
-            </button>
-            <button
-              type="button"
-              disabled={salesReadOnly}
-              onClick={(e) => {
-                itemsRoomDeleteOriginElRef.current = e.currentTarget;
-                e.stopPropagation();
-                setItemsRoomDeleteOrigin(captureGlassModalOrigin(e));
-                setItemsRoomPendingDeleteId(room.id);
-              }}
-              className="inline-flex h-7 w-7 items-center justify-center rounded-[7px] transition hover:brightness-95 disabled:opacity-50"
-              style={{ backgroundColor: "transparent", color: "var(--danger-strong)" }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor = "var(--danger-soft)";
-                setHoveredItemsRoomDeleteId(room.id);
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.backgroundColor = "transparent";
-                setHoveredItemsRoomDeleteId((prev) => (prev === room.id ? "" : prev));
-              }}
-              title="Delete room"
-            >
-              <Trash2 size={12} />
-            </button>
-          </div>
-        </div>
+        {/* Remove: first in the row, a proper (red) button — always asking first, whatever its quantity. */}
         <button
           type="button"
           disabled={salesReadOnly}
           onClick={(e) => {
-            itemsLibraryModalOriginElRef.current = e.currentTarget;
+            itemsRemoveConfirmOriginElRef.current = e.currentTarget;
             e.stopPropagation();
-            setItemsLibraryModalOrigin(captureGlassModalOrigin(e));
-            setActiveSalesItemsRoomId(room.id);
-            setIsItemsLibraryModalOpen(true);
+            setItemsRemoveConfirmOrigin(captureGlassModalOrigin(e));
+            setItemsRemovePendingItem({ roomId: room.id, roomName: room.name, itemId: item.itemId, name: item.name, quantity: item.quantity });
           }}
-          className="mt-2 inline-flex h-8 w-full items-center justify-center gap-2 rounded-[9px] border text-[12px] font-bold disabled:opacity-60"
-          style={{ backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)", borderColor: isActive ? "var(--brand-strong)" : "transparent" }}
+          className={`inline-flex shrink-0 items-center justify-center rounded-full border transition hover:brightness-95 disabled:opacity-60 ${touch ? "h-6 w-6" : "h-5 w-5"}`}
+          style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
+          title="Remove item"
+          aria-label={`Remove ${item.name}`}
         >
-          <Plus size={13} />
-          Add Item
+          <X size={12} strokeWidth={2.5} />
         </button>
-        <div className="mt-1 min-h-0 flex-1 overflow-y-auto pr-1">
-          {sortedRoomItems.length > 0 ? (
-            sortedRoomItems.map((item, itemIndex) => (
-              <div
-                key={`sales_room_item_${room.id}_${item.itemId}`}
-                className="py-2"
-                style={{ borderTop: itemIndex > 0 ? "1px solid var(--glass-border)" : undefined }}
-              >
-                <div className="flex items-center gap-2">
-                  {opts.interactive ? (
-                    <div
-                      className="flex shrink-0 items-center"
-                      draggable
-                      onDragStart={(event: ReactDragEvent<HTMLDivElement>) => onSalesItemsRoomItemDragStart(event, room.id, item, opts)}
-                      onDragEnd={onSalesItemsLibraryDragEnd}
+        {touch ? null : (
+          <div className="flex shrink-0 items-center" {...dragProps}>
+            <GripVertical size={12} style={{ color: "var(--text-muted)" }} />
+          </div>
+        )}
+        <div className="flex min-w-0 flex-1 items-center gap-1.5" {...dragProps}>
+          <p
+            id={`sales-room-name-${touch ? "mobile" : "desktop"}-${room.id}-${item.itemId}`}
+            className={`min-w-0 truncate font-semibold ${touch ? "text-[13px]" : "text-[12px]"}`}
+            style={{ color: "var(--text-main)" }}
+            title={item.name}
+          >
+            {item.name}
+          </p>
+          {/* At a price staff entered (a custom price): the price they entered, beside it (what it comes to with its
+              markup — what the room's total adds up — isn't shown); click it to change it. */}
+          {item.customPrice ? (
+            <button
+              type="button"
+              draggable={false}
+              disabled={salesReadOnly}
+              onClick={(e) => {
+                e.stopPropagation();
+                openSalesItemsCustomPriceEdit(room, item, e.currentTarget);
+              }}
+              className="shrink-0 rounded-full border px-1.5 py-[1px] text-[11px] font-medium transition hover:brightness-95 disabled:cursor-default"
+              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+              title="Custom price — click to change it"
+              aria-label={`Change the price of ${item.name}`}
+            >
+              {item.enteredPrice ?? item.price}
+            </button>
+          ) : null}
+        </div>
+        <div className="flex shrink-0 items-center gap-0.5">
+          <button
+            type="button"
+            disabled={salesReadOnly}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (item.quantity <= 1) {
+                // Down to none would take it out of the room altogether: asks first (the remove button's confirm).
+                itemsRemoveConfirmOriginElRef.current = e.currentTarget;
+                setItemsRemoveConfirmOrigin(captureGlassModalOrigin(e));
+                setItemsRemovePendingItem({ roomId: room.id, roomName: room.name, itemId: item.itemId, name: item.name, quantity: item.quantity });
+                return;
+              }
+              setSalesItemsBoardRooms((prev) => updateSalesItemsRoomItemQuantity(prev, room.id, item.itemId, -1));
+            }}
+            // − and +: on a computer only while the row's hovered (or one has the keyboard's focus) — fading in, keeping
+            // their room; on a phone, always.
+            className={stepButtonClass}
+            style={{ backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+            aria-label={`One fewer ${item.name}`}
+          >
+            <Minus size={touch ? 14 : 11} />
+          </button>
+          <input
+            type="text"
+            inputMode="numeric"
+            draggable={false}
+            disabled={salesReadOnly}
+            value={editingSalesItemsQuantityKey === `${room.id}:${item.itemId}` ? editingSalesItemsQuantityDraft : String(item.quantity)}
+            onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            onFocus={() => startEditingSalesItemsQuantity(room.id, item.itemId, item.quantity)}
+            onChange={(e) => setEditingSalesItemsQuantityDraft(e.target.value.replace(/[^0-9]/g, ""))}
+            onBlur={() => commitEditingSalesItemsQuantity(room.id, item.itemId)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); }
+              if (e.key === "Escape") { e.preventDefault(); cancelEditingSalesItemsQuantity(); e.currentTarget.blur(); }
+            }}
+            aria-label={`How many ${item.name}`}
+            className={`rounded-[6px] border-0 bg-transparent text-center font-bold outline-none disabled:opacity-60 ${touch ? "h-7 w-9 text-[13px]" : "h-5 w-8 text-[12px]"}`}
+            style={{ color: "var(--text-main)", WebkitUserDrag: "none", userSelect: "text" } as React.CSSProperties}
+          />
+          <button
+            type="button"
+            disabled={salesReadOnly}
+            onClick={(e) => { e.stopPropagation(); setSalesItemsBoardRooms((prev) => updateSalesItemsRoomItemQuantity(prev, room.id, item.itemId, 1)); }}
+            className={`${stepButtonClass} border text-white`}
+            // Green, as the app's + buttons.
+            style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
+            aria-label={`One more ${item.name}`}
+          >
+            <Plus size={touch ? 14 : 11} />
+          </button>
+        </div>
+      </div>
+    );
+  };
+  // A room's items, as the item library lays them out (each category's items with no sub-category first, then each
+  // sub-category's), each lot under one bar — its sub-category (in its colour), or for those with none, its category (in
+  // the category's) — clicked to collapse; the rows tinted to match (renderSalesItemsRoomItemCompactRow). touch: the
+  // phone's room cards. Inside a container with px-3 (the bars and rows reach out across it).
+  const renderSalesItemsRoomGroups = (room: SalesItemsRoomBoardRow, touch = false) =>
+        // In the item library's order: each category's items — those with no sub-category first, then each
+        // sub-category's — each lot under one bar: its sub-category (in its colour), or for those with none, its
+        // category (in the category's); its name in black or white to suit.
+        groupSalesItemsRoomItems(room).map((category) => (
+          <div key={`room_cat_${room.id}_${category.key}`}>
+            {category.groups.map((group) => {
+              // Its sub-category's colour — or, with none (or one without a colour), its category's: the bar, and a
+              // lighter wash of it behind its items.
+              const barColor = (group.name && category.subcategoryColors[group.name.toLowerCase()]) || category.color;
+              const barText = contrastTextForFill(barColor);
+              // Click the bar to collapse / expand its items (sliding, as the library's) — per room, kept as each
+              // person left it (with the library's, as "room:<room>::<category>::<sub-category>").
+              const groupCollapseKey = `room:${room.id}::${category.key}::${group.name.toLowerCase()}`;
+              const groupCollapsed = salesItemsLibraryCollapsed[groupCollapseKey] ?? false;
+              return (
+                <div key={`room_sub_${room.id}_${category.key}_${group.name.toLowerCase() || "_none"}`}>
+                  <button
+                    type="button"
+                    onClick={() => toggleSalesItemsLibraryCollapsed(groupCollapseKey)}
+                    aria-expanded={!groupCollapsed}
+                    className="-mx-3 flex h-7 w-[calc(100%+24px)] items-center justify-between gap-2 px-3 text-left"
+                    style={{ backgroundColor: barColor }}
+                  >
+                    <p className="min-w-0 flex-1 truncate text-[13px] font-medium" style={{ color: barText }}>{group.name || category.name}</p>
+                    {/* Collapsed: how many are in it (their quantities, as the column's own count) — fading in. */}
+                    <span
+                      aria-hidden={!groupCollapsed}
+                      className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full px-1.5 text-[11px] font-bold transition-opacity"
+                      style={{
+                        opacity: groupCollapsed ? 1 : 0,
+                        color: barText,
+                        backgroundColor: `color-mix(in srgb, ${barText} 16%, transparent)`,
+                      }}
                     >
-                      <GripVertical size={13} style={{ color: "var(--text-muted)" }} />
-                    </div>
-                  ) : null}
-                  <div className="min-w-0 flex-1">
-                    <div
-                      className="flex items-start gap-2"
-                      {...(opts.interactive
-                        ? {
-                            draggable: true,
-                            onDragStart: (event: ReactDragEvent<HTMLDivElement>) => onSalesItemsRoomItemDragStart(event, room.id, item, opts),
-                            onDragEnd: onSalesItemsLibraryDragEnd,
-                          }
-                        : {})}
-                    >
-                      <div className="min-w-0 flex-1">
-                        <p id={`sales-room-name-${opts.interactive ? "desktop" : "mobile"}-${room.id}-${item.itemId}`} className="truncate text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>{item.name}</p>
-                        <span className="mt-1.5 inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold text-white" style={{ backgroundColor: item.categoryColor }}>
-                          {item.categoryName}
-                        </span>
-                      </div>
-                      <button
-                        type="button"
-                        disabled={salesReadOnly}
-                        onClick={(e) => {
-                          itemsRemoveConfirmOriginElRef.current = e.currentTarget;
-                          e.stopPropagation();
-                          if (item.quantity > 1) {
-                            setItemsRemoveConfirmOrigin(captureGlassModalOrigin(e));
-                            setItemsRemovePendingItem({ roomId: room.id, roomName: room.name, itemId: item.itemId, name: item.name, quantity: item.quantity });
-                            return;
-                          }
-                          setSalesItemsBoardRooms((prev) => removeItemFromSalesItemsRoom(prev, room.id, item.itemId));
-                        }}
-                        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full disabled:opacity-60"
-                        style={{ color: "var(--text-muted)" }}
-                        title="Remove item"
-                      >
-                        <X size={12} />
-                      </button>
-                    </div>
-                    <div className="mt-1.5 flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        disabled={salesReadOnly}
-                        onClick={(e) => { e.stopPropagation(); setSalesItemsBoardRooms((prev) => updateSalesItemsRoomItemQuantity(prev, room.id, item.itemId, -1)); }}
-                        className="inline-flex h-6 w-6 items-center justify-center rounded-full disabled:opacity-60"
-                        style={{ backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
-                      >
-                        <Minus size={12} />
-                      </button>
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        draggable={false}
-                        disabled={salesReadOnly}
-                        value={editingSalesItemsQuantityKey === `${room.id}:${item.itemId}` ? editingSalesItemsQuantityDraft : String(item.quantity)}
-                        onClick={(e) => e.stopPropagation()}
-                        onMouseDown={(e) => e.stopPropagation()}
-                        onFocus={() => startEditingSalesItemsQuantity(room.id, item.itemId, item.quantity)}
-                        onChange={(e) => setEditingSalesItemsQuantityDraft(e.target.value.replace(/[^0-9]/g, ""))}
-                        onBlur={() => commitEditingSalesItemsQuantity(room.id, item.itemId)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); }
-                          if (e.key === "Escape") { e.preventDefault(); cancelEditingSalesItemsQuantity(); e.currentTarget.blur(); }
-                        }}
-                        className="h-6 w-10 rounded-[6px] border-0 bg-transparent text-center text-[12px] font-bold outline-none disabled:opacity-60"
-                        style={{ color: "var(--text-main)", WebkitUserDrag: "none", userSelect: "text" } as React.CSSProperties}
-                      />
-                      <button
-                        type="button"
-                        disabled={salesReadOnly}
-                        onClick={(e) => { e.stopPropagation(); setSalesItemsBoardRooms((prev) => updateSalesItemsRoomItemQuantity(prev, room.id, item.itemId, 1)); }}
-                        className="inline-flex h-6 w-6 items-center justify-center rounded-full text-white disabled:opacity-60"
-                        style={{ backgroundImage: "var(--brand-gradient)" }}
-                      >
-                        <Plus size={12} />
-                      </button>
+                      {group.items.reduce((sum, item) => sum + item.quantity, 0)}
+                    </span>
+                    <TintedAngleDownIcon color={barText} size={12} expanded={!groupCollapsed} />
+                  </button>
+                  {/* Out to the column's edges (and padded back in): its overflow-hidden would otherwise cut off the
+                      rows' tint, which reaches past the list's padding. */}
+                  <div className="-mx-3 grid" style={{ gridTemplateRows: groupCollapsed ? "0fr" : "1fr", transition: SALES_ITEMS_LIBRARY_SLIDE }} inert={groupCollapsed}>
+                    <div className="min-h-0 overflow-hidden px-3">
+                      {group.items.map((item, itemIndex) => renderSalesItemsRoomItemCompactRow(room, item, itemIndex, barColor, { touch }))}
                     </div>
                   </div>
                 </div>
-              </div>
-            ))
-          ) : (
-            <div
-              className="flex h-full min-h-[80px] items-center justify-center rounded-[10px] border border-dashed px-3 text-center text-[11px]"
-              style={{ borderColor: "var(--glass-border)", color: "var(--text-muted)" }}
-            >
-              {opts.interactive ? "Drop items here or use Add Item." : "No items yet — tap Add Item."}
-            </div>
+              );
+            })}
+          </div>
+        ));
+  // A room's "…" menu: Rename, Duplicate, Clear Room (with anything in it) and Delete — the confirms growing out of its
+  // "…" button (menuElementId: the wrapper the button's in).
+  const salesItemsRoomMenuItems = (room: SalesItemsRoomBoardRow, menuElementId: string): GlassActionMenuItem[] =>
+    salesReadOnly
+      ? []
+      : [
+          { key: "rename", label: "Rename", icon: <Pencil size={14} />, onSelect: () => startEditingItemsRoom(room.id, room.name) },
+          { key: "duplicate", label: "Duplicate", icon: <Copy size={14} />, onSelect: () => duplicateItemsRoom(room.id) },
+          ...(room.items.length > 0
+            ? [
+                {
+                  key: "clear",
+                  label: "Clear Room",
+                  icon: <Eraser size={14} />,
+                  onSelect: () => {
+                    // The Summary's Clear Room confirm, for this room (it clears the room items go to) — growing out of
+                    // the "…" button (the button itself, so its wrapper is what its landing bounce un-clips).
+                    const menuEl = document.getElementById(menuElementId)?.querySelector("button") ?? null;
+                    const rect = menuEl?.getBoundingClientRect();
+                    setActiveSalesItemsRoomId(room.id);
+                    clearSalesItemsConfirmOriginElRef.current = menuEl;
+                    setClearSalesItemsConfirmOrigin(rect ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height } : null);
+                    setClearSalesItemsConfirmKind("room");
+                  },
+                },
+              ]
+            : []),
+          {
+            key: "delete",
+            label: "Delete",
+            icon: <Trash2 size={14} />,
+            danger: true,
+            onSelect: () => {
+              // Its confirm grows out of the "…" button (the menu that chose it has gone) — the button itself, so its
+              // wrapper is what its landing bounce un-clips.
+              const menuEl = document.getElementById(menuElementId)?.querySelector("button") ?? null;
+              const rect = menuEl?.getBoundingClientRect();
+              itemsRoomDeleteOriginElRef.current = menuEl;
+              setItemsRoomDeleteOrigin(rect ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height } : null);
+              setItemsRoomPendingDeleteId(room.id);
+            },
+          },
+        ];
+
+  // Moving a room among the others. Where it'd go: how many of the other rooms' columns (desktop, side by side) or cards
+  // (phone, down the page) come before the pointer — each once it's past their middle (as the boards' cards,
+  // lib/board-drop-order.ts).
+  const salesItemsRoomDropIndexAt = (container: Element, axis: "x" | "y", at: number, draggedId: string) => {
+    const others = Array.from(container.querySelectorAll<HTMLElement>("[data-sales-room-id]")).filter(
+      (el) => el.dataset.salesRoomId !== draggedId,
+    );
+    let index = 0;
+    for (const el of others) {
+      const rect = el.getBoundingClientRect();
+      if (at > (axis === "x" ? rect.left + rect.width / 2 : rect.top + rect.height / 2)) index += 1;
+      else break;
+    }
+    return index;
+  };
+  const moveSalesItemsRoomTo = (roomId: string, dropIndex: number) =>
+    setSalesItemsBoardRooms((prev) => {
+      const from = prev.findIndex((room) => room.id === roomId);
+      if (from < 0) return prev;
+      const others = prev.filter((room) => room.id !== roomId);
+      const at = Math.max(0, Math.min(others.length, dropIndex));
+      if (at === from) return prev;
+      return [...others.slice(0, at), prev[from], ...others.slice(at)];
+    });
+  // Desktop: a column dragged by its header (as the boards' cards are — the ghost following, a preview where it'll go).
+  const onSalesItemsRoomColumnDragStart = (event: ReactDragEvent<HTMLElement>, room: SalesItemsRoomBoardRow) => {
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("application/json", JSON.stringify({ kind: "room-column", roomId: room.id }));
+    if (salesItemsDragGhost.transparentImageRef.current) {
+      event.dataTransfer.setDragImage(salesItemsDragGhost.transparentImageRef.current, 0, 0);
+    }
+    salesItemsDragGhost.spawn(event, `items-room-col-name-${room.id}`, { label: room.name, color: "var(--brand)" });
+    setSalesItemsDraggingRoomId(room.id);
+    setSalesItemsRoomDropIndex(null);
+  };
+  const onSalesItemsRoomColumnDragEnd = () => {
+    setSalesItemsDraggingRoomId("");
+    setSalesItemsRoomDropIndex(null);
+    salesItemsDragGhost.end();
+  };
+  // Over the row of columns while one's dragged (items being dragged are the columns' own business).
+  const onSalesItemsRoomBoardDragOver = (event: ReactDragEvent<HTMLElement>) => {
+    if (!salesItemsDraggingRoomId) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    const index = salesItemsRoomDropIndexAt(event.currentTarget, "x", event.clientX, salesItemsDraggingRoomId);
+    if (index !== salesItemsRoomDropIndex) setSalesItemsRoomDropIndex(index);
+  };
+  const onSalesItemsRoomBoardDrop = (event: ReactDragEvent<HTMLElement>) => {
+    if (!salesItemsDraggingRoomId) return;
+    event.preventDefault();
+    moveSalesItemsRoomTo(
+      salesItemsDraggingRoomId,
+      salesItemsRoomDropIndexAt(event.currentTarget, "x", event.clientX, salesItemsDraggingRoomId),
+    );
+    onSalesItemsRoomColumnDragEnd();
+  };
+  // Phone: a card picked up by holding its header (a quick tap still collapses it; moving first is a scroll), then
+  // moved up or down — the ghost following the finger, the page scrolling along near the screen's top / bottom edge.
+  const updateSalesItemsRoomTouchDrop = () => {
+    const state = salesItemsRoomTouchRef.current;
+    if (!state?.dragging || !state.listEl) return;
+    const index = salesItemsRoomDropIndexAt(state.listEl, "y", state.lastY, state.roomId);
+    state.dropIndex = index;
+    setSalesItemsRoomDropIndex((prev) => (prev === index ? prev : index));
+  };
+  const endSalesItemsRoomCardTouchDrag = (commit: boolean) => {
+    const state = salesItemsRoomTouchRef.current;
+    salesItemsRoomTouchRef.current = null;
+    if (!state) return;
+    if (state.timer) clearTimeout(state.timer);
+    if (state.blockScroll) document.removeEventListener("touchmove", state.blockScroll);
+    if (state.edgeFrame) cancelAnimationFrame(state.edgeFrame);
+    if (!state.dragging) return;
+    // Where it is as the finger lifts (the page may have scrolled under a still finger).
+    if (commit && state.listEl) state.dropIndex = salesItemsRoomDropIndexAt(state.listEl, "y", state.lastY, state.roomId);
+    setSalesItemsDraggingRoomId("");
+    setSalesItemsRoomDropIndex(null);
+    salesItemsDragGhost.end();
+    // The tap some browsers send straight after is ignored — just that one (it comes at once).
+    suppressNextSalesItemsRoomTapRef.current = state.roomId;
+    window.setTimeout(() => {
+      if (suppressNextSalesItemsRoomTapRef.current === state.roomId) suppressNextSalesItemsRoomTapRef.current = "";
+    }, 400);
+    if (commit && state.dropIndex !== null) moveSalesItemsRoomTo(state.roomId, state.dropIndex);
+  };
+  const onSalesItemsRoomCardTouchStart = (event: ReactTouchEvent<HTMLElement>, room: SalesItemsRoomBoardRow) => {
+    const touch = event.touches[0];
+    if (!touch || salesReadOnly || editingItemsRoomId === room.id) return;
+    endSalesItemsRoomCardTouchDrag(false);
+    const listEl = event.currentTarget.closest<HTMLElement>("[data-sales-room-list]");
+    const state: NonNullable<typeof salesItemsRoomTouchRef.current> = {
+      roomId: room.id,
+      listEl,
+      startX: touch.clientX,
+      startY: touch.clientY,
+      lastX: touch.clientX,
+      lastY: touch.clientY,
+      timer: null,
+      dragging: false,
+      eligible: true,
+      dropIndex: null,
+      blockScroll: null,
+      edgeFrame: 0,
+    };
+    state.timer = setTimeout(() => {
+      if (salesItemsRoomTouchRef.current !== state || !state.eligible) return;
+      state.timer = null;
+      state.dragging = true;
+      // The page doesn't scroll under the finger while it's held — a listener that can stop it (React's touch
+      // listeners can't).
+      state.blockScroll = (e: TouchEvent) => {
+        if (e.cancelable) e.preventDefault();
+      };
+      document.addEventListener("touchmove", state.blockScroll, { passive: false });
+      setSalesItemsDraggingRoomId(room.id);
+      setSalesItemsRoomDropIndex(null);
+      salesItemsDragGhost.spawn({ clientX: state.lastX, clientY: state.lastY }, `items-room-card-name-${room.id}`, { label: room.name, color: "var(--brand)" });
+      // Near the top or bottom of the screen, the page scrolls along (faster the closer it's held to the edge).
+      let scroller: HTMLElement | null = listEl?.parentElement ?? null;
+      while (scroller && !(/(auto|scroll)/.test(getComputedStyle(scroller).overflowY) && scroller.scrollHeight > scroller.clientHeight)) {
+        scroller = scroller.parentElement;
+      }
+      const pageScroller = scroller ?? (document.scrollingElement as HTMLElement | null);
+      const edge = 90;
+      const tick = () => {
+        if (salesItemsRoomTouchRef.current !== state) return;
+        const y = state.lastY;
+        const by = y < edge ? -Math.ceil((edge - y) / 6) : y > window.innerHeight - edge ? Math.ceil((y - (window.innerHeight - edge)) / 6) : 0;
+        if (by && pageScroller) {
+          pageScroller.scrollTop += by;
+          updateSalesItemsRoomTouchDrop();
+        }
+        state.edgeFrame = requestAnimationFrame(tick);
+      };
+      state.edgeFrame = requestAnimationFrame(tick);
+    }, SALES_ITEMS_ROOM_LONG_PRESS_MS);
+    salesItemsRoomTouchRef.current = state;
+  };
+  const onSalesItemsRoomCardTouchMove = (event: ReactTouchEvent<HTMLElement>) => {
+    const state = salesItemsRoomTouchRef.current;
+    const touch = event.touches[0];
+    if (!state || !touch) return;
+    if (!state.dragging) {
+      // Moved before it was picked up: a scroll — left alone.
+      if (Math.abs(touch.clientX - state.startX) > SALES_ITEMS_ROOM_MOVE_CANCEL_PX || Math.abs(touch.clientY - state.startY) > SALES_ITEMS_ROOM_MOVE_CANCEL_PX) {
+        state.eligible = false;
+        if (state.timer) clearTimeout(state.timer);
+        state.timer = null;
+      }
+      return;
+    }
+    state.lastX = touch.clientX;
+    state.lastY = touch.clientY;
+    salesItemsDragGhost.trackPointer(touch.clientX, touch.clientY);
+    updateSalesItemsRoomTouchDrop();
+  };
+  // Where the dragged room would go: a faded, dashed-outline stand-in (the boards' drop preview) — its column's size
+  // (desktop), or its card's header (phone).
+  const renderSalesItemsRoomDropPreview = (touch: boolean) => {
+    const room = salesItemsBoardRooms.find((row) => row.id === salesItemsDraggingRoomId);
+    if (!room) return null;
+    const collapsed = salesItemsRoomsCollapsed[room.id] ?? false;
+    return (
+      <div
+        key="sales_items_room_drop_preview"
+        aria-hidden="true"
+        inert
+        className={touch ? "pointer-events-none" : `pointer-events-none h-full shrink-0 ${collapsed ? "w-[52px]" : "w-[300px]"}`}
+        style={SALES_ITEMS_ROOM_DROP_PREVIEW_STYLE}
+      >
+        <div
+          className={`w-full rounded-[16px] border px-3 py-3 ${touch ? "h-[57px]" : "h-full"}`}
+          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}
+        >
+          {collapsed && !touch ? null : (
+            <p className="truncate text-[15px] font-semibold" style={{ color: "var(--text-main)" }}>{room.name}</p>
           )}
+        </div>
+      </div>
+    );
+  };
+
+  // Design › Items (desktop): a room's column, as the Dashboard's kanban columns — its collapse button and name top
+  // left, its item count and a "…" menu (Rename / Duplicate / Delete) top right, then a green Add Item and its items.
+  // Collapsed, a narrow strip (expand button, count, its name down it); it slides between the two
+  // (lib/board-column-collapse.ts), and stays as each person left it (salesItemsRoomsCollapsed). Items dropped on it
+  // (either way) go in it; clicking it makes it the room items are added to.
+  const renderSalesItemsDesktopRoomColumn = (room: SalesItemsRoomBoardRow) => {
+    const isActive = room.id === activeSalesItemsRoomId;
+    const isDragTarget = salesItemsDragTargetRoomId === room.id;
+    const collapsed = salesItemsRoomsCollapsed[room.id] ?? false;
+    const itemCount = room.items.reduce((sum, item) => sum + item.quantity, 0);
+    const roomItems = sortedSalesItemsRoomItems(room);
+    // Items dropped on it go in it; a room column being moved is the row's business (onSalesItemsRoomBoardDragOver).
+    const dragTargetProps = {
+      "data-sales-room-id": room.id,
+      style: { opacity: salesItemsDraggingRoomId === room.id ? 0.45 : 1, transition: "opacity 150ms ease" },
+      onDragOver: (event: ReactDragEvent<HTMLDivElement>) => {
+        if (salesItemsDraggingRoomId) return;
+        event.preventDefault();
+        if (salesItemsDragTargetRoomId !== room.id) setSalesItemsDragTargetRoomId(room.id);
+      },
+      onDragLeave: (event: ReactDragEvent<HTMLDivElement>) => {
+        const related = event.relatedTarget as Node | null;
+        if (related && event.currentTarget.contains(related)) return;
+        if (salesItemsDragTargetRoomId === room.id) setSalesItemsDragTargetRoomId("");
+      },
+      onDrop: (event: ReactDragEvent<HTMLDivElement>) => {
+        if (salesItemsDraggingRoomId) return;
+        onSalesItemsRoomDrop(event, room.id);
+      },
+    };
+    // Dragged by its header (or its whole strip, collapsed) to move it among the others.
+    const columnDragProps = {
+      draggable: !salesReadOnly && editingItemsRoomId !== room.id,
+      onDragStart: (event: ReactDragEvent<HTMLElement>) => onSalesItemsRoomColumnDragStart(event, room),
+      onDragEnd: onSalesItemsRoomColumnDragEnd,
+    };
+    // The room items are being added to (isActive): a thin outline in the brand colour and a soft brand header with its
+    // name in the brand colour — the column itself stays white. Dragged over: a firmer outline. The outline is its
+    // border plus a ring drawn just inside it, over everything in the column (outlineRing) — not a ring round the
+    // outside (a box-shadow), which the frame's own cut-off at the bottom of the screen fades in and out with the
+    // shadow there (.board-column-window / .board-column-cap), leaving it faint and lumpy round the bottom corners.
+    const shadow = `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`;
+    const outlined = isActive || isDragTarget;
+    const surfaceStyle: React.CSSProperties = {
+      borderColor: outlined ? "var(--brand-strong)" : "var(--glass-border)",
+      backgroundColor: "var(--panel-bg)",
+    };
+    // Inside the 1px border, following its curve (16px corners, less the border), above the rows and bars.
+    const outlineRing = outlined ? (
+      <span
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 z-[6] rounded-[15px]"
+        style={{ boxShadow: `inset 0 0 0 ${isDragTarget ? 2 : 1}px var(--brand-strong)` }}
+      />
+    ) : null;
+    const nameColor = isActive ? "var(--brand-strong)" : "var(--text-main)";
+    const badgeStyle: React.CSSProperties = { backgroundColor: "var(--panel-muted)", color: "var(--text-main)" };
+    if (collapsed) {
+      return (
+        <BoardColumnFrame key={`sales_items_room_col_${room.id}`} {...dragTargetProps} className="h-full w-[52px] shrink-0" shadow={shadow}>
+          <button
+            type="button"
+            {...columnDragProps}
+            onClick={(e) => expandBoardColumnAnimated(e.currentTarget, () => setSalesItemsRoomCollapsed(room.id, false))}
+            // pt-2: its expand button on the same line as a full column's header buttons, where the collapse button
+            // slides to (lib/board-column-collapse.ts).
+            className="relative flex h-full w-full flex-col items-center gap-3 overflow-hidden rounded-[16px] border pb-3 pt-2 transition hover:brightness-[0.98]"
+            style={surfaceStyle}
+            title={`Expand ${room.name}`}
+            aria-label={`Expand ${room.name}`}
+          >
+            {outlineRing}
+            <span data-column-collapse-button="true" className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full" style={badgeStyle}>
+              <ColumnCollapseChevrons size={14} flipped />
+            </span>
+            <span className="inline-flex h-7 min-w-[28px] shrink-0 items-center justify-center rounded-full px-2 text-[11px] font-bold" style={badgeStyle}>
+              {itemCount}
+            </span>
+            <span
+              id={`items-room-col-name-${room.id}`}
+              className="shrink-0 whitespace-nowrap text-[20px] font-medium"
+              style={{ writingMode: "vertical-rl", color: nameColor, letterSpacing: "0.12em" }}
+            >
+              {room.name}
+            </span>
+          </button>
+        </BoardColumnFrame>
+      );
+    }
+    const menuItems = salesItemsRoomMenuItems(room, `items-room-menu-${room.id}`);
+    return (
+      <BoardColumnFrame key={`sales_items_room_col_${room.id}`} {...dragTargetProps} className="h-full w-[300px] shrink-0" shadow={shadow}>
+        <div
+          onClick={() => setActiveSalesItemsRoomId(room.id)}
+          className="relative flex h-full w-full cursor-pointer flex-col overflow-hidden rounded-[16px] border transition"
+          style={surfaceStyle}
+        >
+          {outlineRing}
+          {/* pl-[11px]: the collapse button 12px in from the column's edge (with its 1px border) — where the collapsed
+              strip centres its own (52px wide), so it doesn't move either way. */}
+          <div
+            {...columnDragProps}
+            className="flex shrink-0 items-center justify-between gap-2 border-b py-2 pl-[11px] pr-3 transition-colors"
+            style={{ borderColor: "var(--glass-border)", backgroundColor: isActive ? "var(--brand-soft)" : "transparent" }}
+          >
+            <div className="flex min-w-0 flex-1 items-center gap-1.5">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  collapseBoardColumnAnimated(e.currentTarget, () => setSalesItemsRoomCollapsed(room.id, true));
+                }}
+                data-column-collapse-button="true"
+                className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition hover:brightness-95"
+                style={badgeStyle}
+                title={`Collapse ${room.name}`}
+                aria-label={`Collapse ${room.name}`}
+              >
+                <ColumnCollapseChevrons size={14} />
+              </button>
+              {editingItemsRoomId === room.id ? (
+                <input
+                  autoFocus
+                  value={editingItemsRoomDraftName}
+                  onChange={(e) => setEditingItemsRoomDraftName(e.currentTarget.value)}
+                  onBlur={commitEditingItemsRoom}
+                  onClick={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") { e.preventDefault(); commitEditingItemsRoom(); }
+                    if (e.key === "Escape") { e.preventDefault(); cancelEditingItemsRoom(); }
+                  }}
+                  className="h-7 min-w-0 flex-1 rounded-[8px] border px-2 text-[14px] font-semibold outline-none"
+                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                />
+              ) : (
+                <p id={`items-room-col-name-${room.id}`} className="truncate text-[15px] font-semibold transition-colors" style={{ color: nameColor }}>{room.name}</p>
+              )}
+            </div>
+            <div className="flex shrink-0 items-center gap-1.5">
+              <span
+                className="inline-flex h-7 min-w-[28px] items-center justify-center rounded-full px-2 text-[11px] font-bold"
+                style={badgeStyle}
+                title={`${itemCount} item${itemCount === 1 ? "" : "s"}`}
+              >
+                {itemCount}
+              </span>
+              {/* overflow-hidden: as Add Item's wrapper — its confirms land back here, and un-clip this, not the column. */}
+              <span id={`items-room-menu-${room.id}`} className="inline-flex overflow-hidden" onClick={(e) => e.stopPropagation()}>
+                <GlassActionMenu
+                  items={menuItems}
+                  ariaLabel={`${room.name} options`}
+                  openWithOneItem
+                  menuMinWidth={170}
+                  triggerClassName="inline-flex h-7 w-7 items-center justify-center rounded-full transition hover:brightness-95"
+                  triggerStyle={badgeStyle}
+                >
+                  <MoreHorizontal size={15} />
+                </GlassActionMenu>
+              </span>
+            </div>
+          </div>
+          {/* The same 10px all round it (the list starts straight after). Clips (though nothing in it overflows) so it's
+              what a pop-up landing back in the button un-clips for the button's bounce (bounceOriginElement takes the
+              nearest clipping ancestor) — not the column, whose rounded corners would go square for that moment. */}
+          <div className="shrink-0 overflow-hidden p-2.5">
+            {/* Green, as the app's + buttons. */}
+            <button
+              type="button"
+              disabled={salesReadOnly}
+              onClick={(e) => {
+                itemsLibraryModalOriginElRef.current = e.currentTarget;
+                e.stopPropagation();
+                setItemsLibraryModalOrigin(captureGlassModalOrigin(e));
+                setActiveSalesItemsRoomId(room.id);
+                setIsItemsLibraryModalOpen(true);
+              }}
+              className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-[9px] border text-[14px] font-bold text-white hover:brightness-95 disabled:opacity-60"
+              style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
+            >
+              <Plus size={17} strokeWidth={2.5} />
+              Add Item
+            </button>
+          </div>
+          {/* Rows right across the column, its scrollbar floating over their right edge (their padding keeps clear of
+              it). */}
+          <OverlayScrollArea className="min-h-0 flex-1" contentClassName="px-3 pb-2">
+            {roomItems.length > 0 ? (
+              renderSalesItemsRoomGroups(room)
+            ) : (
+              <div
+                className="mt-1 flex min-h-[80px] items-center justify-center rounded-[10px] border border-dashed px-3 text-center text-[11px]"
+                style={{ borderColor: "var(--glass-border)", color: "var(--text-muted)" }}
+              >
+                Drop items here or use Add Item.
+              </div>
+            )}
+          </OverlayScrollArea>
+        </div>
+      </BoardColumnFrame>
+    );
+  };
+
+  // Design › Items (phone): a room as a card down the page — the desktop column's look: its name (tap to collapse /
+  // expand it, sliding — kept as the desktop's collapse), its count and "…" menu, a green Add Item, then its items
+  // grouped under their colour bars (renderSalesItemsRoomGroups, touch). The room items are added to (isActive): a thin
+  // brand outline and soft brand header.
+  const renderSalesItemsMobileRoomCard = (room: SalesItemsRoomBoardRow) => {
+    const isActive = room.id === activeSalesItemsRoomId;
+    const collapsed = salesItemsRoomsCollapsed[room.id] ?? false;
+    const itemCount = room.items.reduce((sum, item) => sum + item.quantity, 0);
+    const nameColor = isActive ? "var(--brand-strong)" : "var(--text-main)";
+    const badgeStyle: React.CSSProperties = { backgroundColor: "var(--panel-muted)", color: "var(--text-main)" };
+    const menuElementId = `items-room-menu-m-${room.id}`;
+    return (
+      <div
+        key={`sales_items_room_card_${room.id}`}
+        data-sales-room-id={room.id}
+        onClick={() => {
+          if (suppressNextSalesItemsRoomTapRef.current === room.id) {
+            suppressNextSalesItemsRoomTapRef.current = "";
+            return;
+          }
+          setActiveSalesItemsRoomId(room.id);
+        }}
+        className="relative overflow-hidden rounded-[16px] border"
+        style={{
+          borderColor: isActive ? "var(--brand-strong)" : "var(--glass-border)",
+          backgroundColor: "var(--panel-bg)",
+          boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
+          opacity: salesItemsDraggingRoomId === room.id ? 0.45 : 1,
+          transition: "opacity 150ms ease",
+        }}
+      >
+        {isActive ? (
+          <span aria-hidden="true" className="pointer-events-none absolute inset-0 z-[6] rounded-[15px]" style={{ boxShadow: "inset 0 0 0 1px var(--brand-strong)" }} />
+        ) : null}
+        {/* Held, it's picked up to move among the others (onSalesItemsRoomCardTouchStart); no text selecting or callout
+            while it's held. */}
+        <div
+          onTouchStart={(e) => onSalesItemsRoomCardTouchStart(e, room)}
+          onTouchMove={onSalesItemsRoomCardTouchMove}
+          onTouchEnd={() => endSalesItemsRoomCardTouchDrag(true)}
+          onTouchCancel={() => endSalesItemsRoomCardTouchDrag(false)}
+          onContextMenu={(e) => e.preventDefault()}
+          className="flex select-none items-center gap-2 border-b py-2 pl-3 pr-2 transition-colors [-webkit-touch-callout:none]"
+          style={{ borderColor: collapsed ? "transparent" : "var(--glass-border)", backgroundColor: isActive ? "var(--brand-soft)" : "transparent" }}
+        >
+          {editingItemsRoomId === room.id ? (
+            <input
+              autoFocus
+              value={editingItemsRoomDraftName}
+              onChange={(e) => setEditingItemsRoomDraftName(e.currentTarget.value)}
+              onBlur={commitEditingItemsRoom}
+              onClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") { e.preventDefault(); commitEditingItemsRoom(); }
+                if (e.key === "Escape") { e.preventDefault(); cancelEditingItemsRoom(); }
+              }}
+              className="h-9 min-w-0 flex-1 rounded-[9px] border px-2.5 text-[15px] font-semibold outline-none"
+              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+            />
+          ) : (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                // The tap after a drop isn't a tap.
+                if (suppressNextSalesItemsRoomTapRef.current === room.id) {
+                  suppressNextSalesItemsRoomTapRef.current = "";
+                  return;
+                }
+                setSalesItemsRoomCollapsed(room.id, !collapsed);
+              }}
+              aria-expanded={!collapsed}
+              className="flex min-w-0 flex-1 items-center gap-2 py-1 text-left"
+            >
+              <TintedAngleDownIcon color={nameColor} size={13} expanded={!collapsed} />
+              <span id={`items-room-card-name-${room.id}`} className="truncate text-[16px] font-semibold transition-colors" style={{ color: nameColor }}>{room.name}</span>
+            </button>
+          )}
+          <span
+            className="inline-flex h-8 min-w-[32px] shrink-0 items-center justify-center rounded-full px-2 text-[12px] font-bold"
+            style={badgeStyle}
+            title={`${itemCount} item${itemCount === 1 ? "" : "s"}`}
+          >
+            {itemCount}
+          </span>
+          <span id={menuElementId} className="inline-flex shrink-0 overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <GlassActionMenu
+              items={salesItemsRoomMenuItems(room, menuElementId)}
+              ariaLabel={`${room.name} options`}
+              openWithOneItem
+              menuMinWidth={180}
+              triggerClassName="inline-flex h-8 w-8 items-center justify-center rounded-full transition hover:brightness-95"
+              triggerStyle={badgeStyle}
+            >
+              <MoreHorizontal size={16} />
+            </GlassActionMenu>
+          </span>
+        </div>
+        <div className="grid" style={{ gridTemplateRows: collapsed ? "0fr" : "1fr", transition: SALES_ITEMS_LIBRARY_SLIDE }} inert={collapsed}>
+          <div className="min-h-0 overflow-hidden">
+            {/* overflow-hidden: so a pop-up landing back in its button un-clips this, not the card (see the desktop's). */}
+            <div className="overflow-hidden p-2.5">
+              <button
+                type="button"
+                disabled={salesReadOnly}
+                onClick={(e) => {
+                  itemsLibraryModalOriginElRef.current = e.currentTarget;
+                  e.stopPropagation();
+                  setItemsLibraryModalOrigin(captureGlassModalOrigin(e));
+                  setActiveSalesItemsRoomId(room.id);
+                  setIsItemsLibraryModalOpen(true);
+                }}
+                className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-[10px] border text-[15px] font-bold text-white hover:brightness-95 disabled:opacity-60"
+                style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
+              >
+                <Plus size={18} strokeWidth={2.5} />
+                Add Item
+              </button>
+            </div>
+            <div className="px-3 pb-2">
+              {room.items.length > 0 ? (
+                renderSalesItemsRoomGroups(room, true)
+              ) : (
+                <div
+                  className="mb-1 flex min-h-[64px] items-center justify-center rounded-[10px] border border-dashed px-3 text-center text-[12px]"
+                  style={{ borderColor: "var(--glass-border)", color: "var(--text-muted)" }}
+                >
+                  No items yet — tap Add Item.
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -13525,12 +14692,17 @@ export default function ProjectDetailsPage() {
     const hydratedRooms = sourceRooms.map((room) => ({
       ...room,
       items: room.items.map((item) => {
-        const byId =
-          salesItemsLibraryPriceLookup.byItemId[String(item.itemId || "").trim().toLowerCase()] ?? "";
+        // Added at a price staff entered: kept as it is.
+        if (item.customPrice) return item;
+        const byIdEntry = salesItemsLibraryPriceLookup.byItemId[String(item.itemId || "").trim().toLowerCase()];
+        const byId = byIdEntry ?? "";
+        // By name only when its id isn't one the library has (an older line) — one whose item is there keeps to it.
         const byCategoryAndName =
-          salesItemsLibraryPriceLookup.byCategoryAndName[
-            `${String(item.categoryId || "").trim()}::${String(item.name || "").trim().toLowerCase()}`
-          ] ?? "";
+          byIdEntry === undefined
+            ? salesItemsLibraryPriceLookup.byCategoryAndName[
+                `${String(item.categoryId || "").trim()}::${String(item.name || "").trim().toLowerCase()}`
+              ] ?? ""
+            : "";
         const resolvedPrice = String(byId || byCategoryAndName || item.price || "").trim();
         return resolvedPrice === String(item.price || "").trim() ? item : { ...item, price: resolvedPrice };
       }),
@@ -31552,6 +32724,192 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         )
       : null;
 
+  // The item library's bubbles (desktop) — and the Add Item pop-up's (desktop): glass. Declared here, before the pop-up
+  // (built as soon as it's declared), which uses it.
+  const salesItemsLibraryBubbleStyle: React.CSSProperties = {
+    borderColor: "var(--glass-border)",
+    backgroundColor: "var(--glass-bg-strong)",
+    backdropFilter: "blur(20px) saturate(180%)",
+    WebkitBackdropFilter: "blur(20px) saturate(180%)",
+    boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
+  };
+  // Design › Items' Add Item pop-up: compact (a phone's the same, its header in two rows — search on its own — and its
+  // quantities always showing, bigger to tap). A one-line header (Add Item · its room, search, close), then
+  // the items in the library's order as one run of groups — a sub-category's items, or a category's with none (no
+  // category heading over its sub-categories): each group a small pill in its colour (the sub-category's, else the
+  // category's — the library's colour rule), how many, and a line; click it to collapse (kept with the library's, as
+  // "add:<category>::<sub-category>"). Its items in a light card: a thin mark in the group's colour, the name, a
+  // quantity that shows on hover (as the library's — the same one) and a green +; an "Added" pill pops up in the
+  // middle of the row; a description (if it has one) slides open under it. The phone keeps its own (below).
+  const renderSalesItemsAddItemPanel = (touch: boolean) => {
+    const groups = salesItemsAddFilteredCategories.flatMap((category) =>
+      groupSalesItemsBySubcategory(category).map((group) => ({
+        category,
+        group,
+        key: `add:${category.id}::${group.name.toLowerCase()}`,
+        name: group.name || category.name,
+        color: (group.name && category.subcategoryColors[group.name.toLowerCase()]) || category.color,
+      })),
+    );
+    return (
+      <>
+        <div
+          className={`flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b px-4 py-3 ${touch ? "pt-4 max-md:pt-[max(16px,env(safe-area-inset-top))]" : ""}`}
+          style={{ borderColor: "var(--glass-border)" }}
+        >
+          <div className="min-w-0 flex-1">
+            <p className={`font-semibold leading-tight ${touch ? "text-[17px]" : "text-[15px]"}`} style={{ color: "var(--text-main)" }}>Add Item</p>
+            <p className="truncate text-[12px] font-medium" style={{ color: "var(--text-main)" }}>
+              {activeSalesItemsRoom ? activeSalesItemsRoom.name : "Select a room first"}
+            </p>
+          </div>
+          <div
+            className={`flex shrink-0 items-center gap-2 rounded-full border px-3 ${touch ? "order-last h-10 w-full" : "h-8 w-[210px]"}`}
+            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}
+          >
+            <Search size={13} className="shrink-0" style={{ color: "var(--text-muted)" }} />
+            <input
+              value={salesItemsAddSearch}
+              onChange={(e) => onSalesItemsSearchChange(e.currentTarget.value, "add")}
+              placeholder="Search items"
+              className="h-full w-full bg-transparent text-[12.5px] outline-none"
+              style={{ color: "var(--text-main)" }}
+            />
+          </div>
+          <button type="button" onClick={() => setIsItemsLibraryModalOpen(false)} className={iconRemoveButtonClass} aria-label="Close">
+            <X size={16} />
+          </button>
+        </div>
+        <OverlayScrollArea className="min-h-0 flex-1" contentClassName={touch ? "px-3 pt-1 pb-3 max-md:pb-[max(12px,env(safe-area-inset-bottom))]" : "px-3 pb-3 pt-1"}>
+          {groups.length === 0 ? (
+            <p className="py-10 text-center text-[12.5px]" style={{ color: "var(--text-muted)" }}>No items match your search.</p>
+          ) : null}
+          {groups.map(({ category, group, key, name, color }) => {
+            const collapsed = isSalesItemsLibraryGroupCollapsed(key);
+            return (
+              <div key={key} className="pt-2.5">
+                <button type="button" onClick={() => toggleSalesItemsLibraryGroupCollapsed(key)} aria-expanded={!collapsed} className="flex w-full items-center gap-2 py-0.5 text-left">
+                  <span
+                    className="inline-flex min-w-0 max-w-[70%] items-center truncate rounded-full px-2.5 py-[3px] text-[12px] font-semibold"
+                    style={{ backgroundColor: color, color: contrastTextForFill(color) }}
+                  >
+                    <span className="truncate">{name}</span>
+                  </span>
+                  <span className="shrink-0 text-[11.5px] font-medium" style={{ color: "var(--text-muted)" }}>{group.items.length}</span>
+                  <span className="h-px min-w-4 flex-1" style={{ backgroundColor: "var(--glass-border)" }} />
+                  <TintedAngleDownIcon color="var(--text-muted)" size={11} expanded={!collapsed} />
+                </button>
+                <div className="grid" style={{ gridTemplateRows: collapsed ? "0fr" : "1fr", transition: SALES_ITEMS_LIBRARY_SLIDE }} inert={collapsed}>
+                  <div className="min-h-0 overflow-hidden">
+                    <div className="mt-1.5 overflow-hidden rounded-[10px] border" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}>
+                      {group.items.map((item, itemIndex) => {
+                        const itemKey = item.id.toLowerCase();
+                        const descriptionExpanded = openSalesItemDescriptions.includes(itemKey);
+                        const hasDescription = String(item.description || "").trim().length > 0;
+                        const addedPill = salesItemsLibraryAddedPills[itemKey];
+                        const quantityText = salesItemsLibraryQuantities[itemKey] ?? "";
+                        return (
+                          <div
+                            key={`add_item_row_${item.id}`}
+                            className="group/additem"
+                            style={{ borderTop: itemIndex > 0 ? "1px solid var(--glass-border)" : undefined }}
+                          >
+                            <div className={`relative flex items-center gap-2 pl-2.5 pr-2 ${touch ? "h-12" : "h-9"}`}>
+                              {addedPill ? (
+                                // "Added", in the middle of the row: pops in, and away after 5 seconds (as the library's).
+                                <div className="pointer-events-none absolute inset-0 z-[4] flex items-center justify-center">
+                                  <span
+                                    key={addedPill.n}
+                                    className={`${addedPill.leaving ? "floating-bar-slot-pop" : "glass-bubble-pop"} inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-bold text-white`}
+                                    style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
+                                  >
+                                    <Check size={14} strokeWidth={3} />
+                                    Added
+                                  </span>
+                                </div>
+                              ) : null}
+                              <span className="h-4 w-[3px] shrink-0 rounded-full" style={{ backgroundColor: color }} />
+                              <p className={`min-w-0 flex-1 truncate font-medium ${touch ? "text-[14px]" : "text-[12.5px]"}`} style={{ color: "var(--text-main)" }} title={item.name}>
+                                {item.name}
+                              </p>
+                              {hasDescription ? (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setOpenSalesItemDescriptions((prev) =>
+                                      prev.includes(itemKey)
+                                        ? prev.filter((k) => k !== itemKey)
+                                        : [...prev, itemKey].slice(-SALES_ITEMS_LIBRARY_MAX_OPEN_DESCRIPTIONS),
+                                    )
+                                  }
+                                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center"
+                                  title={descriptionExpanded ? "Hide description" : "Show description"}
+                                >
+                                  <TintedAngleDownIcon color="var(--text-muted)" size={11} expanded={descriptionExpanded} />
+                                </button>
+                              ) : null}
+                              {/* How many (the library's own): on hover, staying once there's one in it. */}
+                              <input
+                                value={quantityText}
+                                onChange={(event) => {
+                                  const digits = event.currentTarget.value.replace(/\D/g, "").slice(0, 4);
+                                  setSalesItemsLibraryQuantities((prev) => {
+                                    const next = { ...prev };
+                                    if (digits) next[itemKey] = digits;
+                                    else delete next[itemKey];
+                                    return next;
+                                  });
+                                }}
+                                inputMode="numeric"
+                                placeholder="Qty"
+                                disabled={salesReadOnly}
+                                aria-label={`How many ${item.name} to add`}
+                                className={`shrink-0 rounded-[7px] border px-1 text-center font-medium outline-none transition-opacity duration-200 focus:placeholder:text-transparent ${
+                                  touch ? "h-8 w-12 text-[13px]" : "h-6 w-10 text-[12px]"
+                                } ${quantityText || touch ? "opacity-100" : "opacity-0 focus:opacity-100 group-hover/additem:opacity-100"}`}
+                                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                              />
+                              <button
+                                type="button"
+                                disabled={!activeSalesItemsRoom || salesReadOnly}
+                                onClick={(e) => {
+                                  if (onAddSalesItemsLibraryItem(category, item, salesItemsLibraryQuantityFor(itemKey), { originEl: e.currentTarget })) {
+                                    onSalesItemsLibraryItemAdded(itemKey);
+                                  }
+                                }}
+                                className={`inline-flex shrink-0 items-center justify-center rounded-full border text-white transition hover:brightness-95 disabled:opacity-50 ${touch ? "h-8 w-8" : "h-6 w-6"}`}
+                                style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
+                                aria-label={`Add ${item.name}`}
+                                title="Add"
+                              >
+                                <Plus size={touch ? 16 : 13} strokeWidth={2.75} />
+                              </button>
+                            </div>
+                            {hasDescription ? (
+                              <div className="grid" style={{ gridTemplateRows: descriptionExpanded ? "1fr" : "0fr", transition: SALES_ITEMS_LIBRARY_SLIDE }} inert={!descriptionExpanded}>
+                                <div className="min-h-0 overflow-hidden">
+                                  <p
+                                    className="whitespace-pre-wrap px-3 pb-2 pl-[22px] text-[11.5px] leading-5 [overflow-wrap:anywhere]"
+                                    style={{ color: "var(--text-main)" }}
+                                  >
+                                    {item.description}
+                                  </p>
+                                </div>
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </OverlayScrollArea>
+      </>
+    );
+  };
   const salesItemsLibraryModalPortal =
     shouldRenderItemsLibraryModal && typeof document !== "undefined"
       ? createPortal(
@@ -31564,181 +32922,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             />
             <div
               ref={itemsLibraryModalPanelRef}
-              className="glass-modal-panel relative z-[2147483647] flex h-[88dvh] w-full flex-col overflow-hidden md:h-[min(820px,92vh)] md:w-[min(760px,96vw)]"
+              // Compact; on a phone it takes the whole screen (square corners, no border).
+              className={`glass-modal-panel relative z-[2147483647] flex flex-col overflow-hidden ${
+                isCompactProjectViewport
+                  ? "h-[100dvh] w-full max-md:rounded-none! max-md:border-0! md:h-[min(680px,86vh)] md:w-[min(560px,96vw)]"
+                  : "h-[min(680px,86vh)] w-[min(560px,96vw)]"
+              }`}
             >
-              <div className="glass-modal-header px-4 py-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>Add Item</p>
-                    <p className="mt-1 text-[12px]" style={{ color: "var(--text-main)" }}>
-                      {activeSalesItemsRoom ? `Adding to ${activeSalesItemsRoom.name}` : "Select a room first"}
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setIsItemsLibraryModalOpen(false)}
-                    className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border"
-                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
-                  >
-                    <X size={15} />
-                  </button>
-                </div>
-                <div
-                  className="mt-3 flex h-11 items-center gap-3 rounded-[12px] border px-3"
-                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}
-                >
-                  <Search size={15} style={{ color: "var(--text-muted)" }} />
-                  <input
-                    value={salesItemsSearch}
-                    onChange={(e) => setSalesItemsSearch(e.currentTarget.value)}
-                    placeholder="Search items"
-                    className="h-full w-full bg-transparent text-[13px] outline-none"
-                    style={{ color: "var(--text-main)" }}
-                  />
-                </div>
-              </div>
-              <div className="glass-scroll min-h-0 flex-1 overflow-y-auto">
-                <div>
-                  {salesItemsFilteredCategories.map((category, categoryIndex) => {
-                    const collapsed = collapsedSalesItemCategories[category.id] ?? false;
-                    return (
-                      <section key={`mobile_sales_item_cat_${category.id}`} className="relative overflow-hidden">
-                        <div
-                          className="pointer-events-none absolute inset-y-0 left-0 z-[3] w-[6px]"
-                          style={{ backgroundColor: category.color }}
-                        />
-                        {categoryIndex > 0 ? <div className="ml-[6px] border-t" style={{ borderColor: "var(--glass-border)" }} /> : null}
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setCollapsedSalesItemCategories((prev) => ({
-                              ...prev,
-                              [category.id]: !(prev[category.id] ?? false),
-                            }))
-                          }
-                          className="relative z-[2] flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
-                        >
-                          <div className="min-w-0">
-                            <p className="text-[13px] font-bold" style={{ color: "var(--text-main)" }}>{category.name}</p>
-                          </div>
-                          <ChevronDown
-                            size={16}
-                            className="shrink-0 transition-transform"
-                            style={{ color: "var(--text-muted)", transform: collapsed ? undefined : "rotate(180deg)" }}
-                          />
-                        </button>
-                        {!collapsed ? (
-                          <div>
-                            <div className="ml-[6px] border-t" style={{ borderColor: "var(--glass-border)" }} />
-                            {category.items.map((item, itemIndex) => {
-                              const itemKey = `${category.id}__${item.name}`.toLowerCase();
-                              const descriptionExpanded = expandedSalesItemLibraryModalDescriptions[itemKey] ?? false;
-                              const hasDescription = String(item.description || "").trim().length > 0;
-                              const justAdded = salesItemsJustAddedKey === `modal:${itemKey}`;
-                              return (
-                                <div
-                                  key={`mobile_sales_item_${category.id}_${item.name}`}
-                                  className="relative z-[2] overflow-hidden"
-                                  style={{ backgroundColor: "var(--panel-muted)" }}
-                                >
-                                  {itemIndex > 0 ? <div className="ml-[6px] border-t" style={{ borderColor: "var(--glass-border)" }} /> : null}
-                                  <div className="flex items-center gap-2 py-2 pl-3 pr-2">
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        setExpandedSalesItemLibraryModalDescriptions((prev) => ({
-                                          ...prev,
-                                          [itemKey]: !(prev[itemKey] ?? false),
-                                        }))
-                                      }
-                                      className="flex min-w-0 flex-1 items-center gap-3 py-1 text-left"
-                                    >
-                                      <div className="min-w-0">
-                                        <p className="truncate text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>{item.name}</p>
-                                        {item.subcategory ? (
-                                          <p className="truncate text-[11px]" style={{ color: "var(--text-muted)" }}>{item.subcategory}</p>
-                                        ) : null}
-                                      </div>
-                                    </button>
-                                    {justAdded ? (
-                                      <span
-                                        className="glass-bubble-pop inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-1 text-[10px] font-bold"
-                                        style={{
-                                          borderColor: "var(--glass-border)",
-                                          backgroundColor: "var(--glass-modal-bg)",
-                                          backdropFilter: "blur(12px) saturate(220%)",
-                                          WebkitBackdropFilter: "blur(12px) saturate(220%)",
-                                          color: "var(--success-strong)",
-                                        }}
-                                      >
-                                        <Check size={10} />
-                                        Added
-                                      </span>
-                                    ) : (
-                                      <>
-                                        <input
-                                          type="text"
-                                          inputMode="numeric"
-                                          value={salesItemsAddQuantityDrafts[itemKey] ?? "1"}
-                                          onClick={(e) => e.stopPropagation()}
-                                          onChange={(e) =>
-                                            setSalesItemsAddQuantityDrafts((prev) => ({
-                                              ...prev,
-                                              [itemKey]: e.target.value.replace(/[^0-9]/g, ""),
-                                            }))
-                                          }
-                                          className="h-8 w-10 shrink-0 rounded-[8px] border text-center text-[12px] font-bold outline-none"
-                                          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                                        />
-                                        <button
-                                          type="button"
-                                          disabled={!activeSalesItemsRoom || salesReadOnly}
-                                          onClick={() => {
-                                            const raw = salesItemsAddQuantityDrafts[itemKey] ?? "1";
-                                            const qty = Math.max(1, parseInt(raw, 10) || 1);
-                                            onAddSalesItemsLibraryItem(category, item, qty);
-                                            flashSalesItemsJustAdded(`modal:${itemKey}`);
-                                            setSalesItemsAddQuantityDrafts((prev) => ({ ...prev, [itemKey]: "1" }));
-                                          }}
-                                          className="inline-flex h-8 shrink-0 items-center justify-center rounded-full px-3 text-[11px] font-bold text-white disabled:opacity-50"
-                                          style={{ backgroundImage: "var(--brand-gradient)" }}
-                                        >
-                                          Add
-                                        </button>
-                                      </>
-                                    )}
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        setExpandedSalesItemLibraryModalDescriptions((prev) => ({
-                                          ...prev,
-                                          [itemKey]: !(prev[itemKey] ?? false),
-                                        }))
-                                      }
-                                      className="inline-flex w-6 shrink-0 items-center justify-center bg-transparent"
-                                      title={descriptionExpanded ? "Hide description" : "Show description"}
-                                    >
-                                      <TintedAngleDownIcon color="var(--text-muted)" size={12} expanded={descriptionExpanded} />
-                                    </button>
-                                  </div>
-                                  {descriptionExpanded ? (
-                                    <div
-                                      className="border-t px-3 py-2 text-[11px] leading-5"
-                                      style={{ borderColor: "var(--glass-border)", color: "var(--text-muted)" }}
-                                    >
-                                      {hasDescription ? item.description : "No description"}
-                                    </div>
-                                  ) : null}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        ) : null}
-                      </section>
-                    );
-                  })}
-                </div>
-              </div>
+              {renderSalesItemsAddItemPanel(isCompactProjectViewport)}
             </div>
           </div>,
           document.body,
@@ -31897,403 +33088,549 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         )
       : null;
 
-  const salesItemsBoardContent = (
-    <>
-      <div className="space-y-4 xl:hidden">
-        <section
-          className="rounded-[18px] border p-4"
-          style={{
-            borderColor: "var(--glass-border)",
-            backgroundColor: "var(--glass-bg-strong)",
-            backdropFilter: "blur(20px) saturate(180%)",
-            WebkitBackdropFilter: "blur(20px) saturate(180%)",
-            boxShadow: "var(--shadow-glass)",
-          }}
-        >
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-[14px] font-semibold tracking-[1px]" style={{ color: "var(--text-main)" }}>ITEMS ADDED TO ROOMS</p>
-              <p className="mt-1 text-[12px]" style={{ color: "var(--text-muted)" }}>Assign company items to rooms without pricing.</p>
-            </div>
+  // A custom-priced item's price, asked for as it's added (to the room it's going in) — or a line's, being changed: Add /
+  // Save puts it in at that price plus its markup — neither the markup nor what it comes to shown here.
+  const salesItemsCustomPricePortal =
+    shouldRenderSalesItemsCustomPriceModal && displaySalesItemsCustomPricePending && typeof document !== "undefined"
+      ? createPortal(
+          <div className="fixed inset-0 z-[2147483646] flex items-center justify-center px-4">
             <button
               type="button"
-              disabled={salesReadOnly}
-              onClick={(e) => { itemsAddRoomOriginElRef.current = e.currentTarget; setRoomModalOrigin(captureGlassModalOrigin(e)); setIsItemsAddRoomModalOpen(true); }}
-              className="inline-flex h-10 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold disabled:opacity-60"
-              style={{ borderColor: "var(--success-strong)", backgroundColor: "var(--success-soft)", color: "var(--success-strong)" }}
-            >
-              <Plus size={14} />
-              Add Room
-            </button>
-          </div>
-          {salesItemsBoardRooms.length > 0 ? (
-            <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-              {salesItemsBoardRooms.map((room) => renderSalesItemsRoomCard(room, { interactive: false }))}
-            </div>
-          ) : (
-            <div
-              className="mt-4 rounded-[12px] border border-dashed px-4 py-8 text-center text-[12px]"
-              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
-            >
-              Add a room to start assigning items.
-            </div>
-          )}
-        </section>
-
-        <section
-          className="rounded-[18px] border p-4"
-          style={{
-            borderColor: "var(--glass-border)",
-            backgroundColor: "var(--glass-bg-strong)",
-            backdropFilter: "blur(20px) saturate(180%)",
-            WebkitBackdropFilter: "blur(20px) saturate(180%)",
-            boxShadow: "var(--shadow-glass)",
-          }}
-        >
-          <div className="flex items-center justify-between gap-2">
-            <p className="text-[14px] font-semibold tracking-[1px]" style={{ color: "var(--text-main)" }}>SUMMARY</p>
-            <span className="rounded-full px-3 py-1 text-[11px] font-bold" style={{ backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}>
-              {salesItemsTotalSelected} items
-            </span>
-          </div>
-          <div className="mt-4 space-y-1 text-[12px]" style={{ color: "var(--text-main)" }}>
-            <div className="flex items-center justify-between py-1"><span>Total rooms</span><span className="font-bold">{salesItemsBoardRooms.length}</span></div>
-            <div className="flex items-center justify-between py-1"><span>Total items selected</span><span className="font-bold">{salesItemsTotalSelected}</span></div>
-          </div>
-          <div className="mt-4 border-t pt-3" style={{ borderColor: "var(--glass-border)" }}>
-            <p className="text-[11px] font-bold uppercase tracking-[0.7px]" style={{ color: "var(--text-muted)" }}>Items per room</p>
-            <div className="mt-2 space-y-1.5 text-[12px]" style={{ color: "var(--text-main)" }}>
-              {salesItemsBoardRooms.map((room) => (
-                <div key={`mobile_room_summary_${room.id}`} className="flex items-center justify-between">
-                  <span className="truncate pr-3">{room.name}</span>
-                  <span className="font-bold">{room.items.reduce((sum, item) => sum + item.quantity, 0)}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-          <div className="mt-4 border-t pt-3" style={{ borderColor: "var(--glass-border)" }}>
-            <p className="text-[11px] font-bold uppercase tracking-[0.7px]" style={{ color: "var(--text-muted)" }}>Category breakdown</p>
-            <div className="mt-2 space-y-1.5 text-[12px]" style={{ color: "var(--text-main)" }}>
-              {salesItemsCategoryBreakdown.length > 0 ? (
-                salesItemsCategoryBreakdown.map((row) => (
-                  <div key={`mobile_cat_summary_${row.categoryName}`} className="flex items-center justify-between gap-3">
-                    <div className="inline-flex min-w-0 items-center gap-2">
-                      <span className="h-3 w-3 rounded-full" style={{ backgroundColor: row.categoryColor }} />
-                      <span className="truncate">{row.categoryName}</span>
-                    </div>
-                    <span className="font-bold">{row.quantity}</span>
-                  </div>
-                ))
-              ) : (
-                <p style={{ color: "var(--text-muted)" }}>No items selected yet.</p>
-              )}
-            </div>
-          </div>
-          <div className="mt-4 grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              disabled={salesReadOnly || !activeSalesItemsRoom}
-              onClick={(e) => { clearSalesItemsConfirmOriginElRef.current = e.currentTarget; setClearSalesItemsConfirmOrigin(captureGlassModalOrigin(e)); setClearSalesItemsConfirmKind("room"); }}
-              className="h-10 rounded-[10px] border px-3 text-[12px] font-bold disabled:opacity-60"
-              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
-            >
-              Clear Room
-            </button>
-            <button
-              type="button"
-              disabled={salesReadOnly}
-              onClick={(e) => { clearSalesItemsConfirmOriginElRef.current = e.currentTarget; setClearSalesItemsConfirmOrigin(captureGlassModalOrigin(e)); setClearSalesItemsConfirmKind("all"); }}
-              className="h-10 rounded-[10px] border px-3 text-[12px] font-bold disabled:opacity-60"
-              style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
-            >
-              Clear All
-            </button>
-          </div>
-        </section>
-      </div>
-
-      <div className="hidden gap-4 xl:grid xl:grid-cols-[320px_minmax(0,1fr)_320px]">
-        <section
-          className="flex min-h-[calc(100svh-96px)] flex-col overflow-hidden rounded-[18px] border"
-          style={{
-            borderColor: "var(--glass-border)",
-            backgroundColor: "var(--glass-bg-strong)",
-            backdropFilter: "blur(20px) saturate(180%)",
-            WebkitBackdropFilter: "blur(20px) saturate(180%)",
-            boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
-          }}
-        >
-          <div
-            className="flex h-[56px] shrink-0 items-center border-b px-4"
-            style={{ borderBottomColor: "var(--glass-border)", backgroundColor: isDarkMode ? "rgba(255,255,255,0.04)" : "rgba(15,23,42,0.025)" }}
-          >
-            <p
-              className="shrink-0 overflow-hidden whitespace-nowrap text-[14px] font-semibold tracking-[1px] transition-all duration-200 ease-out"
-              style={{
-                color: "var(--text-main)",
-                maxWidth: isSalesItemsSearchExpanded ? 0 : 200,
-                marginRight: isSalesItemsSearchExpanded ? 0 : 12,
-                opacity: isSalesItemsSearchExpanded ? 0 : 1,
+              aria-label="Close custom price dialog backdrop"
+              onClick={() => setSalesItemsCustomPricePending(null)}
+              className="glass-modal-backdrop absolute inset-0"
+            />
+            <div ref={salesItemsCustomPricePanelRef} className="glass-modal-panel relative z-[2147483647] w-[min(400px,96vw)] overflow-hidden">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                confirmSalesItemsCustomPrice();
               }}
             >
-              ITEM LIBRARY
-            </p>
-            <div className="flex h-10 flex-1 items-center gap-3 rounded-[12px] border px-3" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>
-              <Search size={15} className="shrink-0" style={{ color: "var(--text-muted)" }} />
-              <input
-                value={salesItemsSearch}
-                onChange={(e) => setSalesItemsSearch(e.currentTarget.value)}
-                onFocus={() => setIsSalesItemsSearchExpanded(true)}
-                onBlur={() => { if (!salesItemsSearch.trim()) setIsSalesItemsSearchExpanded(false); }}
-                placeholder="Search"
-                className="h-full w-full bg-transparent text-[13px] outline-none"
-                style={{ color: "var(--text-main)" }}
-              />
+              <div className="glass-modal-header px-5 py-4">
+                <p className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>Custom price</p>
+                <p className="mt-0.5 truncate text-[12.5px] font-medium" style={{ color: "var(--text-main)" }}>
+                  {displaySalesItemsCustomPricePending.name}
+                  {displaySalesItemsCustomPricePending.quantity > 1 ? ` × ${displaySalesItemsCustomPricePending.quantity}` : ""}
+                  {displaySalesItemsCustomPricePending.roomName ? ` · ${displaySalesItemsCustomPricePending.roomName}` : ""}
+                </p>
+              </div>
+              <div className="px-5 py-4">
+                <label className="block text-[12px] font-medium" style={{ color: "var(--text-main)" }}>
+                  Price{displaySalesItemsCustomPricePending.quantity > 1 ? " (each)" : ""}
+                  <input
+                    autoFocus
+                    value={salesItemsCustomPriceDraft}
+                    onChange={(e) => setSalesItemsCustomPriceDraft(e.currentTarget.value.replace(/[^\d.,$]/g, ""))}
+                    inputMode="decimal"
+                    placeholder={formatCurrencyValue(0)}
+                    className="mt-1.5 h-10 w-full rounded-[10px] border px-3 text-[14px] font-medium outline-none"
+                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                  />
+                </label>
+                <div className="mt-4 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSalesItemsCustomPricePending(null)}
+                    className="h-9 rounded-[8px] border px-4 text-[12px] font-bold hover:brightness-95"
+                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={!salesItemsCustomPriceDraft.trim()}
+                    className="h-9 rounded-[8px] border px-4 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-55"
+                    style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
+                  >
+                    {displaySalesItemsCustomPricePending.editItemId ? "Save" : "Add"}
+                  </button>
+                </div>
+              </div>
+            </form>
             </div>
+          </div>,
+          document.body,
+        )
+      : null;
+
+  // The item library's bubbles' slide (desktop): each sliding in / out with the panel (staggered, as Nesting's). Their
+  // look is salesItemsLibraryBubbleStyle (declared earlier — the Add Item pop-up's list uses it too).
+  const salesItemsLibraryBubbleAnimation = (key: string): React.CSSProperties =>
+    isSalesItemsLibraryClosing
+      ? { animation: "glass-bubble-slide-out-left 280ms ease 0ms both" }
+      : isSalesItemsLibraryJustOpened
+        ? { animation: `glass-bubble-slide-in-left 480ms cubic-bezier(0.34, 1.56, 0.64, 1) ${stableBubbleAnimationDelayMs(key)}ms both` }
+        : {};
+  const salesItemsSummaryBubbleAnimation = (key: string): React.CSSProperties =>
+    isSalesItemsSummaryClosing
+      ? { animation: "glass-bubble-slide-out-right 280ms ease 0ms both" }
+      : isSalesItemsSummaryJustOpened
+        ? { animation: `glass-bubble-slide-in-right 480ms cubic-bezier(0.34, 1.56, 0.64, 1) ${stableBubbleAnimationDelayMs(key)}ms both` }
+        : {};
+  // One of the Summary's lists (Items per room, Category breakdown): a bubble with its name and arrow on top, sliding
+  // open / shut as the library's categories do — and, like them, staying as each person left it (saved with the
+  // library's, as "summary:<id>").
+  const renderSalesItemsSummaryListBubble = (
+    id: string,
+    title: string,
+    rows: Array<{ key: string; label: string; value: number; color?: string }>,
+    emptyText: string,
+  ) => {
+    const collapseKey = `summary:${id}`;
+    const collapsed = salesItemsLibraryCollapsed[collapseKey] ?? false;
+    return (
+      <section
+        key={collapseKey}
+        className="relative overflow-hidden rounded-[14px] border"
+        style={{ ...salesItemsLibraryBubbleStyle, ...salesItemsSummaryBubbleAnimation(collapseKey) }}
+      >
+        <button
+          type="button"
+          onClick={() => toggleSalesItemsLibraryCollapsed(collapseKey)}
+          aria-expanded={!collapsed}
+          className="relative z-[2] flex h-[43.5px] w-full items-center justify-between gap-3 pl-4 pr-[10px] text-left"
+        >
+          <p className="truncate text-[15px] font-bold leading-tight" style={{ color: "var(--text-main)" }}>{title}</p>
+          <TintedAngleDownIcon color="var(--text-main)" size={12} expanded={!collapsed} />
+        </button>
+        <div className="grid" style={{ gridTemplateRows: collapsed ? "0fr" : "1fr", transition: SALES_ITEMS_LIBRARY_SLIDE }} inert={collapsed}>
+          <div className="min-h-0 overflow-hidden">
+            <div style={{ borderTop: "1px solid var(--glass-border)" }} />
+            {rows.length > 0 ? (
+              rows.map((row, rowIndex) => (
+                <div key={row.key} style={{ backgroundColor: "var(--panel-muted)" }}>
+                  {rowIndex > 0 ? <div style={{ borderTop: "1px solid var(--glass-border)" }} /> : null}
+                  <div className="flex items-center justify-between gap-3 px-4 py-2">
+                    <span className="inline-flex min-w-0 items-center gap-2">
+                      {row.color ? <span className="h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: row.color }} /> : null}
+                      <span className="truncate text-[12.5px] font-medium" style={{ color: "var(--text-main)" }}>{row.label}</span>
+                    </span>
+                    <span className="shrink-0 text-[12.5px] font-bold" style={{ color: "var(--text-main)" }}>{row.value}</span>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <p className="px-4 py-3 text-[12px]" style={{ backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}>{emptyText}</p>
+            )}
           </div>
-          <div className="glass-scroll min-h-0 flex-1 overflow-y-auto">
-            <div>
-              {salesItemsFilteredCategories.length > 0 ? salesItemsFilteredCategories.map((category, categoryIndex) => {
-                const collapsed = collapsedSalesItemCategories[category.id] ?? false;
+        </div>
+      </section>
+    );
+  };
+  const salesItemsBoardContent = (
+    <>
+      {/* Phone: the desktop's design, down the page — each room a card (renderSalesItemsMobileRoomCard), and a green Add
+          Room under them (no Summary on a phone). */}
+      <div data-sales-room-list="true" className="space-y-3 pb-6 xl:hidden">
+        {salesItemsBoardRooms.length > 0 ? (
+          withBoardDropPreview(
+            salesItemsBoardRooms,
+            salesItemsDraggingRoomId,
+            salesItemsDraggingRoomId ? salesItemsRoomDropIndex : null,
+            (room) => renderSalesItemsMobileRoomCard(room),
+            () => renderSalesItemsRoomDropPreview(true),
+          )
+        ) : (
+          <div
+            className="rounded-[16px] border border-dashed px-4 py-8 text-center text-[13px]"
+            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
+          >
+            Add a room to start assigning items to spaces like Kitchen, Bathroom, or Laundry.
+          </div>
+        )}
+        {/* overflow-clip (well clear of its shadow): so its pop-up landing back in it un-clips this, not the page. */}
+        <div className="overflow-clip [overflow-clip-margin:40px]">
+          <button
+            type="button"
+            disabled={salesReadOnly}
+            onClick={(e) => { itemsAddRoomOriginElRef.current = e.currentTarget; setRoomModalOrigin(captureGlassModalOrigin(e)); setIsItemsAddRoomModalOpen(true); }}
+            className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-[14px] border text-[15px] font-bold text-white transition hover:brightness-95 disabled:opacity-60"
+            style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)", boxShadow: "var(--shadow-glass)" }}
+          >
+            <Plus size={18} strokeWidth={2.5} />
+            Add Room
+          </button>
+        </div>
+      </div>
+
+      {/* Desktop: the room columns fill the screen below the bar — moved in from the left while the item library is out,
+          and from the right while the Summary is (both float over the page; below). */}
+      <div
+        className="hidden h-full min-h-0 xl:block"
+        style={{
+          marginLeft: isSalesItemsLibraryOpen && !isSalesItemsLibraryClosing ? 348 : 0,
+          marginRight: isSalesItemsSummaryOpen && !isSalesItemsSummaryClosing ? 348 : 0,
+          transition: [
+            isSalesItemsLibraryOpen && !isSalesItemsLibraryClosing ? "margin-left 180ms ease" : "margin-left 200ms ease 280ms",
+            isSalesItemsSummaryOpen && !isSalesItemsSummaryClosing ? "margin-right 180ms ease" : "margin-right 200ms ease 280ms",
+          ].join(", "),
+        }}
+      >
+
+        {/* The room columns, straight in the window (no container round them), scrolling sideways (Add Room is in the
+            Summary). A scroller cuts off whatever reaches past its edges, so it reaches out into the space round it
+            (the negative margins: up to the bar above, and under the see-through edges of the item library and the Summary
+            either side) and pads back in by as much — the columns stay put, with room all round for their shadows. */}
+        {/* data-horizontal-swipe-scroll: a column (or item) held against its left / right edge while dragged steps it
+            along a column (lib/use-drag-ghost.ts). A room column dragged over it shows where it'd go, and lands there. */}
+        <div
+          data-horizontal-swipe-scroll="true"
+          onDragOver={onSalesItemsRoomBoardDragOver}
+          onDrop={onSalesItemsRoomBoardDrop}
+          className="glass-scroll -mb-5 -ml-8 -mr-8 -mt-3 h-[calc(100%+32px)] min-h-0 overflow-x-auto overflow-y-hidden pb-5 pl-8 pr-8 pt-3"
+          onWheel={(e) => {
+            if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+            e.currentTarget.scrollLeft += e.deltaY;
+            e.preventDefault();
+          }}
+        >
+          <div className="flex h-full items-stretch gap-3">
+            {withBoardDropPreview(
+              salesItemsBoardRooms,
+              salesItemsDraggingRoomId,
+              salesItemsDraggingRoomId ? salesItemsRoomDropIndex : null,
+              (room) => renderSalesItemsDesktopRoomColumn(room),
+              () => renderSalesItemsRoomDropPreview(false),
+            )}
+            {salesItemsBoardRooms.length === 0 ? (
+              <div
+                className="flex h-full w-[300px] shrink-0 items-center justify-center rounded-[16px] border border-dashed px-6 text-center text-[13px]"
+                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
+              >
+                Add a room (Summary › Add Room) to start assigning items to spaces like Kitchen, Bathroom, or Laundry.
+              </div>
+            ) : null}
+          </div>
+        </div>
+
+      </div>
+        {/* Desktop: the item library floats down the left, over the page — its search and each category a bubble of
+            their own, scrolling on its own (under the bar, with its own scrollbar at the left edge) — shown / hidden
+            from the bar's Item Library toggle, sliding in and out as Nesting's Visibility panel does. */}
+        {isSalesItemsLibraryOpen ? (
+          <section
+            ref={salesItemsLibraryScrollRef}
+            // 40px wider than its bubbles (360px with their padding): a scroller cuts off whatever reaches past its
+            // edges, and that's the room their shadows need on the right. The extra strip is see-through to the
+            // pointer (only the bubbles take it), so the room columns under it can still be clicked.
+            className="hide-native-scrollbar pointer-events-none hidden min-h-0 overflow-y-auto xl:block"
+            style={{ position: "fixed", left: 0, top: 0, width: 400, height: "100svh", zIndex: 40 }}
+          >
+            <div style={{ height: 105 }} />
+            <div className="pointer-events-auto space-y-2 p-3" style={{ width: 360 }}>
+              <div
+                className="flex h-10 items-center gap-3 rounded-full border px-3"
+                style={{ ...salesItemsLibraryBubbleStyle, ...salesItemsLibraryBubbleAnimation("search") }}
+              >
+                <Search size={15} className="shrink-0" style={{ color: "var(--text-muted)" }} />
+                <input
+                  value={salesItemsSearch}
+                  onChange={(e) => onSalesItemsSearchChange(e.currentTarget.value, "library")}
+                  placeholder="Search items"
+                  className="h-full w-full bg-transparent text-[13px] outline-none"
+                  style={{ color: "var(--text-main)" }}
+                />
+              </div>
+              {salesItemsFilteredCategories.length > 0 ? salesItemsFilteredCategories.map((category) => {
+                const collapsed = isSalesItemsLibraryGroupCollapsed(category.id);
                 return (
                   <section
                     key={`sales_item_cat_${category.id}`}
-                    className="relative overflow-hidden"
-                    style={{ backgroundColor: "var(--panel-bg)" }}
+                    className="relative overflow-hidden rounded-[14px] border"
+                    style={{ ...salesItemsLibraryBubbleStyle, ...salesItemsLibraryBubbleAnimation(`cat:${category.id}`) }}
                   >
-                    <div
-                      className="pointer-events-none absolute inset-y-0 left-0 z-[3] w-[6px]"
-                      style={{ backgroundColor: category.color }}
-                    />
-                    {categoryIndex > 0 ? <div style={{ marginLeft: 6, borderTop: "1px solid var(--glass-border)" }} /> : null}
                     <button
                       type="button"
-                      onClick={() => setCollapsedSalesItemCategories((prev) => ({ ...prev, [category.id]: !(prev[category.id] ?? false) }))}
-                      className="relative z-[2] flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
+                      onClick={(e) => {
+                        const section = e.currentTarget.closest("section");
+                        toggleSalesItemsLibraryGroupCollapsed(category.id);
+                        if (collapsed) followSalesItemsLibraryExpand(section);
+                      }}
+                      aria-expanded={!collapsed}
+                      // Its arrow: the items' own (description) arrow, in the same place — one column of them down the right —
+                      // each in its bar's text colour.
+                      // A set height (what it was with 13px text), so the bigger name doesn't make the bar bigger.
+                      className="relative z-[2] flex h-[43.5px] w-full items-center justify-between gap-3 pl-4 pr-[10px] text-left"
                     >
                       <div className="min-w-0">
-                        <p className="truncate text-[13px] font-bold" style={{ color: "var(--text-main)" }}>{category.name}</p>
+                        <p className="truncate text-[15px] font-bold leading-tight" style={{ color: "var(--text-main)" }}>{category.name}</p>
                       </div>
-                      <ChevronDown size={16} className="shrink-0 transition-transform" style={{ color: "var(--text-muted)", transform: collapsed ? undefined : "rotate(180deg)" }} />
+                      <TintedAngleDownIcon color="var(--text-main)" size={12} expanded={!collapsed} />
                     </button>
-                        {!collapsed ? (
-                      <div>
+                    {/* Slides open / shut (its rows' height, 0 to all of it); shut, nothing in it takes the pointer or focus. */}
+                    <div className="grid" style={{ gridTemplateRows: collapsed ? "0fr" : "1fr", transition: SALES_ITEMS_LIBRARY_SLIDE }} inert={collapsed}>
+                      <div className="min-h-0 overflow-hidden">
                         <div style={{ marginLeft: 6, borderTop: "1px solid var(--glass-border)" }} />
-                        {category.items.map((item, itemIndex) => {
-                          const itemKey = `${category.id}__${item.name}`.toLowerCase();
-                          const descriptionExpanded = expandedSalesItemDescriptions[itemKey] ?? false;
+                        {groupSalesItemsBySubcategory(category).map((group) => {
+                        const subKey = `${category.id}::${group.name.toLowerCase()}`;
+                        const subCollapsed = Boolean(group.name) && isSalesItemsLibraryGroupCollapsed(subKey);
+                        return (
+                        <div key={`sales_item_sub_${category.id}_${group.name.toLowerCase() || "_none"}`} className="relative">
+                          {/* Down the side: its sub-category's colour — the category's only for items with none (or a
+                              sub-category without a colour). */}
+                          <div
+                            className="pointer-events-none absolute inset-y-0 left-0 z-[3] w-[6px]"
+                            style={{ backgroundColor: (group.name && category.subcategoryColors[group.name.toLowerCase()]) || category.color }}
+                          />
+                          {/* Its sub-category's heading (none for the items without one, which come first): a bar in its
+                              colour (the category's, without one), its name in black or white to suit — click it to
+                              collapse / expand its items. */}
+                          {group.name ? (() => {
+                            const barColor = category.subcategoryColors[group.name.toLowerCase()] || category.color;
+                            const barText = contrastTextForFill(barColor);
+                            return (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  // Its group: its bar and its items.
+                                  const group = e.currentTarget.parentElement;
+                                  toggleSalesItemsLibraryGroupCollapsed(subKey);
+                                  if (subCollapsed) followSalesItemsLibraryExpand(group);
+                                }}
+                                aria-expanded={!subCollapsed}
+                                // A set height (what it was with 12.5px text), so the bigger name doesn't make the bar bigger.
+                                className="relative z-[2] flex h-[30.75px] w-full items-center justify-between gap-3 pl-5 pr-[10px] text-left"
+                                style={{ backgroundColor: barColor }}
+                              >
+                                <p className="truncate text-[14px] font-medium leading-tight" style={{ color: barText }}>{group.name}</p>
+                                <TintedAngleDownIcon color={barText} size={12} expanded={!subCollapsed} />
+                              </button>
+                            );
+                          })() : null}
+                          <div className="grid" style={{ gridTemplateRows: subCollapsed ? "0fr" : "1fr", transition: SALES_ITEMS_LIBRARY_SLIDE }} inert={subCollapsed}>
+                            <div className="min-h-0 overflow-hidden">
+                        {group.items.map((item, itemIndex) => {
+                          const itemKey = item.id.toLowerCase();
+                          const descriptionExpanded = openSalesItemDescriptions.includes(itemKey);
                           const hasDescription = String(item.description || "").trim().length > 0;
+                          const quantityText = salesItemsLibraryQuantities[itemKey] ?? "";
                           return (
                             <div
-                              key={`sales_item_row_${category.id}_${item.name}`}
-                              className="relative z-[2] overflow-hidden"
+                              key={`sales_item_row_${item.id}`}
+                              className="group/libitem relative z-[2] overflow-hidden"
                               style={{ backgroundColor: "var(--panel-muted)" }}
                             >
                               {itemIndex > 0 ? <div style={{ marginLeft: 6, borderTop: "1px solid var(--glass-border)" }} /> : null}
-                              <div className="flex items-stretch">
+                              <div className="relative flex items-stretch">
+                                {salesItemsLibraryAddedPills[itemKey] ? (
+                                  // "Added", in the middle of the row: pops in, and away after 5 seconds.
+                                  <div className="pointer-events-none absolute inset-0 z-[4] flex items-center justify-center">
+                                    <span
+                                      key={salesItemsLibraryAddedPills[itemKey].n}
+                                      className={`${salesItemsLibraryAddedPills[itemKey].leaving ? "floating-bar-slot-pop" : "glass-bubble-pop"} inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-bold text-white`}
+                                      // A plain green pill: the app's + buttons' green, white text.
+                                      style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
+                                    >
+                                      <Check size={14} strokeWidth={3} />
+                                      Added
+                                    </span>
+                                  </div>
+                                ) : null}
                                 <button
                                   type="button"
                                   draggable
                                   onDragStart={(event) => onSalesItemsLibraryDragStart(event, category, item)}
                                   onDragEnd={onSalesItemsLibraryDragEnd}
                                   disabled={!activeSalesItemsRoom || salesReadOnly}
-                                  onClick={() => { onAddSalesItemsLibraryItem(category, item); flashSalesItemsJustAdded(`lib:${itemKey}`); }}
-                                  className="flex min-w-0 flex-1 items-center gap-3 px-3 py-0.5 text-left disabled:opacity-60"
+                                  onClick={(e) => {
+                                    if (onAddSalesItemsLibraryItem(category, item, salesItemsLibraryQuantityFor(itemKey), { originEl: e.currentTarget })) {
+                                      onSalesItemsLibraryItemAdded(itemKey);
+                                    }
+                                  }}
+                                  className="flex min-w-0 flex-1 items-center gap-3 px-3 py-2 text-left disabled:opacity-60"
                                 >
                                   <GripVertical size={14} className="shrink-0" style={{ color: "var(--text-muted)" }} />
                                   <div className="min-w-0 flex-1">
-                                    <div className="inline-flex items-center gap-2">
-                                      <span className="h-3 w-3 rounded-full" style={{ backgroundColor: category.color }} />
-                                      <p id={`sales-lib-name-${itemKey}`} className="truncate text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>{item.name}</p>
-                                    </div>
-                                    {item.subcategory ? <p className="mt-0.5 truncate text-[11px]" style={{ color: "var(--text-muted)" }}>{item.subcategory}</p> : null}
+                                    {/* No dot: its colour is the strip down the side. */}
+                                    <p id={`sales-lib-name-${itemKey}`} className="truncate text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>{item.name}</p>
                                   </div>
-                                  {salesItemsJustAddedKey === `lib:${itemKey}` ? (
-                                    <span
-                                      className="glass-bubble-pop inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-bold"
-                                      style={{
-                                        borderColor: "var(--glass-border)",
-                                        backgroundColor: "var(--glass-modal-bg)",
-                                        backdropFilter: "blur(12px) saturate(220%)",
-                                        WebkitBackdropFilter: "blur(12px) saturate(220%)",
-                                        color: "var(--success-strong)",
-                                      }}
-                                    >
-                                      <Check size={10} />
-                                      Added
-                                    </span>
-                                  ) : null}
                                 </button>
+                                {/* How many to add (clicking or dragging the item): fades in on hover, and stays once
+                                    there's a number in it (or it's being typed in). Numbers only. */}
+                                <div
+                                  className={`flex shrink-0 items-center transition-opacity duration-200 ${
+                                    quantityText
+                                      ? "opacity-100"
+                                      : "pointer-events-none opacity-0 focus-within:pointer-events-auto focus-within:opacity-100 group-hover/libitem:pointer-events-auto group-hover/libitem:opacity-100"
+                                  }`}
+                                >
+                                  <input
+                                    value={quantityText}
+                                    onChange={(event) => {
+                                      const digits = event.currentTarget.value.replace(/\D/g, "").slice(0, 4);
+                                      setSalesItemsLibraryQuantities((prev) => {
+                                        const next = { ...prev };
+                                        if (digits) next[itemKey] = digits;
+                                        else delete next[itemKey];
+                                        return next;
+                                      });
+                                    }}
+                                    inputMode="numeric"
+                                    // "Qty" until it's clicked into: blank then, ready for the number.
+                                    placeholder="Qty"
+                                    disabled={salesReadOnly}
+                                    aria-label={`How many ${item.name} to add`}
+                                    className="h-7 w-11 rounded-[8px] border px-1 text-center text-[12px] font-medium outline-none focus:placeholder:text-transparent"
+                                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                                  />
+                                </div>
                                 <button
                                   type="button"
                                   onClick={(event) => {
                                     event.stopPropagation();
-                                    setExpandedSalesItemDescriptions((prev) => ({
-                                      ...prev,
-                                      [itemKey]: !(prev[itemKey] ?? false),
-                                    }));
+                                    setOpenSalesItemDescriptions((prev) =>
+                                      prev.includes(itemKey)
+                                        ? prev.filter((key) => key !== itemKey)
+                                        : [...prev, itemKey].slice(-SALES_ITEMS_LIBRARY_MAX_OPEN_DESCRIPTIONS),
+                                    );
                                   }}
                                   className="inline-flex w-8 shrink-0 items-center justify-center"
                                   style={{ backgroundColor: "transparent" }}
                                   title={descriptionExpanded ? "Hide description" : "Show description"}
                                 >
-                                  <TintedAngleDownIcon color="var(--text-muted)" size={12} expanded={descriptionExpanded} />
+                                  <TintedAngleDownIcon color="var(--text-main)" size={12} expanded={descriptionExpanded} />
                                 </button>
                               </div>
-                              {descriptionExpanded ? (
-                                <div className="border-t px-3 py-2 text-[11px] leading-5" style={{ borderTopColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}>
-                                  {hasDescription ? item.description : "No description"}
+                              {/* Its description slides open / shut under it, as the categories do. */}
+                              <div className="grid" style={{ gridTemplateRows: descriptionExpanded ? "1fr" : "0fr", transition: SALES_ITEMS_LIBRARY_SLIDE }} inert={!descriptionExpanded}>
+                                <div className="min-h-0 overflow-hidden">
+                                  <div className="whitespace-pre-wrap border-t px-3 py-2 text-[11px] leading-5 [overflow-wrap:anywhere]" style={{ borderTopColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}>
+                                    {hasDescription ? item.description : "No description"}
+                                  </div>
                                 </div>
-                              ) : null}
+                              </div>
                             </div>
                           );
                         })}
+                            </div>
+                          </div>
+                        </div>
+                        );
+                        })}
                       </div>
-                    ) : null}
+                    </div>
                   </section>
                 );
               }) : (
-                <div className="rounded-[14px] border border-dashed px-4 py-10 text-center text-[12px]" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}>No items match your search.</div>
+                <div className="rounded-[14px] border border-dashed px-4 py-10 text-center text-[12px]" style={{ ...salesItemsLibraryBubbleStyle, color: "var(--text-muted)" }}>No items match your search.</div>
               )}
             </div>
+          </section>
+        ) : null}
+        {isSalesItemsLibraryOpen ? (
+          <div className="hidden xl:block">
+            <GlassScrollbarThumb scrollRef={salesItemsLibraryScrollRef} side="left" />
           </div>
-        </section>
-
-        <section
-          className="flex min-h-[calc(100svh-96px)] flex-col overflow-hidden rounded-[18px] border"
-          style={{
-            borderColor: "var(--glass-border)",
-            backgroundColor: "var(--glass-bg-strong)",
-            backdropFilter: "blur(20px) saturate(180%)",
-            WebkitBackdropFilter: "blur(20px) saturate(180%)",
-            boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
-          }}
-        >
-          <div
-            className="flex h-[56px] shrink-0 items-center justify-between border-b px-4"
-            style={{ borderBottomColor: "var(--glass-border)", backgroundColor: isDarkMode ? "rgba(255,255,255,0.04)" : "rgba(15,23,42,0.025)" }}
+        ) : null}
+        {/* Desktop: the Summary floats down the right, as the item library does down the left — its counts, each list
+            and its buttons a bubble of their own, scrolling on its own — shown / hidden from the bar's Summary toggle,
+            sliding in and out from the right. 40px wider than its bubbles (on the left: room for their shadows),
+            see-through to the pointer there. */}
+        {isSalesItemsSummaryOpen ? (
+          <section
+            ref={salesItemsSummaryScrollRef}
+            className="hide-native-scrollbar pointer-events-none hidden min-h-0 overflow-y-auto xl:block"
+            style={{ position: "fixed", right: 0, top: 0, width: 400, height: "100svh", zIndex: 40 }}
           >
-            <p className="text-[14px] font-semibold tracking-[1px]" style={{ color: "var(--text-main)" }}>ROOMS</p>
-            <button
-              type="button"
-              disabled={salesReadOnly}
-              onClick={(e) => { itemsAddRoomOriginElRef.current = e.currentTarget; setRoomModalOrigin(captureGlassModalOrigin(e)); setIsItemsAddRoomModalOpen(true); }}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] border text-white hover:brightness-95 disabled:opacity-55"
-              style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
-              title="Add Room"
-            >
-              <img
-                src="/plus.png"
-                alt="Add Room"
-                className="block object-contain"
-                style={{ width: 17, height: 17, filter: "brightness(0) invert(1)" }}
-                onError={(e) => {
-                  e.currentTarget.style.display = "none";
-                }}
-              />
-            </button>
-          </div>
-          <div
-            className="glass-scroll min-h-0 flex-1 overflow-x-auto overflow-y-hidden p-4"
-            onWheel={(e) => {
-              if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
-              e.currentTarget.scrollLeft += e.deltaY;
-              e.preventDefault();
-            }}
-          >
-            {salesItemsBoardRooms.length > 0 ? (
-              <div className="flex h-full items-stretch gap-3">
-                {salesItemsBoardRooms.map((room) => renderSalesItemsRoomCard(room, { interactive: true }))}
+            <div style={{ height: 105 }} />
+            <div className="pointer-events-auto ml-auto space-y-2 p-3" style={{ width: 360 }}>
+              <div className="grid grid-cols-2 gap-2">
+                {([
+                  ["Rooms", salesItemsBoardRooms.length],
+                  ["Items", salesItemsTotalSelected],
+                ] as const).map(([label, value]) => (
+                  <div
+                    key={`summary_stat_${label}`}
+                    className="rounded-[14px] border px-4 py-3"
+                    style={{ ...salesItemsLibraryBubbleStyle, ...salesItemsSummaryBubbleAnimation(`summary:stat:${label}`) }}
+                  >
+                    <p className="text-[11px] font-bold uppercase tracking-[0.8px]" style={{ color: "var(--text-muted)" }}>{label}</p>
+                    <p className="mt-1 text-[28px] font-extrabold leading-tight" style={{ color: "var(--brand-strong)" }}>{value}</p>
+                  </div>
+                ))}
               </div>
-            ) : (
-              <div
-                className="flex h-full min-h-[420px] items-center justify-center rounded-[16px] border border-dashed px-6 text-center text-[13px]"
-                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
-              >
-                Add a room to start assigning items to spaces like Kitchen, Bathroom, or Laundry.
+              {renderSalesItemsSummaryListBubble(
+                "rooms",
+                "Items per room",
+                salesItemsBoardRooms.map((room) => ({
+                  key: `summary_room_${room.id}`,
+                  label: room.name,
+                  value: room.items.reduce((sum, item) => sum + item.quantity, 0),
+                })),
+                "No rooms yet.",
+              )}
+              {renderSalesItemsSummaryListBubble(
+                "categories",
+                "Category breakdown",
+                salesItemsCategoryBreakdown.map((row) => ({
+                  key: `summary_cat_${row.categoryName}`,
+                  label: row.categoryName,
+                  value: row.quantity,
+                  color: row.categoryColor,
+                })),
+                "No items selected yet.",
+              )}
+              {/* Clear Room / Clear All: side by side, each a bubble of its own (no container round them). */}
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  disabled={salesReadOnly || !activeSalesItemsRoom}
+                  onClick={(e) => { clearSalesItemsConfirmOriginElRef.current = e.currentTarget; setClearSalesItemsConfirmOrigin(captureGlassModalOrigin(e)); setClearSalesItemsConfirmKind("room"); }}
+                  className="h-10 rounded-[14px] border px-3 text-[12px] font-bold disabled:opacity-60"
+                  style={{ ...salesItemsLibraryBubbleStyle, ...salesItemsSummaryBubbleAnimation("summary:clear-room"), color: "var(--text-main)" }}
+                >
+                  Clear Room
+                </button>
+                <button
+                  type="button"
+                  disabled={salesReadOnly}
+                  onClick={(e) => { clearSalesItemsConfirmOriginElRef.current = e.currentTarget; setClearSalesItemsConfirmOrigin(captureGlassModalOrigin(e)); setClearSalesItemsConfirmKind("all"); }}
+                  className="h-10 rounded-[14px] border px-3 text-[12px] font-bold disabled:opacity-60"
+                  style={{
+                    ...salesItemsSummaryBubbleAnimation("summary:clear-all"),
+                    borderColor: "var(--danger-border)",
+                    backgroundColor: "var(--danger-soft)",
+                    color: "var(--danger-strong)",
+                    boxShadow: "var(--shadow-glass)",
+                  }}
+                >
+                  Clear All
+                </button>
               </div>
-            )}
-          </div>
-        </section>
-
-        <section
-          className="flex min-h-[calc(100svh-96px)] flex-col overflow-hidden rounded-[18px] border"
-          style={{
-            borderColor: "var(--glass-border)",
-            backgroundColor: "var(--glass-bg-strong)",
-            backdropFilter: "blur(20px) saturate(180%)",
-            WebkitBackdropFilter: "blur(20px) saturate(180%)",
-            boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
-          }}
-        >
-          <div
-            className="flex h-[56px] shrink-0 items-center border-b px-4"
-            style={{ borderBottomColor: "var(--glass-border)", backgroundColor: isDarkMode ? "rgba(255,255,255,0.04)" : "rgba(15,23,42,0.025)" }}
-          >
-            <p className="text-[14px] font-semibold tracking-[1px]" style={{ color: "var(--text-main)" }}>SUMMARY</p>
-          </div>
-          <div className="glass-scroll min-h-0 flex-1 overflow-y-auto p-4">
-            <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="rounded-[14px] p-3" style={{ backgroundColor: "var(--panel-muted)" }}><p className="text-[11px] font-bold uppercase tracking-[0.8px]" style={{ color: "var(--text-muted)" }}>Rooms</p><p className="mt-2 text-[28px] font-extrabold" style={{ color: "var(--brand-strong)" }}>{salesItemsBoardRooms.length}</p></div>
-                <div className="rounded-[14px] p-3" style={{ backgroundColor: "var(--panel-muted)" }}><p className="text-[11px] font-bold uppercase tracking-[0.8px]" style={{ color: "var(--text-muted)" }}>Items</p><p className="mt-2 text-[28px] font-extrabold" style={{ color: "var(--brand-strong)" }}>{salesItemsTotalSelected}</p></div>
-              </div>
-              <div className="border-t pt-3" style={{ borderColor: "var(--glass-border)" }}>
-                <p className="text-[11px] font-bold uppercase tracking-[0.8px]" style={{ color: "var(--text-muted)" }}>Items Per Room</p>
-                <div className="mt-2 space-y-1.5">
-                  {salesItemsBoardRooms.map((room) => (
-                    <div key={`room_count_${room.id}`} className="flex items-center justify-between gap-3">
-                      <span className="truncate text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>{room.name}</span>
-                      <span className="text-[12px] font-bold" style={{ color: "var(--text-main)" }}>{room.items.reduce((sum, item) => sum + item.quantity, 0)}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <div className="border-t pt-3" style={{ borderColor: "var(--glass-border)" }}>
-                <p className="text-[11px] font-bold uppercase tracking-[0.8px]" style={{ color: "var(--text-muted)" }}>Category Breakdown</p>
-                <div className="mt-2 space-y-1.5">
-                  {salesItemsCategoryBreakdown.length > 0 ? salesItemsCategoryBreakdown.map((row) => (
-                    <div key={`desktop_cat_breakdown_${row.categoryName}`} className="flex items-center justify-between gap-3">
-                      <div className="inline-flex min-w-0 items-center gap-2">
-                        <span className="h-3 w-3 rounded-full" style={{ backgroundColor: row.categoryColor }} />
-                        <span className="truncate text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>{row.categoryName}</span>
-                      </div>
-                      <span className="text-[12px] font-bold" style={{ color: "var(--text-main)" }}>{row.quantity}</span>
-                    </div>
-                  )) : <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>No items selected yet.</p>}
-                </div>
+              {/* Add Room: the Summary's whole width, green as the app's + buttons — in a wrapper that clips (well clear of
+                  its shadow), so its pop-up landing back in it un-clips that, not the Summary's scroller. */}
+              <div className="overflow-clip [overflow-clip-margin:40px]">
+                <button
+                  type="button"
+                  disabled={salesReadOnly}
+                  onClick={(e) => { itemsAddRoomOriginElRef.current = e.currentTarget; setRoomModalOrigin(captureGlassModalOrigin(e)); setIsItemsAddRoomModalOpen(true); }}
+                  className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-[14px] border text-[14px] font-bold text-white transition hover:brightness-95 disabled:opacity-60"
+                  style={{
+                    ...salesItemsSummaryBubbleAnimation("summary:add-room"),
+                    backgroundImage: "var(--success-gradient)",
+                    borderColor: "var(--success-strong)",
+                    boxShadow: "var(--shadow-glass)",
+                  }}
+                >
+                  <Plus size={17} strokeWidth={2.5} />
+                  Add Room
+                </button>
               </div>
             </div>
+          </section>
+        ) : null}
+        {isSalesItemsSummaryOpen ? (
+          <div className="hidden xl:block">
+            <GlassScrollbarThumb scrollRef={salesItemsSummaryScrollRef} />
           </div>
-          <div className="border-t p-4" style={{ borderTopColor: "var(--glass-border)" }}>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                disabled={salesReadOnly || !activeSalesItemsRoom}
-                onClick={(e) => { clearSalesItemsConfirmOriginElRef.current = e.currentTarget; setClearSalesItemsConfirmOrigin(captureGlassModalOrigin(e)); setClearSalesItemsConfirmKind("room"); }}
-                className="h-10 rounded-[10px] border px-3 text-[12px] font-bold disabled:opacity-60"
-                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
-              >
-                Clear Room
-              </button>
-              <button
-                type="button"
-                disabled={salesReadOnly}
-                onClick={(e) => { clearSalesItemsConfirmOriginElRef.current = e.currentTarget; setClearSalesItemsConfirmOrigin(captureGlassModalOrigin(e)); setClearSalesItemsConfirmKind("all"); }}
-                className="h-10 rounded-[10px] border px-3 text-[12px] font-bold disabled:opacity-60"
-                style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
-              >
-                Clear All
-              </button>
-            </div>
-          </div>
-        </section>
-      </div>
+        ) : null}
       {salesItemsRoomModalPortal}
       {salesItemsLibraryModalPortal}
       {salesItemsRoomDeleteConfirmPortal}
       {salesItemsClearConfirmPortal}
       {salesItemsRemoveItemConfirmPortal}
+      {salesItemsCustomPricePortal}
       <DragGhostLayer controller={salesItemsDragGhost} />
     </>
   );
@@ -33203,7 +34540,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         </section>
 
         <section
-          className="overflow-hidden rounded-[18px] border xl:max-w-[340px]"
+          className="overflow-hidden rounded-[18px] border xl:w-max xl:min-w-[340px] xl:max-w-full"
           style={{
             borderColor: "var(--glass-border)",
             backgroundColor: "var(--glass-bg-strong)",
@@ -33212,13 +34549,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
           }}
         >
-          {/* xl:max-w caps this section instead of letting it stretch to fill the whole 1fr track
-              (roughly matching ROOMS' own 430px, for a balanced two-box look) — but the grid cell
-              ITSELF stays a single full 1fr (see this grid's own comment on the removed phantom
-              second 1fr column), so this only ever starts shrinking once the viewport genuinely
-              can't fit it, not artificially early from splitting space with an empty column that
-              isn't there anymore. Only at xl: — below that breakpoint the grid is a single stacked
-              column and this should stay full width like everything else in it. */}
+          {/* At xl: as wide as its widest product name needs (each name on one line), never under 340px,
+              and only wrapping once it would run past the whole 1fr track it sits in. Below xl: the grid is a single
+              stacked column and this stays full width like everything else in it. */}
           <div
             className="flex h-[50px] items-center border-b px-4"
             style={{ borderBottomColor: "var(--glass-border)", backgroundColor: isDarkMode ? "rgba(255,255,255,0.04)" : "rgba(15,23,42,0.025)" }}
@@ -46586,9 +47919,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               sticky div used to reserve on its own. */}
           <div
             data-app-top-bar="true"
-            className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
+            className="pointer-events-none fixed left-0 right-0 top-0 z-[90] h-[56px] xl:h-[105px]"
             style={{
-              height: 56,
               backgroundColor: "var(--glass-bg-strong)",
               backdropFilter: "blur(14px) saturate(220%)",
               WebkitBackdropFilter: "blur(14px) saturate(220%)",
@@ -46636,7 +47968,52 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           {/* Top padding = the 56px bar + the same gap as the sides, so the containers sit as far
               below the bar as they do from the bottom of the screen (desktop's three columns fill
               the screen minus 96px: 56 bar + 20 + 20). */}
-          <div className="min-h-0 flex-1 overflow-auto px-3 pb-3 pt-[68px] sm:px-4 sm:pb-4 sm:pt-[72px] md:px-5 md:pb-5 md:pt-[76px]">
+          {/* Desktop: a band under the bar (its backdrop runs behind it) with the Item Library toggle on the left, the
+              Summary toggle on the right, and a line across under it — as Nesting's Visibility. */}
+          <div className="pointer-events-none fixed inset-x-0 z-[95] hidden h-px xl:block" style={{ top: 56 + 49, backgroundColor: "var(--glass-border)" }} />
+          <button
+            type="button"
+            onClick={toggleSalesItemsLibrary}
+            className="fixed z-[95] hidden items-center justify-center gap-1.5 text-[15px] font-bold transition hover:brightness-95 xl:flex"
+            style={{
+              left: 0,
+              top: 56,
+              width: 360,
+              height: 49,
+              color: isSalesItemsLibraryOpen && !isSalesItemsLibraryClosing ? "var(--brand-strong)" : "var(--text-main)",
+            }}
+          >
+            Item Library
+            <ChevronDown
+              size={13}
+              style={{
+                transform: isSalesItemsLibraryOpen && !isSalesItemsLibraryClosing ? "rotate(-90deg)" : "rotate(90deg)",
+                transition: "transform 140ms ease",
+              }}
+            />
+          </button>
+          <button
+            type="button"
+            onClick={toggleSalesItemsSummary}
+            className="fixed z-[95] hidden items-center justify-center gap-1.5 text-[15px] font-bold transition hover:brightness-95 xl:flex"
+            style={{
+              right: 0,
+              top: 56,
+              width: 360,
+              height: 49,
+              color: isSalesItemsSummaryOpen && !isSalesItemsSummaryClosing ? "var(--brand-strong)" : "var(--text-main)",
+            }}
+          >
+            Summary
+            <ChevronDown
+              size={13}
+              style={{
+                transform: isSalesItemsSummaryOpen && !isSalesItemsSummaryClosing ? "rotate(90deg)" : "rotate(-90deg)",
+                transition: "transform 140ms ease",
+              }}
+            />
+          </button>
+          <div className="min-h-0 flex-1 overflow-auto px-3 pb-3 pt-[68px] sm:px-4 sm:pb-4 sm:pt-[72px] md:px-5 md:pb-5 md:pt-[76px] xl:overflow-hidden xl:pt-[117px]">
             {salesItemsBoardContent}
           </div>
         </div>
@@ -52987,7 +54364,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           "--project-tab-pill-y": `${projectTabPill.top}px`,
                           "--project-tab-pill-w": `${projectTabPill.width}px`,
                           "--project-tab-pill-h": `${projectTabPill.height}px`,
-                          "--project-tab-pill-mask": projectTabPillMask(projectTabPill.width, projectTabPill.height),
                           "--project-tab-magnify": PROJECT_TAB_MAGNIFY,
                         } as React.CSSProperties)
                       : undefined
@@ -54296,9 +55672,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   { label: "Initial Measure", icon: Ruler, key: "initial" as const },
                   { label: "Items", icon: ListChecks, key: "items" as const },
                   { label: "Quote", icon: DollarSign, key: "quote" as const },
-                  { label: "Upgrades", icon: ArrowLeftRight, key: "compare" as const },
                   { label: "Specifications", icon: ClipboardList, key: "specifications" as const },
+                  { label: "Upgrades", icon: ArrowLeftRight, key: "compare" as const },
                   { label: "Project Management", icon: HardHat, key: "projectManagement" as const },
+                  // The Calendar's events linked to this project (for those who can see the Calendar).
+                  ...(projectScheduleViewer.canViewCalendar ? [{ label: "Schedule", icon: CalendarDays, key: "schedule" as const }] : []),
                   // Once something's been shared with the client — same as the Quote/Specifications windows' button.
                   ...(specsShareStatus && project?.id ? [{ label: "Client Portal", icon: ExternalLink, key: "clientPortal" as const }] : []),
                 ].map((item) => {
@@ -54309,10 +55687,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     <button
                       type="button"
                       ref={item.key === "initial" ? initialMeasureTabButtonRef : undefined}
-                      disabled={item.key === "clientPortal" ? false : salesReadOnly}
+                      disabled={item.key === "clientPortal" || item.key === "schedule" ? false : salesReadOnly}
                       onClick={(e) => {
                         if (item.key === "clientPortal") {
                           if (project?.id) openClientHubInNewTab(project.id);
+                          return;
+                        }
+                        if (item.key === "schedule") {
+                          projectScheduleModalOriginElRef.current = e.currentTarget;
+                          setProjectScheduleModalOrigin(captureGlassModalOrigin(e));
+                          setIsProjectScheduleModalOpen(true);
                           return;
                         }
                         if (item.key === "projectManagement") {
@@ -54680,6 +56064,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 )}
               </div>
               {projectManagementModalPortal}
+              <ProjectScheduleModal
+                open={isProjectScheduleModalOpen}
+                origin={projectScheduleModalOrigin}
+                originElRef={projectScheduleModalOriginElRef}
+                onClose={() => setIsProjectScheduleModalOpen(false)}
+                companyId={String(project?.companyId || "")}
+                projectId={String(project?.id || "")}
+                calendarCategories={(companyDoc as Record<string, unknown> | null)?.calendarCategories}
+                viewer={projectScheduleViewer}
+              />
             </div>
           )}
 
@@ -54699,6 +56093,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   { label: "Nesting", icon: GitBranch, key: "nesting" as const },
                   { label: "CNC Cutlist", icon: Cpu, key: "cnc" as const },
                   { label: "Order", icon: ShoppingCart, key: "order" as const },
+                  // The Specifications the client confirmed, in a pop-up.
+                  { label: "Specifications", icon: ClipboardList, key: "specifications" as const },
                   { label: "Remedials", icon: Wrench, key: "remedials" as const },
                   { label: "Print", icon: Printer, key: "print" as const },
                   { label: "Import", icon: ImportIcon, key: "import" as const },
@@ -54708,7 +56104,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 ].map((item) => {
                   const Icon = item.icon;
                   const active =
-                    item.key === "unlock" || item.key === "print" || item.key === "remedials" || item.key === "import"
+                    item.key === "unlock" || item.key === "print" || item.key === "remedials" || item.key === "import" || item.key === "specifications"
                       ? false
                       : productionNav === item.key;
                   return (
@@ -54721,6 +56117,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             unlockEditModalOriginElRef.current = e.currentTarget;
                             setUnlockEditModalOrigin(captureGlassModalOrigin(e));
                             openUnlockEditModal();
+                            return;
+                          }
+                          if (item.key === "specifications") {
+                            productionSpecsModalOriginElRef.current = e.currentTarget;
+                            setProductionSpecsModalOrigin(captureGlassModalOrigin(e));
+                            setIsProductionSpecsModalOpen(true);
                             return;
                           }
                           if (item.key === "print") {
@@ -57653,6 +59055,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 {renderProductionNotesCard("sidebar")}
               </div>
             ))}
+
+          <ProductionSpecificationsModal
+            open={isProductionSpecsModalOpen}
+            origin={productionSpecsModalOrigin}
+            originElRef={productionSpecsModalOriginElRef}
+            onClose={() => setIsProductionSpecsModalOpen(false)}
+            project={project}
+          />
 
           {resolvedTab === "settings" && settingsAccess.view && (
             <div ref={projectTabContentRef} key={resolvedTab} className="-mx-4 -mb-4 md:-mx-5" style={{ backgroundColor: projectTabAreaBg, animation: projectTabSlideAnimation }}>

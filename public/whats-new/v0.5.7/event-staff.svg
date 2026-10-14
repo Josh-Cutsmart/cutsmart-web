@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" width="640" height="360" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title>Linking a project to an event adds its creator and assigned person as staff; more staff are added, and each gets the event's reminder</title>
+  <style>
+    .project { animation: project 7s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes project { 0%, 8% { opacity: 0; transform: translateX(-8px); } 13%, 94% { opacity: 1; transform: translateX(0); } 98%, 100% { opacity: 0; } }
+    .s1 { animation: s1 7s ease-out infinite both; }
+    @keyframes s1 { 0%, 16% { opacity: 0; transform: translateY(6px); } 20%, 94% { opacity: 1; transform: translateY(0); } 98%, 100% { opacity: 0; } }
+    .s2 { animation: s2 7s ease-out infinite both; }
+    @keyframes s2 { 0%, 20% { opacity: 0; transform: translateY(6px); } 24%, 94% { opacity: 1; transform: translateY(0); } 98%, 100% { opacity: 0; } }
+    .menu { transform-box: fill-box; transform-origin: 0 0; animation: menu 7s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes menu { 0%, 32% { opacity: 0; transform: scale(.94); } 36%, 44% { opacity: 1; transform: scale(1); } 47%, 100% { opacity: 0; transform: scale(.96); } }
+    .s3 { animation: s3 7s ease-out infinite both; }
+    @keyframes s3 { 0%, 46% { opacity: 0; transform: translateY(6px); } 50%, 94% { opacity: 1; transform: translateY(0); } 98%, 100% { opacity: 0; } }
+    .n1 { animation: n1 7s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    .n2 { animation: n2 7s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    .n3 { animation: n3 7s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes n1 { 0%, 58% { opacity: 0; transform: translateX(24px); } 63%, 92% { opacity: 1; transform: translateX(0); } 97%, 100% { opacity: 0; transform: translateX(0); } }
+    @keyframes n2 { 0%, 62% { opacity: 0; transform: translateX(24px); } 67%, 92% { opacity: 1; transform: translateX(0); } 97%, 100% { opacity: 0; transform: translateX(0); } }
+    @keyframes n3 { 0%, 66% { opacity: 0; transform: translateX(24px); } 71%, 92% { opacity: 1; transform: translateX(0); } 97%, 100% { opacity: 0; transform: translateX(0); } }
+    .cursor { animation: cursor 7s ease-in-out infinite both; }
+    @keyframes cursor {
+      0%, 22% { transform: translate(600px, 340px); opacity: 0; }
+      26% { opacity: 1; }
+      32%, 34% { transform: translate(118px, 284px); opacity: 1; }
+      42%, 45% { transform: translate(150px, 322px); opacity: 1; }
+      56%, 100% { transform: translate(600px, 340px); opacity: 0; }
+    }
+  </style>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#EEF3FB"/>
+      <stop offset="1" stop-color="#E1E9F7"/>
+    </linearGradient>
+    <filter id="pop" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#0F172A" flood-opacity=".16"/>
+    </filter>
+  </defs>
+  <rect width="640" height="360" fill="url(#bg)"/>
+
+  <!-- the event -->
+  <rect x="44" y="28" width="340" height="304" rx="22" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+  <text x="68" y="64" font-size="17" font-weight="700" fill="#0F172A">Site measure</text>
+  <text x="68" y="90" font-size="11.5" font-weight="500" fill="#334155">Tue 21 Oct · 9:00 am – 10:00 am</text>
+  <rect x="68" y="102" width="74" height="22" rx="11" fill="#DBEAFE" stroke="#93C5FD"/>
+  <circle cx="81" cy="113" r="4" fill="#2563EB"/>
+  <text x="90" y="117" font-size="10.5" font-weight="600" fill="#1D4ED8">Measures</text>
+  <g class="project">
+    <rect x="68" y="134" width="178" height="24" rx="12" fill="#F1F5F9"/>
+    <rect x="78" y="141" width="11" height="10" rx="2" fill="none" stroke="#334155" stroke-width="1.3"/>
+    <text x="96" y="150" font-size="10.5" font-weight="600" fill="#0F172A">Patel Kitchen &amp; Scullery</text>
+  </g>
+
+  <path d="M68 174 H360" stroke="#E2E8F0"/>
+  <text x="68" y="196" font-size="10.5" font-weight="700" letter-spacing=".8" fill="#0F172A">STAFF</text>
+  <g class="s1">
+    <circle cx="80" cy="218" r="11" fill="#2563EB"/>
+    <text x="80" y="222" text-anchor="middle" font-size="8.5" font-weight="700" fill="#FFFFFF">AM</text>
+    <text x="98" y="222" font-size="11.5" font-weight="500" fill="#0F172A">Alex Morgan</text>
+  </g>
+  <g class="s2">
+    <circle cx="216" cy="218" r="11" fill="#0F766E"/>
+    <text x="216" y="222" text-anchor="middle" font-size="8.5" font-weight="700" fill="#FFFFFF">LC</text>
+    <text x="234" y="222" font-size="11.5" font-weight="500" fill="#0F172A">Liam Chen</text>
+  </g>
+  <g class="s3">
+    <circle cx="80" cy="248" r="11" fill="#C2410C"/>
+    <text x="80" y="252" text-anchor="middle" font-size="8.5" font-weight="700" fill="#FFFFFF">MT</text>
+    <text x="98" y="252" font-size="11.5" font-weight="500" fill="#0F172A">Mere Tawhiri</text>
+  </g>
+  <rect x="68" y="272" width="96" height="26" rx="13" fill="#FFFFFF" stroke="#CBD5E1"/>
+  <text x="116" y="289" text-anchor="middle" font-size="10.5" font-weight="600" fill="#0F172A">+ Add staff</text>
+
+  <g class="menu">
+    <rect x="68" y="302" width="150" height="44" rx="12" fill="#FFFFFF" stroke="#E2E8F0" filter="url(#pop)"/>
+    <rect x="74" y="308" width="138" height="32" rx="8" fill="#EEF2FF"/>
+    <circle cx="90" cy="324" r="9" fill="#C2410C"/>
+    <text x="90" y="327.5" text-anchor="middle" font-size="7.5" font-weight="700" fill="#FFFFFF">MT</text>
+    <text x="106" y="328" font-size="11" font-weight="500" fill="#0F172A">Mere Tawhiri</text>
+  </g>
+
+  <!-- each one's reminder -->
+  <g class="n1">
+    <rect x="404" y="78" width="210" height="58" rx="16" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+    <circle cx="428" cy="107" r="11" fill="#2563EB"/>
+    <text x="428" y="111" text-anchor="middle" font-size="8.5" font-weight="700" fill="#FFFFFF">AM</text>
+    <text x="448" y="102" font-size="11" font-weight="700" fill="#0F172A">Site measure</text>
+    <text x="448" y="119" font-size="10" font-weight="500" fill="#334155">In 1 hour · Patel Kitchen</text>
+  </g>
+  <g class="n2">
+    <rect x="404" y="150" width="210" height="58" rx="16" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+    <circle cx="428" cy="179" r="11" fill="#0F766E"/>
+    <text x="428" y="183" text-anchor="middle" font-size="8.5" font-weight="700" fill="#FFFFFF">LC</text>
+    <text x="448" y="174" font-size="11" font-weight="700" fill="#0F172A">Site measure</text>
+    <text x="448" y="191" font-size="10" font-weight="500" fill="#334155">In 1 hour · Patel Kitchen</text>
+  </g>
+  <g class="n3">
+    <rect x="404" y="222" width="210" height="58" rx="16" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+    <circle cx="428" cy="251" r="11" fill="#C2410C"/>
+    <text x="428" y="255" text-anchor="middle" font-size="8.5" font-weight="700" fill="#FFFFFF">MT</text>
+    <text x="448" y="246" font-size="11" font-weight="700" fill="#0F172A">Site measure</text>
+    <text x="448" y="263" font-size="10" font-weight="500" fill="#334155">In 1 hour · Patel Kitchen</text>
+  </g>
+
+  <g class="cursor">
+    <path d="M0 0 l0 20 l5 -5 l4 9 l3.4 -1.5 l-4 -9 l7 0 z" fill="#0F172A" stroke="#FFFFFF" stroke-width="1.4" stroke-linejoin="round"/>
+  </g>
+</svg>

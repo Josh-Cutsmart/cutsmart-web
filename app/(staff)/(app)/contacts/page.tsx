@@ -154,15 +154,26 @@ function timeSinceLabel(value: string) {
   return remMonths > 0 ? `${years}y ${remMonths}m ago` : `${years}y ago`;
 }
 
+// Letters only: a "(", digit or other symbol where an initial would be is just left out — "Josh (MYKM)" is "J",
+// not "J(".
+function lettersOnly(text: string) {
+  return Array.from(text)
+    .filter((ch) => /\p{L}/u.test(ch))
+    .join("");
+}
+
 function contactInitials(name: string, email: string) {
   const words = String(name || "")
     .trim()
     .split(/\s+/)
     .filter(Boolean);
-  if (words.length >= 2) return `${words[0].charAt(0)}${words[words.length - 1].charAt(0)}`.toUpperCase();
-  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
-  const fromEmail = String(email || "").trim().charAt(0);
-  return fromEmail ? fromEmail.toUpperCase() : "?";
+  let initials = "";
+  if (words.length >= 2) initials = lettersOnly(`${words[0].charAt(0)}${words[words.length - 1].charAt(0)}`);
+  else if (words.length === 1) initials = lettersOnly(words[0].slice(0, 2));
+  if (initials) return initials.toUpperCase();
+  // None there: the name's first letter anywhere in it, else the email's.
+  const fallback = lettersOnly(String(name || "")).charAt(0) || lettersOnly(String(email || "")).charAt(0);
+  return fallback ? fallback.toUpperCase() : "?";
 }
 
 // Dark text on a light category colour, white on a dark one, so the big initials stay legible.
@@ -1765,10 +1776,13 @@ function ClientsPageInner() {
                                   className={`${isEditingProfile ? fieldInputEditClass : `${fieldReadonlyClass} ${mobileReadonlyLineClass}`} mt-1`}
                                 />
                               </label>
-                              {/* Mobile only, and not while editing: call this contact (several numbers -> pick which,
-                                  same glass menu as the header's). */}
+                              {/* Mobile only, and not while editing: text or call this contact (several numbers -> pick
+                                  which, same glass menu as the header's). */}
                               {!isEditingProfile ? (
-                                <div className="shrink-0">
+                                <div className="flex shrink-0 items-center gap-2">
+                                  <GlassActionMenu items={textItems} ariaLabel="Text" triggerClassName={mobileCompactRoundButtonClass} triggerStyle={containerIconButtonStyle} menuMinWidth={300}>
+                                    <MessageSquare size={18} />
+                                  </GlassActionMenu>
                                   <GlassActionMenu items={callItems} ariaLabel="Call" triggerClassName={mobileCompactRoundButtonClass} triggerStyle={containerIconButtonStyle} menuMinWidth={300}>
                                     <Phone size={18} />
                                   </GlassActionMenu>

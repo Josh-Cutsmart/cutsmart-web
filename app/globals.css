@@ -193,6 +193,17 @@ p {
   cursor: pointer;
 }
 
+/* Anything that can be dragged (draggable="true" — the Items window's library items and room items, and the like):
+ * the pointer over it, the closed hand while it's held — though an element setting its own cursor inline still wins.
+ * Once the browser's own drag has started, the cursor is the browser's. */
+.cs-app [draggable="true"]:not(:disabled) {
+  cursor: pointer;
+}
+
+.cs-app [draggable="true"]:not(:disabled):active {
+  cursor: grabbing;
+}
+
 .cs-app select,
 .cs-app textarea {
   border: 1px solid var(--panel-border);
@@ -534,10 +545,14 @@ body[data-theme="dark"].cs-app .notes-rich li {
     transition: none;
   }
 }
-/* The plain tabs, with the pill cut out of them. */
+
+/* The plain tabs, with the pill's box cut out of them. Drawn with gradients, not an image: a mask image loads on its
+ * own, and Chrome could leave the row unpainted until something else repainted it — on first opening a project, only
+ * the selected tab (the pill's copy) showed until a click. The names never reach the pill's rounded corners, so a
+ * square cut is as good as a rounded one. */
 .project-tab-strip > .project-tab-row {
-  -webkit-mask-image: var(--project-tab-pill-mask), linear-gradient(#000, #000);
-  mask-image: var(--project-tab-pill-mask), linear-gradient(#000, #000);
+  -webkit-mask-image: linear-gradient(#000, #000), linear-gradient(#000, #000);
+  mask-image: linear-gradient(#000, #000), linear-gradient(#000, #000);
   -webkit-mask-repeat: no-repeat;
   mask-repeat: no-repeat;
   -webkit-mask-size: var(--project-tab-pill-w) var(--project-tab-pill-h), 100% 100%;
@@ -669,8 +684,9 @@ html.cs-scroll-locked [data-app-scroll-root="true"] {
   overscroll-behavior: none;
 }
 /* The sidebar's resize handle (components/app-shell.tsx) sits on the very top layer, so it's never behind the page —
- * which would put it over a pop-up too. While one is open (every pop-up has a .glass-modal-backdrop), it's hidden. */
-body:has(.glass-modal-backdrop) [data-sidebar-resize-handle="true"] {
+ * which would put it over a pop-up too. While one is open (every pop-up has a .glass-modal-backdrop), or a full-screen
+ * window with no backdrop (marked data-full-screen-window — Item Categories, the layout builders), it's hidden. */
+body:has(.glass-modal-backdrop, [data-full-screen-window="true"]) [data-sidebar-resize-handle="true"] {
   display: none !important;
 }
 
@@ -1427,17 +1443,23 @@ textarea,
 }
 /* Hovering a card stops its bobbing (the animation's set inline on the card's wrapper, hence !important). */
 /* Kanban board columns (components/board-column-frame.tsx). The window a column is seen through: 48px
- * of room above and to the sides of it (for its shadow), everything above its last 16px, and in those
- * last 16px only the column's own shape — its 16px rounded bottom corners — so the column is cut off
- * along this window's bottom edge as if that were its own. lib/board-sticky-scroll.ts slides the
- * window so that edge stays on the bottom of the screen while the board scrolls into place. */
+ * of room above and to the sides of it (for its shadow), fading out over its last 48px to 16px; the
+ * column itself whole down to its last 16px, and in those only its own shape — its 16px rounded bottom
+ * corners — so the column is cut off along this window's bottom edge as if that were its own.
+ * lib/board-sticky-scroll.ts slides the window so that edge stays on the bottom of the screen while the
+ * board scrolls into place.
+ *
+ * Over that same stretch the cap's shadow (below) fades in as the column's own fades out, so the two
+ * always add up to the one shadow. They used to swap over at one row, with a hard edge each — and
+ * wherever that row fell between two pixels, both drew it: the shadow twice over, a faint dark line
+ * across the gaps between the columns. */
 .board-column-window {
-  -webkit-mask-image: linear-gradient(#000, #000), radial-gradient(circle at 100% 0, #000 15.5px, transparent 16px), radial-gradient(circle at 0 0, #000 15.5px, transparent 16px), linear-gradient(#000, #000);
-  mask-image: linear-gradient(#000, #000), radial-gradient(circle at 100% 0, #000 15.5px, transparent 16px), radial-gradient(circle at 0 0, #000 15.5px, transparent 16px), linear-gradient(#000, #000);
-  -webkit-mask-size: 100% calc(100% - 16px), 16px 16px, 16px 16px, calc(100% - 128px) 16px;
-  mask-size: 100% calc(100% - 16px), 16px 16px, 16px 16px, calc(100% - 128px) 16px;
-  -webkit-mask-position: 0 0, 48px 100%, calc(100% - 48px) 100%, 64px 100%;
-  mask-position: 0 0, 48px 100%, calc(100% - 48px) 100%, 64px 100%;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 48px), transparent calc(100% - 16px)), linear-gradient(#000, #000), radial-gradient(circle at 100% 0, #000 15.5px, transparent 16px), radial-gradient(circle at 0 0, #000 15.5px, transparent 16px), linear-gradient(#000, #000);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 48px), transparent calc(100% - 16px)), linear-gradient(#000, #000), radial-gradient(circle at 100% 0, #000 15.5px, transparent 16px), radial-gradient(circle at 0 0, #000 15.5px, transparent 16px), linear-gradient(#000, #000);
+  -webkit-mask-size: 100% 100%, calc(100% - 96px) 40px, 16px 16px, 16px 16px, calc(100% - 128px) 16px;
+  mask-size: 100% 100%, calc(100% - 96px) 40px, 16px 16px, 16px 16px, calc(100% - 128px) 16px;
+  -webkit-mask-position: 0 0, 48px calc(100% - 16px), 48px 100%, calc(100% - 48px) 100%, 64px 100%;
+  mask-position: 0 0, 48px calc(100% - 16px), 48px 100%, calc(100% - 48px) 100%, 64px 100%;
   -webkit-mask-repeat: no-repeat;
   mask-repeat: no-repeat;
 }
@@ -1460,10 +1482,13 @@ textarea,
   transition: none;
 }
 
-/* ...and the shadow along that bottom edge, which the window cuts off the column's own: only the part
- * from the column's last 16px down. */
+/* ...and the shadow along that bottom edge, which the window cuts off the column's own: the cap is the
+ * column's box with 48px of room at the sides and below for its shadow; it fades in from the column's
+ * last 48px to its last 16px (the window's fade, the other way), nothing above that (the cap reaches up
+ * past the column's top while it's cut off). */
 .board-column-cap {
-  clip-path: inset(calc(100% - 16px) -48px -48px -48px);
+  -webkit-mask-image: linear-gradient(to bottom, transparent calc(100% - 96px), #000 calc(100% - 64px));
+  mask-image: linear-gradient(to bottom, transparent calc(100% - 96px), #000 calc(100% - 64px));
 }
 
 /* The top tab bar's tabs (components/global-app-tabs-bar.tsx): a little darker with a faint blue

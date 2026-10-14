@@ -129,8 +129,24 @@ function ModalPortal({ children }: { children: React.ReactNode }) {
   return createPortal(children, document.body);
 }
 
-type ItemCategoryItemRow = { name: string; description: string; subcategory: string; price: string; markupPercent: string };
-type ItemCategoryRow = { name: string; color: string; subcategories: string; items: ItemCategoryItemRow[] };
+// customPrice: no set price — staff enter one each time it's added to a room (Design › Items).
+type ItemCategoryItemRow = {
+  name: string;
+  description: string;
+  subcategory: string;
+  price: string;
+  markupPercent: string;
+  customPrice?: boolean;
+};
+// subcategoryColors: each sub-category's own colour (by lower-case name) — its items' circle in Design › Items; none:
+// the category's.
+type ItemCategoryRow = {
+  name: string;
+  color: string;
+  subcategories: string;
+  subcategoryColors: Record<string, string>;
+  items: ItemCategoryItemRow[];
+};
 // Company-wide categories for Contacts-page contacts — kept here (not per-user) so staff stay
 // consistent about what categories exist. Matched by name (not a synthetic id), same loose
 // convention Part Types/Item Categories already use.
@@ -933,9 +949,15 @@ function normalizeItemCategories(raw: unknown): ItemCategoryRow[] {
     .filter((item) => item && typeof item === "object")
     .map((item) => {
       const row = item as Record<string, unknown>;
-      const subs = Array.isArray(row.subcategories)
-        ? (row.subcategories as Array<Record<string, unknown>>).map((s) => toStr(s?.name ?? s)).filter(Boolean)
-        : [];
+      const subRows = Array.isArray(row.subcategories) ? (row.subcategories as Array<Record<string, unknown> | string>) : [];
+      const subs = subRows.map((s) => toStr(typeof s === "string" ? s : s?.name)).filter(Boolean);
+      const subcategoryColors: Record<string, string> = {};
+      for (const sub of subRows) {
+        if (!sub || typeof sub !== "object") continue;
+        const subName = toStr(sub.name).toLowerCase();
+        const subColor = toStr(sub.color);
+        if (subName && subColor) subcategoryColors[subName] = subColor;
+      }
       const items = Array.isArray(row.items)
         ? (row.items as Array<Record<string, unknown>>).map((it) => ({
             name: toStr(it?.name),
@@ -943,12 +965,14 @@ function normalizeItemCategories(raw: unknown): ItemCategoryRow[] {
             subcategory: toStr(it?.subcategory),
             price: toStr(it?.price),
             markupPercent: toStr(it?.markupPercent),
+            customPrice: Boolean(it?.customPrice),
           }))
         : [];
       return {
         name: toStr(row.name),
         color: toStr(row.color, "#7D99B3"),
         subcategories: subs.join(", "),
+        subcategoryColors,
         items,
       };
     })
@@ -2789,7 +2813,9 @@ export default function CompanySettingsPage() {
         if (i !== index) return row;
         const current = parseSubcategoryNames(row.subcategories);
         const next = current.filter((v) => v.toLowerCase() !== String(name || "").toLowerCase());
-        return { ...row, subcategories: next.join(", ") };
+        const subcategoryColors = { ...row.subcategoryColors };
+        delete subcategoryColors[String(name || "").toLowerCase()];
+        return { ...row, subcategories: next.join(", "), subcategoryColors };
       }),
     );
   };
@@ -3524,7 +3550,7 @@ export default function CompanySettingsPage() {
             .split(",")
             .map((v) => v.trim())
             .filter(Boolean)
-            .map((nameVal) => ({ name: nameVal, color: toStr(row.color, "#7D99B3") }));
+            .map((nameVal) => ({ name: nameVal, color: toStr(row.subcategoryColors?.[nameVal.toLowerCase()], toStr(row.color, "#7D99B3")) }));
           const items = (row.items ?? [])
             .map((item) => {
               const itemName = toStr(item.name);
@@ -3535,6 +3561,7 @@ export default function CompanySettingsPage() {
                 subcategory: toStr(item.subcategory),
                 price: ensureDollarFormat(toStr(item.price, "$0.00")),
                 markupPercent: toStr(item.markupPercent, "0"),
+                ...(item.customPrice ? { customPrice: true } : {}),
               };
             })
             .filter(Boolean);
@@ -7063,21 +7090,24 @@ export default function CompanySettingsPage() {
                   ) : null}
                   {shouldRenderItemCategoriesModal ? (
                     <ModalPortal>
-                    <div className="fixed inset-0 z-[1750] flex items-center justify-center px-4 py-4">
-                      <button
-                        type="button"
-                        aria-label="Close item categories"
-                        onClick={() => setIsItemCategoriesModalOpen(false)}
-                        className="glass-modal-backdrop absolute inset-0"
-                      />
-                      <div ref={itemCategoriesModalPanelRef} className="glass-modal-panel relative z-[1751] flex h-[min(760px,calc(100svh-32px))] w-full max-w-[1080px] flex-col overflow-hidden">
-                        <div className="glass-modal-header flex items-center justify-between px-4 py-3">
-                          <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>Item categories</p>
-                          <button type="button" onClick={() => setIsItemCategoriesModalOpen(false)} className={dangerIconButtonClass} aria-label="Close">
-                            <X size={16} />
+                    {/* Full screen, like the layout builders — room for every category's items and their columns. */}
+                    <div ref={itemCategoriesModalPanelRef} data-full-screen-window="true" className="fixed inset-0 z-[1750] flex flex-col bg-[var(--bg-app)]">
+                        <div className="glass-page-header flex h-[56px] shrink-0 items-center justify-between gap-2 px-4 md:px-5">
+                          <div className="inline-flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                            <FolderTree size={14} className="shrink-0" />
+                            <span className="truncate">Item Categories</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setIsItemCategoriesModalOpen(false)}
+                            className="inline-flex h-9 shrink-0 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+                            style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+                          >
+                            <ArrowLeft size={14} />
+                            <span className="max-sm:sr-only">Back</span>
                           </button>
                         </div>
-                        <div className="flex-1 overflow-y-auto max-lg:overflow-x-auto">
+                        <div className="glass-scroll m-3 min-h-0 flex-1 overflow-y-auto rounded-[10px] border max-lg:overflow-x-auto" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}>
                           {/* Below desktop this spreadsheet-style editor keeps its desktop column widths and
                               scrolls sideways inside the pop-up, rather than squeezing the columns apart. */}
                           <div className="max-lg:min-w-[880px]">
@@ -7179,6 +7209,17 @@ export default function CompanySettingsPage() {
                                         key={`${idx}_${sub}`}
                                         className={chipClass}
                                       >
+                                        {/* Its own colour (its items' circle in Design › Items) — the category's to start with. */}
+                                        <ColorCircle
+                                          size={16}
+                                          title="Sub-category colour"
+                                          value={row.subcategoryColors[sub.toLowerCase()] || row.color || "#7D99B3"}
+                                          onChange={(hex) =>
+                                            setItemCategories((prev) =>
+                                              prev.map((v, i) => (i === idx ? { ...v, subcategoryColors: { ...v.subcategoryColors, [sub.toLowerCase()]: hex } } : v)),
+                                            )
+                                          }
+                                        />
                                         {sub}
                                         <button
                                           type="button"
@@ -7200,7 +7241,7 @@ export default function CompanySettingsPage() {
                                     style={{ backgroundColor: `color-mix(in srgb, ${row.color || "#7D99B3"} 8%, transparent)`, borderColor: "var(--glass-border)" }}
                                   >
                                     <div
-                                      className="grid grid-cols-[30px_30px_1fr_2.2fr_130px_110px_100px_110px] items-center gap-2 border-b px-4 py-1.5 text-[10.5px] font-bold uppercase tracking-[0.6px]"
+                                      className="grid grid-cols-[30px_30px_1fr_2.2fr_130px_150px_100px_110px] items-center gap-2 border-b px-4 py-1.5 text-[10.5px] font-bold uppercase tracking-[0.6px]"
                                       style={{ borderColor: "var(--glass-border)", color: "var(--text-muted)" }}
                                     >
                                       <p></p>
@@ -7219,7 +7260,7 @@ export default function CompanySettingsPage() {
                                         <div
                                           key={`${idx}_item_${itemIdx}`}
                                           id={`settings_item_category_${idx}_item_${itemIdx}`}
-                                          className={`grid grid-cols-[30px_30px_1fr_2.2fr_130px_110px_100px_110px] items-center gap-2 px-4 py-1.5 ${isLastItem ? "" : "border-b"}`}
+                                          className={`group/itemrow grid grid-cols-[30px_30px_1fr_2.2fr_130px_150px_100px_110px] items-center gap-2 px-4 py-1.5 ${isLastItem ? "" : "border-b"}`}
                                           style={{
                                             borderColor: "var(--glass-border)",
                                             opacity: itemCategoryItemDrag?.catIndex === idx && itemCategoryItemDrag.itemIndex === itemIdx ? 0.45 : 1,
@@ -7270,7 +7311,7 @@ export default function CompanySettingsPage() {
                                             type="button"
                                             onClick={(e) => {
                                               // A blank new one (nothing filled in) just goes; anything else asks first.
-                                              const filled = [itemRow.name, itemRow.description, itemRow.price, itemRow.markupPercent].some((v) => String(v ?? "").trim());
+                                              const filled = Boolean(itemRow.customPrice) || [itemRow.name, itemRow.description, itemRow.price, itemRow.markupPercent].some((v) => String(v ?? "").trim());
                                               if (!filled) {
                                                 removeItemCategoryItem(idx, itemIdx);
                                                 return;
@@ -7307,13 +7348,39 @@ export default function CompanySettingsPage() {
                                             ariaLabel="Sub-category"
                                             triggerClassName={`${glassFieldSmClass} justify-between`}
                                           />
-                                          <input
-                                            value={itemRow.price}
-                                            onChange={(e) => updateItemCategoryItem(idx, itemIdx, { price: e.target.value })}
-                                            onBlur={(e) => updateItemCategoryItem(idx, itemIdx, { price: ensureDollarFormat(e.target.value) })}
-                                            className={gridCellInputClass}
-                                            placeholder={formatMoney(0, companyCurrency)}
-                                          />
+                                          {/* Its price — or, switched to Custom, none: staff enter one each time it's added to a room
+                                              (Design › Items asks), and its markup goes on top of what they enter. */}
+                                          <div className="relative min-w-0">
+                                            <input
+                                              value={itemRow.customPrice ? "" : itemRow.price}
+                                              readOnly={Boolean(itemRow.customPrice)}
+                                              tabIndex={itemRow.customPrice ? -1 : undefined}
+                                              onChange={(e) => updateItemCategoryItem(idx, itemIdx, { price: e.target.value })}
+                                              onBlur={(e) => {
+                                                if (!itemRow.customPrice) updateItemCategoryItem(idx, itemIdx, { price: ensureDollarFormat(e.target.value) });
+                                              }}
+                                              className={gridCellInputClass}
+                                              style={{ paddingRight: 66 }}
+                                              placeholder={itemRow.customPrice ? "" : formatMoney(0, companyCurrency)}
+                                            />
+                                            {/* On: "Custom price", in the brand colour. Off: "Custom", showing while the row's hovered. */}
+                                            <button
+                                              type="button"
+                                              onClick={() => updateItemCategoryItem(idx, itemIdx, { customPrice: !itemRow.customPrice })}
+                                              aria-pressed={Boolean(itemRow.customPrice)}
+                                              title={itemRow.customPrice ? "Custom price — staff enter the price each time it's added. Click to set a price instead." : "Make this a custom price — staff enter the price each time it's added"}
+                                              className={`absolute top-1/2 -translate-y-1/2 rounded-full border px-2 py-[1px] text-[10.5px] font-semibold transition hover:brightness-95 ${
+                                                itemRow.customPrice ? "left-1" : "right-1 opacity-0 focus-visible:opacity-100 group-hover/itemrow:opacity-100"
+                                              }`}
+                                              style={
+                                                itemRow.customPrice
+                                                  ? { borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }
+                                                  : { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }
+                                              }
+                                            >
+                                              {itemRow.customPrice ? "Custom price" : "Custom"}
+                                            </button>
+                                          </div>
                                           <input
                                             value={itemRow.markupPercent}
                                             onChange={(e) => updateItemCategoryItem(idx, itemIdx, { markupPercent: e.target.value })}
@@ -7321,7 +7388,11 @@ export default function CompanySettingsPage() {
                                             placeholder="0"
                                           />
                                           <p className="truncate px-2 text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
-                                            {computeOutputPrice(itemRow.price, itemRow.markupPercent)}
+                                            {itemRow.customPrice
+                                              ? parseNumberLoose(itemRow.markupPercent) > 0
+                                                ? `Entered + ${parseNumberLoose(itemRow.markupPercent)}%`
+                                                : "When added"
+                                              : computeOutputPrice(itemRow.price, itemRow.markupPercent)}
                                           </p>
                                         </div>
                                       );
@@ -7342,26 +7413,15 @@ export default function CompanySettingsPage() {
                               </div>
                             ))}
                           <div className="px-4 py-3">
-                            <button type="button" onClick={() => setItemCategories((prev) => [...prev, { name: "", color: "#7D99B3", subcategories: "", items: [] }])} className={secondaryButtonClass}><Plus size={14} /> Add category</button>
+                            <button type="button" onClick={() => setItemCategories((prev) => [...prev, { name: "", color: "#7D99B3", subcategories: "", subcategoryColors: {}, items: [] }])} className={secondaryButtonClass}><Plus size={14} /> Add category</button>
                           </div>
                           </div>
                         </div>
-                        <div className="flex items-center justify-end gap-2 border-t border-[var(--glass-border)] px-4 py-3">
-                          <button
-                            type="button"
-                            onClick={() => setIsItemCategoriesModalOpen(false)}
-                            className={primaryButtonClass}
-                            style={primaryButtonStyle}
-                          >
-                            Done
-                          </button>
-                        </div>
-                      </div>
                     </div>
                     </ModalPortal>
                   ) : null}
                   {isSpecsLayoutModalOpen ? (
-                    <div data-specs-layout-modal="true" className="fixed inset-0 z-[1000] flex flex-col bg-[var(--bg-app)]">
+                    <div data-specs-layout-modal="true" data-full-screen-window="true" className="fixed inset-0 z-[1000] flex flex-col bg-[var(--bg-app)]">
                       <div className="glass-page-header flex h-[56px] shrink-0 items-center justify-between gap-2 px-4 md:px-5">
                         <div className="inline-flex min-w-0 items-center gap-3">
                           <div className="inline-flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
@@ -7520,7 +7580,7 @@ export default function CompanySettingsPage() {
                     </ModalPortal>
                   ) : null}
                   {isQuoteLayoutModalOpen ? (
-                    <div data-quote-layout-modal="true" className="fixed inset-0 z-[1000] flex flex-col bg-[var(--bg-app)]">
+                    <div data-quote-layout-modal="true" data-full-screen-window="true" className="fixed inset-0 z-[1000] flex flex-col bg-[var(--bg-app)]">
                       <div className="glass-page-header flex h-[56px] shrink-0 items-center justify-between gap-2 px-4 md:px-5">
                         <div className="inline-flex min-w-0 items-center gap-3">
                           <div className="inline-flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>

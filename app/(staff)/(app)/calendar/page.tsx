@@ -11,7 +11,7 @@ import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, use
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { CalendarDays, ChevronLeft, ChevronRight, Clock, Copy, ExternalLink, Filter, FolderKanban, Lock, MapPin, MoreHorizontal, Pencil, Plus, Search, Trash2, X } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, Clock, Copy, ExternalLink, Filter, FolderKanban, Lock, MapPin, MoreHorizontal, Pencil, Plus, Search, Trash2, Users, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { fetchCompanyDoc, fetchCompanyMembers, fetchProjects } from "@/lib/firestore-data";
 import { isProjectArchived } from "@/lib/project-archive";
@@ -33,6 +33,7 @@ import {
   normalizeCalendarShowNonWorkdays,
   normalizeCalendarWorkdays,
   fetchUserCalendarShowNonWorkdays,
+  projectEventStaffUids,
   DEFAULT_CALENDAR_WORKDAYS,
   saveCalendarEvent,
   subscribeCalendarEvents,
@@ -362,6 +363,8 @@ type Draft = {
   updatedAtIso: string;
   updatedByUid: string;
   updatedByName: string;
+  // Its staff — null for one saved before events had staff (see CalendarEvent's staffUids and draftStaffUids).
+  staffUids: string[] | null;
 };
 
 function draftFromEvent(e: CalendarEvent): Draft {
@@ -388,12 +391,15 @@ function draftFromEvent(e: CalendarEvent): Draft {
     updatedAtIso: e.updatedAtIso,
     updatedByUid: e.updatedByUid,
     updatedByName: e.updatedByName,
+    staffUids: e.staffUids,
   };
 }
 
-// Whether any field of two drafts differs (all are plain values).
+// Whether any field of two drafts differs (all are plain values, but the staff list).
 function draftsDiffer(a: Draft, b: Draft): boolean {
-  return (Object.keys(a) as Array<keyof Draft>).some((key) => a[key] !== b[key]);
+  return (Object.keys(a) as Array<keyof Draft>).some((key) =>
+    key === "staffUids" ? (a.staffUids ?? []).join(",") !== (b.staffUids ?? []).join(",") || !a.staffUids !== !b.staffUids : a[key] !== b[key],
+  );
 }
 
 function eventFromDraft(d: Draft): CalendarEvent | null {
@@ -428,7 +434,13 @@ function eventFromDraft(d: Draft): CalendarEvent | null {
     updatedAtIso: d.updatedAtIso,
     updatedByUid: d.updatedByUid,
     updatedByName: d.updatedByName,
+    staffUids: d.staffUids,
   };
+}
+
+// A name's initials for a staff emblem ("?" without one).
+function nameInitials(name: string): string {
+  return name.trim().split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]?.toUpperCase() ?? "").join("") || "?";
 }
 
 // The time now, for event handlers (opening the event pop-up) — a module function, as the React Compiler lint
@@ -579,6 +591,8 @@ function CalendarPageContent() {
   const [showToClientDefault, setShowToClientDefault] = useState(false);
   // Staff colours, for the "Added by" emblem in the event pop-up.
   const [memberColorByUid, setMemberColorByUid] = useState<Record<string, string>>({});
+  // The company's staff, for the event pop-up's Staff section (who's on it, and Add staff).
+  const [staffMembers, setStaffMembers] = useState<Array<{ uid: string; name: string }>>([]);
 
   // Per-person view + hidden categories, remembered on this device.
   useEffect(() => {
@@ -636,6 +650,12 @@ function CalendarPageContent() {
       const map: Record<string, string> = {};
       for (const m of members) map[m.uid] = String(m.userColor || m.badgeColor || "").trim();
       setMemberColorByUid(map);
+      setStaffMembers(
+        members
+          .map((m) => ({ uid: m.uid, name: String(m.displayName || m.email || "").trim() }))
+          .filter((m) => m.uid && m.name)
+          .sort((a, b) => a.name.localeCompare(b.name)),
+      );
     });
     if (user?.uid) {
       // Archived projects too: events already linked to one keep their details (see restrictedIds) —
@@ -682,6 +702,10 @@ function CalendarPageContent() {
   // just the basics — title, time, category — and can't be edited. Until projects load, linked events
   // are treated as restricted so details never flash up.
   const accessibleProjectIds = useMemo(() => new Set(projects.map((p) => p.id)), [projects]);
+  const projectById = useMemo(() => new Map(projects.map((p) => [p.id, p])), [projects]);
+  // An event's staff — for one saved before events had staff, its linked project's creator and assignee (as the
+  // server counts them for its reminders).
+  const draftStaffUids = (d: Draft): string[] => d.staffUids ?? projectEventStaffUids(projectById.get(d.projectId));
   const restrictedIds = useMemo(
     () =>
       new Set(
@@ -845,6 +869,7 @@ function CalendarPageContent() {
       updatedAtIso: "",
       updatedByUid: "",
       updatedByName: "",
+      staffUids: [],
     };
     setDraft(next);
     setRenderedDraft(next);
@@ -921,7 +946,7 @@ function CalendarPageContent() {
       return;
     }
     if (!canEditEvent(draft)) return;
-    const event = eventFromDraft(draft);
+    const event = eventFromDraft({ ...draft, staffUids: draftStaffUids(draft) });
     if (!event) {
       setModalError("Check the dates and times.");
       return;
@@ -949,6 +974,7 @@ function CalendarPageContent() {
       id: newCalendarId("evt"),
       isNew: true,
       categoryId: "",
+      staffUids: draftStaffUids(draft),
       createdByUid: String(user?.uid || ""),
       createdByName: String(user?.displayName || ""),
       createdAtIso: "",
@@ -2327,6 +2353,29 @@ function CalendarPageContent() {
         ]
       : [];
   const draftCategory = d ? categoryById.get(d.categoryId) ?? UNCATEGORISED : UNCATEGORISED;
+  // A person's emblem: their initials on their colour.
+  const staffEmblem = (uid: string, name: string, title?: string) => (
+    <span
+      className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white"
+      style={{ backgroundColor: (uid === user?.uid ? String(user?.userColor || "") : "") || memberColorByUid[uid] || "#7D99B3" }}
+      title={title}
+    >
+      {nameInitials(name)}
+    </span>
+  );
+  // The event's staff, by name (anyone no longer in the company left out).
+  const staffNameByUid = new Map(staffMembers.map((m) => [m.uid, m.name]));
+  const draftStaff = d
+    ? draftStaffUids(d)
+        .map((uid) => ({ uid, name: staffNameByUid.get(uid) || (uid === user?.uid ? String(user?.displayName || "") : "") }))
+        .filter((m) => m.name)
+    : [];
+  // Add staff: everyone not on it yet.
+  const staffOptions = d
+    ? staffMembers
+        .filter((m) => !draftStaffUids(d).includes(m.uid))
+        .map((m) => ({ value: m.uid, label: m.name, color: (m.uid === user?.uid ? String(user?.userColor || "") : "") || memberColorByUid[m.uid] || "#7D99B3" }))
+    : [];
   // Existing events open read-only first (and always, for people who can't edit).
   const viewingEvent = Boolean(d && !d.isNew && (eventMode === "view" || readOnly));
   const viewEvent = d && viewingEvent ? eventFromDraft(d) : null;
@@ -2352,13 +2401,7 @@ function CalendarPageContent() {
     };
     return (
       <div className={`flex items-center gap-2 text-[12.5px] font-medium ${className}`} style={{ color: "var(--text-main)" }}>
-        <span
-          className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white"
-          style={{ backgroundColor: (d.createdByUid === user?.uid ? String(user?.userColor || "") : "") || memberColorByUid[d.createdByUid] || "#7D99B3" }}
-          title={`Added by ${d.createdByName}`}
-        >
-          {d.createdByName.trim().split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]?.toUpperCase() ?? "").join("") || "?"}
-        </span>
+        {staffEmblem(d.createdByUid, d.createdByName, `Added by ${d.createdByName}`)}
         <span className={`min-w-0 flex-col leading-[1.35] ${compact ? "hidden md:flex" : "flex"}`}>
           {auditLine("Added by", d.createdByName, d.createdAtIso)}
           {!compact && d.updatedByUid ? auditLine("Modified by", d.updatedByName || "someone", d.updatedAtIso) : null}
@@ -2756,6 +2799,25 @@ function CalendarPageContent() {
                           </div>
                         </div>
                       ) : null}
+                      {draftStaff.length ? (
+                        <div
+                          className="flex items-start gap-3 rounded-[14px] border px-3 py-2.5"
+                          style={{ borderColor: "var(--glass-border)", backgroundColor: "color-mix(in srgb, var(--panel-bg) 55%, transparent)" }}
+                        >
+                          <Users size={17} className="mt-0.5 shrink-0" style={{ color: draftCategory.color }} />
+                          <div className="min-w-0 flex-1">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.5px]" style={{ color: "var(--text-main)" }}>Staff</p>
+                            <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1.5">
+                              {draftStaff.map((m) => (
+                                <span key={m.uid} className="inline-flex min-w-0 max-w-full items-center gap-1.5 text-[14px]" style={{ color: "var(--text-main)" }}>
+                                  {staffEmblem(m.uid, m.name)}
+                                  <span className="truncate">{m.name}</span>
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      ) : null}
                       {modalError ? (
                         <p className="text-[12px] font-medium" style={{ color: "var(--danger-strong)" }}>{modalError}</p>
                       ) : null}
@@ -2886,7 +2948,10 @@ function CalendarPageContent() {
                           {!readOnly ? (
                             <button
                               type="button"
-                              onClick={() => setDraft((prev) => (prev ? { ...prev, projectId: "", projectName: "", showToClient: false } : prev))}
+                              // Its people stay on as staff (taken off one by one below).
+                              onClick={() =>
+                                setDraft((prev) => (prev ? { ...prev, projectId: "", projectName: "", showToClient: false, staffUids: draftStaffUids(prev) } : prev))
+                              }
                               className={iconRemoveButtonClass}
                               aria-label="Unlink project"
                             >
@@ -2938,6 +3003,8 @@ function CalendarPageContent() {
                                               projectId: p.id,
                                               projectName: p.name,
                                               showToClient: showToClientDefault,
+                                              // The project's creator and assignee go on as staff.
+                                              staffUids: Array.from(new Set([...draftStaffUids(prev), ...projectEventStaffUids(p)])),
                                               title: prev.title || p.name,
                                               location: prev.location || String(p.clientAddress || ""),
                                             }
@@ -2958,6 +3025,52 @@ function CalendarPageContent() {
                       ) : (
                         <p className="text-[12.5px] font-normal" style={{ color: "var(--text-muted)" }}>None</p>
                       )}
+                    </div>
+                    {/* Who's on it — each is reminded before it (their Notifications > Upcoming events). A linked
+                        project's creator and assignee go on when it's linked. */}
+                    <div className="grid gap-1.5 text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
+                      Staff
+                      {draftStaff.length ? (
+                        <div className="flex flex-wrap gap-1.5">
+                          {draftStaff.map((m) => (
+                            <span
+                              key={m.uid}
+                              className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-full border py-1 pl-1 pr-2 text-[13px] font-medium"
+                              style={{ borderColor: "var(--glass-border)", backgroundColor: "color-mix(in srgb, var(--panel-bg) 55%, transparent)" }}
+                            >
+                              {staffEmblem(m.uid, m.name)}
+                              <span className="truncate">{m.name}</span>
+                              {!readOnly ? (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setDraft((prev) => (prev ? { ...prev, staffUids: draftStaffUids(prev).filter((uid) => uid !== m.uid) } : prev))
+                                  }
+                                  className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full transition hover:bg-[color-mix(in_srgb,var(--text-main)_8%,transparent)]"
+                                  aria-label={`Take ${m.name} off this event`}
+                                  title="Remove"
+                                >
+                                  <X size={13} />
+                                </button>
+                              ) : null}
+                            </span>
+                          ))}
+                        </div>
+                      ) : readOnly ? (
+                        <p className="text-[12.5px] font-normal" style={{ color: "var(--text-muted)" }}>None</p>
+                      ) : null}
+                      {!readOnly && staffOptions.length ? (
+                        <GlassDropdown
+                          value=""
+                          options={staffOptions}
+                          onChange={(uid) =>
+                            setDraft((prev) => (prev ? { ...prev, staffUids: [...draftStaffUids(prev).filter((v) => v !== uid), uid] } : prev))
+                          }
+                          ariaLabel="Add staff"
+                          placeholder="Add staff"
+                          triggerClassName={`${glassFieldClass} justify-between`}
+                        />
+                      ) : null}
                     </div>
                     <div className="grid grid-cols-[auto_minmax(0,1fr)] items-end gap-3">
                       <div className="grid gap-1.5 text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>

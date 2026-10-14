@@ -66,7 +66,7 @@ import {
 // or Back to return, like a contact in Contacts), plus a search across every kind. Those choices are the
 // user's own, stored on their profile (users/{uid}.pushNotificationTypes / pushNotificationCategories /
 // calendarReminderLead / calendarReminderCategories / clientPortalReminderDays / pushQuietMinutes), and apply to
-// all their devices. Calendar's "Upcoming project events" lists the company's calendar categories (only those
+// all their devices. Calendar's "Upcoming events" lists the company's calendar categories (only those
 // they can see — at least View): each on or off, opening to its own page of reminder times.
 
 // The small text under titles here — a stronger shade than the usual muted grey (closer to the main text,
@@ -689,7 +689,7 @@ export function PushNotificationSettings({
   // and for reminders, how far ahead / after how long.
   const renderTypeRow = (option: PushNotificationTypeOption, categoryOn: boolean, categoryLabel?: string) => {
     const isOn = isPushNotificationTypeEnabled(choices, option.type);
-    // Upcoming project events has no switch of its own — Calendar's (and each calendar category's) does it.
+    // Upcoming events has no switch of its own — Calendar's (and each calendar category's) does it.
     const hasOwnSwitch = hasOwnPushNotificationSwitch(option.type);
     // In Calendar's own pop-up / page it's all there is, so it goes straight to its categories — no name or words
     // of its own (search results, mixing every kind, keep them; dev mode keeps its test button).

@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" width="640" height="360" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title>The Hardware box listing Global then each room; the Scullery gets its own brand and drawer type, and Update Drawers shows the drawers it affects, removing one whose height isn't offered</title>
+  <style>
+    .linked { animation: linked 7s ease-in-out infinite both; }
+    @keyframes linked { 0%, 26% { opacity: 1; } 30%, 94% { opacity: 0; } 98%, 100% { opacity: 1; } }
+    .own { animation: own 7s ease-in-out infinite both; }
+    @keyframes own { 0%, 27% { opacity: 0; } 31%, 94% { opacity: 1; } 98%, 100% { opacity: 0; } }
+    .rowHi { animation: rowHi 7s ease-in-out infinite both; }
+    @keyframes rowHi { 0%, 20% { opacity: 0; } 24%, 32% { opacity: 1; } 36%, 100% { opacity: 0; } }
+    .sheet { transform-box: fill-box; transform-origin: 50% 0; animation: sheet 7s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes sheet { 0%, 34% { opacity: 0; transform: scale(.94); } 40%, 82% { opacity: 1; transform: scale(1); } 87%, 100% { opacity: 0; transform: scale(.96); } }
+    .fix { animation: fix 7s ease-in-out infinite both; }
+    @keyframes fix { 0%, 60% { opacity: 1; } 63%, 100% { opacity: 0; } }
+    .cursor { animation: cursor 7s ease-in-out infinite both; }
+    @keyframes cursor {
+      0%, 4% { transform: translate(600px, 340px); opacity: 0; }
+      8% { opacity: 1; }
+      20%, 28% { transform: translate(236px, 236px); opacity: 1; }
+      50%, 60% { transform: translate(566px, 228px); opacity: 1; }
+      72%, 78% { transform: translate(560px, 276px); opacity: 1; }
+      90%, 100% { transform: translate(600px, 340px); opacity: 0; }
+    }
+  </style>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#EEF3FB"/>
+      <stop offset="1" stop-color="#E1E9F7"/>
+    </linearGradient>
+    <filter id="pop" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#0F172A" flood-opacity=".16"/>
+    </filter>
+  </defs>
+  <rect width="640" height="360" fill="url(#bg)"/>
+
+  <!-- Hardware -->
+  <rect x="36" y="44" width="264" height="272" rx="22" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+  <path d="M36 66 a22 22 0 0 1 22 -22 h220 a22 22 0 0 1 22 22 v20 h-264 z" fill="#F8FAFC"/>
+  <path d="M36 86 H300" stroke="#E2E8F0"/>
+  <text x="58" y="71" font-size="13" font-weight="500" letter-spacing="1" fill="#0F172A">HARDWARE</text>
+
+  <text x="58" y="124" font-size="12.5" font-weight="700" fill="#0F172A">Global</text>
+  <rect x="136" y="110" width="50" height="22" rx="11" fill="#FFEDD5"/>
+  <text x="161" y="125" text-anchor="middle" font-size="10.5" font-weight="600" fill="#C2410C">Blum</text>
+  <rect x="192" y="110" width="80" height="22" rx="11" fill="#DBEAFE"/>
+  <text x="232" y="125" text-anchor="middle" font-size="10.5" font-weight="600" fill="#1D4ED8">Legrabox</text>
+  <path d="M58 150 H278" stroke="#E2E8F0"/>
+
+  <text x="58" y="182" font-size="12.5" font-weight="600" fill="#0F172A">Kitchen</text>
+  <rect x="208" y="168" width="64" height="22" rx="11" fill="#F1F5F9"/>
+  <path d="M220 179 h6 m-3 -3 a3 3 0 0 0 0 6 m6 -6 a3 3 0 0 1 0 6" fill="none" stroke="#334155" stroke-width="1.2" stroke-linecap="round"/>
+  <text x="250" y="183" text-anchor="middle" font-size="10.5" font-weight="600" fill="#334155">Global</text>
+  <path d="M58 208 H278" stroke="#E2E8F0"/>
+
+  <rect class="rowHi" x="46" y="214" width="244" height="44" rx="10" fill="#EFF6FF"/>
+  <text x="58" y="240" font-size="12.5" font-weight="600" fill="#0F172A">Scullery</text>
+  <g class="linked">
+    <rect x="208" y="226" width="64" height="22" rx="11" fill="#F1F5F9"/>
+    <path d="M220 237 h6 m-3 -3 a3 3 0 0 0 0 6 m6 -6 a3 3 0 0 1 0 6" fill="none" stroke="#334155" stroke-width="1.2" stroke-linecap="round"/>
+    <text x="250" y="241" text-anchor="middle" font-size="10.5" font-weight="600" fill="#334155">Global</text>
+  </g>
+  <g class="own">
+    <rect x="124" y="226" width="62" height="22" rx="11" fill="#EDE9FE"/>
+    <text x="155" y="241" text-anchor="middle" font-size="10.5" font-weight="600" fill="#6D28D9">Hettich</text>
+    <rect x="192" y="226" width="80" height="22" rx="11" fill="#CCFBF1"/>
+    <text x="232" y="241" text-anchor="middle" font-size="10.5" font-weight="600" fill="#0F766E">ArciTech</text>
+  </g>
+
+  <!-- Update Drawers -->
+  <g class="sheet">
+    <rect x="314" y="96" width="290" height="216" rx="20" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+    <text x="334" y="128" font-size="14" font-weight="700" fill="#0F172A">Update Drawers</text>
+    <text x="334" y="148" font-size="10.5" font-weight="500" fill="#334155">Scullery · 3 drawers move to Hettich ArciTech</text>
+    <path d="M334 162 H584" stroke="#E2E8F0"/>
+    <text x="334" y="184" font-size="11" font-weight="600" fill="#0F172A">Pot drawer</text>
+    <rect x="534" y="172" width="50" height="18" rx="9" fill="#F1F5F9"/>
+    <text x="559" y="185" text-anchor="middle" font-size="10" font-weight="700" fill="#0F172A">B 176</text>
+    <text x="334" y="208" font-size="11" font-weight="600" fill="#0F172A">Cutlery drawer</text>
+    <rect x="534" y="196" width="50" height="18" rx="9" fill="#F1F5F9"/>
+    <text x="559" y="209" text-anchor="middle" font-size="10" font-weight="700" fill="#0F172A">A 94</text>
+    <g class="fix">
+      <text x="334" y="232" font-size="11" font-weight="600" fill="#0F172A">Deep drawer</text>
+      <rect x="434" y="220" width="94" height="18" rx="9" fill="#FEF3C7"/>
+      <text x="481" y="233" text-anchor="middle" font-size="9.5" font-weight="600" fill="#B45309">D not offered</text>
+      <rect x="534" y="220" width="50" height="18" rx="9" fill="#FEE2E2"/>
+      <text x="559" y="233" text-anchor="middle" font-size="10" font-weight="700" fill="#B91C1C">Remove</text>
+    </g>
+    <rect x="454" y="262" width="62" height="30" rx="10" fill="#FFFFFF" stroke="#CBD5E1"/>
+    <text x="485" y="281" text-anchor="middle" font-size="11" font-weight="700" fill="#0F172A">Cancel</text>
+    <rect x="522" y="262" width="62" height="30" rx="10" fill="#2563EB"/>
+    <text x="553" y="281" text-anchor="middle" font-size="11" font-weight="700" fill="#FFFFFF">Update</text>
+  </g>
+
+  <g class="cursor">
+    <path d="M0 0 l0 20 l5 -5 l4 9 l3.4 -1.5 l-4 -9 l7 0 z" fill="#0F172A" stroke="#FFFFFF" stroke-width="1.4" stroke-linejoin="round"/>
+  </g>
+</svg>

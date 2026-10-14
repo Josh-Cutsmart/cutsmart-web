@@ -62,8 +62,8 @@ export const PUSH_NOTIFICATION_CATEGORIES: readonly PushNotificationCategory[] =
     types: [
       {
         type: "calendar_reminder",
-        label: "Upcoming project events",
-        description: "An event for a project assigned to you is coming up — choose which calendar categories, and how far ahead for each, below.",
+        label: "Upcoming events",
+        description: "An event you're on as staff is coming up — choose which calendar categories, and how far ahead for each, below.",
       },
     ],
   },
