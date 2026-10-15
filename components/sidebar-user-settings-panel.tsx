@@ -446,7 +446,7 @@ export function SidebarUserSettingsPanel({
           <div className="mt-1 flex h-7 items-center justify-between gap-2">
             {isMobileEditing ? (
               <>
-                <input
+                <input inputMode="tel"
                   autoFocus
                   value={mobileDraft}
                   onChange={(e) => setMobileDraft(e.target.value)}

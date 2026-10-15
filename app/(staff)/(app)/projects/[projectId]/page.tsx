@@ -40,7 +40,7 @@ import { useKeepMenuInView } from "@/lib/use-keep-menu-in-view";
 import { RoomNameCombobox } from "@/components/room-name-combobox";
 import { contrastTextForFill } from "@/lib/user-profile-format";
 import { normalizeBoardFinishes, normalizeHardwareRows, normalizeMmOptions, normalizeSheetSizes, type HardwareTypeRow } from "@/lib/production-hardware";
-import { GlassSwitch, iconRemoveButtonClass } from "@/components/settings-ui";
+import { GlassSwitch, modalCloseButtonClass } from "@/components/settings-ui";
 import {
   cutlistTemplateBoardLabel,
   cutlistTemplateDrawerLabel,
@@ -24410,7 +24410,7 @@ export default function ProjectDetailsPage() {
             </text>
             <foreignObject x={resolvedTopGapInput.leftPx + compactGreenGapInputOffsetX} y={topInputTopPx} width={svgGapInputWidth} height={svgGapInputHeight}>
               <div style={{ width: "100%", height: "100%" }}>
-                <input
+                <input inputMode="decimal"
                   disabled={disabled}
                   value={topGap}
                   onChange={(e) => onTopGapChange(e.target.value)}
@@ -24432,7 +24432,7 @@ export default function ProjectDetailsPage() {
                 height={svgGapInputHeight}
               >
                 <div style={{ width: "100%", height: "100%" }}>
-                  <input
+                  <input inputMode="decimal"
                     disabled={disabled}
                     value={betweenGap}
                     onChange={(e) => onBetweenGapChange(e.target.value)}
@@ -24445,7 +24445,7 @@ export default function ProjectDetailsPage() {
             {sideGapInputs.map((input) => (
               <foreignObject key={`side_input_${input.key}`} x={input.leftPx} y={input.topPx + compactRedGapInputOffsetY} width={svgGapInputWidth} height={svgGapInputHeight}>
                 <div style={{ width: "100%", height: "100%" }}>
-                  <input
+                  <input inputMode="decimal"
                     value={input.value}
                     onChange={(e) =>
                       onSideGapChange(
@@ -24463,7 +24463,7 @@ export default function ProjectDetailsPage() {
               <g key={`drawer_input_${overlay.key}`}>
                 <foreignObject x={overlay.heightInputLeftPx} y={overlay.inputTopPx} width={svgInputWidth} height={svgInputHeight}>
                   <div style={{ width: "100%", height: "100%" }}>
-                    <input
+                    <input inputMode="decimal"
                       disabled={disabled}
                       value={overlay.heightValue}
                       onChange={(e) => onFrontHeightChange(index, e.target.value)}
@@ -24482,7 +24482,7 @@ export default function ProjectDetailsPage() {
               ? (doorLayout?.overlays ?? []).map((overlay, index) => (
                   <foreignObject key={`door_width_input_${overlay.key}`} x={overlay.widthInputLeftPx} y={overlay.widthInputTopPx} width={svgInputWidth} height={svgInputHeight}>
                     <div style={{ width: "100%", height: "100%" }}>
-                      <input
+                      <input inputMode="decimal"
                         disabled={disabled}
                         value={overlay.widthValue}
                         onChange={(e) => onFrontWidthChange(index, e.target.value)}
@@ -32776,7 +32776,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               style={{ color: "var(--text-main)" }}
             />
           </div>
-          <button type="button" onClick={() => setIsItemsLibraryModalOpen(false)} className={iconRemoveButtonClass} aria-label="Close">
+          <button type="button" onClick={() => setIsItemsLibraryModalOpen(false)} className={modalCloseButtonClass} aria-label="Close">
             <X size={16} />
           </button>
         </div>
@@ -39503,14 +39503,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     <div className="grid gap-2">
                                       <div className="space-y-1">
                                         <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Fixed Shelf</p>
-                                        <input disabled={salesReadOnly} value={draft.fixedShelf ?? ""} onChange={(e) => updateInitialDraftCutlistRow(draft.id, { fixedShelf: numericOnlyText(e.target.value) })} className="h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
+                                        <input inputMode="numeric" disabled={salesReadOnly} value={draft.fixedShelf ?? ""} onChange={(e) => updateInitialDraftCutlistRow(draft.id, { fixedShelf: numericOnlyText(e.target.value) })} className="h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
                                         {hasShelfQuantity(draft.fixedShelf) ? (
                                           <BoardPillDropdown value={normalizeDrillingValue(draft.fixedShelfDrilling)} options={DRILLING_OPTIONS} disabled={salesReadOnly} bg={draftFieldBg} border={draftFieldBorder} text={draftTextColor} size="compact" getSize={() => ""} getLabel={(v) => v} onChange={(v) => updateInitialDraftCutlistRow(draft.id, { fixedShelfDrilling: normalizeDrillingValue(v) })} />
                                         ) : null}
                                       </div>
                                       <div className="space-y-1">
                                         <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Adjustable Shelf</p>
-                                        <input disabled={salesReadOnly} value={draft.adjustableShelf ?? ""} onChange={(e) => updateInitialDraftCutlistRow(draft.id, { adjustableShelf: numericOnlyText(e.target.value) })} className="h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
+                                        <input inputMode="numeric" disabled={salesReadOnly} value={draft.adjustableShelf ?? ""} onChange={(e) => updateInitialDraftCutlistRow(draft.id, { adjustableShelf: numericOnlyText(e.target.value) })} className="h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
                                         {hasShelfQuantity(draft.adjustableShelf) ? (
                                           <BoardPillDropdown value={normalizeDrillingValue(draft.adjustableShelfDrilling)} options={DRILLING_OPTIONS} disabled={salesReadOnly} bg={draftFieldBg} border={draftFieldBorder} text={draftTextColor} size="compact" getSize={() => ""} getLabel={(v) => v} onChange={(v) => updateInitialDraftCutlistRow(draft.id, { adjustableShelfDrilling: normalizeDrillingValue(v) })} />
                                         ) : null}
@@ -40542,7 +40542,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 <div className="grid content-start gap-0">
                                   <div className="grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
                                     <span className="block pr-[3px] text-right text-[9px] font-bold leading-none" style={{ color: draftTextColor }}>Fixed Shelf</span>
-                                    <input
+                                    <input inputMode="numeric"
                                       disabled={salesReadOnly}
                                       value={draft.fixedShelf ?? ""}
                                       onChange={(e) => updateInitialDraftCutlistRow(draft.id, { fixedShelf: numericOnlyText(e.target.value) })}
@@ -40577,7 +40577,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 <div className="grid content-start gap-0">
                                   <div className="grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
                                     <span className="block pr-[3px] text-right text-[9px] font-bold leading-none" style={{ color: draftTextColor }}>Adjustable Shelf</span>
-                                    <input
+                                    <input inputMode="numeric"
                                       disabled={salesReadOnly}
                                       value={draft.adjustableShelf ?? ""}
                                       onChange={(e) => updateInitialDraftCutlistRow(draft.id, { adjustableShelf: numericOnlyText(e.target.value) })}
@@ -41092,7 +41092,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                               );
                                             })()
                                           ) : isInitialEditing(row.id, key) ? (
-                                            <input
+                                            <input inputMode={isNumericCutlistInputKey(key) ? "decimal" : undefined}
                                               autoFocus
                                               value={initialEditingCellValue}
                                               onChange={(e) => setInitialEditingCellValue(isNumericCutlistInputKey(key) ? sanitizeCutlistNumericInput(key, e.target.value) : e.target.value)}
@@ -42283,14 +42283,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   <div className={`grid gap-2 ${isTabletProjectViewport ? "sm:grid-cols-2" : ""}`}>
                                     <div className="space-y-1">
                                       <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Fixed Shelf</p>
-                                      <input disabled={productionReadOnly} value={draft.fixedShelf ?? ""} onChange={(e) => updateDraftCutlistRow(draft.id, { fixedShelf: numericOnlyText(e.target.value) })} className="h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
+                                      <input inputMode="numeric" disabled={productionReadOnly} value={draft.fixedShelf ?? ""} onChange={(e) => updateDraftCutlistRow(draft.id, { fixedShelf: numericOnlyText(e.target.value) })} className="h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
                                       {hasShelfQuantity(draft.fixedShelf) ? (
                                         <BoardPillDropdown value={normalizeDrillingValue(draft.fixedShelfDrilling)} options={drillingOptionsForShelfQuantity(draft.fixedShelf)} disabled={productionReadOnly} bg={draftFieldBg} border={draftFieldBorder} text={draftTextColor} size="compact" hideBlankOption getSize={() => ""} getLabel={(v) => v} onChange={(v) => updateDraftCutlistRow(draft.id, { fixedShelfDrilling: normalizeDrillingValue(v) })} />
                                       ) : null}
                                     </div>
                                     <div className="space-y-1">
                                       <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Adjustable Shelf</p>
-                                      <input disabled={productionReadOnly} value={draft.adjustableShelf ?? ""} onChange={(e) => updateDraftCutlistRow(draft.id, { adjustableShelf: numericOnlyText(e.target.value) })} className="h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
+                                      <input inputMode="numeric" disabled={productionReadOnly} value={draft.adjustableShelf ?? ""} onChange={(e) => updateDraftCutlistRow(draft.id, { adjustableShelf: numericOnlyText(e.target.value) })} className="h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
                                       {hasShelfQuantity(draft.adjustableShelf) ? (
                                         <BoardPillDropdown value={normalizeDrillingValue(draft.adjustableShelfDrilling)} options={drillingOptionsForShelfQuantity(draft.adjustableShelf)} disabled={productionReadOnly} bg={draftFieldBg} border={draftFieldBorder} text={draftTextColor} size="compact" hideBlankOption getSize={() => ""} getLabel={(v) => v} onChange={(v) => updateDraftCutlistRow(draft.id, { adjustableShelfDrilling: normalizeDrillingValue(v) })} />
                                       ) : null}
@@ -44210,7 +44210,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 <div className={`${isSubPartDraft ? "h-6" : "h-8"} mx-1 w-px shrink-0`} style={{ backgroundColor: draftFieldBorder }} />
                                 <div className="flex items-center gap-1">
                                   <span className="whitespace-nowrap text-[11px] font-bold" style={{ color: draftTextColor }}>Fixed Shelf</span>
-                                  <input
+                                  <input inputMode="numeric"
                                     disabled={productionReadOnly}
                                     title="Fixed Shelf"
                                     value={draft.fixedShelf ?? ""}
@@ -44243,7 +44243,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 <div className={`${isSubPartDraft ? "h-6" : "h-8"} mx-1 w-px shrink-0`} style={{ backgroundColor: draftFieldBorder }} />
                                 <div className="flex items-center gap-1">
                                   <span className="whitespace-nowrap text-[11px] font-bold" style={{ color: draftTextColor }}>Adj Shelf</span>
-                                  <input
+                                  <input inputMode="numeric"
                                     disabled={productionReadOnly}
                                     title="Adjustable Shelf"
                                     value={draft.adjustableShelf ?? ""}
@@ -49092,7 +49092,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 className="h-8 min-w-0 flex-1 rounded-[7px] border px-2 text-[12px]"
                                 style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                               />
-                              <input
+                              <input inputMode="decimal"
                                 value={row.price}
                                 onChange={(e) => setQuoteCustomPriceDraftRows((rows) => rows.map((r, i) => (i === idx ? { ...r, price: e.target.value } : r)))}
                                 placeholder={activeMoney(0)}
@@ -54914,7 +54914,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         ] as const).map((field) => (
                                           <label key={field.key} className="block text-[11px] font-bold" style={{ color: "var(--text-main)" }}>
                                             {field.label}
-                                            <input
+                                            <input inputMode={field.key === "phone" ? "tel" : undefined}
                                               value={createContactForm[field.key]}
                                               onChange={(e) => {
                                                 const nextValue = e.target.value;
@@ -55095,7 +55095,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     </p>
                                   )}
                                   {isEditingRow ? (
-                                    <input
+                                    <input inputMode={row.key === "clientPhone" ? "tel" : undefined}
                                       type="text"
                                       value={generalDetailsDraft[row.key]}
                                       onChange={(e) => {
@@ -59161,7 +59161,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           <div className="grid grid-cols-[45px_1fr] items-center gap-2 text-[12px]">
                             {section.rows.map((row) => (
                               <Fragment key={row.key}>
-                                <input
+                                <input inputMode="decimal"
                                   value={projectGapAllowancesDraft[row.key]}
                                   onChange={(e) => {
                                     const nextValue = e.target.value;

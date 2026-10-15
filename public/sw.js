@@ -41,8 +41,42 @@ async function shownInOpenWindow(push) {
   return answers.some(Boolean);
 }
 
-// A notification arrives: show it (unless a computer with CutSmart on screen pops it up itself), and put the
-// unread count on the app icon where the device supports it.
+// Notifications that waited for this device — it was off or offline when they were sent, and the push service kept
+// them until it was back — arrive all at once. Rather than a pile of them, they're gathered into one: "5 new
+// notifications", the first few listed, opening the Notifications list. One has waited when it arrives more than 2
+// minutes after it was sent (data.sentAt, from lib/push-server.ts). The first is shown as it is (it may be the only
+// one); the next joins it into the group, and each after that is added to the group quietly. One with buttons
+// (Approve / Deny) is always shown on its own.
+const CATCH_UP_DELAY_MS = 2 * 60 * 1000;
+const CATCH_UP_TAG = "cutsmart-catch-up";
+// One at a time, so a pile arriving together can't each think it's the first.
+let catchUpQueue = Promise.resolve();
+
+async function showCaughtUp(title, options) {
+  const shown = await self.registration.getNotifications();
+  const group = shown.find((notification) => notification.tag === CATCH_UP_TAG);
+  const singles = shown.filter((notification) => notification.tag !== CATCH_UP_TAG && notification.data && notification.data.caughtUp);
+  if (!group && singles.length === 0) {
+    return self.registration.showNotification(title, { ...options, data: { ...options.data, caughtUp: true } });
+  }
+  const groupData = (group && group.data) || {};
+  const titles = [...(Array.isArray(groupData.titles) ? groupData.titles : []), ...singles.map((notification) => notification.title), title];
+  const count = (Number(groupData.count) || 0) + singles.length + 1;
+  singles.forEach((notification) => notification.close());
+  const listed = titles.slice(0, 4).map((line) => `• ${line}`);
+  if (count > listed.length) listed.push(`and ${count - listed.length} more`);
+  return self.registration.showNotification(`${count} new notifications`, {
+    body: listed.join("\n"),
+    icon: options.icon,
+    tag: CATCH_UP_TAG,
+    renotify: false,
+    silent: true,
+    data: { url: "/dashboard?notifications=open", count, titles: titles.slice(0, 20), caughtUp: true },
+  });
+}
+
+// A notification arrives: show it (unless a computer with CutSmart on screen pops it up itself) — gathered with the
+// others if it waited for this device (above) — and put the unread count on the app icon where the device supports it.
 self.addEventListener("push", (event) => {
   let data = {};
   try {
@@ -60,11 +94,18 @@ self.addEventListener("push", (event) => {
     actions: Array.isArray(data.actions) ? data.actions.slice(0, 2) : undefined,
     data: { url: data.url || "/dashboard", actionUrl: data.actionUrl || "", actionToken: data.actionToken || "" },
   };
+  const sentAt = Number(data.sentAt) || 0;
+  const waited = sentAt > 0 && Date.now() - sentAt > CATCH_UP_DELAY_MS && !(options.actions && options.actions.length);
+  const show = () => {
+    if (!waited) return self.registration.showNotification(title, options);
+    catchUpQueue = catchUpQueue.catch(() => undefined).then(() => showCaughtUp(title, options));
+    return catchUpQueue;
+  };
   const tasks = [
     // What it says, for a window that shows it from the push itself (a dev mode test, which isn't stored).
     shownInOpenWindow({ title, body: options.body, url: options.data.url, tag: data.tag || "" })
       .catch(() => false)
-      .then((shownInApp) => (shownInApp ? undefined : self.registration.showNotification(title, options))),
+      .then((shownInApp) => (shownInApp ? undefined : show())),
   ];
   if (typeof data.badgeCount === "number" && self.navigator && "setAppBadge" in self.navigator) {
     tasks.push(

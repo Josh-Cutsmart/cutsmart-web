@@ -945,7 +945,7 @@ export default function UserSettingsPage() {
           <div className="mt-1 flex h-8 items-center justify-between gap-2">
             {isMobileEditing ? (
               <>
-                <input
+                <input inputMode="tel"
                   autoFocus
                   value={mobileDraft}
                   onChange={(e) => setMobileDraft(e.target.value)}
@@ -1025,8 +1025,8 @@ export default function UserSettingsPage() {
     {
       id: "dashboardStatCards",
       icon: LayoutDashboard,
-      label: "Dashboard Stat Cards",
-      description: "Show the Projects/Active/Completed/Staff cards at the top of the dashboard.",
+      label: "Stat Cards",
+      description: "Show the stat cards at the top of the Dashboard and Leads.",
       checked: dashboardStatCardsEnabled,
       onChange: (next) => {
         setDashboardStatCardsEnabled(next);
@@ -1348,7 +1348,7 @@ export default function UserSettingsPage() {
     return draft.editing ? (
       <div className={MOBILE_ROW_CLASS}>
         <Icon size={17} className="shrink-0" style={{ color: "var(--text-muted)" }} />
-        <input
+        <input inputMode={label === "Mobile" ? "tel" : undefined}
           autoFocus
           aria-label={label}
           value={draft.value}

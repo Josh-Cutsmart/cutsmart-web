@@ -2,6 +2,7 @@ import { createHash, createHmac, timingSafeEqual } from "crypto";
 import { FieldPath, FieldValue, type DocumentReference } from "firebase-admin/firestore";
 import { adminDb } from "@/lib/firebase-admin";
 import { listCompanyMemberAccess } from "@/lib/api-company-access";
+import { isProjectNotifySubscribed } from "@/lib/project-notify";
 
 // Production unlock requests. Someone without production edit asks to unlock a project's production
 // (app/api/production-unlock/request); the people who can let them in — the project's creator and
@@ -34,8 +35,13 @@ export function pendingUnlockRequests(projectData: Record<string, unknown>): Rec
 }
 
 // Who can approve: the project's creator, assignee and editors, and the company's owners/admins — those
-// still in the company.
-export async function productionUnlockApproverUids(companyId: string, projectData: Record<string, unknown>): Promise<string[]> {
+// still in the company. notify: who's told about a request — the same, except the creator only with the project's
+// bell on for them (unless they're one of the others too).
+export async function productionUnlockApproverUids(
+  companyId: string,
+  projectData: Record<string, unknown>,
+  options: { notify?: boolean } = {},
+): Promise<string[]> {
   const members = await listCompanyMemberAccess(companyId);
   const memberUids = new Set(members.map((member) => member.access.uid));
   const settings = (projectData.projectSettings ?? {}) as Record<string, unknown>;
@@ -45,7 +51,15 @@ export async function productionUnlockApproverUids(companyId: string, projectDat
     const clean = str(uid);
     if (clean && memberUids.has(clean)) uids.add(clean);
   };
-  add(projectData.createdByUid);
+  const creatorUid = str(projectData.createdByUid);
+  const creatorBellOn = isProjectNotifySubscribed(
+    {
+      assignedToUid: PROJECT_ASSIGNEE_FIELDS.map((field) => str(projectData[field])).find(Boolean) ?? "",
+      notifySubscriptionOverrides: (projectData.notifySubscriptionOverrides ?? {}) as Record<string, boolean>,
+    },
+    creatorUid,
+  );
+  if (!options.notify || creatorBellOn) add(creatorUid);
   PROJECT_ASSIGNEE_FIELDS.forEach((field) => add(projectData[field]));
   Object.entries(permissions).forEach(([uid, level]) => {
     if (str(level).toLowerCase() === "edit") add(uid);

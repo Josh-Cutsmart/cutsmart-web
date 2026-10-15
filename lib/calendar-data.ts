@@ -44,15 +44,18 @@ export type CalendarEvent = {
   // With a linked project: shown on that project's client portal (Schedule tab).
   showToClient: boolean;
   // The staff on it (uids) — each is reminded before it (lib/calendar-reminders-server.ts). Linking a project puts
-  // that project's creator and assignee on it. null: saved before events had staff — a linked project's creator and
-  // assignee count as its staff then (projectEventStaffUids), and it's saved with them the next time it's edited.
+  // that project's assignee on it (its creator, when no one's assigned). null: saved before events had staff — those
+  // count as its staff then (projectEventStaffUids), and it's saved with them the next time it's edited.
   staffUids: string[] | null;
 };
 
-// A project's people who go on an event linked to it as its staff: whoever it's assigned to, and whoever made it.
+// Who from a project goes on an event linked to it as its staff: whoever it's assigned to — or, with no one assigned,
+// whoever made it. (Either can be taken off it again.)
 export function projectEventStaffUids(project: { assignedToUid?: string; createdByUid?: string } | null | undefined): string[] {
   if (!project) return [];
-  return Array.from(new Set([String(project.assignedToUid ?? "").trim(), String(project.createdByUid ?? "").trim()].filter(Boolean)));
+  const assignee = String(project.assignedToUid ?? "").trim();
+  const creator = String(project.createdByUid ?? "").trim();
+  return assignee ? [assignee] : creator ? [creator] : [];
 }
 
 // What the client portal's Schedule tab gets for one event (app/api/specs-share/[shareId]/schedule) —

@@ -20,13 +20,16 @@
 // Measured from the container's own computed style rather than hardcoded, so it stays correct
 // whichever padding class is actually active at the current breakpoint.
 //
-// ANIMATION: hand-rolled via requestAnimationFrame rather than `scrollBy({behavior:"smooth"})` —
-// confirmed during testing that the native smooth scroll can be a silent no-op (some browsers
-// honor an OS/browser "reduce motion" preference by disabling it outright, with no error and no
-// instant fallback; `behavior:"auto"` worked immediately in the exact same environment where
-// `"smooth"` produced zero movement). Rolling it by hand also respects that same preference
-// deliberately (falling back to an instant jump), rather than accidentally being silently broken
-// by it.
+// ANIMATION: the browser's own smooth scroll (`scrollTo({behavior:"smooth"})`) — the same slide the
+// arrow keys give when the board isn't handling them. The browser runs it apart from the page's own
+// work, so it stays smooth while the board repaints under it. It used to be stepped by hand from
+// requestAnimationFrame, setting scrollLeft every frame — that waits on the page each frame, and with
+// the pointer over the board (cards repainting their hover as they pass under it) whole frames went
+// missing, so it jumped to the next column rather than sliding. (An earlier note here said the smooth
+// scroll could be a silent no-op — that was a hidden test window, which plays no animation at all.)
+// A key pressed while a slide's still under way carries on from where it's headed — one more column
+// per press, the browser retargeting it mid-glide. A press on the board or a sideways wheel scroll
+// takes over from it.
 //
 // FOCUS: listens on `document`, not the container itself — an earlier version attached to the
 // container and relied on the key event bubbling up from whichever descendant had focus (e.g. a
@@ -39,7 +42,8 @@
 // specifically.
 export function attachBoardArrowKeyScroll(container: HTMLElement): () => void {
   const EPSILON_PX = 2;
-  const ANIMATION_MS = 280;
+  // Longest a slide could take — in case it's cut short without a scrollend to say so.
+  const SLIDE_SAFETY_MS = 1200;
 
   let isHovering = false;
   const onMouseEnter = () => {
@@ -49,35 +53,36 @@ export function attachBoardArrowKeyScroll(container: HTMLElement): () => void {
     isHovering = false;
   };
 
-  let activeAnimationId = 0;
-  const animateScrollLeftBy = (delta: number) => {
-    const prefersReducedMotion =
-      typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (prefersReducedMotion) {
-      container.scrollLeft += delta;
-      return;
-    }
-    const animationId = ++activeAnimationId;
-    const startLeft = container.scrollLeft;
-    const targetLeft = startLeft + delta;
-    const startTime = performance.now();
-    const step = (now: number) => {
-      // A newer call (another key press mid-animation) has taken over — let it run instead of
-      // fighting over scrollLeft with this now-stale one.
-      if (animationId !== activeAnimationId) return;
-      const t = Math.min(1, (now - startTime) / ANIMATION_MS);
-      // Ease-out cubic — same "fast start, gentle settle" curve as the app's other slide
-      // animations, reads as a natural momentum-scroll-style slide rather than a linear pan.
-      const eased = 1 - Math.pow(1 - t, 3);
-      container.scrollLeft = startLeft + (targetLeft - startLeft) * eased;
-      if (t < 1) requestAnimationFrame(step);
-    };
-    requestAnimationFrame(step);
+  // Where a slide still under way is headed (null when none is) — a key pressed mid-slide works from there.
+  let slideTargetLeft: number | null = null;
+  let slideSafetyTimer = 0;
+  const endSlide = () => {
+    slideTargetLeft = null;
+    window.clearTimeout(slideSafetyTimer);
+  };
+  const slideScrollLeftTo = (targetLeft: number) => {
+    const maxLeft = Math.max(0, container.scrollWidth - container.clientWidth);
+    slideTargetLeft = Math.min(maxLeft, Math.max(0, targetLeft));
+    window.clearTimeout(slideSafetyTimer);
+    slideSafetyTimer = window.setTimeout(endSlide, SLIDE_SAFETY_MS);
+    container.scrollTo({ left: slideTargetLeft, behavior: "smooth" });
+  };
+  // It's landed (scrollend, or — where there's no scrollend — the scroll reaching it).
+  const onScroll = () => {
+    if (slideTargetLeft !== null && Math.abs(container.scrollLeft - slideTargetLeft) < 1) endSlide();
   };
 
   const scrollToRevealColumn = (direction: 1 | -1) => {
     const columns = Array.from(container.querySelectorAll<HTMLElement>("[data-board-column]"));
     if (!columns.length) return;
+    // Measured as the board will be once a slide under way lands (the columns shifted by what's left of it), so
+    // a press mid-slide reveals the column after the one already sliding in, not that one again.
+    const baseLeft = slideTargetLeft ?? container.scrollLeft;
+    const pending = baseLeft - container.scrollLeft;
+    const rectOf = (col: HTMLElement) => {
+      const r = col.getBoundingClientRect();
+      return { left: r.left - pending, right: r.right - pending };
+    };
     const containerRect = container.getBoundingClientRect();
     const containerStyle = getComputedStyle(container);
     const paddingLeft = Number.parseFloat(containerStyle.paddingLeft) || 0;
@@ -87,30 +92,30 @@ export function attachBoardArrowKeyScroll(container: HTMLElement): () => void {
     if (direction > 0) {
       const edge = containerRect.right - paddingRight;
       target = columns.find((col) => {
-        const r = col.getBoundingClientRect();
+        const r = rectOf(col);
         return r.left < edge - EPSILON_PX && r.right > edge + EPSILON_PX;
       });
       if (!target) {
-        target = columns.find((col) => col.getBoundingClientRect().left >= edge - EPSILON_PX);
+        target = columns.find((col) => rectOf(col).left >= edge - EPSILON_PX);
       }
       if (!target) return;
-      const delta = target.getBoundingClientRect().right - edge;
-      if (Math.abs(delta) > EPSILON_PX) animateScrollLeftBy(delta);
+      const delta = rectOf(target).right - edge;
+      if (Math.abs(delta) > EPSILON_PX) slideScrollLeftTo(baseLeft + delta);
       return;
     }
 
     const edge = containerRect.left + paddingLeft;
     const reversed = [...columns].reverse();
     target = reversed.find((col) => {
-      const r = col.getBoundingClientRect();
+      const r = rectOf(col);
       return r.right > edge + EPSILON_PX && r.left < edge - EPSILON_PX;
     });
     if (!target) {
-      target = reversed.find((col) => col.getBoundingClientRect().right <= edge + EPSILON_PX);
+      target = reversed.find((col) => rectOf(col).right <= edge + EPSILON_PX);
     }
     if (!target) return;
-    const delta = target.getBoundingClientRect().left - edge;
-    if (Math.abs(delta) > EPSILON_PX) animateScrollLeftBy(delta);
+    const delta = rectOf(target).left - edge;
+    if (Math.abs(delta) > EPSILON_PX) slideScrollLeftTo(baseLeft + delta);
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
@@ -127,12 +132,27 @@ export function attachBoardArrowKeyScroll(container: HTMLElement): () => void {
     scrollToRevealColumn(e.key === "ArrowRight" ? 1 : -1);
   };
 
+  // A press on the board (a drag-scroll starting) or a sideways wheel scroll takes over from a slide under way (the
+  // browser stops its own slide for them) — so the next key press works from wherever the board then is.
+  const onWheel = (e: WheelEvent) => {
+    if (slideTargetLeft !== null && (e.deltaX !== 0 || e.shiftKey)) endSlide();
+  };
+
   container.addEventListener("mouseenter", onMouseEnter);
   container.addEventListener("mouseleave", onMouseLeave);
+  container.addEventListener("pointerdown", endSlide);
+  container.addEventListener("wheel", onWheel, { passive: true });
+  container.addEventListener("scroll", onScroll, { passive: true });
+  container.addEventListener("scrollend", endSlide);
   document.addEventListener("keydown", onKeyDown);
   return () => {
+    endSlide();
     container.removeEventListener("mouseenter", onMouseEnter);
     container.removeEventListener("mouseleave", onMouseLeave);
+    container.removeEventListener("pointerdown", endSlide);
+    container.removeEventListener("wheel", onWheel);
+    container.removeEventListener("scroll", onScroll);
+    container.removeEventListener("scrollend", endSlide);
     document.removeEventListener("keydown", onKeyDown);
   };
 }

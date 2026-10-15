@@ -32,6 +32,11 @@ export const smallButtonClass =
 export const primaryButtonClass =
   "inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-[11px] px-4 text-[12.5px] font-semibold text-white transition hover:brightness-105 disabled:opacity-60";
 export const primaryButtonStyle = { backgroundImage: "var(--brand-gradient)", boxShadow: "0 6px 16px rgba(0,100,214,0.22)" } as const;
+// A pop-up's close (X), in its top right corner: plain like iconRemoveButtonClass (no fill or border), but the X easier
+// to see — the main text colour rather than grey. Pointed at: a red circle behind it.
+// (iconRemoveButtonClass, below, is the quieter X for taking a row out of a list.)
+export const modalCloseButtonClass =
+  "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[var(--text-main)] transition hover:bg-[var(--danger-soft)] hover:text-[var(--danger)] disabled:opacity-40";
 export const iconRemoveButtonClass =
   "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] text-[var(--text-muted)] transition hover:bg-[var(--danger-soft)] hover:text-[var(--danger)] disabled:opacity-40";
 export const gripClass =

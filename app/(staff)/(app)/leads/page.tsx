@@ -3,8 +3,22 @@
 import { activeDateTime, useCompanyFormats } from "@/lib/company-formats";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type TouchEvent as ReactTouchEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { createPortal } from "react-dom";
-import { ChevronsLeftRight, ChevronsRightLeft, ChevronUp, ImagePlus, Inbox, Kanban, LayoutGrid, Plus, Rows3, Search, X } from "lucide-react";
+import { Activity, ArrowUpDown, CalendarDays, CheckCircle2, ChevronsLeftRight, ChevronsRightLeft, ImagePlus, Inbox, Kanban, ListFilter, Mail, MapPin, Phone, Plus, Rows3, Search, Sparkles, UserX, X } from "lucide-react";
+import { DASHBOARD_STAT_CARDS_UPDATED_EVENT, readDashboardStatCardsEnabled } from "@/lib/ui-preferences";
+import { flatPageBg } from "@/lib/flat-page";
+import { GlassDropdown } from "@/components/glass-dropdown";
 import { FullscreenImageViewerShell } from "@/components/fullscreen-image-viewer-shell";
+import { glassFieldClass, modalCloseButtonClass, primaryButtonClass, primaryButtonStyle, secondaryButtonClass } from "@/components/settings-ui";
+import { LeadFormFields } from "@/components/lead-form-fields";
+import {
+  collectLeadFormAnswers,
+  leadFormFieldLayout,
+  MANUAL_LEAD_SOURCES,
+  normalizeLeadForms,
+  type LeadForm,
+  type LeadFormAnswers,
+} from "@/lib/lead-forms";
+import { isPreviewMode } from "@/lib/preview-mode";
 import { useBoardStickyRef } from "@/lib/board-sticky-scroll";
 import { collapseBoardColumnAnimated, expandBoardColumnAnimated } from "@/lib/board-column-collapse";
 import { BoardColumnFrame, ColumnCollapseChevrons } from "@/components/board-column-frame";
@@ -659,6 +673,91 @@ function buildLeadProjectPrefill(lead: CompanyLeadRow, fieldLayout: LeadFieldLay
   };
 }
 
+// The stat cards across the top (the Dashboard's): leads still being worked on, new ones, converted ones (by their
+// status — a lead made into a project isn't necessarily sold), and active ones no one's been assigned yet. phoneLabel:
+// what a phone's narrow card says instead.
+const LEAD_STAT_CARDS = [
+  { label: "Active", phoneLabel: "Active", key: "active", icon: Activity, iconFrom: "#F3CD6C", iconTo: "#DC9A1F" },
+  { label: "New", phoneLabel: "New", key: "new", icon: Sparkles, iconFrom: "#6EB4FF", iconTo: "#3577E0" },
+  { label: "Converted", phoneLabel: "Converted", key: "converted", icon: CheckCircle2, iconFrom: "#6BC79A", iconTo: "#2E8C5C" },
+  { label: "Unassigned", phoneLabel: "Unassigned", key: "unassigned", icon: UserX, iconFrom: "#A796F0", iconTo: "#6E56D9" },
+] as const;
+// Which statuses count as converted, or closed without converting (so not active) — by name, since each company names
+// its own.
+const LEAD_CONVERTED_STATUS = /convert|won|sold|accepted|signed/i;
+const LEAD_CLOSED_STATUS = /lost|closed|declin|dead|reject|cancel|unsuccess|no sale|not interested|spam/i;
+
+// The list view's rows (the Dashboard's list): a colour across a row that fades out over its last 72px at each end
+// instead of stopping in a hard edge — the hover highlight, and the line between rows (a 1px line along the bottom of
+// the row, in its background).
+function fadedAcrossRow(color: string) {
+  return `linear-gradient(90deg, transparent 0, ${color} 72px, ${color} calc(100% - 72px), transparent 100%)`;
+}
+function fadedRowLineStyle(lineColor: string, rowBackground = "none"): React.CSSProperties {
+  return {
+    backgroundImage: `${fadedAcrossRow(lineColor)}, ${rowBackground}`,
+    backgroundSize: "100% 1px, 100% 100%",
+    backgroundPosition: "left bottom, left top",
+    backgroundRepeat: "no-repeat",
+  };
+}
+// A lead in the list view: its name (first and last — the name a project made from it gets), phone, email and suburb
+// (found as a project made from it finds them — buildLeadProjectPrefill — the suburb from a suburb field, else a town
+// or city one), and when it came in (in the company's date format, with the time).
+// The fields on a lead's card (none chosen: its first three) and in its pop-up (none chosen: all of them).
+function leadRowFields(layout: LeadFieldLayoutRow[]) {
+  const configured = layout.filter((field) => field.showInRow);
+  return configured.length > 0 ? configured : layout.slice(0, 3);
+}
+
+function leadDetailFields(layout: LeadFieldLayoutRow[]) {
+  const configured = layout.filter((field) => field.showInDetail);
+  return configured.length > 0 ? configured : layout;
+}
+
+function leadListDetails(lead: CompanyLeadRow, fieldLayout: LeadFieldLayoutRow[]) {
+  const fields = getLeadDynamicFields(lead);
+  const mapped = (target: LeadProjectFieldTarget) => {
+    const row = fieldLayout.find((item) => item.projectFieldTarget === target);
+    return row ? fields.find((field) => normalizeLeadFieldKey(field.key) === normalizeLeadFieldKey(row.key)) ?? null : null;
+  };
+  const email =
+    mapped("clientEmail") ||
+    findBestLeadField(fields, [/email/, /e-mail/], (field) => isLikelyEmailValue(field.value)) ||
+    fields.find((field) => isLikelyEmailValue(field.value)) ||
+    null;
+  const phone =
+    mapped("clientPhone") ||
+    findBestLeadField(fields, [/phone/, /mobile/, /cell/, /contact/], (field) => isLikelyPhoneValue(field.value)) ||
+    fields.find((field) => isLikelyPhoneValue(field.value)) ||
+    null;
+  const suburb = findBestLeadField(fields, [/(^|[^a-z])suburb([^a-z]|$)/]) || findBestLeadField(fields, [/town/, /city/]) || null;
+  return {
+    name: leadClientName(fields, fieldLayout) || lead.name || lead.email || lead.phone || "Untitled Lead",
+    phone: String(phone?.value || lead.phone || "").trim(),
+    email: String(email?.value || lead.email || "").trim(),
+    suburb: String(suburb?.value || "").trim(),
+    received: activeDateTime(lead.createdAtIso || lead.submittedAtIso || "") || "-",
+  };
+}
+
+// The lead pop-up's colour: its status's, washed softly across it — brightest from the top left — as the Calendar's
+// event pop-up does with its category's.
+function leadPopupTintStyle(color: string): React.CSSProperties {
+  return {
+    backgroundImage: [
+      `radial-gradient(120% 70% at 0% 0%, color-mix(in srgb, ${color} 30%, transparent), transparent 70%)`,
+      `radial-gradient(90% 60% at 100% 100%, color-mix(in srgb, ${color} 14%, transparent), transparent 70%)`,
+      `linear-gradient(to bottom, color-mix(in srgb, ${color} 10%, transparent), color-mix(in srgb, ${color} 5%, transparent))`,
+    ].join(", "),
+  };
+}
+// Its white see-through boxes (each field, and its plain buttons), as the Calendar's event pop-up's.
+const LEAD_POPUP_BOX_STYLE: React.CSSProperties = {
+  borderColor: "var(--glass-border)",
+  backgroundColor: "color-mix(in srgb, var(--panel-bg) 55%, transparent)",
+};
+
 export default function LeadsPage() {
   // Re-render when the company's date format changes.
   useCompanyFormats();
@@ -668,6 +767,16 @@ export default function LeadsPage() {
   // in app/(app)/projects/[projectId]/page.tsx's own comment for the fuller reasoning.
   const isUserVerified = Boolean(user?.verified);
   const [themeMode, setThemeMode] = useState<ThemeMode>("light");
+  // The list view's colours — the Dashboard list's own (its dashboardPalette).
+  const leadsListPalette =
+    themeMode === "dark"
+      ? { panelBg: "#212121", border: "#3f3f46", text: "#f1f1f1", textMuted: "#aaaaaa", textSoft: "#c9d1d9", rowHover: "#2a2a2a" }
+      : { panelBg: "#ffffff", border: "#D7DEE8", text: "#111827", textMuted: "#64748B", textSoft: "#475467", rowHover: "#F2F6FC" };
+  // The toolbar's colours — the Dashboard toolbar's own (its dashboardPalette), so the two pages match.
+  const leadsToolbarPalette =
+    themeMode === "dark"
+      ? { panelBg: "#212121", border: "#3f3f46", text: "#f1f1f1", textMuted: "#aaaaaa", inputText: "#f1f1f1" }
+      : { panelBg: "#ffffff", border: "#D7DEE8", text: "#111827", textMuted: "#64748B", inputText: "#5B6472" };
   const access = useCompanyAccess();
   const activeCompanyId = access.companyId;
   const canAccessLeads = access.status === "ready" && (isOwnerOrAdmin(access.role) || hasPermissionKey(access.permissionKeys, "leads.view"));
@@ -716,6 +825,38 @@ export default function LeadsPage() {
   const [isBoardCardsCompact, setIsBoardCardsCompact] = useState(false);
   const [compactCardOverrides, setCompactCardOverrides] = useState<Record<string, boolean>>({});
   const [isToolbarExpanded, setIsToolbarExpanded] = useState(true);
+  // Phone: the search circle opening into the full bar as soon as it's touched (the Dashboard's — see its toolbar).
+  const [searchOpening, setSearchOpening] = useState(false);
+  // Phone (list view): the filter button's status menu or the order button's menu, and where it opens.
+  const [leadsPhoneMenu, setLeadsPhoneMenu] = useState<{ kind: "status" | "order"; left: number; top: number; width: number } | null>(null);
+  useEffect(() => {
+    if (!leadsPhoneMenu) return;
+    const close = () => setLeadsPhoneMenu(null);
+    // A press outside closes it (the buttons that open it toggle it themselves).
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("[data-leads-phone-menu='true'], [data-leads-phone-menu-trigger='true']")) return;
+      close();
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("resize", close);
+    window.addEventListener("scroll", close, true);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("resize", close);
+      window.removeEventListener("scroll", close, true);
+    };
+  }, [leadsPhoneMenu]);
+  const openLeadsPhoneMenu = (kind: "status" | "order", event: ReactMouseEvent<HTMLElement>) => {
+    if (leadsPhoneMenu?.kind === kind) {
+      setLeadsPhoneMenu(null);
+      return;
+    }
+    const rect = event.currentTarget.getBoundingClientRect();
+    const menuWidth = 200;
+    const centeredLeft = rect.left + rect.width / 2 - menuWidth / 2;
+    setLeadsPhoneMenu({ kind, left: Math.min(Math.max(8, centeredLeft), window.innerWidth - menuWidth - 8), top: rect.bottom + 4, width: menuWidth });
+  };
   const [boardPrefsHydrated, setBoardPrefsHydrated] = useState(false);
   // Loads this user+company's saved board preferences (collapsed columns,
   // compact cards) once both are known. Deliberately kept separate from the
@@ -737,6 +878,8 @@ export default function LeadsPage() {
     // handle — the whole point is that it's visible from the start so
     // people discover it, only their own explicit collapse should hide it.
     let nextToolbarExpanded = true;
+    // The view they last chose (columns or list) stays until they change it — columns the first time.
+    let nextViewMode: "board" | "grid" = "board";
     try {
       const raw = window.localStorage.getItem(leadsBoardPrefsStorageKey(currentUserUid, activeCompanyId));
       const parsed = raw ? JSON.parse(raw) : null;
@@ -753,6 +896,9 @@ export default function LeadsPage() {
         if (typeof parsed.toolbarExpanded === "boolean") {
           nextToolbarExpanded = parsed.toolbarExpanded;
         }
+        if (parsed.viewMode === "board" || parsed.viewMode === "grid") {
+          nextViewMode = parsed.viewMode;
+        }
       }
     } catch {}
     setCollapsedStatusColumns(nextCollapsed);
@@ -761,6 +907,7 @@ export default function LeadsPage() {
     setIsBoardCardsCompact(nextCompact);
     setCompactCardOverrides(nextCardOverrides);
     setIsToolbarExpanded(nextToolbarExpanded);
+    setLeadsViewMode(nextViewMode);
     setBoardPrefsHydrated(true);
   }, [currentUserUid, activeCompanyId]);
   // Persists on every change, but only once hydration above has actually
@@ -781,10 +928,11 @@ export default function LeadsPage() {
           compactCards: isBoardCardsCompact,
           compactCardOverrides,
           toolbarExpanded: isToolbarExpanded,
+          viewMode: leadsViewMode,
         }),
       );
     } catch {}
-  }, [collapsedStatusColumns, leadColumnSorts, leadBoardSort, isBoardCardsCompact, compactCardOverrides, isToolbarExpanded, boardPrefsHydrated, currentUserUid, activeCompanyId]);
+  }, [collapsedStatusColumns, leadColumnSorts, leadBoardSort, isBoardCardsCompact, compactCardOverrides, isToolbarExpanded, leadsViewMode, boardPrefsHydrated, currentUserUid, activeCompanyId]);
   // The sort choices are saved on the user's own profile (lib/board-sort-prefs.ts), so they follow
   // them to any device — the browser copy above only shows them straight away while that loads.
   // Nothing is saved until the profile's copy has loaded (null), so it's never overwritten unseen.
@@ -873,8 +1021,14 @@ export default function LeadsPage() {
   // open the lead's detail modal right after dropping it into a new column.
   const suppressNextLeadCardClickRef = useRef("");
   const [listOrder, setListOrder] = useState<"status" | "az" | "za" | "newest" | "oldest">("newest");
+  // The list view (the Dashboard's): how many rows a page shows, the row under the pointer, a row's status menu (where it
+  // opens), and whether its column headings have stuck under the top bar.
+  const [listPageSize, setListPageSize] = useState(20);
+  const [hoveredLeadRowId, setHoveredLeadRowId] = useState("");
+  const [listStatusMenu, setListStatusMenu] = useState<{ leadId: string; left: number; top: number; width: number } | null>(null);
+  const [isLeadsListHeaderStuck, setIsLeadsListHeaderStuck] = useState(false);
+  const leadsListHeadRef = useRef<HTMLTableSectionElement | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [companyName, setCompanyName] = useState("");
   const [companyThemeColor, setCompanyThemeColor] = useState("#2F6BFF");
   const [leadStatusRows, setLeadStatusRows] = useState<StatusRow[]>(normalizeLeadStatuses(undefined));
   const [fieldLayout, setFieldLayout] = useState<LeadFieldLayoutRow[]>([]);
@@ -897,7 +1051,9 @@ export default function LeadsPage() {
   const effectiveCardStatusMenuLeadId = shouldRenderCardStatusMenu
     ? cardStatusMenuLeadId || lastCardStatusMenuLeadIdRef.current
     : "";
-  const [leadFormUrl, setLeadFormUrl] = useState("");
+  // The company's lead forms (Company Settings → Leads; lib/lead-forms.ts) — Create Lead's questions, and how a lead
+  // from one of them is shown.
+  const [leadForms, setLeadForms] = useState<LeadForm[]>([]);
   const [companyMembers, setCompanyMembers] = useState<CompanyMemberOption[]>([]);
   const [assignModalOrigin, setAssignModalOrigin] = useState<GlassModalOrigin>(null);
   const [leadImagesModalOrigin, setLeadImagesModalOrigin] = useState<GlassModalOrigin>(null);
@@ -915,6 +1071,20 @@ export default function LeadsPage() {
   const shouldRenderLeadDetailModal = useGlassModalPopOrigin(Boolean(selectedLeadId), leadDetailModalOrigin, leadDetailModalPanelRef, undefined, leadDetailModalOriginElRef);
   const shouldRenderAssignModal = useGlassModalPopOrigin(Boolean(assignLeadId), assignModalOrigin, assignModalPanelRef, undefined, assignModalOriginElRef);
   const shouldRenderDeleteConfirmModal = useGlassModalPopOrigin(Boolean(confirmDeleteLeadId), deleteConfirmModalOrigin, deleteConfirmModalPanelRef, undefined, deleteConfirmModalOriginElRef);
+  // Create Lead: one of the company's lead forms, filled in by a staff member in a pop-up — plus how the lead came in,
+  // its status and who it's assigned to (app/api/leads/manual).
+  const [leadFormModalOpen, setLeadFormModalOpen] = useState(false);
+  const [leadFormModalOrigin, setLeadFormModalOrigin] = useState<GlassModalOrigin>(null);
+  const leadFormModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const leadFormModalOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderLeadFormModal = useGlassModalPopOrigin(leadFormModalOpen, leadFormModalOrigin, leadFormModalPanelRef, undefined, leadFormModalOriginElRef);
+  const [createLeadFormId, setCreateLeadFormId] = useState("");
+  const [createLeadAnswers, setCreateLeadAnswers] = useState<LeadFormAnswers>({});
+  const [createLeadErrors, setCreateLeadErrors] = useState<Record<string, string>>({});
+  const [createLeadSource, setCreateLeadSource] = useState<string>(MANUAL_LEAD_SOURCES[0]);
+  const [createLeadStatus, setCreateLeadStatus] = useState("");
+  const [createLeadSaving, setCreateLeadSaving] = useState(false);
+  const [createLeadMessage, setCreateLeadMessage] = useState("");
   const [assignSearch, setAssignSearch] = useState("");
   const [assignSelectedUid, setAssignSelectedUid] = useState("");
   const [assigningLeadId, setAssigningLeadId] = useState("");
@@ -1139,10 +1309,9 @@ export default function LeadsPage() {
           { attempts: 2, delayMs: 250 },
         );
         if (cancelled) return;
-        setCompanyName(String(companyDoc?.name || "").trim());
         setCompanyThemeColor(String(companyDoc?.themeColor || "").trim() || "#2F6BFF");
         setCurrentUserPinColor(String(userColorMap[String(user?.uid || "").trim()] || "").trim());
-        setLeadFormUrl(String(companyDoc?.salesLeadFormUrl || "").trim());
+        setLeadForms(normalizeLeadForms((companyDoc as Record<string, unknown> | null)?.leadForms));
         setLeadStatusRows(normalizeLeadStatuses((companyDoc as Record<string, unknown> | null)?.leadStatuses));
         setFieldLayout(
           normalizeLeadFieldLayout(
@@ -1270,6 +1439,9 @@ export default function LeadsPage() {
     const seen = new Set<string>();
     const columns: Array<{ key: string; label: string }> = [];
     for (const lead of leads) {
+      // A lead from one of the company's own forms, or its leads email inbox, has a layout of its own
+      // (fieldLayoutForLead).
+      if (lead.formId || lead.source === "email") continue;
       for (const field of getLeadDynamicFields(lead)) {
         const normalized = normalizeLeadFieldKey(field.key);
         if (!normalized || seen.has(normalized)) continue;
@@ -1285,6 +1457,56 @@ export default function LeadsPage() {
   const mergedFieldLayout = useMemo(
     () => mergeLeadFieldLayout(availableFields, fieldLayout),
     [availableFields, fieldLayout],
+  );
+  // How a lead's fields are shown — its card, its pop-up, its name, what it fills in on a project. A lead from one of
+  // the company's lead forms: that form's questions (lib/lead-forms.ts), then any answers it has to questions since
+  // taken out; one whose form has since been deleted: its own answers, as they were filed. A lead from the leads email
+  // inbox (app/api/leads/email-inbound): who it's from and how to reach them, the subject, anything else the email
+  // said, then the message — its phone and subject on its card. Any other lead: the Zapier field layout above.
+  const leadFormsById = useMemo(() => new Map(leadForms.map((form) => [form.id, form] as const)), [leadForms]);
+  const fieldLayoutForLead = useCallback(
+    (lead: CompanyLeadRow | null | undefined): LeadFieldLayoutRow[] => {
+      const formId = String(lead?.formId || "").trim();
+      if (lead && !formId && lead.source === "email") {
+        const order = ["name", "email", "phone", "address", "subject"];
+        const last = ["attachments", "message"];
+        const rank = (key: string) => {
+          const normalized = normalizeLeadFieldKey(key);
+          if (order.includes(normalized)) return order.indexOf(normalized);
+          if (last.includes(normalized)) return 100 + last.indexOf(normalized);
+          return 50;
+        };
+        const targets: Record<string, LeadProjectFieldTarget> = {
+          name: "clientName",
+          email: "clientEmail",
+          phone: "clientPhone",
+          address: "projectAddress",
+          message: "projectNotes",
+        };
+        return getLeadDynamicFields(lead)
+          .sort((a, b) => rank(a.key) - rank(b.key) || a.key.localeCompare(b.key))
+          .map((field, index) => ({
+            key: field.key,
+            label: field.label,
+            showInRow: ["phone", "subject"].includes(normalizeLeadFieldKey(field.key)),
+            showInDetail: true,
+            order: index,
+            projectFieldTarget: targets[normalizeLeadFieldKey(field.key)] ?? "",
+          }));
+      }
+      if (!lead || !formId) return mergedFieldLayout;
+      const form = leadFormsById.get(formId);
+      const rows: LeadFieldLayoutRow[] = form ? leadFormFieldLayout(form, lead.formFieldKeys) : [];
+      const known = new Set(rows.map((row) => normalizeLeadFieldKey(row.key)));
+      for (const field of getLeadDynamicFields(lead)) {
+        const normalized = normalizeLeadFieldKey(field.key);
+        if (known.has(normalized)) continue;
+        known.add(normalized);
+        rows.push({ key: field.key, label: field.label, showInRow: !form && rows.length < 2, showInDetail: true, order: rows.length, projectFieldTarget: "" });
+      }
+      return rows;
+    },
+    [leadFormsById, mergedFieldLayout],
   );
 
   const filteredLeads = useMemo(() => {
@@ -1306,7 +1528,7 @@ export default function LeadsPage() {
     const sorted = [...filtered];
       const leadLabel = (lead: CompanyLeadRow) => {
         const fields = getLeadDynamicFields(lead);
-        const derivedName = leadClientName(fields, mergedFieldLayout);
+        const derivedName = leadClientName(fields, fieldLayoutForLead(lead));
         const firstVisible = fields[0]?.value || "";
         return String(derivedName || firstVisible || lead.name || lead.email || lead.phone || "").trim().toLowerCase();
       };
@@ -1331,8 +1553,63 @@ export default function LeadsPage() {
       });
     }
     return sorted;
-  }, [leads, listOrder, search, statusFilter]);
+  }, [fieldLayoutForLead, leads, listOrder, search, statusFilter]);
 
+  // The list view shows a page of rows at a time, the next page coming in as it's scrolled near the bottom (or straight
+  // away while there's nothing to scroll) — back to one page whenever the search, filter, order or page size changes.
+  const listRevealKey = `${search}|${statusFilter}|${listOrder}|${listPageSize}`;
+  const [listReveal, setListReveal] = useState({ key: "", count: 20 });
+  const listVisibleCount = listReveal.key === listRevealKey ? listReveal.count : listPageSize;
+  const visibleListLeads = useMemo(() => filteredLeads.slice(0, listVisibleCount), [filteredLeads, listVisibleCount]);
+  useEffect(() => {
+    if (leadsViewMode !== "grid") return;
+    let ticking = false;
+    const loadOneMore = () =>
+      setListReveal((prev) => {
+        const current = prev.key === listRevealKey ? prev.count : listPageSize;
+        return current >= filteredLeads.length ? prev : { key: listRevealKey, count: Math.min(filteredLeads.length, current + listPageSize) };
+      });
+    // Whichever is scrolling — the page (desktop) or <main> (below 1024px).
+    const nearBottom = () => {
+      const main = document.querySelector("main");
+      const pageNear = window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 600;
+      const mainNear = Boolean(main && main.scrollHeight > main.clientHeight && main.scrollTop + main.clientHeight >= main.scrollHeight - 600);
+      return pageNear || mainNear;
+    };
+    const check = () => {
+      ticking = false;
+      if (nearBottom()) loadOneMore();
+      setIsLeadsListHeaderStuck(Boolean(leadsListHeadRef.current && leadsListHeadRef.current.getBoundingClientRect().top <= 49));
+    };
+    const onScrollOrResize = () => {
+      if (ticking) return;
+      ticking = true;
+      window.requestAnimationFrame(check);
+    };
+    const first = window.requestAnimationFrame(check);
+    const main = document.querySelector("main");
+    const canScroll = document.documentElement.scrollHeight > window.innerHeight + 40 || Boolean(main && main.scrollHeight > main.clientHeight + 40);
+    const noScrollbarTimer = !canScroll && listVisibleCount < filteredLeads.length ? window.setTimeout(loadOneMore, 200) : null;
+    document.addEventListener("scroll", onScrollOrResize, { capture: true, passive: true });
+    window.addEventListener("resize", onScrollOrResize);
+    return () => {
+      window.cancelAnimationFrame(first);
+      if (noScrollbarTimer) window.clearTimeout(noScrollbarTimer);
+      document.removeEventListener("scroll", onScrollOrResize, { capture: true });
+      window.removeEventListener("resize", onScrollOrResize);
+    };
+  }, [leadsViewMode, filteredLeads.length, listPageSize, listVisibleCount, listRevealKey]);
+  // A row's status menu: a click anywhere else closes it.
+  useEffect(() => {
+    if (!listStatusMenu) return;
+    const onPointerDown = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("[data-lead-status-menu='true'], [data-lead-status-trigger='true']")) return;
+      setListStatusMenu(null);
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [listStatusMenu]);
   // Board view ignores `statusFilter` (every status gets its own column) but
   // still respects the search box, matching the grid's search behavior.
   const searchFilteredLeads = useMemo(() => {
@@ -1349,9 +1626,9 @@ export default function LeadsPage() {
     (lead: CompanyLeadRow): BoardCardSortInfo => ({
       key: leadBoardKey(lead),
       dateMs: leadDateMs(lead),
-      name: leadClientName(getLeadDynamicFields(lead), mergedFieldLayout) || lead.name || lead.email || lead.phone || "",
+      name: leadClientName(getLeadDynamicFields(lead), fieldLayoutForLead(lead)) || lead.name || lead.email || lead.phone || "",
     }),
-    [mergedFieldLayout],
+    [fieldLayoutForLead],
   );
   // A column's order for this user: the board-wide sort while one is set, else the column's own.
   const leadColumnSortFor = (columnName: string): BoardSortMode =>
@@ -1372,14 +1649,17 @@ export default function LeadsPage() {
   }, [searchFilteredLeads, leadStatusRows, leadBoardSort, leadColumnSorts, leadSortInfo]);
 
   const newCount = filteredLeads.filter((lead) => String(lead.status || "").trim().toLowerCase() === "new").length;
-  const rowFields = useMemo(() => {
-    const configured = mergedFieldLayout.filter((field) => field.showInRow);
-    return configured.length > 0 ? configured : mergedFieldLayout.slice(0, 3);
-  }, [mergedFieldLayout]);
-  const detailFields = useMemo(() => {
-    const configured = mergedFieldLayout.filter((field) => field.showInDetail);
-    return configured.length > 0 ? configured : mergedFieldLayout;
-  }, [mergedFieldLayout]);
+  // The stat cards: on or off with User Settings' Stat Cards (the Dashboard's own switch).
+  const [leadStatCardsEnabled, setLeadStatCardsEnabled] = useState(true);
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => setLeadStatCardsEnabled(readDashboardStatCardsEnabled()));
+    const onUpdated = (event: Event) => setLeadStatCardsEnabled((event as CustomEvent<{ enabled: boolean }>).detail?.enabled ?? true);
+    window.addEventListener(DASHBOARD_STAT_CARDS_UPDATED_EVENT, onUpdated as EventListener);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener(DASHBOARD_STAT_CARDS_UPDATED_EVENT, onUpdated as EventListener);
+    };
+  }, []);
   const leadStatusColorByName = useMemo(() => {
     const map = new Map<string, string>();
     for (const row of leadStatusRows) {
@@ -1391,6 +1671,73 @@ export default function LeadsPage() {
     const options = leadStatusRows.map((row) => row.name).filter(Boolean);
     return options.length ? options : ["New", "Contacted", "Qualified", "Converted"];
   }, [leadStatusRows]);
+  // Their numbers, from every lead (not the search or filter): active — not converted, nor closed without converting;
+  // new — in the first status (New); converted; and unassigned — active ones with no one assigned. "+ N this week":
+  // those that came in since Monday (converted ones: changed since Monday).
+  const leadStats = useMemo(() => {
+    const weekStart = new Date();
+    weekStart.setDate(weekStart.getDate() - ((weekStart.getDay() + 6) % 7));
+    weekStart.setHours(0, 0, 0, 0);
+    const since = (iso: string | undefined) => {
+      const ms = Date.parse(String(iso || ""));
+      return Number.isFinite(ms) && ms >= weekStart.getTime();
+    };
+    const statusOf = (lead: CompanyLeadRow) => String(lead.status || "").trim();
+    const firstStatus = String(leadStatusOptions[0] || "New").trim().toLowerCase();
+    const converted = leads.filter((lead) => LEAD_CONVERTED_STATUS.test(statusOf(lead)));
+    const active = leads.filter((lead) => !LEAD_CONVERTED_STATUS.test(statusOf(lead)) && !LEAD_CLOSED_STATUS.test(statusOf(lead)));
+    const fresh = leads.filter((lead) => (statusOf(lead).toLowerCase() || firstStatus) === firstStatus);
+    const received = (lead: CompanyLeadRow) => since(lead.createdAtIso || lead.submittedAtIso);
+    const unassigned = active.filter((lead) => !String(lead.assignedToUid || lead.assignedToName || lead.assignedTo || "").trim());
+    return {
+      values: {
+        active: String(active.length),
+        new: String(fresh.length),
+        converted: String(converted.length),
+        unassigned: String(unassigned.length),
+      },
+      weekly: {
+        active: active.filter(received).length,
+        new: fresh.filter(received).length,
+        converted: converted.filter((lead) => since(lead.updatedAtIso)).length,
+        unassigned: unassigned.filter(received).length,
+      },
+    };
+  }, [leads, leadStatusOptions]);
+  // The status column fits the longest status name (the Dashboard's sizing).
+  const listStatusPillWidthPx = useMemo(() => {
+    const maxLen = leadStatusOptions.reduce((max, name) => Math.max(max, String(name || "").trim().length), 0);
+    return maxLen === 0 ? 120 : Math.ceil(maxLen * 7) + 40;
+  }, [leadStatusOptions]);
+  const listStatusColumnWidthPx = listStatusPillWidthPx + 20;
+  // A row's status pill: opens its status menu just under it (or above, without room below), as the Dashboard's.
+  const openListStatusMenu = (event: ReactMouseEvent<HTMLElement>, lead: CompanyLeadRow) => {
+    event.stopPropagation();
+    if (statusUpdatingLeadId === lead.id) return;
+    if (listStatusMenu?.leadId === lead.id) {
+      setListStatusMenu(null);
+      return;
+    }
+    const rect = event.currentTarget.getBoundingClientRect();
+    const isPhoneMenu = window.matchMedia("(max-width: 767px)").matches;
+    const estimatedMenuHeight = leadStatusOptions.length * (isPhoneMenu ? 50 : 38) + 8;
+    const hasRoomBelow = rect.bottom + estimatedMenuHeight <= window.innerHeight - 8;
+    const hasRoomAbove = rect.top - estimatedMenuHeight >= 8;
+    const menuWidth = Math.max(isPhoneMenu ? 170 : 120, Math.round(rect.width));
+    setListStatusMenu({
+      leadId: lead.id,
+      left: Math.min(Math.max(8, rect.left), window.innerWidth - menuWidth - 8),
+      top: !hasRoomBelow && hasRoomAbove ? Math.max(8, rect.top - estimatedMenuHeight - 4) : rect.bottom + 4,
+      width: menuWidth,
+    });
+  };
+  const openLeadFromListRow = (element: HTMLElement, lead: CompanyLeadRow) => {
+    leadDetailModalOriginElRef.current = element;
+    const rect = element.getBoundingClientRect();
+    setLeadDetailModalOrigin({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+    setSelectedLeadId(lead.id);
+  };
+
   const leadStatusPillStyle = (statusLabel: string) => {
     const configured = leadStatusColorByName.get(String(statusLabel || "").trim().toLowerCase());
     if (configured) {
@@ -1404,8 +1751,8 @@ export default function LeadsPage() {
   );
   const assignLeadName = useMemo(() => {
     if (!assignLead) return "Untitled Lead";
-    return leadClientName(getLeadDynamicFields(assignLead), mergedFieldLayout) || assignLead.name || "Untitled Lead";
-  }, [assignLead, mergedFieldLayout]);
+    return leadClientName(getLeadDynamicFields(assignLead), fieldLayoutForLead(assignLead)) || assignLead.name || "Untitled Lead";
+  }, [assignLead, fieldLayoutForLead]);
   const filteredCompanyMembers = useMemo(() => {
     const query = String(assignSearch || "").trim().toLowerCase();
     if (!query) return companyMembers;
@@ -1445,7 +1792,7 @@ export default function LeadsPage() {
     [leadImageCachedSrcMap],
   );
   const leadImageClientName = leadImagesLead
-    ? leadClientName(getLeadDynamicFields(leadImagesLead), mergedFieldLayout) || leadImagesLead.name || "Untitled Lead"
+    ? leadClientName(getLeadDynamicFields(leadImagesLead), fieldLayoutForLead(leadImagesLead)) || leadImagesLead.name || "Untitled Lead"
     : "Untitled Lead";
   const getLeadAnnotationRenderPoint = useCallback(
     (annotation: { x: number; y: number; xPx?: number; yPx?: number }) => {
@@ -2035,7 +2382,7 @@ export default function LeadsPage() {
       event.dataTransfer.setDragImage(leadBoardDragGhost.transparentImageRef.current, 0, 0);
     }
     const displayName =
-      leadClientName(getLeadDynamicFields(lead), mergedFieldLayout) ||
+      leadClientName(getLeadDynamicFields(lead), fieldLayoutForLead(lead)) ||
       lead.name || lead.email || lead.phone || "Untitled Lead";
     const color = String(leadStatusPillStyle(lead.status || "New").backgroundColor || "");
     leadBoardDragGhost.spawn(event, `lead-board-name-${lead.id}`, { label: displayName, color });
@@ -2159,7 +2506,7 @@ export default function LeadsPage() {
       current.dragging = true;
       setDraggingLeadId(lead.id);
       const displayName =
-        leadClientName(getLeadDynamicFields(lead), mergedFieldLayout) ||
+        leadClientName(getLeadDynamicFields(lead), fieldLayoutForLead(lead)) ||
         lead.name || lead.email || lead.phone || "Untitled Lead";
       const color = String(leadStatusPillStyle(lead.status || "New").backgroundColor || "");
       leadBoardDragGhost.spawn({ clientX: current.lastX, clientY: current.lastY }, `lead-board-name-${lead.id}`, { label: displayName, color });
@@ -2251,7 +2598,7 @@ export default function LeadsPage() {
     window.dispatchEvent(
       new CustomEvent<NewProjectPrefillPayload>(OPEN_NEW_PROJECT_EVENT, {
         detail: {
-          ...buildLeadProjectPrefill(fullLead, mergedFieldLayout),
+          ...buildLeadProjectPrefill(fullLead, fieldLayoutForLead(fullLead)),
           sourceLeadId: String(fullLead.id || "").trim(),
           sourceLeadCompanyId: String(fullLead.companyId || "").trim(),
         },
@@ -2409,10 +2756,123 @@ export default function LeadsPage() {
     setAssigningLeadId("");
   };
 
-  const openLeadForm = () => {
-    const url = String(leadFormUrl || "").trim();
-    if (!url || typeof window === "undefined") return;
-    window.open(url, "_blank", "noopener,noreferrer");
+  const createLeadForm = leadForms.find((form) => form.id === createLeadFormId) ?? leadForms[0] ?? null;
+  const createLeadFormStorageKey = `cutsmart_create_lead_form:${activeCompanyId}`;
+
+  const openLeadForm = (event: ReactMouseEvent<HTMLElement>) => {
+    leadFormModalOriginElRef.current = event.currentTarget;
+    setLeadFormModalOrigin(captureGlassModalOrigin(event));
+    // The form used last time on this device, while it's still there; else the first.
+    let lastFormId = "";
+    try {
+      lastFormId = window.localStorage.getItem(createLeadFormStorageKey) || "";
+    } catch {
+      lastFormId = "";
+    }
+    setCreateLeadFormId(leadForms.some((form) => form.id === lastFormId) ? lastFormId : (leadForms[0]?.id ?? ""));
+    setCreateLeadAnswers({});
+    setCreateLeadErrors({});
+    setCreateLeadMessage("");
+    setCreateLeadSource(MANUAL_LEAD_SOURCES[0]);
+    setCreateLeadStatus(leadStatusOptions[0] || "New");
+    setLeadFormModalOpen(true);
+  };
+
+  const closeLeadFormModal = () => {
+    if (createLeadSaving) return;
+    setLeadFormModalOpen(false);
+  };
+
+  const submitCreateLead = async () => {
+    const form = createLeadForm;
+    const cid = String(activeCompanyId || "").trim();
+    if (!form || !cid || createLeadSaving) return;
+    const result = collectLeadFormAnswers(form, createLeadAnswers, { skipRequired: true });
+    setCreateLeadErrors(result.errors);
+    if (Object.keys(result.errors).length > 0) {
+      setCreateLeadMessage("");
+      window.requestAnimationFrame(() => {
+        const firstBad = form.questions.find((question) => result.errors[question.id]);
+        if (firstBad) document.querySelector(`[data-lead-form-question="${CSS.escape(firstBad.id)}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" });
+      });
+      return;
+    }
+    if (result.answeredCount === 0) {
+      setCreateLeadMessage("Fill in at least one answer.");
+      return;
+    }
+    setCreateLeadSaving(true);
+    setCreateLeadMessage("");
+    // Nobody's yet (assign it from its pop-up) — except for someone who can only see their own leads: it's theirs.
+    const assigneeUid = canViewOtherLeads ? "" : currentUserUid;
+    try {
+      if (isPreviewMode()) {
+        // The Preview holds every server call (lib/preview-runtime.ts): the lead is one of its own sample leads instead.
+        const nowIso = new Date().toISOString();
+        const assignee = companyMembers.find((member) => member.uid === assigneeUid);
+        const row: CompanyLeadRow = {
+          id: `temporary-sample-lead-${Date.now().toString(36)}`,
+          companyId: cid,
+          name: result.contact.name,
+          email: result.contact.email,
+          phone: result.contact.phone,
+          message: result.contact.message,
+          formName: form.name,
+          formId: form.id,
+          formFieldKeys: result.formFieldKeys,
+          submittedAtIso: nowIso,
+          createdAtIso: nowIso,
+          updatedAtIso: nowIso,
+          source: "manual",
+          sourceDetail: createLeadSource,
+          status: createLeadStatus || leadStatusOptions[0] || "New",
+          assignedToUid: assignee?.uid || "",
+          assignedToName: assignee?.displayName || "",
+          assignedTo: assignee?.displayName || "",
+          imageItems: [],
+          imageUrls: [],
+          rawFields: result.rawFields,
+        };
+        sampleLeadsRef.current[cid] = [row, ...(sampleLeadsRef.current[cid] || [])];
+        persistSampleLeads(cid, sampleLeadsRef.current[cid]);
+      } else {
+        const response = await authorizedFetch("/api/leads/manual", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            companyId: cid,
+            formId: form.id,
+            answers: createLeadAnswers,
+            sourceDetail: createLeadSource,
+            status: createLeadStatus,
+            assignedToUid: assigneeUid,
+          }),
+        });
+        const detail = (await response.json().catch(() => null)) as { ok?: boolean; error?: string; errors?: Record<string, string> } | null;
+        if (!response.ok || !detail?.ok) {
+          if (detail?.errors) setCreateLeadErrors(detail.errors);
+          setCreateLeadMessage(
+            detail?.error === "form-not-found"
+              ? "That form has just been changed or deleted — close this and open Create Lead again."
+              : detail?.error === "invalid-answers"
+                ? "Check the answers marked in red."
+                : "Couldn't save the lead. Try again.",
+          );
+          return;
+        }
+      }
+      try {
+        window.localStorage.setItem(createLeadFormStorageKey, form.id);
+      } catch {
+        // just not remembered
+      }
+      setLeadFormModalOpen(false);
+      void loadLeads(cid);
+    } catch {
+      setCreateLeadMessage("Couldn't save the lead. Try again.");
+    } finally {
+      setCreateLeadSaving(false);
+    }
   };
 
   const closeLeadImagesModal = () => {
@@ -3144,8 +3604,10 @@ export default function LeadsPage() {
     const compact = Boolean(options?.compact);
     const effectiveCompact = compactCardOverrides[lead.id] ?? compact;
     const leadFields = getLeadDynamicFields(lead);
+    const leadLayout = fieldLayoutForLead(lead);
+    const rowFields = leadRowFields(leadLayout);
     const displayName =
-      leadClientName(leadFields, mergedFieldLayout) ||
+      leadClientName(leadFields, leadLayout) ||
       leadFields[0]?.value ||
       lead.name || lead.email || lead.phone || "Untitled Lead";
     const assignedUid = String(lead.assignedToUid || "").trim();
@@ -3304,7 +3766,7 @@ export default function LeadsPage() {
             {rowFields.length > 0 ? (
               <div className="space-y-1">
                 {rowFields.map((column) => {
-                  const value = resolveLeadColumnValue(leadFields, column, mergedFieldLayout);
+                  const value = resolveLeadColumnValue(leadFields, column, leadLayout);
                   return (
                     <p key={`${lead.id}:${column.key}`} className="truncate text-[12px]" style={{ color: boardMutedColor }}>
                       <span className="font-semibold" style={{ color: boardTextColor }}>{column.label}: </span>
@@ -3351,8 +3813,10 @@ export default function LeadsPage() {
     lastLeadDetailModalLeadRef.current = lead;
     const renderLead = leadDetailsById[lead.id] ?? lead;
     const leadFields = getLeadDynamicFields(renderLead);
+    const leadLayout = fieldLayoutForLead(renderLead);
+    const detailFields = leadDetailFields(leadLayout);
     const displayName =
-      leadClientName(leadFields, mergedFieldLayout) ||
+      leadClientName(leadFields, leadLayout) ||
       lead.name || lead.email || lead.phone || "Untitled Lead";
     const isDetailLoading = detailLoadingLeadId === lead.id && !leadDetailsById[lead.id];
     const assignedUid = String(lead.assignedToUid || "").trim();
@@ -3365,51 +3829,56 @@ export default function LeadsPage() {
         <div
           ref={leadDetailModalPanelRef}
           onClick={(e) => e.stopPropagation()}
-          className="glass-modal-panel relative flex flex-col overflow-hidden"
+          className="glass-modal-panel relative isolate flex flex-col overflow-hidden"
           style={{
             width: "min(560px, 96vw)",
             maxHeight: "min(720px, 90vh)",
           }}
         >
-          <div className="glass-modal-header flex h-[56px] shrink-0 items-center justify-between px-5">
-            <div className="flex min-w-0 items-center gap-2">
-              <p className="truncate text-[15px] font-bold" style={{ color: "var(--text-main)" }}>{displayName}</p>
-              <span className="shrink-0 rounded-full px-2.5 py-[2px] text-[10px] font-bold" style={leadStatusPillStyle(lead.status || "New")}>
-                {lead.status || "New"}
-              </span>
-            </div>
+          {/* The Calendar event pop-up's look: its status's colour washed across it, the X alone in the top right corner,
+              the status (a dropdown pill) over the lead's name, and each field in a white see-through box. All its text
+              black. */}
+          <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10" style={leadPopupTintStyle(String(leadStatusPillStyle(lead.status || "New").backgroundColor || companyThemeColor))} />
+          <div className="relative shrink-0 px-5 pb-3 pt-5">
             <button
               type="button"
               onClick={() => setSelectedLeadId("")}
-              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] border hover:brightness-95"
-              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+              className={`${modalCloseButtonClass} absolute right-3 top-3`}
               aria-label="Close lead details"
             >
               <X size={16} />
             </button>
+            {/* Its status, as a pill that's also the dropdown to change it — each status with its colour. */}
+            <div className="max-w-[calc(100%-48px)]">
+              <GlassDropdown
+                value={lead.status || "New"}
+                options={leadStatusOptions.map((option) => ({
+                  value: option,
+                  label: option,
+                  color: String(leadStatusPillStyle(option).backgroundColor || ""),
+                }))}
+                onChange={(next) => void onSelectLeadStatus(lead, next)}
+                disabled={statusUpdatingLeadId === lead.id}
+                hideTriggerDot
+                menuMinWidth={170}
+                ariaLabel="Lead status"
+                // The Create Project button's size (h-9, px-3, 12px bold, a 1px border — here in the pill's own colour).
+                triggerClassName="h-9 max-w-full gap-1.5! rounded-full border px-3 text-[12px] font-bold transition hover:brightness-95 disabled:cursor-wait"
+                triggerStyle={{
+                  ...leadStatusPillStyle(lead.status || "New"),
+                  borderColor: String(leadStatusPillStyle(lead.status || "New").backgroundColor || "transparent"),
+                }}
+              />
+            </div>
+            <h2 className="mt-2.5 pr-10 text-[22px] font-semibold leading-tight" style={{ color: "var(--text-main)" }}>
+              {displayName}
+            </h2>
           </div>
-          <div className="flex flex-wrap gap-1.5 border-b px-5 py-3" style={{ borderColor: "var(--glass-border)" }}>
-            {leadStatusOptions.map((option) => {
-              const active = String(lead.status || "").trim().toLowerCase() === option.toLowerCase();
-              return (
-                <button
-                  key={option}
-                  type="button"
-                  disabled={statusUpdatingLeadId === lead.id}
-                  onClick={() => void onSelectLeadStatus(lead, option)}
-                  className="rounded-full px-3 py-1 text-[11px] font-bold transition disabled:cursor-wait"
-                  style={{ ...leadStatusPillStyle(option), opacity: active ? 1 : 0.55 }}
-                >
-                  {option}
-                </button>
-              );
-            })}
-          </div>
-          <div className="flex flex-wrap gap-2 px-5 py-3">
+          <div className="flex shrink-0 flex-wrap gap-2 px-5 pb-4">
             <button
               type="button"
               onClick={() => void handleCreateProjectFromLead(renderLead)}
-              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-[8px] border px-3 text-[12px] font-bold text-white hover:brightness-95"
+              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95"
               style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
             >
               Create Project
@@ -3422,8 +3891,8 @@ export default function LeadsPage() {
                 setLeadImagesLeadId(lead.id);
                 setLeadImagesDragActive(false);
               }}
-              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-[8px] border px-3 text-[12px] font-bold hover:brightness-95"
-              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-full border px-3 text-[12px] font-bold hover:brightness-95"
+              style={{ ...LEAD_POPUP_BOX_STYLE, color: "var(--text-main)" }}
             >
               <ImagePlus size={13} />
               Photos ({Array.isArray(renderLead.imageUrls) ? renderLead.imageUrls.length : 0})
@@ -3435,8 +3904,8 @@ export default function LeadsPage() {
                 setAssignModalOrigin(captureGlassModalOrigin(e));
                 openAssignLeadModal(renderLead);
               }}
-              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-[8px] border px-3 text-[12px] font-bold hover:brightness-95"
-              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-full border px-3 text-[12px] font-bold hover:brightness-95"
+              style={{ ...LEAD_POPUP_BOX_STYLE, color: "var(--text-main)" }}
             >
               {assignedLabel ? (
                 <>
@@ -3459,7 +3928,7 @@ export default function LeadsPage() {
                 setDeleteConfirmModalOrigin(captureGlassModalOrigin(e));
                 setConfirmDeleteLeadId(lead.id);
               }}
-              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-[8px] border px-3 text-[12px] font-bold text-white hover:brightness-95"
+              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95"
               style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
             >
               Archive
@@ -3467,28 +3936,24 @@ export default function LeadsPage() {
           </div>
           <div className="glass-scroll min-h-0 flex-1 overflow-y-auto px-5 pb-5">
             {isDetailLoading ? (
-              <div className="mb-3 rounded-[12px] border px-3 py-2 text-[12px] font-semibold" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}>
+              <div className="mb-2 rounded-[14px] border px-3 py-2.5 text-[13px] font-medium" style={{ ...LEAD_POPUP_BOX_STYLE, color: "var(--text-main)" }}>
                 Loading lead details...
               </div>
             ) : null}
             {detailFields.length === 0 ? (
-              <p className="text-[12px] font-semibold" style={{ color: "var(--text-muted)" }}>
+              <p className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
                 No detail fields configured yet.
               </p>
             ) : (
               <div className="space-y-2">
                 {detailFields.map((column) => {
-                  const value = resolveLeadColumnValue(leadFields, column, mergedFieldLayout);
+                  const value = resolveLeadColumnValue(leadFields, column, leadLayout);
                   return (
-                    <div
-                      key={`${lead.id}:detail:${column.key}`}
-                      className="rounded-[12px] border px-3 py-2"
-                      style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}
-                    >
-                      <p className="text-[10px] font-extrabold uppercase tracking-[0.7px]" style={{ color: "var(--text-muted)" }}>
+                    <div key={`${lead.id}:detail:${column.key}`} className="rounded-[14px] border px-3 py-2.5" style={LEAD_POPUP_BOX_STYLE}>
+                      <p className="text-[11.5px] font-medium" style={{ color: "var(--text-main)" }}>
                         {column.label}
                       </p>
-                      <p className="mt-1 whitespace-pre-wrap text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
+                      <p className="mt-0.5 whitespace-pre-wrap text-[14px] font-medium" style={{ color: "var(--text-main)" }}>
                         {value || "-"}
                       </p>
                     </div>
@@ -3515,7 +3980,7 @@ export default function LeadsPage() {
             <button
               type="button"
               onClick={() => access.retry()}
-              className="mt-3 inline-flex h-9 items-center rounded-[8px] border px-3 text-[12px] font-bold hover:brightness-95"
+              className="mt-3 inline-flex h-9 items-center rounded-full border px-3 text-[12px] font-bold hover:brightness-95"
               style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
             >
               Retry
@@ -3527,178 +3992,418 @@ export default function LeadsPage() {
           </div>
         ) : (
           <div className="space-y-4">
-            <div className="glass-page-header relative -mx-4 -mt-3 px-4 pb-3 pt-5 md:-mx-5 md:-mt-4 md:px-5">
-              <div className="flex flex-wrap items-center justify-between gap-4">
-                <div className="flex min-w-0 flex-wrap items-center gap-5">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <Inbox size={16} style={{ color: "var(--text-main)" }} strokeWidth={2.1} />
-                    <p className="truncate text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                      Leads
-                    </p>
-                    <span className="text-[14px] font-medium" style={{ color: "var(--text-muted)" }}>|</span>
-                    <p className="truncate text-[14px] font-medium" style={{ color: "var(--text-main)" }}>
-                      {companyName || activeCompanyId || "Company"}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2 border-l pl-5" style={{ borderColor: "var(--glass-border)" }}>
-                    <span className="rounded-full border px-2.5 py-1 text-[11px] font-bold" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-bg)", color: "var(--text-muted)" }}>
-                      {filteredLeads.length} total
-                    </span>
-                    <span className="rounded-full border px-2.5 py-1 text-[11px] font-bold" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-bg)", color: "var(--text-muted)" }}>
-                      {newCount} new
-                    </span>
-                  </div>
-                </div>
-                <div className="flex items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={openLeadForm}
-                    disabled={!leadFormUrl}
-                    className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-4 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-55"
-                    style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
-                  >
-                    <Plus size={14} />
-                    Create Lead
-                  </button>
+            {/* Flat, like the Dashboard: one line — its search, the view toggle (grid on the left, columns on the right),
+                the view's own controls (columns: Compact and Sort; grid: the status filters and the order), and at the end
+                the counts and Create Lead. Every button round-ended. Phone: the search is a circle until it's tapped,
+                then takes the whole line (the rest step aside); Compact and Create Lead are just their icons. */}
+            {/* The stat cards across the top — the Dashboard's (look, tilt under the pointer, phone layout), on or off with
+                User Settings' Stat Cards. Above the toolbar, their shadows over it. */}
+            {leadStatCardsEnabled ? (
+              // paddingBottom 13: with the 16px gap the page puts between this and the toolbar, the toolbar sits exactly
+              // where the Dashboard's does (its cards' 16px, its toolbar's 1px top border and 12px padding).
+              <div className="relative z-[18] -mt-3 md:-mt-4" style={{ paddingTop: 16, paddingBottom: 13 }}>
+                <div className="grid grid-cols-2 gap-2 sm:gap-4 lg:grid-cols-4">
+                  {LEAD_STAT_CARDS.map((card) => {
+                    const Icon = card.icon;
+                    const weekly = leadStats.weekly[card.key];
+                    return (
+                      <div
+                        key={card.key}
+                        onMouseMove={(e) => {
+                          const el = e.currentTarget;
+                          const rect = el.getBoundingClientRect();
+                          const rotateY = ((e.clientX - rect.left - rect.width / 2) / (rect.width / 2)) * 3;
+                          const rotateX = -((e.clientY - rect.top - rect.height / 2) / (rect.height / 2)) * 3;
+                          el.style.transition = "transform 60ms linear";
+                          el.style.transform = `perspective(800px) rotateX(${rotateX}deg) rotateY(${rotateY}deg) translateY(-1px) scale(1.008)`;
+                        }}
+                        onMouseLeave={(e) => {
+                          const el = e.currentTarget;
+                          el.style.transition = "transform 350ms cubic-bezier(0.22, 1, 0.36, 1)";
+                          el.style.transform = "perspective(800px) rotateX(0deg) rotateY(0deg) translateY(0px) scale(1)";
+                        }}
+                        className="rounded-[18px] border px-3 py-2.5 sm:px-5 sm:py-4"
+                        style={{
+                          borderColor: "var(--glass-border)",
+                          backgroundColor: "var(--glass-bg-strong)",
+                          boxShadow: "var(--shadow-glass)",
+                          willChange: "transform",
+                        }}
+                      >
+                        <div className="flex items-center gap-2 sm:mb-3 sm:gap-2.5">
+                          <div
+                            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-white shadow-[0_4px_10px_rgba(0,0,0,0.14)] sm:h-9 sm:w-9"
+                            style={{ backgroundImage: `linear-gradient(135deg, ${card.iconFrom} 0%, ${card.iconTo} 100%)` }}
+                          >
+                            <Icon size={15} strokeWidth={2.4} />
+                          </div>
+                          <p className="min-w-0 truncate text-[12px] font-semibold sm:text-[14px]" style={{ color: leadsListPalette.textSoft }}>
+                            <span className="sm:hidden">{card.phoneLabel}</span>
+                            <span className="max-sm:hidden">{card.label}</span>
+                          </p>
+                          <p className="ml-auto shrink-0 text-[18px] font-bold sm:hidden" style={{ color: leadsListPalette.text }}>{leadStats.values[card.key]}</p>
+                        </div>
+                        {/* The number, and "+ N this week" at the end of its line (the Dashboard's) — the same height with it
+                            or without. */}
+                        <div className="hidden min-w-0 items-end justify-between gap-2 sm:flex">
+                          <p className="shrink-0 text-[32px] font-semibold leading-none sm:text-[38px] lg:text-[42px]" style={{ color: leadsListPalette.text }}>
+                            {leadStats.values[card.key]}
+                          </p>
+                          {weekly > 0 ? (
+                            <p className="min-w-0 truncate whitespace-nowrap text-[13px] font-bold" style={{ color: themeMode === "dark" ? "var(--success)" : "#2A7A3B" }}>
+                              + {weekly} this week
+                            </p>
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
-              <div className="mt-5 flex flex-wrap items-center gap-5">
-                <div
-                  className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-2.5"
-                  style={{ width: 260, borderColor: "var(--glass-border)", backgroundColor: "var(--glass-bg)" }}
-                >
-                  <Search size={14} className="shrink-0" style={{ color: "var(--text-muted)" }} />
-                  <input
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key !== "Enter" || leadsViewMode !== "board" || !search.trim()) return;
-                      e.preventDefault();
-                      searchMatchColumnRef.current = scrollBoardToSearchMatch(searchMatchColumnRef.current);
-                    }}
-                    placeholder="Search leads..."
-                    className="h-8 w-full bg-transparent text-[12px] outline-none"
-                    style={{ color: "var(--text-main)" }}
-                  />
-                </div>
-              </div>
+            ) : null}
+            {/* With the stat cards off it starts where the Dashboard's does then — up at the page's top edge, 1px down (the
+                Dashboard toolbar's own top border). */}
+            {/* Phone (the Dashboard's layout): the search at the left, this view's buttons in the middle, and the view
+                toggle at the right end (max-sm:pr-[90px] is its room) — the search taking the line up to the toggle while
+                it's tapped into. */}
+            <div className={`relative z-[15] flex flex-wrap items-center gap-2 max-sm:pr-[90px] ${leadStatCardsEnabled ? "" : "-mt-3 pt-px md:-mt-4"}`}>
               <div
-                className="grid transition-[grid-template-rows] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]"
-                style={{ gridTemplateRows: isToolbarExpanded ? "1fr" : "0fr" }}
-                aria-hidden={!isToolbarExpanded}
+                // Phone: opens as soon as it's touched (data-opening), not once it has focus (the Dashboard's).
+                data-opening={searchOpening ? "true" : undefined}
+                onPointerDown={(event) => {
+                  setSearchOpening(true);
+                  // A touch that turned into a scroll (the search never got focus): back it goes.
+                  const wrap = event.currentTarget;
+                  window.setTimeout(() => {
+                    if (!wrap.contains(document.activeElement)) setSearchOpening(false);
+                  }, 700);
+                }}
+                onBlur={() => setSearchOpening(false)}
+                className={`peer relative w-9 min-w-9 shrink-0 flex-none transition-[flex-grow,width] duration-200 focus-within:flex-1 sm:w-auto sm:min-w-[260px] sm:max-w-[360px] sm:flex-none sm:focus-within:flex-none ${
+                  search.trim() || searchOpening ? "max-sm:flex-1" : ""
+                }`}
               >
-                <div className="overflow-hidden">
-                  <div className="mt-3 flex flex-wrap items-center gap-3">
+                <Search
+                  size={14}
+                  className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 max-sm:left-[11px]"
+                  style={{ color: leadsToolbarPalette.textMuted }}
+                />
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key !== "Enter" || leadsViewMode !== "board" || !search.trim()) return;
+                    e.preventDefault();
+                    searchMatchColumnRef.current = scrollBoardToSearchMatch(searchMatchColumnRef.current);
+                  }}
+                  placeholder="Search"
+                  aria-label="Search leads"
+                  // cs-own-fill: its own fill and border in dark mode too (globals.css), as the Dashboard's.
+                  className={`cs-own-fill h-9 w-full rounded-full border pl-9 pr-3.5 text-[12px] font-semibold outline-none transition-colors focus:border-[var(--brand)] max-sm:pl-[34px] ${
+                    search.trim() ? "" : "max-sm:pr-0 max-sm:focus:pr-3.5"
+                  }`}
+                  style={{
+                    borderColor: leadsToolbarPalette.border,
+                    backgroundColor: leadsToolbarPalette.panelBg,
+                    color: leadsToolbarPalette.inputText,
+                    ["--field-bg" as string]: leadsToolbarPalette.panelBg,
+                    ["--field-border" as string]: leadsToolbarPalette.border,
+                  }}
+                />
+              </div>
+              {/* Phone: this view's buttons, just their icons, centred between the search and the toggle — columns:
+                  Compact and Sort; list: the status filter and the order (each opening its menu). They slide away while
+                  the search is open (the Dashboard's). Create Lead floats at the bottom right instead (below). */}
+              <div className="relative z-0 flex flex-1 translate-x-0 justify-center gap-2 overflow-hidden transition-[opacity,flex-grow,transform,margin] duration-200 peer-focus-within:pointer-events-none peer-focus-within:-ml-2 peer-focus-within:w-0 peer-focus-within:flex-none peer-focus-within:translate-x-6 peer-focus-within:opacity-0 peer-data-[opening=true]:pointer-events-none peer-data-[opening=true]:-ml-2 peer-data-[opening=true]:w-0 peer-data-[opening=true]:flex-none peer-data-[opening=true]:translate-x-6 peer-data-[opening=true]:opacity-0 sm:hidden">
+                {leadsViewMode === "board" ? (
+                  <>
                     <button
                       type="button"
-                      role="switch"
-                      aria-checked={leadsViewMode === "grid"}
-                      onClick={() => setLeadsViewMode((prev) => (prev === "board" ? "grid" : "board"))}
-                      className="relative inline-flex h-[38px] w-[82px] shrink-0 items-center overflow-hidden rounded-full border p-1"
-                      style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}
-                      title="Toggle lead view"
-                      aria-label="Toggle lead view"
+                      onClick={() => {
+                        setIsBoardCardsCompact((prev) => !prev);
+                        setCompactCardOverrides({});
+                      }}
+                      className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border transition hover:brightness-95"
+                      style={
+                        isBoardCardsCompact
+                          ? { backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)", color: "#fff" }
+                          : { borderColor: leadsToolbarPalette.border, backgroundColor: leadsToolbarPalette.panelBg, color: leadsToolbarPalette.textMuted }
+                      }
+                      title={isBoardCardsCompact ? "Show full cards" : "Collapse cards to names only"}
+                      aria-label={isBoardCardsCompact ? "Show full cards" : "Collapse cards to names only"}
                     >
-                      <div
-                        className="absolute top-1 h-7 w-9 rounded-full transition-all duration-200"
-                        style={{ left: leadsViewMode === "board" ? 4 : 40, backgroundImage: "var(--brand-gradient)" }}
-                      />
-                      <span className="relative z-[1] flex h-7 w-9 items-center justify-center rounded-full">
-                        <Kanban size={15} style={{ color: leadsViewMode === "board" ? "#fff" : "var(--text-muted)" }} />
-                      </span>
-                      <span className="relative z-[1] flex h-7 w-9 items-center justify-center rounded-full">
-                        <LayoutGrid size={15} style={{ color: leadsViewMode === "grid" ? "#fff" : "var(--text-muted)" }} />
-                      </span>
+                      <Rows3 size={15} />
                     </button>
-                    {leadsViewMode === "board" && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsBoardCardsCompact((prev) => !prev);
-                          setCompactCardOverrides({});
-                        }}
-                        className="inline-flex h-9 items-center gap-1.5 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
-                        style={
-                          isBoardCardsCompact
-                            ? { backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)", color: "#fff" }
-                            : { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }
-                        }
-                        title={isBoardCardsCompact ? "Show full cards" : "Collapse cards to names only"}
-                        aria-label={isBoardCardsCompact ? "Show full cards" : "Collapse cards to names only"}
-                      >
-                        <Rows3 size={14} />
-                        Compact
-                      </button>
-                    )}
-                    {leadsViewMode === "board" && <BoardSortButton value={leadBoardSort} onChange={setLeadBoardSort} />}
-                    {leadsViewMode === "grid" && (
-                      <div className="flex flex-wrap items-center gap-2 border-l pl-3" style={{ borderColor: "var(--glass-border)" }}>
-                        <button
-                          type="button"
-                          onClick={() => setStatusFilter("all")}
-                          className="inline-flex h-8 items-center rounded-full border px-3.5 text-[11px] font-bold transition hover:brightness-95"
-                          style={
-                            statusFilter === "all"
-                              ? { backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)", color: "#fff" }
-                              : { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }
-                          }
-                        >
-                          All Statuses
-                        </button>
-                        {leadStatusOptions.map((status) => {
-                          const isActive = statusFilter === String(status).trim().toLowerCase();
-                          return (
-                            <button
-                              key={status}
-                              type="button"
-                              onClick={() => setStatusFilter(String(status).trim().toLowerCase())}
-                              className="inline-flex h-8 items-center gap-1.5 rounded-full border px-3.5 text-[11px] font-bold transition hover:brightness-95"
-                              style={
-                                isActive
-                                  ? { ...leadStatusPillStyle(status), borderColor: "transparent", boxShadow: "0 0 0 1px var(--brand)" }
-                                  : { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }
-                              }
-                            >
-                              {status}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                    {leadsViewMode === "grid" && (
-                      <div className="border-l pl-3" style={{ borderColor: "var(--glass-border)" }}>
-                        <select
-                          value={listOrder}
-                          onChange={(e) => setListOrder((e.target.value as "status" | "az" | "za" | "newest" | "oldest") || "newest")}
-                          className="h-8 rounded-[8px] border pl-2.5 pr-2 text-[12px] outline-none"
-                          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
-                        >
-                          <option value="status">Sort: Status</option>
-                          <option value="newest">Newest</option>
-                          <option value="oldest">Oldest</option>
-                          <option value="az">A &gt; Z</option>
-                          <option value="za">Z &gt; A</option>
-                        </select>
-                      </div>
-                    )}
-                  </div>
-                </div>
+                    <BoardSortButton
+                      value={leadBoardSort}
+                      onChange={setLeadBoardSort}
+                      className="inline-flex h-9 w-9 shrink-0 items-center justify-center border transition hover:brightness-95"
+                      labelClassName="hidden"
+                      style={{
+                        backgroundColor: leadsToolbarPalette.panelBg,
+                        borderRadius: 9999,
+                        ...(leadBoardSort === "custom" ? { color: leadsToolbarPalette.textMuted, borderColor: leadsToolbarPalette.border } : {}),
+                      }}
+                    />
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      data-leads-phone-menu-trigger="true"
+                      onClick={(e) => openLeadsPhoneMenu("status", e)}
+                      className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border"
+                      style={
+                        statusFilter === "all"
+                          ? { borderColor: leadsToolbarPalette.border, backgroundColor: leadsToolbarPalette.panelBg, color: leadsToolbarPalette.textMuted }
+                          : { backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand)", color: "#FFFFFF" }
+                      }
+                      title="Filter by status"
+                      aria-label="Filter by status"
+                    >
+                      <ListFilter size={16} />
+                    </button>
+                    <button
+                      type="button"
+                      data-leads-phone-menu-trigger="true"
+                      onClick={(e) => openLeadsPhoneMenu("order", e)}
+                      className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border"
+                      style={
+                        listOrder === "newest"
+                          ? { borderColor: leadsToolbarPalette.border, backgroundColor: leadsToolbarPalette.panelBg, color: leadsToolbarPalette.textMuted }
+                          : { backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand)", color: "#FFFFFF" }
+                      }
+                      title="Order"
+                      aria-label="Order"
+                    >
+                      <ArrowUpDown size={15} />
+                    </button>
+                  </>
+                )}
               </div>
+              {/* Phone: Create Lead, as a floating round + at the bottom right of the screen (the Calendar's New event) —
+                  portalled so it's fixed to the screen whatever the page around it does. */}
+              {typeof document !== "undefined"
+                ? createPortal(
+                    <button
+                      type="button"
+                      onClick={openLeadForm}
+                      className="fixed right-4 z-[60] inline-flex h-14 w-14 items-center justify-center rounded-full border text-white shadow-[0_10px_28px_rgba(15,23,42,0.28)] transition hover:brightness-105 active:scale-95 disabled:opacity-55 sm:hidden"
+                      style={{ bottom: "calc(20px + env(safe-area-inset-bottom))", backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                      title="Create Lead"
+                      aria-label="Create Lead"
+                    >
+                      <Plus size={28} strokeWidth={2.4} />
+                    </button>,
+                    document.body,
+                  )
+                : null}
+              {leadsPhoneMenu && typeof document !== "undefined"
+                ? createPortal(
+                    <div
+                      data-leads-phone-menu="true"
+                      className="fixed overflow-hidden rounded-[10px] border p-1 shadow-[var(--shadow-md)]"
+                      style={{
+                        left: leadsPhoneMenu.left,
+                        top: leadsPhoneMenu.top,
+                        width: leadsPhoneMenu.width,
+                        zIndex: 2147483647,
+                        borderColor: "var(--glass-border)",
+                        backgroundColor: "var(--glass-modal-bg)",
+                        backdropFilter: "blur(12px) saturate(220%)",
+                        WebkitBackdropFilter: "blur(12px) saturate(220%)",
+                      }}
+                    >
+                      {(leadsPhoneMenu.kind === "status"
+                        ? [
+                            { key: "all", label: "All statuses", color: "" },
+                            ...leadStatusOptions.map((status) => ({
+                              key: String(status).trim().toLowerCase(),
+                              label: status,
+                              color: String(leadStatusPillStyle(status).backgroundColor || ""),
+                            })),
+                          ]
+                        : [
+                            { key: "newest", label: "Newest", color: "" },
+                            { key: "oldest", label: "Oldest", color: "" },
+                            { key: "status", label: "By status", color: "" },
+                            { key: "az", label: "A – Z", color: "" },
+                            { key: "za", label: "Z – A", color: "" },
+                          ]
+                      ).map((option) => {
+                        const active = leadsPhoneMenu.kind === "status" ? statusFilter === option.key : listOrder === option.key;
+                        return (
+                          <button
+                            key={option.key}
+                            type="button"
+                            onClick={() => {
+                              if (leadsPhoneMenu.kind === "status") setStatusFilter(option.key);
+                              else setListOrder(option.key as "status" | "az" | "za" | "newest" | "oldest");
+                              setLeadsPhoneMenu(null);
+                            }}
+                            className="flex w-full items-center gap-2 rounded-[10px] px-3.5 py-3 text-left text-[15px] font-bold"
+                            style={{ backgroundImage: active ? "var(--brand-gradient)" : "none", color: active ? "#FFFFFF" : leadsToolbarPalette.text }}
+                          >
+                            {leadsPhoneMenu.kind === "status" ? (
+                              <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: option.color || "transparent" }} />
+                            ) : null}
+                            {option.label}
+                          </button>
+                        );
+                      })}
+                    </div>,
+                    document.body,
+                  )
+                : null}
               <button
                 type="button"
-                onClick={() => setIsToolbarExpanded((prev) => !prev)}
-                // z-20: above the board below, which reaches up under this edge (room for its columns' shadows).
-                className="absolute bottom-0 left-1/2 z-20 flex h-6 w-6 -translate-x-1/2 translate-y-1/2 items-center justify-center rounded-full border transition hover:brightness-95"
-                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: themeMode === "dark" ? "#aaaaaa" : "#475467" }}
-                title={isToolbarExpanded ? "Collapse toolbar" : "Expand toolbar"}
-                aria-label={isToolbarExpanded ? "Collapse toolbar" : "Expand toolbar"}
+                role="switch"
+                aria-checked={leadsViewMode === "board"}
+                onClick={() => setLeadsViewMode((prev) => (prev === "board" ? "grid" : "board"))}
+                // Phone: at the row's right end, apart from the rest (the Dashboard's), staying while the search is open.
+                className="relative inline-flex h-[38px] w-[82px] shrink-0 items-center overflow-hidden rounded-full border p-1 max-sm:absolute max-sm:right-0 max-sm:top-1/2 max-sm:z-20 max-sm:-translate-y-1/2"
+                style={{ borderColor: leadsToolbarPalette.border, backgroundColor: leadsToolbarPalette.panelBg }}
+                title="Toggle lead view"
+                aria-label="Toggle lead view"
               >
-                <ChevronUp
-                  size={14}
-                  className="transition-transform"
-                  style={{ transform: isToolbarExpanded ? "rotate(0deg)" : "rotate(180deg)" }}
+                <div
+                  className="absolute top-1 h-7 w-9 rounded-full transition-all duration-200"
+                  style={{ left: leadsViewMode === "grid" ? 4 : 40, backgroundImage: "var(--brand-gradient)" }}
                 />
+                <span className="relative z-[1] flex h-7 w-9 items-center justify-center rounded-full">
+                  <Rows3 size={15} style={{ color: leadsViewMode === "grid" ? "#fff" : leadsToolbarPalette.textMuted }} />
+                </span>
+                <span className="relative z-[1] flex h-7 w-9 items-center justify-center rounded-full">
+                  <Kanban size={15} style={{ color: leadsViewMode === "board" ? "#fff" : leadsToolbarPalette.textMuted }} />
+                </span>
               </button>
+              {leadsViewMode === "board" && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsBoardCardsCompact((prev) => !prev);
+                    setCompactCardOverrides({});
+                  }}
+                  className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full border px-3 text-[12px] font-bold transition hover:brightness-95 max-sm:hidden"
+                  style={
+                    isBoardCardsCompact
+                      ? { backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)", color: "#fff" }
+                      : { borderColor: leadsToolbarPalette.border, backgroundColor: leadsToolbarPalette.panelBg, color: leadsToolbarPalette.textMuted }
+                  }
+                  title={isBoardCardsCompact ? "Show full cards" : "Collapse cards to names only"}
+                  aria-label={isBoardCardsCompact ? "Show full cards" : "Collapse cards to names only"}
+                >
+                  <Rows3 size={14} />
+                  <span className="max-sm:hidden">Compact</span>
+                </button>
+              )}
+              {leadsViewMode === "board" && (
+                // The Dashboard's: white like the search and toggle (blue once a sort's chosen), round-ended; just the
+                // icon on a phone.
+                <BoardSortButton
+                  value={leadBoardSort}
+                  onChange={setLeadBoardSort}
+                  className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 border px-3 text-[12px] font-bold transition hover:brightness-95 max-sm:hidden"
+                  labelClassName="max-sm:hidden"
+                  style={{
+                    backgroundColor: leadsToolbarPalette.panelBg,
+                    borderRadius: 9999,
+                    ...(leadBoardSort === "custom" ? { color: leadsToolbarPalette.textMuted, borderColor: leadsToolbarPalette.border } : {}),
+                  }}
+                />
+              )}
+              {leadsViewMode === "grid" && (
+                // Which status to show (All, then each status with its colour) and the order — the same dropdown, the same
+                // look. Beside the rest on a computer; on a phone, their own line under it.
+                <div className="flex shrink-0 items-center gap-2 max-sm:hidden">
+                  <GlassDropdown
+                    value={statusFilter}
+                    options={[
+                      { value: "all", label: "All statuses" },
+                      ...leadStatusOptions.map((status) => ({
+                        value: String(status).trim().toLowerCase(),
+                        label: status,
+                        color: String(leadStatusPillStyle(status).backgroundColor || ""),
+                      })),
+                    ]}
+                    onChange={setStatusFilter}
+                    ariaLabel="Status"
+                    triggerClassName="cs-own-fill h-9 min-w-[150px] shrink-0 justify-between rounded-full border px-3.5 text-[12px] font-bold max-sm:min-w-0 max-sm:flex-1"
+                    triggerStyle={{
+                      borderColor: statusFilter === "all" ? leadsToolbarPalette.border : "var(--brand)",
+                      backgroundColor: leadsToolbarPalette.panelBg,
+                      color: leadsToolbarPalette.text,
+                    }}
+                  />
+                  <GlassDropdown
+                    value={listOrder}
+                    options={[
+                      { value: "newest", label: "Newest" },
+                      { value: "oldest", label: "Oldest" },
+                      { value: "status", label: "By status" },
+                      { value: "az", label: "A – Z" },
+                      { value: "za", label: "Z – A" },
+                    ]}
+                    onChange={(next) => setListOrder((next as "status" | "az" | "za" | "newest" | "oldest") || "newest")}
+                    ariaLabel="Order"
+                    triggerClassName="cs-own-fill h-9 min-w-[120px] shrink-0 justify-between rounded-full border px-3.5 text-[12px] font-bold max-sm:min-w-0 max-sm:flex-1"
+                    triggerStyle={{
+                      borderColor: leadsToolbarPalette.border,
+                      backgroundColor: leadsToolbarPalette.panelBg,
+                      color: leadsToolbarPalette.text,
+                    }}
+                  />
+                </div>
+              )}
+              <div className="ml-auto flex shrink-0 items-center gap-2 max-sm:hidden">
+                {leadsViewMode === "grid" ? (
+                  // The Dashboard's: how many rows a page shows (the next page comes in as it's scrolled). Not on a phone,
+                  // where scrolling is all there is to it.
+                  <div className="hidden items-center gap-1.5 sm:flex">
+                    <span className="text-[11px] font-semibold" style={{ color: leadsToolbarPalette.textMuted }}>Show</span>
+                    <select
+                      value={listPageSize}
+                      onChange={(e) => setListPageSize(Number(e.target.value))}
+                      aria-label="Leads per page"
+                      className="cs-own-fill h-9 border px-3 text-[12px] font-bold outline-none"
+                      style={{
+                        borderRadius: 9999,
+                        borderColor: leadsToolbarPalette.border,
+                        backgroundColor: leadsToolbarPalette.panelBg,
+                        color: leadsToolbarPalette.text,
+                        ["--field-bg" as string]: leadsToolbarPalette.panelBg,
+                        ["--field-border" as string]: leadsToolbarPalette.border,
+                      }}
+                    >
+                      {[10, 20, 30, 40, 50].map((size) => (
+                        <option key={size} value={size}>{size}</option>
+                      ))}
+                    </select>
+                    <span className="text-[11px] font-semibold" style={{ color: leadsToolbarPalette.textMuted }}>per page</span>
+                  </div>
+                ) : null}
+                {/* How many — the columns view only (the list, like the Dashboard's, has its rows and "Show N per page"
+                    there instead, which keeps it all on one line), and only with the stat cards off (they say as much). */}
+                {leadsViewMode === "board" && !leadStatCardsEnabled ? (
+                  <span
+                    className="inline-flex h-9 items-center rounded-full border px-3.5 text-[12px] font-bold max-sm:hidden"
+                    style={{ borderColor: leadsToolbarPalette.border, backgroundColor: leadsToolbarPalette.panelBg, color: leadsToolbarPalette.textMuted }}
+                  >
+                    {filteredLeads.length} lead{filteredLeads.length === 1 ? "" : "s"} · {newCount} new
+                  </span>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={openLeadForm}
+                  className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full border px-4 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-55 max-sm:w-9 max-sm:px-0"
+                  style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                  title="Create Lead"
+                  aria-label="Create Lead"
+                >
+                  <Plus size={14} />
+                  <span className="max-sm:hidden">Create Lead</span>
+                </button>
+              </div>
             </div>
 
             {isLoading ? (
@@ -3712,9 +4417,212 @@ export default function LeadsPage() {
                   <p className="text-[13px] font-semibold" style={{ color: "var(--text-muted)" }}>No leads yet.</p>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                  {filteredLeads.map((lead) => renderLeadCard(lead))}
-                </div>
+                <>
+                  {/* Phones and tablets (below lg): each lead a card, the Dashboard list's — its name and status, then its
+                      phone, email and suburb, and when it came in. */}
+                  <div className="-mx-3 md:-mx-4 lg:hidden">
+                    <div className="grid grid-cols-1 gap-2 px-2 pb-2 pt-2 md:grid-cols-2">
+                      {visibleListLeads.map((lead) => {
+                        const details = leadListDetails(lead, fieldLayoutForLead(lead));
+                        return (
+                          <div
+                            key={lead.id}
+                            role="button"
+                            tabIndex={0}
+                            className="w-full cursor-pointer rounded-[14px] border px-3.5 py-3.5 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-soft)]"
+                            style={{
+                              borderColor: leadsListPalette.border,
+                              backgroundColor: hoveredLeadRowId === lead.id ? leadsListPalette.rowHover : leadsListPalette.panelBg,
+                            }}
+                            onMouseEnter={() => setHoveredLeadRowId(lead.id)}
+                            onMouseLeave={() => setHoveredLeadRowId((prev) => (prev === lead.id ? "" : prev))}
+                            onClick={(e) => openLeadFromListRow(e.currentTarget, lead)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                openLeadFromListRow(e.currentTarget, lead);
+                              }
+                            }}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <p className="line-clamp-2 text-[16px] font-bold" style={{ color: leadsListPalette.text }}>{details.name}</p>
+                              <button
+                                type="button"
+                                data-lead-status-trigger="true"
+                                onClick={(e) => openListStatusMenu(e, lead)}
+                                className="inline-flex h-7 w-[118px] shrink-0 items-center justify-center rounded-[10px] px-3 text-[11px] font-normal"
+                                style={leadStatusPillStyle(lead.status || "New")}
+                                aria-label="Lead status"
+                                title="Change lead status"
+                              >
+                                {statusUpdatingLeadId === lead.id ? "Saving..." : lead.status || "New"}
+                              </button>
+                            </div>
+                            <div className="mt-2 flex items-end justify-between gap-2">
+                              <div className="flex min-w-0 flex-col gap-1 text-[12px]" style={{ color: leadsListPalette.text }}>
+                                {details.phone ? (
+                                  <span className="flex min-w-0 items-center gap-1.5">
+                                    <Phone size={11} className="shrink-0" style={{ color: leadsListPalette.textMuted }} />
+                                    <span className="truncate">{details.phone}</span>
+                                  </span>
+                                ) : null}
+                                {details.email ? (
+                                  <span className="flex min-w-0 items-center gap-1.5">
+                                    <Mail size={11} className="shrink-0" style={{ color: leadsListPalette.textMuted }} />
+                                    <span className="truncate">{details.email}</span>
+                                  </span>
+                                ) : null}
+                                {details.suburb ? (
+                                  <span className="flex min-w-0 items-center gap-1.5">
+                                    <MapPin size={11} className="shrink-0" style={{ color: leadsListPalette.textMuted }} />
+                                    <span className="truncate">{details.suburb}</span>
+                                  </span>
+                                ) : null}
+                              </div>
+                              <p className="flex shrink-0 items-center gap-1 text-[11px]" style={{ color: leadsListPalette.textSoft }}>
+                                <CalendarDays size={11} className="shrink-0" style={{ color: leadsListPalette.textMuted }} />
+                                <span>{details.received}</span>
+                              </p>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {visibleListLeads.length < filteredLeads.length ? (
+                      <div className="flex items-center justify-center gap-2 px-3 py-4 text-center text-[12px] font-semibold" style={{ color: leadsListPalette.textMuted }}>
+                        Loading more leads...
+                        <div className="h-3.5 w-3.5 animate-spin rounded-full border-[2px] border-[var(--glass-border)] border-t-[var(--brand-strong)]" role="status" aria-label="Loading" />
+                      </div>
+                    ) : null}
+                  </div>
+                  {/* Desktop: the Dashboard list's table, straight on the page — Date received, Name, Phone, Email, Suburb
+                      and Status; its headings sticking under the top bar (frosted once they have), each row's line
+                      fading out at each end, and a row lighting up under the pointer. */}
+                  <div className="hidden lg:block">
+                    <table className="w-full table-fixed text-[12px]" style={{ minWidth: 150 + 220 + 140 + 240 + 150 + listStatusColumnWidthPx }}>
+                      <colgroup>
+                        <col style={{ width: "150px" }} />
+                        <col style={{ width: "220px" }} />
+                        <col style={{ width: "140px" }} />
+                        <col style={{ width: "240px" }} />
+                        <col style={{ width: "150px" }} />
+                        <col style={{ width: `${listStatusColumnWidthPx}px` }} />
+                      </colgroup>
+                      <thead
+                        ref={leadsListHeadRef}
+                        className="sticky top-12 z-20"
+                        style={{
+                          backgroundColor: isLeadsListHeaderStuck
+                            ? themeMode === "dark"
+                              ? "rgba(11,13,18,0.6)"
+                              : "rgba(245,247,250,0.6)"
+                            : flatPageBg(themeMode === "dark"),
+                          backdropFilter: isLeadsListHeaderStuck ? "blur(12px) saturate(220%)" : "none",
+                          WebkitBackdropFilter: isLeadsListHeaderStuck ? "blur(12px) saturate(220%)" : "none",
+                          transition: "background-color 280ms ease, backdrop-filter 280ms ease",
+                        }}
+                      >
+                        <tr style={fadedRowLineStyle(leadsListPalette.border)}>
+                          <th className="py-2 pl-[10px] text-left text-[11px] font-bold" style={{ color: leadsListPalette.textMuted }}>Date Received</th>
+                          <th className="py-2 text-left text-[11px] font-bold" style={{ color: leadsListPalette.textMuted }}>Name</th>
+                          <th className="py-2 text-left text-[11px] font-bold" style={{ color: leadsListPalette.textMuted }}>Phone</th>
+                          <th className="py-2 text-left text-[11px] font-bold" style={{ color: leadsListPalette.textMuted }}>Email</th>
+                          <th className="py-2 text-left text-[11px] font-bold" style={{ color: leadsListPalette.textMuted }}>Suburb</th>
+                          <th className="py-2 text-right text-[11px] font-bold" style={{ width: listStatusColumnWidthPx, color: leadsListPalette.textMuted }}>
+                            <span className="inline-block text-center" style={{ width: listStatusPillWidthPx, marginRight: 10 }}>Status</span>
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {visibleListLeads.map((lead) => {
+                          const details = leadListDetails(lead, fieldLayoutForLead(lead));
+                          const rowHoverColor = themeMode === "dark" ? "rgba(0, 0, 0, 0.25)" : "#ECF0F6";
+                          const rowBg = hoveredLeadRowId === lead.id ? fadedAcrossRow(rowHoverColor) : "none";
+                          return (
+                            <tr
+                              key={lead.id}
+                              className="cursor-pointer transition-colors"
+                              style={fadedRowLineStyle(themeMode === "dark" ? "var(--glass-border)" : leadsListPalette.border, rowBg)}
+                              onMouseEnter={() => setHoveredLeadRowId(lead.id)}
+                              onMouseLeave={() => setHoveredLeadRowId((prev) => (prev === lead.id ? "" : prev))}
+                              onClick={(e) => openLeadFromListRow(e.currentTarget, lead)}
+                            >
+                              <td className="truncate py-[11px] pl-[10px] text-[12px]" style={{ color: leadsListPalette.textSoft }}>{details.received}</td>
+                              <td className="truncate py-[11px] font-bold" style={{ color: leadsListPalette.text }}>{details.name}</td>
+                              <td className="truncate py-[11px] text-[12px]" style={{ color: leadsListPalette.text }}>{details.phone || "-"}</td>
+                              <td className="truncate py-[11px] text-[12px]" style={{ color: leadsListPalette.text }}>{details.email || "-"}</td>
+                              <td className="truncate py-[11px] text-[12px]" style={{ color: leadsListPalette.text }}>{details.suburb || "-"}</td>
+                              <td className="relative py-[6px] text-right" style={{ width: listStatusColumnWidthPx }}>
+                                <button
+                                  type="button"
+                                  data-lead-status-trigger="true"
+                                  onClick={(e) => openListStatusMenu(e, lead)}
+                                  className="inline-flex items-center justify-center rounded-[10px] px-3 py-2 text-[12px] font-normal"
+                                  style={{ ...leadStatusPillStyle(lead.status || "New"), width: listStatusPillWidthPx, marginRight: 10 }}
+                                  aria-label="Lead status"
+                                  title="Change lead status"
+                                >
+                                  {statusUpdatingLeadId === lead.id ? "Saving..." : lead.status || "New"}
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                        {visibleListLeads.length < filteredLeads.length ? (
+                          <tr>
+                            <td className="py-4 text-center" style={{ color: leadsListPalette.textMuted }} colSpan={6}>
+                              <div className="flex items-center justify-center gap-2">
+                                Loading more leads...
+                                <div className="h-3.5 w-3.5 animate-spin rounded-full border-[2px] border-[var(--glass-border)] border-t-[var(--brand-strong)]" role="status" aria-label="Loading" />
+                              </div>
+                            </td>
+                          </tr>
+                        ) : null}
+                      </tbody>
+                    </table>
+                  </div>
+                  {/* A row's status menu: each status in its own colour (the Dashboard's). */}
+                  {listStatusMenu && typeof document !== "undefined"
+                    ? createPortal(
+                        <div
+                          data-lead-status-menu="true"
+                          className="fixed overflow-hidden rounded-[10px] border p-1 shadow-[var(--shadow-md)]"
+                          style={{
+                            left: listStatusMenu.left,
+                            top: listStatusMenu.top,
+                            width: listStatusMenu.width,
+                            zIndex: 2147483647,
+                            borderColor: "var(--glass-border)",
+                            backgroundColor: "var(--glass-modal-bg)",
+                            backdropFilter: "blur(12px) saturate(220%)",
+                            WebkitBackdropFilter: "blur(12px) saturate(220%)",
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {leadStatusOptions.map((option) => {
+                            const menuLead = getLeadById(listStatusMenu.leadId);
+                            const active = String(menuLead?.status || "").trim().toLowerCase() === option.toLowerCase();
+                            return (
+                              <button
+                                key={`${listStatusMenu.leadId}_${option}`}
+                                type="button"
+                                disabled={!menuLead || statusUpdatingLeadId === listStatusMenu.leadId}
+                                onClick={() => {
+                                  if (menuLead) void onSelectLeadStatus(menuLead, option);
+                                  setListStatusMenu(null);
+                                }}
+                                className="mb-1 block w-full rounded-[8px] px-3 py-2 text-center text-[12px] font-semibold last:mb-0 disabled:opacity-55 max-md:rounded-[10px] max-md:py-3 max-md:text-[15px]"
+                                style={{ ...leadStatusPillStyle(option), filter: active ? "brightness(0.96)" : "brightness(1)" }}
+                              >
+                                {option}
+                              </button>
+                            );
+                          })}
+                        </div>,
+                        document.body,
+                      )
+                    : null}
+                </>
               )
             ) : searchFilteredLeads.length === 0 ? (
               <div className="flex flex-col items-center gap-2 rounded-[14px] border border-dashed px-4 py-10 text-center" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>
@@ -3736,8 +4644,10 @@ export default function LeadsPage() {
                 // columns sit 20px (32px on a phone) below the header, so by then it — and the
                 // collapse button hanging 12px off its bottom — has gone under the bar. No native
                 // scrollbar (same as the Dashboard board): it took 10px under the columns, on top of
-                // that gap, whenever the columns didn't all fit across.
-                className="glass-scroll hide-native-scrollbar sticky -top-5 flex h-[calc(100svh-28px)] min-h-[280px] snap-x snap-mandatory items-stretch gap-2 -mx-2 -mt-6 px-2 pb-2 pt-7 max-md:-top-2 max-md:-mt-3 max-md:h-[calc(100svh-40px)] max-md:pb-5 sm:snap-none lg:top-7 lg:h-[calc(100svh-28px)] lg:min-h-[320px]"
+                // that gap, whenever the columns didn't all fit across. Out to the page's own edges either side (back in
+                // by as much — <main>'s px-3 / md:px-4 / lg:px-5), so the first and last columns' shadows have room
+                // before this scroller cuts them off.
+                className="glass-scroll hide-native-scrollbar sticky -top-5 flex h-[calc(100svh-28px)] min-h-[280px] snap-x snap-mandatory items-stretch gap-2 -mx-3 -mt-6 px-3 pb-2 pt-7 md:-mx-4 md:px-4 lg:-mx-5 lg:px-5 max-md:-top-2 max-md:-mt-3 max-md:h-[calc(100svh-40px)] max-md:pb-5 sm:snap-none lg:top-7 lg:h-[calc(100svh-28px)] lg:min-h-[320px]"
                 style={{ overflowX: "auto", overflowY: "hidden" }}
               >
                 {leadStatusBoardColumns.columns.map((column) => {
@@ -3972,6 +4882,121 @@ export default function LeadsPage() {
         )}
         {renderLeadDetailDrawer()}
         <DragGhostLayer controller={leadBoardDragGhost} />
+        {shouldRenderLeadFormModal && typeof document !== "undefined"
+          ? createPortal(
+              // Create Lead: how it came in and its status, then a lead form's questions to fill in (none of them
+              // required of staff — they don't always get everything on a call). All its text black. A phone: the whole
+              // screen.
+              <div className="fixed inset-0 z-[236] flex items-center justify-center p-0 sm:p-4">
+                <button type="button" aria-label="Close create lead" onClick={closeLeadFormModal} className="glass-modal-backdrop absolute inset-0" />
+                <div
+                  ref={leadFormModalPanelRef}
+                  className="glass-modal-panel relative flex h-[100dvh] w-full flex-col overflow-hidden max-sm:rounded-none! max-sm:border-0! sm:h-auto sm:max-h-[min(860px,92vh)] sm:w-[min(600px,96vw)]"
+                >
+                  <div className="flex shrink-0 items-center gap-2 px-5 pb-3 pt-4 max-sm:pt-[calc(16px+env(safe-area-inset-top))]">
+                    <h2 className="min-w-0 flex-1 truncate text-[20px] font-semibold" style={{ color: "var(--text-main)" }}>
+                      Create Lead
+                    </h2>
+                    <button type="button" onClick={closeLeadFormModal} className={modalCloseButtonClass} aria-label="Close create lead">
+                      <X size={16} />
+                    </button>
+                  </div>
+                  {!createLeadForm ? (
+                    <div className="px-5 pb-6">
+                      <p className="text-[13px] font-medium leading-[1.5]" style={{ color: "var(--text-main)" }}>
+                        There aren&apos;t any lead forms yet. Make one in Company Settings → Leads — its questions are what you fill in here.
+                      </p>
+                      <a href="/company-settings?section=leads" className={`${primaryButtonClass} mt-4`} style={primaryButtonStyle}>
+                        Open Company Settings
+                      </a>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="glass-scroll min-h-0 flex-1 overflow-y-auto px-5 pb-5">
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          {leadForms.length > 1 ? (
+                            <div className="sm:col-span-2">
+                              <span className="mb-1.5 block text-[12px] font-medium" style={{ color: "var(--text-main)" }}>
+                                Form
+                              </span>
+                              <GlassDropdown
+                                value={createLeadForm.id}
+                                options={leadForms.map((form) => ({ value: form.id, label: form.name || "Untitled form" }))}
+                                onChange={(next) => {
+                                  setCreateLeadFormId(next);
+                                  setCreateLeadAnswers({});
+                                  setCreateLeadErrors({});
+                                }}
+                                ariaLabel="Form"
+                                triggerClassName={`${glassFieldClass} justify-between`}
+                              />
+                            </div>
+                          ) : null}
+                          <div>
+                            <span className="mb-1.5 block text-[12px] font-medium" style={{ color: "var(--text-main)" }}>
+                              How it came in
+                            </span>
+                            <GlassDropdown
+                              value={createLeadSource}
+                              options={MANUAL_LEAD_SOURCES.map((source) => ({ value: source, label: source }))}
+                              onChange={setCreateLeadSource}
+                              ariaLabel="How it came in"
+                              triggerClassName={`${glassFieldClass} justify-between`}
+                            />
+                          </div>
+                          <div>
+                            <span className="mb-1.5 block text-[12px] font-medium" style={{ color: "var(--text-main)" }}>
+                              Status
+                            </span>
+                            <GlassDropdown
+                              value={createLeadStatus}
+                              options={leadStatusOptions.map((status) => ({
+                                value: status,
+                                label: status,
+                                color: String(leadStatusPillStyle(status).backgroundColor || ""),
+                              }))}
+                              onChange={setCreateLeadStatus}
+                              ariaLabel="Status"
+                              triggerClassName={`${glassFieldClass} justify-between`}
+                            />
+                          </div>
+                        </div>
+                        <div className="my-5 h-px" style={{ backgroundColor: "var(--glass-border)" }} />
+                        <LeadFormFields
+                          form={createLeadForm}
+                          answers={createLeadAnswers}
+                          errors={createLeadErrors}
+                          disabled={createLeadSaving}
+                          hideRequiredMarks
+                          strongHelp
+                          idPrefix="create_lead"
+                          onChange={(questionId, value) => {
+                            setCreateLeadAnswers((prev) => ({ ...prev, [questionId]: value }));
+                            setCreateLeadErrors((prev) => (prev[questionId] ? { ...prev, [questionId]: "" } : prev));
+                          }}
+                        />
+                      </div>
+                      <div
+                        className="flex shrink-0 items-center gap-2 border-t px-5 py-3 max-sm:pb-[calc(12px+env(safe-area-inset-bottom))]"
+                        style={{ borderColor: "var(--glass-border)" }}
+                      >
+                        <p className="min-w-0 flex-1 text-[12.5px] font-medium" style={{ color: "var(--danger)" }}>
+                          {createLeadMessage}
+                        </p>
+                        <button type="button" onClick={closeLeadFormModal} disabled={createLeadSaving} className={secondaryButtonClass}>
+                          Cancel
+                        </button>
+                        <button type="button" onClick={() => void submitCreateLead()} disabled={createLeadSaving} className={primaryButtonClass} style={primaryButtonStyle}>
+                          {createLeadSaving ? "Saving…" : "Create Lead"}
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>,
+              document.body,
+            )
+          : null}
         {shouldRenderAssignModal &&
           typeof document !== "undefined" &&
           createPortal(
@@ -4080,7 +5105,7 @@ export default function LeadsPage() {
                     type="button"
                     onClick={() => void handleAssignLead()}
                     disabled={!selectedAssignedMember || assigningLeadId === assignLeadId}
-                    className="flex h-11 w-full items-center justify-center whitespace-nowrap rounded-[10px] border px-4 text-[12px] font-bold text-white hover:brightness-95 disabled:cursor-not-allowed"
+                    className="flex h-11 w-full items-center justify-center whitespace-nowrap rounded-full border px-4 text-[12px] font-bold text-white hover:brightness-95 disabled:cursor-not-allowed"
                     style={{
                       backgroundImage: "var(--brand-gradient)",
                       borderColor: "var(--brand-strong)",
@@ -4127,7 +5152,7 @@ export default function LeadsPage() {
                       |
                     </span>
                     <p className="truncate text-[14px] font-medium" style={{ color: "var(--text-main)" }}>
-                      {leadClientName(getLeadDynamicFields(displayLeadImagesLead), mergedFieldLayout) || displayLeadImagesLead.name || "Untitled Lead"}
+                      {leadClientName(getLeadDynamicFields(displayLeadImagesLead), fieldLayoutForLead(displayLeadImagesLead)) || displayLeadImagesLead.name || "Untitled Lead"}
                     </p>
                   </div>
                   <button
@@ -4433,7 +5458,7 @@ export default function LeadsPage() {
                                       width: measuredWidth,
                                     });
                                   }}
-                                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] border opacity-0 transition-opacity group-hover/comment:opacity-100"
+                                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border opacity-0 transition-opacity group-hover/comment:opacity-100"
                                   data-lead-image-comments-no-drag="true"
                                   style={{
                                     borderColor: leadImageListEditingAnnotation?.id === annotation.id ? "var(--success-strong)" : "var(--brand-strong)",
@@ -4484,7 +5509,7 @@ export default function LeadsPage() {
                                   onMouseLeave={() =>
                                     setLeadImageDeleteHoverAnnotationId((prev) => (prev === annotation.id ? "" : prev))
                                   }
-                                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] border opacity-0 transition-opacity group-hover/comment:opacity-100"
+                                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border opacity-0 transition-opacity group-hover/comment:opacity-100"
                                   data-lead-image-comments-no-drag="true"
                                   style={{
                                     borderColor: "var(--danger-strong)",
@@ -4784,7 +5809,7 @@ export default function LeadsPage() {
                                   height: measuredHeight,
                                 });
                               }}
-                              className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] border"
+                              className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border"
                               style={{
                                 borderColor: leadImageEditingAnnotation?.id === annotation.id ? "#15803D" : "#D7DEE8",
                                   backgroundColor: leadImageEditingAnnotation?.id === annotation.id ? "#15803D" : "#ffffff",
@@ -4825,7 +5850,7 @@ export default function LeadsPage() {
                                   setConfirmDeleteLeadImageAnnotationId("");
                                   void handleDeleteLeadImageAnnotation(annotation.id);
                                 }}
-                                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] border"
+                                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border"
                                 style={{
                                   borderColor: confirmDeleteLeadImageAnnotationId === annotation.id ? "#991B1B" : "#F1B7BC",
                                   backgroundColor: confirmDeleteLeadImageAnnotationId === annotation.id ? "#991B1B" : "#FFF5F6",
@@ -4930,7 +5955,7 @@ export default function LeadsPage() {
                           <button
                             type="button"
                             onClick={() => setLeadImageDraftAnnotation(null)}
-                            className="inline-flex h-8 items-center justify-center rounded-[8px] border px-3 text-[11px] font-bold"
+                            className="inline-flex h-8 items-center justify-center rounded-full border px-3 text-[11px] font-bold"
                             style={{ borderColor: "#D7DEE8", color: "#64748B", backgroundColor: "#ffffff" }}
                           >
                             Cancel
@@ -4938,7 +5963,7 @@ export default function LeadsPage() {
                           <button
                             type="button"
                             onClick={() => void handleSaveLeadImageAnnotation()}
-                            className="inline-flex h-8 items-center justify-center rounded-[8px] border px-3 text-[11px] font-bold text-white"
+                            className="inline-flex h-8 items-center justify-center rounded-full border px-3 text-[11px] font-bold text-white"
                             style={{ borderColor: companyThemeColor, backgroundColor: companyThemeColor }}
                           >
                             Save Note
@@ -5175,7 +6200,7 @@ export default function LeadsPage() {
                                       height: measuredHeight,
                                     });
                                   }}
-                                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] border"
+                                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border"
                                   style={{
                                     borderColor: leadImageEditingAnnotation?.id === annotation.id ? "var(--success-strong)" : "var(--brand-strong)",
                                     backgroundImage: leadImageEditingAnnotation?.id === annotation.id ? "var(--success-gradient)" : "var(--brand-gradient)",
@@ -5220,7 +6245,7 @@ export default function LeadsPage() {
                                   onMouseLeave={() =>
                                     setLeadImageDeleteHoverAnnotationId((prev) => (prev === annotation.id ? "" : prev))
                                   }
-                                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] border"
+                                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border"
                                   style={{
                                     borderColor: "var(--danger-strong)",
                                     backgroundImage: "var(--danger-gradient)",
@@ -5336,7 +6361,7 @@ export default function LeadsPage() {
                             <button
                               type="button"
                               onClick={() => setLeadImageDraftAnnotation(null)}
-                              className="inline-flex h-8 items-center justify-center rounded-[8px] border px-3 text-[11px] font-bold"
+                              className="inline-flex h-8 items-center justify-center rounded-full border px-3 text-[11px] font-bold"
                               style={{ borderColor: "var(--glass-border)", color: "var(--text-muted)", backgroundColor: "var(--panel-bg)" }}
                             >
                               Cancel
@@ -5344,7 +6369,7 @@ export default function LeadsPage() {
                             <button
                               type="button"
                               onClick={() => void handleSaveLeadImageAnnotation()}
-                              className="inline-flex h-8 items-center justify-center rounded-[8px] border px-3 text-[11px] font-bold text-white"
+                              className="inline-flex h-8 items-center justify-center rounded-full border px-3 text-[11px] font-bold text-white"
                               style={{ borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)" }}
                             >
                               Save Note
@@ -5436,7 +6461,7 @@ export default function LeadsPage() {
                   <button
                     type="button"
                     onClick={() => setConfirmDeleteLeadId("")}
-                    className="inline-flex h-9 items-center justify-center rounded-[10px] border px-4 text-[12px] font-bold hover:brightness-95"
+                    className="inline-flex h-9 items-center justify-center rounded-full border px-4 text-[12px] font-bold hover:brightness-95"
                     style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
                   >
                     Cancel
@@ -5448,7 +6473,7 @@ export default function LeadsPage() {
                       const lead = getLeadById(confirmDeleteLeadId);
                       if (lead) void handleDeleteLead(lead);
                     }}
-                    className="inline-flex h-9 items-center justify-center rounded-[10px] border px-4 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-55"
+                    className="inline-flex h-9 items-center justify-center rounded-full border px-4 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-55"
                     style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
                   >
                     {deletingLeadId === confirmDeleteLeadId ? "Archiving..." : "Archive"}

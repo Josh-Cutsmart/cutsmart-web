@@ -13,8 +13,8 @@ import {
 import { isCompanyMemberUid, pushStoredNotification } from "@/lib/push-server";
 
 // Calendar reminders: "<event> for <project> is in 2 days" ("<event> is in 2 days" with no project). An event
-// reminds each of its staff (staffUids — linking a project puts that project's creator and assignee on it; an event
-// saved before events had staff: its linked project's assignee and creator), as far ahead as they chose (User
+// reminds each of its staff (staffUids — linking a project puts that project's assignee on it, or its creator with no
+// one assigned; an event saved before events had staff: the same), as far ahead as they chose (User
 // Settings > Phone & Desktop Notifications > Upcoming events) — each calendar category's own reminders, or their usual ones
 // (users/{uid}.calendarReminderCategories / calendarReminderLead), one list for timed and all-day events: minutes
 // and hours exactly that long before a timed event (an all-day event: 8am on the day); days, weeks and months on
@@ -23,6 +23,10 @@ import { isCompanyMemberUid, pushStoredNotification } from "@/lib/push-server";
 // Notifications list and to their devices (if they want that kind). It runs from
 // app/api/cron/calendar-reminders (a scheduled call every few minutes) and, as a fallback, whenever
 // someone in the company has the app open (app/api/push/reminders-tick).
+//
+// Reminders start from when someone last changed their reminder times (users/{uid}.calendarRemindersChangedAt):
+// one that would have gone before then — turning on "the day before at 8am" on the day of an event, say — is just
+// marked done, never sent.
 //
 // Each of a person's reminder times is sent once per event time: the event remembers it
 // (remindersSent.{uid}_m{minutes} / {uid}_d{days} / {uid}_mo{months} — with _HHMM when not at 8am — = the startMs it was sent for), so moving the event
@@ -135,6 +139,8 @@ export async function runCalendarReminders(options: { siteOrigin: string; compan
   type ReminderPrefs = {
     usual: ReturnType<typeof normalizeCalendarReminderLead>;
     categories: ReturnType<typeof normalizeCalendarCategoryReminders>;
+    // When they last changed them (0: never).
+    changedAt: number;
   };
   const prefsByUid = new Map<string, ReminderPrefs>();
   const prefsFor = async (uid: string) => {
@@ -143,6 +149,7 @@ export async function runCalendarReminders(options: { siteOrigin: string; compan
       prefsByUid.set(uid, {
         usual: normalizeCalendarReminderLead(data?.calendarReminderLead),
         categories: normalizeCalendarCategoryReminders(data?.calendarReminderCategories),
+        changedAt: Number(data?.calendarRemindersChangedAt) || 0,
       });
     }
     return prefsByUid.get(uid)!;
@@ -230,9 +237,11 @@ export async function runCalendarReminders(options: { siteOrigin: string; compan
       // Linked to a project that's gone, archived or deleted: none.
       const project = projectId ? await projectFor(projectId) : null;
       if (projectId && (!project || project.closed)) continue;
-      // Its staff — or, saved before events had staff, its project's assignee and creator.
+      // Its staff — or, saved before events had staff, its project's assignee (its creator, with no one assigned).
       const staffUids = Array.from(
-        new Set((Array.isArray(event.staffUids) ? event.staffUids.map(str) : [project?.assigneeUid ?? "", project?.creatorUid ?? ""]).filter(Boolean)),
+        new Set(
+          (Array.isArray(event.staffUids) ? event.staffUids.map(str) : [project?.assigneeUid || project?.creatorUid || ""]).filter(Boolean),
+        ),
       );
       if (!staffUids.length) continue;
       const categoryId = str(event.categoryId);
@@ -260,7 +269,8 @@ export async function runCalendarReminders(options: { siteOrigin: string; compan
         if (!(await canSeeCategory(uid, categoryId))) continue;
         const legacySent = sentMap[uid] === startMs;
 
-        // Claim them first (so two runs at once can't both send), then send the nearest one.
+        // Claim them first (so two runs at once can't both send), then send the nearest one — unless they were all due
+        // before they last changed their reminder times (those are only marked done).
         const claimed = await db.runTransaction(async (tx) => {
           const fresh = await tx.get(eventSnap.ref);
           if (!fresh.exists) return false;
@@ -274,7 +284,7 @@ export async function runCalendarReminders(options: { siteOrigin: string; compan
             startMs,
             ...rest.flatMap((time) => [new FieldPath("remindersSent", time.key), startMs]),
           );
-          return true;
+          return stillDue.some((time) => time.remindAt >= prefs.changedAt);
         });
         if (!claimed || legacySent) continue;
 

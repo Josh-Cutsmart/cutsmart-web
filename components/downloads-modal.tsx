@@ -3,7 +3,7 @@
 import { useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { Download, FileSpreadsheet, X } from "lucide-react";
-import { iconRemoveButtonClass } from "@/components/settings-ui";
+import { modalCloseButtonClass } from "@/components/settings-ui";
 import { useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { downloadProductionCutlistTemplate } from "@/lib/production-cutlist-download";
 
@@ -51,7 +51,7 @@ export function DownloadsModal({
               Downloads
             </p>
           </div>
-          <button type="button" onClick={onClose} className={iconRemoveButtonClass} aria-label="Close">
+          <button type="button" onClick={onClose} className={modalCloseButtonClass} aria-label="Close">
             <X size={16} />
           </button>
         </div>

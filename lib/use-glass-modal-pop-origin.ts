@@ -93,9 +93,9 @@ export function bounceOriginElement(el: HTMLElement, dx: number, dy: number) {
   if (distance < 1) return;
   const nx = dx / distance;
   const ny = dy / distance;
-  const BOUNCE_DURATION_MS = 460;
-  // The bounce below overshoots past the origin element's own resting transform (scale 1.01,
-  // translated up to 6px) — an origin button living inside a tightly-fitted overflow:hidden
+  const BOUNCE_DURATION_MS = 380;
+  // The bounce below overshoots past the origin element's own resting transform (half a pixel,
+  // translated up to 2px) — an origin button living inside a tightly-fitted overflow:hidden
   // container (e.g. a bottom action bar sized exactly to its collapsed/expanded content, like
   // FloatingBarSlot in the project page) clips that overshoot at the container's own edge, which
   // reads as the bounce getting visibly cut off mid-motion rather than wobbling freely. Walking up
@@ -139,13 +139,18 @@ export function bounceOriginElement(el: HTMLElement, dx: number, dy: number) {
   // — one motion out, one motion back, nothing in between. `fill: "none"` (the default) means the
   // element simply reverts to its underlying (untouched) transform once this finishes, no cleanup
   // needed.
+  // The squash and overshoot sized to the element: its edges move at most 1.5px in and 0.5px out whatever its size —
+  // a plain percentage moved a wide list row's ends by many pixels (1% of 1,150px is over 11px).
+  const box = el.getBoundingClientRect();
+  const squeeze = (size: number) => Math.max(0.99, 1 - 3 / Math.max(size, 1));
+  const overshoot = (size: number) => Math.min(1.004, 1 + 1 / Math.max(size, 1));
   el.animate(
     [
       { transform: "translate(0px, 0px) scale(1, 1)" },
-      // Kept subtle: a small nudge and a little settle, not a big wobble.
-      { transform: `translate(${nx * 6}px, ${ny * 6}px) scale(0.98, 0.98)`, offset: 0.26 },
-      { transform: `translate(${-nx * 2}px, ${-ny * 2}px) scale(1.01, 1.01)`, offset: 0.56 },
-      { transform: `translate(${nx * 0.6}px, ${ny * 0.6}px) scale(0.997, 0.997)`, offset: 0.8 },
+      // Kept subtle: a 2px nudge and a little settle, not a wobble.
+      { transform: `translate(${nx * 2}px, ${ny * 2}px) scale(${squeeze(box.width)}, ${squeeze(box.height)})`, offset: 0.26 },
+      { transform: `translate(${-nx * 0.6}px, ${-ny * 0.6}px) scale(${overshoot(box.width)}, ${overshoot(box.height)})`, offset: 0.56 },
+      { transform: `translate(${nx * 0.2}px, ${ny * 0.2}px) scale(1, 1)`, offset: 0.8 },
       { transform: "translate(0px, 0px) scale(1, 1)" },
     ],
     { duration: BOUNCE_DURATION_MS, easing: "ease-in-out" },
@@ -174,16 +179,18 @@ function scheduleOriginArrival(
   if (!originElRef) return () => {};
   let cancelled = false;
   let rafId = 0;
-  const targetDiagonal = Math.hypot(targetWidth, targetHeight);
   // 1.35x, not 1.0x — firing at exact convergence is the "lands then disappears" case this exists
   // to avoid; firing while there's still a visible bit of shrink left to play out is the point.
-  const closeEnoughDiagonal = targetDiagonal * 1.35;
+  // Width and height each, not the diagonal: a wide, short origin (a list row) has a diagonal far bigger than the
+  // pop-up's own, so by the diagonal it "arrived" on the first frame — sinking behind the page before it had
+  // shrunk at all, leaving just the row's bounce. Each side has to be near the target's (or smaller) instead.
+  const closeEnoughWidth = targetWidth * 1.35;
+  const closeEnoughHeight = targetHeight * 1.35;
   const deadline = performance.now() + maxDelayMs;
   const check = () => {
     if (cancelled) return;
     const rect = panel.getBoundingClientRect();
-    const currentDiagonal = Math.hypot(rect.width, rect.height);
-    if (currentDiagonal <= closeEnoughDiagonal || performance.now() >= deadline) {
+    if ((rect.width <= closeEnoughWidth && rect.height <= closeEnoughHeight) || performance.now() >= deadline) {
       const originEl = originElRef.current;
       if (originEl?.isConnected) {
         applyOriginArrival(panel, originEl, dx, dy);

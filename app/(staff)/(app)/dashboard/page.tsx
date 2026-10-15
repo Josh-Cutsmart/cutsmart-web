@@ -7,6 +7,7 @@ import { createPortal } from "react-dom";
 import { Activity, Archive, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, FolderKanban, Kanban, ListFilter, RefreshCw, Rows3, Search, Users2, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
+import { GlassDropdown } from "@/components/glass-dropdown";
 import { attachBoardArrowKeyScroll } from "@/lib/board-arrow-key-scroll";
 import { attachBoardDragScroll } from "@/lib/board-drag-scroll";
 import { useBoardStickyRef } from "@/lib/board-sticky-scroll";
@@ -50,7 +51,7 @@ import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/use
 import { hedgedAsync } from "@/lib/load-retry";
 import { readLastKnown, saveLastKnown } from "@/lib/last-known";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
-import { iconRemoveButtonClass } from "@/components/settings-ui";
+import { modalCloseButtonClass } from "@/components/settings-ui";
 import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
 import { completedStatusMatcher, isProjectArchived, PROJECTS_ARCHIVED_EVENT, type ProjectsArchivedDetail } from "@/lib/project-archive";
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
@@ -66,12 +67,6 @@ const statCards = [
   { label: "Completed", key: "completed", icon: CheckCircle2, iconFrom: "#6BC79A", iconTo: "#2E8C5C" },
   { label: "Staff", key: "staff", icon: Users2, iconFrom: "#A796F0", iconTo: "#6E56D9" },
 ] as const;
-type QuickFilter = "all" | "active" | "completed";
-const QUICK_FILTER_OPTIONS: { key: QuickFilter; label: string }[] = [
-  { key: "all", label: "All" },
-  { key: "active", label: "Active" },
-  { key: "completed", label: "Completed" },
-];
 type DashboardLegendRow = { id: string; name: string; color: string };
 
 function normalizeRoleKey(value: unknown): string {
@@ -425,7 +420,9 @@ export default function DashboardPage() {
   const { tabs: globalAppTabs, registerScopeTabs } = useAppTabs();
   const [themeMode, setThemeMode] = useState<ThemeMode>("light");
   const [search, setSearch] = useState("");
-  const [quickFilter, setQuickFilter] = useState<QuickFilter>("all");
+  // The list view's status filter: "all", or one status (its name, lower case) — the toolbar's dropdown (a phone's
+  // filter button's menu).
+  const [quickFilter, setQuickFilter] = useState("all");
   const [pageSize, setPageSize] = useState(20);
   const [visibleCount, setVisibleCount] = useState(20);
   const [allProjects, setAllProjects] = useState<Project[]>([]);
@@ -443,7 +440,8 @@ export default function DashboardPage() {
   // one on the Leads page (same shared drag-ghost helper, same interaction language). View mode
   // and per-column collapse state are remembered per-user (localStorage keyed by uid), so two
   // people sharing a browser profile each keep their own preference.
-  const [dashboardViewMode, setDashboardViewMode] = useState<"list" | "board">("list");
+  // Columns (board) the first time; after that, whichever they last chose (saved with their board preferences below).
+  const [dashboardViewMode, setDashboardViewMode] = useState<"list" | "board">("board");
   // Set once the view's been switched with the toolbar toggle: the controls that belong to one view
   // (the list's filter pills and page size, the board's Sort) pop in as that view comes in — not on
   // the page's first load. The ones leaving pop away (popAwayViewToolbarItems).
@@ -1449,10 +1447,7 @@ export default function DashboardPage() {
     let rows = liveProjects.filter((project) => {
       const statusLabel = String(project.statusLabel || "New");
 
-      if (applyQuickFilter && quickFilter === "active" && isCompletedStatus(statusLabel)) {
-        return false;
-      }
-      if (applyQuickFilter && quickFilter === "completed" && !isCompletedStatus(statusLabel)) {
+      if (applyQuickFilter && quickFilter !== "all" && statusLabel.trim().toLowerCase() !== quickFilter) {
         return false;
       }
 
@@ -2608,7 +2603,7 @@ export default function DashboardPage() {
                 <button
                   type="button"
                   onClick={onCloseCompletedProjectsModal}
-                  className={iconRemoveButtonClass}
+                  className={modalCloseButtonClass}
                   aria-label="Close"
                 >
                   <X size={16} />
@@ -2857,7 +2852,7 @@ export default function DashboardPage() {
                 <button
                   type="button"
                   onClick={onCloseStaffModal}
-                  className={iconRemoveButtonClass}
+                  className={modalCloseButtonClass}
                   aria-label="Close"
                 >
                   <X size={16} />
@@ -3098,12 +3093,16 @@ export default function DashboardPage() {
                       <p className="min-w-0 truncate text-[12px] font-semibold sm:text-[13px] sm:text-[14px]" style={{ color: dashboardPalette.textSoft }}>{card.label}</p>
                       <p className="ml-auto shrink-0 text-[18px] font-bold sm:hidden" style={{ color: dashboardPalette.text }}>{value}</p>
                     </div>
-                    <p className="hidden text-[32px] font-semibold leading-none sm:block sm:text-[38px] lg:text-[42px]" style={{ color: dashboardPalette.text }}>{value}</p>
-                    {stats.weekly[card.key] > 0 && (
-                      <p className="hidden pt-1 text-[13px] font-bold sm:block" style={{ color: isDarkMode ? "var(--success)" : "#2A7A3B" }}>
-                        + {stats.weekly[card.key]} this week
-                      </p>
-                    )}
+                    {/* The number, and "+ N this week" at the end of its line rather than a line of its own — so a card is the
+                        same height with it or without (and the toolbar below never moves). */}
+                    <div className="hidden min-w-0 items-end justify-between gap-2 sm:flex">
+                      <p className="shrink-0 text-[32px] font-semibold leading-none sm:text-[38px] lg:text-[42px]" style={{ color: dashboardPalette.text }}>{value}</p>
+                      {stats.weekly[card.key] > 0 && (
+                        <p className="min-w-0 truncate whitespace-nowrap text-[13px] font-bold" style={{ color: isDarkMode ? "var(--success)" : "#2A7A3B" }}>
+                          + {stats.weekly[card.key]} this week
+                        </p>
+                      )}
+                    </div>
                   </div>
                 );
               })}
@@ -3224,66 +3223,85 @@ export default function DashboardPage() {
                     }}
                   />
                 </div>
-                {/* Desktop — the three filter pills, next to the search bar. Not shown in board
-                    (column) view — its columns already separate complete from active by status,
-                    so the filter has nothing meaningful left to do there. */}
+                {/* Desktop — which status to show: one dropdown (as Leads'), All then each status with its colour, next
+                    to the search bar. Not shown in board (column) view — its columns already are the statuses, so the
+                    filter has nothing meaningful left to do there. */}
                 {dashboardViewMode !== "board" && (
-                <div className="order-2 hidden flex-initial gap-1.5 sm:flex">
-                  {QUICK_FILTER_OPTIONS.map((option) => (
-                    <button
-                      key={option.key}
-                      onClick={() => setQuickFilter(option.key as QuickFilter)}
-                      data-view-toolbar-item="true"
-                      className={`h-9 rounded-full border px-4 text-[12px] font-bold transition ${viewToolbarPopIn ? "glass-bubble-pop" : ""}`}
-                      style={{
-                        backgroundColor: quickFilter === option.key ? undefined : dashboardPalette.panelBg,
-                        backgroundImage: quickFilter === option.key ? "var(--brand-gradient)" : "none",
-                        borderColor: quickFilter === option.key ? "var(--brand)" : dashboardPalette.border,
-                        color: quickFilter === option.key ? "#FFFFFF" : dashboardPalette.text,
-                        boxShadow: quickFilter === option.key ? "var(--shadow-sm)" : "none",
-                      }}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
+                // sm:order-1: after the search and view toggle (as on Leads), before Show N per page (sm:order-2).
+                <div data-view-toolbar-item="true" className={`order-2 hidden flex-initial sm:order-1 sm:flex ${viewToolbarPopIn ? "glass-bubble-pop" : ""}`}>
+                  <GlassDropdown
+                    value={quickFilter}
+                    options={[
+                      { value: "all", label: "All statuses" },
+                      ...statusOptions.map((status) => ({
+                        value: String(status).trim().toLowerCase(),
+                        label: status,
+                        color: statusColorByName.get(String(status).trim().toLowerCase()) || "#64748B",
+                      })),
+                    ]}
+                    onChange={setQuickFilter}
+                    ariaLabel="Status"
+                    triggerClassName="cs-own-fill h-9 min-w-[150px] shrink-0 justify-between rounded-full border px-3.5 text-[12px] font-bold"
+                    triggerStyle={{
+                      borderColor: quickFilter === "all" ? dashboardPalette.border : "var(--brand)",
+                      backgroundColor: dashboardPalette.panelBg,
+                      color: dashboardPalette.text,
+                    }}
+                  />
                 </div>
                 )}
-                {/* Mobile — the pills collapse into a single icon that opens a glass dropdown
-                    with the same three options, since there isn't room otherwise. Fades/slides
+                {/* Mobile — a single icon that opens a glass dropdown with the same choices (All, then each
+                    status with its colour), since there isn't room for the dropdown itself. Fades/slides
                     out of the way (same as it did as a button row) while the search bar is
                     focused and expanded — taking the row's gap before it along with it
                     (peer-focus-within:-ml-2), so none's left over beside the bar. */}
                 <div className="relative z-0 order-2 flex flex-1 translate-x-0 justify-center overflow-hidden transition-[opacity,flex-grow,transform,margin] duration-200 peer-focus-within:pointer-events-none peer-focus-within:-ml-2 peer-focus-within:flex-none peer-focus-within:w-0 peer-focus-within:translate-x-6 peer-focus-within:opacity-0 peer-data-[opening=true]:pointer-events-none peer-data-[opening=true]:-ml-2 peer-data-[opening=true]:flex-none peer-data-[opening=true]:w-0 peer-data-[opening=true]:translate-x-6 peer-data-[opening=true]:opacity-0 sm:hidden">
-                  <button
-                    type="button"
-                    data-quick-filter-trigger="true"
-                    onClick={(e) => {
-                      if (isMobileQuickFilterOpen) {
-                        setIsMobileQuickFilterOpen(false);
-                        setMobileQuickFilterPos(null);
-                        return;
-                      }
-                      const rect = e.currentTarget.getBoundingClientRect();
-                      const menuWidth = Math.max(180, rect.width);
-                      const centeredLeft = rect.left + rect.width / 2 - menuWidth / 2;
-                      setMobileQuickFilterPos({
-                        left: Math.min(Math.max(8, centeredLeft), window.innerWidth - menuWidth - 8),
-                        top: rect.bottom + 4,
-                        width: menuWidth,
-                      });
-                      setIsMobileQuickFilterOpen(true);
-                    }}
-                    className="inline-flex h-9 w-9 items-center justify-center rounded-full border"
-                    style={{
-                      backgroundColor: quickFilter === "all" ? dashboardPalette.panelBg : undefined,
-                      backgroundImage: quickFilter === "all" ? "none" : "var(--brand-gradient)",
-                      borderColor: quickFilter === "all" ? dashboardPalette.border : "var(--brand)",
-                    }}
-                    title="Filter projects"
-                    aria-label="Filter projects"
-                  >
-                    <ListFilter size={16} style={{ color: quickFilter === "all" ? dashboardPalette.textMuted : "#FFFFFF" }} />
-                  </button>
+                  {dashboardViewMode === "board" ? (
+                    // Columns: no status filter (the columns are the statuses) — the up/down sort button here instead,
+                    // just its icon in a circle.
+                    <BoardSortButton
+                      value={projectBoardSort}
+                      onChange={setProjectBoardSort}
+                      className="inline-flex h-9 w-9 shrink-0 items-center justify-center border transition hover:brightness-95"
+                      labelClassName="hidden"
+                      style={{
+                        backgroundColor: dashboardPalette.panelBg,
+                        borderRadius: 9999,
+                        ...(projectBoardSort === "custom" ? { color: dashboardPalette.textMuted, borderColor: dashboardPalette.border } : {}),
+                      }}
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      data-quick-filter-trigger="true"
+                      onClick={(e) => {
+                        if (isMobileQuickFilterOpen) {
+                          setIsMobileQuickFilterOpen(false);
+                          setMobileQuickFilterPos(null);
+                          return;
+                        }
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const menuWidth = Math.max(200, rect.width);
+                        const centeredLeft = rect.left + rect.width / 2 - menuWidth / 2;
+                        setMobileQuickFilterPos({
+                          left: Math.min(Math.max(8, centeredLeft), window.innerWidth - menuWidth - 8),
+                          top: rect.bottom + 4,
+                          width: menuWidth,
+                        });
+                        setIsMobileQuickFilterOpen(true);
+                      }}
+                      className="inline-flex h-9 w-9 items-center justify-center rounded-full border"
+                      style={{
+                        backgroundColor: quickFilter === "all" ? dashboardPalette.panelBg : undefined,
+                        backgroundImage: quickFilter === "all" ? "none" : "var(--brand-gradient)",
+                        borderColor: quickFilter === "all" ? dashboardPalette.border : "var(--brand)",
+                      }}
+                      title="Filter projects"
+                      aria-label="Filter projects"
+                    >
+                      <ListFilter size={16} style={{ color: quickFilter === "all" ? dashboardPalette.textMuted : "#FFFFFF" }} />
+                    </button>
+                  )}
                 </div>
                 <button
                   type="button"
@@ -3321,12 +3339,12 @@ export default function DashboardPage() {
                 {dashboardViewMode === "board" && (
                   // White like the search box and view toggle beside it (under the blue fill once sorted),
                   // and fully rounded ends like them and the top bar's tabs; its icon and text the search
-                  // icon's grey until a sort's chosen (then white on the blue). Just the icon, in a
-                  // circle, on a phone.
+                  // icon's grey until a sort's chosen (then white on the blue). Not on a phone — there it's
+                  // in the filter button's place (the columns are the statuses already, so there's no filter).
                   <BoardSortButton
                     value={projectBoardSort}
                     onChange={setProjectBoardSort}
-                    className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 border px-3 text-[12px] font-bold transition hover:brightness-95 max-sm:w-9 max-sm:px-0"
+                    className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 border px-3 text-[12px] font-bold transition hover:brightness-95 max-sm:hidden"
                     labelClassName="max-sm:hidden"
                     style={{
                       // Pops in once the search bar has slid out of its way (see searchSlideRef).
@@ -3344,7 +3362,7 @@ export default function DashboardPage() {
                   // for the picker itself to do there besides take up space.
                   <div
                     data-view-toolbar-item="true"
-                    className={`order-4 hidden w-full items-center gap-1.5 sm:order-none sm:ml-auto sm:flex sm:w-auto ${viewToolbarPopIn ? "glass-bubble-pop" : ""}`}
+                    className={`order-4 hidden w-full items-center gap-1.5 sm:order-2 sm:ml-auto sm:flex sm:w-auto ${viewToolbarPopIn ? "glass-bubble-pop" : ""}`}
                   >
                     <span className="text-[11px] font-semibold" style={{ color: dashboardPalette.textMuted }}>Show</span>
                     <select
@@ -3994,7 +4012,14 @@ export default function DashboardPage() {
                     }}
                     onClick={(e) => e.stopPropagation()}
                   >
-                    {QUICK_FILTER_OPTIONS.map((option) => (
+                    {[
+                      { key: "all", label: "All statuses", color: "" },
+                      ...statusOptions.map((status) => ({
+                        key: String(status).trim().toLowerCase(),
+                        label: status,
+                        color: statusColorByName.get(String(status).trim().toLowerCase()) || "#64748B",
+                      })),
+                    ].map((option) => (
                       <button
                         key={option.key}
                         type="button"
@@ -4003,12 +4028,14 @@ export default function DashboardPage() {
                           setIsMobileQuickFilterOpen(false);
                           setMobileQuickFilterPos(null);
                         }}
-                        className="block w-full rounded-[8px] px-3 py-2 text-left text-[12px] font-bold max-md:rounded-[10px] max-md:px-3.5 max-md:py-3 max-md:text-[15px]"
+                        className="flex w-full items-center gap-2 rounded-[8px] px-3 py-2 text-left text-[12px] font-bold max-md:rounded-[10px] max-md:px-3.5 max-md:py-3 max-md:text-[15px]"
                         style={{
                           backgroundImage: quickFilter === option.key ? "var(--brand-gradient)" : "none",
                           color: quickFilter === option.key ? "#FFFFFF" : dashboardPalette.text,
                         }}
                       >
+                        {/* Each status's colour (All has none — the space kept, so the names line up). */}
+                        <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: option.color || "transparent" }} />
                         {option.label}
                       </button>
                     ))}

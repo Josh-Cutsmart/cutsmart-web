@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Check, Copy, Eye, EyeOff, KeyRound, Plus, Trash2, X } from "lucide-react";
-import { glassFieldClass, iconRemoveButtonClass, primaryButtonClass, primaryButtonStyle, smallButtonClass } from "@/components/settings-ui";
+import { glassFieldClass, modalCloseButtonClass, primaryButtonClass, primaryButtonStyle, smallButtonClass } from "@/components/settings-ui";
 import { activeDateTime } from "@/lib/company-formats";
 import {
   changeMasterJoinCode,
@@ -157,7 +157,7 @@ export function CompanyJoinCodesModal({
           <p className="inline-flex items-center gap-2 text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
             <KeyRound size={15} /> Join codes
           </p>
-          <button type="button" onClick={onClose} className={iconRemoveButtonClass} aria-label="Close">
+          <button type="button" onClick={onClose} className={modalCloseButtonClass} aria-label="Close">
             <X size={16} />
           </button>
         </div>

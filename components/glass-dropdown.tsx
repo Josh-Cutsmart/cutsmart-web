@@ -236,6 +236,8 @@ type GlassDropdownProps = {
   // Shown (muted) while the value matches none of the options — e.g. "Choose a category". Without it, the
   // first option is shown then.
   placeholder?: string;
+  // No colour dot in the trigger — for a trigger that's already in the chosen option's colour (e.g. a status pill).
+  hideTriggerDot?: boolean;
 };
 
 // A select-style dropdown: the trigger shows the chosen option (with its colour dot) and a chevron.
@@ -251,6 +253,7 @@ export function GlassDropdown({
   hideChevron,
   menuAlign = "left",
   placeholder,
+  hideTriggerDot = false,
 }: GlassDropdownProps) {
   const { position, isOpen, triggerRef, menuRef, toggle, close } = useAnchoredGlassMenu({
     rowCount: options.length,
@@ -276,7 +279,7 @@ export function GlassDropdown({
         className={`inline-flex items-center gap-2 text-left disabled:opacity-60 ${triggerClassName ?? ""}`}
         style={triggerStyle}
       >
-        {selected?.color ? (
+        {selected?.color && !hideTriggerDot ? (
           <span
             className="h-2.5 w-2.5 shrink-0 rounded-full transition-colors duration-700 ease-in-out motion-reduce:transition-none"
             style={{ backgroundColor: selected.color }}

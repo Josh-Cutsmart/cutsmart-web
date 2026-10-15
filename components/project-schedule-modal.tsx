@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { CalendarDays, X } from "lucide-react";
-import { iconRemoveButtonClass } from "@/components/settings-ui";
+import { modalCloseButtonClass } from "@/components/settings-ui";
 import { useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { activeDate } from "@/lib/company-formats";
 import {
@@ -169,7 +169,7 @@ export function ProjectScheduleModal({
               Schedule
             </p>
           </div>
-          <button type="button" onClick={onClose} className={iconRemoveButtonClass} aria-label="Close">
+          <button type="button" onClick={onClose} className={modalCloseButtonClass} aria-label="Close">
             <X size={16} />
           </button>
         </div>

@@ -7,8 +7,8 @@ import { displayNameIn, productionUnlockApproverUids, signUnlockActionToken } fr
 import { sendPushToUser } from "@/lib/push-server";
 
 // "Request unlock" (the project page's Unlock Edit pop-up): records the signed-in user's request on the
-// project and notifies everyone who can approve it — in their Notifications list, and on their devices
-// with Approve/Deny buttons (lib/production-unlock-server.ts).
+// project and notifies everyone who can approve it (the project's creator only with its bell on) — in their
+// Notifications list, and on their devices with Approve/Deny buttons (lib/production-unlock-server.ts).
 export async function POST(request: NextRequest) {
   if (!adminDb || !hasFirebaseAdminConfig) {
     return NextResponse.json({ ok: false, error: "missing-firebase-admin-config" }, { status: 500 });
@@ -33,7 +33,7 @@ export async function POST(request: NextRequest) {
   const requestedAtIso = new Date().toISOString();
   await projectRef.update(new FieldPath("productionUnlockRequests", access.uid), { requestedAtIso, name: requesterName });
 
-  const approvers = (await productionUnlockApproverUids(companyId, projectData)).filter((uid) => uid !== access.uid);
+  const approvers = (await productionUnlockApproverUids(companyId, projectData, { notify: true })).filter((uid) => uid !== access.uid);
   const projectName = String(projectData.name || "a project").trim() || "a project";
   const siteOrigin = new URL(request.url).origin;
   await Promise.all(

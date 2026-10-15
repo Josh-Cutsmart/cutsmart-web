@@ -1514,6 +1514,34 @@ body[data-theme="dark"] [data-app-top-tab] {
   --app-top-tab-tint: rgba(0, 0, 0, 0.16);
 }
 
+/* The glass shine: light catching the very edge of each tab — a thin rim, brightest along its top and fading away
+ * down its rounded sides into a faint shade along the bottom (which is what lets the bright top show on a light
+ * tab); the tab itself stays as it is. (A 1.5px ring: the gradient, with everything inside the ring masked away.) */
+[data-app-top-tab]::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  /* Under the label and the hover / open outline (so that shows all the way round, over the rim). */
+  z-index: -1;
+  border-radius: inherit;
+  padding: 1.5px;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 1) 0%,
+    rgba(255, 255, 255, 0.6) 30%,
+    rgba(255, 255, 255, 0) 55%,
+    rgba(15, 23, 42, 0.12) 100%
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+}
+
+body[data-theme="dark"] [data-app-top-tab]::before {
+  background: linear-gradient(to bottom, rgba(255, 255, 255, 0.32) 0%, rgba(255, 255, 255, 0.12) 30%, rgba(255, 255, 255, 0) 60%);
+}
+
 /* The tint: between the tab's own background (set inline) and its label, so it works over whatever
  * colour the tab is. */
 [data-app-top-tab]::after {

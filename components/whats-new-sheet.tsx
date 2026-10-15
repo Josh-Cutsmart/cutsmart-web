@@ -431,7 +431,24 @@ export function WhatsNewSheet({
   onPublished?: () => void;
 }) {
   const [closing, setClosing] = useState(false);
-  const close = () => setClosing(true);
+  // Slides away, then onClose — once. With animations turned off (the device's reduced-motion setting) there's no
+  // slide, so it's at once; and in case the slide's end is never reported (a tab in the background), it's done
+  // anyway a moment after the slide would have finished.
+  const closedRef = useRef(false);
+  const finishClose = () => {
+    if (closedRef.current) return;
+    closedRef.current = true;
+    onClose();
+  };
+  const close = () => {
+    if (closing) return;
+    if (typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      finishClose();
+      return;
+    }
+    setClosing(true);
+    window.setTimeout(finishClose, 600);
+  };
   // A draft opened on a local server: it can't be published here (a red pill in the middle of the bar).
   const [localNotice, setLocalNotice] = useState("");
   // A modal <dialog>: above everything on the page whatever its z-index, and everything behind it can't be
@@ -522,7 +539,7 @@ export function WhatsNewSheet({
       />
       <div
         onAnimationEnd={(event) => {
-          if (closing && event.target === event.currentTarget) onClose();
+          if (closing && event.target === event.currentTarget) finishClose();
         }}
         className={`absolute inset-0 overflow-hidden ${
           closing

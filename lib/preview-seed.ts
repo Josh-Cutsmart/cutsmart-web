@@ -1,5 +1,6 @@
 import { Timestamp, doc, setDoc, type Firestore } from "@/lib/firestore-client";
 import { parseUpdateNotesText } from "@/lib/update-notes-utils";
+import { newLeadForm } from "@/lib/lead-forms";
 
 // The made-up company CutSmart Preview opens on (lib/preview-mode.ts): a joinery with a team, jobs at
 // every stage, cutlists, a week in the calendar, contacts, leads and notifications. Written into the
@@ -599,6 +600,10 @@ export async function seedPreviewDatabase(db: Firestore): Promise<void> {
     roles: ROLES,
     staffRoleIdsByUid: Object.fromEntries(TEAM.map((member) => [member.uid, member.roleId])),
     projectStatuses: PROJECT_STATUSES,
+    // A lead form to try Create Lead and the form builder with (Company Settings → Leads), and a leads email inbox
+    // address (CutSmart Demo Joinery → cdj_…).
+    leadForms: [newLeadForm("Website enquiry")],
+    leadInbox: { localPart: "cdj_k7m2q", code: "k7m2q", createdAtIso: iso(nowMs - 30 * 86_400_000) },
     leadStatuses: [
       { id: "new", name: "New", color: "#3060D0" },
       { id: "contacted", name: "Contacted", color: "#C77700" },
@@ -962,8 +967,36 @@ export async function seedPreviewDatabase(db: Firestore): Promise<void> {
       rawFields: { FullName: lead.name, Email: email, Phone: phone, Suburb: lead.suburb, Message: lead.message },
     };
   });
+  // One that came in by email to the leads inbox (app/api/leads/email-inbound).
+  const emailedIso = iso(leadTime(6 * 3_600_000));
+  const emailedLead = {
+    id: "temporary-sample-lead-email-1",
+    companyId: PREVIEW_COMPANY_ID,
+    name: "Liam Parata",
+    email: "liam.parata@example.com",
+    phone: "027 555 0144",
+    message: "Hi there, we're after a quote for a new kitchen and scullery. Photos of the current kitchen attached. Thanks, Liam",
+    formName: "Email",
+    submittedAtIso: emailedIso,
+    createdAtIso: emailedIso,
+    updatedAtIso: emailedIso,
+    source: "email",
+    status: "New",
+    assignedToUid: "",
+    assignedToName: "",
+    assignedTo: "",
+    imageItems: [],
+    imageUrls: [],
+    rawFields: {
+      Name: "Liam Parata",
+      Email: "liam.parata@example.com",
+      Phone: "027 555 0144",
+      Subject: "Kitchen and scullery quote",
+      Message: "Hi there, we're after a quote for a new kitchen and scullery. Photos of the current kitchen attached. Thanks, Liam",
+    },
+  };
   try {
-    window.localStorage.setItem(SAMPLE_LEADS_STORAGE_KEY, JSON.stringify(leads));
+    window.localStorage.setItem(SAMPLE_LEADS_STORAGE_KEY, JSON.stringify([emailedLead, ...leads]));
     window.localStorage.setItem("cutsmart_active_company_id", PREVIEW_COMPANY_ID);
   } catch {
     // storage unavailable — the Leads page starts empty

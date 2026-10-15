@@ -49,6 +49,7 @@ import {
   Segmented,
   glassFieldClass,
   iconRemoveButtonClass,
+  modalCloseButtonClass,
   primaryButtonClass,
   primaryButtonStyle,
   secondaryButtonClass,
@@ -64,8 +65,9 @@ const pillButtonClass = `${smallButtonClass.replace("rounded-[10px]", "rounded-f
 const desktopStepButtonClass =
   "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--text-main)] transition hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)]";
 // The event pop-up's "…" (beside its X): the same size, tinted on hover rather than red.
+// Plain, like the close button beside it (modalCloseButtonClass) — its dots the same main text colour as that X.
 const eventMenuButtonClass =
-  "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] text-[var(--text-muted)] transition hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] hover:text-[var(--text-main)]";
+  "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[var(--text-main)] transition hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)]";
 const mobileStepButtonClass =
   "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--text-main)] transition active:bg-[color-mix(in_srgb,var(--text-main)_8%,transparent)]";
 
@@ -703,8 +705,8 @@ function CalendarPageContent() {
   // are treated as restricted so details never flash up.
   const accessibleProjectIds = useMemo(() => new Set(projects.map((p) => p.id)), [projects]);
   const projectById = useMemo(() => new Map(projects.map((p) => [p.id, p])), [projects]);
-  // An event's staff — for one saved before events had staff, its linked project's creator and assignee (as the
-  // server counts them for its reminders).
+  // An event's staff — for one saved before events had staff, its linked project's assignee, or its creator with no
+  // one assigned (as the server counts them for its reminders).
   const draftStaffUids = (d: Draft): string[] => d.staffUids ?? projectEventStaffUids(projectById.get(d.projectId));
   const restrictedIds = useMemo(
     () =>
@@ -2709,7 +2711,7 @@ function CalendarPageContent() {
                             <MoreHorizontal size={16} />
                           </GlassActionMenu>
                         ) : null}
-                        <button type="button" onClick={closeModal} className={iconRemoveButtonClass} aria-label="Close">
+                        <button type="button" onClick={closeModal} className={modalCloseButtonClass} aria-label="Close">
                           <X size={16} />
                         </button>
                       </div>
@@ -2876,7 +2878,7 @@ function CalendarPageContent() {
                   <p className="flex-1 truncate text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
                     {d.isNew ? "New event" : readOnly ? "Event" : "Edit event"}
                   </p>
-                  <button type="button" onClick={closeModal} className={iconRemoveButtonClass} aria-label="Close">
+                  <button type="button" onClick={closeModal} className={modalCloseButtonClass} aria-label="Close">
                     <X size={16} />
                   </button>
                 </div>
@@ -3003,7 +3005,7 @@ function CalendarPageContent() {
                                               projectId: p.id,
                                               projectName: p.name,
                                               showToClient: showToClientDefault,
-                                              // The project's creator and assignee go on as staff.
+                                              // The project's assignee goes on as staff (its creator, with no one assigned).
                                               staffUids: Array.from(new Set([...draftStaffUids(prev), ...projectEventStaffUids(p)])),
                                               title: prev.title || p.name,
                                               location: prev.location || String(p.clientAddress || ""),
@@ -3027,7 +3029,8 @@ function CalendarPageContent() {
                       )}
                     </div>
                     {/* Who's on it — each is reminded before it (their Notifications > Upcoming events). A linked
-                        project's creator and assignee go on when it's linked. */}
+                        project's assignee goes on when it's linked (its creator, with no one assigned); anyone can be
+                        taken off. */}
                     <div className="grid gap-1.5 text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
                       Staff
                       {draftStaff.length ? (

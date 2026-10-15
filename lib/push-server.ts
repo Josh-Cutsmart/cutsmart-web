@@ -166,7 +166,9 @@ export async function sendPushToUser(
       badgeCount = undefined;
     }
   }
-  const body = JSON.stringify({ icon: "/icon-192.png", ...toSend, ...(badgeCount !== undefined ? { badgeCount } : {}) });
+  // sentAt: when it went out — a device that was off or offline gets it later, and the service worker (public/sw.js)
+  // gathers those that waited into one notification rather than a pile of them.
+  const body = JSON.stringify({ icon: "/icon-192.png", ...toSend, ...(badgeCount !== undefined ? { badgeCount } : {}), sentAt: Date.now() });
   await Promise.all(
     subsSnap.docs.map(async (docSnap) => {
       const data = docSnap.data() as { endpoint?: string; keys?: { p256dh?: string; auth?: string } };

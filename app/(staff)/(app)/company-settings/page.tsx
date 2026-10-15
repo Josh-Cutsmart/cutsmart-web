@@ -69,6 +69,8 @@ import {
   activeDateTime,
 } from "@/lib/company-formats";
 import { CompanyJoinCodesModal } from "@/components/company-join-codes-modal";
+import { LeadFormsPanel, LeadInboxPanel } from "@/components/lead-forms-settings";
+import { normalizeLeadForms, type LeadForm } from "@/lib/lead-forms";
 import {
   cancelCompanyInvite,
   createTemporaryJoinCode,
@@ -81,7 +83,7 @@ import {
   type JoinCodesState,
 } from "@/lib/company-join-codes";
 import { FileText, Lightbulb } from "lucide-react";
-import { Box, FileInput, FolderTree, LayoutTemplate, Lock, Percent, Receipt, Shield, ShieldCheck, UserMinus, UserPlus } from "lucide-react";
+import { Box, FolderTree, LayoutTemplate, Lock, Percent, Receipt, Shield, ShieldCheck, UserMinus, UserPlus } from "lucide-react";
 import { isStaffContactCategory, withStaffContactCategory } from "@/lib/staff-contacts";
 import { Archive, Award, CalendarDays, CircleDashed, Cog, Columns3, Contact, Copy, Cpu, DoorClosed, DoorOpen, Eye, Factory, Globe2, HardHat as TradeIcon, ImageUp, Inbox, KanbanSquare, KeyRound, Palette, PanelLeft, RefreshCw, Ruler, Shapes, SlidersHorizontal, Star, Tags, Trash2 } from "lucide-react";
 import {
@@ -109,7 +111,7 @@ import {
 } from "@/components/settings-ui";
 
 type SettingsSection =
-  | "company" | "dashboard" | "calendar" | "sales" | "production" | "nesting" | "materials"
+  | "company" | "dashboard" | "calendar" | "leads" | "sales" | "production" | "nesting" | "materials"
   | "hardware" | "staff" | "integrations" | "backup";
 
 type SubStageRow = { name: string; color: string; isDefault?: boolean };
@@ -517,7 +519,8 @@ const sections: Array<{
   // Same icon as the sidebar's Dashboard item (components/app-shell.tsx topNav).
   { key: "dashboard", label: "Dashboard", group: "General", icon: LayoutDashboard, description: "Statuses, tags, contact categories, how long deleted items are kept and when finished projects are archived." },
   { key: "calendar", label: "Calendar", group: "General", icon: CalendarDays, description: "The categories events can belong to on the Calendar tab." },
-  { key: "sales", label: "Sales", group: "Sales", icon: CircleDollarSign, description: "Lead form, quote & specs layouts, products, helpers and discounts." },
+  { key: "leads", label: "Leads", group: "Sales", icon: Inbox, description: "Your lead forms, your leads email inbox and the statuses on your Leads board." },
+  { key: "sales", label: "Sales", group: "Sales", icon: CircleDollarSign, description: "Quote & specs layouts, products, helpers and discounts." },
   { key: "production", label: "Production", group: "Workshop", icon: Wrench, description: "Cutlists, part types, gap allowances and production access." },
   { key: "nesting", label: "Machining", group: "Workshop", icon: Layers3, description: "Your machines, their settings, servicing and nesting rules." },
   { key: "materials", label: "Materials & Boards", group: "Workshop", icon: Package2, description: "Sheet thicknesses, finishes, sizes and remembered board colours." },
@@ -535,7 +538,6 @@ const SETTINGS_SEARCH_INDEX: Array<{ section: SettingsSection; label: string; ca
   { section: "company", card: "Regional formats", label: "Measurement unit", keywords: "mm inches millimetres" },
   { section: "company", card: "Regional formats", label: "Date format" },
   { section: "dashboard", card: "Project statuses", label: "Project statuses", keywords: "sub-stages board columns" },
-  { section: "dashboard", card: "Lead statuses", label: "Lead statuses" },
   { section: "dashboard", card: "Contact categories", label: "Contact categories" },
   { section: "dashboard", card: "Completed project legend", label: "Completed project legend" },
   { section: "dashboard", card: "Tags", label: "Tags" },
@@ -543,7 +545,9 @@ const SETTINGS_SEARCH_INDEX: Array<{ section: SettingsSection; label: string; ca
   { section: "calendar", card: "Calendar categories", label: "Calendar categories", keywords: "events sub-calendars colours teamup" },
   { section: "calendar", card: "Workdays", label: "Workdays", keywords: "business days weekends" },
   { section: "calendar", card: "Workdays", label: "Show non-workdays", keywords: "hide weekends month week view" },
-  { section: "sales", card: "Lead form", label: "Lead form URL" },
+  { section: "leads", card: "Lead forms", label: "Lead forms", keywords: "enquiry website embed questions create lead" },
+  { section: "leads", card: "Leads email inbox", label: "Leads email inbox", keywords: "email address forward" },
+  { section: "leads", card: "Lead statuses", label: "Lead statuses" },
   { section: "sales", card: "Layout builders", label: "Specs & quote layouts", keywords: "template builder" },
   { section: "sales", card: "Client confirmation", label: "Reopen for editing" },
   { section: "sales", card: "Layout builders", label: "Item categories", keywords: "items picker" },
@@ -1663,6 +1667,8 @@ export default function CompanySettingsPage() {
   // Whether a status is already ticked as the completed one (Project statuses hides the others' button).
   const hasCompletedStatus = statuses.some((row) => Boolean(row.isComplete));
   const [leadStatuses, setLeadStatuses] = useState<StatusRow[]>([]);
+  // The company's lead forms (Company Settings → Leads — components/lead-forms-settings.tsx; lib/lead-forms.ts).
+  const [leadForms, setLeadForms] = useState<LeadForm[]>([]);
   const [dashboardLegend, setDashboardLegend] = useState<DashboardLegendRow[]>([]);
   const [legendDragIndex, setLegendDragIndex] = useState<number | null>(null);
   const [legendDragOverIndex, setLegendDragOverIndex] = useState<number | null>(null);
@@ -1795,7 +1801,6 @@ export default function CompanySettingsPage() {
   // editing" safety-valve buttons on a sent/submitted Quote or Specifications sheet), so an
   // existing company that's never touched this setting should keep working exactly as before.
   const [salesAllowReopenForEditing, setSalesAllowReopenForEditing] = useState(true);
-  const [salesLeadFormUrl, setSalesLeadFormUrl] = useState("");
   const quoteHelperRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [hardware, setHardware] = useState<HardwareRow[]>([]);
   const [hardwareExpanded, setHardwareExpanded] = useState<Record<number, boolean>>({});
@@ -2034,6 +2039,7 @@ export default function CompanySettingsPage() {
         });
         setStatuses(normalizeStatuses(doc.projectStatuses));
         setLeadStatuses(normalizeLeadStatuses((doc as Record<string, unknown>).leadStatuses));
+        setLeadForms(normalizeLeadForms((doc as Record<string, unknown>).leadForms));
         setDashboardLegend(normalizeDashboardLegend(doc.dashboardCompleteLegend));
         setProjectTagUsage(normalizeProjectTagUsage(doc.projectTagUsage));
         setBoardColourMemory(normalizeBoardColourMemory(doc.boardMaterialUsage));
@@ -2059,7 +2065,6 @@ export default function CompanySettingsPage() {
         setDiscountTiers(normalizeDiscountTiers(doc.salesQuoteDiscountTiers));
         setMinusOffQuoteTotal(Boolean(doc.salesMinusOffQuoteTotal));
         setSalesAllowReopenForEditing(doc.salesAllowReopenForEditing !== false);
-        setSalesLeadFormUrl(toStr(doc.salesLeadFormUrl));
         const hardwareRows = normalizeHardware(doc.hardwareSettings);
         setHardware(sanitizeHardwareRows(hardwareRows));
         setNesting({
@@ -3183,7 +3188,6 @@ export default function CompanySettingsPage() {
         salesQuoteDiscountTiers: discountTiers,
         salesMinusOffQuoteTotal: minusOffQuoteTotal,
         salesAllowReopenForEditing,
-        salesLeadFormUrl,
         backupTemplate,
         hardware,
         nesting,
@@ -3404,6 +3408,7 @@ export default function CompanySettingsPage() {
         name: toStr(row.name),
         color: toStr(row.color, "#64748B"),
       })),
+      leadForms: normalizeLeadForms(leadForms),
       dashboardCompleteLegend: dashboardLegend
         .map((row, idx) => {
           const name = toStr(row.name);
@@ -3608,7 +3613,6 @@ export default function CompanySettingsPage() {
         .filter((row) => row.low && row.high && row.discount),
       salesMinusOffQuoteTotal: Boolean(minusOffQuoteTotal),
       salesAllowReopenForEditing: Boolean(salesAllowReopenForEditing),
-      salesLeadFormUrl: toStr(salesLeadFormUrl),
       integrations: {
         ...(((company as Record<string, unknown> | null)?.integrations as Record<string, unknown> | undefined) ?? {}),
         zapierLeads: {
@@ -3661,6 +3665,7 @@ export default function CompanySettingsPage() {
           ...form,
         projectStatuses: statuses,
         leadStatuses,
+        leadForms,
         dashboardCompleteLegend: dashboardLegend,
         projectTagUsage: { tags: projectTagUsage },
         boardThicknesses,
@@ -3692,7 +3697,6 @@ export default function CompanySettingsPage() {
           salesQuoteDiscountTiers: discountTiers,
           salesMinusOffQuoteTotal: minusOffQuoteTotal,
           salesAllowReopenForEditing,
-          salesLeadFormUrl,
           integrations: {
             ...((((prev ?? {}) as Record<string, unknown>).integrations as Record<string, unknown> | undefined) ?? {}),
             zapierLeads: {
@@ -4074,6 +4078,7 @@ export default function CompanySettingsPage() {
     form,
     statuses,
     leadStatuses,
+    leadForms,
     dashboardLegend,
     calendarCategories,
     calendarWorkdays,
@@ -4095,7 +4100,6 @@ export default function CompanySettingsPage() {
       discountTiers,
       minusOffQuoteTotal,
       salesAllowReopenForEditing,
-      salesLeadFormUrl,
       zapierLeads,
       backupTemplate,
     hardware,
@@ -5136,7 +5140,7 @@ export default function CompanySettingsPage() {
                                     />
                                   </StackField>
                                   <StackField label="Phone">
-                                    <input
+                                    <input inputMode="tel"
                                       value={activeMachine.maintenanceContact.phone}
                                       onChange={(e) => updateActiveMachine((m) => ({ maintenanceContact: { ...m.maintenanceContact, phone: e.target.value } }))}
                                       className={fieldInputClass}
@@ -5242,7 +5246,7 @@ export default function CompanySettingsPage() {
                                     {activeMachine.edgebandingSettings.rules.map((rule, idx) => (
                                       <div key={`machine_edgeband_rule_${idx}`} className={`${listRowClass} flex-wrap text-[12.5px] font-medium`} style={{ color: "var(--text-main)" }}>
                                         <span className="pl-1">If edge tape is</span>
-                                        <input
+                                        <input inputMode="decimal"
                                           value={rule.upToMeters}
                                           onChange={(e) =>
                                             updateActiveMachine((m) => ({
@@ -5255,7 +5259,7 @@ export default function CompanySettingsPage() {
                                           className={`${glassFieldSmClass} w-[80px] text-center`}
                                         />
                                         <span>m or less, add</span>
-                                        <input
+                                        <input inputMode="decimal"
                                           value={rule.addMeters}
                                           onChange={(e) =>
                                             updateActiveMachine((m) => ({
@@ -5326,7 +5330,7 @@ export default function CompanySettingsPage() {
                                       disabled={!activeMachine.edgebandingSettings.roundEnabled}
                                     />
                                     <span>to the nearest</span>
-                                    <input
+                                    <input inputMode="decimal"
                                       value={activeMachine.edgebandingSettings.roundNearestMeters}
                                       onChange={(e) =>
                                         updateActiveMachine((m) => ({ edgebandingSettings: { ...m.edgebandingSettings, roundNearestMeters: e.target.value } }))
@@ -6414,69 +6418,6 @@ export default function CompanySettingsPage() {
                       </button>
                     </div>
                   </Panel>
-                  <Panel title="Lead statuses" icon={Inbox} description="The columns on your Leads board.">
-                    <div className="space-y-1.5">
-                      {leadStatuses.map((row, idx) => (
-                        <div
-                          key={`lead_status_${idx}`}
-                          id={`settings_lead_status_${idx}`}
-                          className={listRowClass}
-                          style={{ opacity: leadStatusDragIndex === idx ? 0.45 : 1 }}
-                          onDragOver={(e) => {
-                            e.preventDefault();
-                            e.dataTransfer.dropEffect = "move";
-                          }}
-                          onDragEnter={(e) => {
-                            e.preventDefault();
-                            if (leadStatusDragIndex == null || leadStatusDragIndex === idx) return;
-                            setLeadStatuses((prev) => moveRowTo(prev, leadStatusDragIndex, idx));
-                            setLeadStatusDragIndex(idx);
-                            setLeadStatusDragOverIndex(idx);
-                          }}
-                          onDrop={(e) => {
-                            e.preventDefault();
-                            setLeadStatusDragIndex(null);
-                            setLeadStatusDragOverIndex(null);
-                            endRowDrag();
-                            triggerAutosaveAfterRowDrop();
-                          }}
-                        >
-                          <button
-                            type="button"
-                            draggable
-                            onDragStart={(e) => {
-                              setLeadStatusDragIndex(idx);
-                              setLeadStatusDragOverIndex(idx);
-                              e.dataTransfer.setData("text/plain", `${idx}`);
-                              startRowDrag(e, `settings_lead_status_${idx}`, row.name, row.color);
-                            }}
-                            onDragEnd={() => {
-                              setLeadStatusDragIndex(null);
-                              setLeadStatusDragOverIndex(null);
-                              endRowDrag();
-                            }}
-                            className={gripClass}
-                            title="Drag to reorder"
-                          >
-                            <GripVertical size={15} />
-                          </button>
-                          <ColorCircle value={row.color || "#64748B"} onChange={(hex) => setLeadStatuses((prev) => prev.map((v, i) => (i === idx ? { ...v, color: hex } : v)))} />
-                          <input
-                            value={row.name}
-                            placeholder="Status name"
-                            onChange={(e) => setLeadStatuses((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))}
-                            className={gridCellInputClass}
-                          />
-                          <button type="button" onClick={() => setLeadStatuses((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} title="Remove">
-                            <X size={15} />
-                          </button>
-                        </div>
-                      ))}
-                      <button type="button" onClick={() => setLeadStatuses((prev) => [...prev, { name: "", color: "#64748B" }])} className={`${secondaryButtonClass} mt-1.5`}>
-                        <Plus size={14} /> Add status
-                      </button>
-                    </div>
-                  </Panel>
                   <Panel title="Contact categories" icon={Contact} description="Group your contacts — the colour themes each contact's card. Drag to set the order they're listed in. Staff is built in: every staff member is in everyone's Contacts under it.">
                     <div className="space-y-1.5">
                       {contactCategories.map((row, idx) => (
@@ -6961,13 +6902,80 @@ export default function CompanySettingsPage() {
                 </div>
               )}
 
+              {active === "leads" && (
+                <div className="grid gap-[18px] max-lg:grid-cols-1 xl:grid-cols-2">
+                  <div className="min-w-0 xl:col-span-2">
+                    <LeadFormsPanel companyId={activeCompanyId} forms={leadForms} setForms={setLeadForms} />
+                  </div>
+                  <LeadInboxPanel key={activeCompanyId} companyId={activeCompanyId} savedInbox={company?.leadInbox} />
+                  <Panel title="Lead statuses" icon={Inbox} description="The columns on your Leads board.">
+                    <div className="space-y-1.5">
+                      {leadStatuses.map((row, idx) => (
+                        <div
+                          key={`lead_status_${idx}`}
+                          id={`settings_lead_status_${idx}`}
+                          className={listRowClass}
+                          style={{ opacity: leadStatusDragIndex === idx ? 0.45 : 1 }}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = "move";
+                          }}
+                          onDragEnter={(e) => {
+                            e.preventDefault();
+                            if (leadStatusDragIndex == null || leadStatusDragIndex === idx) return;
+                            setLeadStatuses((prev) => moveRowTo(prev, leadStatusDragIndex, idx));
+                            setLeadStatusDragIndex(idx);
+                            setLeadStatusDragOverIndex(idx);
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            setLeadStatusDragIndex(null);
+                            setLeadStatusDragOverIndex(null);
+                            endRowDrag();
+                            triggerAutosaveAfterRowDrop();
+                          }}
+                        >
+                          <button
+                            type="button"
+                            draggable
+                            onDragStart={(e) => {
+                              setLeadStatusDragIndex(idx);
+                              setLeadStatusDragOverIndex(idx);
+                              e.dataTransfer.setData("text/plain", `${idx}`);
+                              startRowDrag(e, `settings_lead_status_${idx}`, row.name, row.color);
+                            }}
+                            onDragEnd={() => {
+                              setLeadStatusDragIndex(null);
+                              setLeadStatusDragOverIndex(null);
+                              endRowDrag();
+                            }}
+                            className={gripClass}
+                            title="Drag to reorder"
+                          >
+                            <GripVertical size={15} />
+                          </button>
+                          <ColorCircle value={row.color || "#64748B"} onChange={(hex) => setLeadStatuses((prev) => prev.map((v, i) => (i === idx ? { ...v, color: hex } : v)))} />
+                          <input
+                            value={row.name}
+                            placeholder="Status name"
+                            onChange={(e) => setLeadStatuses((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))}
+                            className={gridCellInputClass}
+                          />
+                          <button type="button" onClick={() => setLeadStatuses((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} title="Remove">
+                            <X size={15} />
+                          </button>
+                        </div>
+                      ))}
+                      <button type="button" onClick={() => setLeadStatuses((prev) => [...prev, { name: "", color: "#64748B" }])} className={`${secondaryButtonClass} mt-1.5`}>
+                        <Plus size={14} /> Add status
+                      </button>
+                    </div>
+                  </Panel>
+                </div>
+              )}
+
               {active === "sales" && (
                 <div className="grid gap-[18px] max-lg:grid-cols-1 xl:grid-cols-2">
-                  <Panel title="Lead form" icon={FileInput} description="Your public enquiry form. Submissions land in Leads.">
-                    <FieldRow label="Public form URL">
-                      <input value={salesLeadFormUrl} onChange={(e) => setSalesLeadFormUrl(e.target.value)} placeholder="https://..." className={fieldInputClass} />
-                    </FieldRow>
-                  </Panel>
                   <Panel title="Client confirmation" icon={ShieldCheck} description="What staff can do once a quote or specs sheet has gone to the client.">
                     <FieldRow
                       label="Allow reopening for editing"
@@ -7351,7 +7359,7 @@ export default function CompanySettingsPage() {
                                           {/* Its price — or, switched to Custom, none: staff enter one each time it's added to a room
                                               (Design › Items asks), and its markup goes on top of what they enter. */}
                                           <div className="relative min-w-0">
-                                            <input
+                                            <input inputMode="decimal"
                                               value={itemRow.customPrice ? "" : itemRow.price}
                                               readOnly={Boolean(itemRow.customPrice)}
                                               tabIndex={itemRow.customPrice ? -1 : undefined}
@@ -7381,7 +7389,7 @@ export default function CompanySettingsPage() {
                                               {itemRow.customPrice ? "Custom price" : "Custom"}
                                             </button>
                                           </div>
-                                          <input
+                                          <input inputMode="decimal"
                                             value={itemRow.markupPercent}
                                             onChange={(e) => updateItemCategoryItem(idx, itemIdx, { markupPercent: e.target.value })}
                                             className={gridCellInputClass}
@@ -7840,7 +7848,7 @@ export default function CompanySettingsPage() {
                                       triggerClassName={`${glassFieldSmClass} justify-between`}
                                     />
                                   </span>
-                                  <input
+                                  <input inputMode="decimal"
                                     value={sp.pricePerSheet}
                                     onChange={(e) => updateJobTypeSheetPrice(idx, spIdx, { pricePerSheet: e.target.value })}
                                     onBlur={(e) => updateJobTypeSheetPrice(idx, spIdx, { pricePerSheet: ensureDollarFormat(e.target.value) })}
@@ -7939,7 +7947,7 @@ export default function CompanySettingsPage() {
                             <GripVertical size={15} />
                           </button>
                           {(["low", "high", "discount"] as const).map((field) => (
-                            <input
+                            <input inputMode="decimal"
                               key={field}
                               value={row[field]}
                               placeholder={formatMoney(0, companyCurrency)}
@@ -8190,7 +8198,7 @@ export default function CompanySettingsPage() {
                                         <div className="flex items-center gap-2 text-[12px] max-lg:flex-wrap">
                                           <p className="w-[70px] font-semibold text-[var(--text-main)]">Bottoms</p>
                                           <span className="text-[var(--text-muted)]">Width</span>
-                                          <input
+                                          <input inputMode="decimal"
                                             value={readDrawerBottomWidth(drawer)}
                                             onChange={(e) =>
                                               updateHardwareJsonList(idx, "drawersJson", (items) =>
@@ -8200,7 +8208,7 @@ export default function CompanySettingsPage() {
                                             className={`${glassFieldSmClass} w-[90px]`}
                                           />
                                           <span className="text-[var(--text-muted)]">Depth</span>
-                                          <input
+                                          <input inputMode="decimal"
                                             value={readDrawerBottomDepth(drawer)}
                                             onChange={(e) =>
                                               updateHardwareJsonList(idx, "drawersJson", (items) =>
@@ -8214,7 +8222,7 @@ export default function CompanySettingsPage() {
                                         <div className="flex flex-wrap items-center gap-2 text-[12px]">
                                           <p className="w-[70px] font-semibold text-[var(--text-main)]">Backs</p>
                                           <span className="text-[var(--text-muted)]">Width</span>
-                                          <input
+                                          <input inputMode="decimal"
                                             value={readDrawerBackWidth(drawer)}
                                             onChange={(e) =>
                                               updateHardwareJsonList(idx, "drawersJson", (items) =>
@@ -8396,7 +8404,7 @@ export default function CompanySettingsPage() {
                                                 >
                                                   <X size={13} />
                                                 </button>
-                                                <input
+                                                <input inputMode="decimal"
                                                   value={length}
                                                   onChange={(e) => {
                                                     const current = readDrawerLengths(drawer);
@@ -8414,7 +8422,7 @@ export default function CompanySettingsPage() {
 
                                         <div className="flex items-center gap-2 text-[12px] max-lg:flex-wrap">
                                           <p className="w-[120px] font-semibold text-[var(--text-main)]">Depth requirement</p>
-                                          <input
+                                          <input inputMode="decimal"
                                             value={readDrawerSpaceRequirement(drawer)}
                                             onChange={(e) =>
                                               updateHardwareJsonList(idx, "drawersJson", (items) =>

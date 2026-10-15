@@ -18,7 +18,7 @@ import {
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Archive, Check, ChevronLeft, Mail, MapPin, MessageSquare, Pencil, Phone, Plus, Search, Users, X } from "lucide-react";
+import { Archive, Check, ChevronLeft, Mail, MapPin, MessageSquare, Pencil, Phone, Plus, Search, Share, Users, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { authorizedFetch } from "@/lib/api-fetch";
 import {
@@ -959,6 +959,8 @@ function ClientsPageInner() {
   // The profile fields read as plain text until Edit is pressed (then Done); each field still saves
   // as soon as it changes / loses focus.
   const [isEditingProfile, setIsEditingProfile] = useState(false);
+  // The Share button's tick, for a moment after the details were copied (no sharing on this device).
+  const [contactShareCopied, setContactShareCopied] = useState(false);
   useEffect(() => {
     setIsConfirmingArchive(false);
     setArchiveError("");
@@ -1193,6 +1195,61 @@ function ClientsPageInner() {
         },
       }))
     : [];
+
+  // Share: the contact's details — name, phone, email, address — through whatever the device offers (Messages, Mail,
+  // WhatsApp, Windows' share window…), as a contact card (.vcf) where the app can take one (saved straight to the other
+  // person's contacts), else as text. With no sharing on the device (some computer browsers), the details are copied
+  // instead, to paste anywhere — the button shows a tick for a moment.
+  const shareActiveContact = async () => {
+    if (!activeDetail) return;
+    const name = activeDetail.name.trim() || "Contact";
+    const phone = activeDetail.phone.trim();
+    const email = activeDetail.email.trim();
+    const address = activeDetail.address.trim();
+    const text = [name, phone && `Phone: ${phone}`, email && `Email: ${email}`, address && `Address: ${address}`].filter(Boolean).join("\n");
+    // A vCard value: its backslashes, line breaks, commas and semicolons escaped.
+    const vcardText = (value: string) => value.replace(/\\/g, "\\\\").replace(/\r?\n/g, "\\n").replace(/([,;])/g, "\\$1");
+    const vcard = [
+      "BEGIN:VCARD",
+      "VERSION:3.0",
+      `FN:${vcardText(name)}`,
+      `N:${vcardText(name)};;;;`,
+      phone ? `TEL;TYPE=CELL:${phone}` : "",
+      email ? `EMAIL:${email}` : "",
+      address ? `ADR;TYPE=WORK:;;${vcardText(address)};;;;` : "",
+      "END:VCARD",
+    ]
+      .filter(Boolean)
+      .join("\r\n");
+    const fileName = `${name.replace(/[\\/:*?"<>|]+/g, " ").trim() || "Contact"}.vcf`;
+    const card = typeof File !== "undefined" ? new File([vcard], fileName, { type: "text/vcard" }) : null;
+    try {
+      if (card && navigator.canShare?.({ files: [card] })) {
+        await navigator.share({ files: [card], title: name, text });
+        return;
+      }
+      if (typeof navigator.share === "function") {
+        await navigator.share({ title: name, text });
+        return;
+      }
+    } catch (error) {
+      // Closed without sharing — nothing more to do.
+      if ((error as { name?: string } | null)?.name === "AbortError") return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      setContactShareCopied(true);
+      window.setTimeout(() => setContactShareCopied(false), 1600);
+    } catch {
+      // No clipboard either: the contact card downloads instead.
+      const url = URL.createObjectURL(new Blob([vcard], { type: "text/vcard" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = fileName;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+  };
 
   const gateCardClass = "rounded-[14px] border p-6 text-[13px] font-semibold";
 
@@ -1628,7 +1685,23 @@ function ClientsPageInner() {
                       editButtonMobile
                     )}
                   </div>
-                  <div className="pointer-events-auto absolute right-3 top-3">{backButtonMobile}</div>
+                  {/* Share, left of the back button — fading away as the bar comes up (with the Call / Text / Email
+                      buttons, and no longer tappable once faded: data-fade), so it's never over the name. */}
+                  <div className="pointer-events-auto absolute right-3 top-3 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void shareActiveContact()}
+                      disabled={!activeDetail}
+                      className={`${mobileRoundButtonClass} [[data-fade='1']_&]:pointer-events-none`}
+                      // Its opacity follows the scroll exactly (no easing behind it — only its hover keeps one).
+                      style={{ opacity: "max(0, calc(1 - var(--p) * 2))", transitionProperty: "filter, background-color, color" }}
+                      aria-label={contactShareCopied ? "Contact details copied" : "Share contact"}
+                      title={contactShareCopied ? "Copied" : "Share contact"}
+                    >
+                      {contactShareCopied ? <Check size={18} /> : <Share size={18} />}
+                    </button>
+                    {backButtonMobile}
+                  </div>
                   <div
                     aria-hidden
                     className="absolute z-10 flex items-center justify-center rounded-full font-medium leading-none motion-reduce:!transition-none"
@@ -1766,7 +1839,7 @@ function ClientsPageInner() {
                             <div className={`flex items-center gap-2 ${mobileFieldCardClass} order-1`}>
                               <label className="block min-w-0 flex-1 text-[11px] font-bold" style={{ color: "var(--text-muted)" }}>
                                 Phone
-                                <input
+                                <input inputMode="tel"
                                   defaultValue={activeDetail.phone}
                                   key={`${activeDetail.id}_phone_${fieldsRev.phone ?? 0}`}
                                   onBlur={(e) => {
@@ -2065,7 +2138,7 @@ function ClientsPageInner() {
               </label>
               <label className="block text-[11px] font-bold" style={{ color: "var(--text-muted)" }}>
                 Phone
-                <input
+                <input inputMode="tel"
                   value={contactForm.phone}
                   onChange={(e) => setContactForm((prev) => ({ ...prev, phone: e.target.value }))}
                   className={`${fieldInputClass} mt-1`}

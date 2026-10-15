@@ -17,7 +17,7 @@ import { Bell, CalendarDays, ChevronLeft, ChevronRight, FolderKanban, Globe, Inb
 import { db } from "@/lib/firebase";
 import { GlassDropdown } from "@/components/glass-dropdown";
 import { DevTestButton } from "@/components/dev-mode";
-import { GlassSwitch, iconRemoveButtonClass } from "@/components/settings-ui";
+import { GlassSwitch, iconRemoveButtonClass, modalCloseButtonClass } from "@/components/settings-ui";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import {
   CALENDAR_REMINDER_UNITS,
@@ -451,24 +451,42 @@ export function PushNotificationSettings({
     }
   };
 
-  // Lists are saved whole (a removed row has to go), each under its own field.
+  // Lists are saved whole (a removed row has to go), each under its own field. Each change also saves when it was made
+  // (calendarRemindersChangedAt / clientPortalRemindersChangedAt): reminders start from then — any that would have
+  // gone before it are never sent (lib/calendar-reminders-server.ts, lib/client-portal-reminders-server.ts).
   const onReminderLeadChange = (patch: Partial<CalendarReminderLead>) => {
     const next = { ...reminderLead, ...patch };
     setReminderLead(next);
-    if (db && uid) void setDoc(doc(db, "users", uid), { calendarReminderLead: next }, { mergeFields: ["calendarReminderLead"] }).catch(() => undefined);
+    if (db && uid) {
+      void setDoc(
+        doc(db, "users", uid),
+        { calendarReminderLead: next, calendarRemindersChangedAt: Date.now() },
+        { mergeFields: ["calendarReminderLead", "calendarRemindersChangedAt"] },
+      ).catch(() => undefined);
+    }
   };
   // One calendar category's: on/off or one of its lists — saved into its own entry (lists whole).
   const onCategoryReminderChange = (categoryId: string, patch: Partial<CalendarCategoryReminder>) => {
     const nextEntry: CalendarCategoryReminder = { ...(categoryReminders[categoryId] ?? { off: false }), ...patch };
     setCategoryReminders((prev) => ({ ...prev, [categoryId]: nextEntry }));
     if (db && uid) {
-      void setDoc(doc(db, "users", uid), { calendarReminderCategories: { [categoryId]: nextEntry } }, { merge: true }).catch(() => undefined);
+      void setDoc(
+        doc(db, "users", uid),
+        { calendarReminderCategories: { [categoryId]: nextEntry }, calendarRemindersChangedAt: Date.now() },
+        { merge: true },
+      ).catch(() => undefined);
     }
   };
   const onPendingDaysChange = (patch: Partial<ClientPortalReminderDays>) => {
     const next = { ...pendingDays, ...patch };
     setPendingDays(next);
-    if (db && uid) void setDoc(doc(db, "users", uid), { clientPortalReminderDays: next }, { mergeFields: ["clientPortalReminderDays"] }).catch(() => undefined);
+    if (db && uid) {
+      void setDoc(
+        doc(db, "users", uid),
+        { clientPortalReminderDays: next, clientPortalRemindersChangedAt: Date.now() },
+        { mergeFields: ["clientPortalReminderDays", "clientPortalRemindersChangedAt"] },
+      ).catch(() => undefined);
+    }
   };
 
   const onQuietMinutesChange = (minutes: number) => {
@@ -899,7 +917,7 @@ export function PushNotificationSettings({
                     />
                     <p className="truncate text-[15px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>{openCategory.label}</p>
                   </div>
-                  <button type="button" onClick={() => setIsCategoryOpen(false)} className={iconRemoveButtonClass} aria-label="Close">
+                  <button type="button" onClick={() => setIsCategoryOpen(false)} className={modalCloseButtonClass} aria-label="Close">
                     <X size={16} />
                   </button>
                 </div>

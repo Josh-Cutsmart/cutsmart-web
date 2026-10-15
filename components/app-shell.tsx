@@ -1880,6 +1880,12 @@ export function AppShell({
         const seen = seenInAccount || seenOnDevice;
         if (seen) {
           window.localStorage.setItem(seenKey, "1");
+        } else {
+          // Shown once, then never again by itself — it counts as seen the moment it opens (on this device and the
+          // account), not only once it's been closed, so however it's left (closed, the page left or reloaded
+          // under it) it doesn't open again on the next page.
+          window.localStorage.setItem(seenKey, "1");
+          void markUserUpdateNoticeSeen(uid, companyId, version);
         }
         setShowUpdateNotice(!seen);
       } catch {
@@ -3973,7 +3979,7 @@ export function AppShell({
               <div className="grid max-w-[480px] grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className={modalRowClass}>
                   <p className={modalLabelClass}>Client Phone</p>
-                  <input
+                  <input inputMode="tel"
                     value={clientPhone}
                     onChange={(e) => setClientPhone(formatMobileLikeDesktop(e.target.value))}
                     className="h-10 w-full rounded-[10px] border border-[var(--panel-border)] bg-[var(--panel-bg)] px-3 text-[13px] text-[var(--text-main)] outline-none transition focus:border-[var(--brand)]"

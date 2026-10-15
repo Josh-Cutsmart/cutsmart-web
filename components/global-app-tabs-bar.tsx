@@ -749,6 +749,18 @@ export function GlobalAppTabsBar() {
     setPendingActiveAppTabKey("");
   }, [pathname]);
 
+  // ?notifications=open (the "5 new notifications" a device gets for the ones that waited for it — public/sw.js):
+  // the Notifications list opens over the page, and the link's taken back out of the address so a reload doesn't
+  // open it again.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("notifications") !== "open") return;
+    params.delete("notifications");
+    const rest = params.toString();
+    window.history.replaceState(window.history.state, "", `${window.location.pathname}${rest ? `?${rest}` : ""}${window.location.hash}`);
+    setIsNotifOpen(true);
+  }, [pathname, setIsNotifOpen]);
+
   useEffect(() => {
     if (typeof document === "undefined") return;
     const onPointerDown = (event: PointerEvent) => {

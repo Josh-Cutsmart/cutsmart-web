@@ -1201,9 +1201,20 @@ export async function fetchQuotes(projectId: string): Promise<SalesQuote[]> {
   }
 }
 
+// A project's changes, newest first (the Settings tab's Changelog lists them that way; new ones go on top as
+// they're made). Firestore hands them back in its own id order, which is no order at all — so they're put in order
+// of when each happened here.
+function newestChangesFirst(changes: ProjectChange[]): ProjectChange[] {
+  const timeOf = (change: ProjectChange) => {
+    const ms = Date.parse(String(change.at || ""));
+    return Number.isFinite(ms) ? ms : 0;
+  };
+  return [...changes].sort((a, b) => timeOf(b) - timeOf(a));
+}
+
 export async function fetchChanges(projectId: string): Promise<ProjectChange[]> {
   if (!db) {
-    return mockChanges.filter((change) => change.projectId === projectId);
+    return newestChangesFirst(mockChanges.filter((change) => change.projectId === projectId));
   }
 
   try {
@@ -1213,12 +1224,12 @@ export async function fetchChanges(projectId: string): Promise<ProjectChange[]> 
     // accumulates.
     const snap = await getDocs(query(collection(db, "changelog"), where("projectId", "==", projectId)));
     if (snap.empty) {
-      return hasFirebaseConfig ? [] : mockChanges.filter((change) => change.projectId === projectId);
+      return hasFirebaseConfig ? [] : newestChangesFirst(mockChanges.filter((change) => change.projectId === projectId));
     }
 
-    return snap.docs.map((item) => normalizeChange(item.id, item.data() as Record<string, unknown>));
+    return newestChangesFirst(snap.docs.map((item) => normalizeChange(item.id, item.data() as Record<string, unknown>)));
   } catch {
-    return hasFirebaseConfig ? [] : mockChanges.filter((change) => change.projectId === projectId);
+    return hasFirebaseConfig ? [] : newestChangesFirst(mockChanges.filter((change) => change.projectId === projectId));
   }
 }
 
@@ -4202,12 +4213,18 @@ export type CompanyLeadRow = {
   phone: string;
   message: string;
   formName: string;
+  // From one of the company's own lead forms (lib/lead-forms.ts): which form, and which question each answer in
+  // rawFields belongs to (question id → rawFields key).
+  formId?: string;
+  formFieldKeys?: Record<string, string>;
   submittedAtIso: string;
   createdAtIso: string;
   updatedAtIso?: string;
   deletedAtIso?: string;
   isDeleted?: boolean;
   source: string;
+  // How a lead added by hand came in (Phone call, Walk-in, …).
+  sourceDetail?: string;
   status: string;
   assignedToUid?: string;
   assignedToName?: string;

@@ -1,51 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
-import { apiHasPermission, listCompanyMemberAccess, requireCompanyMember } from "@/lib/api-company-access";
+import { apiHasPermission, requireCompanyMember } from "@/lib/api-company-access";
 import { addNotificationAndPush } from "@/lib/push-server";
-import { leadClientDisplayName } from "@/lib/lead-name";
-
-// A lead's name for a notification: its client's name (the company's lead field mapping), else what the
-// form sent.
-async function leadNameForNotification(companyId: string, lead: Record<string, unknown>): Promise<string> {
-  let fieldLayout: unknown = null;
-  try {
-    const companySnap = await adminDb!.collection("companies").doc(companyId).get();
-    const integrations = (companySnap.data()?.integrations ?? {}) as Record<string, unknown>;
-    fieldLayout = ((integrations.zapierLeads ?? {}) as Record<string, unknown>).fieldLayout ?? null;
-  } catch {
-    fieldLayout = null;
-  }
-  return leadClientDisplayName(lead.rawFields, fieldLayout) || toStr(lead.name) || toStr(lead.email) || toStr(lead.phone) || "A new lead";
-}
-
-// "New lead" to everyone who can see it: a brand-new lead isn't assigned yet, so that's the owner/admins
-// and anyone allowed to see others' leads (leads.view.others) — same rule as the Leads page.
-async function notifyNewLead(companyId: string, leadId: string, lead: Record<string, unknown>, siteOrigin: string) {
-  try {
-    const [members, name] = await Promise.all([listCompanyMemberAccess(companyId), leadNameForNotification(companyId, lead)]);
-    const from = toStr(lead.formName) || (toStr(lead.source) === "zapier-form" ? "" : toStr(lead.source));
-    await Promise.all(
-      members
-        .filter((member) => apiHasPermission(member.access, "leads.view.others"))
-        .map((member) =>
-          addNotificationAndPush(
-            member.access.uid,
-            {
-              title: "New lead",
-              message: from ? `${name} came in from ${from}.` : `${name} just came in.`,
-              type: "lead_new",
-              leadId,
-              companyId,
-            },
-            siteOrigin,
-          ),
-        ),
-    );
-  } catch (error) {
-    console.error("[leads] new-lead notifications failed:", error);
-  }
-}
+import { leadNameForNotification, notifyNewLead } from "@/lib/lead-notify-server";
 
 function toStr(value: unknown) {
   return String(value ?? "").trim();
@@ -181,6 +139,13 @@ function buildLeadResponse(
     phone: toStr(data.phone),
     message: mode === "detail" ? toStr(data.message) : "",
     formName: toStr(data.formName),
+    // A lead from one of the company's own lead forms (lib/lead-forms.ts): which form, and which question each
+    // of its answers (rawFields) belongs to.
+    formId: toStr(data.formId),
+    formFieldKeys:
+      data.formFieldKeys && typeof data.formFieldKeys === "object" ? (data.formFieldKeys as Record<string, string>) : undefined,
+    // How a lead added by hand came in (Phone call, Walk-in, …).
+    sourceDetail: toStr(data.sourceDetail),
     submittedAtIso: toIsoString(data.submittedAtIso ?? data.submittedAt, ""),
     createdAtIso: toIsoString(data.createdAtIso ?? data.createdAt, ""),
     updatedAtIso: toIsoString(data.updatedAtIso ?? data.updatedAt, ""),

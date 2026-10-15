@@ -2939,7 +2939,7 @@ export default function SpecsGridEditor({
         </label>
         <label className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-bold" style={toolbarButtonStyle} title="Text size">
           Size
-          <input
+          <input inputMode="numeric"
             key={activeCell ? `${activeCell.row}:${activeCell.col}` : "none"}
             type="number"
             min={6}
@@ -3281,7 +3281,7 @@ export default function SpecsGridEditor({
               </button>
               <label className="flex items-center justify-between gap-1.5 text-[11px] font-bold" style={{ color: "var(--text-main)" }} title="Border width">
                 Width
-                <input
+                <input inputMode="numeric"
                   key={activeCell ? `${activeCell.row}:${activeCell.col}` : "none"}
                   type="number"
                   min={MIN_BORDER_WIDTH_PX}
@@ -4759,7 +4759,7 @@ export default function SpecsGridEditor({
                     setHeaderContextMenu(null);
                   }}
                 >
-                  <input
+                  <input inputMode="numeric"
                     name="size"
                     type="number"
                     autoFocus

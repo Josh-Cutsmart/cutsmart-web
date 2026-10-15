@@ -4,9 +4,8 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { AlertTriangle, CheckCircle2, ClipboardList, X } from "lucide-react";
 import SpecsGridClientView from "@/components/specs-grid-client-view";
-import { iconRemoveButtonClass } from "@/components/settings-ui";
+import { modalCloseButtonClass } from "@/components/settings-ui";
 import { authorizedFetch } from "@/lib/api-fetch";
-import { activeDateTime } from "@/lib/company-formats";
 import { fetchGridVersion, fetchGridVersions, fetchSalesGridData } from "@/lib/firestore-data";
 import { isPreviewMode } from "@/lib/preview-mode";
 import type { SpecsGrid, SpecsGridVersion } from "@/lib/specs-grid-types";
@@ -17,8 +16,8 @@ import { useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-m
 // view, read-only, scaled down to fit the pop-up's width (a phone's too), scrolling down it. Which sheet:
 //  - the one the client confirmed (submitted from the client portal) — if it's since been reopened for editing (which
 //    un-confirms it, app/api/specs-share/[shareId]/reopen) it no longer counts;
-//  - otherwise, clearly marked unconfirmed: the one sent to the client and waiting on them, else the latest saved
-//    version, else the live sheet.
+//  - otherwise the one sent to the client and waiting on them, else the latest saved version, else the live sheet.
+// Which it is shows as a pill in the top bar: Confirmed, or Unconfirmed.
 // Looked up afresh each time it opens.
 
 type Shown =
@@ -105,8 +104,6 @@ export function ProductionSpecificationsModal({
 
   if (!shouldRender || typeof document === "undefined") return null;
 
-  const versionLabel = (v: SpecsGridVersion) => v.name || `Version ${v.version}`;
-
   return createPortal(
     <div className="fixed inset-0 z-[1700] flex items-center justify-center px-3 py-3 sm:px-4 sm:py-4">
       <button type="button" aria-label="Close specifications" onClick={onClose} className="glass-modal-backdrop absolute inset-0" />
@@ -117,8 +114,37 @@ export function ProductionSpecificationsModal({
             <p className="truncate text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
               Specifications
             </p>
+            {/* Where they stand: confirmed by the client, or not (sent and waiting, the latest version, or the live
+                sheet) — unmistakably, before anyone works from them. */}
+            {phase === "ready" && shown ? (
+              shown.kind === "confirmed" ? (
+                <span
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-[3px] text-[12px] font-semibold"
+                  style={{
+                    borderColor: "color-mix(in srgb, var(--success) 45%, transparent)",
+                    backgroundColor: "color-mix(in srgb, var(--success) 12%, var(--panel-bg))",
+                    color: "var(--success-strong)",
+                  }}
+                >
+                  <CheckCircle2 size={13} className="shrink-0" />
+                  Confirmed
+                </span>
+              ) : (
+                <span
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-[3px] text-[12px] font-semibold"
+                  style={{
+                    borderColor: `color-mix(in srgb, ${AMBER} 55%, transparent)`,
+                    backgroundColor: `color-mix(in srgb, ${AMBER} 12%, var(--panel-bg))`,
+                    color: AMBER,
+                  }}
+                >
+                  <AlertTriangle size={13} className="shrink-0" />
+                  Unconfirmed
+                </span>
+              )
+            ) : null}
           </div>
-          <button type="button" onClick={onClose} className={iconRemoveButtonClass} aria-label="Close">
+          <button type="button" onClick={onClose} className={modalCloseButtonClass} aria-label="Close">
             <X size={16} />
           </button>
         </div>
@@ -135,48 +161,9 @@ export function ProductionSpecificationsModal({
               <p className="mt-1 text-[12.5px]" style={{ color: "var(--text-muted)" }}>They show here once they&apos;ve been started in Design › Specifications.</p>
             </div>
           ) : (
-            <>
-              {shown.kind === "confirmed" ? (
-                <div
-                  className="mb-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-[10px] border px-3 py-2 text-[12.5px] font-medium"
-                  style={{
-                    borderColor: "color-mix(in srgb, var(--success) 45%, transparent)",
-                    backgroundColor: "color-mix(in srgb, var(--success) 10%, var(--panel-bg))",
-                    color: "var(--success-strong)",
-                  }}
-                >
-                  <span className="inline-flex items-center gap-1.5">
-                    <CheckCircle2 size={15} className="shrink-0" />
-                    Confirmed by the client{shown.version.submittedByName ? ` (${shown.version.submittedByName})` : ""}
-                    {shown.version.submittedAtIso ? ` · ${activeDateTime(shown.version.submittedAtIso)}` : ""}
-                  </span>
-                  <span style={{ color: "var(--text-main)" }}>{versionLabel(shown.version)}</span>
-                </div>
-              ) : (
-                // Not confirmed: unmistakably so — before anyone works from it.
-                <div
-                  className="mb-3 flex flex-wrap items-start justify-between gap-x-3 gap-y-1 rounded-[10px] border px-3 py-2 text-[12.5px]"
-                  style={{ borderColor: `color-mix(in srgb, ${AMBER} 55%, transparent)`, backgroundColor: `color-mix(in srgb, ${AMBER} 12%, var(--panel-bg))` }}
-                >
-                  <span className="inline-flex min-w-0 items-start gap-1.5" style={{ color: "var(--text-main)" }}>
-                    <AlertTriangle size={15} className="mt-[1px] shrink-0" style={{ color: AMBER }} />
-                    <span className="min-w-0">
-                      <b style={{ color: AMBER }}>Unconfirmed</b> — the client hasn&apos;t confirmed these.{" "}
-                      {shown.kind === "sent"
-                        ? "They've been sent to the client and are waiting on them."
-                        : shown.kind === "version"
-                          ? "This is the latest saved version."
-                          : "This is the live sheet (not saved as a version or sent yet)."}
-                    </span>
-                  </span>
-                  {shown.version ? (
-                    <span className="font-medium" style={{ color: "var(--text-main)" }}>{versionLabel(shown.version)}</span>
-                  ) : null}
-                </div>
-              )}
-              {/* The client portal's sheet, read-only, scaled to fit the pop-up's width (fitToWidth). */}
-              <SpecsGridClientView grid={shown.grid} locked onAnswer={() => {}} fitToWidth />
-            </>
+            // The client portal's sheet, read-only, scaled to fit the pop-up's width (fitToWidth). Confirmed or not:
+            // the top bar's pill.
+            <SpecsGridClientView grid={shown.grid} locked onAnswer={() => {}} fitToWidth />
           )}
         </div>
       </div>
