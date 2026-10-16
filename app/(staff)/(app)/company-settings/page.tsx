@@ -153,13 +153,30 @@ type ItemCategoryRow = {
 // consistent about what categories exist. Matched by name (not a synthetic id), same loose
 // convention Part Types/Item Categories already use.
 type ContactCategoryRow = { name: string; color: string };
-type JobTypeSheetPriceRow = { sheetSize: string; pricePerSheet: string };
+// A product's sheet size, its price per sheet and the margin added on that price for quotes.
+type JobTypeSheetPriceRow = { sheetSize: string; pricePerSheet: string; marginPercent: string };
+// Something charged on a quote for every sheet of the product a room uses (e.g. cutting, handling).
+type JobTypeMiscChargeRow = { name: string; price: string; marginPercent: string };
 // "Grain" used to be its own checkbox; it's now one value of this Type dropdown, alongside the two
 // lacquer-sidedness options that drive the Company Wrapped lacquer-SQM calculation and "Melteca"
 // (a laminate finish that isn't lacquer at all — it simply never matches the lacquer-sidedness
 // lookup, so it needs no special-case handling anywhere).
 type JobTypeProductType = "" | "grain" | "lacquer-1" | "lacquer-2" | "melteca";
-type JobTypeRow = { name: string; sheetPrices: JobTypeSheetPriceRow[]; showInSales: boolean; type: JobTypeProductType };
+// Pricing for quotes (Sales > a room's price): each sheet size's price + its margin, then by type — Grain and
+// Melteca: edge tape per linear metre (+ margin); Lacquer (1 / 2 side): lacquer per m² (+ margin) — and the misc
+// charges, per sheet used.
+type JobTypeRow = {
+  name: string;
+  // Just for telling the products apart in Company Settings (its rows' colour).
+  color: string;
+  sheetPrices: JobTypeSheetPriceRow[];
+  type: JobTypeProductType;
+  edgeTapePrice: string;
+  edgeTapeMarginPercent: string;
+  lacquerSqmPrice: string;
+  lacquerMarginPercent: string;
+  miscCharges: JobTypeMiscChargeRow[];
+};
 type EdgebandingRuleRow = { upToMeters: string; addMeters: string };
 // A CNC or table saw's own copy of what used to be the single global "Nesting Settings" panel —
 // same five fields, same string-typed form-input convention as every other settings object in this
@@ -221,6 +238,10 @@ type PartTypeRow = {
 };
 type QuoteHelperRow = { id: string; content: string };
 type DiscountTierRow = { low: string; high: string; discount: string };
+// Company Settings → Sales → Extra charges: a named charge with a price that a project's quote can include (each one
+// toggled on / off in the project's Design tab). `isDefault`: on for every project's quote unless turned off there.
+// `id` stays the same through renames — it's what a project's toggles are kept against.
+type ExtraChargeRow = { id: string; name: string; price: string; isDefault: boolean };
 type HardwareRow = { name: string; color: string; default: boolean; drawersJson: string; hingesJson: string; otherJson: string };
 type BackupTemplateSettings = {
   quoteTemplateHeaderHtml: string;
@@ -635,6 +656,10 @@ function genMachineId() {
   return `mch_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
 }
 
+function genExtraChargeId() {
+  return `xc_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
+}
+
 function genMachineServiceLogId() {
   return `msl_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
 }
@@ -681,6 +706,66 @@ const gridCellInputClass = rowFieldClass;
 const secondaryButtonClass = smallButtonClass;
 // Row delete buttons: a quiet X that only turns red on hover (was a always-red tile).
 const dangerIconButtonClass = iconRemoveButtonClass;
+
+// Products are edited in a full-screen sheet (like Item Categories): one table, each product a header row (its name,
+// type) with its lines under it in labelled sections — Sheets (a row per size), Misc (a row per charge) and On the
+// quote (its Edge tape — Grain / Melteca — or Lacquer row) — all sharing the same columns: Item (which size / charge),
+// Cost, Margin, and Sell price (cost + margin, what the quote charges). Every column a set width — the cards are only
+// as wide as their columns (centred in the sheet), rather than the item column soaking up a wide screen.
+const PRODUCT_SHEET_GRID = "grid grid-cols-[56px_240px_128px_100px_176px_36px] items-center gap-x-3";
+
+// Colours a product starts with (in turn) until it's given its own — clearly different from one another, so the
+// products are easy to tell apart (the palette's own first few are all blues).
+const PRODUCT_START_COLORS = ["#2F6BFF", "#16A34A", "#E8721C", "#8B5CF6", "#DC2626", "#0EA5E9", "#EAB308", "#D946EF", "#14B8A6", "#A16207"];
+
+const PRODUCT_TYPE_LABELS: Record<JobTypeProductType, string> = {
+  "": "No type",
+  grain: "Grain",
+  "lacquer-1": "Lacquer (1 side)",
+  "lacquer-2": "Lacquer (2 side)",
+  melteca: "Melteca",
+};
+
+function sheetSizeLabel(value: string) {
+  return String(value || "").replace(/\s*x\s*/i, " × ") || "No size";
+}
+
+// A margin box with its % inside it.
+function MarginInput({ value, onChange }: { value: string; onChange: (next: string) => void }) {
+  return (
+    <span className="relative block">
+      <input
+        inputMode="decimal"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={`${glassFieldSmClass} pr-6 text-right`}
+        placeholder="0"
+        aria-label="Margin percent"
+      />
+      <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[12px] font-medium" style={{ color: "var(--text-main)" }}>
+        %
+      </span>
+    </span>
+  );
+}
+
+// A status's place in its list — 1, 2, 3, … Number 1 is where every new project / lead starts, so it's picked out.
+function StatusNumber({ index, startsHere }: { index: number; startsHere: string }) {
+  const first = index === 0;
+  return (
+    <span
+      className="inline-flex h-6 min-w-6 shrink-0 items-center justify-center rounded-full px-1.5 text-[11.5px] font-semibold tabular-nums"
+      style={
+        first
+          ? { backgroundImage: "var(--brand-gradient)", color: "#FFFFFF" }
+          : { backgroundColor: "color-mix(in srgb, var(--text-main) 8%, transparent)", color: "var(--text-main)" }
+      }
+      title={first ? startsHere : undefined}
+    >
+      {index + 1}
+    </span>
+  );
+}
 
 function FieldRow({
   label,
@@ -987,25 +1072,27 @@ function normalizeJobTypes(raw: unknown): JobTypeRow[] {
   if (!Array.isArray(raw)) return [];
   return raw
     .filter((item) => item && typeof item === "object")
-    .map((item) => {
+    .map((item, index) => {
       const row = item as Record<string, unknown>;
       const sheetPrices = Array.isArray(row.sheetPrices)
         ? (row.sheetPrices as Array<Record<string, unknown>>).map((sp) => ({
             sheetSize: toStr(sp?.sheetSize),
             pricePerSheet: toStr(sp?.pricePerSheet),
+            marginPercent: toStr(sp?.marginPercent),
           }))
         : [];
       const fallbackSheetSize = toStr(row.sheetSize);
       const fallbackPrice = toStr(row.pricePerSheet);
       return {
         name: toStr(row.name),
+        // One from the palette, in turn, for a product that hasn't been given one.
+        color: /^#[0-9a-f]{6}$/i.test(toStr(row.color)) ? toStr(row.color) : PRODUCT_START_COLORS[index % PRODUCT_START_COLORS.length],
         sheetPrices:
           sheetPrices.length > 0
             ? sheetPrices
             : fallbackSheetSize || fallbackPrice
-              ? [{ sheetSize: fallbackSheetSize, pricePerSheet: fallbackPrice }]
+              ? [{ sheetSize: fallbackSheetSize, pricePerSheet: fallbackPrice, marginPercent: "" }]
               : [],
-        showInSales: Boolean(row.showInSales ?? true),
         // Legacy docs only ever had `grain: boolean` — a previously-ticked row keeps reading as
         // "grain" once opened under the new Type dropdown instead of silently reverting to blank.
         type: (["grain", "lacquer-1", "lacquer-2", "melteca"].includes(toStr(row.type))
@@ -1013,9 +1100,28 @@ function normalizeJobTypes(raw: unknown): JobTypeRow[] {
           : Boolean(row.grain ?? row.isGrain ?? false)
             ? "grain"
             : "") as JobTypeProductType,
+        edgeTapePrice: toStr(row.edgeTapePrice),
+        edgeTapeMarginPercent: toStr(row.edgeTapeMarginPercent),
+        lacquerSqmPrice: toStr(row.lacquerSqmPrice),
+        lacquerMarginPercent: toStr(row.lacquerMarginPercent),
+        miscCharges: Array.isArray(row.miscCharges)
+          ? (row.miscCharges as Array<Record<string, unknown>>).map((charge) => ({
+              name: toStr(charge?.name),
+              price: toStr(charge?.price),
+              marginPercent: toStr(charge?.marginPercent),
+            }))
+          : [],
       };
     })
     .filter((r) => r.name);
+}
+
+// Edge tape is priced for Grain and Melteca products; lacquer per m² for the two Lacquer types.
+function jobTypeHasEdgeTape(type: JobTypeProductType) {
+  return type === "grain" || type === "melteca";
+}
+function jobTypeHasLacquer(type: JobTypeProductType) {
+  return type === "lacquer-1" || type === "lacquer-2";
 }
 
 function normalizeContactCategories(raw: unknown): ContactCategoryRow[] {
@@ -1271,6 +1377,16 @@ function normalizeDiscountTiers(raw: unknown): DiscountTierRow[] {
       return { low: toStr(row.low), high: toStr(row.high), discount: toStr(row.discount) };
     })
     .filter((r) => r.low || r.high || r.discount);
+}
+
+function normalizeExtraCharges(raw: unknown): ExtraChargeRow[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((item) => item && typeof item === "object")
+    .map((item) => {
+      const row = item as Record<string, unknown>;
+      return { id: toStr(row.id) || genExtraChargeId(), name: toStr(row.name), price: toStr(row.price), isDefault: Boolean(row.isDefault) };
+    });
 }
 
 function normalizeHardware(raw: unknown): HardwareRow[] {
@@ -1602,16 +1718,19 @@ export default function CompanySettingsPage() {
     return () => setReduceMainTopPadding(false);
   }, [setReduceMainTopPadding]);
   const searchParams = useSearchParams();
-  const [active, setActive] = useState<SettingsSection>("company");
-  useEffect(() => {
+  // Opens on the URL's ?section= (a link to a given section, or a refresh — see below), else Company. Only read on
+  // first load — the sidebar's own onClick is the source of truth for `active` after that.
+  const [active, setActive] = useState<SettingsSection>(() => {
     const requestedSection = searchParams.get("section");
-    if (requestedSection && sections.some((item) => item.key === requestedSection)) {
-      setActive(requestedSection as SettingsSection);
-    }
-    // Only honor the query param on first load — the sidebar's own onClick is the source of
-    // truth for `active` after that, so this must not fight later in-page navigation.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    return requestedSection && sections.some((item) => item.key === requestedSection) ? (requestedSection as SettingsSection) : "company";
+  });
+  // The open section is kept in the URL, so refreshing the page opens it again rather than going back to Company.
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (active === "company") url.searchParams.delete("section");
+    else url.searchParams.set("section", active);
+    if (url.href !== window.location.href) window.history.replaceState(null, "", url);
+  }, [active]);
   const [search, setSearch] = useState("");
   // The search results list under the rail's search box — hidden by a press anywhere else (the
   // query stays, and focusing the box shows the results again).
@@ -1780,14 +1899,16 @@ export default function CompanySettingsPage() {
   const itemCategoriesModalOriginElRef = useRef<HTMLElement | null>(null);
   const [jobTypes, setJobTypes] = useState<JobTypeRow[]>([]);
   // Sales Product names offered in the Quote/Specs group editor's Rules "IF <Product>" dropdown —
-  // same "Incl in Sales" filter as the Product panel below and as a project's own "Product"
-  // checklist (see companySalesProductConfigs in app/(app)/projects/[projectId]/page.tsx), so a
-  // rule can only ever reference a product that actually appears there.
-  const specsGroupProductOptions = useMemo(
-    () => jobTypes.filter((row) => row.showInSales).map((row) => row.name.trim()).filter(Boolean),
-    [jobTypes],
-  );
-  const [jobTypeExpanded, setJobTypeExpanded] = useState<Record<number, boolean>>({});
+  // the same products as a project's own "Product" checklist (every product — see companySalesProductConfigs in
+  // app/(app)/projects/[projectId]/page.tsx), so a rule can only ever reference a product that actually appears there.
+  const specsGroupProductOptions = useMemo(() => jobTypes.map((row) => row.name.trim()).filter(Boolean), [jobTypes]);
+  // Products folded shut in the Products sheet (by their place in the list).
+  const [productCollapsed, setProductCollapsed] = useState<Record<number, boolean>>({});
+  // The full-screen Products sheet (Company Settings → Sales → Products → Edit products).
+  const [isProductsSheetOpen, setIsProductsSheetOpen] = useState(false);
+  const [productsSheetOrigin, setProductsSheetOrigin] = useState<GlassModalOrigin>(null);
+  const productsSheetPanelRef = useRef<HTMLDivElement | null>(null);
+  const productsSheetOriginElRef = useRef<HTMLElement | null>(null);
   const [jobTypeDragIndex, setJobTypeDragIndex] = useState<number | null>(null);
   const [jobTypeDragOverIndex, setJobTypeDragOverIndex] = useState<number | null>(null);
   const [quoteHelpers, setQuoteHelpers] = useState<QuoteHelperRow[]>([]);
@@ -1797,10 +1918,15 @@ export default function CompanySettingsPage() {
   const [discountTierDragIndex, setDiscountTierDragIndex] = useState<number | null>(null);
   const [discountTierDragOverIndex, setDiscountTierDragOverIndex] = useState<number | null>(null);
   const [minusOffQuoteTotal, setMinusOffQuoteTotal] = useState(false);
+  const [extraCharges, setExtraCharges] = useState<ExtraChargeRow[]>([]);
+  const [extraChargeDragIndex, setExtraChargeDragIndex] = useState<number | null>(null);
   // Defaults true (allowed) — this only ever RESTRICTS an existing capability (the "Reopen for
   // editing" safety-valve buttons on a sent/submitted Quote or Specifications sheet), so an
   // existing company that's never touched this setting should keep working exactly as before.
   const [salesAllowReopenForEditing, setSalesAllowReopenForEditing] = useState(true);
+  // GST: when on, its percent goes on top of every quote's total (after any discount).
+  const [salesGstEnabled, setSalesGstEnabled] = useState(false);
+  const [salesGstPercent, setSalesGstPercent] = useState("15");
   const quoteHelperRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [hardware, setHardware] = useState<HardwareRow[]>([]);
   const [hardwareExpanded, setHardwareExpanded] = useState<Record<number, boolean>>({});
@@ -2064,7 +2190,10 @@ export default function CompanySettingsPage() {
         setQuoteHelpers(normalizeQuoteHelpers(doc.salesQuoteHelpers));
         setDiscountTiers(normalizeDiscountTiers(doc.salesQuoteDiscountTiers));
         setMinusOffQuoteTotal(Boolean(doc.salesMinusOffQuoteTotal));
+        setExtraCharges(normalizeExtraCharges(doc.salesExtraCharges));
         setSalesAllowReopenForEditing(doc.salesAllowReopenForEditing !== false);
+        setSalesGstEnabled(Boolean(doc.salesGstEnabled));
+        setSalesGstPercent(doc.salesGstPercent == null || doc.salesGstPercent === "" ? "15" : toStr(doc.salesGstPercent));
         const hardwareRows = normalizeHardware(doc.hardwareSettings);
         setHardware(sanitizeHardwareRows(hardwareRows));
         setNesting({
@@ -2881,11 +3010,21 @@ export default function CompanySettingsPage() {
     return formatMoney(Number.isFinite(n) ? n : 0, companyCurrency);
   };
 
+  // A margin as saved: just its number ("25", "12.5"), "" when there's none.
+  const percentForSave = (value: string) => {
+    const cleaned = String(value || "").replace(/[^0-9.]/g, "");
+    const n = Number(cleaned);
+    return cleaned && Number.isFinite(n) ? String(n) : "";
+  };
+
   const parseNumberLoose = (value: string) => {
     const cleaned = String(value || "").replace(/[^0-9.-]/g, "");
     const n = Number(cleaned);
     return Number.isFinite(n) ? n : 0;
   };
+
+  // A price with its margin on, as a number (computeOutputPrice below formats it).
+  const sellAmount = (price: string, marginPercent: string) => parseNumberLoose(price) * (1 + parseNumberLoose(marginPercent) / 100);
 
   const computeOutputPrice = (price: string, markupPercent: string) => {
     const base = parseNumberLoose(price);
@@ -2929,8 +3068,34 @@ export default function CompanySettingsPage() {
   };
 
 
-  const toggleJobTypeExpanded = (index: number) => {
-    setJobTypeExpanded((prev) => ({ ...prev, [index]: !prev[index] }));
+  const toggleProductCollapsed = (index: number) => {
+    setProductCollapsed((prev) => ({ ...prev, [index]: !prev[index] }));
+  };
+  const openProductsSheet = (event: ReactMouseEvent<HTMLElement>) => {
+    productsSheetOriginElRef.current = event.currentTarget;
+    setProductsSheetOrigin(captureGlassModalOrigin(event));
+    setIsProductsSheetOpen(true);
+  };
+  const addProduct = () => {
+    setJobTypes((prev) => [
+      ...prev,
+      {
+        name: "",
+        color: PRODUCT_START_COLORS[prev.length % PRODUCT_START_COLORS.length],
+        sheetPrices: [{ sheetSize: defaultSheetSizeValue(sheetSizes), pricePerSheet: ensureDollarFormat("0"), marginPercent: "" }],
+        type: "",
+        edgeTapePrice: "",
+        edgeTapeMarginPercent: "",
+        lacquerSqmPrice: "",
+        lacquerMarginPercent: "",
+        miscCharges: [],
+      },
+    ]);
+    // Its row brought into view at the bottom of the sheet.
+    window.requestAnimationFrame(() => {
+      const rows = document.querySelectorAll("[data-products-sheet-product]");
+      rows[rows.length - 1]?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
   };
 
   const addJobTypeSheetPrice = (index: number) => {
@@ -2939,10 +3104,10 @@ export default function CompanySettingsPage() {
     setJobTypes((prev) =>
       prev.map((row, i) => {
         if (i !== index) return row;
-        return { ...row, sheetPrices: [...(row.sheetPrices ?? []), { sheetSize: defaultValue, pricePerSheet: formatMoney(0, companyCurrency) }] };
+        return { ...row, sheetPrices: [...(row.sheetPrices ?? []), { sheetSize: defaultValue, pricePerSheet: formatMoney(0, companyCurrency), marginPercent: "" }] };
       }),
     );
-    setJobTypeExpanded((prev) => ({ ...prev, [index]: true }));
+    setProductCollapsed((prev) => ({ ...prev, [index]: false }));
   };
 
   const updateJobTypeSheetPrice = (jobTypeIndex: number, sheetPriceIndex: number, patch: Partial<JobTypeSheetPriceRow>) => {
@@ -2952,6 +3117,17 @@ export default function CompanySettingsPage() {
         const nextRows = (row.sheetPrices ?? []).map((sp, j) => (j === sheetPriceIndex ? { ...sp, ...patch } : sp));
         return { ...row, sheetPrices: nextRows };
       }),
+    );
+  };
+
+  const updateJobType = (index: number, patch: Partial<JobTypeRow>) => {
+    setJobTypes((prev) => prev.map((row, i) => (i === index ? { ...row, ...patch } : row)));
+  };
+  const updateJobTypeMiscCharge = (jobTypeIndex: number, chargeIndex: number, patch: Partial<JobTypeMiscChargeRow>) => {
+    setJobTypes((prev) =>
+      prev.map((row, i) =>
+        i === jobTypeIndex ? { ...row, miscCharges: (row.miscCharges ?? []).map((charge, j) => (j === chargeIndex ? { ...charge, ...patch } : charge)) } : row,
+      ),
     );
   };
 
@@ -3058,6 +3234,13 @@ export default function CompanySettingsPage() {
     itemCategoriesModalPanelRef,
     undefined,
     itemCategoriesModalOriginElRef,
+  );
+  const shouldRenderProductsSheet = useGlassModalPopOrigin(
+    isProductsSheetOpen,
+    productsSheetOrigin,
+    productsSheetPanelRef,
+    undefined,
+    productsSheetOriginElRef,
   );
   const shouldRenderSpecsTemplateResetConfirmModal = useGlassModalPopOrigin(
     isSpecsTemplateResetConfirmOpen,
@@ -3187,7 +3370,10 @@ export default function CompanySettingsPage() {
         salesQuoteHelpers: quoteHelpers,
         salesQuoteDiscountTiers: discountTiers,
         salesMinusOffQuoteTotal: minusOffQuoteTotal,
+        salesExtraCharges: extraCharges,
         salesAllowReopenForEditing,
+        salesGstEnabled,
+        salesGstPercent,
         backupTemplate,
         hardware,
         nesting,
@@ -3586,15 +3772,29 @@ export default function CompanySettingsPage() {
             .map((sp) => ({
               sheetSize: toStr(sp.sheetSize),
               pricePerSheet: ensureDollarFormat(toStr(sp.pricePerSheet, "$0.00")),
+              marginPercent: percentForSave(sp.marginPercent),
             }))
             .filter((sp) => sp.sheetSize || sp.pricePerSheet);
           return {
             name,
+            color: toStr(row.color),
             pricePerSheet: toStr(sheetPrices[0]?.pricePerSheet),
             sheetSize: toStr(sheetPrices[0]?.sheetSize),
             sheetPrices,
-            showInSales: Boolean(row.showInSales),
+            // Every product shows in Sales now (the old per-product switch is gone) — kept for anything still reading it.
+            showInSales: true,
             type: row.type,
+            edgeTapePrice: toStr(row.edgeTapePrice) ? ensureDollarFormat(row.edgeTapePrice) : "",
+            edgeTapeMarginPercent: percentForSave(row.edgeTapeMarginPercent),
+            lacquerSqmPrice: toStr(row.lacquerSqmPrice) ? ensureDollarFormat(row.lacquerSqmPrice) : "",
+            lacquerMarginPercent: percentForSave(row.lacquerMarginPercent),
+            miscCharges: (row.miscCharges ?? [])
+              .map((charge) => ({
+                name: toStr(charge.name),
+                price: toStr(charge.price) ? ensureDollarFormat(charge.price) : "",
+                marginPercent: percentForSave(charge.marginPercent),
+              }))
+              .filter((charge) => charge.name || charge.price),
           };
         })
         .filter(Boolean),
@@ -3612,7 +3812,12 @@ export default function CompanySettingsPage() {
         .map((row) => ({ low: toStr(row.low), high: toStr(row.high), discount: toStr(row.discount) }))
         .filter((row) => row.low && row.high && row.discount),
       salesMinusOffQuoteTotal: Boolean(minusOffQuoteTotal),
+      salesExtraCharges: extraCharges
+        .filter((row) => row.name.trim())
+        .map((row) => ({ id: row.id, name: row.name.trim(), price: toStr(row.price), isDefault: Boolean(row.isDefault) })),
       salesAllowReopenForEditing: Boolean(salesAllowReopenForEditing),
+      salesGstEnabled: Boolean(salesGstEnabled),
+      salesGstPercent: Math.max(0, parseNumberLoose(salesGstPercent)),
       integrations: {
         ...(((company as Record<string, unknown> | null)?.integrations as Record<string, unknown> | undefined) ?? {}),
         zapierLeads: {
@@ -3696,7 +3901,12 @@ export default function CompanySettingsPage() {
           salesQuoteHelpers: quoteHelpers,
           salesQuoteDiscountTiers: discountTiers,
           salesMinusOffQuoteTotal: minusOffQuoteTotal,
+          salesExtraCharges: extraCharges
+            .filter((row) => row.name.trim())
+            .map((row) => ({ id: row.id, name: row.name.trim(), price: toStr(row.price), isDefault: Boolean(row.isDefault) })),
           salesAllowReopenForEditing,
+          salesGstEnabled: Boolean(salesGstEnabled),
+          salesGstPercent: Math.max(0, parseNumberLoose(salesGstPercent)),
           integrations: {
             ...((((prev ?? {}) as Record<string, unknown>).integrations as Record<string, unknown> | undefined) ?? {}),
             zapierLeads: {
@@ -4099,7 +4309,10 @@ export default function CompanySettingsPage() {
       quoteHelpers,
       discountTiers,
       minusOffQuoteTotal,
+      extraCharges,
       salesAllowReopenForEditing,
+      salesGstEnabled,
+      salesGstPercent,
       zapierLeads,
       backupTemplate,
     hardware,
@@ -6262,14 +6475,16 @@ export default function CompanySettingsPage() {
                   <Panel
                     title="Project statuses"
                     icon={KanbanSquare}
-                    description="The columns on your Dashboard board, in order. Drag to reorder; expand a status to add sub-stages. Tick Completed on the status that means a job is finished."
+                    description="The columns on your Dashboard board, in order — number 1 is where every new project starts. Drag to reorder; expand a status to add sub-stages. Tick Completed on the status that means a job is finished."
                   >
-                    <div className="space-y-1.5">
+                    {/* Narrower than 448px (beside another card on most desktops, as well as on a phone): the Completed
+                        button and the sub-stage count shrink to their icon and number, so the name keeps its room. */}
+                    <div className="@container space-y-1.5">
                       {statuses.map((row, idx) => (
                         <div key={`project_status_${idx}`}>
                           <div
                             id={`settings_status_${idx}`}
-                            className={listRowClass}
+                            className={`${listRowClass} @max-md:gap-1`}
                             style={{ opacity: statusDragIndex === idx ? 0.45 : 1 }}
                             onDragOver={(e) => {
                               e.preventDefault();
@@ -6309,6 +6524,7 @@ export default function CompanySettingsPage() {
                             >
                               <GripVertical size={15} />
                             </button>
+                            <StatusNumber index={idx} startsHere="New projects start here" />
                             <ColorCircle value={row.color || "#64748B"} onChange={(hex) => setStatuses((prev) => prev.map((v, i) => (i === idx ? { ...v, color: hex } : v)))} />
                             <input
                               value={row.name}
@@ -6336,7 +6552,7 @@ export default function CompanySettingsPage() {
                                   ? "The completed status — projects here count as finished, and are archived as set under Finished projects"
                                   : "Make this the completed status (only one status can be)"
                               }
-                              className={`inline-flex h-7 shrink-0 items-center gap-1 rounded-full border px-2 text-[11.5px] font-medium transition max-sm:w-7 max-sm:justify-center max-sm:px-0 ${
+                              className={`inline-flex h-7 shrink-0 items-center gap-1 rounded-full border px-2 text-[11.5px] font-medium transition max-sm:w-7 max-sm:justify-center max-sm:px-0 @max-md:w-7 @max-md:justify-center @max-md:px-0 ${
                                 hasCompletedStatus && !row.isComplete ? "invisible" : ""
                               }`}
                               style={
@@ -6346,12 +6562,12 @@ export default function CompanySettingsPage() {
                               }
                             >
                               <CheckCircle2 size={13} />
-                              <span className="max-sm:hidden">Completed</span>
+                              <span className="max-sm:hidden @max-md:hidden">Completed</span>
                             </button>
                             {(row.subStages ?? []).length > 0 ? (
                               <span className={countPillClass} title="Sub-stages">
                                 {(row.subStages ?? []).length}
-                                <span className="max-sm:hidden">&nbsp;sub-stages</span>
+                                <span className="max-sm:hidden @max-md:hidden">&nbsp;sub-stages</span>
                               </span>
                             ) : null}
                             <button
@@ -6908,7 +7124,11 @@ export default function CompanySettingsPage() {
                     <LeadFormsPanel companyId={activeCompanyId} forms={leadForms} setForms={setLeadForms} />
                   </div>
                   <LeadInboxPanel key={activeCompanyId} companyId={activeCompanyId} savedInbox={company?.leadInbox} />
-                  <Panel title="Lead statuses" icon={Inbox} description="The columns on your Leads board.">
+                  <Panel
+                    title="Lead statuses"
+                    icon={Inbox}
+                    description="The columns on your Leads board, in order — number 1 is where every new lead starts, whether it comes from a form, your leads inbox, Zapier or Create Lead. Drag to reorder."
+                  >
                     <div className="space-y-1.5">
                       {leadStatuses.map((row, idx) => (
                         <div
@@ -6954,6 +7174,7 @@ export default function CompanySettingsPage() {
                           >
                             <GripVertical size={15} />
                           </button>
+                          <StatusNumber index={idx} startsHere="New leads start here" />
                           <ColorCircle value={row.color || "#64748B"} onChange={(hex) => setLeadStatuses((prev) => prev.map((v, i) => (i === idx ? { ...v, color: hex } : v)))} />
                           <input
                             value={row.name}
@@ -6976,6 +7197,26 @@ export default function CompanySettingsPage() {
 
               {active === "sales" && (
                 <div className="grid gap-[18px] max-lg:grid-cols-1 xl:grid-cols-2">
+                  <Panel title="GST" icon={Receipt} description="Tax added on top of the quote total.">
+                    <FieldRow label="Add GST to the quote total" hint="Adds the GST rate on top of each quote's total, after any discount, so the total includes GST.">
+                      <GlassSwitch checked={salesGstEnabled} onChange={(on) => setSalesGstEnabled(on)} ariaLabel="Add GST to the quote total" />
+                    </FieldRow>
+                    <FieldRow label="GST rate" hint={salesGstEnabled ? "The percent added to the quote total." : "Used once GST is turned on."}>
+                      <span className="relative block w-[110px]" style={{ opacity: salesGstEnabled ? 1 : 0.55 }}>
+                        <input
+                          inputMode="decimal"
+                          value={salesGstPercent}
+                          onChange={(e) => setSalesGstPercent(e.target.value.replace(/[^0-9.]/g, ""))}
+                          className={`${glassFieldSmClass} pr-6 text-right`}
+                          placeholder="15"
+                          aria-label="GST rate percent"
+                        />
+                        <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[12px] font-medium" style={{ color: "var(--text-main)" }}>
+                          %
+                        </span>
+                      </span>
+                    </FieldRow>
+                  </Panel>
                   <Panel title="Client confirmation" icon={ShieldCheck} description="What staff can do once a quote or specs sheet has gone to the client.">
                     <FieldRow
                       label="Allow reopening for editing"
@@ -7744,149 +7985,580 @@ export default function CompanySettingsPage() {
                     </div>
                     </ModalPortal>
                   ) : null}
-                  <Panel className="xl:col-span-2" title="Products" icon={Box} description="Your products (job types), their type and per-sheet pricing. Drag to set the order they appear in." allowOverflow>
-                    <div className="space-y-1.5">
-                      {jobTypes.map((row, idx) => (
-                        <div key={idx}>
-                          <div
-                            id={`settings_product_${idx}`}
-                            className={`${listRowClass} flex-wrap`}
-                            style={{ opacity: jobTypeDragIndex === idx ? 0.45 : 1 }}
-                            onDragOver={(e) => {
-                              e.preventDefault();
-                              e.dataTransfer.dropEffect = "move";
-                            }}
-                            onDragEnter={(e) => {
-                              e.preventDefault();
-                              if (jobTypeDragIndex == null || jobTypeDragIndex === idx) return;
-                              setJobTypes((prev) => moveRowTo(prev, jobTypeDragIndex, idx));
-                              setJobTypeDragIndex(idx);
-                              setJobTypeDragOverIndex(idx);
-                            }}
-                            onDrop={(e) => {
-                              e.preventDefault();
-                              setJobTypeDragIndex(null);
-                              setJobTypeDragOverIndex(null);
-                              endRowDrag();
-                              triggerAutosaveAfterRowDrop();
-                            }}
+                  <Panel
+                    className="xl:col-span-2"
+                    title="Products"
+                    icon={Box}
+                    description="Your products and how they're priced on a quote — each sheet size with its own margin and misc charges per sheet used, plus edge tape per metre (Grain, Melteca) or lacquer per m² (Lacquer) on the metres / m² in the project's Product table."
+                    headerRight={
+                      <button type="button" onClick={openProductsSheet} className={primaryButtonClass} style={primaryButtonStyle}>
+                        <Box size={15} /> Edit products
+                      </button>
+                    }
+                  >
+                    {/* At a glance: each product's sell prices (cost + margin). Click any row to edit them all in the sheet. */}
+                    {jobTypes.length === 0 ? (
+                      <div className="flex flex-col items-center gap-2 rounded-[14px] border border-dashed px-4 py-8 text-center" style={{ borderColor: "color-mix(in srgb, var(--text-main) 18%, transparent)" }}>
+                        <p className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>No products yet.</p>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            addProduct();
+                            openProductsSheet(e);
+                          }}
+                          className={secondaryButtonClass}
+                        >
+                          <Plus size={14} /> Add a product
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full min-w-[640px] text-[13px]">
+                          <thead>
+                            <tr className="border-b" style={{ borderColor: "var(--glass-border)" }}>
+                              {["Product", "Type", "Sheet sizes", "Edge tape / Lacquer", "Misc charges"].map((heading) => (
+                                <th key={heading} className={`${columnHeadClass} whitespace-nowrap px-2 pb-2 text-left`}>
+                                  {heading}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {jobTypes.map((row, idx) => (
+                              <tr
+                                key={`product_summary_${idx}`}
+                                onClick={openProductsSheet}
+                                className="cursor-pointer border-b align-top transition last:border-none hover:brightness-[0.97]"
+                                style={{ borderColor: "var(--glass-border)", backgroundColor: `color-mix(in srgb, ${row.color} 9%, transparent)` }}
+                                title="Edit products"
+                              >
+                                <td className="px-2 py-2.5 font-medium" style={{ color: "var(--text-main)" }}>
+                                  <span className="inline-flex items-center gap-2">
+                                    <span className="h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: row.color }} />
+                                    {row.name || "Untitled product"}
+                                  </span>
+                                </td>
+                                <td className="whitespace-nowrap px-2 py-2.5" style={{ color: "var(--text-main)" }}>{PRODUCT_TYPE_LABELS[row.type]}</td>
+                                <td className="px-2 py-2.5" style={{ color: "var(--text-main)" }}>
+                                  {(row.sheetPrices ?? []).length ? (
+                                    (row.sheetPrices ?? []).map((sp, spIdx) => (
+                                      <p key={spIdx} className="whitespace-nowrap tabular-nums">
+                                        {sheetSizeLabel(sp.sheetSize)} · <span className="font-semibold">{computeOutputPrice(sp.pricePerSheet, sp.marginPercent)}</span>
+                                      </p>
+                                    ))
+                                  ) : (
+                                    "—"
+                                  )}
+                                </td>
+                                <td className="whitespace-nowrap px-2 py-2.5 tabular-nums" style={{ color: "var(--text-main)" }}>
+                                  {jobTypeHasEdgeTape(row.type) && toStr(row.edgeTapePrice) ? (
+                                    <>
+                                      <span className="font-semibold">{computeOutputPrice(row.edgeTapePrice, row.edgeTapeMarginPercent)}</span> / m
+                                    </>
+                                  ) : jobTypeHasLacquer(row.type) && toStr(row.lacquerSqmPrice) ? (
+                                    <>
+                                      <span className="font-semibold">{computeOutputPrice(row.lacquerSqmPrice, row.lacquerMarginPercent)}</span> / m²
+                                    </>
+                                  ) : (
+                                    "—"
+                                  )}
+                                </td>
+                                <td className="px-2 py-2.5" style={{ color: "var(--text-main)" }}>
+                                  {(row.miscCharges ?? []).filter((charge) => charge.name || charge.price).length
+                                    ? (row.miscCharges ?? [])
+                                        .filter((charge) => charge.name || charge.price)
+                                        .map((charge, chargeIdx) => (
+                                          <p key={chargeIdx} className="whitespace-nowrap tabular-nums">
+                                            {charge.name || "Misc"} · <span className="font-semibold">{computeOutputPrice(charge.price, charge.marginPercent)}</span> / sheet
+                                          </p>
+                                        ))
+                                    : "—"}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </Panel>
+                  {shouldRenderProductsSheet ? (
+                    <ModalPortal>
+                    {/* Full screen, like Item Categories — every product and its pricing in one table. */}
+                    <div ref={productsSheetPanelRef} data-full-screen-window="true" className="fixed inset-0 z-[1750] flex flex-col bg-[var(--bg-app)]">
+                      <div className="glass-page-header flex h-[56px] shrink-0 items-center justify-between gap-2 px-4 md:px-5">
+                        <div className="inline-flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                          <Box size={14} className="shrink-0" />
+                          <span className="truncate">Products</span>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2">
+                          <button type="button" onClick={addProduct} className={secondaryButtonClass}>
+                            <Plus size={14} />
+                            <span className="max-sm:sr-only">Add product</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setIsProductsSheetOpen(false)}
+                            className="inline-flex h-9 shrink-0 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+                            style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
                           >
-                            <button
-                              type="button"
-                              draggable
-                              onDragStart={(e) => {
-                                setJobTypeDragIndex(idx);
-                                setJobTypeDragOverIndex(idx);
-                                e.dataTransfer.setData("text/plain", `jobtype_${idx}`);
-                                startRowDrag(e, `settings_product_${idx}`, row.name, "#7D99B3");
-                              }}
-                              onDragEnd={() => {
-                                setJobTypeDragIndex(null);
-                                setJobTypeDragOverIndex(null);
-                                endRowDrag();
-                              }}
-                              className={gripClass}
-                              title="Drag to reorder"
+                            <ArrowLeft size={14} />
+                            <span className="max-sm:sr-only">Back</span>
+                          </button>
+                        </div>
+                      </div>
+                      <div className="glass-scroll min-h-0 flex-1 overflow-auto p-3 md:p-4">
+                        {/* Each product floats in its own card. Below desktop they keep their desktop column widths and
+                            scroll sideways, rather than squeezing them. */}
+                        <div className="mx-auto flex w-max flex-col gap-3">
+                          {jobTypes.length === 0 ? (
+                            <p
+                              className="rounded-[16px] border px-4 py-8 text-center text-[13px] font-medium"
+                              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                             >
-                              <GripVertical size={15} />
-                            </button>
-                            <input
-                              value={row.name}
-                              placeholder="Product name"
-                              onChange={(e) => setJobTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))}
-                              className={`${gridCellInputClass} min-w-[160px] flex-1`}
-                            />
-                            <span className="w-[170px] shrink-0">
-                              <GlassDropdown
-                                value={row.type}
-                                options={[
-                                  { value: "", label: "No type" },
-                                  { value: "grain", label: "Grain" },
-                                  { value: "lacquer-1", label: "Lacquer (1 side)" },
-                                  { value: "lacquer-2", label: "Lacquer (2 side)" },
-                                  { value: "melteca", label: "Melteca" },
-                                ]}
-                                onChange={(next) => setJobTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, type: next as JobTypeProductType } : v)))}
-                                ariaLabel="Product type"
-                                triggerClassName={`${glassFieldSmClass} justify-between`}
-                              />
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => toggleJobTypeExpanded(idx)}
-                              className={`${countPillClass} gap-1 transition hover:brightness-95`}
-                              title="Sheet sizes & prices"
-                            >
-                              {row.sheetPrices?.length || 0} sheet size{(row.sheetPrices?.length || 0) === 1 ? "" : "s"}
-                              <ChevronDown size={12} style={{ transform: jobTypeExpanded[idx] ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 200ms ease" }} />
-                            </button>
-                            <span className="inline-flex shrink-0 items-center gap-1.5 text-[11.5px] font-medium" style={{ color: "var(--text-muted)" }}>
-                              In sales
-                              <GlassSwitch size="sm" checked={row.showInSales} onChange={(on) => setJobTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, showInSales: on } : v)))} ariaLabel="Include in sales" />
-                            </span>
-                            <button type="button" onClick={() => setJobTypes((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} title="Remove product">
-                              <X size={15} />
-                            </button>
-                          </div>
-                          {jobTypeExpanded[idx] && (
-                            <div className="my-1.5 ml-8 grid gap-1.5 rounded-[12px] border border-dashed p-2.5 max-sm:ml-3" style={{ borderColor: "color-mix(in srgb, var(--text-main) 16%, transparent)" }}>
-                              {(row.sheetPrices ?? []).map((sp, spIdx) => (
-                                <div key={`${idx}_sheetprice_${spIdx}`} className={`${listRowClass} max-lg:flex-wrap`}>
-                                  <span className="w-[200px] shrink-0 max-sm:w-full">
+                              No products yet — add one.
+                            </p>
+                          ) : null}
+                          {jobTypes.map((row, idx) => {
+                            const collapsed = Boolean(productCollapsed[idx]);
+                            const lineClass = `${PRODUCT_SHEET_GRID} border-b px-3 py-1.5`;
+                            // Its lines (what drops down under it) in a lighter wash of its colour — the product's own row a
+                            // stronger one — and a stripe of it down the left of them all.
+                            const lineStyle = {
+                              borderColor: "var(--glass-border)",
+                              backgroundColor: `color-mix(in srgb, ${row.color} 8%, var(--panel-bg))`,
+                              boxShadow: `inset 4px 0 0 color-mix(in srgb, ${row.color} 55%, transparent)`,
+                            };
+                            const sellCell = (price: string, margin: string, unit: string, prefix = "") => (
+                              <span className="text-right text-[13px] tabular-nums" style={{ color: "var(--text-main)" }}>
+                                <span className="font-semibold">
+                                  {prefix}
+                                  {computeOutputPrice(price, margin)}
+                                </span>
+                                <span className="text-[12px]"> {unit}</span>
+                              </span>
+                            );
+                            // Every misc charge (margin on) — added on top of each sheet, whatever its size.
+                            const miscPerSheet = (row.miscCharges ?? []).reduce((sum, charge) => sum + sellAmount(charge.price, charge.marginPercent), 0);
+                            // Its lines come in three parts, each under a label strip in the product's colour (as strong as
+                            // its own row): Sheets (the only lines that differ by size), Misc (added to every sheet) and
+                            // On the quote (edge tape / lacquer, later).
+                            const sectionLabel = (title: string, note = "", right?: React.ReactNode) => (
+                              <div
+                                className={`${PRODUCT_SHEET_GRID} border-b px-3 py-2`}
+                                style={{
+                                  borderColor: `color-mix(in srgb, ${row.color} 25%, var(--glass-border))`,
+                                  backgroundColor: `color-mix(in srgb, ${row.color} 20%, var(--panel-bg))`,
+                                  boxShadow: `inset 4px 0 0 ${row.color}`,
+                                }}
+                              >
+                                <span />
+                                <span className="col-span-3 flex min-w-0 items-baseline gap-2">
+                                  <span
+                                    className="shrink-0 text-[11px] font-bold uppercase tracking-[0.6px]"
+                                    style={{ color: `color-mix(in srgb, ${row.color} 65%, var(--text-main))` }}
+                                  >
+                                    {title}
+                                  </span>
+                                  <span className="truncate text-[12px] font-medium" style={{ color: "var(--text-main)" }}>
+                                    {note}
+                                  </span>
+                                </span>
+                                <span className="text-right text-[12px] tabular-nums" style={{ color: "var(--text-main)" }}>
+                                  {right}
+                                </span>
+                                <span />
+                              </div>
+                            );
+                            const addLineButton = (label: string, onClick: () => void) => (
+                              <div className={lineClass} style={lineStyle}>
+                                <span />
+                                <span className="col-span-4">
+                                  <button type="button" onClick={onClick} className="inline-flex items-center gap-1 text-[12px] font-semibold" style={{ color: "var(--brand-strong)" }}>
+                                    <Plus size={14} /> {label}
+                                  </button>
+                                </span>
+                                <span />
+                              </div>
+                            );
+                            return (
+                              <div
+                                key={idx}
+                                id={`settings_product_${idx}`}
+                                data-products-sheet-product="true"
+                                // Its own floating card; the last row inside drops its bottom line (the card's edge is there).
+                                className="overflow-hidden rounded-[16px] border"
+                                style={{
+                                  opacity: jobTypeDragIndex === idx ? 0.45 : 1,
+                                  borderColor: `color-mix(in srgb, ${row.color} 30%, var(--glass-border))`,
+                                  backgroundColor: "var(--panel-bg)",
+                                  boxShadow: "var(--shadow-glass)",
+                                }}
+                                onDragOver={(e) => {
+                                  e.preventDefault();
+                                  e.dataTransfer.dropEffect = "move";
+                                }}
+                                onDragEnter={(e) => {
+                                  e.preventDefault();
+                                  if (jobTypeDragIndex == null || jobTypeDragIndex === idx) return;
+                                  setJobTypes((prev) => moveRowTo(prev, jobTypeDragIndex, idx));
+                                  setJobTypeDragIndex(idx);
+                                  setJobTypeDragOverIndex(idx);
+                                }}
+                                onDrop={(e) => {
+                                  e.preventDefault();
+                                  setJobTypeDragIndex(null);
+                                  setJobTypeDragOverIndex(null);
+                                  endRowDrag();
+                                  triggerAutosaveAfterRowDrop();
+                                }}
+                              >
+                                {/* The product: drag to reorder, fold its lines away, its name and type, remove. */}
+                                <div
+                                  className={`${PRODUCT_SHEET_GRID} px-3 py-2.5`}
+                                  style={{
+                                    backgroundColor: `color-mix(in srgb, ${row.color} 20%, var(--panel-bg))`,
+                                    boxShadow: `inset 4px 0 0 ${row.color}`,
+                                  }}
+                                >
+                                  <span className="flex items-center gap-0.5">
+                                    <button
+                                      type="button"
+                                      draggable
+                                      onDragStart={(e) => {
+                                        setJobTypeDragIndex(idx);
+                                        setJobTypeDragOverIndex(idx);
+                                        e.dataTransfer.setData("text/plain", `jobtype_${idx}`);
+                                        startRowDrag(e, `settings_product_${idx}`, row.name, row.color);
+                                      }}
+                                      onDragEnd={() => {
+                                        setJobTypeDragIndex(null);
+                                        setJobTypeDragOverIndex(null);
+                                        endRowDrag();
+                                      }}
+                                      className={gripClass}
+                                      title="Drag to reorder"
+                                    >
+                                      <GripVertical size={15} />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleProductCollapsed(idx)}
+                                      className="inline-flex h-7 w-6 items-center justify-center rounded-[7px] transition hover:bg-[color-mix(in_srgb,var(--text-main)_6%,transparent)]"
+                                      style={{ color: "var(--text-main)" }}
+                                      aria-label={collapsed ? "Show this product's lines" : "Hide this product's lines"}
+                                      aria-expanded={!collapsed}
+                                    >
+                                      <ChevronDown size={15} style={{ transform: collapsed ? "rotate(-90deg)" : "none", transition: "transform 180ms ease" }} />
+                                    </button>
+                                  </span>
+                                  <span className="flex min-w-0 items-center gap-2">
+                                    <ColorCircle value={row.color} size={24} onChange={(hex) => updateJobType(idx, { color: hex })} title="Product colour" />
+                                    <input
+                                      value={row.name}
+                                      placeholder="Product name"
+                                      onChange={(e) => updateJobType(idx, { name: e.target.value })}
+                                      className={`${glassFieldSmClass} text-[13.5px] font-semibold`}
+                                      aria-label="Product name"
+                                    />
+                                  </span>
+                                  <span className="col-span-2">
                                     <GlassDropdown
-                                      value={sp.sheetSize}
-                                      options={[
-                                        { value: "", label: "Choose sheet size" },
-                                        ...sheetSizes.map((ss) => {
-                                          const value = `${ss.h} x ${ss.w}`;
-                                          return { value, label: `${formatLength(ss.h, companyUnit, { withUnit: false })} × ${formatLength(ss.w, companyUnit)}` };
-                                        }),
-                                        ...(sp.sheetSize && !sheetSizes.some((ss) => `${ss.h} x ${ss.w}` === sp.sheetSize) ? [{ value: sp.sheetSize, label: sp.sheetSize }] : []),
-                                      ]}
-                                      onChange={(next) => updateJobTypeSheetPrice(idx, spIdx, { sheetSize: next })}
-                                      ariaLabel="Sheet size"
+                                      value={row.type}
+                                      options={(Object.keys(PRODUCT_TYPE_LABELS) as JobTypeProductType[]).map((type) => ({ value: type, label: PRODUCT_TYPE_LABELS[type] }))}
+                                      onChange={(next) => updateJobType(idx, { type: next as JobTypeProductType })}
+                                      ariaLabel="Product type"
                                       triggerClassName={`${glassFieldSmClass} justify-between`}
                                     />
                                   </span>
-                                  <input inputMode="decimal"
-                                    value={sp.pricePerSheet}
-                                    onChange={(e) => updateJobTypeSheetPrice(idx, spIdx, { pricePerSheet: e.target.value })}
-                                    onBlur={(e) => updateJobTypeSheetPrice(idx, spIdx, { pricePerSheet: ensureDollarFormat(e.target.value) })}
-                                    className={`${glassFieldSmClass} w-[120px]`}
-                                    placeholder={formatMoney(0, companyCurrency)}
-                                  />
-                                  <span className="text-[12px]" style={{ color: "var(--text-muted)" }}>per sheet</span>
-                                  <span className="flex-1" />
-                                  <button type="button" onClick={() => removeJobTypeSheetPrice(idx, spIdx)} className={dangerIconButtonClass} title="Remove sheet size">
+                                  {/* Right of its type, in the Sell price column: each sheet size's total — the sheet plus all its
+                                      misc charges (per sheet), each with its margin on — at a glance, even with its lines folded away.
+                                      Edge tape / lacquer aren't in it: a quote adds those on the project's own metres / m² (its
+                                      Product table). Hover one for how it adds up. */}
+                                  <span className="flex flex-col items-end gap-0.5 text-right text-[12px] tabular-nums" style={{ color: "var(--text-main)" }}>
+                                    <span className="text-[10px] font-bold uppercase tracking-[0.6px]">Total per sheet</span>
+                                    {(row.sheetPrices ?? []).map((sp, spIdx) => {
+                                      const sheet = sellAmount(sp.pricePerSheet, sp.marginPercent);
+                                      const parts = [`Sheet ${formatMoney(sheet, companyCurrency)}`, miscPerSheet > 0 ? `misc ${formatMoney(miscPerSheet, companyCurrency)}` : ""].filter(Boolean);
+                                      return (
+                                        <span key={`row_price_${spIdx}`} className="whitespace-nowrap" title={parts.join(" + ")}>
+                                          {sheetSizeLabel(sp.sheetSize)} ·{" "}
+                                          <span className="font-semibold">{formatMoney(sheet + miscPerSheet, companyCurrency)}</span>
+                                        </span>
+                                      );
+                                    })}
+                                  </span>
+                                  <button type="button" onClick={() => setJobTypes((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} title="Remove product">
                                     <X size={15} />
                                   </button>
                                 </div>
-                              ))}
-                              <div>
-                                <button type="button" onClick={() => addJobTypeSheetPrice(idx)} className="inline-flex items-center gap-1 text-[12px] font-semibold" style={{ color: "var(--brand-strong)" }}>
-                                  <Plus size={14} /> Add sheet size
-                                </button>
+                                {/* Its lines slide out from under it (and back up when it's folded away). */}
+                                <div
+                                  className="grid transition-[grid-template-rows] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none"
+                                  style={{ gridTemplateRows: collapsed ? "0fr" : "1fr" }}
+                                  inert={collapsed}
+                                >
+                                  <div className="min-h-0 overflow-hidden">
+                                  <div
+                                    className="border-t [&>div:last-child]:border-b-0"
+                                    style={{ borderColor: `color-mix(in srgb, ${row.color} 25%, var(--glass-border))`, opacity: collapsed ? 0 : 1, transition: "opacity 200ms ease" }}
+                                  >
+                                    {/* Its column headings in the product row's own colour, so the two read as one block. */}
+                                    <div
+                                      className={`${PRODUCT_SHEET_GRID} border-b px-3 py-1.5`}
+                                      style={{
+                                        borderColor: `color-mix(in srgb, ${row.color} 25%, var(--glass-border))`,
+                                        backgroundColor: `color-mix(in srgb, ${row.color} 20%, var(--panel-bg))`,
+                                        boxShadow: `inset 4px 0 0 ${row.color}`,
+                                      }}
+                                    >
+                                      <span />
+                                      {["Item", "Cost", "Margin", "Sell price"].map((heading) => (
+                                        <span
+                                          key={heading}
+                                          className={`${columnHeadClass} ${heading === "Sell price" ? "text-right" : ""}`}
+                                          style={{ color: `color-mix(in srgb, ${row.color} 60%, var(--text-main))` }}
+                                        >
+                                          {heading}
+                                        </span>
+                                      ))}
+                                      <span />
+                                    </div>
+                                    {sectionLabel("Sheets")}
+                                    {(row.sheetPrices ?? []).map((sp, spIdx) => (
+                                      <div key={`sheet_${spIdx}`} className={lineClass} style={lineStyle}>
+                                        <span />
+                                        <GlassDropdown
+                                          value={sp.sheetSize}
+                                          options={[
+                                            { value: "", label: "Choose sheet size" },
+                                            ...sheetSizes.map((ss) => {
+                                              const value = `${ss.h} x ${ss.w}`;
+                                              return { value, label: `${formatLength(ss.h, companyUnit, { withUnit: false })} × ${formatLength(ss.w, companyUnit)}` };
+                                            }),
+                                            ...(sp.sheetSize && !sheetSizes.some((ss) => `${ss.h} x ${ss.w}` === sp.sheetSize) ? [{ value: sp.sheetSize, label: sp.sheetSize }] : []),
+                                          ]}
+                                          onChange={(next) => updateJobTypeSheetPrice(idx, spIdx, { sheetSize: next })}
+                                          ariaLabel="Sheet size"
+                                          triggerClassName={`${glassFieldSmClass} justify-between`}
+                                        />
+                                        <input inputMode="decimal"
+                                          value={sp.pricePerSheet}
+                                          onChange={(e) => updateJobTypeSheetPrice(idx, spIdx, { pricePerSheet: e.target.value })}
+                                          onBlur={(e) => updateJobTypeSheetPrice(idx, spIdx, { pricePerSheet: ensureDollarFormat(e.target.value) })}
+                                          className={glassFieldSmClass}
+                                          placeholder={formatMoney(0, companyCurrency)}
+                                          aria-label="Cost per sheet"
+                                        />
+                                        <MarginInput value={sp.marginPercent} onChange={(next) => updateJobTypeSheetPrice(idx, spIdx, { marginPercent: next })} />
+                                        {sellCell(sp.pricePerSheet, sp.marginPercent, "/ sheet")}
+                                        <button type="button" onClick={() => removeJobTypeSheetPrice(idx, spIdx)} className={dangerIconButtonClass} title="Remove sheet size">
+                                          <X size={15} />
+                                        </button>
+                                      </div>
+                                    ))}
+                                    {addLineButton("Sheet size", () => addJobTypeSheetPrice(idx))}
+                                    {/* Misc: the same on every sheet, whatever its size — the strip shows what they add to each one. */}
+                                    {sectionLabel(
+                                      "Misc",
+                                      "",
+                                      miscPerSheet > 0 ? (
+                                        <>
+                                          <span className="font-semibold">+ {formatMoney(miscPerSheet, companyCurrency)}</span> / sheet
+                                        </>
+                                      ) : null,
+                                    )}
+                                    {(row.miscCharges ?? []).map((charge, chargeIdx) => (
+                                      <div key={`misc_${chargeIdx}`} className={lineClass} style={lineStyle}>
+                                        <span />
+                                        <input
+                                          value={charge.name}
+                                          onChange={(e) => updateJobTypeMiscCharge(idx, chargeIdx, { name: e.target.value })}
+                                          className={glassFieldSmClass}
+                                          placeholder="e.g. Cutting"
+                                          aria-label="Charge name"
+                                        />
+                                        <input inputMode="decimal"
+                                          value={charge.price}
+                                          onChange={(e) => updateJobTypeMiscCharge(idx, chargeIdx, { price: e.target.value })}
+                                          onBlur={(e) => updateJobTypeMiscCharge(idx, chargeIdx, { price: e.target.value.trim() ? ensureDollarFormat(e.target.value) : "" })}
+                                          className={glassFieldSmClass}
+                                          placeholder={formatMoney(0, companyCurrency)}
+                                          aria-label="Charge cost per sheet"
+                                        />
+                                        <MarginInput value={charge.marginPercent} onChange={(next) => updateJobTypeMiscCharge(idx, chargeIdx, { marginPercent: next })} />
+                                        {sellCell(charge.price, charge.marginPercent, "/ sheet", "+ ")}
+                                        <button
+                                          type="button"
+                                          onClick={() => updateJobType(idx, { miscCharges: (row.miscCharges ?? []).filter((_, j) => j !== chargeIdx) })}
+                                          className={dangerIconButtonClass}
+                                          title="Remove charge"
+                                        >
+                                          <X size={15} />
+                                        </button>
+                                      </div>
+                                    ))}
+                                    {addLineButton("Misc charge", () =>
+                                      updateJobType(idx, { miscCharges: [...(row.miscCharges ?? []), { name: "", price: "", marginPercent: "" }] }),
+                                    )}
+                                    {/* Last, under everything that makes up its Total per sheet: edge tape / lacquer aren't in that total —
+                                        a quote adds them later, on the project's own metres / m² (its Product table). */}
+                                    {sectionLabel("On the quote", "Not in the total — added from the project's Product table")}
+                                    {jobTypeHasEdgeTape(row.type) || jobTypeHasLacquer(row.type) ? (
+                                      <div className={lineClass} style={lineStyle}>
+                                        <span />
+                                        <span className="px-1 text-[12.5px] font-medium" style={{ color: "var(--text-main)" }}>
+                                          {jobTypeHasEdgeTape(row.type)
+                                            ? "Edge tape · per metre"
+                                            : `Lacquer · per m² (${row.type === "lacquer-2" ? "2 sides" : "1 side"})`}
+                                        </span>
+                                        <input inputMode="decimal"
+                                          value={jobTypeHasEdgeTape(row.type) ? row.edgeTapePrice : row.lacquerSqmPrice}
+                                          onChange={(e) =>
+                                            updateJobType(idx, jobTypeHasEdgeTape(row.type) ? { edgeTapePrice: e.target.value } : { lacquerSqmPrice: e.target.value })
+                                          }
+                                          onBlur={(e) => {
+                                            const value = e.target.value.trim() ? ensureDollarFormat(e.target.value) : "";
+                                            updateJobType(idx, jobTypeHasEdgeTape(row.type) ? { edgeTapePrice: value } : { lacquerSqmPrice: value });
+                                          }}
+                                          className={glassFieldSmClass}
+                                          placeholder={formatMoney(0, companyCurrency)}
+                                          aria-label={jobTypeHasEdgeTape(row.type) ? "Edge tape cost per metre" : "Lacquer cost per square metre"}
+                                        />
+                                        <MarginInput
+                                          value={jobTypeHasEdgeTape(row.type) ? row.edgeTapeMarginPercent : row.lacquerMarginPercent}
+                                          onChange={(next) =>
+                                            updateJobType(idx, jobTypeHasEdgeTape(row.type) ? { edgeTapeMarginPercent: next } : { lacquerMarginPercent: next })
+                                          }
+                                        />
+                                        {jobTypeHasEdgeTape(row.type)
+                                          ? sellCell(row.edgeTapePrice, row.edgeTapeMarginPercent, "/ m")
+                                          : sellCell(row.lacquerSqmPrice, row.lacquerMarginPercent, "/ m²")}
+                                        <span />
+                                      </div>
+                                    ) : (
+                                      <div className={lineClass} style={lineStyle}>
+                                        <span />
+                                        <span className="col-span-4 px-1 text-[12.5px]" style={{ color: "var(--text-main)" }}>
+                                          Set a type to price edge tape (Grain, Melteca) or lacquer per m² (Lacquer).
+                                        </span>
+                                        <span />
+                                      </div>
+                                    )}
+                                  </div>
+                                  </div>
+                                </div>
                               </div>
-                            </div>
-                          )}
+                            );
+                          })}
+                          <div>
+                            <button type="button" onClick={addProduct} className={secondaryButtonClass}>
+                              <Plus size={14} /> Add product
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    </ModalPortal>
+                  ) : null}
+                  <Panel
+                    className="xl:col-span-2"
+                    title="Extra charges"
+                    icon={Receipt}
+                    description="Charges a quote can include, each turned on or off in a project's Design tab. Default ones start on for every project."
+                  >
+                    <div className="space-y-1.5">
+                      {extraCharges.length > 0 ? (
+                        <div className="flex items-center gap-2 px-2">
+                          <span className="w-6 shrink-0" />
+                          <span className={`flex-1 ${columnHeadClass}`}>Charge</span>
+                          <span className={`w-[100px] shrink-0 sm:w-[130px] ${columnHeadClass}`}>Price</span>
+                          <span className={`w-[60px] shrink-0 text-center sm:w-[88px] ${columnHeadClass}`}>Default</span>
+                          <span className="w-7 shrink-0" />
+                        </div>
+                      ) : (
+                        <p className="px-2 py-1 text-[12.5px] font-medium" style={{ color: "var(--text-main)" }}>
+                          No extra charges yet.
+                        </p>
+                      )}
+                      {extraCharges.map((row, idx) => (
+                        <div
+                          key={row.id}
+                          id={`settings_extra_charge_${idx}`}
+                          className={listRowClass}
+                          style={{ opacity: extraChargeDragIndex === idx ? 0.45 : 1 }}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = "move";
+                          }}
+                          onDragEnter={(e) => {
+                            e.preventDefault();
+                            if (extraChargeDragIndex == null || extraChargeDragIndex === idx) return;
+                            setExtraCharges((prev) => moveRowTo(prev, extraChargeDragIndex, idx));
+                            setExtraChargeDragIndex(idx);
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            setExtraChargeDragIndex(null);
+                            endRowDrag();
+                            triggerAutosaveAfterRowDrop();
+                          }}
+                        >
+                          <button
+                            type="button"
+                            draggable
+                            onDragStart={(e) => {
+                              setExtraChargeDragIndex(idx);
+                              e.dataTransfer.setData("text/plain", `extra_charge_${idx}`);
+                              startRowDrag(e, `settings_extra_charge_${idx}`, row.name || "Charge", "#2F6BFF");
+                            }}
+                            onDragEnd={() => {
+                              setExtraChargeDragIndex(null);
+                              endRowDrag();
+                            }}
+                            className={gripClass}
+                            title="Drag to reorder"
+                          >
+                            <GripVertical size={15} />
+                          </button>
+                          <input
+                            value={row.name}
+                            placeholder="e.g. Delivery"
+                            onChange={(e) => setExtraCharges((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))}
+                            className={`${glassFieldSmClass} min-w-0 flex-1`}
+                            aria-label="Charge name"
+                          />
+                          <span className="w-[100px] shrink-0 sm:w-[130px]">
+                            <input
+                              inputMode="decimal"
+                              value={row.price}
+                              placeholder={formatMoney(0, companyCurrency)}
+                              onChange={(e) => setExtraCharges((prev) => prev.map((v, i) => (i === idx ? { ...v, price: e.target.value } : v)))}
+                              onBlur={(e) =>
+                                setExtraCharges((prev) => prev.map((v, i) => (i === idx ? { ...v, price: e.target.value.trim() ? ensureDollarFormat(e.target.value) : "" } : v)))
+                              }
+                              className={glassFieldSmClass}
+                              aria-label="Charge price"
+                            />
+                          </span>
+                          <span className="flex w-[60px] shrink-0 justify-center sm:w-[88px]">
+                            <GlassSwitch
+                              size="sm"
+                              checked={row.isDefault}
+                              onChange={(on) => setExtraCharges((prev) => prev.map((v, i) => (i === idx ? { ...v, isDefault: on } : v)))}
+                              ariaLabel="On for every project by default"
+                            />
+                          </span>
+                          <button type="button" onClick={() => setExtraCharges((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} title="Remove charge">
+                            <X size={15} />
+                          </button>
                         </div>
                       ))}
                       <button
                         type="button"
-                        onClick={() =>
-                          setJobTypes((prev) => [
-                            ...prev,
-                            {
-                              name: "",
-                              sheetPrices: [{ sheetSize: defaultSheetSizeValue(sheetSizes), pricePerSheet: ensureDollarFormat("0") }],
-                              showInSales: true,
-                              type: "",
-                            },
-                          ])
-                        }
+                        onClick={() => setExtraCharges((prev) => [...prev, { id: genExtraChargeId(), name: "", price: "", isDefault: false }])}
                         className={`${secondaryButtonClass} mt-1.5`}
                       >
-                        <Plus size={14} /> Add product
+                        <Plus size={14} /> Add charge
                       </button>
                     </div>
                   </Panel>

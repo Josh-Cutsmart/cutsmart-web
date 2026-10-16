@@ -9,6 +9,7 @@ import {
   getDoc,
   getDocs,
   limit,
+  onSnapshot,
   orderBy,
   query,
   serverTimestamp,
@@ -36,6 +37,7 @@ import {
 import type { ProductComparison } from "@/lib/cutlist-types";
 import type { ChecklistTemplate, Cutlist, Project, ProjectChange, ProjectChecklist, ProjectImageItem, SalesQuote } from "@/lib/types";
 import { normalizeWhatsNewHighlights, type UpdateChangelogEntry } from "@/lib/update-notes-utils";
+import { buildLeadRow } from "@/lib/lead-row";
 
 function toIsoString(value: unknown, fallback = "") {
   if (!value) {
@@ -4235,7 +4237,59 @@ export type CompanyLeadRow = {
   // Its place in its Leads board column once someone has dragged it there (see
   // lib/board-drop-order.ts) — unset until then, when it sits by date.
   boardOrder?: number;
+  // The team's notes on it (the lead pop-up's Notes), oldest first.
+  notes?: LeadNote[];
+  // Checklists added to it (the lead pop-up's Checklists) — copies of someone's saved checklists (User Settings),
+  // ticked off on the lead; the same shape as a project's.
+  checklists?: ProjectChecklist[];
 };
+
+// One note on a lead: what was written, when, and by whom (their name as it was then — the pop-up shows their
+// current name and colour when they're still in the company).
+export type LeadNote = {
+  id: string;
+  text: string;
+  createdAtIso: string;
+  createdByUid: string;
+  createdByName: string;
+};
+
+// The Leads page's leads — the newest 500, as /api/leads gives them — read straight from Firestore and kept up to
+// date as they change (as the Dashboard reads its projects), rather than through the server each time. Returns an
+// unsubscribe function. onError when this browser can't read them (e.g. the leads rule isn't deployed yet) — the
+// page then falls back to /api/leads.
+export function subscribeCompanyLeads(
+  companyId: string,
+  onLeads: (leads: CompanyLeadRow[]) => void,
+  onError: (error: unknown) => void,
+): () => void {
+  const cid = String(companyId || "").trim();
+  if (!db || !cid) {
+    onError(new Error("leads-direct-unavailable"));
+    return () => {};
+  }
+  const q = query(collection(db, "companies", cid, "leads"), orderBy("createdAt", "desc"), limit(500));
+  return onSnapshot(
+    q,
+    (snap) => onLeads(snap.docs.map((d) => buildLeadRow(cid, d.id, (d.data() ?? {}) as Record<string, unknown>, "summary"))),
+    (error) => onError(error),
+  );
+}
+
+// One lead in full (its pop-up), straight from Firestore. undefined when this browser can't read it (fall back to
+// /api/leads); null when there's no such lead.
+export async function fetchCompanyLeadDirect(companyId: string, leadId: string): Promise<CompanyLeadRow | null | undefined> {
+  const cid = String(companyId || "").trim();
+  const id = String(leadId || "").trim();
+  if (!db || !cid || !id) return undefined;
+  try {
+    const snap = await getDoc(doc(db, "companies", cid, "leads", id));
+    if (!snap.exists()) return null;
+    return buildLeadRow(cid, snap.id, (snap.data() ?? {}) as Record<string, unknown>, "detail");
+  } catch {
+    return undefined;
+  }
+}
 
 function normalizeLeadImageItems(value: unknown): LeadImageItem[] {
   if (!Array.isArray(value)) return [];

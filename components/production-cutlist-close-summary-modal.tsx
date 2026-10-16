@@ -3,7 +3,7 @@
 import { useRef, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
-import { findMissingProductionRows, summarizeCutlistRowsByPartType, type CutlistRow } from "@/lib/cutlist-types";
+import { summarizeCutlistRowsByPartType, type CutlistRow } from "@/lib/cutlist-types";
 import { contrastTextForFill } from "@/lib/user-profile-format";
 import { useGlassModalShrinkOnClose, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 
@@ -19,7 +19,6 @@ export function ProductionCutlistCloseSummaryModal({
   isOpen,
   origin,
   productionRows,
-  initialRows,
   partTypeColors,
   sheetCounts,
   sessionBaseline,
@@ -34,7 +33,6 @@ export function ProductionCutlistCloseSummaryModal({
   isOpen: boolean;
   origin: GlassModalOrigin;
   productionRows: CutlistRow[];
-  initialRows: CutlistRow[];
   partTypeColors: Record<string, string>;
   sheetCounts: SheetCountEntry[];
   sessionBaseline: Record<string, number> | null;
@@ -56,7 +54,6 @@ export function ProductionCutlistCloseSummaryModal({
   const displayPartTypes = Array.from(
     new Set([...currentCountByType.keys(), ...(sessionBaseline ? Object.keys(sessionBaseline) : [])]),
   ).sort((a, b) => a.localeCompare(b));
-  const missing = findMissingProductionRows(initialRows, productionRows);
   const rooms = Array.from(new Set(productionRows.map(roomLabel)));
   const showRoomGroups = rooms.length > 1;
   // Per-room part-type counts for the Parts Added table, only actually needed (and only
@@ -197,36 +194,6 @@ export function ProductionCutlistCloseSummaryModal({
               </table>
             </div>
           )}
-
-          <div>
-            <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-main)" }}>
-              Missing From Production
-            </p>
-            {missing.length === 0 ? (
-              <div
-                className="rounded-[10px] border px-3 py-2.5 text-[13px] font-semibold"
-                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--success-strong)" }}
-              >
-                Every part from Initial Measure is included.
-              </div>
-            ) : (
-              <div className="space-y-1.5">
-                {missing.map((row) => (
-                  <div
-                    key={row.id}
-                    className="rounded-[10px] border px-3 py-2"
-                    style={{ borderColor: "var(--danger-soft)", backgroundColor: "var(--danger-soft)" }}
-                  >
-                    <p className="text-[13px] font-semibold" style={{ color: "var(--danger-strong)" }}>{row.name}</p>
-                    <p className="text-[11px]" style={{ color: "var(--danger-strong)" }}>
-                      {row.room ? `${row.room} · ` : ""}
-                      {row.partType || "Unassigned"}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
         </div>
       </div>
     </div>,

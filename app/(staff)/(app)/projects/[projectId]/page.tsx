@@ -1,10 +1,11 @@
 "use client";
 
 import { Fragment, startTransition, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type FocusEvent as ReactFocusEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, type TouchEvent as ReactTouchEvent, type WheelEvent as ReactWheelEvent } from "react";
+import { glassShineStyle } from "@/lib/glass-shine";
 import { createPortal } from "react-dom";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Great_Vibes } from "next/font/google";
-import { ArrowLeft, ArrowLeftRight, ArrowRight, Bell, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, File as FileIcon, FileSpreadsheet, FileText, GitBranch, Eraser, GripVertical, HardHat, Image as ImageIcon, Import as ImportIcon, Info, Link2, ListChecks, Lock, Mail, MapPin, Minus, MoreHorizontal, NotebookPen, Pencil, Phone, Plus, Printer, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, Unlock, User, UserPlus, Users, Wrench, X } from "lucide-react";
+import { ArrowLeft, ArrowLeftRight, ArrowRight, Bell, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, File as FileIcon, FileSpreadsheet, FileUp, FileText, GitBranch, Eraser, GripVertical, HardHat, Image as ImageIcon, ImagePlus, Import as ImportIcon, Info, Link2, ListChecks, Lock, Mail, MapPin, Minus, MoreHorizontal, NotebookPen, Pencil, Phone, Plus, Printer, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, Unlock, User, UserPlus, Users, Wrench, X } from "lucide-react";
 import type { DecoupledEditor, ModelWriter } from "ckeditor5";
 import type { RichText as ExcelRichText } from "exceljs";
 import type { CellInput as AutoTableCellInput, RowInput as AutoTableRowInput } from "jspdf-autotable";
@@ -41,6 +42,9 @@ import { RoomNameCombobox } from "@/components/room-name-combobox";
 import { contrastTextForFill } from "@/lib/user-profile-format";
 import { normalizeBoardFinishes, normalizeHardwareRows, normalizeMmOptions, normalizeSheetSizes, type HardwareTypeRow } from "@/lib/production-hardware";
 import { GlassSwitch, modalCloseButtonClass } from "@/components/settings-ui";
+import { ContactCardPopup } from "@/components/contact-card-popup";
+import { UploadDropZone } from "@/components/upload-drop-zone";
+import { contactInitials } from "@/lib/contact-card";
 import {
   cutlistTemplateBoardLabel,
   cutlistTemplateDrawerLabel,
@@ -1142,8 +1146,59 @@ function formatSignedCurrencyValue(value: number): string {
 // Lacquer, ...) with one or more sheet-size options, each carrying its own price. Used by both
 // salesRoomSheetAnalysis (the Sales Items room-pricing engine) and computeCutlistSelectionPricing
 // (the Product Compare tool) so the two never drift into two different costing models.
+// `price`: per sheet, with that size's margin (Company Settings → Products) — what the quote charges.
 type SheetPriceOption = { sheetSize: string; width: number; height: number; price: number };
-type ProductSheetPricing = { defaultOption: SheetPriceOption | null; options: SheetPriceOption[] };
+// What else a product costs on a quote, each with its margin already on: edge tape per metre (Grain / Melteca
+// products) and lacquer per m² (Lacquer products — `lacquerSides` faces), both charged on the project's Product-table
+// figures (see salesRoomSheetAnalysis), and misc charges per sheet used.
+type ProductSheetPricing = {
+  defaultOption: SheetPriceOption | null;
+  options: SheetPriceOption[];
+  edgeTapePerMeter: number;
+  lacquerPerSqm: number;
+  lacquerSides: LacquerSides;
+  miscCharges: Array<{ name: string; perSheet: number }>;
+};
+
+// The clashed edges (a clash value's 1L / 2L / 1S / 2S, each side) of a cutlist row across its whole quantity, in mm —
+// read the same way as the Production edge-tape maths (rawEdgeTapeByBoardKey).
+function clashedEdgeMm(
+  row: { height?: unknown; width?: unknown; depth?: unknown; clashing?: unknown; clashLeft?: unknown; clashRight?: unknown },
+  qty: number,
+): number {
+  const dimOf = (value: unknown) => {
+    const match = String(value ?? "").replace(/,/g, ".").match(/-?\d+(?:\.\d+)?/);
+    const n = match ? Number.parseFloat(match[0]) : 0;
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  };
+  const dims = [dimOf(row.height), dimOf(row.width), dimOf(row.depth)].filter((v) => v > 0);
+  if (!dims.length || qty <= 0) return 0;
+  const longDim = Math.max(...dims);
+  const shortDim = Math.min(...dims);
+  const split = splitClashing(String(row.clashing || ""));
+  let mm = 0;
+  for (const raw of [String(row.clashLeft || split.left || ""), String(row.clashRight || split.right || "")]) {
+    const token = raw.trim().toUpperCase();
+    if (!["1L", "2L", "1S", "2S"].includes(token)) continue;
+    mm += (token.endsWith("L") ? longDim : shortDim) * (token.startsWith("2") ? 2 : 1) * qty;
+  }
+  return mm;
+}
+
+// A cutlist row's lacquered area across its whole quantity, in mm² — the Design tab's Lacquer column formula.
+function lacqueredRowMm2(
+  row: { height?: unknown; width?: unknown; depth?: unknown; clashing?: unknown; clashLeft?: unknown; clashRight?: unknown },
+  qty: number,
+  sides: LacquerSides,
+): number {
+  const split = splitClashing(String(row.clashing || ""));
+  return lacquerPieceAreaMm2({
+    dims: [row.height, row.width, row.depth],
+    clash: `${row.clashLeft || split.left || ""} ${row.clashRight || split.right || ""}`,
+    quantity: qty,
+    sides,
+  });
+}
 
 // Picks which sheet size a piece of the given dimensions would actually be cut from for a given
 // product: the product's default sheet if the piece fits on it, else the first configured option
@@ -1175,79 +1230,142 @@ function chooseSheetOptionForPiece(
 }
 
 type PackablePiece = { width: number; height: number; grainLocked: boolean };
+// Where layoutPiecesOntoSheets put a piece: its corner (x, y) inside the sheet's margin, its size there (w × h — the
+// piece's own width / height, swapped when `rotated`), and whether it was bigger than the usable sheet (`oversize` —
+// cut down to fit, so it still counts as taking a sheet).
+type SheetPackPlacement<T> = { piece: T; x: number; y: number; w: number; h: number; rotated: boolean; oversize: boolean };
 
-// How many sheets of the given size a set of same-product pieces requires: a simple deterministic
-// bin-pack (largest area first, left-to-right row fill, wrap to a new row/sheet on overflow,
-// kerf-width gaps between pieces) — not optimal, but consistent and fast enough to run live as
-// staff tick checkboxes. A non-grain-locked piece may be rotated 90° when that lets it fit or
-// packs the sheet's long axis more efficiently. Mirrors the nesting preview's own layout logic
-// closely enough for pricing purposes without needing to track actual placements — only the
-// resulting sheet count is ever used for cost.
-function packPiecesOntoSheets(pieces: PackablePiece[], sheetWidth: number, sheetHeight: number, margin: number, kerf: number): number {
+// Lays a set of same-product pieces out on sheets of the given size, packing them as tight as it can: biggest pieces
+// first (longest edge, then area — the same order as Production's Nesting), each one going into whichever gap it
+// fits best on ANY sheet already started (the tightest fit; on a tie, the earliest sheet) — so small pieces fill in
+// the space left on sheet 1, 2, … before a new sheet is started. A gap is any free rectangle of the sheet (MaxRects —
+// the same as Production's Nesting on a CNC); each piece keeps a kerf-wide gap from the next. A non-grain-locked piece
+// may be turned 90° when that fits better. How many sheets it takes is what the quote charges for
+// (packPiecesOntoSheets); the placements themselves are what the Design tab's Nesting view draws.
+function layoutPiecesOntoSheets<T extends PackablePiece>(
+  pieces: T[],
+  sheetWidth: number,
+  sheetHeight: number,
+  margin: number,
+  kerf: number,
+): { innerW: number; innerH: number; sheets: SheetPackPlacement<T>[][] } {
   const innerW = Math.max(80, sheetWidth - margin * 2);
   const innerH = Math.max(80, sheetHeight - margin * 2);
-  const sorted = [...pieces].sort((a, b) => b.width * b.height - a.width * a.height);
+  const EPS = 0.001;
+  const sorted = [...pieces].sort((a, b) => {
+    const longest = Math.max(b.width, b.height) - Math.max(a.width, a.height);
+    if (Math.abs(longest) > EPS) return longest;
+    const area = b.width * b.height - a.width * a.height;
+    if (Math.abs(area) > EPS) return area;
+    return Math.min(b.width, b.height) - Math.min(a.width, a.height);
+  });
 
-  let sheetsUsed = 0;
-  let piecesOnCurrentSheet = 0;
-  let x = 0;
-  let y = 0;
-  let rowMax = 0;
+  type FreeRect = { x: number; y: number; w: number; h: number };
+  type Orientation = { w: number; h: number; rotated: boolean };
+  type Score = [number, number, number, number];
+  type PackSheet = { placements: SheetPackPlacement<T>[]; free: FreeRect[] };
+  const sheets: PackSheet[] = [];
+  const newSheet = (): PackSheet => ({ placements: [], free: [{ x: 0, y: 0, w: innerW, h: innerH }] });
 
-  const startNewSheet = () => {
-    if (piecesOnCurrentSheet > 0) sheetsUsed += 1;
-    piecesOnCurrentSheet = 0;
-    x = 0;
-    y = 0;
-    rowMax = 0;
+  // Lower is better, compared in order: the shorter leftover side, the leftover area, then top-most, left-most.
+  const better = (a: Score, b: Score) => {
+    for (let i = 0; i < a.length; i += 1) {
+      if (a[i] < b[i] - EPS) return true;
+      if (a[i] > b[i] + EPS) return false;
+    }
+    return false;
+  };
+
+  // The ways round a piece may go. One bigger than the sheet whichever way round is cut down to the sheet (the way
+  // that overflows least) — it still takes up a sheet.
+  const orientationsFor = (piece: T): { options: Orientation[]; oversize: boolean } => {
+    const normal: Orientation = { w: piece.width, h: piece.height, rotated: false };
+    const turned: Orientation = { w: piece.height, h: piece.width, rotated: true };
+    const allowed = piece.grainLocked ? [normal] : [normal, turned];
+    const fitting = allowed.filter((o) => o.w <= innerW + EPS && o.h <= innerH + EPS);
+    if (fitting.length) return { options: fitting, oversize: false };
+    const overflow = (o: Orientation) => Math.max(0, o.w - innerW) + Math.max(0, o.h - innerH);
+    const least = allowed.reduce((best, o) => (overflow(o) < overflow(best) ? o : best));
+    return { options: [{ w: Math.min(least.w, innerW), h: Math.min(least.h, innerH), rotated: least.rotated }], oversize: true };
+  };
+
+  const bestOnSheet = (sheet: PackSheet, options: Orientation[]) => {
+    let best: { x: number; y: number; o: Orientation; score: Score } | null = null;
+    for (const rect of sheet.free) {
+      for (const o of options) {
+        if (o.w > rect.w + EPS || o.h > rect.h + EPS) continue;
+        const leftoverW = rect.w - o.w;
+        const leftoverH = rect.h - o.h;
+        const score: Score = [Math.min(leftoverW, leftoverH), leftoverW * leftoverH, rect.y, rect.x];
+        if (!best || better(score, best.score)) best = { x: rect.x, y: rect.y, o, score };
+      }
+    }
+    return best;
+  };
+
+  // Takes the piece's footprint (plus its kerf) out of every free rectangle it overlaps, keeping what's left of each
+  // (up to four pieces), then drops slivers and any rectangle lying wholly inside another.
+  const occupy = (sheet: PackSheet, x: number, y: number, w: number, h: number) => {
+    const used: FreeRect = { x, y, w: w + kerf, h: h + kerf };
+    const next: FreeRect[] = [];
+    for (const rect of sheet.free) {
+      const overlaps = rect.x < used.x + used.w - EPS && rect.x + rect.w > used.x + EPS && rect.y < used.y + used.h - EPS && rect.y + rect.h > used.y + EPS;
+      if (!overlaps) {
+        next.push(rect);
+        continue;
+      }
+      if (rect.x < used.x) next.push({ x: rect.x, y: rect.y, w: used.x - rect.x, h: rect.h });
+      if (rect.x + rect.w > used.x + used.w) next.push({ x: used.x + used.w, y: rect.y, w: rect.x + rect.w - (used.x + used.w), h: rect.h });
+      if (rect.y < used.y) next.push({ x: rect.x, y: rect.y, w: rect.w, h: used.y - rect.y });
+      if (rect.y + rect.h > used.y + used.h) next.push({ x: rect.x, y: used.y + used.h, w: rect.w, h: rect.y + rect.h - (used.y + used.h) });
+    }
+    const kept = next.filter((rect) => rect.w > EPS && rect.h > EPS);
+    const contains = (outer: FreeRect, inner: FreeRect) =>
+      inner.x >= outer.x - EPS && inner.y >= outer.y - EPS && inner.x + inner.w <= outer.x + outer.w + EPS && inner.y + inner.h <= outer.y + outer.h + EPS;
+    // (Two identical rectangles: the first one stays.)
+    sheet.free = kept.filter((rect, i) => !kept.some((other, j) => j !== i && contains(other, rect) && (!contains(rect, other) || j < i)));
   };
 
   for (const piece of sorted) {
-    let w = piece.width;
-    let h = piece.height;
-
-    if (!piece.grainLocked) {
-      const canNormalFit = w <= innerW && h <= innerH;
-      const canRotatedFit = h <= innerW && w <= innerH;
-      const preferLongOnSheetLong = innerW >= innerH ? h > w : w > h;
-
-      if (canRotatedFit && (!canNormalFit || preferLongOnSheetLong)) {
-        const nextW = h;
-        const nextH = w;
-        w = nextW;
-        h = nextH;
-      } else if (!canNormalFit && !canRotatedFit) {
-        const normalOverflow = Math.max(0, w - innerW) + Math.max(0, h - innerH);
-        const rotatedOverflow = Math.max(0, h - innerW) + Math.max(0, w - innerH);
-        if (rotatedOverflow < normalOverflow) {
-          const nextW = h;
-          const nextH = w;
-          w = nextW;
-          h = nextH;
-        }
-      }
+    const { options, oversize } = orientationsFor(piece);
+    let target: { sheet: PackSheet; x: number; y: number; o: Orientation; score: Score } | null = null;
+    for (const sheet of sheets) {
+      const choice = bestOnSheet(sheet, options);
+      if (choice && (!target || better(choice.score, target.score))) target = { sheet, ...choice };
     }
-
-    w = Math.min(w, innerW);
-    h = Math.min(h, innerH);
-
-    if (x > 0 && x + w > innerW) {
-      x = 0;
-      y += rowMax + kerf;
-      rowMax = 0;
+    if (!target) {
+      const sheet = newSheet();
+      sheets.push(sheet);
+      const choice = bestOnSheet(sheet, options);
+      if (!choice) continue; // (can't happen — every option fits an empty sheet)
+      target = { sheet, ...choice };
     }
-    if (y > 0 && y + h > innerH) {
-      startNewSheet();
-    }
-
-    piecesOnCurrentSheet += 1;
-    x += w + kerf;
-    rowMax = Math.max(rowMax, h);
+    target.sheet.placements.push({ piece, x: target.x, y: target.y, w: target.o.w, h: target.o.h, rotated: target.o.rotated, oversize });
+    occupy(target.sheet, target.x, target.y, target.o.w, target.o.h);
   }
 
-  if (piecesOnCurrentSheet > 0) sheetsUsed += 1;
-  return sheetsUsed;
+  return { innerW, innerH, sheets: sheets.map((sheet) => sheet.placements) };
 }
+
+// How many sheets of the given size a set of same-product pieces requires (see layoutPiecesOntoSheets).
+function packPiecesOntoSheets(pieces: PackablePiece[], sheetWidth: number, sheetHeight: number, margin: number, kerf: number): number {
+  return layoutPiecesOntoSheets(pieces, sheetWidth, sheetHeight, margin, kerf).sheets.length;
+}
+
+// One room's sheets of a product (one sheet size) as the quote's sheet count laid them out — for the Design tab's
+// Total Sheets → Nesting view. Placements are inside the margin ((sheetWidth − innerW) / 2 each side).
+type SalesNestingPlacement = { id: string; row: CutlistRow; x: number; y: number; w: number; h: number; rotated: boolean; oversize: boolean };
+type SalesNestingLayout = {
+  room: string;
+  productName: string;
+  sheetSize: string;
+  sheetWidth: number;
+  sheetHeight: number;
+  innerW: number;
+  innerH: number;
+  grain: boolean;
+  sheets: SalesNestingPlacement[][];
+};
 
 // Clusters Quote Extras (any object carrying an optional SpecsRowGroup-style `category`) under one
 // heading per distinct category, for both quote-extras sidebars below. Matched case-insensitively
@@ -1329,6 +1447,38 @@ function mobileActionsButtonBounceStyle(
   if (sheet.isOpen) return mobileActionsBubbleStyle(id);
   if (sheet.isClosing) return { animation: "glass-bubble-pop-away 180ms ease-in both" };
   return undefined;
+}
+
+// A Design-tab extra charge's quantity: typed freely, saved when it loses focus (or on Enter) — an empty or 0 entry
+// goes back to the saved value rather than saving it.
+function ExtraChargeQuantityInput({ value, disabled, onCommit }: { value: number; disabled?: boolean; onCommit: (next: number) => void }) {
+  // (Keyed on its saved value where it's used, so a newly saved value starts it afresh.)
+  const [draft, setDraft] = useState(String(value));
+  const commit = () => {
+    const next = Number.parseFloat(draft.replace(/[^\d.]/g, ""));
+    if (!Number.isFinite(next) || next <= 0) {
+      setDraft(String(value));
+      return;
+    }
+    const rounded = Math.round(next * 100) / 100;
+    setDraft(String(rounded));
+    if (rounded !== value) onCommit(rounded);
+  };
+  return (
+    <input
+      inputMode="decimal"
+      value={draft}
+      disabled={disabled}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") e.currentTarget.blur();
+      }}
+      className="h-7 w-full rounded-[8px] border px-2 text-center text-[12px] font-semibold tabular-nums outline-none transition focus:border-[var(--brand)] disabled:opacity-60"
+      style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+      aria-label="Quantity"
+    />
+  );
 }
 
 // Compact on/off switch for the Quote Extras lists (both the Sales tab overview and the Quote
@@ -1838,26 +1988,26 @@ function MarqueeText({ text, className }: { text: string; className?: string }) 
   );
 }
 
-// A room's price broken into WHY it's that price — see salesRoomCostBreakdownByName's own comment
-// for how these are computed. "Misc" has no dedicated data source anywhere in this app today (no
-// per-room addon-cost concept exists) — it's the leftover once Items+Sheets are subtracted from
-// the room's own displayed total, which is $0 unless something else affecting that total is added
-// later, but keeping the section means this stays correct automatically if that ever changes,
-// rather than silently omitting a real cost.
+// A room's price broken into WHY it's that price — its Items and its Sheets — see salesRoomCostBreakdownByName's
+// own comment for how these are computed.
 type RoomCostBreakdownItemLine = { name: string; categoryName: string; categoryColor: string; quantity: number; unitPrice: number; lineTotal: number };
+// A product's sheets of one size in the room. Its total takes in everything else that product costs there — its misc
+// charges per sheet and its edge tape / lacquer (Company Settings → Products) — so there's no separate Misc list.
+// (sheetSize "" / count 0: that product's edge tape / lacquer in a room it has no sheets in.)
 type RoomCostBreakdownSheetLine = { productName: string; sheetSize: string; count: number; unitPrice: number; lineTotal: number };
 type RoomCostBreakdown = {
   items: RoomCostBreakdownItemLine[];
   itemsTotal: number;
   sheets: RoomCostBreakdownSheetLine[];
   sheetsTotal: number;
-  miscTotal: number;
+  // Anything else in the room's total (normally nothing).
+  otherTotal: number;
   roomTotal: number;
 };
 
 // Shared by the single-room cost breakdown popup and each expanded room inside the whole-project
-// cost breakdown popup — one table layout for both, so they can never drift apart. Three sections
-// (Items/Sheets/Misc), each its own small table with its own subtotal, then the room's own grand
+// cost breakdown popup — one table layout for both, so they can never drift apart. Two sections
+// (Items/Sheets), each its own small table with its own subtotal, then the room's own grand
 // total underneath.
 function RoomCostBreakdownTables({ breakdown }: { breakdown: RoomCostBreakdown }) {
   const cellStyle = { color: "var(--text-main)" } as const;
@@ -1900,8 +2050,8 @@ function RoomCostBreakdownTables({ breakdown }: { breakdown: RoomCostBreakdown }
                   <td className="whitespace-nowrap px-2 py-1.5" style={cellStyle}>
                     {line.categoryName ? (
                       <span
-                        className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold text-white"
-                        style={{ backgroundColor: line.categoryColor }}
+                        className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold"
+                        style={{ backgroundColor: line.categoryColor, color: contrastTextForFill(line.categoryColor) }}
                       >
                         {line.categoryName}
                       </span>
@@ -1944,8 +2094,8 @@ function RoomCostBreakdownTables({ breakdown }: { breakdown: RoomCostBreakdown }
               {breakdown.sheets.map((line, index) => (
                 <tr key={`${line.productName}_${line.sheetSize}_${index}`} className="border-b last:border-none" style={borderStyle}>
                   <td className="px-2 py-1.5" style={cellStyle}>{line.productName}</td>
-                  <td className="px-2 py-1.5" style={cellStyle}>{line.sheetSize}</td>
-                  <td className="px-2 py-1.5 text-center" style={cellStyle}>{line.count}</td>
+                  <td className="px-2 py-1.5" style={cellStyle}>{line.sheetSize || "—"}</td>
+                  <td className="px-2 py-1.5 text-center" style={cellStyle}>{line.count > 0 ? line.count : "—"}</td>
                   <td className="px-2 py-1.5 text-right font-semibold" style={cellStyle}>{formatCurrencyValue(line.lineTotal)}</td>
                 </tr>
               ))}
@@ -1954,22 +2104,9 @@ function RoomCostBreakdownTables({ breakdown }: { breakdown: RoomCostBreakdown }
         )}
         <p className="mt-1 text-right text-[12px] font-bold" style={cellStyle}>Sheets Total: {formatCurrencyValue(breakdown.sheetsTotal)}</p>
       </div>
-      <div>
-        {sectionHeaderBar("Misc")}
-        {breakdown.miscTotal <= 0 ? (
-          <p className="text-[12px] italic" style={sectionLabelStyle}>No additional costs for this room.</p>
-        ) : (
-          <table className="w-full text-[12px]">
-            <tbody>
-              <tr>
-                <td className="px-2 py-1.5" style={cellStyle}>Other costs</td>
-                <td className="px-2 py-1.5 text-right font-semibold" style={cellStyle}>{formatCurrencyValue(breakdown.miscTotal)}</td>
-              </tr>
-            </tbody>
-          </table>
-        )}
-        <p className="mt-1 text-right text-[12px] font-bold" style={cellStyle}>Misc Total: {formatCurrencyValue(breakdown.miscTotal)}</p>
-      </div>
+      {breakdown.otherTotal > 0 ? (
+        <p className="text-right text-[12px] font-bold" style={cellStyle}>Other costs: {formatCurrencyValue(breakdown.otherTotal)}</p>
+      ) : null}
       <div className="border-t pt-2" style={{ borderTopColor: "var(--glass-border)" }}>
         <p className="text-right text-[14px] font-bold" style={cellStyle}>Room Total: {formatCurrencyValue(breakdown.roomTotal)}</p>
       </div>
@@ -2031,7 +2168,7 @@ const ROOM_COST_BREAKDOWN_PRINT_MEDIA_CSS = `
 }
 `;
 
-// One room's Items/Sheets/Misc/Total, as plain HTML — shared by the single-room popup's own Print
+// One room's Items/Sheets/Total, as plain HTML — shared by the single-room popup's own Print
 // button and the project popup's Print button (which concatenates one of these per room). Mirrors
 // RoomCostBreakdownTables' own layout exactly (same columns, same category pill treatment) so the
 // printed page matches what's on screen instead of reading as a generic, differently-laid-out table.
@@ -2047,7 +2184,7 @@ function roomCostBreakdownRoomBlockHtml(roomName: string, breakdown: RoomCostBre
           (line) =>
             `<tr><td class="category-cell">${
               line.categoryName
-                ? `<span class="pill" style="background-color:${escapeHtml(line.categoryColor)}">${escapeHtml(line.categoryName)}</span>`
+                ? `<span class="pill" style="background-color:${escapeHtml(line.categoryColor)};color:${contrastTextForFill(line.categoryColor)}">${escapeHtml(line.categoryName)}</span>`
                 : ""
             }</td><td>${escapeHtml(line.name)}</td><td class="center">${line.quantity}</td><td class="num">${formatCurrencyValue(line.lineTotal)}</td></tr>`,
         )
@@ -2057,14 +2194,10 @@ function roomCostBreakdownRoomBlockHtml(roomName: string, breakdown: RoomCostBre
     ? `<table style="table-layout:fixed">${colgroup}<thead><tr><th>Product</th><th>Sheet Size</th><th class="center">Qty</th><th class="num">Total</th></tr></thead><tbody>${breakdown.sheets
         .map(
           (line) =>
-            `<tr><td>${escapeHtml(line.productName)}</td><td>${escapeHtml(line.sheetSize)}</td><td class="center">${line.count}</td><td class="num">${formatCurrencyValue(line.lineTotal)}</td></tr>`,
+            `<tr><td>${escapeHtml(line.productName)}</td><td>${escapeHtml(line.sheetSize || "—")}</td><td class="center">${line.count > 0 ? line.count : "—"}</td><td class="num">${formatCurrencyValue(line.lineTotal)}</td></tr>`,
         )
         .join("")}</tbody></table>`
     : `<p class="empty">No sheets required for this room.</p>`;
-  const miscTable =
-    breakdown.miscTotal > 0
-      ? `<table><tbody><tr><td>Other costs</td><td class="num">${formatCurrencyValue(breakdown.miscTotal)}</td></tr></tbody></table>`
-      : `<p class="empty">No additional costs for this room.</p>`;
   return `
     <div class="room-block">
       <h1>${escapeHtml(roomName)}</h1>
@@ -2074,9 +2207,7 @@ function roomCostBreakdownRoomBlockHtml(roomName: string, breakdown: RoomCostBre
       ${sectionBar("Sheets")}
       ${sheetsTable}
       <p class="subtotal">Sheets Total: ${formatCurrencyValue(breakdown.sheetsTotal)}</p>
-      ${sectionBar("Misc")}
-      ${miscTable}
-      <p class="subtotal">Misc Total: ${formatCurrencyValue(breakdown.miscTotal)}</p>
+      ${breakdown.otherTotal > 0 ? `<p class="subtotal">Other costs: ${formatCurrencyValue(breakdown.otherTotal)}</p>` : ""}
       <p class="room-total">Room Total: ${formatCurrencyValue(breakdown.roomTotal)}</p>
     </div>
   `;
@@ -7247,6 +7378,19 @@ export default function ProjectDetailsPage() {
     undefined,
     sheetCountModalOriginElRef,
   );
+  // Total Sheets → a product's "Nesting": a full-screen view of how that product's sheets (one size) were laid out.
+  const [salesNestingTarget, setSalesNestingTarget] = useState<{ productName: string; sheetSize: string } | null>(null);
+  useEffect(() => {
+    if (!salesNestingTarget) return;
+    // Esc closes just this view (back to the sheet count list), not the list under it too.
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      setSalesNestingTarget(null);
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [salesNestingTarget]);
   const [isCostByRoomModalOpen, setIsCostByRoomModalOpen] = useState(false);
   const [costByRoomModalOrigin, setCostByRoomModalOrigin] = useState<GlassModalOrigin>(null);
   const costByRoomModalPanelRef = useRef<HTMLDivElement | null>(null);
@@ -9655,7 +9799,6 @@ export default function ProjectDetailsPage() {
       .map((row) => {
         const item = row as Record<string, unknown>;
         const name = String(item.name ?? "").trim();
-        const showInSales = Boolean(item.showInSales ?? true);
         const sheetPriceRows = Array.isArray(item.sheetPrices) ? (item.sheetPrices as Record<string, unknown>[]) : [];
         const parsedOptions = sheetPriceRows
           .map((sheetRow) => {
@@ -9667,7 +9810,8 @@ export default function ProjectDetailsPage() {
               sheetSize,
               width: Math.max(a, b),
               height: Math.min(a, b),
-              price: toNum(sheetRow?.pricePerSheet),
+              // With this size's margin on — what the quote charges per sheet.
+              price: toNum(sheetRow?.pricePerSheet) * (1 + toNum(sheetRow?.marginPercent) / 100),
               canonicalKey: canonicalSizeKey(sheetSize),
             };
           })
@@ -9681,15 +9825,25 @@ export default function ProjectDetailsPage() {
         // Legacy docs only ever had `grain: boolean` — a previously-ticked row keeps reading as
         // "grain" once opened under the company-settings Type dropdown instead of reverting blank.
         const type = String(item.type ?? "").trim() || (Boolean(item.grain ?? item.isGrain ?? false) ? "grain" : "");
+        // Edge tape (Grain / Melteca) or lacquer (Lacquer) and the misc charges, each with its margin on.
+        const withMargin = (price: unknown, marginPercent: unknown) => toNum(price) * (1 + toNum(marginPercent) / 100);
+        const lacquerSides = lacquerSidesForProductType(type);
+        const miscCharges = (Array.isArray(item.miscCharges) ? (item.miscCharges as Array<Record<string, unknown>>) : [])
+          .map((charge) => ({ name: String(charge?.name ?? "").trim() || "Misc charge", perSheet: withMargin(charge?.price, charge?.marginPercent) }))
+          .filter((charge) => charge.perSheet > 0);
         return {
           name,
-          showInSales,
           grain: type === "grain",
           options: parsedOptions,
           defaultOption,
+          edgeTapePerMeter: type === "grain" || type === "melteca" ? withMargin(item.edgeTapePrice, item.edgeTapeMarginPercent) : 0,
+          lacquerPerSqm: lacquerSides > 0 ? withMargin(item.lacquerSqmPrice, item.lacquerMarginPercent) : 0,
+          lacquerSides,
+          miscCharges,
         };
       })
-      .filter((row) => row.name && row.showInSales);
+      // Every product shows in Sales (Company Settings no longer has a per-product "In sales" switch).
+      .filter((row) => row.name);
   }, [companyDoc, sheetSizeOptions]);
   // Company Wrapped's lacquer-SQM calc needs a company-wide "how do we lacquer" setting: whichever
   // Sales Product row(s) are typed Lacquer (1/2 side) determines the sidedness applied to every
@@ -9734,6 +9888,32 @@ export default function ProjectDetailsPage() {
     }));
     return merged;
   }, [companySalesProductNames, rawSalesProductRows]);
+  // Company Settings → Sales → Extra charges, each on or off for this project's quote: what staff have set in the
+  // Design tab's Extra Charges card (the sales payload's extraChargeSelections, by charge id), else the charge's own
+  // Default — so a Default charge is on for every project until it's turned off there.
+  const salesExtraChargeRows = useMemo(() => {
+    const raw = (companyDoc as Record<string, unknown> | null)?.salesExtraCharges;
+    const picks = ((salesPayload as Record<string, unknown>).extraChargeSelections ?? {}) as Record<string, unknown>;
+    // How many of each (the Design tab's Qty) — 1 until set.
+    const quantities = ((salesPayload as Record<string, unknown>).extraChargeQuantities ?? {}) as Record<string, unknown>;
+    return (Array.isArray(raw) ? raw : [])
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+      .map((item) => {
+        const id = String(item.id || "").trim();
+        const price = parseCurrencyNumber(item.price);
+        const savedQuantity = Number(quantities[id]);
+        const quantity = Number.isFinite(savedQuantity) && savedQuantity > 0 ? savedQuantity : 1;
+        return {
+          id,
+          name: String(item.name || "").trim(),
+          price,
+          quantity,
+          lineTotal: price * quantity,
+          selected: typeof picks[id] === "boolean" ? Boolean(picks[id]) : Boolean(item.isDefault),
+        };
+      })
+      .filter((row) => row.id && row.name);
+  }, [companyDoc, salesPayload]);
   const salesQuoteProjectText = useMemo(() => {
     const raw = (salesPayload as Record<string, unknown>).quoteProjectText;
     if (!raw || typeof raw !== "object") return {} as Record<string, string>;
@@ -13892,20 +14072,198 @@ export default function ProjectDetailsPage() {
           height: option.height,
           price: option.price,
         })),
+        edgeTapePerMeter: row.edgeTapePerMeter,
+        lacquerPerSqm: row.lacquerPerSqm,
+        lacquerSides: row.lacquerSides,
+        miscCharges: row.miscCharges,
       });
     }
     return map;
   }, [companySalesProductConfigs]);
+  // How the quote's sheet count packs (salesRoomSheetAnalysis): the same as the company's default CNC (Company
+  // Settings → Machining — the CNC marked default, else the first CNC) — its kerf, margin and smallest part size,
+  // packed the way Production's Nesting packs for a CNC. No CNC set up: the old company-wide nesting settings.
   const nestingSheetSettings = useMemo(() => {
     const rawRoot = (companyDoc ?? {}) as Record<string, unknown>;
     const rawNested = ((rawRoot.nestingSettings ?? rawRoot.nesting) ?? {}) as Record<string, unknown>;
+    const cncMachines = (Array.isArray(rawRoot.machines) ? rawRoot.machines : []).filter(
+      (row): row is Record<string, unknown> => Boolean(row) && typeof row === "object" && toStr((row as Record<string, unknown>).type) === "cnc",
+    );
+    const cnc = cncMachines.find((row) => Boolean(row.isDefaultForType)) ?? cncMachines[0] ?? null;
+    const cutting = (cnc ? (cnc.nestingSettings ?? {}) : rawNested) as Record<string, unknown>;
     return {
       sheetHeight: Math.max(100, toNum(rawNested.sheetHeight ?? rawNested.h ?? 2440) || 2440),
       sheetWidth: Math.max(100, toNum(rawNested.sheetWidth ?? rawNested.w ?? 1220) || 1220),
-      kerf: Math.max(0, toNum(rawNested.kerf ?? 5) || 5),
-      margin: Math.max(0, toNum(rawNested.margin ?? 10) || 10),
+      kerf: Math.max(0, toNum(cutting.kerf ?? 5) || 5),
+      margin: Math.max(0, toNum(cutting.margin ?? 10) || 10),
+      minPieceSize: Math.max(0, toNum(cutting.minPieceSize ?? 100) || 100),
+      machineName: cnc ? toStr(cnc.name, "CNC") : "",
     };
   }, [companyDoc]);
+  // (The edge bander's settings and the Initial Measure's per-product Edge Tape / Lacquer figures live up here, ahead
+  // of salesRoomSheetAnalysis, which prices each product's edge tape / lacquer from exactly those figures.)
+  const edgebandingSettings = useMemo(() => {
+    // Reads the default Edge Bander MACHINE's own settings now, not the old single global field —
+    // see productionMachines' own comment. Falls back to that legacy field when no Edge Bander
+    // machine is configured yet, same reasoning as nestingSettings' own fallback above.
+    const rawRoot = (companyDoc as Record<string, unknown> | null) ?? {};
+    const rawMachines = Array.isArray(rawRoot.machines) ? (rawRoot.machines as Record<string, unknown>[]) : [];
+    const defaultEdgeBander =
+      rawMachines.find((m) => m && typeof m === "object" && m.type === "edge-bander" && m.isDefaultForType) ??
+      rawMachines.find((m) => m && typeof m === "object" && m.type === "edge-bander");
+    return normalizeEdgebandingSettings(defaultEdgeBander ? defaultEdgeBander.edgebandingSettings : rawRoot.edgebandingSettings);
+  }, [companyDoc]);
+  // Initial Measure rows exploded into the real pieces that get cut, the same way as
+  // productionCutPieces above. Shared by the Design tab's per-product Edge Tape and Lacquer
+  // figures below so both always count exactly the same pieces.
+  const initialMeasureCutPieces = useMemo(() => {
+    const rowsForEdgeTape: CutlistRow[] = [];
+    for (const row of initialCutlistRows) {
+      if (isCabinetryPartType(row.partType)) {
+        for (const piece of buildCabinetryDerivedPieces(row)) {
+          const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
+          if (qty <= 0) continue;
+          rowsForEdgeTape.push({ ...row, height: String(piece.height || ""), width: String(piece.width || ""), depth: String(piece.depth || ""), quantity: String(qty), clashLeft: String(piece.clashLeft || ""), clashRight: String(piece.clashRight || "") });
+        }
+        continue;
+      }
+      if (isDrawerPartType(row.partType)) {
+        for (const piece of buildDrawerDerivedPieces(row)) {
+          const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
+          if (qty <= 0) continue;
+          rowsForEdgeTape.push({ ...row, height: String(piece.height || ""), width: String(piece.width || ""), depth: String(piece.depth || ""), quantity: String(qty), clashLeft: String(piece.clashLeft || ""), clashRight: String(piece.clashRight || "") });
+        }
+        continue;
+      }
+      if (isDoorPartType(row.partType) && normalizeDoorModeValue(row.doorMode) !== "manual") {
+        for (const piece of buildConfiguredDoorDerivedPieces(row)) {
+          const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
+          if (qty <= 0) continue;
+          rowsForEdgeTape.push({ ...row, height: String(piece.height || ""), width: String(piece.width || ""), depth: String(piece.depth || ""), quantity: String(qty), clashLeft: String(piece.clashLeft || ""), clashRight: String(piece.clashRight || ""), grainValue: String(piece.grainValue || row.grainValue || "") });
+        }
+        continue;
+      }
+      rowsForEdgeTape.push(row);
+    }
+    return rowsForEdgeTape;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialCutlistRows, isCabinetryPartType, isDrawerPartType, isDoorPartType, buildCabinetryDerivedPieces, buildDrawerDerivedPieces, buildConfiguredDoorDerivedPieces]);
+  // Linear metres of edge tape per Sales Product, shown next to each product in the Sales tab's
+  // own "Product" checklist. Same excess-per-end/minimum-order-rules/round-to-nearest formula as
+  // requiredEdgetapeByBoardRowId just above, and the same raw-mm-then-apply-settings two-step
+  // shape — but computed from INITIAL MEASURE rows (not Production's), bucketed by Sales Product
+  // name directly (row.board on an Initial Measure row already IS the product name — no Board
+  // Settings row indirection to go through, unlike Production). Kept as its own duplicated
+  // calculation rather than a shared extraction, same reasoning as productionSheetCountsByRoom
+  // above: this is a second, independent caller of the same idea, not a reshaping of the existing,
+  // already-reviewed Production computation.
+  const initialMeasureRawEdgeTapeByProduct = useMemo(() => {
+    const mmByProduct: Record<string, number> = {};
+    const tapeRunCountByProduct: Record<string, number> = {};
+    const parseDim = (value: unknown): number => {
+      const match = String(value ?? "").replace(/,/g, ".").match(/-?\d+(?:\.\d+)?/);
+      if (!match) return 0;
+      const n = Number.parseFloat(match[0]);
+      return Number.isFinite(n) && n > 0 ? n : 0;
+    };
+    const tapeFromToken = (tokenRaw: string, longDim: number, shortDim: number, qty: number): { mm: number; runs: number } => {
+      const token = String(tokenRaw || "").trim().toUpperCase();
+      if (!token || !["1L", "2L", "1S", "2S"].includes(token)) return { mm: 0, runs: 0 };
+      const isLong = token.endsWith("L");
+      const edgeCount = token.startsWith("2") ? 2 : 1;
+      const dim = isLong ? longDim : shortDim;
+      if (!Number.isFinite(dim) || dim <= 0 || qty <= 0) return { mm: 0, runs: 0 };
+      return { mm: dim * qty * edgeCount, runs: qty * edgeCount };
+    };
+
+    for (const row of initialMeasureCutPieces) {
+      const productName = String(row.board || "").trim().toLowerCase();
+      if (!productName) continue;
+      const qty = Math.max(0, Number.parseInt(String(row.quantity || "0"), 10) || 0);
+      if (qty <= 0) continue;
+      const dims = [parseDim(row.height), parseDim(row.width), parseDim(row.depth)].filter((v) => v > 0);
+      if (!dims.length) continue;
+      const longDim = Math.max(...dims);
+      const shortDim = Math.min(...dims);
+      const split = splitClashing(String(row.clashing || ""));
+      const left = String(row.clashLeft || split.left || "").trim().toUpperCase();
+      const right = String(row.clashRight || split.right || "").trim().toUpperCase();
+      const leftTape = tapeFromToken(left, longDim, shortDim, qty);
+      const rightTape = tapeFromToken(right, longDim, shortDim, qty);
+      const rowMm = leftTape.mm + rightTape.mm;
+      if (rowMm <= 0) continue;
+      mmByProduct[productName] = (mmByProduct[productName] ?? 0) + rowMm;
+      tapeRunCountByProduct[productName] = (tapeRunCountByProduct[productName] ?? 0) + leftTape.runs + rightTape.runs;
+    }
+    return { mmByProduct, tapeRunCountByProduct };
+  }, [initialMeasureCutPieces]);
+  const initialMeasureEdgeTapeMetersByProductName = useMemo(() => {
+    const out: Record<string, string> = {};
+    const excessPerEndMm = Math.max(0, Number.parseFloat(String(edgebandingSettings.excessPerEndMm || "").replace(/,/g, ".")) || 0);
+    const rules = [...(edgebandingSettings.rules || [])]
+      .map((rule) => ({
+        upToMeters: Math.max(0, Number.parseFloat(String(rule.upToMeters || "").replace(/,/g, ".")) || 0),
+        addMeters: Math.max(0, Number.parseFloat(String(rule.addMeters || "").replace(/,/g, ".")) || 0),
+      }))
+      .filter((rule) => rule.upToMeters > 0 && rule.addMeters >= 0)
+      .sort((a, b) => a.upToMeters - b.upToMeters);
+    const roundEnabled = Boolean(edgebandingSettings.roundEnabled);
+    const roundDirection: "up" | "down" = edgebandingSettings.roundDirection === "down" ? "down" : "up";
+    const roundNearestMeters = Math.max(0, Number.parseFloat(String(edgebandingSettings.roundNearestMeters || "").replace(/,/g, ".")) || 0);
+    const formatMeters = (meters: number) => {
+      const rounded = Math.round(Math.max(0, meters) * 100) / 100;
+      return rounded % 1 === 0 ? String(Math.round(rounded)) : String(rounded.toFixed(2).replace(/\.?0+$/, ""));
+    };
+    const { mmByProduct, tapeRunCountByProduct } = initialMeasureRawEdgeTapeByProduct;
+    for (const productName of Object.keys(mmByProduct)) {
+      const rawMm = mmByProduct[productName] ?? 0;
+      const runs = tapeRunCountByProduct[productName] ?? 0;
+      const baseMeters = (rawMm + excessPerEndMm * 2 * runs) / 1000;
+      let extraMeters = 0;
+      if (baseMeters > 0) {
+        const matchRule = rules.find((rule) => baseMeters <= rule.upToMeters);
+        if (matchRule) extraMeters = matchRule.addMeters;
+      }
+      let finalMeters = baseMeters + extraMeters;
+      if (finalMeters > 0 && roundEnabled && roundNearestMeters > 0) {
+        const ratio = finalMeters / roundNearestMeters;
+        finalMeters = (roundDirection === "down" ? Math.floor(ratio) : Math.ceil(ratio)) * roundNearestMeters;
+      }
+      out[productName] = finalMeters > 0 ? formatMeters(finalMeters) : "";
+    }
+    return out;
+  }, [
+    initialMeasureRawEdgeTapeByProduct,
+    edgebandingSettings.excessPerEndMm,
+    edgebandingSettings.rules,
+    edgebandingSettings.roundEnabled,
+    edgebandingSettings.roundDirection,
+    edgebandingSettings.roundNearestMeters,
+  ]);
+  // Square metres of lacquer per Sales Product, shown beside Edge Tape in the Design tab's Product
+  // container. Shared formula in lib/lacquer-area.ts (faces × 1 or 2, plus each clashed edge × 20mm),
+  // over exactly the pieces the Edge Tape figure counts. Only products typed "Lacquer (1 side)" or
+  // "Lacquer (2 side)" in Company Settings get a figure. The clash reads the same way as the edge
+  // tape's: a piece's own left/right fields first, else the row's combined "1L 2S" value.
+  const initialMeasureLacquerSqmByProductName = useMemo(() => {
+    const mm2ByProduct: Record<string, number> = {};
+    for (const row of initialMeasureCutPieces) {
+      const productName = String(row.board || "").trim().toLowerCase();
+      const sides = salesProductLacquerSidesByName[productName] ?? 0;
+      if (!productName || sides <= 0) continue;
+      const split = splitClashing(String(row.clashing || ""));
+      const mm2 = lacquerPieceAreaMm2({
+        dims: [row.height, row.width, row.depth],
+        clash: `${row.clashLeft || split.left} ${row.clashRight || split.right}`,
+        quantity: row.quantity,
+        sides,
+      });
+      if (mm2 > 0) mm2ByProduct[productName] = (mm2ByProduct[productName] ?? 0) + mm2;
+    }
+    const out: Record<string, string> = {};
+    for (const [productName, mm2] of Object.entries(mm2ByProduct)) out[productName] = formatLacquerSqm(mm2ToM2(mm2));
+    return out;
+  }, [initialMeasureCutPieces, salesProductLacquerSidesByName]);
   const salesRoomSheetAnalysis = useMemo(() => {
     type FlatPiece = {
       id: string;
@@ -14045,15 +14403,18 @@ export default function ProjectDetailsPage() {
         usedLargerThanDefault: requiresLargerThanDefault,
       };
       bucket.usedLargerThanDefault = bucket.usedLargerThanDefault || requiresLargerThanDefault;
+      // A part smaller than the machine's smallest part size takes up that much room (as Production's Nesting packs it).
+      const packW = Math.max(settings.minPieceSize, width);
+      const packH = Math.max(settings.minPieceSize, height);
       for (let i = 0; i < qty; i += 1) {
         bucket.pieces.push({
           id: `${row.id}_${i + 1}`,
           row,
           room,
           productName,
-          width: Math.max(30, width),
-          height: Math.max(24, height),
-          area: Math.max(1, width * height),
+          width: packW,
+          height: packH,
+          area: Math.max(1, packW * packH),
           grainLocked,
         });
       }
@@ -14074,14 +14435,50 @@ export default function ProjectDetailsPage() {
       string,
       { room: string; productName: string; sheetSize: string; sheetCount: number }
     >();
+    // Sheets used per room and product (all sizes), for its misc charges per sheet.
+    const sheetsByRoomProduct = new Map<string, { room: string; productName: string; sheetCount: number }>();
+    // How each bucket's pieces were laid out on its sheets (the Total Sheets → Nesting view).
+    const sheetLayouts: SalesNestingLayout[] = [];
     for (const bucket of piecesByRoomAndSheet.values()) {
       const sheetWidth = Math.max(200, bucket.option.width);
       const sheetHeight = Math.max(150, bucket.option.height);
       const kerf = Math.max(0, settings.kerf);
 
-      const sheetsRequired = packPiecesOntoSheets(bucket.pieces, sheetWidth, sheetHeight, settings.margin, kerf);
-      const bucketCost = sheetsRequired * bucket.option.price;
+      const layout = layoutPiecesOntoSheets(bucket.pieces, sheetWidth, sheetHeight, settings.margin, kerf);
+      const sheetsRequired = layout.sheets.length;
+      if (sheetsRequired > 0) {
+        sheetLayouts.push({
+          room: bucket.room,
+          productName: bucket.productName,
+          sheetSize: bucket.option.sheetSize,
+          sheetWidth,
+          sheetHeight,
+          innerW: layout.innerW,
+          innerH: layout.innerH,
+          grain: Boolean(initialMeasureBoardGrainMap[bucket.productName.trim().toLowerCase()]),
+          sheets: layout.sheets.map((sheet) =>
+            sheet.map((placement) => ({
+              id: placement.piece.id,
+              row: placement.piece.row,
+              x: placement.x,
+              y: placement.y,
+              w: placement.w,
+              h: placement.h,
+              rotated: placement.rotated,
+              oversize: placement.oversize,
+            })),
+          ),
+        });
+      }
+      const miscPerSheet = (productMap.get(bucket.productName.toLowerCase())?.miscCharges ?? []).reduce((sum, charge) => sum + charge.perSheet, 0);
+      const bucketCost = sheetsRequired * (bucket.option.price + miscPerSheet);
       priceByRoom[bucket.room.toLowerCase()] = (priceByRoom[bucket.room.toLowerCase()] ?? 0) + bucketCost;
+      if (sheetsRequired > 0) {
+        const roomProductKey = `${bucket.room.toLowerCase()}__${bucket.productName.toLowerCase()}`;
+        const used = sheetsByRoomProduct.get(roomProductKey) ?? { room: bucket.room, productName: bucket.productName, sheetCount: 0 };
+        used.sheetCount += sheetsRequired;
+        sheetsByRoomProduct.set(roomProductKey, used);
+      }
       if (sheetsRequired > 0) {
         const sheetCountKey = `${bucket.productName}__${bucket.option.sheetSize}`;
         const existingSheetCount = sheetCountsByProductMap.get(sheetCountKey);
@@ -14118,6 +14515,75 @@ export default function ProjectDetailsPage() {
       }
     }
 
+    // What each room's products cost beyond their sheets: edge tape / lacquer, and misc charges per sheet used.
+    type RoomProductExtras = {
+      room: string;
+      productName: string;
+      edgeTapeMeters: number;
+      edgeTapeCost: number;
+      lacquerSqm: number;
+      lacquerCost: number;
+      sheetCount: number;
+      miscLines: Array<{ name: string; total: number }>;
+    };
+    const extrasByRoomProduct = new Map<string, RoomProductExtras>();
+    const extrasFor = (room: string, productName: string): RoomProductExtras => {
+      const key = `${room.toLowerCase()}__${productName.toLowerCase()}`;
+      const existing = extrasByRoomProduct.get(key);
+      if (existing) return existing;
+      const next: RoomProductExtras = { room, productName, edgeTapeMeters: 0, edgeTapeCost: 0, lacquerSqm: 0, lacquerCost: 0, sheetCount: 0, miscLines: [] };
+      extrasByRoomProduct.set(key, next);
+      return next;
+    };
+    // Edge tape and lacquer: each product's figures in the Product table (Design tab — its Edge Tape metres, with the
+    // edge bander's allowances, and its Lacquer m²) × its price per metre / m², shared out between the rooms by how
+    // much of that product's edging / sprayed area is in each. Pieces not in a room aren't charged (like their sheets).
+    const finishShare = new Map<string, { room: string; productName: string; edgeMm: number; lacquerMm2: number }>();
+    const finishTotals = new Map<string, { edgeMm: number; lacquerMm2: number }>();
+    for (const row of initialMeasureCutPieces) {
+      const productName = String(row.board || "").trim();
+      const product = productMap.get(productName.toLowerCase());
+      if (!product || (product.edgeTapePerMeter <= 0 && product.lacquerPerSqm <= 0)) continue;
+      const qty = Math.max(0, Number.parseInt(String(row.quantity || "0"), 10) || 0);
+      if (qty <= 0) continue;
+      const edgeMm = product.edgeTapePerMeter > 0 ? clashedEdgeMm(row, qty) : 0;
+      const lacquerMm2 = product.lacquerPerSqm > 0 ? lacqueredRowMm2(row, qty, product.lacquerSides) : 0;
+      if (edgeMm <= 0 && lacquerMm2 <= 0) continue;
+      const total = finishTotals.get(productName.toLowerCase()) ?? { edgeMm: 0, lacquerMm2: 0 };
+      total.edgeMm += edgeMm;
+      total.lacquerMm2 += lacquerMm2;
+      finishTotals.set(productName.toLowerCase(), total);
+      const room = String(row.room || "").trim();
+      if (!room) continue;
+      const shareKey = `${room.toLowerCase()}__${productName.toLowerCase()}`;
+      const share = finishShare.get(shareKey) ?? { room, productName, edgeMm: 0, lacquerMm2: 0 };
+      share.edgeMm += edgeMm;
+      share.lacquerMm2 += lacquerMm2;
+      finishShare.set(shareKey, share);
+    }
+    for (const share of finishShare.values()) {
+      const key = share.productName.toLowerCase();
+      const product = productMap.get(key);
+      const total = finishTotals.get(key);
+      if (!product || !total) continue;
+      const productMeters = toNum(initialMeasureEdgeTapeMetersByProductName[key]);
+      const productSqm = toNum(initialMeasureLacquerSqmByProductName[key]);
+      const extras = extrasFor(share.room, share.productName);
+      extras.edgeTapeMeters = total.edgeMm > 0 ? productMeters * (share.edgeMm / total.edgeMm) : 0;
+      extras.edgeTapeCost = extras.edgeTapeMeters * product.edgeTapePerMeter;
+      extras.lacquerSqm = total.lacquerMm2 > 0 ? productSqm * (share.lacquerMm2 / total.lacquerMm2) : 0;
+      extras.lacquerCost = extras.lacquerSqm * product.lacquerPerSqm;
+      priceByRoom[share.room.toLowerCase()] = (priceByRoom[share.room.toLowerCase()] ?? 0) + extras.edgeTapeCost + extras.lacquerCost;
+    }
+    for (const used of sheetsByRoomProduct.values()) {
+      const product = productMap.get(used.productName.toLowerCase());
+      if (!product?.miscCharges.length) continue;
+      const extras = extrasFor(used.room, used.productName);
+      extras.sheetCount = used.sheetCount;
+      // (Already in the room's price, with its sheets above.)
+      extras.miscLines = product.miscCharges.map((charge) => ({ name: charge.name, total: charge.perSheet * used.sheetCount }));
+    }
+
     const out: Record<string, string> = {};
     for (const row of salesRoomRows) {
       const roomName = String(row.name || "").trim();
@@ -14138,6 +14604,8 @@ export default function ProjectDetailsPage() {
         largerSheetWarningEntries.length > 0 && largerSheetWarningEntries.every((entry) => entry.addedToQuote),
       sheetCountsByProduct,
       sheetCountsByRoomAndProduct,
+      extrasByRoomAndProduct: Array.from(extrasByRoomProduct.values()),
+      sheetLayouts,
     };
     // buildCabinetryDerivedPieces/buildDrawerDerivedPieces/isCabinetryPartType/isDrawerPartType are
     // plain functions redefined every render (not wrapped in useCallback), so listing them here
@@ -14152,6 +14620,9 @@ export default function ProjectDetailsPage() {
     nestingSheetSettings,
     salesRoomRows,
     initialMeasureBoardGrainMap,
+    initialMeasureCutPieces,
+    initialMeasureEdgeTapeMetersByProductName,
+    initialMeasureLacquerSqmByProductName,
   ]);
   const salesRoomPricingByName = salesRoomSheetAnalysis.pricingByRoom;
   // The Product Compare tool's own calculator — same bucketing+packing engine as
@@ -14181,7 +14652,16 @@ export default function ProjectDetailsPage() {
           for (const piece of buildCabinetryDerivedPieces(row)) {
             const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
             if (qty <= 0) continue;
-            expandedRows.push({ ...row, height: String(piece.height || ""), width: String(piece.width || ""), depth: String(piece.depth || ""), quantity: String(qty) });
+            expandedRows.push({
+              ...row,
+              height: String(piece.height || ""),
+              width: String(piece.width || ""),
+              depth: String(piece.depth || ""),
+              quantity: String(qty),
+              clashing: joinClashing(String(piece.clashLeft || ""), String(piece.clashRight || "")),
+              clashLeft: String(piece.clashLeft || ""),
+              clashRight: String(piece.clashRight || ""),
+            });
           }
           continue;
         }
@@ -14189,16 +14669,27 @@ export default function ProjectDetailsPage() {
           for (const piece of buildDrawerDerivedPieces(row)) {
             const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
             if (qty <= 0) continue;
-            expandedRows.push({ ...row, height: String(piece.height || ""), width: String(piece.width || ""), depth: String(piece.depth || ""), quantity: String(qty) });
+            expandedRows.push({
+              ...row,
+              height: String(piece.height || ""),
+              width: String(piece.width || ""),
+              depth: String(piece.depth || ""),
+              quantity: String(qty),
+              clashing: joinClashing(String(piece.clashLeft || ""), String(piece.clashRight || "")),
+              clashLeft: String(piece.clashLeft || ""),
+              clashRight: String(piece.clashRight || ""),
+            });
           }
           continue;
         }
         expandedRows.push(row);
       }
 
-      type SelectionBucket = { room: string; option: SheetPriceOption; pieces: SelectionPiece[] };
+      type SelectionBucket = { room: string; option: SheetPriceOption; miscPerSheet: number; pieces: SelectionPiece[] };
       const buckets = new Map<string, SelectionBucket>();
       let totalAreaM2 = 0;
+      // Edge tape / lacquer on these pieces, per room (priced per row — they don't depend on the packing).
+      const finishCostByRoom: Record<string, number> = {};
 
       for (const row of expandedRows) {
         // Unassigned rows still price as their own "Project Cutlist" bucket — mirrors the label
@@ -14234,8 +14725,18 @@ export default function ProjectDetailsPage() {
         const pieceHeight = Math.max(24, height);
         totalAreaM2 += (pieceWidth * pieceHeight * qty) / 1_000_000;
 
+        const finishCost =
+          (product.edgeTapePerMeter > 0 ? (clashedEdgeMm(row, qty) / 1000) * product.edgeTapePerMeter : 0) +
+          (product.lacquerPerSqm > 0 ? mm2ToM2(lacqueredRowMm2(row, qty, product.lacquerSides)) * product.lacquerPerSqm : 0);
+        if (finishCost > 0) finishCostByRoom[room] = (finishCostByRoom[room] ?? 0) + finishCost;
+
         const key = `${room.toLowerCase()}__${productName.toLowerCase()}__${chosenOption.sheetSize}`;
-        const bucket = buckets.get(key) ?? { room, option: chosenOption, pieces: [] };
+        const bucket = buckets.get(key) ?? {
+          room,
+          option: chosenOption,
+          miscPerSheet: product.miscCharges.reduce((sum, charge) => sum + charge.perSheet, 0),
+          pieces: [],
+        };
         for (let i = 0; i < qty; i += 1) {
           bucket.pieces.push({ room, width: pieceWidth, height: pieceHeight, grainLocked });
         }
@@ -14252,9 +14753,13 @@ export default function ProjectDetailsPage() {
           nestingSheetSettings.margin,
           nestingSheetSettings.kerf,
         );
-        const cost = sheetsRequired * bucket.option.price;
+        const cost = sheetsRequired * (bucket.option.price + bucket.miscPerSheet);
         totalCost += cost;
         byRoom[bucket.room] = (byRoom[bucket.room] ?? 0) + cost;
+      }
+      for (const [room, cost] of Object.entries(finishCostByRoom)) {
+        totalCost += cost;
+        byRoom[room] = (byRoom[room] ?? 0) + cost;
       }
 
       return { totalCost, totalAreaM2, byRoom };
@@ -14782,17 +15287,33 @@ export default function ProjectDetailsPage() {
   // lowercased room name, built from the SAME data sources displayedSalesRoomRows itself already
   // reads (salesRoomPricingByName for Sheets, salesItemsRoomPricingByName for Items via
   // effectiveSalesItemsRooms), so the popup's own subtotals can never disagree with the room's
-  // displayed total. Misc is whatever's left after Items+Sheets are subtracted from that total —
-  // see RoomCostBreakdownTables' own comment on why that's $0 today but still worth keeping.
+  // displayed total. A product's misc charges and edge tape / lacquer are in its Sheets lines; anything
+  // still left over (normally nothing) shows as "Other costs".
   const salesRoomCostBreakdownByName = useMemo(() => {
     const map: Record<string, RoomCostBreakdown> = {};
+    // An item's pill, as Design › Items groups it: its sub-category (the item library's — a room keeps only its
+    // category) in that sub-category's colour (else its category's); one with no sub-category, its category in the
+    // category's colour. An item whose category Company Settings no longer has keeps what the room saved.
+    const categoryById = new Map(companyItemCategories.map((category) => [String(category.id || "").trim().toLowerCase(), category]));
+    const itemPill = (item: SalesRoomItemSelection) => {
+      const category = categoryById.get(String(item.categoryId || "").trim().toLowerCase());
+      if (!category) return { name: item.categoryName, color: item.categoryColor };
+      const libraryId = salesItemsLibraryIdOf(item.itemId).toLowerCase();
+      const libraryItem =
+        category.items.find((libraryRow) => libraryRow.id.toLowerCase() === libraryId) ??
+        category.items.find((libraryRow) => libraryRow.name.trim().toLowerCase() === item.name.trim().toLowerCase());
+      const subcategory = libraryItem?.subcategory.trim() ?? "";
+      if (subcategory) return { name: subcategory, color: category.subcategoryColors[subcategory.toLowerCase()] || category.color || item.categoryColor };
+      return { name: category.name || item.categoryName, color: category.color || item.categoryColor };
+    };
     for (const row of displayedSalesRoomRows) {
       const key = String(row.name || "").trim().toLowerCase();
       const itemsRoom = effectiveSalesItemsRooms.find((r) => String(r.name || "").trim().toLowerCase() === key);
       const items: RoomCostBreakdownItemLine[] = (itemsRoom?.items ?? []).map((item) => {
         const unitPrice = parseCurrencyNumber(item.price);
         const quantity = Math.max(0, Number(item.quantity) || 0);
-        return { name: item.name, categoryName: item.categoryName, categoryColor: item.categoryColor, quantity, unitPrice, lineTotal: unitPrice * quantity };
+        const pill = itemPill(item);
+        return { name: item.name, categoryName: pill.name, categoryColor: pill.color, quantity, unitPrice, lineTotal: unitPrice * quantity };
       });
       const itemsTotal = items.reduce((sum, line) => sum + line.lineTotal, 0);
 
@@ -14803,15 +15324,35 @@ export default function ProjectDetailsPage() {
           const unitPrice = productPricing?.options.find((option) => option.sheetSize === entry.sheetSize)?.price ?? 0;
           return { productName: entry.productName, sheetSize: entry.sheetSize, count: entry.sheetCount, unitPrice, lineTotal: unitPrice * entry.sheetCount };
         });
+      // Each product's misc charges and edge tape / lacquer (already in the room's total — see salesRoomSheetAnalysis)
+      // go into its sheet lines here, shared between its sizes by how many sheets each is.
+      for (const entry of salesRoomSheetAnalysis.extrasByRoomAndProduct) {
+        if (entry.room.trim().toLowerCase() !== key) continue;
+        const extra = entry.edgeTapeCost + entry.lacquerCost + entry.miscLines.reduce((sum, line) => sum + line.total, 0);
+        if (extra <= 0) continue;
+        const productKey = entry.productName.trim().toLowerCase();
+        const lines = sheets.filter((line) => line.productName.trim().toLowerCase() === productKey);
+        const lineSheets = lines.reduce((sum, line) => sum + line.count, 0);
+        if (lines.length === 0 || lineSheets <= 0) {
+          sheets.push({ productName: entry.productName, sheetSize: "", count: 0, unitPrice: 0, lineTotal: extra });
+          continue;
+        }
+        for (const line of lines) {
+          line.lineTotal += extra * (line.count / lineSheets);
+          line.unitPrice = line.lineTotal / line.count;
+        }
+      }
       const sheetsTotal = sheets.reduce((sum, line) => sum + line.lineTotal, 0);
 
       const roomTotal = parseCurrencyNumber(row.totalPrice);
-      const miscTotal = Math.max(0, roomTotal - itemsTotal - sheetsTotal);
+      // Rounding aside, anything left over once Items and Sheets are taken away.
+      const leftover = roomTotal - itemsTotal - sheetsTotal;
+      const otherTotal = leftover > 0.005 ? leftover : 0;
 
-      map[key] = { items, itemsTotal, sheets, sheetsTotal, miscTotal, roomTotal };
+      map[key] = { items, itemsTotal, sheets, sheetsTotal, otherTotal, roomTotal };
     }
     return map;
-  }, [displayedSalesRoomRows, effectiveSalesItemsRooms, salesRoomSheetAnalysis, productSheetPricingByName]);
+  }, [displayedSalesRoomRows, effectiveSalesItemsRooms, salesRoomSheetAnalysis, productSheetPricingByName, companyItemCategories]);
   // Every named row-group in the project's own LIVE Quote grid directly IS a toggleable "quote
   // extra" now — same on/off-a-whole-section idea as the Specifications sheet's own "Sections"
   // checklist, just surfaced here as a sidebar instead (see displayedQuoteGridExtras' own comment
@@ -14856,9 +15397,14 @@ export default function ProjectDetailsPage() {
     () => quoteCustomPriceRows.reduce((sum, row) => sum + parseCurrencyNumber(row.price), 0),
     [quoteCustomPriceRows],
   );
+  // The extra charges turned on for this project (Design tab → Extra Charges).
+  const displayedSalesExtraChargesTotal = useMemo(
+    () => salesExtraChargeRows.reduce((sum, row) => sum + (row.selected ? row.lineTotal : 0), 0),
+    [salesExtraChargeRows],
+  );
   const displayedSalesQuoteGrandTotal = useMemo(
-    () => displayedSalesRoomsTotal + displayedSalesQuoteExtrasTotal + displayedSalesQuoteCustomPriceTotal,
-    [displayedSalesQuoteExtrasTotal, displayedSalesQuoteCustomPriceTotal, displayedSalesRoomsTotal],
+    () => displayedSalesRoomsTotal + displayedSalesQuoteExtrasTotal + displayedSalesQuoteCustomPriceTotal + displayedSalesExtraChargesTotal,
+    [displayedSalesQuoteExtrasTotal, displayedSalesQuoteCustomPriceTotal, displayedSalesRoomsTotal, displayedSalesExtraChargesTotal],
   );
   const displayedSalesQuoteDiscountTotal = useMemo(() => {
     const rawTiers = Array.isArray((companyDoc as Record<string, unknown> | null)?.salesQuoteDiscountTiers)
@@ -14885,10 +15431,26 @@ export default function ProjectDetailsPage() {
     () => (companyDoc as Record<string, unknown> | null)?.salesAllowReopenForEditing !== false,
     [companyDoc],
   );
-  const displayedSalesQuoteFinalTotal = useMemo(() => {
+  // Company Settings → Sales → GST: when on, its percent goes on top of the quote's total (after any discount) —
+  // so the Project Total, the quote's {{quote_total}} and a sent quote's total all include it. 0 when off.
+  const salesGstPercent = useMemo(() => {
+    const doc = companyDoc as Record<string, unknown> | null;
+    if (!doc?.salesGstEnabled) return 0;
+    const percent = Number(doc.salesGstPercent);
+    return Number.isFinite(percent) && percent > 0 ? percent : 0;
+  }, [companyDoc]);
+  const salesGstLabel = `GST (${Number(salesGstPercent.toFixed(2))}%)`;
+  // Under the Design tab's Project Cost and room Total: whether those totals include GST.
+  const salesGstTotalNote = salesGstPercent > 0 ? "incl GST" : "excl GST";
+  const displayedSalesQuoteTotalBeforeGst = useMemo(() => {
     if (!salesMinusOffQuoteTotalEnabled) return displayedSalesQuoteGrandTotal;
     return Math.max(0, displayedSalesQuoteGrandTotal - parseCurrencyNumber(displayedSalesQuoteDiscountTotal));
   }, [displayedSalesQuoteDiscountTotal, displayedSalesQuoteGrandTotal, salesMinusOffQuoteTotalEnabled]);
+  const displayedSalesQuoteGstTotal = useMemo(
+    () => Math.round(displayedSalesQuoteTotalBeforeGst * salesGstPercent) / 100,
+    [displayedSalesQuoteTotalBeforeGst, salesGstPercent],
+  );
+  const displayedSalesQuoteFinalTotal = displayedSalesQuoteTotalBeforeGst + displayedSalesQuoteGstTotal;
   // Mirrored into a ref so the Quote grid's own outdated-detection (leaveQuoteGridWindow / the
   // staleness effect further down) can read its LATEST value at the moment it actually needs it —
   // without listing it as a reactive effect dependency, which would re-run that staleness check
@@ -18929,6 +19491,10 @@ export default function ProjectDetailsPage() {
     ? contactCategories.find((c) => c.name === projectContact.category)?.color || ""
     : "";
   const clientCardAmbientColor = contactCategoryColor || CONTACT_NEUTRAL_COLOR;
+  // The client's contact card, opened from their initials badge as a pop-up over the project (not the Contacts page).
+  const [isContactCardOpen, setIsContactCardOpen] = useState(false);
+  const [contactCardOrigin, setContactCardOrigin] = useState<GlassModalOrigin>(null);
+  const contactCardOriginElRef = useRef<HTMLElement | null>(null);
   const hasProjectClientInfo = Boolean(
     String(project?.customer || "").trim() || String(project?.clientEmail || "").trim() || String(project?.clientPhone || "").trim(),
   );
@@ -18946,6 +19512,8 @@ export default function ProjectDetailsPage() {
     createContactModalOriginElRef,
   );
   const [createContactForm, setCreateContactForm] = useState({ name: "", email: "", phone: "", address: "", category: "", notes: "" });
+  const createContactCategoryColor =
+    (createContactForm.category ? contactCategories.find((c) => c.name === createContactForm.category)?.color : "") || CONTACT_NEUTRAL_COLOR;
   const openCreateContactModal = (event: ReactMouseEvent<HTMLElement>) => {
     if (!project) return;
     createContactModalOriginElRef.current = event.currentTarget;
@@ -19871,6 +20439,40 @@ export default function ProjectDetailsPage() {
     setIsSavingSalesRooms(true);
     await persistSalesPatch(nextSales);
     setIsSavingSalesRooms(false);
+  };
+
+  const onToggleSalesExtraCharge = async (chargeId: string, selected: boolean) => {
+    if (!project || isSavingSalesRooms || !salesAccess.edit) return;
+    const picks = ((salesPayload as Record<string, unknown>).extraChargeSelections ?? {}) as Record<string, unknown>;
+    const nextSales = {
+      ...salesPayload,
+      extraChargeSelections: { ...picks, [chargeId]: selected },
+    } as Record<string, unknown>;
+    // Same optimistic update as onToggleSalesRoomIncluded above — see its own comment.
+    setProject((prevProject) =>
+      prevProject
+        ? { ...prevProject, sales: nextSales as never, projectSettings: { ...(prevProject.projectSettings ?? {}), sales: nextSales } }
+        : prevProject,
+    );
+    setIsSavingSalesRooms(true);
+    await persistSalesPatch(nextSales);
+    setIsSavingSalesRooms(false);
+  };
+
+  const onSetSalesExtraChargeQuantity = async (chargeId: string, quantity: number) => {
+    if (!project || !salesAccess.edit) return;
+    const quantities = ((salesPayload as Record<string, unknown>).extraChargeQuantities ?? {}) as Record<string, unknown>;
+    const nextSales = {
+      ...salesPayload,
+      extraChargeQuantities: { ...quantities, [chargeId]: quantity },
+    } as Record<string, unknown>;
+    // Same optimistic update as onToggleSalesRoomIncluded above — see its own comment.
+    setProject((prevProject) =>
+      prevProject
+        ? { ...prevProject, sales: nextSales as never, projectSettings: { ...(prevProject.projectSettings ?? {}), sales: nextSales } }
+        : prevProject,
+    );
+    await persistSalesPatch(nextSales);
   };
 
   const onSaveQuoteCustomPriceRows = async (nextRows: { id: string; name: string; price: string }[]) => {
@@ -28158,17 +28760,6 @@ export default function ProjectDetailsPage() {
     }
     return rows.sort((a, b) => a.productName.localeCompare(b.productName) || a.sheetSize.localeCompare(b.sheetSize));
   }, [productionForm.boardTypes, requiredSheetCountByBoardRowId, boardBaseLabelFromRow]);
-  const edgebandingSettings = useMemo(() => {
-    // Reads the default Edge Bander MACHINE's own settings now, not the old single global field —
-    // see productionMachines' own comment. Falls back to that legacy field when no Edge Bander
-    // machine is configured yet, same reasoning as nestingSettings' own fallback above.
-    const rawRoot = (companyDoc as Record<string, unknown> | null) ?? {};
-    const rawMachines = Array.isArray(rawRoot.machines) ? (rawRoot.machines as Record<string, unknown>[]) : [];
-    const defaultEdgeBander =
-      rawMachines.find((m) => m && typeof m === "object" && m.type === "edge-bander" && m.isDefaultForType) ??
-      rawMachines.find((m) => m && typeof m === "object" && m.type === "edge-bander");
-    return normalizeEdgebandingSettings(defaultEdgeBander ? defaultEdgeBander.edgebandingSettings : rawRoot.edgebandingSettings);
-  }, [companyDoc]);
   const effectiveProjectGapAllowances = useMemo(() => {
     const projectSettings = ((project?.projectSettings ?? {}) as Record<string, unknown>) || {};
     return normalizeGapAllowancesSettings(
@@ -28355,157 +28946,6 @@ export default function ProjectDetailsPage() {
     rawEdgeTapeByBoardKey,
     resolveBoardKey,
   ]);
-  // Initial Measure rows exploded into the real pieces that get cut, the same way as
-  // productionCutPieces above. Shared by the Design tab's per-product Edge Tape and Lacquer
-  // figures below so both always count exactly the same pieces.
-  const initialMeasureCutPieces = useMemo(() => {
-    const rowsForEdgeTape: CutlistRow[] = [];
-    for (const row of initialCutlistRows) {
-      if (isCabinetryPartType(row.partType)) {
-        for (const piece of buildCabinetryDerivedPieces(row)) {
-          const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
-          if (qty <= 0) continue;
-          rowsForEdgeTape.push({ ...row, height: String(piece.height || ""), width: String(piece.width || ""), depth: String(piece.depth || ""), quantity: String(qty), clashLeft: String(piece.clashLeft || ""), clashRight: String(piece.clashRight || "") });
-        }
-        continue;
-      }
-      if (isDrawerPartType(row.partType)) {
-        for (const piece of buildDrawerDerivedPieces(row)) {
-          const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
-          if (qty <= 0) continue;
-          rowsForEdgeTape.push({ ...row, height: String(piece.height || ""), width: String(piece.width || ""), depth: String(piece.depth || ""), quantity: String(qty), clashLeft: String(piece.clashLeft || ""), clashRight: String(piece.clashRight || "") });
-        }
-        continue;
-      }
-      if (isDoorPartType(row.partType) && normalizeDoorModeValue(row.doorMode) !== "manual") {
-        for (const piece of buildConfiguredDoorDerivedPieces(row)) {
-          const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
-          if (qty <= 0) continue;
-          rowsForEdgeTape.push({ ...row, height: String(piece.height || ""), width: String(piece.width || ""), depth: String(piece.depth || ""), quantity: String(qty), clashLeft: String(piece.clashLeft || ""), clashRight: String(piece.clashRight || ""), grainValue: String(piece.grainValue || row.grainValue || "") });
-        }
-        continue;
-      }
-      rowsForEdgeTape.push(row);
-    }
-    return rowsForEdgeTape;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialCutlistRows, isCabinetryPartType, isDrawerPartType, isDoorPartType, buildCabinetryDerivedPieces, buildDrawerDerivedPieces, buildConfiguredDoorDerivedPieces]);
-  // Linear metres of edge tape per Sales Product, shown next to each product in the Sales tab's
-  // own "Product" checklist. Same excess-per-end/minimum-order-rules/round-to-nearest formula as
-  // requiredEdgetapeByBoardRowId just above, and the same raw-mm-then-apply-settings two-step
-  // shape — but computed from INITIAL MEASURE rows (not Production's), bucketed by Sales Product
-  // name directly (row.board on an Initial Measure row already IS the product name — no Board
-  // Settings row indirection to go through, unlike Production). Kept as its own duplicated
-  // calculation rather than a shared extraction, same reasoning as productionSheetCountsByRoom
-  // above: this is a second, independent caller of the same idea, not a reshaping of the existing,
-  // already-reviewed Production computation.
-  const initialMeasureRawEdgeTapeByProduct = useMemo(() => {
-    const mmByProduct: Record<string, number> = {};
-    const tapeRunCountByProduct: Record<string, number> = {};
-    const parseDim = (value: unknown): number => {
-      const match = String(value ?? "").replace(/,/g, ".").match(/-?\d+(?:\.\d+)?/);
-      if (!match) return 0;
-      const n = Number.parseFloat(match[0]);
-      return Number.isFinite(n) && n > 0 ? n : 0;
-    };
-    const tapeFromToken = (tokenRaw: string, longDim: number, shortDim: number, qty: number): { mm: number; runs: number } => {
-      const token = String(tokenRaw || "").trim().toUpperCase();
-      if (!token || !["1L", "2L", "1S", "2S"].includes(token)) return { mm: 0, runs: 0 };
-      const isLong = token.endsWith("L");
-      const edgeCount = token.startsWith("2") ? 2 : 1;
-      const dim = isLong ? longDim : shortDim;
-      if (!Number.isFinite(dim) || dim <= 0 || qty <= 0) return { mm: 0, runs: 0 };
-      return { mm: dim * qty * edgeCount, runs: qty * edgeCount };
-    };
-
-    for (const row of initialMeasureCutPieces) {
-      const productName = String(row.board || "").trim().toLowerCase();
-      if (!productName) continue;
-      const qty = Math.max(0, Number.parseInt(String(row.quantity || "0"), 10) || 0);
-      if (qty <= 0) continue;
-      const dims = [parseDim(row.height), parseDim(row.width), parseDim(row.depth)].filter((v) => v > 0);
-      if (!dims.length) continue;
-      const longDim = Math.max(...dims);
-      const shortDim = Math.min(...dims);
-      const split = splitClashing(String(row.clashing || ""));
-      const left = String(row.clashLeft || split.left || "").trim().toUpperCase();
-      const right = String(row.clashRight || split.right || "").trim().toUpperCase();
-      const leftTape = tapeFromToken(left, longDim, shortDim, qty);
-      const rightTape = tapeFromToken(right, longDim, shortDim, qty);
-      const rowMm = leftTape.mm + rightTape.mm;
-      if (rowMm <= 0) continue;
-      mmByProduct[productName] = (mmByProduct[productName] ?? 0) + rowMm;
-      tapeRunCountByProduct[productName] = (tapeRunCountByProduct[productName] ?? 0) + leftTape.runs + rightTape.runs;
-    }
-    return { mmByProduct, tapeRunCountByProduct };
-  }, [initialMeasureCutPieces]);
-  const initialMeasureEdgeTapeMetersByProductName = useMemo(() => {
-    const out: Record<string, string> = {};
-    const excessPerEndMm = Math.max(0, Number.parseFloat(String(edgebandingSettings.excessPerEndMm || "").replace(/,/g, ".")) || 0);
-    const rules = [...(edgebandingSettings.rules || [])]
-      .map((rule) => ({
-        upToMeters: Math.max(0, Number.parseFloat(String(rule.upToMeters || "").replace(/,/g, ".")) || 0),
-        addMeters: Math.max(0, Number.parseFloat(String(rule.addMeters || "").replace(/,/g, ".")) || 0),
-      }))
-      .filter((rule) => rule.upToMeters > 0 && rule.addMeters >= 0)
-      .sort((a, b) => a.upToMeters - b.upToMeters);
-    const roundEnabled = Boolean(edgebandingSettings.roundEnabled);
-    const roundDirection: "up" | "down" = edgebandingSettings.roundDirection === "down" ? "down" : "up";
-    const roundNearestMeters = Math.max(0, Number.parseFloat(String(edgebandingSettings.roundNearestMeters || "").replace(/,/g, ".")) || 0);
-    const formatMeters = (meters: number) => {
-      const rounded = Math.round(Math.max(0, meters) * 100) / 100;
-      return rounded % 1 === 0 ? String(Math.round(rounded)) : String(rounded.toFixed(2).replace(/\.?0+$/, ""));
-    };
-    const { mmByProduct, tapeRunCountByProduct } = initialMeasureRawEdgeTapeByProduct;
-    for (const productName of Object.keys(mmByProduct)) {
-      const rawMm = mmByProduct[productName] ?? 0;
-      const runs = tapeRunCountByProduct[productName] ?? 0;
-      const baseMeters = (rawMm + excessPerEndMm * 2 * runs) / 1000;
-      let extraMeters = 0;
-      if (baseMeters > 0) {
-        const matchRule = rules.find((rule) => baseMeters <= rule.upToMeters);
-        if (matchRule) extraMeters = matchRule.addMeters;
-      }
-      let finalMeters = baseMeters + extraMeters;
-      if (finalMeters > 0 && roundEnabled && roundNearestMeters > 0) {
-        const ratio = finalMeters / roundNearestMeters;
-        finalMeters = (roundDirection === "down" ? Math.floor(ratio) : Math.ceil(ratio)) * roundNearestMeters;
-      }
-      out[productName] = finalMeters > 0 ? formatMeters(finalMeters) : "";
-    }
-    return out;
-  }, [
-    initialMeasureRawEdgeTapeByProduct,
-    edgebandingSettings.excessPerEndMm,
-    edgebandingSettings.rules,
-    edgebandingSettings.roundEnabled,
-    edgebandingSettings.roundDirection,
-    edgebandingSettings.roundNearestMeters,
-  ]);
-  // Square metres of lacquer per Sales Product, shown beside Edge Tape in the Design tab's Product
-  // container. Shared formula in lib/lacquer-area.ts (faces × 1 or 2, plus each clashed edge × 20mm),
-  // over exactly the pieces the Edge Tape figure counts. Only products typed "Lacquer (1 side)" or
-  // "Lacquer (2 side)" in Company Settings get a figure. The clash reads the same way as the edge
-  // tape's: a piece's own left/right fields first, else the row's combined "1L 2S" value.
-  const initialMeasureLacquerSqmByProductName = useMemo(() => {
-    const mm2ByProduct: Record<string, number> = {};
-    for (const row of initialMeasureCutPieces) {
-      const productName = String(row.board || "").trim().toLowerCase();
-      const sides = salesProductLacquerSidesByName[productName] ?? 0;
-      if (!productName || sides <= 0) continue;
-      const split = splitClashing(String(row.clashing || ""));
-      const mm2 = lacquerPieceAreaMm2({
-        dims: [row.height, row.width, row.depth],
-        clash: `${row.clashLeft || split.left} ${row.clashRight || split.right}`,
-        quantity: row.quantity,
-        sides,
-      });
-      if (mm2 > 0) mm2ByProduct[productName] = (mm2ByProduct[productName] ?? 0) + mm2;
-    }
-    const out: Record<string, string> = {};
-    for (const [productName, mm2] of Object.entries(mm2ByProduct)) out[productName] = formatLacquerSqm(mm2ToM2(mm2));
-    return out;
-  }, [initialMeasureCutPieces, salesProductLacquerSidesByName]);
   // Company Wrapped inputs — both requiredSheetCountByBoardRowId/requiredEdgetapeByBoardRowId are
   // outputs of the nesting/edgebanding simulation above (no stored per-row value to diff on save),
   // so instead of hooking a commit function, a useEffect below watches these totals for change.
@@ -29562,8 +30002,21 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               className="absolute inset-0 glass-modal-backdrop"
             />
             <div ref={addRoomPilotPanelRef} className="glass-modal-panel relative w-[min(720px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
-              <div className="glass-modal-header px-5 py-4">
+              {/* Its X in the top right corner, as the other pop-ups' (no Back button). */}
+              <div className="glass-modal-header flex items-center justify-between gap-3 px-5 py-4">
                 <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Add Room</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsAddRoomModalOpen(false);
+                    setAddRoomName("");
+                    setAddRoomError("");
+                  }}
+                  className={modalCloseButtonClass}
+                  aria-label="Close"
+                >
+                  <X size={16} />
+                </button>
               </div>
               <div className="space-y-4 px-5 py-4">
                 <div className="space-y-2">
@@ -29591,24 +30044,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   ) : null}
                 </div>
                 <div className="flex items-center justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsAddRoomModalOpen(false);
-                      setAddRoomName("");
-                      setAddRoomError("");
-                    }}
-                    className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95"
-                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
-                  >
-                    Back
-                  </button>
+                  {/* Round-ended, with the glass shine (lib/glass-shine.ts) in the brand blue. */}
                   <button
                     type="button"
                     disabled={isSavingSalesRooms}
                     onClick={() => void onConfirmAddCutlistRoom()}
-                    className="h-9 rounded-[9px] border px-4 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-55"
-                    style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                    className="glass-shine h-9 rounded-full px-5 text-[12px] font-bold text-white hover:brightness-105 disabled:opacity-55"
+                    style={glassShineStyle("var(--brand)")}
                   >
                     Add Room
                   </button>
@@ -33654,8 +34096,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   type="button"
                   aria-label="Close"
                   onClick={() => setIsPartTypeBreakdownModalOpen(false)}
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] hover:brightness-95"
-                  style={{ color: "var(--text-main)" }}
+                  className={modalCloseButtonClass}
                 >
                   <X size={16} />
                 </button>
@@ -33705,7 +34146,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             />
             <div
               ref={sheetCountModalPanelRef}
-              className="glass-modal-panel relative z-[2147483647] flex max-h-[80vh] w-[min(520px,96vw)] flex-col overflow-hidden"
+              className="glass-modal-panel relative z-[2147483647] flex max-h-[80vh] w-[min(620px,96vw)] flex-col overflow-hidden"
             >
               <div className="glass-modal-header flex items-center justify-between px-5 py-4">
                 <p className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>Sheet Count by Product Type</p>
@@ -33713,8 +34154,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   type="button"
                   aria-label="Close"
                   onClick={() => setIsSheetCountModalOpen(false)}
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] hover:brightness-95"
-                  style={{ color: "var(--text-main)" }}
+                  className={modalCloseButtonClass}
                 >
                   <X size={16} />
                 </button>
@@ -33729,6 +34169,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         <th className="px-2 py-2 text-left" style={{ color: "var(--text-main)" }}>Product</th>
                         <th className="px-2 py-2 text-left" style={{ color: "var(--text-main)" }}>Sheet Size</th>
                         <th className="px-2 py-2 text-right" style={{ color: "var(--text-main)" }}>Sheet Count</th>
+                        <th className="w-px px-2 py-2" />
                       </tr>
                     </thead>
                     <tbody>
@@ -33737,11 +34178,188 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           <td className="px-2 py-2" style={{ color: "var(--text-main)" }}>{entry.productName}</td>
                           <td className="px-2 py-2" style={{ color: "var(--text-main)" }}>{entry.sheetSize}</td>
                           <td className="px-2 py-2 text-right font-semibold" style={{ color: "var(--text-main)" }}>{entry.sheetCount}</td>
+                          <td className="px-2 py-2 text-right">
+                            <button
+                              type="button"
+                              onClick={() => setSalesNestingTarget({ productName: entry.productName, sheetSize: entry.sheetSize })}
+                              className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-[8px] border px-2.5 text-[12px] font-bold transition hover:brightness-95"
+                              style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+                              title={`How ${entry.productName}'s sheets were laid out`}
+                            >
+                              <GitBranch size={13} />
+                              Nesting
+                            </button>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 )}
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )
+      : null;
+  // Total Sheets → Nesting: one product's sheets (one size), room by room, laid out exactly as the quote's sheet count
+  // packed them (salesRoomSheetAnalysis — each room on its own sheets). Drawn like Production's Nesting sheets.
+  const salesNestingLayouts = salesNestingTarget
+    ? salesRoomSheetAnalysis.sheetLayouts
+        .filter((layout) => layout.productName === salesNestingTarget.productName && layout.sheetSize === salesNestingTarget.sheetSize)
+        .sort((a, b) => {
+          const order = (room: string) => {
+            const index = salesRoomRows.findIndex((row) => String(row.name || "").trim().toLowerCase() === room.trim().toLowerCase());
+            return index < 0 ? Number.MAX_SAFE_INTEGER : index;
+          };
+          return order(a.room) - order(b.room) || a.room.localeCompare(b.room);
+        })
+    : [];
+  const salesNestingSheetTotal = salesNestingLayouts.reduce((sum, layout) => sum + layout.sheets.length, 0);
+  const salesNestingGrainPoints: Array<[number, number]> = [
+    [8, 14], [22, 14], [36, 14], [50, 14], [64, 14], [78, 14], [92, 14],
+    [15, 34], [29, 34], [43, 34], [57, 34], [71, 34], [85, 34],
+    [8, 54], [22, 54], [36, 54], [50, 54], [64, 54], [78, 54], [92, 54],
+    [15, 74], [29, 74], [43, 74], [57, 74], [71, 74], [85, 74],
+    [8, 90], [22, 90], [36, 90], [50, 90], [64, 90], [78, 90], [92, 90],
+  ];
+  const salesNestingWindowPortal =
+    salesNestingTarget && typeof document !== "undefined"
+      ? createPortal(
+          // Above the sheet count list (Back / Esc returns to it).
+          <div data-full-screen-window="true" className="fixed inset-0 z-[2147483647] flex flex-col bg-[var(--bg-app)]">
+            <div className="glass-page-header flex h-[56px] shrink-0 items-center justify-between gap-2 border-b px-3 md:px-5" style={{ borderBottomColor: projectPalette.border }}>
+              <div className="inline-flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                <GitBranch size={14} className="shrink-0" />
+                <span>Nesting</span>
+                <span style={{ color: "var(--text-muted)" }}>|</span>
+                <span className="truncate">
+                  {salesNestingTarget.productName} · {salesNestingTarget.sheetSize}
+                </span>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <span
+                  className="hidden rounded-full px-2.5 py-1 text-[12px] font-bold sm:inline-flex"
+                  style={{ backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+                >
+                  {salesNestingSheetTotal} {salesNestingSheetTotal === 1 ? "sheet" : "sheets"}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setSalesNestingTarget(null)}
+                  className="inline-flex h-9 shrink-0 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+                  style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+                >
+                  <ArrowLeft size={14} />
+                  <span className="max-sm:sr-only">Back</span>
+                </button>
+              </div>
+            </div>
+            <div className="glass-scroll min-h-0 flex-1 overflow-y-auto p-3 md:p-5">
+              <p className="mb-3 text-[12.5px] font-medium" style={{ color: "var(--text-main)" }}>
+                {`How the quote's sheet count for ${salesNestingTarget.productName} was worked out — each room's parts on their own sheets, packed ${
+                  nestingSheetSettings.machineName ? `like your default CNC (${nestingSheetSettings.machineName})` : "like a CNC"
+                }: ${nestingSheetSettings.kerf}mm kerf, ${nestingSheetSettings.margin}mm margin, parts under ${nestingSheetSettings.minPieceSize}mm taken as ${nestingSheetSettings.minPieceSize}mm.`}
+              </p>
+              {salesNestingLayouts.length === 0 ? (
+                <p className="rounded-[12px] border px-4 py-8 text-center text-[13px] font-medium" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}>
+                  No sheets for this product.
+                </p>
+              ) : null}
+              <div className="space-y-4">
+                {salesNestingLayouts.map((layout) => {
+                  const partsCount = layout.sheets.reduce((sum, sheet) => sum + sheet.length, 0);
+                  const marginX = (layout.sheetWidth - layout.innerW) / 2;
+                  const marginY = (layout.sheetHeight - layout.innerH) / 2;
+                  return (
+                    <section key={`${layout.room}__${layout.sheetSize}`} className="overflow-hidden rounded-[12px] border" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}>
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2" style={{ borderBottomColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>
+                        <p className="min-w-0 truncate text-[13px] font-bold" style={{ color: "var(--text-main)" }}>{layout.room}</p>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="rounded-full px-2 py-[1px] text-[11px] font-bold" style={{ backgroundColor: isDarkMode ? "rgba(255,255,255,0.12)" : "#DEE6F3", color: isDarkMode ? "#f1f1f1" : "#45658A" }}>
+                            {layout.sheetWidth}x{layout.sheetHeight}
+                          </span>
+                          <span className="rounded-full px-2 py-[1px] text-[11px] font-bold" style={{ backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}>
+                            {layout.sheets.length} {layout.sheets.length === 1 ? "sheet" : "sheets"}
+                          </span>
+                          <span className="text-[11px] font-bold" style={{ color: "var(--text-main)" }}>{formatPartCount(partsCount)}</span>
+                        </div>
+                      </div>
+                      <div className="grid gap-3 p-3 [grid-template-columns:repeat(auto-fill,minmax(min(100%,340px),1fr))]">
+                        {layout.sheets.map((sheet, sheetIndex) => (
+                          <div key={`sheet_${sheetIndex}`}>
+                            <p className="mb-1 text-[11px] font-bold" style={{ color: "var(--text-main)" }}>
+                              Sheet {sheetIndex + 1}
+                            </p>
+                            <div
+                              className="relative z-0 isolate w-full overflow-hidden rounded-[4px] border border-[#D5DDE8] bg-white"
+                              style={{ aspectRatio: `${layout.sheetWidth}/${layout.sheetHeight}`, minHeight: 120 }}
+                            >
+                              {sheet.map((placement) => {
+                                const c = partTypeColors[placement.row.partType] ?? "#CBD5E1";
+                                const isDerived = (isCabinetryPartType(placement.row.partType) || isDrawerPartType(placement.row.partType)) && placement.row.parentName;
+                                return (
+                                  <div
+                                    key={placement.id}
+                                    className="absolute z-[10] overflow-hidden border px-[6px] py-[1px] text-[10px] font-semibold leading-tight"
+                                    title={nestingPieceTooltip(
+                                      String(placement.row.parentName || placement.row.name || "Part"),
+                                      String(placement.row.name || "Part"),
+                                      layout.room,
+                                      placement.w,
+                                      placement.h,
+                                      placement.oversize ? "Bigger than the sheet — counted as a sheet of its own." : undefined,
+                                    )}
+                                    style={{
+                                      left: `${((marginX + placement.x) / layout.sheetWidth) * 100}%`,
+                                      top: `${((marginY + placement.y) / layout.sheetHeight) * 100}%`,
+                                      width: `${(placement.w / layout.sheetWidth) * 100}%`,
+                                      height: `${(placement.h / layout.sheetHeight) * 100}%`,
+                                      backgroundColor: lightenHex(c, 0.18),
+                                      borderColor: placement.oversize ? "#DC2626" : darkenHex(c, 0.22),
+                                      borderStyle: placement.oversize ? "dashed" : "solid",
+                                      color: isLightHex(c) ? "#0F172A" : "#F8FAFC",
+                                    }}
+                                  >
+                                    {isDerived ? (
+                                      <>
+                                        <span className="block truncate text-[10px] leading-tight opacity-85">{placement.row.parentName}</span>
+                                        <span className="block truncate text-[10px] leading-tight">{placement.row.name}</span>
+                                      </>
+                                    ) : (
+                                      <span className="block truncate">{placement.row.name}</span>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                              {layout.grain ? (
+                                <div className="pointer-events-none absolute inset-0 z-[30]">
+                                  {salesNestingGrainPoints.map(([x, y], idx) => (
+                                    // eslint-disable-next-line @next/next/no-img-element
+                                    <img
+                                      key={`grain_${idx}`}
+                                      src="/arrow-right.png"
+                                      alt=""
+                                      aria-hidden="true"
+                                      className="absolute opacity-55"
+                                      style={{
+                                        left: `${x}%`,
+                                        top: `${y}%`,
+                                        width: "15px",
+                                        height: "15px",
+                                        transform: `translate(-50%, -50%) rotate(${layout.sheetWidth >= layout.sheetHeight ? 0 : 90}deg)`,
+                                        filter: "drop-shadow(0 0 1px rgba(255,255,255,0.75))",
+                                      }}
+                                    />
+                                  ))}
+                                </div>
+                              ) : null}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  );
+                })}
               </div>
             </div>
           </div>,
@@ -33768,8 +34386,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   type="button"
                   aria-label="Close"
                   onClick={() => setIsCostByRoomModalOpen(false)}
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] hover:brightness-95"
-                  style={{ color: "var(--text-main)" }}
+                  className={modalCloseButtonClass}
                 >
                   <X size={16} />
                 </button>
@@ -33846,7 +34463,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         roomCostBreakdownRoomBlockHtml(roomCostBreakdownModalRoomName || "Room", roomCostBreakdownModalBreakdown),
                       )
                     }
-                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] border hover:brightness-95 disabled:opacity-50"
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border hover:brightness-95 disabled:opacity-50"
                     style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                   >
                     <Printer size={15} />
@@ -33855,16 +34472,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     type="button"
                     aria-label="Close"
                     onClick={() => setIsRoomCostBreakdownModalOpen(false)}
-                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] border hover:brightness-95"
-                    style={{
-                      borderColor: "var(--danger-glass-border)",
-                      backgroundColor: "var(--danger-glass-bg)",
-                      backdropFilter: "blur(10px) saturate(180%)",
-                      WebkitBackdropFilter: "blur(10px) saturate(180%)",
-                      color: "#FFFFFF",
-                    }}
+                    className={modalCloseButtonClass}
                   >
-                    <X size={16} strokeWidth={2.4} />
+                    <X size={16} />
                   </button>
                 </div>
               </div>
@@ -33921,13 +34531,21 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           <div class="summary-row"><span>Rooms Subtotal</span><span>${formatCurrencyValue(displayedSalesRoomsTotal)}</span></div>
                           ${displayedSalesQuoteExtrasTotal > 0 ? `<div class="summary-row"><span>Quote Extras</span><span>${formatCurrencyValue(displayedSalesQuoteExtrasTotal)}</span></div>` : ""}
                           ${displayedSalesQuoteCustomPriceTotal > 0 ? `<div class="summary-row"><span>Custom Pricing</span><span>${formatCurrencyValue(displayedSalesQuoteCustomPriceTotal)}</span></div>` : ""}
+                          ${salesExtraChargeRows
+                            .filter((row) => row.selected && row.lineTotal !== 0)
+                            .map(
+                              (row) =>
+                                `<div class="summary-row"><span>${escapeHtml(row.name)}${row.quantity !== 1 ? ` × ${row.quantity}` : ""}</span><span>${formatCurrencyValue(row.lineTotal)}</span></div>`,
+                            )
+                            .join("")}
                           ${salesMinusOffQuoteTotalEnabled && discountAmount > 0 ? `<div class="summary-row"><span>Discount</span><span>-${escapeHtml(displayedSalesQuoteDiscountTotal)}</span></div>` : ""}
+                          ${salesGstPercent > 0 ? `<div class="summary-row"><span>${salesGstLabel}</span><span>${formatCurrencyValue(displayedSalesQuoteGstTotal)}</span></div>` : ""}
                           <div class="grand-total"><span>Project Total</span><span>${formatCurrencyValue(displayedSalesQuoteFinalTotal)}</span></div>
                         </div>
                       `;
                       triggerCostBreakdownPrint("Project Cost Breakdown", roomsHtml + summaryHtml);
                     }}
-                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] border hover:brightness-95 disabled:opacity-50"
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border hover:brightness-95 disabled:opacity-50"
                     style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                   >
                     <Printer size={15} />
@@ -33936,16 +34554,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     type="button"
                     aria-label="Close"
                     onClick={() => setIsProjectCostBreakdownModalOpen(false)}
-                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] border hover:brightness-95"
-                    style={{
-                      borderColor: "var(--danger-glass-border)",
-                      backgroundColor: "var(--danger-glass-bg)",
-                      backdropFilter: "blur(10px) saturate(180%)",
-                      WebkitBackdropFilter: "blur(10px) saturate(180%)",
-                      color: "#FFFFFF",
-                    }}
+                    className={modalCloseButtonClass}
                   >
-                    <X size={16} strokeWidth={2.4} />
+                    <X size={16} />
                   </button>
                 </div>
               </div>
@@ -34031,10 +34642,27 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       <span className="font-semibold">{formatCurrencyValue(displayedSalesQuoteCustomPriceTotal)}</span>
                     </div>
                   ) : null}
+                  {salesExtraChargeRows
+                    .filter((row) => row.selected && row.lineTotal !== 0)
+                    .map((row) => (
+                      <div key={row.id} className="flex items-center justify-between text-[12px]" style={{ color: "var(--text-main)" }}>
+                        <span>
+                          {row.name}
+                          {row.quantity !== 1 ? ` × ${row.quantity}` : ""}
+                        </span>
+                        <span className="font-semibold">{formatCurrencyValue(row.lineTotal)}</span>
+                      </div>
+                    ))}
                   {salesMinusOffQuoteTotalEnabled && parseCurrencyNumber(displayedSalesQuoteDiscountTotal) > 0 ? (
                     <div className="flex items-center justify-between text-[12px]" style={{ color: "var(--danger-strong)" }}>
                       <span>Discount</span>
                       <span className="font-semibold">-{displayedSalesQuoteDiscountTotal}</span>
+                    </div>
+                  ) : null}
+                  {salesGstPercent > 0 ? (
+                    <div className="flex items-center justify-between text-[12px]" style={{ color: "var(--text-main)" }}>
+                      <span>{salesGstLabel}</span>
+                      <span className="font-semibold">{formatCurrencyValue(displayedSalesQuoteGstTotal)}</span>
                     </div>
                   ) : null}
                   <div
@@ -34237,6 +34865,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           document.body,
         )
       : null;
+  // The project's tab containers — General's, Design's (its stat cards, Rooms, Product, Extra Charges, Notes),
+  // Production's and Settings' — with the glass shine's neutral version (className "glass-shine glass-shine-neutral" —
+  // lib/glass-shine.ts; no colour of their own), still frosted.
+  const tabContainerStyle: React.CSSProperties = {
+    backdropFilter: "blur(20px) saturate(180%)",
+    WebkitBackdropFilter: "blur(20px) saturate(180%)",
+  };
   const salesOverviewContent = (
     <>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -34245,6 +34880,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             key: "total",
             label: "Project Cost",
             value: formatCurrencyValue(displayedSalesQuoteFinalTotal),
+            note: salesGstTotalNote,
             hero: true,
             onClick: (e: ReactMouseEvent<HTMLButtonElement>) => {
               projectCostBreakdownModalOriginElRef.current = e.currentTarget;
@@ -34265,7 +34901,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           },
           {
             key: "sheets",
-            label: "Total Sheets",
+            label: "Sheets",
             value: String(salesSummaryTotalSheets),
             hero: false,
             onClick: (e: ReactMouseEvent<HTMLButtonElement>) => {
@@ -34286,24 +34922,24 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             },
           },
         ].map((tile) => {
-          const tileStyle = {
-            borderColor: "var(--glass-border)",
-            backgroundColor: "var(--glass-bg-strong)",
-            backdropFilter: "blur(20px) saturate(180%)",
-            WebkitBackdropFilter: "blur(20px) saturate(180%)",
-            boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
-          };
+          const tileStyle = tabContainerStyle;
           const tileContent = (
             <>
-              <p className="text-[11px] font-semibold uppercase tracking-[1px]" style={{ color: projectPalette.textMuted }}>
+              {/* Its heading in the top left — black, as the sections' below (ROOMS, PRODUCT) — and its count under it. */}
+              <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
                 {tile.label}
               </p>
               <p
-                className={tile.hero ? "mt-1 text-[26px] font-bold" : "mt-1 text-[20px] font-bold"}
+                className={tile.hero ? "mt-1.5 text-[26px] font-bold" : "mt-1.5 text-[20px] font-bold"}
                 style={{ color: tile.hero ? "var(--brand-strong)" : "var(--text-main)" }}
               >
                 {tile.value}
               </p>
+              {tile.note ? (
+                <p className="text-[11px] font-medium leading-tight" style={{ color: projectPalette.textMuted }}>
+                  {tile.note}
+                </p>
+              ) : null}
             </>
           );
           return tile.onClick ? (
@@ -34311,34 +34947,25 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               key={tile.key}
               type="button"
               onClick={tile.onClick}
-              className="overflow-hidden rounded-[18px] border p-4 text-left transition hover:brightness-95"
+              className="glass-shine glass-shine-neutral overflow-hidden rounded-[18px] border p-4 text-left transition hover:brightness-95"
               style={tileStyle}
             >
               {tileContent}
             </button>
           ) : (
-            <div key={tile.key} className="overflow-hidden rounded-[18px] border p-4" style={tileStyle}>
+            <div key={tile.key} className="glass-shine glass-shine-neutral overflow-hidden rounded-[18px] border p-4" style={tileStyle}>
               {tileContent}
             </div>
           );
         })}
       </div>
-      {/* Two grid items live here (ROOMS, PRODUCT) — grid-cols is 430px + ONE 1fr, matching that
-          exactly. It used to declare a second 1fr track too (presumably for a third section that
-          existed at some point and was since removed without updating this), which CSS Grid just
-          leaves empty when there's nothing to place in it — visible as dead space on the right,
-          while PRODUCT was squeezed into sharing the remaining width with that phantom column
-          instead of getting all of it, so it started shrinking well before it needed to. */}
-      <div className="grid gap-4 xl:grid-cols-[430px_1fr]">
+      {/* ROOMS, PRODUCT and EXTRA CHARGES in one row at xl: Product and Extra Charges each as wide as their content
+          (every name on one line), Rooms 430px but shrinking (down to 320px) when that keeps all three on the row — a card
+          only moves onto the next line when even that won't fit. Below xl they stack, full width. */}
+      <div className="flex flex-wrap items-stretch gap-4">
         <section
-          className="overflow-hidden rounded-[18px] border"
-          style={{
-            borderColor: "var(--glass-border)",
-            backgroundColor: "var(--glass-bg-strong)",
-            backdropFilter: "blur(20px) saturate(180%)",
-            WebkitBackdropFilter: "blur(20px) saturate(180%)",
-            boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
-          }}
+          className="glass-shine glass-shine-neutral w-full overflow-hidden rounded-[18px] border xl:w-auto xl:min-w-[320px] xl:max-w-[430px] xl:flex-[1_1_320px]"
+          style={tabContainerStyle}
         >
           <div
             className="flex h-[50px] items-center justify-between border-b px-4"
@@ -34349,19 +34976,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               type="button"
               disabled={salesReadOnly || isSavingSalesRooms}
               onClick={(e) => { addRoomPilotOriginElRef.current = e.currentTarget; addRoomFullscreenOriginElRef.current = e.currentTarget; setRoomModalOrigin(captureGlassModalOrigin(e)); void onAddCutlistRoom(); }}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] border text-white hover:brightness-95 disabled:opacity-55"
-              style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
+              // Round, with the glass shine (lib/glass-shine.ts) in green.
+              className="glass-shine inline-flex h-8 w-8 items-center justify-center rounded-full text-white hover:brightness-105 disabled:opacity-55"
+              style={glassShineStyle("#16A34A")}
               title="Add room"
+              aria-label="Add room"
             >
-              <img
-                src="/plus.png"
-                alt="Add room"
-                className="block object-contain"
-                style={{ width: 17, height: 17, filter: "brightness(0) invert(1)" }}
-                onError={(e) => {
-                  e.currentTarget.style.display = "none";
-                }}
-              />
+              {/* The same weight as the rooms' X. */}
+              <Plus size={24} strokeWidth={3} />
             </button>
           </div>
           <div className="p-3">
@@ -34424,12 +35046,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     type="button"
                     disabled={salesReadOnly || isSavingSalesRooms}
                     onClick={(e) => { roomDeleteBlockedOriginElRef.current = e.currentTarget; e.stopPropagation(); setRoomModalOrigin(captureGlassModalOrigin(e)); void onDeleteSalesRoom(room.name); }}
-                    className="inline-flex h-6 w-6 items-center justify-center rounded-[8px] border text-white hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-55"
-                    style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
+                    // Round, with the glass shine (lib/glass-shine.ts) in red.
+                    className="glass-shine inline-flex h-6 w-6 items-center justify-center rounded-full text-white hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-55"
+                    style={glassShineStyle("#EF4444")}
                     onMouseEnter={() => setHoveredSalesRoomDeleteName(room.name)}
                     onMouseLeave={() => setHoveredSalesRoomDeleteName((prev) => (prev === room.name ? "" : prev))}
                   >
-                    <X size={11} strokeWidth={2.5} />
+                    <X size={15} strokeWidth={2.75} />
                   </button>
                   {salesAccess.edit && editingSalesRoomName === room.name ? (
                     <input
@@ -34491,19 +35114,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 type="button"
                 disabled={salesReadOnly || isSavingSalesRooms}
                 onClick={(e) => { addRoomPilotOriginElRef.current = e.currentTarget; addRoomFullscreenOriginElRef.current = e.currentTarget; setRoomModalOrigin(captureGlassModalOrigin(e)); void onAddCutlistRoom(); }}
-                className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] border text-white hover:brightness-95 disabled:opacity-55"
-                style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
+                // Round, with the glass shine (lib/glass-shine.ts) in green.
+                className="glass-shine inline-flex h-8 w-8 items-center justify-center rounded-full text-white hover:brightness-105 disabled:opacity-55"
+                style={glassShineStyle("#16A34A")}
                 title="Add room"
+                aria-label="Add room"
               >
-                <img
-                  src="/plus.png"
-                  alt="Add room"
-                  className="block object-contain"
-                  style={{ width: 17, height: 17, filter: "brightness(0) invert(1)" }}
-                  onError={(e) => {
-                    e.currentTarget.style.display = "none";
-                  }}
-                />
+                {/* The same weight as the rooms' X. */}
+                <Plus size={24} strokeWidth={3} />
               </button>
               {/* Disabled while viewing a frozen quote snapshot — the breakdown popup always reads
                   LIVE room/pricing data, which would disagree with that historical total shown
@@ -34534,20 +35152,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     ? activeQuoteSnapshot.totalFormatted
                     : formatCurrencyValue(displayedSalesQuoteFinalTotal)}
                 </p>
+                <span className="text-[11px] font-medium leading-tight" style={{ color: "var(--text-muted)" }}>
+                  {salesGstTotalNote}
+                </span>
               </button>
             </div>
           </div>
         </section>
 
         <section
-          className="overflow-hidden rounded-[18px] border xl:w-max xl:min-w-[340px] xl:max-w-full"
-          style={{
-            borderColor: "var(--glass-border)",
-            backgroundColor: "var(--glass-bg-strong)",
-            backdropFilter: "blur(20px) saturate(180%)",
-            WebkitBackdropFilter: "blur(20px) saturate(180%)",
-            boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
-          }}
+          className="glass-shine glass-shine-neutral w-full overflow-hidden rounded-[18px] border xl:w-max xl:min-w-[340px] xl:max-w-full"
+          style={tabContainerStyle}
         >
           {/* At xl: as wide as its widest product name needs (each name on one line), never under 340px,
               and only wrapping once it would run past the whole 1fr track it sits in. Below xl: the grid is a single
@@ -34589,19 +35204,61 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           </div>
         </section>
 
+        {/* Extra charges (Company Settings → Sales → Extra charges): each one turned on / off for this project's quote. */}
+        <section
+          className="glass-shine glass-shine-neutral w-full overflow-hidden rounded-[18px] border xl:w-max xl:min-w-[240px] xl:max-w-full"
+          style={tabContainerStyle}
+        >
+          <div
+            className="flex h-[50px] items-center justify-between gap-2 border-b px-4"
+            style={{ borderBottomColor: "var(--glass-border)", backgroundColor: isDarkMode ? "rgba(255,255,255,0.04)" : "rgba(15,23,42,0.025)" }}
+          >
+            <p className="text-[14px] font-medium tracking-[1px]" style={{ color: "var(--text-main)" }}>EXTRA CHARGES</p>
+          </div>
+          <div className="p-3 text-[12px]">
+            {salesExtraChargeRows.length > 0 ? (
+              <>
+                <div className="mb-2 grid grid-cols-[40px_52px_1fr_auto] gap-2 text-[11px] font-bold" style={{ color: projectPalette.textMuted }}>
+                  <p></p><p className="text-center">Qty</p><p>Charge</p><p className="text-right">Price</p>
+                </div>
+                <div className="space-y-1">
+                  {salesExtraChargeRows.map((row) => (
+                    <div key={row.id} className="grid grid-cols-[40px_52px_1fr_auto] items-center gap-2 border-b py-2 last:border-none" style={{ borderBottomColor: projectPalette.border }}>
+                      <QuoteExtraToggleSwitch
+                        checked={row.selected}
+                        disabled={salesReadOnly || isSavingSalesRooms}
+                        onChange={(checked) => void onToggleSalesExtraCharge(row.id, checked)}
+                      />
+                      <ExtraChargeQuantityInput
+                        key={`${row.id}_${row.quantity}`}
+                        value={row.quantity}
+                        disabled={salesReadOnly}
+                        onCommit={(next) => void onSetSalesExtraChargeQuantity(row.id, next)}
+                      />
+                      <span className="font-semibold xl:whitespace-nowrap" style={{ color: projectPalette.text }}>{row.name}</span>
+                      <span
+                        className="whitespace-nowrap text-right font-medium tabular-nums"
+                        style={{ color: row.selected ? "var(--text-main)" : "var(--text-muted)" }}
+                        title={row.quantity !== 1 ? `${row.quantity} × ${formatCurrencyValue(row.price)}` : undefined}
+                      >
+                        {formatCurrencyValue(row.lineTotal)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <p className="text-[12px]" style={{ color: projectPalette.textMuted }}>No extra charges — add them in Company Settings → Sales.</p>
+            )}
+          </div>
+        </section>
       </div>
 
       {/* Design's own notes — set out as General's and Production's Notes cards. */}
       <div ref={designNotesContainerRef}>
         <section
-          className="overflow-hidden rounded-[18px] border"
-          style={{
-            borderColor: "var(--glass-border)",
-            backgroundColor: "var(--glass-bg-strong)",
-            backdropFilter: "blur(20px) saturate(180%)",
-            WebkitBackdropFilter: "blur(20px) saturate(180%)",
-            boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
-          }}
+          className="glass-shine glass-shine-neutral overflow-hidden rounded-[18px] border"
+          style={tabContainerStyle}
         >
           <div
             className="relative z-[2] flex h-[50px] items-center justify-between border-b px-4"
@@ -34648,6 +35305,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       )}
       {partTypeBreakdownModalPortal}
       {sheetCountModalPortal}
+      {salesNestingWindowPortal}
       {costByRoomModalPortal}
       {roomCostBreakdownModalPortal}
       {projectCostBreakdownModalPortal}
@@ -53415,9 +54073,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     return (
       <span className={`flex min-w-0 flex-wrap items-center gap-1 ${align === "end" ? "justify-end" : "justify-start"}`}>
         {category ? (
+          // The glass shine (lib/glass-shine.ts) in the brand's colour.
           <span
-            className="inline-block h-5 max-w-full truncate rounded-full px-2 text-[10.5px] font-bold leading-5"
-            style={{ backgroundColor: color, color: isLightHex(color) ? "#1F2937" : "#FFFFFF" }}
+            className="glass-shine inline-block h-5 max-w-full truncate rounded-full px-2 text-[10.5px] font-bold leading-[18px]"
+            style={glassShineStyle({ backgroundColor: color, color: isLightHex(color) ? "#1F2937" : "#FFFFFF" })}
           >
             {category}
           </span>
@@ -53885,7 +54544,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     <button
                       type="button"
                       onClick={startEditingProjectName}
-                      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] opacity-0 transition-opacity hover:bg-[var(--panel-muted)] group-hover:opacity-100"
+                      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full opacity-0 transition-opacity hover:bg-[var(--panel-muted)] group-hover:opacity-100"
                       style={{ color: "var(--text-muted)" }}
                       title="Edit project name"
                       aria-label="Edit project name"
@@ -54023,10 +54682,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           void onAddTag();
                         }}
                         disabled={isSavingTags}
-                        className="inline-flex h-[22px] w-[22px] items-center justify-center rounded-[8px] border hover:bg-[#E2E8F0] disabled:opacity-60"
-                        style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: projectPalette.textMuted }}
+                        // Round, with the glass shine (lib/glass-shine.ts) in green — as the Design tab's Add room.
+                        // The Design tab's Add room + (its 3 stroke, at ¾ of its circle), just smaller: 18px in a 24px circle —
+                        // an even 3px all round, so it sits dead centre.
+                        className="glass-shine inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-white hover:brightness-105 disabled:opacity-60"
+                        style={glassShineStyle("#16A34A")}
+                        title="Add tag"
+                        aria-label="Add tag"
                       >
-                        <Plus size={14} />
+                        <Plus size={18} strokeWidth={3} />
                       </button>
                   </>
                   )}
@@ -54070,8 +54734,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       }}
                       disabled={isDeleting || !canDeleteProject}
                       title="Move this project to the Archive"
-                      className="h-8 shrink-0 rounded-[10px] border px-4 text-[12px] font-bold text-white transition hover:brightness-95 disabled:opacity-60"
-                      style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
+                      // The glass shine (lib/glass-shine.ts), in red, round-ended (as the status pill beside it).
+                      className="glass-shine h-8 shrink-0 rounded-full px-4 text-[12px] font-bold text-white transition hover:brightness-105 disabled:opacity-60"
+                      style={glassShineStyle("#EF4444")}
                     >
                       Archive
                     </button>
@@ -54166,8 +54831,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         width: menuWidth,
                       });
                     }}
-                    className="hidden h-8 min-w-[90px] items-center justify-center rounded-[10px] px-3 text-[12px] font-normal md:inline-flex"
-                    style={projectStatusPillStyle(project.statusLabel || "New")}
+                    // The glass shine (lib/glass-shine.ts) in its status's colour.
+                    className="glass-shine hidden h-8 min-w-[90px] items-center justify-center rounded-full px-3 text-[12px] font-normal md:inline-flex"
+                    style={glassShineStyle(projectStatusPillStyle(project.statusLabel || "New"))}
                     aria-disabled={isSavingStatus || !canEditStatus}
                     aria-label="Project status"
                     title={canEditStatus ? "Change project status" : "You can view this project but not change its status"}
@@ -54199,16 +54865,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 <div data-header-fade="true" className="flex min-w-0 items-center gap-1.5">
                   <User size={13} className="shrink-0" style={{ color: projectPalette.textMuted }} />
                   <span className="hidden shrink-0 text-[13px] md:inline" style={{ color: projectPalette.textMuted }}>Creator:</span>
+                  {/* Their emblem with the glass shine (lib/glass-shine.ts), in their colour — as the assignee's below. */}
                   <div
-                    className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white"
-                    style={{
+                    className="glass-shine inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white"
+                    style={glassShineStyle({
                       backgroundColor:
                         toStr(staffIconColorByUid[String(projectCreatorMember?.uid || "")]) ||
                         toStr(projectCreatorMember?.badgeColor) ||
                         toStr(projectCreatorMember?.userColor) ||
                         toStr((companyDoc as Record<string, unknown> | null)?.themeColor) ||
                         "#7D99B3",
-                    }}
+                    })}
                   >
                     {initials(creatorDisplayName)}
                   </div>
@@ -54220,15 +54887,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       <Users size={13} className="shrink-0" style={{ color: projectPalette.textMuted }} />
                       <span className="hidden shrink-0 text-[13px] md:inline" style={{ color: projectPalette.textMuted }}>Assigned:</span>
                       <div
-                        className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white"
-                        style={{
+                        className="glass-shine inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white"
+                        style={glassShineStyle({
                           backgroundColor:
                             toStr(staffIconColorByUid[String(projectAssignedMember?.uid || "")]) ||
                             toStr(projectAssignedMember?.badgeColor) ||
                             toStr(projectAssignedMember?.userColor) ||
                             toStr((companyDoc as Record<string, unknown> | null)?.themeColor) ||
                             "#7D99B3",
-                        }}
+                        })}
                       >
                         {initials(assignedDisplayName)}
                       </div>
@@ -54241,8 +54908,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         ref={quickAssignButtonRef}
                         type="button"
                         onClick={() => setIsQuickAssignOpen((prev) => !prev)}
-                        className="inline-flex items-center rounded-full border px-2.5 py-0.5 text-[11px] font-bold transition hover:brightness-95"
-                        style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+                        // The glass shine (lib/glass-shine.ts), in the brand blue.
+                        className="glass-shine inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-bold text-white transition hover:brightness-105"
+                        style={glassShineStyle("var(--brand)")}
                       >
                         Assign
                       </button>
@@ -54703,12 +55371,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       type="button"
                       disabled={isSavingStatus}
                       onClick={() => void onChangeStatus(option)}
-                      className="mb-1 block w-full rounded-[8px] px-3 py-2 text-center text-[12px] font-semibold last:mb-0 disabled:opacity-55"
-                      style={{
+                      className="glass-shine mb-1 block w-full rounded-full px-3 py-2 text-center text-[12px] font-semibold last:mb-0 disabled:opacity-55"
+                      style={glassShineStyle({
                         backgroundColor: rowColor,
                         color: isLightHex(rowColor, 0.75) ? "#0F172A" : "#FFFFFF",
                         filter: active ? "brightness(0.96)" : "brightness(1)",
-                      }}
+                      })}
                     >
                       {option}
                     </button>
@@ -54767,15 +55435,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           icon circles in their contact category's colour (no ambient wash, no category name) (neutral when they
                           have no category, or no contact card yet). */}
                       <section
-                        className="group/client overflow-hidden rounded-[18px] border"
+                        className="glass-shine glass-shine-neutral group/client overflow-hidden rounded-[18px] border"
                         style={{
+                          ...tabContainerStyle,
                           ["--ambient-color" as string]: clientCardAmbientColor,
                           transition: "--ambient-color 800ms ease-in-out",
-                          borderColor: "var(--glass-border)",
-                          backgroundColor: "var(--glass-bg-strong)",
-                          backdropFilter: "blur(20px) saturate(180%)",
-                          WebkitBackdropFilter: "blur(20px) saturate(180%)",
-                          boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
                         }}
                       >
                         <CardHeader
@@ -54881,10 +55545,26 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   />
                                   <div
                                     ref={createContactModalPanelRef}
-                                    className="glass-modal-panel relative z-[1701] flex max-h-[calc(100svh-32px)] w-full max-w-[520px] flex-col overflow-hidden"
+                                    className="glass-modal-panel relative isolate z-[1701] flex max-h-[calc(100svh-32px)] w-full max-w-[520px] flex-col overflow-hidden"
                                   >
-                                    <div className="glass-modal-header flex items-center justify-between px-4 py-3">
-                                      <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
+                                    {/* The picked category's colour washed across it, as the contact card is — fading over
+                                        to the new one when the category changes. */}
+                                    <div
+                                      aria-hidden="true"
+                                      className="pointer-events-none absolute inset-0 -z-10"
+                                      style={
+                                        {
+                                          "--ambient-color": createContactCategoryColor,
+                                          transition: "--ambient-color 320ms ease",
+                                          backgroundImage: [
+                                            "radial-gradient(420px 300px at 50% 0px, color-mix(in srgb, var(--ambient-color) 26%, transparent), transparent 100%)",
+                                            "linear-gradient(to bottom, color-mix(in srgb, var(--ambient-color) 12%, transparent), color-mix(in srgb, var(--ambient-color) 5%, transparent))",
+                                          ].join(", "),
+                                        } as React.CSSProperties
+                                      }
+                                    />
+                                    <div className="glass-modal-header flex items-center justify-between gap-3 px-5 py-4">
+                                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
                                         Create Contact
                                       </p>
                                       <button
@@ -54892,8 +55572,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         onClick={() => setIsCreateContactModalOpen(false)}
                                         disabled={isCreatingProjectContact}
                                         aria-label="Close"
-                                        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] border transition hover:brightness-95 disabled:opacity-60"
-                                        style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
+                                        className={modalCloseButtonClass}
                                       >
                                         <X size={16} />
                                       </button>
@@ -54956,19 +55635,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         ) : null}
                                       </div>
                                       <div className="flex items-center justify-end gap-2 border-t px-4 py-3" style={{ borderColor: "var(--glass-border)" }}>
-                                        <button
-                                          type="button"
-                                          onClick={() => setIsCreateContactModalOpen(false)}
-                                          disabled={isCreatingProjectContact}
-                                          className="inline-flex h-9 items-center justify-center rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-3 text-[12px] font-medium text-[var(--text-main)] transition hover:brightness-95 disabled:opacity-60"
-                                        >
-                                          Cancel
-                                        </button>
+                                        {/* Round-ended, with the glass shine (lib/glass-shine.ts) in the brand blue, as Add Room's. */}
                                         <button
                                           type="submit"
                                           disabled={isCreatingProjectContact}
-                                          className="inline-flex h-9 items-center gap-1.5 rounded-[8px] border px-3 text-[12px] font-medium text-white transition hover:brightness-95 disabled:opacity-60"
-                                          style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                                          className="glass-shine inline-flex h-9 items-center gap-1.5 rounded-full px-5 text-[12px] font-bold text-white transition hover:brightness-105 disabled:opacity-55"
+                                          style={glassShineStyle("var(--brand)")}
                                         >
                                           <UserPlus size={14} />
                                           {isCreatingProjectContact ? "Saving..." : "Save Contact"}
@@ -55007,12 +55679,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         <CardContent className="pt-1 text-[13px] text-[#1F2937]">
                           <div className="flex items-center gap-3 border-b pb-3 pt-2" style={{ borderBottomColor: "var(--glass-border)" }}>
                             {/* Initials badge in the contact's category colour, like their contact card; opens
-                                that card when there is one. */}
+                                that card when there is one — as a pop-up here, staying on the project. */}
                             <button
                               type="button"
                               disabled={!projectContact}
-                              onClick={() => {
-                                if (projectContact) router.push(`/contacts?contact=${encodeURIComponent(projectContact.id)}`);
+                              onClick={(e) => {
+                                if (!projectContact) return;
+                                contactCardOriginElRef.current = e.currentTarget;
+                                setContactCardOrigin(captureGlassModalOrigin(e));
+                                setIsContactCardOpen(true);
                               }}
                               className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-full text-[16px] font-medium leading-none transition enabled:hover:brightness-105 disabled:cursor-default"
                               title={projectContact ? "Open contact card" : undefined}
@@ -55024,8 +55699,25 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 boxShadow: `0 6px 16px ${ambientMix(24)}, inset 0 1px 0 rgba(255,255,255,0.5)`,
                               }}
                             >
-                              {initials(project.customer || "")}
+                              {/* As the contact card shows them: the first word's first letter and the last word's. */}
+                              {contactInitials(project.customer || "", projectContact?.email || "")}
                             </button>
+                            <ContactCardPopup
+                              contact={projectContact ?? null}
+                              open={isContactCardOpen && Boolean(projectContact)}
+                              onClose={() => setIsContactCardOpen(false)}
+                              origin={contactCardOrigin}
+                              originElRef={contactCardOriginElRef}
+                              categoryColor={clientCardAmbientColor}
+                              onOpenInContacts={
+                                projectContact && projectContactPersisted
+                                  ? () => {
+                                      setIsContactCardOpen(false);
+                                      router.push(`/contacts?contact=${encodeURIComponent(projectContact.id)}`);
+                                    }
+                                  : undefined
+                              }
+                            />
                             <div className="relative min-h-[24px] min-w-0 flex-1">
                               <p
                                 className={`truncate text-[16px] font-semibold ${isEditingClientDetails && generalAccess.edit ? "opacity-0" : ""}`}
@@ -55054,8 +55746,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               <button
                                 type="button"
                                 onClick={openCreateContactModal}
-                                className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-[12px] font-medium text-white transition hover:brightness-95"
-                                style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
+                                // The glass shine (lib/glass-shine.ts) in green, as the other add (+) buttons — a deeper green, and
+                                // bold, so its white words still read over the lighter top-left of the shine. (Fixed greens: the
+                                // theme's --success turns pale in dark mode, under white.)
+                                className="glass-shine inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3 text-[12px] font-bold text-white transition hover:brightness-105"
+                                style={glassShineStyle("#15803D")}
                                 title="Add this client to your Contacts"
                               >
                                 <UserPlus size={14} />
@@ -55117,14 +55812,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
                     {project.leadCustomFields && project.leadCustomFields.length > 0 && (
                       <section
-                        className="overflow-hidden rounded-[18px] border"
-                        style={{
-                          borderColor: "var(--glass-border)",
-                          backgroundColor: "var(--glass-bg-strong)",
-                          backdropFilter: "blur(20px) saturate(180%)",
-                          WebkitBackdropFilter: "blur(20px) saturate(180%)",
-                          boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
-                        }}
+                        className="glass-shine glass-shine-neutral overflow-hidden rounded-[18px] border"
+                        style={tabContainerStyle}
                       >
                         <CardHeader
                           className="flex min-h-[50px] flex-row items-center justify-between border-b px-4 py-2"
@@ -55157,14 +55846,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
                     <div ref={notesContainerRef}>
                       <section
-                        className="overflow-hidden rounded-[18px] border"
-                        style={{
-                          borderColor: "var(--glass-border)",
-                          backgroundColor: "var(--glass-bg-strong)",
-                          backdropFilter: "blur(20px) saturate(180%)",
-                          WebkitBackdropFilter: "blur(20px) saturate(180%)",
-                          boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
-                        }}
+                        className="glass-shine glass-shine-neutral overflow-hidden rounded-[18px] border"
+                        style={tabContainerStyle}
                       >
                         <CardHeader
                           onClick={() => {
@@ -55209,14 +55892,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
                   <div className="space-y-4">
                     <section
-                      className="overflow-hidden rounded-[18px] border"
-                      style={{
-                        borderColor: "var(--glass-border)",
-                        backgroundColor: "var(--glass-bg-strong)",
-                        backdropFilter: "blur(20px) saturate(180%)",
-                        WebkitBackdropFilter: "blur(20px) saturate(180%)",
-                        boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
-                      }}
+                      className="glass-shine glass-shine-neutral group/images overflow-hidden rounded-[18px] border"
+                      style={tabContainerStyle}
                     >
                   <div
                     onClick={() => {
@@ -55302,13 +55979,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           </span>
                         </div>
                       )}
+                      {/* Add / Delete: round; on a computer, only while the card's hovered (always on a touch screen). */}
+                      <span className="flex items-center gap-2 transition-opacity duration-150 pointer-fine:opacity-0 pointer-fine:group-hover/images:opacity-100 pointer-fine:focus-within:opacity-100">
                       {projectImageUrls.length < 5 && (
                         <button
                           type="button"
                           disabled={!generalAccess.edit || isUploadingProjectImages || isDeletingProjectImage}
                           onClick={() => projectImagesInputRef.current?.click()}
-                          className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] border hover:brightness-95 disabled:opacity-60"
-                          style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                          className="glass-shine inline-flex h-8 w-8 items-center justify-center rounded-full hover:brightness-105 disabled:opacity-60"
+                          style={glassShineStyle("var(--brand)")}
                           title={isUploadingProjectImages ? "Uploading..." : "Add image"}
                         >
                           <img
@@ -55327,15 +56006,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           />
                         </button>
                       )}
+                      {/* Delete: only while there's an image selected to delete. */}
+                      {projectImageUrls[selectedProjectImageIndex] ? (
                       <button
                         type="button"
                         disabled={!generalAccess.edit || isUploadingProjectImages || isDeletingProjectImage}
                         onClick={() => void onDeleteSelectedProjectImage()}
-                        className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] border hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-70"
-                        style={{
-                          backgroundColor: "#EF4444",
-                          borderColor: "#7F1D1D",
-                        }}
+                        className="glass-shine inline-flex h-8 w-8 items-center justify-center rounded-full hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-70"
+                        style={glassShineStyle("#EF4444")}
                         title={isDeletingProjectImage ? "Deleting..." : "Delete image"}
                       >
                         <img
@@ -55353,6 +56031,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           }}
                         />
                       </button>
+                      ) : null}
+                      </span>
                     </div>
                   </div>
                   {(projectImageUrls.length > 0 || isLgUpViewport || isImagesExpandedMobile) && (
@@ -55361,9 +56041,24 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       // The viewer below assumes at least one image (thumbnail strip, prev/next,
                       // pan/zoom); shown on desktop now that this container stays visible even
                       // when empty (mobile only reaches this branch while manually expanded).
-                      <div className="flex h-full min-h-[130px] items-center justify-center text-[13px]" style={{ color: projectPalette.textMuted }}>
-                        No images yet.
-                      </div>
+                      // Empty: somewhere to drag images in (or click to pick them) — just "No images yet" for
+                      // someone who can't add any.
+                      generalAccess.edit ? (
+                        <UploadDropZone
+                          icon={<ImagePlus size={24} strokeWidth={2.25} />}
+                          title="Drag images here to add them"
+                          touchTitle="Tap to add images"
+                          busyLabel={isUploadingProjectImages ? `Uploading… ${projectImageUploadProgress}%` : undefined}
+                          disabled={isDeletingProjectImage}
+                          onFiles={(files) => void onUploadProjectImages(files)}
+                          onBrowse={() => projectImagesInputRef.current?.click()}
+                          minHeight={Math.max(400, projectImageAreaHeight + 28) - 28}
+                        />
+                      ) : (
+                        <div className="flex h-full min-h-[130px] items-center justify-center text-[13px]" style={{ color: projectPalette.textMuted }}>
+                          No images yet.
+                        </div>
+                      )
                     ) : (
                       <div className="flex items-start gap-3">
                         <div className="w-[88px] flex-none">
@@ -55471,14 +56166,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   )}
                 </section>
                     <section
-                    className="overflow-hidden rounded-[18px] border"
-                    style={{
-                      borderColor: "var(--glass-border)",
-                      backgroundColor: "var(--glass-bg-strong)",
-                      backdropFilter: "blur(20px) saturate(180%)",
-                      WebkitBackdropFilter: "blur(20px) saturate(180%)",
-                      boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
-                    }}
+                    className="glass-shine glass-shine-neutral group/files overflow-hidden rounded-[18px] border"
+                    style={tabContainerStyle}
                   >
                   <div
                     onClick={() => {
@@ -55523,13 +56212,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           <span className="w-[40px] text-right text-[11px] font-bold" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>{projectFileUploadProgress}%</span>
                         </div>
                       )}
+                      {/* Add / Delete: round; on a computer, only while the card's hovered (always on a touch screen). */}
+                      <span className="flex items-center gap-2 transition-opacity duration-150 pointer-fine:opacity-0 pointer-fine:group-hover/files:opacity-100 pointer-fine:focus-within:opacity-100">
                       {projectFilesTotalBytes < PROJECT_FILE_TOTAL_LIMIT_BYTES && (
                         <button
                           type="button"
                           disabled={!generalAccess.edit || isUploadingProjectFiles || isDeletingProjectFile}
                           onClick={() => projectFilesInputRef.current?.click()}
-                          className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] border hover:brightness-95"
-                          style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                          className="glass-shine inline-flex h-8 w-8 items-center justify-center rounded-full hover:brightness-105"
+                          style={glassShineStyle("var(--brand)")}
                           title="Add file"
                         >
                           <img
@@ -55543,12 +56234,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           />
                         </button>
                       )}
+                      {/* Delete: only while there's a file selected (or ticked) to delete. */}
+                      {projectFiles[selectedProjectFileIndex] || selectedProjectFileIds.length > 0 ? (
                       <button
                         type="button"
                         disabled={!generalAccess.edit || isUploadingProjectFiles || isDeletingProjectFile}
                         onClick={() => void onDeleteSelectedProjectFile()}
-                        className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] border hover:brightness-95"
-                        style={{ backgroundColor: "#EF4444", borderColor: "#7F1D1D" }}
+                        className="glass-shine inline-flex h-8 w-8 items-center justify-center rounded-full hover:brightness-105"
+                        style={glassShineStyle("#EF4444")}
                         title="Delete file"
                       >
                         <img
@@ -55561,14 +56254,34 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           }}
                         />
                       </button>
+                      ) : null}
+                      </span>
                     </div>
                   </div>
                   {(projectFiles.length > 0 || isLgUpViewport || isFilesExpandedMobile) && (
                   <CardContent className="min-h-[280px] px-0 pb-0 pt-0">
                     {projectFiles.length === 0 ? (
-                      <div className="flex min-h-[130px] items-center justify-center text-[13px]" style={{ color: projectPalette.textMuted }}>
-                        No files yet.
-                      </div>
+                      // Empty: somewhere to drag files in (or click to pick them), as Images — just "No files yet"
+                      // for someone who can't add any.
+                      generalAccess.edit ? (
+                        <div className="p-4">
+                          <UploadDropZone
+                            icon={<FileUp size={24} strokeWidth={2.25} />}
+                            title="Drag files here to add them"
+                            touchTitle="Tap to add files"
+                            hint="PDF, Word, Excel, CSV, DWG, DXF, ZIP · up to 10MB in all"
+                            busyLabel={isUploadingProjectFiles ? `Uploading… ${projectFileUploadProgress}%` : undefined}
+                            disabled={isDeletingProjectFile}
+                            onFiles={(files) => void onUploadProjectFiles(files)}
+                            onBrowse={() => projectFilesInputRef.current?.click()}
+                            minHeight={248}
+                          />
+                        </div>
+                      ) : (
+                        <div className="flex min-h-[130px] items-center justify-center text-[13px]" style={{ color: projectPalette.textMuted }}>
+                          No files yet.
+                        </div>
+                      )
                     ) : (
                       <div className="border-b" style={{ borderBottomColor: projectPalette.border }}>
                         {projectFiles.map((file, idx) => {
@@ -55708,13 +56421,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         if (item.key === salesNav) return;
                         void leaveQuoteWindow(item.key);
                       }}
-                      className="project-subtab-button relative inline-flex w-full min-w-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 py-2.5 text-left text-[13px] font-semibold transition hover:z-10 hover:scale-[1.04] hover:shadow-lg hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-55 disabled:hover:scale-100 disabled:hover:shadow-none sm:w-auto sm:min-w-[120px] xl:w-full xl:min-w-0 xl:whitespace-normal"
-                      style={{
-                        borderColor: projectPalette.border,
-                        backgroundColor: active ? (isDarkMode ? "#2b2b2b" : "#EEF2F7") : projectPalette.panelBg,
-                        color: active ? (isDarkMode ? "#f1f1f1" : "#12345B") : (isDarkMode ? "#cbd5e1" : "#243B58"),
-                        boxShadow: "var(--shadow-sm)",
-                      }}
+                      // The glass shine (lib/glass-shine.ts), as the Design tab's containers: its neutral version — the open
+                      // one the full brand blue, with white text.
+                      className={`project-subtab-button glass-shine ${active ? "" : "glass-shine-neutral"} relative inline-flex w-full min-w-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 py-2.5 text-left text-[13px] font-semibold transition hover:z-10 hover:scale-[1.04] hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-55 disabled:hover:scale-100 sm:w-auto sm:min-w-[120px] xl:w-full xl:min-w-0 xl:whitespace-normal`}
+                      style={glassShineStyle("var(--brand)", {
+                        color: active ? "#FFFFFF" : isDarkMode ? "#cbd5e1" : "#243B58",
+                        // A button-sized shadow (not the containers' big one) — the strip they sit in cuts off anything
+                        // that spreads past its padding.
+                        boxShadow: active
+                          ? "0 2px 6px color-mix(in srgb, var(--brand) 22%, transparent), inset 0 1px 0 rgba(255, 255, 255, 0.5)"
+                          : `0 1px 4px rgba(15, 23, 42, ${isDarkMode ? "0.3" : "0.08"}), inset 0 1px 0 rgba(255, 255, 255, ${isDarkMode ? "0.1" : "0.7"})`,
+                      })}
                     >
                       <Icon size={13} />
                       {item.label}
@@ -56158,13 +56875,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             nestingFullscreen: false,
                           });
                         }}
-                        className="project-subtab-button relative inline-flex w-full min-w-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 py-2.5 text-left text-[13px] font-semibold transition hover:z-10 hover:scale-[1.04] hover:shadow-lg hover:brightness-95 sm:w-auto sm:min-w-[120px] xl:w-full xl:min-w-0 xl:whitespace-normal"
-                        style={{
-                          borderColor: projectPalette.border,
-                          backgroundColor: active ? (isDarkMode ? "#2b2b2b" : "#EEF2F7") : projectPalette.panelBg,
-                          color: active ? (isDarkMode ? "#f1f1f1" : "#12345B") : (isDarkMode ? "#cbd5e1" : "#243B58"),
-                          boxShadow: "var(--shadow-sm)",
-                        }}
+                        // As the Design tab's side buttons: the glass shine's neutral version (lib/glass-shine.ts) — the open
+                        // one the full brand blue, with white text — and a button-sized shadow (its strip cuts off more).
+                        className={`project-subtab-button glass-shine ${active ? "" : "glass-shine-neutral"} relative inline-flex w-full min-w-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 py-2.5 text-left text-[13px] font-semibold transition hover:z-10 hover:scale-[1.04] hover:brightness-95 sm:w-auto sm:min-w-[120px] xl:w-full xl:min-w-0 xl:whitespace-normal`}
+                        style={glassShineStyle("var(--brand)", {
+                          color: active ? "#FFFFFF" : isDarkMode ? "#cbd5e1" : "#243B58",
+                          boxShadow: active
+                            ? "0 2px 6px color-mix(in srgb, var(--brand) 22%, transparent), inset 0 1px 0 rgba(255, 255, 255, 0.5)"
+                            : `0 1px 4px rgba(15, 23, 42, ${isDarkMode ? "0.3" : "0.08"}), inset 0 1px 0 rgba(255, 255, 255, ${isDarkMode ? "0.1" : "0.7"})`,
+                        })}
                       >
                         <Icon size={13} />
                         {item.label}
@@ -56240,14 +56959,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       </section>
 
                       <section
-                        className="overflow-hidden rounded-[18px] border"
-                        style={{
-                          borderColor: "var(--glass-border)",
-                          backgroundColor: "var(--glass-bg-strong)",
-                          backdropFilter: "blur(20px) saturate(180%)",
-                          WebkitBackdropFilter: "blur(20px) saturate(180%)",
-                          boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
-                        }}
+                        className="glass-shine glass-shine-neutral overflow-hidden rounded-[18px] border"
+                        style={tabContainerStyle}
                       >
                         <div className="border-b px-3 py-3" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
                           <div className="mb-3 overflow-x-auto pb-1">
@@ -57820,14 +58533,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       </div>
 
                       <section
-                        className="flex min-h-0 flex-col overflow-hidden rounded-[18px] border"
-                        style={{
-                          borderColor: "var(--glass-border)",
-                          backgroundColor: "var(--glass-bg-strong)",
-                          backdropFilter: "blur(20px) saturate(180%)",
-                          WebkitBackdropFilter: "blur(20px) saturate(180%)",
-                          boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
-                        }}
+                        className="glass-shine glass-shine-neutral flex min-h-0 flex-col overflow-hidden rounded-[18px] border"
+                        style={tabContainerStyle}
                       >
                         <div className="flex min-h-[46px] flex-col gap-2 border-b px-3 py-3 sm:px-4 lg:flex-row lg:items-center lg:justify-between lg:py-0" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
                           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] font-semibold" style={{ color: projectPalette.textSoft }}>
@@ -57989,14 +58696,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     </section>
 
                     <section
-                      className={`${nestingMobilePanel === "layouts" ? "hidden lg:flex" : "flex"} min-h-0 flex-col overflow-hidden rounded-[18px] border lg:max-h-none`}
-                      style={{
-                        borderColor: "var(--glass-border)",
-                        backgroundColor: "var(--glass-bg-strong)",
-                        backdropFilter: "blur(20px) saturate(180%)",
-                        WebkitBackdropFilter: "blur(20px) saturate(180%)",
-                        boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
-                      }}
+                      className={`glass-shine glass-shine-neutral ${nestingMobilePanel === "layouts" ? "hidden lg:flex" : "flex"} min-h-0 flex-col overflow-hidden rounded-[18px] border lg:max-h-none`}
+                      style={tabContainerStyle}
                     >
                       <div className="flex h-[46px] items-center justify-between border-b px-3" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
                         <p className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>Edit Visibility</p>
@@ -58081,14 +58782,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
                     <div className="grid min-h-0 flex-1 gap-3">
                       <section
-                        className="min-h-0 overflow-hidden rounded-[18px] border"
-                        style={{
-                          borderColor: "var(--glass-border)",
-                          backgroundColor: "var(--glass-bg-strong)",
-                          backdropFilter: "blur(20px) saturate(180%)",
-                          WebkitBackdropFilter: "blur(20px) saturate(180%)",
-                          boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
-                        }}
+                        className="glass-shine glass-shine-neutral min-h-0 overflow-hidden rounded-[18px] border"
+                        style={tabContainerStyle}
                       >
                         <div className="flex h-[46px] items-center justify-between border-b px-4" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
                           <p className="text-[13px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Boards To Order</p>
@@ -58138,14 +58833,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   <>
                   <div className="grid gap-4 xl:grid-cols-[1fr_1.35fr_1.05fr]">
                   <section
-                    className="relative z-10 overflow-hidden rounded-[18px] border"
-                    style={{
-                      borderColor: "var(--glass-border)",
-                      backgroundColor: "var(--glass-bg-strong)",
-                      backdropFilter: "blur(20px) saturate(180%)",
-                      WebkitBackdropFilter: "blur(20px) saturate(180%)",
-                      boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
-                    }}
+                    className="glass-shine glass-shine-neutral relative z-10 overflow-hidden rounded-[18px] border"
+                    style={tabContainerStyle}
                   >
                     <div className="flex h-[50px] items-center border-b px-4" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
                       <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Existing Cabinetry</p>
@@ -58179,14 +58868,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   </section>
 
                   <section
-                    className="relative z-10 overflow-hidden rounded-[18px] border"
-                    style={{
-                      borderColor: "var(--glass-border)",
-                      backgroundColor: "var(--glass-bg-strong)",
-                      backdropFilter: "blur(20px) saturate(180%)",
-                      WebkitBackdropFilter: "blur(20px) saturate(180%)",
-                      boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
-                    }}
+                    className="glass-shine glass-shine-neutral relative z-10 overflow-hidden rounded-[18px] border"
+                    style={tabContainerStyle}
                   >
                     <div className="flex h-[50px] items-center border-b px-4" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
                       <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Cabinetry</p>
@@ -58258,14 +58941,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     </section>
 
                   <section
-                    className="relative z-10 overflow-hidden rounded-[18px] border"
-                    style={{
-                      borderColor: "var(--glass-border)",
-                      backgroundColor: "var(--glass-bg-strong)",
-                      backdropFilter: "blur(20px) saturate(180%)",
-                      WebkitBackdropFilter: "blur(20px) saturate(180%)",
-                      boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
-                    }}
+                    className="glass-shine glass-shine-neutral relative z-10 overflow-hidden rounded-[18px] border"
+                    style={tabContainerStyle}
                   >
                     {/* With more than one room, the container is a list — "Global", then each room (which can have
                         its own) — each opening its settings in a pop-up. Otherwise, the project's settings right here. */}
@@ -58290,9 +58967,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     renderHardwarePills(own)
                                   ) : (
                                     // Linked to Global (no hardware of its own).
+                                    // The glass shine (lib/glass-shine.ts) in green.
                                     <span
-                                      className="inline-flex h-5 shrink-0 items-center gap-1 rounded-full px-2 text-[10.5px] font-bold"
-                                      style={{ backgroundColor: "#16A34A", color: "#FFFFFF" }}
+                                      className="glass-shine inline-flex h-5 shrink-0 items-center gap-1 rounded-full px-2 text-[10.5px] font-bold"
+                                      style={glassShineStyle({ backgroundColor: "#16A34A", color: "#FFFFFF" })}
                                     >
                                       <Link2 size={14} strokeWidth={2.5} className="shrink-0" />
                                       Global
@@ -58314,14 +58992,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 </div>
 
                 <section
-                  className="relative z-10 overflow-visible rounded-[18px] border"
-                  style={{
-                    borderColor: "var(--glass-border)",
-                    backgroundColor: "var(--glass-bg-strong)",
-                    backdropFilter: "blur(20px) saturate(180%)",
-                    WebkitBackdropFilter: "blur(20px) saturate(180%)",
-                    boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
-                  }}
+                  className="glass-shine glass-shine-neutral relative z-10 overflow-visible rounded-[18px] border"
+                  style={tabContainerStyle}
                 >
                   <div className="flex h-[50px] items-center justify-between rounded-t-[18px] border-b px-4" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
                     <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Board Settings</p>
@@ -58329,19 +59001,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       type="button"
                       disabled={productionReadOnly}
                       onClick={() => void onAddBoardRow()}
-                      className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] border text-[16px] font-bold leading-none text-white hover:brightness-95 disabled:opacity-55"
-                      style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
+                      // Round, with the glass shine (lib/glass-shine.ts) in green — as the Design tab's Rooms.
+                      className="glass-shine inline-flex h-8 w-8 items-center justify-center rounded-full text-white hover:brightness-105 disabled:opacity-55"
+                      style={glassShineStyle("#16A34A")}
                       title="Add board"
+                      aria-label="Add board"
                     >
-                      <img
-                        src="/plus.png"
-                        alt="Add board"
-                        className="block object-contain"
-                        style={{ width: 17, height: 17, filter: "brightness(0) invert(1)" }}
-                        onError={(e) => {
-                          e.currentTarget.style.display = "none";
-                        }}
-                      />
+                      {/* The same + as the Design tab's Add room (round ends). */}
+                      <Plus size={24} strokeWidth={3} />
                     </button>
                   </div>
                   <div className="p-3 text-[12px]">
@@ -58420,10 +59087,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 onClick={(e) => { boardRowDeleteBlockedOriginElRef.current = e.currentTarget; setBoardRowModalOrigin(captureGlassModalOrigin(e)); void onRemoveBoardRow(row.id); }}
                                 onMouseEnter={() => setHoveredBoardRemoveRowId(row.id)}
                                 onMouseLeave={() => setHoveredBoardRemoveRowId((prev) => (prev === row.id ? "" : prev))}
-                                className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border text-white hover:brightness-95 disabled:opacity-55"
-                                style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
+                                // Round, with the glass shine (lib/glass-shine.ts) in red — as the Design tab's Rooms.
+                                className="glass-shine inline-flex h-7 w-7 items-center justify-center rounded-full text-white hover:brightness-105 disabled:opacity-55"
+                                style={glassShineStyle("#EF4444")}
+                                aria-label="Remove board"
                               >
-                                <X size={13} className="mx-auto" strokeWidth={2.8} />
+                                <X size={17} className="mx-auto" strokeWidth={2.75} />
                               </button>
                               <div className="relative z-20">
                                 <input
@@ -58649,19 +59318,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       type="button"
                       disabled={productionReadOnly}
                       onClick={() => void onAddBoardRow()}
-                      className="mt-3 inline-flex h-8 w-8 items-center justify-center rounded-[10px] border text-[16px] font-bold leading-none text-white hover:brightness-95 disabled:opacity-55"
-                      style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
+                      // Round, with the glass shine (lib/glass-shine.ts) in green — as the Design tab's Rooms.
+                      className="glass-shine mt-3 inline-flex h-8 w-8 items-center justify-center rounded-full text-white hover:brightness-105 disabled:opacity-55"
+                      style={glassShineStyle("#16A34A")}
                       title="Add board"
+                      aria-label="Add board"
                     >
-                      <img
-                        src="/plus.png"
-                        alt="Add board"
-                        className="block object-contain"
-                        style={{ width: 17, height: 17, filter: "brightness(0) invert(1)" }}
-                        onError={(e) => {
-                          e.currentTarget.style.display = "none";
-                        }}
-                      />
+                      {/* The same + as the Design tab's Add room (round ends). */}
+                      <Plus size={24} strokeWidth={3} />
                     </button>
                   </div>
                 </section>
@@ -59085,14 +59749,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 ) : null}
             <div className="grid gap-4 xl:grid-cols-2">
                 <section
-                  className="overflow-hidden rounded-[18px] border"
-                  style={{
-                    borderColor: "var(--glass-border)",
-                    backgroundColor: "var(--glass-bg-strong)",
-                    backdropFilter: "blur(20px) saturate(180%)",
-                    WebkitBackdropFilter: "blur(20px) saturate(180%)",
-                    boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
-                  }}
+                  className="glass-shine glass-shine-neutral overflow-hidden rounded-[18px] border"
+                  style={tabContainerStyle}
                 >
                   <CardHeader
                     className="flex min-h-[50px] flex-row items-center border-b px-4 py-2"
@@ -59133,14 +59791,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 </section>
 
                 <section
-                  className="overflow-hidden rounded-[18px] border"
-                  style={{
-                    borderColor: "var(--glass-border)",
-                    backgroundColor: "var(--glass-bg-strong)",
-                    backdropFilter: "blur(20px) saturate(180%)",
-                    WebkitBackdropFilter: "blur(20px) saturate(180%)",
-                    boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
-                  }}
+                  className="glass-shine glass-shine-neutral overflow-hidden rounded-[18px] border"
+                  style={tabContainerStyle}
                 >
                   <CardHeader
                     className="flex min-h-[50px] flex-row items-center border-b px-4 py-2"
@@ -59192,14 +59844,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 </section>
 
                 <section
-                  className="overflow-hidden rounded-[18px] border"
-                  style={{
-                    borderColor: "var(--glass-border)",
-                    backgroundColor: "var(--glass-bg-strong)",
-                    backdropFilter: "blur(20px) saturate(180%)",
-                    WebkitBackdropFilter: "blur(20px) saturate(180%)",
-                    boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
-                  }}
+                  className="glass-shine glass-shine-neutral overflow-hidden rounded-[18px] border"
+                  style={tabContainerStyle}
                 >
                   <CardHeader
                     className="flex min-h-[50px] flex-row items-center border-b px-4 py-2"
@@ -59416,14 +60062,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </section>
 
               <section
-                className="overflow-hidden rounded-[18px] border"
-                style={{
-                  borderColor: "var(--glass-border)",
-                  backgroundColor: "var(--glass-bg-strong)",
-                  backdropFilter: "blur(20px) saturate(180%)",
-                  WebkitBackdropFilter: "blur(20px) saturate(180%)",
-                  boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
-                }}
+                className="glass-shine glass-shine-neutral overflow-hidden rounded-[18px] border"
+                style={tabContainerStyle}
               >
                 <CardHeader
                   className="flex min-h-[50px] flex-row items-center gap-3 border-b px-4 py-2"
@@ -59649,8 +60289,21 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 className="absolute inset-0 glass-modal-backdrop"
               />
               <div ref={addRoomFullscreenPanelRef} className="glass-modal-panel relative z-[1701] w-[min(720px,96vw)] overflow-hidden">
-                <div className="glass-modal-header px-5 py-4">
+                {/* Its X in the top right corner, as the other pop-ups' (no Back button). */}
+                <div className="glass-modal-header flex items-center justify-between gap-3 px-5 py-4">
                   <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Add Room</p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAddRoomModalOpen(false);
+                      setAddRoomName("");
+                      setAddRoomError("");
+                    }}
+                    className={modalCloseButtonClass}
+                    aria-label="Close"
+                  >
+                    <X size={16} />
+                  </button>
                 </div>
                 <div className="space-y-4 px-5 py-4">
                   <div className="space-y-2">
@@ -59678,24 +60331,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     ) : null}
                   </div>
                   <div className="flex items-center justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsAddRoomModalOpen(false);
-                        setAddRoomName("");
-                        setAddRoomError("");
-                      }}
-                      className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95"
-                      style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
-                    >
-                      Back
-                    </button>
+                    {/* Round-ended, with the glass shine (lib/glass-shine.ts) in the brand blue. */}
                     <button
                       type="button"
                       disabled={isSavingSalesRooms}
                       onClick={() => void onConfirmAddCutlistRoom()}
-                      className="h-9 rounded-[9px] border px-4 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-55"
-                      style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                      className="glass-shine h-9 rounded-full px-5 text-[12px] font-bold text-white hover:brightness-105 disabled:opacity-55"
+                      style={glassShineStyle("var(--brand)")}
                     >
                       Add Room
                     </button>
@@ -60881,7 +61523,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             isOpen={showProductionCutlistCloseSummary}
             origin={productionCutlistCloseSummaryOrigin}
             productionRows={cutlistRows}
-            initialRows={initialCutlistRows}
             partTypeColors={partTypeColors}
             sheetCounts={productionBoardSheetCounts}
             sessionBaseline={productionSummaryBaseline}

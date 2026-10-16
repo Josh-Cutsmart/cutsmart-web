@@ -1,12 +1,14 @@
 "use client";
 
 import { activeDateTime, useCompanyFormats } from "@/lib/company-formats";
+import { glassShineStyle } from "@/lib/glass-shine";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type TouchEvent as ReactTouchEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { createPortal } from "react-dom";
-import { Activity, ArrowUpDown, CalendarDays, CheckCircle2, ChevronsLeftRight, ChevronsRightLeft, ImagePlus, Inbox, Kanban, ListFilter, Mail, MapPin, Phone, Plus, Rows3, Search, Sparkles, UserX, X } from "lucide-react";
+import { Activity, ArrowUpDown, CalendarDays, Check, CheckCircle2, ChevronsLeftRight, ChevronsRightLeft, ImagePlus, Inbox, Kanban, ListChecks, ListFilter, Mail, MapPin, Pencil, Phone, Plus, Rows3, Search, Sparkles, Trash2, UserX, X } from "lucide-react";
 import { DASHBOARD_STAT_CARDS_UPDATED_EVENT, readDashboardStatCardsEnabled } from "@/lib/ui-preferences";
 import { flatPageBg } from "@/lib/flat-page";
-import { GlassDropdown } from "@/components/glass-dropdown";
+import { GlassActionMenu, GlassDropdown } from "@/components/glass-dropdown";
+import Link from "next/link";
 import { FullscreenImageViewerShell } from "@/components/fullscreen-image-viewer-shell";
 import { glassFieldClass, modalCloseButtonClass, primaryButtonClass, primaryButtonStyle, secondaryButtonClass } from "@/components/settings-ui";
 import { LeadFormFields } from "@/components/lead-form-fields";
@@ -25,7 +27,21 @@ import { BoardColumnFrame, ColumnCollapseChevrons } from "@/components/board-col
 import { scrollBoardToSearchMatch } from "@/lib/board-search-scroll";
 import { useAuth } from "@/lib/auth-context";
 import { authorizedFetch } from "@/lib/api-fetch";
-import { fetchCompanyDoc, fetchCompanyMembers, fetchUserColorMapByUids, type CompanyLeadRow, type CompanyMemberOption } from "@/lib/firestore-data";
+import {
+  fetchChecklistTemplates,
+  fetchCompanyDoc,
+  fetchCompanyLeadDirect,
+  fetchCompanyMembers,
+  fetchUserColorMapByUids,
+  subscribeCompanyLeads,
+  type CompanyLeadRow,
+  type CompanyMemberOption,
+  type LeadNote,
+} from "@/lib/firestore-data";
+import { contactInitials } from "@/lib/contact-card";
+import type { ChecklistTemplate, ProjectChecklist } from "@/lib/types";
+import { readLastKnown, saveLastKnown } from "@/lib/last-known";
+import { ACTIVE_COMPANY_STORAGE_KEY } from "@/lib/company-onboarding";
 import { storage } from "@/lib/firebase";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { getFirebaseStorageQuotaExceededMessage, isFirebaseStorageQuotaExceeded } from "@/lib/firebase-storage-errors";
@@ -1218,33 +1234,31 @@ export default function LeadsPage() {
   useEffect(() => {
     shownLeadsRef.current = leads;
   }, [leads]);
-  const loadLeads = useCallback(async (companyId: string, canViewOtherLeadsOverride?: boolean) => {
-    const cid = String(companyId || "").trim();
-    if (!cid) {
-      setLeads([]);
-      return;
-    }
-    const effectiveCanViewOtherLeads = canViewOtherLeadsOverride ?? canViewOtherLeads;
-    const currentSampleLeads =
-      sampleLeadsRef.current[cid] ??
-      (sampleLeadsRef.current[cid] = readPersistedSampleLeads(cid) ?? buildTemporarySampleLeads(cid));
-    persistSampleLeads(cid, currentSampleLeads);
-    try {
-      const response = await retryAsync(
-        () =>
-          authorizedFetch(`/api/leads?companyId=${encodeURIComponent(cid)}&mode=summary`, {
-            method: "GET",
-            cache: "no-store",
-          }),
-        { attempts: 2, delayMs: 300 },
-      );
-        const detail = (await response.json().catch(() => null)) as
-          | { ok?: boolean; leads?: CompanyLeadRow[] }
-          | null;
-        const fetchedLeads = response.ok && Array.isArray(detail?.leads) ? detail.leads.filter((lead) => !lead.isDeleted) : [];
+  // Where the leads come from: read straight from Firestore and kept live (subscribeCompanyLeads — "direct", once its
+  // first read arrives), or, when this browser can't read them that way (the leads rule not deployed yet, …), from
+  // /api/leads, polled ("api"). "pending" until the first direct read answers.
+  const [leadsSource, setLeadsSource] = useState<"pending" | "direct" | "api">("pending");
+  const leadsSourceRef = useRef(leadsSource);
+  // The latest direct read (every lead, before this user's visibility filter), and its first read's outcome (true once
+  // it arrives; false if it can't, or takes over 8s) — what loadLeads waits on instead of also asking the server.
+  const directLeadsRef = useRef<{ companyId: string; leads: CompanyLeadRow[] } | null>(null);
+  const directFirstReadRef = useRef<{ companyId: string; done: Promise<boolean> } | null>(null);
+  // Which company / view the direct read was last put on the page for (loadLeads does it once; see there).
+  const directAppliedKeyRef = useRef("");
+
+  // Fetched leads onto the page: the ones this user may see (all, or only theirs), with the local sample leads, a
+  // board move still saving kept where it was dropped — and saved on this device, to show straight away next visit
+  // (lib/last-known.ts; not when they came from there).
+  const applyFetchedLeads = useCallback(
+    (cid: string, fetched: CompanyLeadRow[], canViewOtherLeadsOverride?: boolean, options?: { fromSaved?: boolean }) => {
+      const effectiveCanViewOtherLeads = canViewOtherLeadsOverride ?? canViewOtherLeads;
+      const currentSampleLeads =
+        sampleLeadsRef.current[cid] ??
+        (sampleLeadsRef.current[cid] = readPersistedSampleLeads(cid) ?? buildTemporarySampleLeads(cid));
+      const live = fetched.filter((lead) => !lead.isDeleted);
       const visibleLeads = effectiveCanViewOtherLeads
-        ? fetchedLeads
-        : fetchedLeads.filter((lead) => String(lead.assignedToUid || "").trim() === currentUserUid);
+        ? live
+        : live.filter((lead) => String(lead.assignedToUid || "").trim() === currentUserUid);
       const visibleSampleLeads = effectiveCanViewOtherLeads
         ? currentSampleLeads
         : currentSampleLeads.filter((lead) => String(lead.assignedToUid || "").trim() === currentUserUid);
@@ -1258,12 +1272,58 @@ export default function LeadsPage() {
           })
         : fetchedLeads2;
       if (JSON.stringify(nextLeads) === JSON.stringify(shownLeadsRef.current)) return;
+      if (!options?.fromSaved) saveLastKnown(`leads:list:${cid}`, currentUserUid, visibleLeads);
       setLeads(nextLeads);
       setLeadDetailsById((current) => {
         const nextIds = new Set(nextLeads.map((lead) => String(lead.id || "").trim()).filter(Boolean));
         const nextEntries = Object.entries(current).filter(([id]) => nextIds.has(id));
         return nextEntries.length === Object.keys(current).length ? current : Object.fromEntries(nextEntries);
       });
+    },
+    [canViewOtherLeads, currentUserUid],
+  );
+  const applyFetchedLeadsRef = useRef(applyFetchedLeads);
+  useEffect(() => {
+    applyFetchedLeadsRef.current = applyFetchedLeads;
+  }, [applyFetchedLeads]);
+
+  const loadLeads = useCallback(async (companyId: string, canViewOtherLeadsOverride?: boolean) => {
+    const cid = String(companyId || "").trim();
+    if (!cid) {
+      setLeads([]);
+      return;
+    }
+    const effectiveCanViewOtherLeads = canViewOtherLeadsOverride ?? canViewOtherLeads;
+    const currentSampleLeads =
+      sampleLeadsRef.current[cid] ??
+      (sampleLeadsRef.current[cid] = readPersistedSampleLeads(cid) ?? buildTemporarySampleLeads(cid));
+    persistSampleLeads(cid, currentSampleLeads);
+    // Read directly (and kept live): its first read's still on its way — wait for it rather than also asking the
+    // server; once it's in, it goes on the page (with the sample leads) once — after that the live read brings each
+    // change itself, so a refresh after a save doesn't put back what was on the page before the save.
+    const firstDirectRead = directFirstReadRef.current;
+    if (leadsSourceRef.current === "pending" && firstDirectRead?.companyId === cid) await firstDirectRead.done;
+    const direct = directLeadsRef.current;
+    if (leadsSourceRef.current === "direct" && direct?.companyId === cid) {
+      const appliedKey = `${cid}|${effectiveCanViewOtherLeads}|${currentUserUid}`;
+      if (directAppliedKeyRef.current === appliedKey) return;
+      directAppliedKeyRef.current = appliedKey;
+      applyFetchedLeads(cid, direct.leads, effectiveCanViewOtherLeads);
+      return;
+    }
+    try {
+      const response = await retryAsync(
+        () =>
+          authorizedFetch(`/api/leads?companyId=${encodeURIComponent(cid)}&mode=summary`, {
+            method: "GET",
+            cache: "no-store",
+          }),
+        { attempts: 2, delayMs: 300 },
+      );
+      const detail = (await response.json().catch(() => null)) as
+        | { ok?: boolean; leads?: CompanyLeadRow[] }
+        | null;
+      applyFetchedLeads(cid, response.ok && Array.isArray(detail?.leads) ? detail.leads : [], effectiveCanViewOtherLeads);
     } catch {
       const visibleSampleLeads = effectiveCanViewOtherLeads
         ? currentSampleLeads
@@ -1275,7 +1335,77 @@ export default function LeadsPage() {
         return nextEntries.length === Object.keys(current).length ? current : Object.fromEntries(nextEntries);
       });
     }
-  }, [canViewOtherLeads, currentUserUid]);
+  }, [applyFetchedLeads, canViewOtherLeads, currentUserUid]);
+
+  // The leads, read straight from Firestore and kept live — started as soon as the company's known (this device's
+  // last company while access is still being checked), not after access. They go on the page once access says this
+  // user may see leads (the run below, via loadLeads); a later change goes straight on. If this browser can't read
+  // them directly, the page asks /api/leads instead (and polls it).
+  const accessReadyForLeadsRef = useRef(false);
+  useEffect(() => {
+    accessReadyForLeadsRef.current = access.status === "ready" && canAccessLeads;
+  }, [access.status, canAccessLeads]);
+  const leadsCompanyIdRef = useRef("");
+  useEffect(() => {
+    leadsCompanyIdRef.current = activeCompanyId;
+  }, [activeCompanyId]);
+  const [storedLeadsCompanyId] = useState(() => {
+    if (typeof window === "undefined") return "";
+    try {
+      return String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim();
+    } catch {
+      return "";
+    }
+  });
+  const leadsListenCompanyId = activeCompanyId || (access.status === "loading" ? storedLeadsCompanyId : "");
+  const setLeadsSourceBoth = useCallback((next: "pending" | "direct" | "api") => {
+    leadsSourceRef.current = next;
+    setLeadsSource(next);
+  }, []);
+  useEffect(() => {
+    const cid = leadsListenCompanyId;
+    if (!cid || !currentUserUid) return;
+    let active = true;
+    let settle: (ok: boolean) => void = () => {};
+    const done = new Promise<boolean>((resolve) => {
+      settle = resolve;
+    });
+    // No first read in 8s: ask the server (and poll it) meanwhile — a read that turns up later still takes over.
+    const timer = window.setTimeout(() => {
+      if (!active) return;
+      if (leadsSourceRef.current === "pending") setLeadsSourceBoth("api");
+      settle(false);
+    }, 8000);
+    directFirstReadRef.current = { companyId: cid, done };
+    directLeadsRef.current = null;
+    directAppliedKeyRef.current = "";
+    setLeadsSourceBoth("pending");
+    const unsubscribe = subscribeCompanyLeads(
+      cid,
+      (rows) => {
+        if (!active) return;
+        directLeadsRef.current = { companyId: cid, leads: rows };
+        setLeadsSourceBoth("direct");
+        window.clearTimeout(timer);
+        settle(true);
+        // Access already says this user may see leads: straight onto the page (else the run below puts the first
+        // read on, via loadLeads, once it does).
+        if (accessReadyForLeadsRef.current && leadsCompanyIdRef.current === cid) applyFetchedLeadsRef.current(cid, rows);
+      },
+      () => {
+        if (!active) return;
+        setLeadsSourceBoth("api");
+        window.clearTimeout(timer);
+        settle(false);
+      },
+    );
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+      settle(false);
+      unsubscribe();
+    };
+  }, [currentUserUid, leadsListenCompanyId, setLeadsSourceBoth]);
 
   useEffect(() => {
     // Access itself is still loading/erroring — the render below is driven by access.status
@@ -1293,6 +1423,26 @@ export default function LeadsPage() {
       return;
     }
     let cancelled = false;
+    // The company's lead set-up the page needs: its theme colour, lead forms, lead statuses and card fields.
+    const applyLeadsCompanyDoc = (companyDoc: Record<string, unknown> | null) => {
+      setCompanyThemeColor(String(companyDoc?.themeColor || "").trim() || "#2F6BFF");
+      setLeadForms(normalizeLeadForms(companyDoc?.leadForms));
+      setLeadStatusRows(normalizeLeadStatuses(companyDoc?.leadStatuses));
+      setFieldLayout(
+        normalizeLeadFieldLayout(
+          ((companyDoc?.integrations as Record<string, unknown> | undefined)?.zapierLeads as Record<string, unknown> | undefined)?.fieldLayout,
+        ),
+      );
+    };
+    // Straight away: what this device last showed for this company (its leads and their set-up) — then refreshed
+    // below, re-rendering only what changed (lib/last-known.ts).
+    const savedCompany = readLastKnown<Record<string, unknown>>(`leads:company:${activeCompanyId}`, currentUserUid);
+    const savedLeads = canAccessLeads ? readLastKnown<CompanyLeadRow[]>(`leads:list:${activeCompanyId}`, currentUserUid) : null;
+    if (savedCompany && Array.isArray(savedLeads)) {
+      applyLeadsCompanyDoc(savedCompany);
+      applyFetchedLeads(activeCompanyId, savedLeads, canViewOtherLeads, { fromSaved: true });
+      setIsLoading(false);
+    }
     const run = async () => {
       const leadsLoad = canAccessLeads
         ? loadLeads(activeCompanyId, canViewOtherLeads).catch(() => {
@@ -1309,15 +1459,16 @@ export default function LeadsPage() {
           { attempts: 2, delayMs: 250 },
         );
         if (cancelled) return;
-        setCompanyThemeColor(String(companyDoc?.themeColor || "").trim() || "#2F6BFF");
+        const doc = (companyDoc ?? null) as Record<string, unknown> | null;
+        applyLeadsCompanyDoc(doc);
         setCurrentUserPinColor(String(userColorMap[String(user?.uid || "").trim()] || "").trim());
-        setLeadForms(normalizeLeadForms((companyDoc as Record<string, unknown> | null)?.leadForms));
-        setLeadStatusRows(normalizeLeadStatuses((companyDoc as Record<string, unknown> | null)?.leadStatuses));
-        setFieldLayout(
-          normalizeLeadFieldLayout(
-            ((companyDoc?.integrations as Record<string, unknown> | undefined)?.zapierLeads as Record<string, unknown> | undefined)?.fieldLayout,
-          ),
-        );
+        // Kept for next time (just the parts above).
+        saveLastKnown(`leads:company:${activeCompanyId}`, currentUserUid, {
+          themeColor: doc?.themeColor ?? "",
+          leadForms: doc?.leadForms ?? [],
+          leadStatuses: doc?.leadStatuses ?? [],
+          integrations: { zapierLeads: { fieldLayout: ((doc?.integrations as Record<string, unknown> | undefined)?.zapierLeads as Record<string, unknown> | undefined)?.fieldLayout ?? [] } },
+        });
         if (!canAccessLeads) {
           setLeads([]);
           return;
@@ -1337,7 +1488,7 @@ export default function LeadsPage() {
     return () => {
       cancelled = true;
     };
-  }, [access.status, activeCompanyId, canAccessLeads, canViewOtherLeads, loadLeads, user?.uid]);
+  }, [access.status, activeCompanyId, applyFetchedLeads, canAccessLeads, canViewOtherLeads, currentUserUid, loadLeads, user?.uid]);
 
   const getLeadById = useCallback(
     (leadId: string) => {
@@ -1378,6 +1529,15 @@ export default function LeadsPage() {
       }
       setDetailLoadingLeadId(id);
       try {
+        if (leadsSourceRef.current !== "api") {
+          const direct = await fetchCompanyLeadDirect(activeCompanyId, id);
+          if (direct === null) return null;
+          if (direct) {
+            if (!canViewOtherLeads && String(direct.assignedToUid || "").trim() !== currentUserUid) return null;
+            setLeadDetailsById((current) => ({ ...current, [id]: direct }));
+            return direct;
+          }
+        }
         const response = await authorizedFetch(
           `/api/leads?companyId=${encodeURIComponent(activeCompanyId)}&mode=detail&leadId=${encodeURIComponent(id)}`,
           {
@@ -1403,14 +1563,15 @@ export default function LeadsPage() {
     [activeCompanyId, canViewOtherLeads, currentUserUid],
   );
 
+  // Only when the leads come from /api/leads — read directly, they're kept live already.
   useEffect(() => {
-    if (access.status !== "ready" || !canAccessLeads || !activeCompanyId) return;
+    if (access.status !== "ready" || !canAccessLeads || !activeCompanyId || leadsSource !== "api") return;
     const intervalId = window.setInterval(() => {
       if (document.visibilityState === "hidden") return;
       void loadLeads(activeCompanyId);
     }, 10000);
     return () => window.clearInterval(intervalId);
-  }, [access.status, activeCompanyId, canAccessLeads, loadLeads]);
+  }, [access.status, activeCompanyId, canAccessLeads, leadsSource, loadLeads]);
 
   useEffect(() => {
     if (!selectedLeadId) return;
@@ -2334,6 +2495,244 @@ export default function LeadsPage() {
     }
     setDeletingLeadId("");
   };
+  // The lead pop-up's field being edited (its pencil, on hover): which lead, which field (its column key) and the text
+  // being typed — null when none is.
+  const [leadFieldEdit, setLeadFieldEdit] = useState<{ leadId: string; key: string; value: string } | null>(null);
+  const [leadFieldSaving, setLeadFieldSaving] = useState(false);
+  const [leadFieldError, setLeadFieldError] = useState("");
+  // Esc: the field closes without its leaving then saving it.
+  const leadFieldEditCancelledRef = useRef(false);
+
+  // Saves the field being edited: into the answer it's shown from (the same rawFields key, whatever its case or
+  // spacing — or a new one under the column's key), with the lead's name / email / phone worked out again (the card,
+  // list, archive and notifications read those). Unchanged: it just closes.
+  const saveLeadFieldEdit = async (lead: CompanyLeadRow, column: LeadFieldLayoutRow, layout: LeadFieldLayoutRow[]) => {
+    const edit = leadFieldEdit;
+    if (!edit || edit.leadId !== lead.id || edit.key !== column.key || leadFieldSaving || !isUserVerified) return;
+    // Closes this field — unless another one has been opened since.
+    const closeThis = () => setLeadFieldEdit((prev) => (prev && prev.leadId === lead.id && prev.key === column.key ? null : prev));
+    const raw = (lead.rawFields ?? {}) as Record<string, unknown>;
+    const next = edit.value.trim();
+    if (next === resolveLeadColumnValue(getLeadDynamicFields(lead), column, layout).trim()) {
+      closeThis();
+      return;
+    }
+    const rawKey = Object.keys(raw).find((key) => normalizeLeadFieldKey(key) === normalizeLeadFieldKey(column.key)) ?? column.key;
+    const fieldsPatch: Record<string, string> = { [rawKey]: next };
+    const nextLead: CompanyLeadRow = { ...lead, rawFields: { ...raw, ...fieldsPatch } };
+    const details = leadListDetails(nextLead, layout);
+    const contact = {
+      name: leadClientName(getLeadDynamicFields(nextLead), layout) || lead.name || "",
+      email: details.email,
+      phone: details.phone,
+    };
+    const updatedAtIso = new Date().toISOString();
+    const apply = (row: CompanyLeadRow): CompanyLeadRow =>
+      row.id === lead.id ? { ...row, rawFields: { ...((row.rawFields ?? {}) as Record<string, unknown>), ...fieldsPatch }, ...contact, updatedAtIso } : row;
+    const applyEverywhere = () => {
+      setLeads((prev) => prev.map(apply));
+      setLeadDetailsById((prev) => (prev[lead.id] ? { ...prev, [lead.id]: apply(prev[lead.id]) } : prev));
+    };
+    if (isTemporarySampleLead(lead)) {
+      sampleLeadsRef.current[lead.companyId] = (sampleLeadsRef.current[lead.companyId] || []).map(apply);
+      persistSampleLeads(lead.companyId, sampleLeadsRef.current[lead.companyId]);
+      applyEverywhere();
+      closeThis();
+      return;
+    }
+    setLeadFieldSaving(true);
+    setLeadFieldError("");
+    const response = await authorizedFetch("/api/leads", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ companyId: lead.companyId, leadId: lead.id, fieldsPatch, ...contact }),
+    }).catch(() => null);
+    setLeadFieldSaving(false);
+    if (!response?.ok) {
+      setLeadFieldError("Couldn't save — try again.");
+      return;
+    }
+    applyEverywhere();
+    closeThis();
+  };
+
+  // The lead pop-up's Notes: the note being written (for which lead), adding one, its error, and the note whose delete
+  // is waiting for its second click (and the one being deleted).
+  const [leadNoteDraft, setLeadNoteDraft] = useState<{ leadId: string; text: string }>({ leadId: "", text: "" });
+  const [leadNoteSaving, setLeadNoteSaving] = useState(false);
+  const [leadNoteError, setLeadNoteError] = useState<{ leadId: string; message: string }>({ leadId: "", message: "" });
+  const [confirmDeleteLeadNoteId, setConfirmDeleteLeadNoteId] = useState("");
+  const [deletingLeadNoteId, setDeletingLeadNoteId] = useState("");
+
+  // A change to a lead's notes, onto the page (its list row, its opened details and — a sample lead — its saved copy).
+  const applyLeadNotes = (lead: CompanyLeadRow, update: (notes: LeadNote[]) => LeadNote[]) => {
+    const apply = (row: CompanyLeadRow): CompanyLeadRow => (row.id === lead.id ? { ...row, notes: update(row.notes ?? []) } : row);
+    if (isTemporarySampleLead(lead)) {
+      sampleLeadsRef.current[lead.companyId] = (sampleLeadsRef.current[lead.companyId] || []).map(apply);
+      persistSampleLeads(lead.companyId, sampleLeadsRef.current[lead.companyId]);
+    }
+    setLeads((prev) => prev.map(apply));
+    setLeadDetailsById((prev) => (prev[lead.id] ? { ...prev, [lead.id]: apply(prev[lead.id]) } : prev));
+  };
+
+  // Adds the note being written — who wrote it and when are the server's (a sample lead's stay on this device).
+  const addLeadNote = async (lead: CompanyLeadRow) => {
+    const text = leadNoteDraft.leadId === lead.id ? leadNoteDraft.text.trim() : "";
+    if (!text || leadNoteSaving || !isUserVerified) return;
+    setLeadNoteError({ leadId: "", message: "" });
+    if (isTemporarySampleLead(lead)) {
+      const note: LeadNote = {
+        id: `note_${Date.now().toString(36)}`,
+        text,
+        createdAtIso: new Date().toISOString(),
+        createdByUid: currentUserUid,
+        createdByName: String(user?.displayName || "").trim(),
+      };
+      applyLeadNotes(lead, (notes) => [...notes, note]);
+      setLeadNoteDraft({ leadId: lead.id, text: "" });
+      return;
+    }
+    setLeadNoteSaving(true);
+    const response = await authorizedFetch("/api/leads", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ companyId: lead.companyId, leadId: lead.id, addNote: text }),
+    }).catch(() => null);
+    const detail = (await response?.json().catch(() => null)) as { ok?: boolean; note?: LeadNote } | null;
+    setLeadNoteSaving(false);
+    const added = detail?.note;
+    if (!response?.ok || !added) {
+      setLeadNoteError({ leadId: lead.id, message: "Couldn't add the note — try again." });
+      return;
+    }
+    // (The live list may have brought it already.)
+    applyLeadNotes(lead, (notes) => (notes.some((note) => note.id === added.id) ? notes : [...notes, added]));
+    setLeadNoteDraft((prev) => (prev.leadId === lead.id && prev.text.trim() === text ? { leadId: lead.id, text: "" } : prev));
+  };
+
+  const deleteLeadNote = async (lead: CompanyLeadRow, note: LeadNote) => {
+    if (deletingLeadNoteId || !isUserVerified) return;
+    setConfirmDeleteLeadNoteId("");
+    setLeadNoteError({ leadId: "", message: "" });
+    if (isTemporarySampleLead(lead)) {
+      applyLeadNotes(lead, (notes) => notes.filter((row) => row.id !== note.id));
+      return;
+    }
+    setDeletingLeadNoteId(note.id);
+    const response = await authorizedFetch("/api/leads", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ companyId: lead.companyId, leadId: lead.id, deleteNoteId: note.id }),
+    }).catch(() => null);
+    setDeletingLeadNoteId("");
+    if (!response?.ok) {
+      setLeadNoteError({ leadId: lead.id, message: "Couldn't delete the note — try again." });
+      return;
+    }
+    applyLeadNotes(lead, (notes) => notes.filter((row) => row.id !== note.id));
+  };
+
+  // The lead pop-up's Checklists: this user's saved checklists (User Settings) to add from — read when a lead's opened
+  // (null until then) — the checklist whose remove is waiting for its second click, and an error.
+  const [leadChecklistTemplates, setLeadChecklistTemplates] = useState<ChecklistTemplate[] | null>(null);
+  const [confirmRemoveLeadChecklistId, setConfirmRemoveLeadChecklistId] = useState("");
+  const [leadChecklistError, setLeadChecklistError] = useState<{ leadId: string; message: string }>({ leadId: "", message: "" });
+  const isLeadPopupOpen = Boolean(selectedLeadId);
+  useEffect(() => {
+    if (!isLeadPopupOpen || !currentUserUid) return;
+    let cancelled = false;
+    void fetchChecklistTemplates(currentUserUid).then((templates) => {
+      if (!cancelled) setLeadChecklistTemplates(templates);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUserUid, isLeadPopupOpen]);
+
+  // A lead's checklists as shown (its list row — kept live — else its opened details).
+  const leadChecklistsOf = (lead: CompanyLeadRow) => (leads.find((row) => row.id === lead.id) ?? lead).checklists ?? [];
+  // A change to them onto the page (its list row, its opened details and — a sample lead — its saved copy).
+  const applyLeadChecklists = (lead: CompanyLeadRow, update: (checklists: ProjectChecklist[]) => ProjectChecklist[]) => {
+    const apply = (row: CompanyLeadRow): CompanyLeadRow => (row.id === lead.id ? { ...row, checklists: update(row.checklists ?? []) } : row);
+    if (isTemporarySampleLead(lead)) {
+      sampleLeadsRef.current[lead.companyId] = (sampleLeadsRef.current[lead.companyId] || []).map(apply);
+      persistSampleLeads(lead.companyId, sampleLeadsRef.current[lead.companyId]);
+    }
+    setLeads((prev) => prev.map(apply));
+    setLeadDetailsById((prev) => (prev[lead.id] ? { ...prev, [lead.id]: apply(prev[lead.id]) } : prev));
+  };
+  // Each change shows straight away, then is saved; if it can't be, just that change is undone (`revert`).
+  const saveLeadChecklistOp = async (
+    lead: CompanyLeadRow,
+    op: Record<string, unknown>,
+    revert: (checklists: ProjectChecklist[]) => ProjectChecklist[],
+    failMessage: string,
+  ) => {
+    if (isTemporarySampleLead(lead)) return;
+    const response = await authorizedFetch("/api/leads", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ companyId: lead.companyId, leadId: lead.id, checklistOp: op }),
+    }).catch(() => null);
+    if (response?.ok) return;
+    applyLeadChecklists(lead, revert);
+    setLeadChecklistError({ leadId: lead.id, message: failMessage });
+  };
+
+  // Adds a copy of one of this user's saved checklists, every item unticked (as a project does).
+  const addLeadChecklistFromTemplate = (lead: CompanyLeadRow, template: ChecklistTemplate) => {
+    if (!isUserVerified) return;
+    setLeadChecklistError({ leadId: "", message: "" });
+    if (leadChecklistsOf(lead).length >= 20) {
+      setLeadChecklistError({ leadId: lead.id, message: "A lead can have up to 20 checklists." });
+      return;
+    }
+    const suffix = () => `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    const checklist: ProjectChecklist = {
+      id: `checklist_${suffix()}`,
+      name: template.name,
+      items: template.items.map((item) => ({ id: `item_${suffix()}`, text: item.text, checked: false })),
+      addedAt: new Date().toISOString(),
+    };
+    applyLeadChecklists(lead, (rows) => [...rows, checklist]);
+    void saveLeadChecklistOp(
+      lead,
+      { type: "add", checklist },
+      (rows) => rows.filter((row) => row.id !== checklist.id),
+      "Couldn't add the checklist — try again.",
+    );
+  };
+
+  const toggleLeadChecklistItem = (lead: CompanyLeadRow, checklistId: string, itemId: string) => {
+    if (!isUserVerified) return;
+    const item = leadChecklistsOf(lead).find((row) => row.id === checklistId)?.items.find((row) => row.id === itemId);
+    if (!item) return;
+    setLeadChecklistError({ leadId: "", message: "" });
+    const setChecked = (checked: boolean) => (rows: ProjectChecklist[]) =>
+      rows.map((row) =>
+        row.id === checklistId ? { ...row, items: row.items.map((entry) => (entry.id === itemId ? { ...entry, checked } : entry)) } : row,
+      );
+    applyLeadChecklists(lead, setChecked(!item.checked));
+    void saveLeadChecklistOp(lead, { type: "check", checklistId, itemId, checked: !item.checked }, setChecked(item.checked), "Couldn't save that — try again.");
+  };
+
+  const removeLeadChecklist = (lead: CompanyLeadRow, checklistId: string) => {
+    if (!isUserVerified) return;
+    const current = leadChecklistsOf(lead);
+    const index = current.findIndex((row) => row.id === checklistId);
+    if (index < 0) return;
+    const removed = current[index];
+    setConfirmRemoveLeadChecklistId("");
+    setLeadChecklistError({ leadId: "", message: "" });
+    applyLeadChecklists(lead, (rows) => rows.filter((row) => row.id !== checklistId));
+    void saveLeadChecklistOp(
+      lead,
+      { type: "remove", checklistId },
+      (rows) => (rows.some((row) => row.id === checklistId) ? rows : [...rows.slice(0, index), removed, ...rows.slice(index)]),
+      "Couldn't remove the checklist — try again.",
+    );
+  };
+
   const onSelectLeadStatus = async (lead: CompanyLeadRow, nextStatus: string) => {
     if (!nextStatus || statusUpdatingLeadId || !isUserVerified) return;
     // getLeadById() (used by both the detail drawer and the board's drag-drop
@@ -3712,8 +4111,8 @@ export default function LeadsPage() {
                         setCardStatusMenuLeadId(lead.id);
                       }
                     }}
-                    className="relative z-40 inline-flex h-6 items-center justify-center rounded-full px-2.5 text-[10px] font-bold transition hover:brightness-95"
-                    style={leadStatusPillStyle(lead.status || "New")}
+                    className="glass-shine relative z-40 inline-flex h-6 items-center justify-center rounded-full px-2.5 text-[10px] font-bold transition hover:brightness-95"
+                    style={glassShineStyle(leadStatusPillStyle(lead.status || "New"))}
                   >
                     {lead.status || "New"}
                   </button>
@@ -3806,6 +4205,322 @@ export default function LeadsPage() {
     );
   }
 
+  // A lead's Checklists: Add Checklist (a menu of this user's saved checklists — or, with none saved, a link to make one
+  // in User Settings), then each one added: its name, how many are done (and a bar), and its items to tick off. Anyone
+  // can tick; removing one takes a second click. "side": the panel on the pop-up's left; "inline": inside the pop-up.
+  function renderLeadChecklists(lead: CompanyLeadRow, checklists: ProjectChecklist[], variant: "side" | "inline") {
+    const canEdit = isUserVerified;
+    const error = leadChecklistError.leadId === lead.id ? leadChecklistError.message : "";
+    const templates = leadChecklistTemplates;
+    const addControl = !canEdit ? null : templates && templates.length === 0 ? (
+      <Link href="/user-settings" className="text-[12px] font-medium underline underline-offset-2" style={{ color: "var(--brand)" }}>
+        Create a checklist in User Settings
+      </Link>
+    ) : (
+      <GlassActionMenu
+        items={(templates ?? []).map((template) => ({
+          key: template.id,
+          label: template.name,
+          detail: `${template.items.length} item${template.items.length === 1 ? "" : "s"}`,
+          onSelect: () => addLeadChecklistFromTemplate(lead, template),
+        }))}
+        openWithOneItem
+        menuMinWidth={240}
+        ariaLabel="Add a checklist"
+        // Round-ended, with the glass shine (lib/glass-shine.ts) in the brand blue — as Add Note.
+        triggerClassName="glass-shine inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-full px-4 text-[12px] font-bold text-white transition hover:brightness-105"
+        triggerStyle={glassShineStyle("var(--brand)")}
+      >
+        <Plus size={14} strokeWidth={2.75} />
+        Add Checklist
+      </GlassActionMenu>
+    );
+    const heading = (
+      <div className="flex items-center justify-between gap-2">
+        <p className="flex items-center gap-2 text-[16px] font-semibold" style={{ color: "var(--text-main)" }}>
+          Checklists
+          {checklists.length ? (
+            <span
+              className="inline-flex h-5 min-w-5 items-center justify-center rounded-full border px-1.5 text-[11px] font-bold"
+              style={{ ...LEAD_POPUP_BOX_STYLE, color: "var(--text-main)" }}
+            >
+              {checklists.length}
+            </span>
+          ) : null}
+        </p>
+        {addControl}
+      </div>
+    );
+    const list = checklists.length ? (
+      <div className="space-y-2">
+        {checklists.map((checklist) => {
+          const total = checklist.items.length;
+          const done = checklist.items.filter((item) => item.checked).length;
+          const complete = total > 0 && done === total;
+          const armed = confirmRemoveLeadChecklistId === checklist.id;
+          return (
+            <div
+              key={checklist.id}
+              className="group/checklist relative rounded-[14px] border px-3 py-2.5"
+              style={LEAD_POPUP_BOX_STYLE}
+              onMouseLeave={() => {
+                if (armed) setConfirmRemoveLeadChecklistId("");
+              }}
+            >
+              <div className={`flex items-center gap-2 ${canEdit ? "pr-8" : ""}`}>
+                <p className="min-w-0 flex-1 truncate text-[14px] font-semibold" style={{ color: "var(--text-main)" }} title={checklist.name}>
+                  {checklist.name}
+                </p>
+                <span className="shrink-0 text-[11px] font-bold" style={{ color: complete ? "#15803D" : "var(--text-muted)" }}>
+                  {done}/{total}
+                </span>
+              </div>
+              {/* How far through it is — green once it's all done. */}
+              <div className="mt-2 h-1.5 overflow-hidden rounded-full" style={{ backgroundColor: "color-mix(in srgb, var(--text-main) 10%, transparent)" }}>
+                <div
+                  className="h-full rounded-full transition-[width] duration-300"
+                  style={{ width: `${total ? (done / total) * 100 : 0}%`, backgroundColor: complete ? "#16A34A" : "var(--brand)" }}
+                />
+              </div>
+              <div className="mt-1.5 space-y-0.5">
+                {checklist.items.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    disabled={!canEdit}
+                    onClick={() => toggleLeadChecklistItem(lead, checklist.id, item.id)}
+                    className="flex w-full items-start gap-2.5 rounded-[8px] px-1.5 py-1.5 text-left transition enabled:hover:bg-[color-mix(in_srgb,var(--text-main)_6%,transparent)] disabled:cursor-default"
+                    aria-pressed={item.checked}
+                  >
+                    <span
+                      className={`mt-px inline-flex h-[17px] w-[17px] shrink-0 items-center justify-center rounded-[5px] border ${item.checked ? "glass-shine" : ""}`}
+                      style={
+                        item.checked
+                          ? glassShineStyle("var(--brand)")
+                          : { borderColor: "color-mix(in srgb, var(--text-main) 28%, transparent)", backgroundColor: "var(--panel-bg)" }
+                      }
+                    >
+                      {item.checked ? <Check size={12} color="#ffffff" strokeWidth={3} /> : null}
+                    </span>
+                    <span
+                      className="min-w-0 break-words text-[13.5px] font-medium"
+                      style={{ color: item.checked ? "var(--text-muted)" : "var(--text-main)", textDecoration: item.checked ? "line-through" : "none" }}
+                    >
+                      {item.text}
+                    </span>
+                  </button>
+                ))}
+              </div>
+              {canEdit ? (
+                armed ? (
+                  <button
+                    type="button"
+                    onClick={() => removeLeadChecklist(lead, checklist.id)}
+                    className="glass-shine absolute right-2 top-2 inline-flex h-6 items-center justify-center rounded-full px-2.5 text-[11px] font-bold text-white hover:brightness-105"
+                    style={glassShineStyle("#EF4444")}
+                  >
+                    Remove
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmRemoveLeadChecklistId(checklist.id)}
+                    className="absolute right-2 top-2 inline-flex h-6 w-6 items-center justify-center rounded-full transition-opacity hover:bg-[var(--danger-soft)] hover:text-[var(--danger)] focus-visible:opacity-100 pointer-fine:opacity-0 pointer-fine:group-hover/checklist:opacity-100"
+                    style={{ color: "var(--text-muted)" }}
+                    title="Remove checklist"
+                    aria-label={`Remove ${checklist.name}`}
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                )
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    ) : null;
+    const errorLine = error ? (
+      <p className="text-[12px] font-medium" style={{ color: "var(--danger-strong)" }}>
+        {error}
+      </p>
+    ) : null;
+    if (variant === "inline") {
+      return (
+        <div className="mt-4 space-y-3">
+          {heading}
+          {errorLine}
+          {list}
+        </div>
+      );
+    }
+    return (
+      <div className="absolute inset-0 flex flex-col">
+        <div className="shrink-0 space-y-3 px-5 pb-3 pt-5">
+          {heading}
+          {errorLine}
+        </div>
+        <div className="glass-scroll min-h-0 flex-1 overflow-y-auto px-5 pb-5">
+          {list ?? (
+            // Nothing added yet: what this is for, quietly.
+            <div className="flex flex-col items-center gap-2 pt-10 text-center" style={{ color: "var(--text-muted)" }}>
+              <ListChecks size={26} strokeWidth={1.75} />
+              <p className="max-w-[220px] text-[12.5px] font-medium">Add one of your saved checklists to tick off for this lead.</p>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // A lead's Notes: a box to write one (and Add Note), then its notes, newest first — each with who wrote it (their
+  // initials in their colour) and when; the writer (or an owner / admin) can delete one (a second click confirms).
+  // "side": the panel beside the pop-up, its notes scrolling under the box; "inline": inside the pop-up, under its
+  // fields (a smaller screen).
+  function renderLeadNotes(lead: CompanyLeadRow, notes: LeadNote[], variant: "side" | "inline") {
+    const draft = leadNoteDraft.leadId === lead.id ? leadNoteDraft.text : "";
+    const error = leadNoteError.leadId === lead.id ? leadNoteError.message : "";
+    const canAdd = isUserVerified;
+    const canDeleteAny = isOwnerOrAdmin(access.role);
+    const newestFirst = [...notes].reverse();
+    const composer = canAdd ? (
+      <div>
+        <textarea
+          value={draft}
+          rows={3}
+          disabled={leadNoteSaving}
+          placeholder="Add a note…"
+          aria-label="New note"
+          onChange={(e) => setLeadNoteDraft({ leadId: lead.id, text: e.target.value })}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            // Ctrl / Cmd + Enter adds it (Enter is a new line).
+            if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+              e.preventDefault();
+              void addLeadNote(lead);
+            }
+          }}
+          className="block w-full resize-none rounded-[14px] border px-3 py-2.5 text-[14px] font-medium outline-none transition placeholder:text-[var(--text-muted)] focus:border-[var(--brand)] disabled:opacity-60"
+          style={{ ...LEAD_POPUP_BOX_STYLE, color: "var(--text-main)" }}
+        />
+        <div className="mt-2 flex items-center justify-end gap-2">
+          {error ? (
+            <p className="mr-auto text-[12px] font-medium" style={{ color: "var(--danger-strong)" }}>
+              {error}
+            </p>
+          ) : null}
+          {/* Round-ended, with the glass shine (lib/glass-shine.ts) in the brand blue. */}
+          <button
+            type="button"
+            disabled={!draft.trim() || leadNoteSaving}
+            onClick={() => void addLeadNote(lead)}
+            className="glass-shine inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-full px-4 text-[12px] font-bold text-white transition hover:brightness-105 disabled:opacity-50"
+            style={glassShineStyle("var(--brand)")}
+          >
+            <Plus size={14} strokeWidth={2.75} />
+            {leadNoteSaving ? "Adding..." : "Add Note"}
+          </button>
+        </div>
+      </div>
+    ) : null;
+    const list = newestFirst.length ? (
+      <div className="space-y-2">
+        {newestFirst.map((note) => {
+          const member = companyMembers.find((row) => row.uid === note.createdByUid) ?? null;
+          const name = String(member?.displayName || note.createdByName || "A teammate").trim();
+          const color = String(member?.badgeColor || member?.userColor || "").trim() || "#7D99B3";
+          const canDelete = canAdd && (note.createdByUid === currentUserUid || canDeleteAny);
+          const armed = confirmDeleteLeadNoteId === note.id;
+          const deleting = deletingLeadNoteId === note.id;
+          return (
+            <div
+              key={note.id}
+              className="group/note relative rounded-[14px] border px-3 py-2.5"
+              style={LEAD_POPUP_BOX_STYLE}
+              onMouseLeave={() => {
+                if (armed) setConfirmDeleteLeadNoteId("");
+              }}
+            >
+              <div className={`flex items-center gap-2 ${canDelete ? "pr-8" : ""}`}>
+                <span
+                  className="glass-shine inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white"
+                  style={glassShineStyle(color)}
+                  aria-hidden="true"
+                >
+                  {contactInitials(name, "")}
+                </span>
+                <span className="min-w-0 truncate text-[12px] font-medium" style={{ color: "var(--text-main)" }}>
+                  {name}
+                </span>
+                <span className="ml-auto shrink-0 text-[11px] font-medium" style={{ color: "var(--text-muted)" }}>
+                  {formatLeadDate(note.createdAtIso)}
+                </span>
+              </div>
+              <p className="mt-1.5 whitespace-pre-wrap break-words text-[13.5px] font-medium" style={{ color: "var(--text-main)" }}>
+                {note.text}
+              </p>
+              {canDelete ? (
+                armed ? (
+                  <button
+                    type="button"
+                    disabled={deleting}
+                    onClick={() => void deleteLeadNote(lead, note)}
+                    className="glass-shine absolute right-2 top-2 inline-flex h-6 items-center justify-center rounded-full px-2.5 text-[11px] font-bold text-white hover:brightness-105 disabled:opacity-60"
+                    style={glassShineStyle("#EF4444")}
+                  >
+                    {deleting ? "Deleting..." : "Delete"}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={Boolean(deletingLeadNoteId)}
+                    onClick={() => setConfirmDeleteLeadNoteId(note.id)}
+                    className="absolute right-2 top-2 inline-flex h-6 w-6 items-center justify-center rounded-full transition-opacity hover:bg-[var(--danger-soft)] hover:text-[var(--danger)] focus-visible:opacity-100 pointer-fine:opacity-0 pointer-fine:group-hover/note:opacity-100"
+                    style={{ color: "var(--text-muted)" }}
+                    title="Delete note"
+                    aria-label="Delete note"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                )
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    ) : null;
+    const heading = (
+      <p className="flex items-center gap-2 text-[16px] font-semibold" style={{ color: "var(--text-main)" }}>
+        Notes
+        {notes.length ? (
+          <span
+            className="inline-flex h-5 min-w-5 items-center justify-center rounded-full border px-1.5 text-[11px] font-bold"
+            style={{ ...LEAD_POPUP_BOX_STYLE, color: "var(--text-main)" }}
+          >
+            {notes.length}
+          </span>
+        ) : null}
+      </p>
+    );
+    if (variant === "inline") {
+      return (
+        <div className="mt-4 space-y-3">
+          {heading}
+          {composer}
+          {list}
+        </div>
+      );
+    }
+    return (
+      <div className="absolute inset-0 flex flex-col">
+        <div className="shrink-0 space-y-3 px-5 pb-3 pt-5">
+          {heading}
+          {composer}
+        </div>
+        <div className="glass-scroll min-h-0 flex-1 overflow-y-auto px-5 pb-5">{list}</div>
+      </div>
+    );
+  }
+
   function renderLeadDetailDrawer() {
     if (!shouldRenderLeadDetailModal || typeof document === "undefined") return null;
     const lead = selectedLeadId ? (getLeadById(selectedLeadId) ?? lastLeadDetailModalLeadRef.current) : lastLeadDetailModalLeadRef.current;
@@ -3819,37 +4534,63 @@ export default function LeadsPage() {
       leadClientName(leadFields, leadLayout) ||
       lead.name || lead.email || lead.phone || "Untitled Lead";
     const isDetailLoading = detailLoadingLeadId === lead.id && !leadDetailsById[lead.id];
+    const leadPhotoItems = normalizeLeadImageItems(renderLead);
     const assignedUid = String(lead.assignedToUid || "").trim();
     const assignedMember = companyMembers.find((member) => member.uid === assignedUid) ?? null;
     const assignedLabel = String(lead.assignedToName || lead.assignedTo || assignedMember?.displayName || "").trim();
     const assignedColor = String(assignedMember?.badgeColor || assignedMember?.userColor || companyThemeColor).trim() || companyThemeColor;
     const assignedInitials = assignedLabel.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase() || "").join("");
+    // Its notes and checklists from the list (kept live), else its opened details.
+    const leadNotes = (leads.find((row) => row.id === lead.id) ?? renderLead).notes ?? [];
+    const leadChecklists = leadChecklistsOf(renderLead);
+    const popupTint = leadPopupTintStyle(String(leadStatusPillStyle(lead.status || "New").backgroundColor || companyThemeColor));
     return createPortal(
-      <div className="glass-modal-backdrop fixed inset-0 z-[230] flex items-center justify-center px-4 py-4" onClick={() => setSelectedLeadId("")}>
+      <div
+        className="glass-modal-backdrop fixed inset-0 z-[230] flex items-center justify-center px-4 py-4 max-sm:p-0"
+        onClick={() => {
+          setSelectedLeadId("");
+          setLeadFieldEdit(null);
+        }}
+      >
+        {/* The pop-up, with its Checklists on its left and its Notes on its right — panels of the same look (a wide
+            enough screen; smaller, they're inside it, under its fields): all three open and close together. */}
         <div
           ref={leadDetailModalPanelRef}
           onClick={(e) => e.stopPropagation()}
-          className="glass-modal-panel relative isolate flex flex-col overflow-hidden"
-          style={{
-            width: "min(560px, 96vw)",
-            maxHeight: "min(720px, 90vh)",
-          }}
+          className="flex items-stretch gap-3 max-sm:h-[100dvh] max-sm:w-full"
+        >
+        {/* Its Checklists: as tall as the pop-up (at least 440px), scrolling inside. */}
+        <aside className="glass-modal-panel relative isolate hidden min-h-[440px] w-[320px] shrink-0 overflow-hidden xl:block" aria-label="Lead checklists">
+          <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10" style={popupTint} />
+          {renderLeadChecklists(renderLead, leadChecklists, "side")}
+        </aside>
+        <div
+          // On a phone it takes the whole screen, square-cornered (its top and bottom clear of the notch / home bar).
+          className="glass-modal-panel relative isolate flex max-h-[min(720px,90vh)] w-[min(560px,96vw)] flex-col overflow-hidden max-sm:h-[100dvh] max-sm:max-h-none max-sm:w-full max-sm:rounded-none! max-sm:border-0!"
         >
           {/* The Calendar event pop-up's look: its status's colour washed across it, the X alone in the top right corner,
               the status (a dropdown pill) over the lead's name, and each field in a white see-through box. All its text
               black. */}
-          <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10" style={leadPopupTintStyle(String(leadStatusPillStyle(lead.status || "New").backgroundColor || companyThemeColor))} />
-          <div className="relative shrink-0 px-5 pb-3 pt-5">
+          <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10" style={popupTint} />
+          <div className="relative shrink-0 px-5 pb-3 pt-5 max-sm:pt-[calc(1.25rem+env(safe-area-inset-top))]">
             <button
               type="button"
-              onClick={() => setSelectedLeadId("")}
-              className={`${modalCloseButtonClass} absolute right-3 top-3`}
+              onClick={() => {
+                setSelectedLeadId("");
+                setLeadFieldEdit(null);
+              }}
+              className={`${modalCloseButtonClass} absolute right-3 top-3 max-sm:top-[calc(0.75rem+env(safe-area-inset-top))]`}
               aria-label="Close lead details"
             >
               <X size={16} />
             </button>
-            {/* Its status, as a pill that's also the dropdown to change it — each status with its colour. */}
-            <div className="max-w-[calc(100%-48px)]">
+            {/* Its name on the left; on the right (clear of the X) its status, as a pill that's also the dropdown to change
+                it — each status with its colour. */}
+            <div className="flex items-start justify-between gap-3 pr-10">
+              <h2 className="min-w-0 flex-1 pt-0.5 text-left text-[22px] font-semibold leading-tight" style={{ color: "var(--text-main)" }}>
+                {displayName}
+              </h2>
+              <div className="shrink-0">
               <GlassDropdown
                 value={lead.status || "New"}
                 options={leadStatusOptions.map((option) => ({
@@ -3863,18 +4604,169 @@ export default function LeadsPage() {
                 menuMinWidth={170}
                 ariaLabel="Lead status"
                 // The Create Project button's size (h-9, px-3, 12px bold, a 1px border — here in the pill's own colour).
-                triggerClassName="h-9 max-w-full gap-1.5! rounded-full border px-3 text-[12px] font-bold transition hover:brightness-95 disabled:cursor-wait"
-                triggerStyle={{
-                  ...leadStatusPillStyle(lead.status || "New"),
-                  borderColor: String(leadStatusPillStyle(lead.status || "New").backgroundColor || "transparent"),
-                }}
+                triggerClassName="glass-shine h-9 max-w-full gap-1.5! rounded-full border px-3 text-[12px] font-bold transition hover:brightness-95 disabled:cursor-wait"
+                triggerStyle={glassShineStyle(leadStatusPillStyle(lead.status || "New"))}
               />
+              </div>
             </div>
-            <h2 className="mt-2.5 pr-10 text-[22px] font-semibold leading-tight" style={{ color: "var(--text-main)" }}>
-              {displayName}
-            </h2>
           </div>
-          <div className="flex shrink-0 flex-wrap gap-2 px-5 pb-4">
+          {/* Its photos, as a strip of thumbnails under its name — a set height, scrolling sideways when there are more
+              than fit (a mouse wheel turns it too). One opens that photo in the photo viewer. */}
+          {leadPhotoItems.length > 0 ? (
+            <div className="shrink-0 px-5 pb-3">
+              <div
+                className="hide-native-scrollbar flex h-[88px] gap-2 overflow-x-auto overflow-y-hidden overscroll-x-contain"
+                onWheel={(e) => {
+                  const strip = e.currentTarget;
+                  if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && strip.scrollWidth > strip.clientWidth) strip.scrollLeft += e.deltaY;
+                }}
+              >
+                {leadPhotoItems.map((item, index) => (
+                  <button
+                    key={`${item.url}_${index}`}
+                    type="button"
+                    onClick={(e) => {
+                      leadImagesModalOriginElRef.current = e.currentTarget;
+                      setLeadImagesModalOrigin(captureGlassModalOrigin(e));
+                      setLeadImagesLeadId(lead.id);
+                      setLeadImagesDragActive(false);
+                      openLeadImagePreview(index);
+                    }}
+                    className="aspect-[4/3] h-full shrink-0 overflow-hidden rounded-[12px] border transition hover:brightness-95"
+                    style={LEAD_POPUP_BOX_STYLE}
+                    title={item.name || `Photo ${index + 1}`}
+                    aria-label={`Open ${item.name || `photo ${index + 1}`}`}
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={item.url} alt="" loading="lazy" draggable={false} className="h-full w-full object-cover" />
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          <div className="glass-scroll min-h-0 flex-1 overflow-y-auto px-5 pb-4">
+            {isDetailLoading ? (
+              <div className="mb-2 rounded-[14px] border px-3 py-2.5 text-[13px] font-medium" style={{ ...LEAD_POPUP_BOX_STYLE, color: "var(--text-main)" }}>
+                Loading lead details...
+              </div>
+            ) : null}
+            {detailFields.length === 0 ? (
+              <p className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
+                No detail fields configured yet.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {detailFields.map((column) => {
+                  const value = resolveLeadColumnValue(leadFields, column, leadLayout);
+                  const editing = leadFieldEdit && leadFieldEdit.leadId === lead.id && leadFieldEdit.key === column.key ? leadFieldEdit : null;
+                  const canEdit = isUserVerified && !isDetailLoading;
+                  const startEditingField = () => {
+                    leadFieldEditCancelledRef.current = false;
+                    setLeadFieldError("");
+                    setLeadFieldEdit({ leadId: lead.id, key: column.key, value });
+                  };
+                  const cancelEditingField = () => {
+                    leadFieldEditCancelledRef.current = true;
+                    setLeadFieldError("");
+                    setLeadFieldEdit(null);
+                  };
+                  // Longer answers (a message, notes, several lines) get a bigger box.
+                  const draft = editing?.value ?? "";
+                  const multiline = /message|note|comment|description|detail|enquiry|inquiry/i.test(`${column.key} ${column.label}`) || draft.includes("\n") || draft.length > 60;
+                  const fieldClass = "mt-1 block w-full rounded-[10px] border px-2.5 text-[14px] font-medium outline-none transition focus:border-[var(--brand)]";
+                  const fieldStyle = { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" };
+                  const fieldProps = {
+                    value: draft,
+                    autoFocus: true,
+                    disabled: leadFieldSaving,
+                    "aria-label": column.label,
+                    style: fieldStyle,
+                    onChange: (e: { target: { value: string } }) =>
+                      setLeadFieldEdit((prev) => (prev && prev.leadId === lead.id && prev.key === column.key ? { ...prev, value: e.target.value } : prev)),
+                    // Clicking away saves it (as Client Details does) — not after Esc.
+                    onBlur: () => {
+                      if (leadFieldEditCancelledRef.current) return;
+                      void saveLeadFieldEdit(renderLead, column, leadLayout);
+                    },
+                  };
+                  return (
+                    // Its pencil — the one Client Details uses — sits at its right: showing on hover (always on a touch
+                    // screen); a tick while it's being edited, which saves.
+                    <div key={`${lead.id}:detail:${column.key}`} className="group/field relative rounded-[14px] border py-2.5 pl-3 pr-11" style={LEAD_POPUP_BOX_STYLE}>
+                      <p className="text-[11.5px] font-medium" style={{ color: "var(--text-main)" }}>
+                        {column.label}
+                      </p>
+                      {editing ? (
+                        multiline ? (
+                          <textarea
+                            {...fieldProps}
+                            rows={4}
+                            onKeyDown={(e) => {
+                              e.stopPropagation();
+                              if (e.key === "Escape") cancelEditingField();
+                              // Ctrl / Cmd + Enter saves (Enter is a new line here).
+                              if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                                e.preventDefault();
+                                void saveLeadFieldEdit(renderLead, column, leadLayout);
+                              }
+                            }}
+                            className={`${fieldClass} resize-y py-2`}
+                          />
+                        ) : (
+                          <input
+                            {...fieldProps}
+                            onKeyDown={(e) => {
+                              e.stopPropagation();
+                              if (e.key === "Escape") cancelEditingField();
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                void saveLeadFieldEdit(renderLead, column, leadLayout);
+                              }
+                            }}
+                            className={`${fieldClass} h-9`}
+                          />
+                        )
+                      ) : (
+                        <p className="mt-0.5 whitespace-pre-wrap text-[14px] font-medium" style={{ color: "var(--text-main)" }}>
+                          {value || "-"}
+                        </p>
+                      )}
+                      {editing && leadFieldError ? (
+                        <p className="mt-1 text-[12px] font-medium" style={{ color: "var(--danger-strong)" }}>
+                          {leadFieldError}
+                        </p>
+                      ) : null}
+                      {canEdit ? (
+                        <button
+                          type="button"
+                          disabled={leadFieldSaving}
+                          // Editing: the tick saves without the field losing focus first (which would save it too).
+                          onMouseDown={(e) => {
+                            if (editing) e.preventDefault();
+                          }}
+                          onClick={() => (editing ? void saveLeadFieldEdit(renderLead, column, leadLayout) : startEditingField())}
+                          className={`absolute right-2 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-[8px] transition-opacity hover:bg-[var(--panel-muted)] focus-visible:opacity-100 disabled:opacity-60 ${
+                            editing ? "opacity-100" : "pointer-fine:opacity-0 pointer-fine:group-hover/field:opacity-100"
+                          }`}
+                          style={{ color: "var(--text-muted)" }}
+                          title={editing ? "Save" : `Edit ${column.label}`}
+                          aria-label={editing ? `Save ${column.label}` : `Edit ${column.label}`}
+                        >
+                          {editing ? <Check size={16} /> : <Pencil size={16} />}
+                        </button>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            <div className="xl:hidden">
+              {renderLeadChecklists(renderLead, leadChecklists, "inline")}
+              {renderLeadNotes(renderLead, leadNotes, "inline")}
+            </div>
+          </div>
+          {/* Its buttons along the bottom, under its fields. */}
+          <div className="flex shrink-0 flex-wrap gap-2 border-t px-5 py-4 max-sm:pb-[calc(1rem+env(safe-area-inset-bottom))]" style={{ borderTopColor: "var(--glass-border)" }}>
             <button
               type="button"
               onClick={() => void handleCreateProjectFromLead(renderLead)}
@@ -3934,34 +4826,12 @@ export default function LeadsPage() {
               Archive
             </button>
           </div>
-          <div className="glass-scroll min-h-0 flex-1 overflow-y-auto px-5 pb-5">
-            {isDetailLoading ? (
-              <div className="mb-2 rounded-[14px] border px-3 py-2.5 text-[13px] font-medium" style={{ ...LEAD_POPUP_BOX_STYLE, color: "var(--text-main)" }}>
-                Loading lead details...
-              </div>
-            ) : null}
-            {detailFields.length === 0 ? (
-              <p className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
-                No detail fields configured yet.
-              </p>
-            ) : (
-              <div className="space-y-2">
-                {detailFields.map((column) => {
-                  const value = resolveLeadColumnValue(leadFields, column, leadLayout);
-                  return (
-                    <div key={`${lead.id}:detail:${column.key}`} className="rounded-[14px] border px-3 py-2.5" style={LEAD_POPUP_BOX_STYLE}>
-                      <p className="text-[11.5px] font-medium" style={{ color: "var(--text-main)" }}>
-                        {column.label}
-                      </p>
-                      <p className="mt-0.5 whitespace-pre-wrap text-[14px] font-medium" style={{ color: "var(--text-main)" }}>
-                        {value || "-"}
-                      </p>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+        </div>
+        {/* Its Notes: as tall as the pop-up (at least 440px), its notes scrolling inside. */}
+        <aside className="glass-modal-panel relative isolate hidden min-h-[440px] w-[320px] shrink-0 overflow-hidden xl:block" aria-label="Lead notes">
+          <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10" style={popupTint} />
+          {renderLeadNotes(renderLead, leadNotes, "side")}
+        </aside>
         </div>
       </div>,
       document.body,
@@ -4022,18 +4892,15 @@ export default function LeadsPage() {
                           el.style.transition = "transform 350ms cubic-bezier(0.22, 1, 0.36, 1)";
                           el.style.transform = "perspective(800px) rotateX(0deg) rotateY(0deg) translateY(0px) scale(1)";
                         }}
-                        className="rounded-[18px] border px-3 py-2.5 sm:px-5 sm:py-4"
-                        style={{
-                          borderColor: "var(--glass-border)",
-                          backgroundColor: "var(--glass-bg-strong)",
-                          boxShadow: "var(--shadow-glass)",
-                          willChange: "transform",
-                        }}
+                        // The glass shine (lib/glass-shine.ts), as the Dashboard's — the card its container version, in a
+                        // wash of its icon's colour, and its icon the full one.
+                        className="glass-shine glass-shine-soft rounded-[18px] border px-3 py-2.5 sm:px-5 sm:py-4"
+                        style={glassShineStyle(card.iconTo, { willChange: "transform" })}
                       >
                         <div className="flex items-center gap-2 sm:mb-3 sm:gap-2.5">
                           <div
-                            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-white shadow-[0_4px_10px_rgba(0,0,0,0.14)] sm:h-9 sm:w-9"
-                            style={{ backgroundImage: `linear-gradient(135deg, ${card.iconFrom} 0%, ${card.iconTo} 100%)` }}
+                            className="glass-shine inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-white sm:h-9 sm:w-9"
+                            style={glassShineStyle(card.iconTo)}
                           >
                             <Icon size={15} strokeWidth={2.4} />
                           </div>
@@ -4188,8 +5055,12 @@ export default function LeadsPage() {
                     <button
                       type="button"
                       onClick={openLeadForm}
-                      className="fixed right-4 z-[60] inline-flex h-14 w-14 items-center justify-center rounded-full border text-white shadow-[0_10px_28px_rgba(15,23,42,0.28)] transition hover:brightness-105 active:scale-95 disabled:opacity-55 sm:hidden"
-                      style={{ bottom: "calc(20px + env(safe-area-inset-bottom))", backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                      // The glass shine (lib/glass-shine.ts), in the brand blue — with a floating button's deeper shadow.
+                      className="glass-shine fixed right-4 z-[60] inline-flex h-14 w-14 items-center justify-center rounded-full text-white transition hover:brightness-105 active:scale-95 disabled:opacity-55 sm:hidden"
+                      style={glassShineStyle("var(--brand)", {
+                        bottom: "calc(20px + env(safe-area-inset-bottom))",
+                        boxShadow: "0 8px 22px rgba(15, 23, 42, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.5)",
+                      })}
                       title="Create Lead"
                       aria-label="Create Lead"
                     >
@@ -4395,8 +5266,9 @@ export default function LeadsPage() {
                 <button
                   type="button"
                   onClick={openLeadForm}
-                  className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full border px-4 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-55 max-sm:w-9 max-sm:px-0"
-                  style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                  // The glass shine (lib/glass-shine.ts), in the brand blue.
+                  className="glass-shine inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full px-4 text-[12px] font-bold text-white hover:brightness-105 disabled:opacity-55 max-sm:w-9 max-sm:px-0"
+                  style={glassShineStyle("var(--brand)")}
                   title="Create Lead"
                   aria-label="Create Lead"
                 >
@@ -4450,8 +5322,8 @@ export default function LeadsPage() {
                                 type="button"
                                 data-lead-status-trigger="true"
                                 onClick={(e) => openListStatusMenu(e, lead)}
-                                className="inline-flex h-7 w-[118px] shrink-0 items-center justify-center rounded-[10px] px-3 text-[11px] font-normal"
-                                style={leadStatusPillStyle(lead.status || "New")}
+                                className="glass-shine inline-flex h-7 w-[118px] shrink-0 items-center justify-center rounded-full px-3 text-[11px] font-normal"
+                                style={glassShineStyle(leadStatusPillStyle(lead.status || "New"))}
                                 aria-label="Lead status"
                                 title="Change lead status"
                               >
@@ -4557,8 +5429,8 @@ export default function LeadsPage() {
                                   type="button"
                                   data-lead-status-trigger="true"
                                   onClick={(e) => openListStatusMenu(e, lead)}
-                                  className="inline-flex items-center justify-center rounded-[10px] px-3 py-2 text-[12px] font-normal"
-                                  style={{ ...leadStatusPillStyle(lead.status || "New"), width: listStatusPillWidthPx, marginRight: 10 }}
+                                  className="glass-shine inline-flex items-center justify-center rounded-full px-3 py-2 text-[12px] font-normal"
+                                  style={glassShineStyle({ ...leadStatusPillStyle(lead.status || "New"), width: listStatusPillWidthPx, marginRight: 10 })}
                                   aria-label="Lead status"
                                   title="Change lead status"
                                 >
@@ -4611,8 +5483,8 @@ export default function LeadsPage() {
                                   if (menuLead) void onSelectLeadStatus(menuLead, option);
                                   setListStatusMenu(null);
                                 }}
-                                className="mb-1 block w-full rounded-[8px] px-3 py-2 text-center text-[12px] font-semibold last:mb-0 disabled:opacity-55 max-md:rounded-[10px] max-md:py-3 max-md:text-[15px]"
-                                style={{ ...leadStatusPillStyle(option), filter: active ? "brightness(0.96)" : "brightness(1)" }}
+                                className="glass-shine mb-1 block w-full rounded-full px-3 py-2 text-center text-[12px] font-semibold last:mb-0 disabled:opacity-55 max-md:py-3 max-md:text-[15px]"
+                                style={glassShineStyle({ ...leadStatusPillStyle(option), filter: active ? "brightness(0.96)" : "brightness(1)" })}
                               >
                                 {option}
                               </button>
@@ -4683,9 +5555,9 @@ export default function LeadsPage() {
                   // No backdrop blur: the columns only ever sit over the plain page background, where a
                   // blur changes nothing you can see (and the frame's window stops it seeing past the
                   // column anyway) — but the browser would redo it on every frame of a board scroll.
-                  const glassColumnSurface: React.CSSProperties = {
-                    backgroundColor: glassColumnBg,
-                  };
+                  // With the glass shine (lib/glass-shine.ts; className glass-shine) in its status colour, still a little
+                  // see-through — as the Dashboard's columns.
+                  const glassColumnSurface: React.CSSProperties = glassShineStyle({ backgroundColor: glassColumnBg });
                   const glassColumnShadow = isDragOver
                     ? "0 0 0 3px rgba(255,255,255,0.85), inset 0 1px 0 rgba(255,255,255,0.7)"
                     : "inset 0 1px 0 rgba(255,255,255,0.7), inset 0 30px 40px -32px rgba(255,255,255,0.35), var(--shadow-glass)";
@@ -4714,7 +5586,7 @@ export default function LeadsPage() {
                           }
                           // pt-2: its expand button on the same line as a full column's header buttons,
                           // where the collapse button slides to (lib/board-column-collapse.ts).
-                          className="flex h-full w-full flex-col items-center gap-3 overflow-hidden rounded-[16px] border pb-3 pt-2 transition hover:brightness-105"
+                          className="glass-shine flex h-full w-full flex-col items-center gap-3 overflow-hidden rounded-[16px] border pb-3 pt-2 transition hover:brightness-105"
                           style={{
                             borderColor: glassColumnBorder,
                             ...glassColumnSurface,
@@ -4757,7 +5629,7 @@ export default function LeadsPage() {
                       shadow={glassColumnShadow}
                     >
                       <div
-                        className="flex h-full w-full flex-col overflow-hidden rounded-[16px] border transition"
+                        className="glass-shine flex h-full w-full flex-col overflow-hidden rounded-[16px] border transition"
                         style={{
                           borderColor: glassColumnBorder,
                           ...glassColumnSurface,
@@ -4815,13 +5687,8 @@ export default function LeadsPage() {
                             // While a lead is dragged over this column: a faded copy of it, in the spot it will land.
                             const previewIndex = leadDropPreview?.column === column.name ? leadDropPreview.index : null;
                             const previewLead = previewIndex !== null && draggingLeadId ? getLeadById(draggingLeadId) ?? null : null;
-                            if (column.leads.length === 0 && !previewLead) {
-                              return (
-                                <p className="px-1 py-6 text-center text-[11px] font-semibold" style={{ color: "#000000" }}>
-                                  No leads.
-                                </p>
-                              );
-                            }
+                            // An empty column is just empty — no "No leads." in it.
+                            if (column.leads.length === 0 && !previewLead) return null;
                             return withBoardDropPreview(
                               column.leads,
                               draggingLeadId,

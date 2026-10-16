@@ -909,7 +909,7 @@ export async function seedPreviewDatabase(db: Firestore): Promise<void> {
 
   const notifications = [
     { title: "Quote accepted for Ridgeway Entertainment Unit", message: "Hannah Brooks accepted your quote for $18,450.00", type: "quote_accepted", job: "prv_job_05", minutesAgo: 35 },
-    { title: "New lead", message: "Aroha Williams sent an enquiry about a kitchen.", type: "lead_new", job: "", minutesAgo: 90 },
+    { title: "New Lead", message: "From Form: Aroha Williams", type: "lead_new", job: "", minutesAgo: 90 },
     { title: "Specifications Submitted for Bayview Vanity", message: "Priya Shah submitted the specifications (14/16) accepted", type: "specs_submitted", job: "prv_job_03", minutesAgo: 60 * 5 },
     { title: "Project assigned", message: "Mere assigned you to Marsden Wardrobe.", type: "project_assigned", job: "prv_job_12", minutesAgo: 60 * 26 },
   ];

@@ -4,6 +4,39 @@ import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
 import { apiHasPermission, requireCompanyMember } from "@/lib/api-company-access";
 import { addNotificationAndPush } from "@/lib/push-server";
 import { leadNameForNotification, notifyNewLead } from "@/lib/lead-notify-server";
+// A lead as the app works with it — shared with the Leads page's own direct reads (lib/firestore-data.ts).
+import {
+  buildLeadRow as buildLeadResponse,
+  LEAD_CHECKLISTS_MAX,
+  LEAD_NOTES_MAX,
+  normalizeLeadChecklists,
+  normalizeLeadNotes,
+  normalizeStoredLeadImageItems as normalizeLeadImageItems,
+} from "@/lib/lead-row";
+import type { LeadNote } from "@/lib/firestore-data";
+import type { ProjectChecklist } from "@/lib/types";
+
+// A change to a lead's Checklists (the lead pop-up's): one added (a copy of a saved checklist), one taken off, or an
+// item ticked / unticked (to the given state — not flipped, so a repeat does no harm).
+type LeadChecklistOp =
+  | { type: "add"; checklist: ProjectChecklist }
+  | { type: "remove"; checklistId: string }
+  | { type: "check"; checklistId: string; itemId: string; checked: boolean };
+
+function parseLeadChecklistOp(value: unknown): LeadChecklistOp | null {
+  const op = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+  if (!op) return null;
+  if (op.type === "add") {
+    const checklist = normalizeLeadChecklists([op.checklist])[0];
+    return checklist ? { type: "add", checklist } : null;
+  }
+  const checklistId = toStr(op.checklistId);
+  if (!checklistId) return null;
+  if (op.type === "remove") return { type: "remove", checklistId };
+  const itemId = toStr(op.itemId);
+  if (op.type === "check" && itemId && typeof op.checked === "boolean") return { type: "check", checklistId, itemId, checked: op.checked };
+  return null;
+}
 
 function toStr(value: unknown) {
   return String(value ?? "").trim();
@@ -51,129 +84,6 @@ async function parseBody(request: NextRequest): Promise<Record<string, unknown>>
     return out;
   }
   return {};
-}
-
-function toIsoString(value: unknown, fallback = "") {
-  if (value == null) return fallback;
-  if (typeof value === "string") {
-    const raw = value.trim();
-    if (!raw) return fallback;
-    const parsed = new Date(raw);
-    return Number.isNaN(parsed.getTime()) ? raw : parsed.toISOString();
-  }
-  if (value && typeof value === "object" && "toDate" in (value as Record<string, unknown>)) {
-    try {
-      const parsed = (value as { toDate: () => Date }).toDate();
-      return parsed.toISOString();
-    } catch {
-      return fallback;
-    }
-  }
-  if (value instanceof Date) return value.toISOString();
-  return fallback;
-}
-
-function normalizeLeadImageItems(
-  value: unknown,
-): Array<{ url: string; name: string; annotations: Array<{ id: string; x: number; y: number; xPx?: number; yPx?: number; note: string; createdByName?: string; createdByColor?: string }> }> {
-  if (!Array.isArray(value)) return [];
-  const items: Array<{
-    url: string;
-    name: string;
-    annotations: Array<{ id: string; x: number; y: number; xPx?: number; yPx?: number; note: string; createdByName?: string; createdByColor?: string }>;
-  }> = [];
-  for (const item of value) {
-    const row = item && typeof item === "object" ? (item as Record<string, unknown>) : null;
-    const url = toStr(row?.url);
-    const name = toStr(row?.name);
-    const annotations: Array<{ id: string; x: number; y: number; xPx?: number; yPx?: number; note: string; createdByName?: string; createdByColor?: string }> = [];
-    if (Array.isArray(row?.annotations)) {
-      for (const annotation of row.annotations) {
-        const next =
-          annotation && typeof annotation === "object"
-            ? (annotation as Record<string, unknown>)
-            : null;
-        const id = toStr(next?.id);
-        const note = toStr(next?.note);
-        const x = Number(next?.x);
-        const y = Number(next?.y);
-        const xPx = Number(next?.xPx);
-        const yPx = Number(next?.yPx);
-        if (!id || !note || !Number.isFinite(x) || !Number.isFinite(y)) continue;
-        annotations.push({
-          id,
-          note,
-          x: Math.min(100, Math.max(0, x)),
-          y: Math.min(100, Math.max(0, y)),
-          xPx: Number.isFinite(xPx) ? Math.max(0, xPx) : undefined,
-          yPx: Number.isFinite(yPx) ? Math.max(0, yPx) : undefined,
-          createdByName: toStr(next?.createdByName),
-          createdByColor: toStr(next?.createdByColor),
-        });
-      }
-    }
-    if (!url) continue;
-    items.push({ url, name, annotations });
-    if (items.length >= 10) break;
-  }
-  return items;
-}
-
-function buildLeadResponse(
-  companyId: string,
-  docId: string,
-  data: Record<string, unknown>,
-  mode: "summary" | "detail" = "detail",
-) {
-  const imageItems = mode === "detail" ? normalizeLeadImageItems(data.imageItems) : [];
-  const summaryImageUrls = Array.isArray(data.imageUrls)
-    ? data.imageUrls.map(String).filter(Boolean)
-    : Array.isArray(data.imageItems)
-      ? normalizeLeadImageItems(data.imageItems).map((item) => item.url)
-      : [];
-  return {
-    id: String(data.id ?? docId),
-    companyId,
-    name: toStr(data.name),
-    email: toStr(data.email),
-    phone: toStr(data.phone),
-    message: mode === "detail" ? toStr(data.message) : "",
-    formName: toStr(data.formName),
-    // A lead from one of the company's own lead forms (lib/lead-forms.ts): which form, and which question each
-    // of its answers (rawFields) belongs to.
-    formId: toStr(data.formId),
-    formFieldKeys:
-      data.formFieldKeys && typeof data.formFieldKeys === "object" ? (data.formFieldKeys as Record<string, string>) : undefined,
-    // How a lead added by hand came in (Phone call, Walk-in, …).
-    sourceDetail: toStr(data.sourceDetail),
-    submittedAtIso: toIsoString(data.submittedAtIso ?? data.submittedAt, ""),
-    createdAtIso: toIsoString(data.createdAtIso ?? data.createdAt, ""),
-    updatedAtIso: toIsoString(data.updatedAtIso ?? data.updatedAt, ""),
-    deletedAtIso: toIsoString(data.deletedAtIso ?? data.deletedAt, ""),
-    isDeleted: Boolean(data.isDeleted),
-    source: toStr(data.source) || "zapier-form",
-    status: (() => {
-      const raw = toStr(data.status);
-      return raw || "New";
-    })(),
-    assignedToUid: toStr(data.assignedToUid),
-    assignedToName: toStr(data.assignedToName || data.assignedTo),
-    assignedTo: toStr(data.assignedTo || data.assignedToName),
-    imageItems,
-    imageUrls:
-      mode === "detail"
-        ? imageItems.length
-          ? imageItems.map((item) => item.url)
-          : Array.isArray(data.imageUrls)
-            ? data.imageUrls.map(String).filter(Boolean)
-            : []
-        : summaryImageUrls,
-    rawFields:
-      data.rawFields && typeof data.rawFields === "object"
-        ? (data.rawFields as Record<string, unknown>)
-        : undefined,
-    boardOrder: typeof data.boardOrder === "number" && Number.isFinite(data.boardOrder) ? data.boardOrder : undefined,
-  };
 }
 
 export async function GET(request: NextRequest) {
@@ -224,7 +134,7 @@ export async function GET(request: NextRequest) {
         .get();
       const leads = archivedSnap.docs
         .map((docSnap) => buildLeadResponse(companyId, docSnap.id, (docSnap.data() ?? {}) as Record<string, unknown>, "summary"))
-        .sort((a, b) => (b.deletedAtIso || b.updatedAtIso).localeCompare(a.deletedAtIso || a.updatedAtIso));
+        .sort((a, b) => (b.deletedAtIso || b.updatedAtIso || "").localeCompare(a.deletedAtIso || a.updatedAtIso || ""));
       return NextResponse.json({ ok: true, leads });
     }
     const snap = await adminDb
@@ -294,6 +204,11 @@ export async function POST(request: NextRequest) {
   }
 
   const submittedAtIso = toStr(body.submittedAt) || new Date().toISOString();
+  // The company's first lead status (number 1 in Company Settings → Leads — the first column on its Leads board),
+  // like a lead from any of its other sources.
+  const firstStatus = (Array.isArray(companyDoc.leadStatuses) ? companyDoc.leadStatuses : [])
+    .map((row) => toStr((row as Record<string, unknown> | null)?.name))
+    .find(Boolean);
   const payload = {
     companyId,
     name: toStr(body.name),
@@ -303,7 +218,7 @@ export async function POST(request: NextRequest) {
     formName: toStr(body.formName),
     submittedAtIso,
     source: toStr(body.source) || "zapier-form",
-    status: "New",
+    status: firstStatus || "New",
   };
 
   const leadRef = adminDb.collection("companies").doc(companyId).collection("leads").doc();
@@ -413,7 +328,44 @@ export async function PATCH(request: NextRequest) {
   const boardOrder = typeof body.boardOrder === "number" && Number.isFinite(body.boardOrder) ? body.boardOrder : null;
   const hasBoardOrder = boardOrder !== null;
 
-  if (!companyId || !leadId || (!status && !hasDeleteMode && !hasImageUrls && !hasImageItems && !hasAssignmentPatch && !hasBoardOrder)) {
+  // Its details edited in the Leads pop-up: the changed answers (rawFields key → its new text — merged into what it
+  // has), and its name / email / phone to match. Text only, within sensible sizes; no "__" (internal) keys.
+  const fieldsPatch: Record<string, string> = {};
+  if (body.fieldsPatch && typeof body.fieldsPatch === "object" && !Array.isArray(body.fieldsPatch)) {
+    for (const [key, value] of Object.entries(body.fieldsPatch as Record<string, unknown>).slice(0, 80)) {
+      const fieldKey = String(key || "").trim();
+      if (!fieldKey || fieldKey.startsWith("__") || fieldKey.length > 120 || typeof value !== "string") continue;
+      fieldsPatch[fieldKey] = value.slice(0, 10000);
+    }
+  }
+  const hasFieldsPatch = Object.keys(fieldsPatch).length > 0;
+  // Its Notes (the lead pop-up's): a note to add (its text — who wrote it and when are worked out here), or one to
+  // take off (by its id: the person who wrote it, or an owner / admin). One or the other at a time.
+  const addNoteText = typeof body.addNote === "string" ? body.addNote.trim().slice(0, 5000) : "";
+  const deleteNoteId = typeof body.deleteNoteId === "string" ? body.deleteNoteId.trim().slice(0, 120) : "";
+  const hasNotePatch = Boolean(addNoteText || deleteNoteId);
+  const checklistOp = parseLeadChecklistOp(body.checklistOp);
+  if (addNoteText && deleteNoteId) {
+    return NextResponse.json({ ok: false, error: "one-note-change-at-a-time" }, { status: 400 });
+  }
+  const contactPatch: Record<string, string> = {};
+  for (const field of ["name", "email", "phone"] as const) {
+    if (hasFieldsPatch && typeof body[field] === "string") contactPatch[field] = String(body[field]).trim().slice(0, 300);
+  }
+
+  if (
+    !companyId ||
+    !leadId ||
+    (!status &&
+      !hasDeleteMode &&
+      !hasImageUrls &&
+      !hasImageItems &&
+      !hasAssignmentPatch &&
+      !hasBoardOrder &&
+      !hasFieldsPatch &&
+      !hasNotePatch &&
+      !checklistOp)
+  ) {
     return NextResponse.json(
       {
         ok: false,
@@ -427,6 +379,44 @@ export async function PATCH(request: NextRequest) {
   const callerAccess = await requireCompanyMember(request, companyId);
   if (!callerAccess) {
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  }
+
+  // A checklist change: read, changed and written back as one (a transaction), so two people ticking items on the
+  // same lead at once both keep theirs. On its own — nothing else is changed with it.
+  if (checklistOp) {
+    const leadRef = adminDb.collection("companies").doc(companyId).collection("leads").doc(leadId);
+    const updatedAtIso = new Date().toISOString();
+    try {
+      const result = await adminDb.runTransaction(async (tx) => {
+        const snap = await tx.get(leadRef);
+        if (!snap.exists) return { error: "lead-not-found" as const };
+        const current = normalizeLeadChecklists((snap.data() ?? {}).checklists);
+        let next = current;
+        if (checklistOp.type === "add") {
+          if (current.some((row) => row.id === checklistOp.checklist.id)) return { checklists: current };
+          if (current.length >= LEAD_CHECKLISTS_MAX) return { error: "too-many-checklists" as const };
+          next = [...current, checklistOp.checklist];
+        } else if (checklistOp.type === "remove") {
+          next = current.filter((row) => row.id !== checklistOp.checklistId);
+        } else {
+          next = current.map((row) =>
+            row.id === checklistOp.checklistId
+              ? { ...row, items: row.items.map((item) => (item.id === checklistOp.itemId ? { ...item, checked: checklistOp.checked } : item)) }
+              : row,
+          );
+        }
+        // (undefined isn't storable — a checklist without addedAt just leaves it out.)
+        const stored = next.map((row) => (row.addedAt ? row : { id: row.id, name: row.name, items: row.items }));
+        tx.update(leadRef, { checklists: stored, updatedAt: FieldValue.serverTimestamp(), updatedAtIso });
+        return { checklists: next };
+      });
+      if ("error" in result) {
+        return NextResponse.json({ ok: false, error: result.error }, { status: result.error === "lead-not-found" ? 404 : 400 });
+      }
+      return NextResponse.json({ ok: true, leadId, checklists: result.checklists, updatedAtIso });
+    } catch {
+      return NextResponse.json({ ok: false, error: "lead-checklist-update-failed" }, { status: 500 });
+    }
   }
 
   try {
@@ -464,6 +454,43 @@ export async function PATCH(request: NextRequest) {
       patch.assignedToName = assignedToName || "";
       patch.assignedTo = assignedToName || "";
     }
+    if (hasFieldsPatch) {
+      const existing = (leadSnap.data() ?? {}).rawFields;
+      const rawFields = existing && typeof existing === "object" && !Array.isArray(existing) ? (existing as Record<string, unknown>) : {};
+      patch.rawFields = { ...rawFields, ...fieldsPatch };
+      Object.assign(patch, contactPatch);
+    }
+    // A note added / taken off — each a single change to the list (arrayUnion / arrayRemove), so two people adding
+    // notes at once both keep theirs.
+    let addedNote: LeadNote | null = null;
+    if (hasNotePatch) {
+      const storedNotes = Array.isArray((leadSnap.data() ?? {}).notes) ? ((leadSnap.data() ?? {}).notes as unknown[]) : [];
+      if (addNoteText) {
+        if (normalizeLeadNotes(storedNotes).length >= LEAD_NOTES_MAX) {
+          return NextResponse.json({ ok: false, error: "too-many-notes" }, { status: 400 });
+        }
+        const callerMembership = await adminDb.collection("companies").doc(companyId).collection("memberships").doc(callerAccess.uid).get();
+        addedNote = {
+          id: `note_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+          text: addNoteText,
+          createdAtIso: updatedAtIso,
+          createdByUid: callerAccess.uid,
+          createdByName: toStr(callerMembership.data()?.displayName ?? callerMembership.data()?.name) || "A teammate",
+        };
+        patch.notes = FieldValue.arrayUnion(addedNote);
+      } else {
+        const stored = storedNotes.find(
+          (item) => item && typeof item === "object" && toStr((item as Record<string, unknown>).id) === deleteNoteId,
+        );
+        if (stored) {
+          const isOwnNote = toStr((stored as Record<string, unknown>).createdByUid) === callerAccess.uid;
+          if (!isOwnNote && callerAccess.role !== "owner" && callerAccess.role !== "admin") {
+            return NextResponse.json({ ok: false, error: "not-your-note" }, { status: 403 });
+          }
+          patch.notes = FieldValue.arrayRemove(stored);
+        }
+      }
+    }
     await leadRef.update(patch);
     // Assigned to someone new (not themselves): let them know.
     const previousAssigneeUid = toStr((leadSnap.data() ?? {}).assignedToUid);
@@ -493,6 +520,8 @@ export async function PATCH(request: NextRequest) {
       assignedToName: hasAssignmentPatch ? assignedToName : undefined,
       imageUrls: hasImageItems ? normalizedImageItems.map((item) => item.url) : imageUrls,
       imageItems: hasImageItems ? normalizedImageItems : imageUrls.map((url) => ({ url, name: "" })),
+      rawFields: hasFieldsPatch ? patch.rawFields : undefined,
+      note: addedNote ?? undefined,
       updatedAtIso,
     });
   } catch {

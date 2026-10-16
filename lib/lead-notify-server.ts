@@ -4,16 +4,17 @@ import { addNotificationAndPush } from "@/lib/push-server";
 import { leadClientDisplayName } from "@/lib/lead-name";
 import { leadFormFieldLayout, normalizeLeadForms } from "@/lib/lead-forms";
 
-// "New lead" notifications — a lead that came in through Zapier (app/api/leads) or was added on the Leads page
-// with Create Lead (app/api/leads/manual).
+// "New Lead" notifications — a lead from the leads email inbox (app/api/leads/email-inbound), one of the company's
+// lead forms (app/api/lead-forms/submit), Zapier (app/api/leads) or Create Lead on the Leads page
+// (app/api/leads/manual).
 
 function toStr(value: unknown) {
   return String(value ?? "").trim();
 }
 
 // A lead's name for a notification: its client's name (the lead's form's questions, else the company's Zapier
-// lead field mapping), else what came in with it.
-export async function leadNameForNotification(companyId: string, lead: Record<string, unknown>): Promise<string> {
+// lead field mapping), else what came in with it, else `fallback`.
+export async function leadNameForNotification(companyId: string, lead: Record<string, unknown>, fallback = "A new lead"): Promise<string> {
   let fieldLayout: unknown = null;
   try {
     const companyData = (await adminDb!.collection("companies").doc(companyId).get()).data() ?? {};
@@ -28,10 +29,23 @@ export async function leadNameForNotification(companyId: string, lead: Record<st
   } catch {
     fieldLayout = null;
   }
-  return leadClientDisplayName(lead.rawFields, fieldLayout) || toStr(lead.name) || toStr(lead.email) || toStr(lead.phone) || "A new lead";
+  return leadClientDisplayName(lead.rawFields, fieldLayout) || toStr(lead.name) || toStr(lead.email) || toStr(lead.phone) || fallback;
 }
 
-// "New lead" to everyone who can see it — the owner/admins and anyone allowed to see others' leads
+// Every new lead's notification reads the same way — "New Lead", then where it came from and who:
+//   From Email: jane@example.com        (the leads email inbox — the sender's address)
+//   From Form: Jane Smith               (one of the company's lead forms — their first and last name)
+//   From Zapier: Jane Smith
+//   From Create Lead: Jane Smith        (added on the Leads page)
+function newLeadMessage(lead: Record<string, unknown>, name: string) {
+  const source = toStr(lead.source);
+  if (source === "email") return `From Email: ${toStr(lead.email) || name}`;
+  if (source === "web-form") return `From Form: ${name}`;
+  if (source === "manual") return `From Create Lead: ${name}`;
+  return `From Zapier: ${name}`;
+}
+
+// "New Lead" to everyone who can see it — the owner/admins and anyone allowed to see others' leads
 // (leads.view.others), the same rule as the Leads page. addedBy: a lead someone added by hand — they aren't told
 // about their own lead, and whoever they assigned it to hears they were added to it.
 export async function notifyNewLead(
@@ -42,8 +56,7 @@ export async function notifyNewLead(
   addedBy?: { uid: string; name: string },
 ) {
   try {
-    const [members, name] = await Promise.all([listCompanyMemberAccess(companyId), leadNameForNotification(companyId, lead)]);
-    const from = toStr(lead.formName) || (toStr(lead.source) === "zapier-form" ? "" : toStr(lead.source));
+    const [members, name] = await Promise.all([listCompanyMemberAccess(companyId), leadNameForNotification(companyId, lead, "no name given")]);
     const assigneeUid = toStr(lead.assignedToUid);
     await Promise.all(
       members
@@ -54,14 +67,8 @@ export async function notifyNewLead(
           return addNotificationAndPush(
             member.access.uid,
             {
-              title: isAssignee ? "Added to a lead" : "New lead",
-              message: addedBy
-                ? isAssignee
-                  ? `${addedBy.name} added you to the lead "${name}".`
-                  : `${addedBy.name} added the lead "${name}".`
-                : from
-                  ? `${name} came in from ${from}.`
-                  : `${name} just came in.`,
+              title: isAssignee ? "Added to a lead" : "New Lead",
+              message: isAssignee && addedBy ? `${addedBy.name} added you to the lead "${name}".` : newLeadMessage(lead, name),
               type: isAssignee ? "lead_access" : "lead_new",
               leadId,
               companyId,

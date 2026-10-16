@@ -95,20 +95,3 @@ export function summarizeCutlistRowsByPartType(rows: CutlistRow[]): Array<{ part
     .map(([partType, count]) => ({ partType, count }))
     .sort((a, b) => a.partType.localeCompare(b.partType));
 }
-
-// room+name, not `id` — a row's id is freshly generated per cutlist (Initial Measure and
-// Production are separate Firestore subcollections), so ids can never line up across the two.
-function cutlistRowMatchKey(row: CutlistRow): string {
-  return `${row.room.trim().toLowerCase()}::${row.name.trim().toLowerCase()}`;
-}
-
-// Initial Measure rows with no match (by room+name) in the Production cutlist — used for the
-// Production close-summary's "missing from Production" callout. Rows with a blank name are
-// excluded on both sides: there's nothing reliable to key an unnamed row on, so it can neither be
-// matched nor meaningfully reported as "missing."
-export function findMissingProductionRows(initialRows: CutlistRow[], productionRows: CutlistRow[]): CutlistRow[] {
-  const productionKeys = new Set(
-    productionRows.filter((row) => row.name.trim()).map(cutlistRowMatchKey),
-  );
-  return initialRows.filter((row) => row.name.trim() && !productionKeys.has(cutlistRowMatchKey(row)));
-}

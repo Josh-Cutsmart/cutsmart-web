@@ -1542,6 +1542,54 @@ body[data-theme="dark"] [data-app-top-tab]::before {
   background: linear-gradient(to bottom, rgba(255, 255, 255, 0.32) 0%, rgba(255, 255, 255, 0.12) 30%, rgba(255, 255, 255, 0) 60%);
 }
 
+/* The glass shine — the app's shared finish for a coloured button, pill or container (the client's initials emblem's
+ * look: Project › General › Client details; also the General tab's Files / Images buttons, and every project / lead
+ * status pill and status menu). Its colour (--shine-color; the brand blue if none) runs diagonally from a lighter tint
+ * into the full colour, with a soft white edge, a thin highlight along the top inside, and a soft shadow of its own
+ * colour. Add the class and set the colour — in JSX, style={glassShineStyle(color)} or glassShineStyle(existingStyle)
+ * (lib/glass-shine.ts, which takes the colour from its backgroundColor). The element's own text colour, shape and
+ * size stay its own. */
+.glass-shine {
+  background: linear-gradient(145deg, color-mix(in srgb, var(--shine-color, var(--brand)) 78%, white), var(--shine-color, var(--brand)));
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--shine-color, var(--brand)) 20%, transparent), inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+/* Its container version (add glass-shine-soft too — e.g. the Dashboard's and Leads' stat cards): the same white edge
+ * and top highlight over just a light wash of its colour (so dark text reads on it), with the page's glass shadow and
+ * a faint glow of its colour. */
+.glass-shine.glass-shine-soft {
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--shine-color, var(--brand)) 5%, var(--panel-bg)),
+    color-mix(in srgb, var(--shine-color, var(--brand)) 14%, var(--panel-bg))
+  );
+  border-color: rgba(255, 255, 255, 0.65);
+  box-shadow: var(--shadow-glass), 0 6px 18px color-mix(in srgb, var(--shine-color, var(--brand)) 14%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+body[data-theme="dark"] .glass-shine.glass-shine-soft {
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow: var(--shadow-glass), 0 6px 18px color-mix(in srgb, var(--shine-color, var(--brand)) 18%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+/* Its neutral version (glass-shine glass-shine-neutral — e.g. the Design tab's containers and side buttons): the same
+ * white edge, top highlight and soft shadow on the plain panel colour — no colour wash or glow (no --shine-color needed),
+ * just a faint shade towards the bottom right. */
+.glass-shine.glass-shine-neutral {
+  background: linear-gradient(145deg, var(--panel-bg), color-mix(in srgb, var(--text-main) 4%, var(--panel-bg)));
+  border-color: rgba(255, 255, 255, 0.65);
+  box-shadow: var(--shadow-glass), inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+body[data-theme="dark"] .glass-shine.glass-shine-neutral {
+  background: linear-gradient(145deg, color-mix(in srgb, white 6%, var(--panel-bg)), var(--panel-bg));
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow: var(--shadow-glass), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
 /* The tint: between the tab's own background (set inline) and its label, so it works over whatever
  * colour the tab is. */
 [data-app-top-tab]::after {

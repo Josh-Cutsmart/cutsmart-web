@@ -183,6 +183,15 @@ service cloud.firestore {
         allow read, write: if isCompanyMember(companyId);
       }
 
+      // Leads (Leads page) — read straight from here so the page shows them quickly and stays live
+      // (subscribeCompanyLeads in lib/firestore-data.ts). Same as /api/leads already gives any member:
+      // which leads someone sees (all, or only their own) is the app's leads.view.others permission.
+      // Every change still goes through /api/leads (lead forms, the email inbox, edits), never here.
+      match /leads/{leadId} {
+        allow read: if isCompanyMember(companyId);
+        allow write: if false;
+      }
+
       // Company Wrapped's per-year delta-tallied stats (doors/drawers/panels/materials/hinges).
       // Same access level as the parent company doc itself.
       match /companyStats/{year} {

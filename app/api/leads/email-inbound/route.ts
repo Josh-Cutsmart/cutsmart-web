@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
-import { Resend, type GetReceivingEmailResponseSuccess, type InboundAttachment } from "resend";
+import { Resend, type GetReceivingEmailResponseSuccess } from "resend";
 import { adminDb, adminStorageBucket, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
 import { leadInboxCodeFromAddress } from "@/lib/lead-inbox";
 import { LEAD_INBOX_CODES_COLLECTION } from "@/lib/lead-inbox-server";
@@ -21,7 +21,10 @@ import { notifyNewLead } from "@/lib/lead-notify-server";
 
 export const maxDuration = 60;
 
-const PHOTO_TYPES: Record<string, string> = { "image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif" };
+const PHOTO_TYPES: Record<string, string> = { "image/jpeg": "jpg", "image/jpg": "jpg", "image/pjpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif" };
+// A photo sent as a plain file (e.g. "application/octet-stream") is known by its name instead.
+const PHOTO_EXTENSIONS: Record<string, string> = { jpg: "jpg", jpeg: "jpg", jfif: "jpg", png: "png", webp: "webp", gif: "gif" };
+const SAVED_CONTENT_TYPES: Record<string, string> = { jpg: "image/jpeg", png: "image/png", webp: "image/webp", gif: "image/gif" };
 const MAX_PHOTOS = 10;
 const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
 // A picture inside the email's text that's smaller than this is a logo or signature, not a photo of the job.
@@ -35,37 +38,112 @@ function readEnvValue(value: string | undefined) {
   return String(value || "").trim().replace(/^(["'])(.*)\1$/, "$2").trim();
 }
 
-// The email's photos, saved with the lead (where the Leads page keeps a lead's photos) — skipped one by one if any
-// can't be fetched or saved.
-async function saveEmailPhotos(resend: Resend, emailId: string, companyId: string, leadId: string, attachments: InboundAttachment[]) {
-  const bucket = adminStorageBucket;
-  if (!bucket) return [];
-  const photos = attachments
-    .filter((attachment) => PHOTO_TYPES[toStr(attachment.content_type).toLowerCase()])
-    .filter((attachment) => attachment.size > 0 && attachment.size <= MAX_PHOTO_BYTES)
-    .filter((attachment) => toStr(attachment.content_disposition).toLowerCase() !== "inline" || attachment.size >= MIN_INLINE_PHOTO_BYTES)
-    .slice(0, MAX_PHOTOS);
+// One of the email's files: its name and type, whether it sits in the email's text (inline), its size when Resend
+// says (it doesn't always), and the link to download it when there is one.
+type EmailFile = { id: string; filename: string; contentType: string; inline: boolean; size: number | null; downloadUrl: string };
+
+function baseContentType(value: unknown) {
+  return toStr(value).split(";")[0].trim().toLowerCase();
+}
+
+function fileSize(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+// The email's files — Resend's list of them (complete details, with download links), else the email's own list.
+async function emailFiles(resend: Resend, email: GetReceivingEmailResponseSuccess): Promise<EmailFile[]> {
+  try {
+    const { data, error } = await resend.emails.receiving.attachments.list({ emailId: email.id });
+    if (!error && data?.data) {
+      return data.data.map((file) => ({
+        id: toStr(file.id),
+        filename: toStr(file.filename),
+        contentType: baseContentType(file.content_type),
+        inline: toStr(file.content_disposition).toLowerCase() === "inline",
+        size: fileSize(file.size),
+        downloadUrl: toStr(file.download_url),
+      }));
+    }
+    if (error) console.error("[leads] couldn't list the email's attachments:", error);
+  } catch (error) {
+    console.error("[leads] couldn't list the email's attachments:", error);
+  }
+  return (email.attachments ?? []).map((file) => ({
+    id: toStr(file.id),
+    filename: toStr(file.filename),
+    contentType: baseContentType(file.content_type),
+    inline: toStr(file.content_disposition).toLowerCase() === "inline",
+    size: fileSize(file.size),
+    downloadUrl: "",
+  }));
+}
+
+// "jpg", "png", … for a photo the Leads page can show; "" for anything else.
+function photoExtension(file: EmailFile) {
+  return PHOTO_TYPES[file.contentType] || PHOTO_EXTENSIONS[(file.filename.match(/\.([a-z0-9]+)$/i)?.[1] ?? "").toLowerCase()] || "";
+}
+
+// An iPhone photo in its own format (HEIC), which most browsers can't show.
+function isIphonePhoto(file: EmailFile) {
+  return /hei[cf]/.test(file.contentType) || /\.hei[cf]$/i.test(file.filename);
+}
+
+function fileLabel(file: EmailFile, index: number) {
+  return file.filename || `File ${index + 1}`;
+}
+
+// The email's photos, saved with the lead (where the Leads page keeps a lead's photos), one by one — notSaved names
+// any that couldn't be, and reasons says why (for the webhook's log in Resend).
+async function saveEmailPhotos(resend: Resend, emailId: string, companyId: string, leadId: string, files: EmailFile[]) {
   const saved: Array<{ url: string; name: string }> = [];
-  for (const [index, attachment] of photos.entries()) {
+  const notSaved: string[] = [];
+  const reasons: string[] = [];
+  const photos = files
+    .filter((file) => photoExtension(file))
+    .filter((file) => !(file.inline && file.size != null && file.size < MIN_INLINE_PHOTO_BYTES))
+    .slice(0, MAX_PHOTOS);
+  if (!photos.length) return { saved, notSaved, reasons, tried: 0 };
+  const bucket = adminStorageBucket;
+  if (!bucket) {
+    return { saved, notSaved: photos.map(fileLabel), reasons: ["no Firebase Storage bucket set up on the server"], tried: photos.length };
+  }
+  for (const [index, photo] of photos.entries()) {
     try {
-      const { data } = await resend.emails.receiving.attachments.get({ emailId, id: attachment.id });
-      if (!data?.download_url) continue;
-      const response = await fetch(data.download_url, { signal: AbortSignal.timeout(15000) });
-      if (!response.ok) continue;
+      let downloadUrl = photo.downloadUrl;
+      if (!downloadUrl) {
+        const { data, error } = await resend.emails.receiving.attachments.get({ emailId, id: photo.id });
+        if (error) throw new Error(`attachment: ${error.name || error.message}`);
+        downloadUrl = toStr(data?.download_url);
+      }
+      if (!downloadUrl) throw new Error("no download link");
+      const response = await fetch(downloadUrl, { signal: AbortSignal.timeout(20000) });
+      if (!response.ok) throw new Error(`download: HTTP ${response.status}`);
       const bytes = Buffer.from(await response.arrayBuffer());
-      const contentType = toStr(attachment.content_type).toLowerCase();
-      const path = `companies/${companyId}/leads/${leadId}/images/${Date.now()}_${index + 1}.${PHOTO_TYPES[contentType]}`;
+      // A logo or signature after all.
+      if (photo.inline && bytes.length < MIN_INLINE_PHOTO_BYTES) continue;
+      if (bytes.length > MAX_PHOTO_BYTES) {
+        notSaved.push(`${fileLabel(photo, index)} (over 10 MB)`);
+        continue;
+      }
+      const extension = photoExtension(photo);
+      const path = `companies/${companyId}/leads/${leadId}/images/${Date.now()}_${index + 1}.${extension}`;
       const token = randomUUID();
-      await bucket.file(path).save(bytes, { resumable: false, contentType, metadata: { metadata: { firebaseStorageDownloadTokens: token } } });
+      await bucket.file(path).save(bytes, {
+        resumable: false,
+        contentType: SAVED_CONTENT_TYPES[extension],
+        metadata: { metadata: { firebaseStorageDownloadTokens: token } },
+      });
       saved.push({
         url: `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(path)}?alt=media&token=${token}`,
-        name: toStr(attachment.filename).replace(/\.[^.]+$/, "") || `Photo ${saved.length + 1}`,
+        name: photo.filename.replace(/\.[^.]+$/, "") || `Photo ${saved.length + 1}`,
       });
     } catch (error) {
       console.error("[leads] email photo not saved:", error);
+      notSaved.push(fileLabel(photo, index));
+      reasons.push(error instanceof Error ? error.message : String(error));
     }
   }
-  return saved;
+  return { saved, notSaved, reasons, tried: photos.length };
 }
 
 // What happened to the email for one company: "lead", or why there's no lead.
@@ -99,12 +177,14 @@ async function fileEmailForCompany(
   const firstStatus = (Array.isArray(companyData.leadStatuses) ? companyData.leadStatuses : [])
     .map((row) => toStr((row as Record<string, unknown> | null)?.name))
     .find(Boolean);
-  // Files that aren't photos (plans, PDFs) are only named — they're in the original email.
-  const otherFiles = (email.attachments ?? [])
-    .filter((attachment) => !PHOTO_TYPES[toStr(attachment.content_type).toLowerCase()] && toStr(attachment.content_disposition).toLowerCase() !== "inline")
-    .map((attachment) => toStr(attachment.filename))
-    .filter(Boolean);
-  const rawFields = { ...draft.rawFields, ...(otherFiles.length ? { Attachments: `${otherFiles.join(", ")} (in the original email)` } : {}) };
+  // Files that aren't photos the Leads page can show (plans, PDFs, iPhone HEIC photos) are only named — they're in
+  // the original email.
+  const files = await emailFiles(resend, email);
+  const otherFiles = files
+    .filter((file) => !photoExtension(file) && (!file.inline || isIphonePhoto(file)))
+    .map((file, index) => (isIphonePhoto(file) ? `${fileLabel(file, index)} (iPhone photo format)` : fileLabel(file, index)));
+  const otherFilesNote = otherFiles.length ? `${otherFiles.join(", ")} (in the original email)` : "";
+  const rawFields = { ...draft.rawFields, ...(otherFilesNote ? { Attachments: otherFilesNote } : {}) };
   const receivedIso = (() => {
     const ms = Date.parse(toStr(email.created_at));
     return Number.isFinite(ms) ? new Date(ms).toISOString() : nowIso;
@@ -141,12 +221,23 @@ async function fileEmailForCompany(
   // Emails are arriving — so any Gmail forwarding confirmation is done with.
   await companyRef.set({ leadInbox: { lastReceivedAtIso: nowIso, gmailConfirmation: FieldValue.delete() } }, { merge: true });
 
-  const photos = await saveEmailPhotos(resend, email.id, companyId, leadRef.id, email.attachments ?? []);
-  if (photos.length) {
-    await leadRef.update({ imageItems: photos, imageUrls: photos.map((photo) => photo.url), updatedAt: FieldValue.serverTimestamp() });
+  const photos = await saveEmailPhotos(resend, email.id, companyId, leadRef.id, files);
+  const patch: Record<string, unknown> = {};
+  if (photos.saved.length) {
+    patch.imageItems = photos.saved;
+    patch.imageUrls = photos.saved.map((photo) => photo.url);
   }
+  // Photos that couldn't be saved are named on the lead, so nobody thinks there weren't any.
+  if (photos.notSaved.length) {
+    const note = `${photos.notSaved.join(", ")} (couldn't be saved — in the original email)`;
+    patch["rawFields.Attachments"] = otherFilesNote ? `${otherFilesNote}; ${note}` : note;
+  }
+  if (Object.keys(patch).length) await leadRef.update({ ...patch, updatedAt: FieldValue.serverTimestamp() });
   await notifyNewLead(companyId, leadRef.id, lead, siteOrigin);
-  return "lead";
+  // For the webhook's log in Resend: how the photos went.
+  return photos.tried
+    ? `lead (photos saved ${photos.saved.length} of ${photos.tried}${photos.reasons.length ? ` — ${photos.reasons.join("; ")}` : ""})`
+    : "lead";
 }
 
 export async function POST(request: NextRequest) {
@@ -200,8 +291,9 @@ export async function POST(request: NextRequest) {
   const { data: email, error } = await resend.emails.receiving.get(event.data.email_id);
   if (error || !email) {
     console.error("[leads] couldn't fetch the received email:", error);
-    // Resend tries again later.
-    return NextResponse.json({ ok: false, error: "fetch-failed" }, { status: 502 });
+    // Resend tries again later. Its reason in the reply, so the webhook's log in Resend says why — e.g.
+    // "restricted_api_key": the API key can only send emails (a Full access key is needed: RESEND_RECEIVING_API_KEY).
+    return NextResponse.json({ ok: false, error: "fetch-failed", reason: String(error?.name || error?.message || "") }, { status: 502 });
   }
   const inbound: InboundEmail = {
     from: toStr(email.from),

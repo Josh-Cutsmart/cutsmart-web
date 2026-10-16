@@ -1,6 +1,7 @@
 "use client";
 
 import { setActiveCompanyFormats } from "@/lib/company-formats";
+import { glassShineStyle } from "@/lib/glass-shine";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type TouchEvent as ReactTouchEvent } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
@@ -3213,7 +3214,9 @@ export function AppShell({
                     setShowNewProject(true);
                     setMobileNavOpen(false);
                   }}
-                  className="mb-3 flex h-14 w-full shrink-0 items-center justify-center gap-2 rounded-[12px] bg-[image:var(--brand-gradient)] text-[17px] font-semibold text-white shadow-[var(--shadow-sm)] transition hover:brightness-105"
+                  // The glass shine (lib/glass-shine.ts), in the brand blue, round-ended.
+                  className="glass-shine mb-3 flex h-14 w-full shrink-0 items-center justify-center gap-2 rounded-full text-[17px] font-semibold text-white transition hover:brightness-105"
+                  style={glassShineStyle("var(--brand)")}
                 >
                   <Plus size={24} strokeWidth={2.5} />
                   New Project
@@ -3443,7 +3446,9 @@ export function AppShell({
               type="button"
               onClick={(e) => { newProjectModalOriginElRef.current = e.currentTarget; setAssigneeUid(""); setNewProjectOrigin(captureGlassModalOrigin(e)); setShowNewProject(true); }}
               title={isSidebarIconOnlyContent ? "New Project" : undefined}
-              className="mb-3 flex h-10 w-full shrink-0 items-center justify-center gap-2 rounded-[10px] bg-[image:var(--brand-gradient)] text-[13px] font-semibold text-white shadow-[var(--shadow-sm)] transition hover:brightness-105"
+              // The glass shine (lib/glass-shine.ts), in the brand blue, round-ended.
+              className="glass-shine mb-3 flex h-10 w-full shrink-0 items-center justify-center gap-2 rounded-full text-[13px] font-semibold text-white transition hover:brightness-105"
+              style={glassShineStyle("var(--brand)")}
             >
               <Plus size={20} strokeWidth={2.5} className="shrink-0" />
               {!isSidebarIconOnlyContent && <span className="sidebar-label-fade-in min-w-0 truncate">New Project</span>}

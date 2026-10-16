@@ -13,7 +13,7 @@ import { notifyNewLead } from "@/lib/lead-notify-server";
 
 // A lead form sent from its public page or a company's website (app/f/[companyId]/[formId]) — no sign-in, so it's
 // checked for robots first (lib/lead-form-public-server.ts), then answered exactly as the form asks (required
-// questions too) and saved as a New lead, with the usual "New lead" notification. Nobody is emailed back.
+// questions too) and saved as a New lead, with the usual "New Lead" notification. Nobody is emailed back.
 
 const MAX_LINKS = 3;
 

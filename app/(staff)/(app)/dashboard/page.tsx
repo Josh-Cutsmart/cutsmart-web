@@ -1,6 +1,7 @@
 "use client";
 
 import { activeDate, activeDateTime, useCompanyFormats } from "@/lib/company-formats";
+import { glassShineStyle } from "@/lib/glass-shine";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { useRouter } from "next/navigation";
 import { createPortal } from "react-dom";
@@ -1894,7 +1895,6 @@ export default function DashboardPage() {
     };
     renderCard: (project: Project) => React.ReactNode;
     renderHeader: (badgeBg: string, badgeText: string) => React.ReactNode;
-    emptyLabel?: string;
     // While a project is dragged over this column: it (draggedId), and the spot its preview shows.
     draggedId?: string;
     dropPreviewIndex?: number | null;
@@ -1904,19 +1904,13 @@ export default function DashboardPage() {
     const glassColumnBorder = "rgba(255,255,255,0.3)";
     // No backdrop blur: the columns only ever sit over the plain page background, where a blur changes
     // nothing you can see — but the browser re-blurs every column on every frame of a board scroll.
-    const glassColumnSurface: React.CSSProperties = {
-      backgroundColor: glassColumnBg,
-    };
+    // With the glass shine (lib/glass-shine.ts; className glass-shine) in its status colour, still a little see-through.
+    const glassColumnSurface: React.CSSProperties = glassShineStyle({ backgroundColor: glassColumnBg });
     const glassColumnShadow = options.isDragOver
       ? "0 0 0 3px rgba(255,255,255,0.85), inset 0 1px 0 rgba(255,255,255,0.7)"
       : "inset 0 1px 0 rgba(255,255,255,0.7), inset 0 30px 40px -32px rgba(255,255,255,0.35), var(--shadow-glass)";
     const columnBadgeBg = isDarkMode ? "rgba(0,0,0,0.35)" : "rgba(255,255,255,0.55)";
     const columnBadgeText = isDarkMode ? dashboardPalette.text : "#000000";
-    // Unlike columnBadgeText (the count badge/collapse button — stays a fixed light/dark-mode
-    // color by design), the column's actual name text contrasts against its OWN configured color,
-    // same reasoning as the status pills this mirrors — main statuses and sub-stages share the
-    // exact same color picker.
-    const columnTitleTextColor = rowTextColorForFill(options.color);
     return (
       // The frame cuts the column off at the bottom of the screen while the board scrolls into place.
       <BoardColumnFrame
@@ -1926,7 +1920,7 @@ export default function DashboardPage() {
         shadow={glassColumnShadow}
       >
         <div
-          className="flex h-full w-full flex-col overflow-hidden rounded-[16px] border transition"
+          className="glass-shine flex h-full w-full flex-col overflow-hidden rounded-[16px] border transition"
           style={{ borderColor: glassColumnBorder, ...glassColumnSurface }}
         >
           {options.renderHeader(columnBadgeBg, columnBadgeText)}
@@ -1935,9 +1929,8 @@ export default function DashboardPage() {
               the board's horizontal scroller, which blocked swiping between columns. See
               setCardListsScrollable in lib/board-sticky-scroll.ts. */}
           <div className="glass-scroll board-column-scroll flex-1 space-y-2.5 overflow-y-hidden p-2.5" style={{ scrollbarWidth: "none" }}>
-            {options.projects.length === 0 && !options.dropPreviewProject ? (
-              <p className="px-1 py-6 text-center text-[11px] font-semibold" style={{ color: columnTitleTextColor }}>{options.emptyLabel ?? "No projects."}</p>
-            ) : (
+            {/* An empty column is just empty — no "No projects." in it. */}
+            {options.projects.length === 0 && !options.dropPreviewProject ? null : (
               withBoardDropPreview(
                 options.projects,
                 options.draggedId ?? "",
@@ -2024,9 +2017,8 @@ export default function DashboardPage() {
   }) => {
     const glassColumnBorder = "rgba(255,255,255,0.3)";
     // No backdrop blur — same reason as renderBoardColumn's.
-    const glassColumnSurface: React.CSSProperties = {
-      backgroundColor: hexToRgba(options.color, 0.85),
-    };
+    // With the glass shine (lib/glass-shine.ts; className glass-shine), as a full column.
+    const glassColumnSurface: React.CSSProperties = glassShineStyle({ backgroundColor: hexToRgba(options.color, 0.85) });
     const glassColumnShadow = options.isDragOver
       ? "0 0 0 3px rgba(255,255,255,0.85), inset 0 1px 0 rgba(255,255,255,0.7)"
       : "inset 0 1px 0 rgba(255,255,255,0.7), inset 0 30px 40px -32px rgba(255,255,255,0.35), var(--shadow-glass)";
@@ -2046,7 +2038,7 @@ export default function DashboardPage() {
           onClick={(e) => expandBoardColumnAnimated(e.currentTarget, options.onExpand)}
           // pt-2: its expand button on the same line as a full column's header buttons, where the
           // collapse button slides to (lib/board-column-collapse.ts).
-          className="flex h-full w-full flex-col items-center gap-3 overflow-hidden rounded-[16px] border pb-3 pt-2 transition hover:brightness-105"
+          className="glass-shine flex h-full w-full flex-col items-center gap-3 overflow-hidden rounded-[16px] border pb-3 pt-2 transition hover:brightness-105"
           style={{ borderColor: glassColumnBorder, ...glassColumnSurface }}
           title={`Expand ${options.name}`}
           aria-label={`Expand ${options.name}`}
@@ -3071,22 +3063,18 @@ export default function DashboardPage() {
                       el.style.transition = "transform 350ms cubic-bezier(0.22, 1, 0.36, 1)";
                       el.style.transform = "perspective(800px) rotateX(0deg) rotateY(0deg) translateY(0px) scale(1)";
                     }}
-                    className={`rounded-[18px] border px-3 py-2.5 sm:px-5 sm:py-4 ${
+                    // The glass shine (lib/glass-shine.ts) — the card its container version, in a wash of its icon's colour,
+                    // and its icon the full one. (No backdrop blur: the stat cards sit over the plain page background — a
+                    // blur shows nothing there — and it was redone on every frame of a page scroll.)
+                    className={`glass-shine glass-shine-soft rounded-[18px] border px-3 py-2.5 sm:px-5 sm:py-4 ${
                       isInteractiveCard ? "cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-soft)]" : ""
                     }`}
-                    style={{
-                      borderColor: "var(--glass-border)",
-                      // No backdrop blur: the stat cards sit over the plain page background (a blur
-                      // shows nothing there) and it was redone on every frame of a page scroll.
-                      backgroundColor: "var(--glass-bg-strong)",
-                      boxShadow: "var(--shadow-glass)",
-                      willChange: "transform",
-                    }}
+                    style={glassShineStyle(card.iconTo, { willChange: "transform" })}
                   >
                     <div className="flex items-center gap-2 sm:mb-3 sm:gap-2.5">
                       <div
-                        className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-white shadow-[0_4px_10px_rgba(0,0,0,0.14)] sm:h-9 sm:w-9"
-                        style={{ backgroundImage: `linear-gradient(135deg, ${card.iconFrom} 0%, ${card.iconTo} 100%)` }}
+                        className="glass-shine inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-white sm:h-9 sm:w-9"
+                        style={glassShineStyle(card.iconTo)}
                       >
                         <Icon size={15} strokeWidth={2.4} />
                       </div>
@@ -3514,8 +3502,8 @@ export default function DashboardPage() {
                               });
                               setStatusMenuProjectId(project.id);
                             }}
-                            className="inline-flex h-7 w-[118px] shrink-0 items-center justify-center rounded-[10px] px-3 text-[11px] font-normal"
-                            style={projectStatusPillStyle(project.statusLabel || "New")}
+                            className="glass-shine inline-flex h-7 w-[118px] shrink-0 items-center justify-center rounded-full px-3 text-[11px] font-normal"
+                            style={glassShineStyle(projectStatusPillStyle(project.statusLabel || "New"))}
                             aria-disabled={statusUpdatingProjectId === project.id || !canEditProjectFromDashboard(project)}
                             aria-label="Project status"
                             title={canEditProjectFromDashboard(project) ? "Change project status" : "You can view this project but not change its status"}
@@ -3919,8 +3907,8 @@ export default function DashboardPage() {
                               });
                               setStatusMenuProjectId(project.id);
                             }}
-                            className="inline-flex items-center justify-center rounded-[10px] px-3 py-2 text-[12px] font-normal"
-                            style={{ ...projectStatusPillStyle(project.statusLabel || "New"), width: listStatusPillWidthPx, marginRight: 10 }}
+                            className="glass-shine inline-flex items-center justify-center rounded-full px-3 py-2 text-[12px] font-normal"
+                            style={glassShineStyle({ ...projectStatusPillStyle(project.statusLabel || "New"), width: listStatusPillWidthPx, marginRight: 10 })}
                             aria-disabled={statusUpdatingProjectId === project.id || !canEditProjectFromDashboard(project)}
                             aria-label="Project status"
                             title={canEditProjectFromDashboard(project) ? "Change project status" : "You can view this project but not change its status"}
@@ -3979,12 +3967,12 @@ export default function DashboardPage() {
                           type="button"
                           disabled={statusUpdatingProjectId === statusMenuProject.id}
                           onClick={() => void onSelectProjectStatus(statusMenuProject, option)}
-                          className="mb-1 block w-full rounded-[8px] px-3 py-2 text-center text-[12px] font-semibold last:mb-0 disabled:opacity-55 max-md:rounded-[10px] max-md:py-3 max-md:text-[15px]"
-                          style={{
+                          className="glass-shine mb-1 block w-full rounded-full px-3 py-2 text-center text-[12px] font-semibold last:mb-0 disabled:opacity-55 max-md:py-3 max-md:text-[15px]"
+                          style={glassShineStyle({
                             backgroundColor: rowColor,
                             color: rowTextColorForFill(rowColor),
                             filter: active ? "brightness(0.96)" : "brightness(1)",
-                          }}
+                          })}
                         >
                           {option}
                         </button>
