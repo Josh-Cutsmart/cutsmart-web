@@ -21,6 +21,10 @@ import { getProjectDocRefAdmin, isShareLinkInactiveAdmin, type SpecsShareLinkDoc
 // (users/{uid}.clientPortalRemindersChangedAt): one that would have gone before then is just marked done.
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+// They're days long, so they're looked for at most this often (they were every minute — every share link, each time):
+// jobRuns/{scope} remembers when (scope: every company, from the scheduled job; or one company, from the open app's
+// fallback). A reminder goes up to this much after its day comes round.
+const CHECK_AT_MOST_EVERY_MS = 60 * 60 * 1000;
 
 function str(value: unknown): string {
   return String(value ?? "").trim();
@@ -28,13 +32,25 @@ function str(value: unknown): string {
 
 type Kind = "quote" | "specs";
 
-export type ClientPortalReminderRunResult = { links: number; sent: number };
+export type ClientPortalReminderRunResult = { links: number; sent: number; skipped?: boolean };
 
 export async function runClientPortalPendingReminders(options: { siteOrigin: string; companyIds?: string[]; now?: number }): Promise<ClientPortalReminderRunResult> {
   const result: ClientPortalReminderRunResult = { links: 0, sent: 0 };
   if (!adminDb) return result;
   const db = adminDb;
   const now = options.now ?? Date.now();
+  // Not again within the hour (see CHECK_AT_MOST_EVERY_MS) — claimed in a transaction, so two runs at once can't both go.
+  const scope = options.companyIds?.length ? `clientPortal_${[...options.companyIds].sort().join("_")}` : "clientPortal_all";
+  const stampRef = db.collection("jobRuns").doc(scope.slice(0, 1400));
+  const claimed = await db
+    .runTransaction(async (tx) => {
+      const last = Number((await tx.get(stampRef)).data()?.lastRunMs) || 0;
+      if (now - last < CHECK_AT_MOST_EVERY_MS) return false;
+      tx.set(stampRef, { lastRunMs: now, lastRunIso: new Date(now).toISOString() }, { merge: true });
+      return true;
+    })
+    .catch(() => false);
+  if (!claimed) return { ...result, skipped: true };
   const collection = db.collection("specsShareLinks");
   const snaps = options.companyIds?.length
     ? (await Promise.all(options.companyIds.map((cid) => collection.where("companyId", "==", cid).get()))).flatMap((snap) => snap.docs)

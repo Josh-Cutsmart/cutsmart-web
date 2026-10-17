@@ -125,7 +125,6 @@ export function QuoteDocumentEditor({
       }
 
       editorRef.current = editor;
-      onEditorReady?.(editor);
       if (editor.ui.view.toolbar.element) {
         toolbarNode.replaceChildren(editor.ui.view.toolbar.element);
         setIsToolbarElementReady(true);
@@ -147,6 +146,10 @@ export function QuoteDocumentEditor({
       if (readOnly) {
         editor.enableReadOnlyMode("cutsmart-quote-document-readonly");
       }
+      // Ready once its typing area is on the page — not before: focusing it any earlier does nothing (it isn't on the
+      // page yet), which is what lost a phone's keyboard on the first tap into a project's Notes (that hands the
+      // keyboard over to the editor from a stand-in text box the moment it's ready).
+      onEditorReady?.(editor);
       if (autoFocus) {
         window.setTimeout(() => {
           try {

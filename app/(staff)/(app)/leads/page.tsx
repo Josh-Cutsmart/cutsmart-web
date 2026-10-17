@@ -7,7 +7,17 @@ import { createPortal } from "react-dom";
 import { Activity, ArrowUpDown, CalendarDays, Check, CheckCircle2, ChevronsLeftRight, ChevronsRightLeft, ImagePlus, Inbox, Kanban, ListChecks, ListFilter, Mail, MapPin, Pencil, Phone, Plus, Rows3, Search, Sparkles, Trash2, UserX, X } from "lucide-react";
 import { DASHBOARD_STAT_CARDS_UPDATED_EVENT, readDashboardStatCardsEnabled } from "@/lib/ui-preferences";
 import { flatPageBg } from "@/lib/flat-page";
-import { GlassActionMenu, GlassDropdown } from "@/components/glass-dropdown";
+import {
+  GLASS_MENU_CLASS,
+  GLASS_MENU_MIN_WIDTH_PHONE_PX,
+  GLASS_MENU_MIN_WIDTH_PX,
+  GLASS_MENU_STYLE,
+  GlassActionMenu,
+  GlassDropdown,
+  GlassMenuOption,
+  glassMenuHeight,
+} from "@/components/glass-dropdown";
+import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
 import Link from "next/link";
 import { FullscreenImageViewerShell } from "@/components/fullscreen-image-viewer-shell";
 import { glassFieldClass, modalCloseButtonClass, primaryButtonClass, primaryButtonStyle, secondaryButtonClass } from "@/components/settings-ui";
@@ -1000,7 +1010,19 @@ export default function LeadsPage() {
   // See lib/board-sticky-scroll.ts for the mechanism (position:sticky natively pinning the row +
   // column-height-reveal, plus the shared Left/Right arrow-key handling), and why it no longer
   // forces the page's own overflow to "hidden".
-  const boardStickyRef = useBoardStickyRef(leadsViewModeRef, boardCheckRef, { bottomPadPx: 8, phoneBottomPadPx: 20, attachArrowKeyScroll: true });
+  const boardStickyRef = useBoardStickyRef(leadsViewModeRef, boardCheckRef, { bottomPadPx: 10, phoneBottomPadPx: 20, attachArrowKeyScroll: true });
+  // The board's row of columns, for its glass scrollbar along the bottom (as the Dashboard board's) — kept in state
+  // too, so the scrollbar finds the row once it's on the page (it's behind the loading gate and the view toggle).
+  const leadsBoardScrollRef = useRef<HTMLDivElement | null>(null);
+  const [leadsBoardScrollEl, setLeadsBoardScrollEl] = useState<HTMLDivElement | null>(null);
+  const leadsBoardRowRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      leadsBoardScrollRef.current = el;
+      setLeadsBoardScrollEl(el);
+      boardStickyRef(el);
+    },
+    [boardStickyRef],
+  );
   // Re-run the check immediately on a view-mode toggle (rather than waiting for the next scroll
   // or resize) so switching into/out of board view updates the lock/height state right away.
   // useLayoutEffect, not useEffect: leadsViewMode can flip away from and back to "board" as the
@@ -1881,10 +1903,10 @@ export default function LeadsPage() {
     }
     const rect = event.currentTarget.getBoundingClientRect();
     const isPhoneMenu = window.matchMedia("(max-width: 767px)").matches;
-    const estimatedMenuHeight = leadStatusOptions.length * (isPhoneMenu ? 50 : 38) + 8;
+    const estimatedMenuHeight = glassMenuHeight(leadStatusOptions.length, isPhoneMenu);
     const hasRoomBelow = rect.bottom + estimatedMenuHeight <= window.innerHeight - 8;
     const hasRoomAbove = rect.top - estimatedMenuHeight >= 8;
-    const menuWidth = Math.max(isPhoneMenu ? 170 : 120, Math.round(rect.width));
+    const menuWidth = Math.max(isPhoneMenu ? GLASS_MENU_MIN_WIDTH_PHONE_PX : GLASS_MENU_MIN_WIDTH_PX, Math.round(rect.width));
     setListStatusMenu({
       leadId: lead.id,
       left: Math.min(Math.max(8, rect.left), window.innerWidth - menuWidth - 8),
@@ -4120,7 +4142,7 @@ export default function LeadsPage() {
                     <div
                       ref={cardStatusMenuPanelRef}
                       onClick={(e) => e.stopPropagation()}
-                      className="absolute left-0 top-0 z-50 min-w-[170px] overflow-hidden rounded-[14px] border p-1.5"
+                      className="absolute left-0 top-0 z-50 min-w-[170px] overflow-hidden rounded-[10px] border p-1 max-md:min-w-[190px] max-md:rounded-[14px] max-md:p-1.5"
                       style={{
                         borderColor: "var(--glass-border)",
                         backgroundColor: "var(--glass-modal-bg)",
@@ -4129,25 +4151,20 @@ export default function LeadsPage() {
                         boxShadow: "var(--shadow-glass)",
                       }}
                     >
-                      {leadStatusOptions.map((option) => {
-                        const active = String(lead.status || "").trim().toLowerCase() === option.toLowerCase();
-                        return (
-                          <button
-                            key={option}
-                            type="button"
-                            disabled={statusUpdatingLeadId === lead.id}
-                            onClick={() => {
-                              void onSelectLeadStatus(lead, option);
-                              setCardStatusMenuLeadId("");
-                            }}
-                            className="flex w-full items-center gap-2 rounded-[10px] px-2.5 py-1.5 text-left text-[11px] font-bold transition hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] disabled:cursor-wait disabled:opacity-60"
-                            style={{ color: "var(--text-main)", ...(active ? { backgroundColor: "var(--panel-muted)" } : {}) }}
-                          >
-                            <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: String(leadStatusPillStyle(option).backgroundColor || "") }} />
-                            {option}
-                          </button>
-                        );
-                      })}
+                      {/* Its rows: the glass dropdown's (components/glass-dropdown.tsx), as every status menu. */}
+                      {leadStatusOptions.map((option) => (
+                        <GlassMenuOption
+                          key={option}
+                          label={option}
+                          color={String(leadStatusPillStyle(option).backgroundColor || "")}
+                          selected={String(lead.status || "").trim().toLowerCase() === option.toLowerCase()}
+                          disabled={statusUpdatingLeadId === lead.id}
+                          onSelect={() => {
+                            void onSelectLeadStatus(lead, option);
+                            setCardStatusMenuLeadId("");
+                          }}
+                        />
+                      ))}
                     </div>
                   ) : null}
                 </div>
@@ -4384,24 +4401,28 @@ export default function LeadsPage() {
     const newestFirst = [...notes].reverse();
     const composer = canAdd ? (
       <div>
-        <textarea
-          value={draft}
-          rows={3}
-          disabled={leadNoteSaving}
-          placeholder="Add a note…"
-          aria-label="New note"
-          onChange={(e) => setLeadNoteDraft({ leadId: lead.id, text: e.target.value })}
-          onKeyDown={(e) => {
-            e.stopPropagation();
-            // Ctrl / Cmd + Enter adds it (Enter is a new line).
-            if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-              e.preventDefault();
-              void addLeadNote(lead);
-            }
-          }}
-          className="block w-full resize-none rounded-[14px] border px-3 py-2.5 text-[14px] font-medium outline-none transition placeholder:text-[var(--text-muted)] focus:border-[var(--brand)] disabled:opacity-60"
-          style={{ ...LEAD_POPUP_BOX_STYLE, color: "var(--text-main)" }}
-        />
+        {/* In a see-through box like each of the lead's fields — the text box itself clear (bg-transparent and no border
+            of its own: the app's blanket text-box colours, a solid grey in dark mode, would cover the box). */}
+        <div className="rounded-[14px] border px-3 py-2.5 transition focus-within:border-[var(--brand)]" style={LEAD_POPUP_BOX_STYLE}>
+          <textarea
+            value={draft}
+            rows={3}
+            disabled={leadNoteSaving}
+            placeholder="Add a note…"
+            aria-label="New note"
+            onChange={(e) => setLeadNoteDraft({ leadId: lead.id, text: e.target.value })}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              // Ctrl / Cmd + Enter adds it (Enter is a new line).
+              if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                e.preventDefault();
+                void addLeadNote(lead);
+              }
+            }}
+            className="block w-full resize-none border-0 bg-transparent p-0 text-[14px] font-medium outline-none placeholder:text-[var(--text-muted)] disabled:opacity-60"
+            style={{ background: "transparent", border: "none", borderRadius: 0, color: "var(--text-main)" }}
+          />
+        </div>
         <div className="mt-2 flex items-center justify-end gap-2">
           {error ? (
             <p className="mr-auto text-[12px] font-medium" style={{ color: "var(--danger-strong)" }}>
@@ -4565,7 +4586,9 @@ export default function LeadsPage() {
           {renderLeadChecklists(renderLead, leadChecklists, "side")}
         </aside>
         <div
-          // On a phone it takes the whole screen, square-cornered (its top and bottom clear of the notch / home bar).
+          // On a phone it takes the whole screen, square-cornered (its top and bottom clear of the notch / home bar) —
+          // and stays that way with the keyboard up, the keyboard over its bottom (data-phone-fullscreen, app/globals.css).
+          data-phone-fullscreen="true"
           className="glass-modal-panel relative isolate flex max-h-[min(720px,90vh)] w-[min(560px,96vw)] flex-col overflow-hidden max-sm:h-[100dvh] max-sm:max-h-none max-sm:w-full max-sm:rounded-none! max-sm:border-0!"
         >
           {/* The Calendar event pop-up's look: its status's colour washed across it, the X alone in the top right corner,
@@ -4644,7 +4667,8 @@ export default function LeadsPage() {
               </div>
             </div>
           ) : null}
-          <div className="glass-scroll min-h-0 flex-1 overflow-y-auto px-5 pb-4">
+          {/* data-keyboard-scroll-pad: room under its fields for the keyboard, so the one being typed in scrolls up above it. */}
+          <div data-keyboard-scroll-pad="true" className="glass-scroll min-h-0 flex-1 overflow-y-auto px-5 pb-4">
             {isDetailLoading ? (
               <div className="mb-2 rounded-[14px] border px-3 py-2.5 text-[13px] font-medium" style={{ ...LEAD_POPUP_BOX_STYLE, color: "var(--text-main)" }}>
                 Loading lead details...
@@ -5453,41 +5477,32 @@ export default function LeadsPage() {
                       </tbody>
                     </table>
                   </div>
-                  {/* A row's status menu: each status in its own colour (the Dashboard's). */}
+                  {/* A row's status menu: the glass dropdown's look (components/glass-dropdown.tsx — as the lead
+                      pop-up's status) — each status a colour dot and its name, the current one in the brand blue. */}
                   {listStatusMenu && typeof document !== "undefined"
                     ? createPortal(
                         <div
                           data-lead-status-menu="true"
-                          className="fixed overflow-hidden rounded-[10px] border p-1 shadow-[var(--shadow-md)]"
-                          style={{
-                            left: listStatusMenu.left,
-                            top: listStatusMenu.top,
-                            width: listStatusMenu.width,
-                            zIndex: 2147483647,
-                            borderColor: "var(--glass-border)",
-                            backgroundColor: "var(--glass-modal-bg)",
-                            backdropFilter: "blur(12px) saturate(220%)",
-                            WebkitBackdropFilter: "blur(12px) saturate(220%)",
-                          }}
+                          role="listbox"
+                          aria-label="Lead status"
+                          className={GLASS_MENU_CLASS}
+                          style={{ ...GLASS_MENU_STYLE, left: listStatusMenu.left, top: listStatusMenu.top, width: listStatusMenu.width }}
                           onClick={(e) => e.stopPropagation()}
                         >
                           {leadStatusOptions.map((option) => {
                             const menuLead = getLeadById(listStatusMenu.leadId);
-                            const active = String(menuLead?.status || "").trim().toLowerCase() === option.toLowerCase();
                             return (
-                              <button
+                              <GlassMenuOption
                                 key={`${listStatusMenu.leadId}_${option}`}
-                                type="button"
+                                label={option}
+                                color={String(leadStatusPillStyle(option).backgroundColor || "")}
+                                selected={String(menuLead?.status || "").trim().toLowerCase() === option.toLowerCase()}
                                 disabled={!menuLead || statusUpdatingLeadId === listStatusMenu.leadId}
-                                onClick={() => {
+                                onSelect={() => {
                                   if (menuLead) void onSelectLeadStatus(menuLead, option);
                                   setListStatusMenu(null);
                                 }}
-                                className="glass-shine mb-1 block w-full rounded-full px-3 py-2 text-center text-[12px] font-semibold last:mb-0 disabled:opacity-55 max-md:py-3 max-md:text-[15px]"
-                                style={glassShineStyle({ ...leadStatusPillStyle(option), filter: active ? "brightness(0.96)" : "brightness(1)" })}
-                              >
-                                {option}
-                              </button>
+                              />
                             );
                           })}
                         </div>,
@@ -5503,23 +5518,24 @@ export default function LeadsPage() {
               </div>
             ) : (
               <div
-                ref={boardStickyRef}
+                ref={leadsBoardRowRef}
                 data-horizontal-swipe-scroll="true"
                 // pt-7: room above the columns for their shadows (this scroller clips them), reaching
                 // up under the toolbar (-mt-6 / max-md:-mt-3 against the space-y-4 gap above).
                 //
                 // Where it sticks: so the columns (28px down inside it) stop the same distance below
-                // the top bar as their bottoms sit above the bottom of the screen — 8px (pb-2), 20px on
-                // a phone (max-md:pb-5). That's top 28px on desktop (the document scrolls, under the
-                // 48px bar), and -20px / -8px under 1024px, where <main> scrolls and already starts
-                // below the bar; the height reaches the bottom of the screen from there. At rest the
+                // the top bar as their bottoms sit above the bottom of the screen — 10px (pb-[10px], the
+                // Dashboard board's — its glass scrollbar runs along there on a computer), 20px on a
+                // phone (max-md:pb-5). That's top 30px on desktop (the document scrolls, under the 48px
+                // bar), and -18px / -8px under 1024px, where <main> scrolls and already starts below the
+                // bar; the height reaches the bottom of the screen from there. At rest the
                 // columns sit 20px (32px on a phone) below the header, so by then it — and the
                 // collapse button hanging 12px off its bottom — has gone under the bar. No native
                 // scrollbar (same as the Dashboard board): it took 10px under the columns, on top of
                 // that gap, whenever the columns didn't all fit across. Out to the page's own edges either side (back in
                 // by as much — <main>'s px-3 / md:px-4 / lg:px-5), so the first and last columns' shadows have room
                 // before this scroller cuts them off.
-                className="glass-scroll hide-native-scrollbar sticky -top-5 flex h-[calc(100svh-28px)] min-h-[280px] snap-x snap-mandatory items-stretch gap-2 -mx-3 -mt-6 px-3 pb-2 pt-7 md:-mx-4 md:px-4 lg:-mx-5 lg:px-5 max-md:-top-2 max-md:-mt-3 max-md:h-[calc(100svh-40px)] max-md:pb-5 sm:snap-none lg:top-7 lg:h-[calc(100svh-28px)] lg:min-h-[320px]"
+                className="glass-scroll hide-native-scrollbar sticky -top-[18px] flex h-[calc(100svh-30px)] min-h-[280px] snap-x snap-mandatory items-stretch gap-2 -mx-3 -mt-6 px-3 pb-[10px] pt-7 md:-mx-4 md:px-4 lg:-mx-5 lg:px-5 max-md:-top-2 max-md:-mt-3 max-md:h-[calc(100svh-40px)] max-md:pb-5 sm:snap-none lg:top-[30px] lg:h-[calc(100svh-30px)] lg:min-h-[320px]"
                 style={{ overflowX: "auto", overflowY: "hidden" }}
               >
                 {leadStatusBoardColumns.columns.map((column) => {
@@ -5748,6 +5764,18 @@ export default function LeadsPage() {
           </div>
         )}
         {renderLeadDetailDrawer()}
+        {/* The board's glass scrollbar along the bottom of the screen, under its columns — the Dashboard board's:
+            the row's own bottom edge is often below the fold, out of reach. A computer only (a phone swipes). */}
+        {leadsViewMode === "board" && leadsBoardScrollEl ? (
+          <GlassScrollbarThumb
+            scrollRef={leadsBoardScrollRef}
+            refreshKey={leadsBoardScrollEl}
+            orientation="horizontal"
+            zIndexClassName="z-[40]"
+            trackClassName="hidden lg:block"
+            viewportBottomInsetPx={0}
+          />
+        ) : null}
         <DragGhostLayer controller={leadBoardDragGhost} />
         {shouldRenderLeadFormModal && typeof document !== "undefined"
           ? createPortal(
@@ -5758,6 +5786,8 @@ export default function LeadsPage() {
                 <button type="button" aria-label="Close create lead" onClick={closeLeadFormModal} className="glass-modal-backdrop absolute inset-0" />
                 <div
                   ref={leadFormModalPanelRef}
+                  // As the lead pop-up: the whole screen on a phone, keyboard up or not (data-phone-fullscreen, app/globals.css).
+                  data-phone-fullscreen="true"
                   className="glass-modal-panel relative flex h-[100dvh] w-full flex-col overflow-hidden max-sm:rounded-none! max-sm:border-0! sm:h-auto sm:max-h-[min(860px,92vh)] sm:w-[min(600px,96vw)]"
                 >
                   <div className="flex shrink-0 items-center gap-2 px-5 pb-3 pt-4 max-sm:pt-[calc(16px+env(safe-area-inset-top))]">
@@ -5779,7 +5809,7 @@ export default function LeadsPage() {
                     </div>
                   ) : (
                     <>
-                      <div className="glass-scroll min-h-0 flex-1 overflow-y-auto px-5 pb-5">
+                      <div data-keyboard-scroll-pad="true" className="glass-scroll min-h-0 flex-1 overflow-y-auto px-5 pb-5">
                         <div className="grid gap-3 sm:grid-cols-2">
                           {leadForms.length > 1 ? (
                             <div className="sm:col-span-2">

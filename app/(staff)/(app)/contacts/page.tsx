@@ -52,6 +52,7 @@ const HOME_SCREEN_APP_PAGE_PADDING = {
 };
 import { GlassActionMenu, GlassDropdown, type GlassActionMenuItem, type GlassDropdownOption } from "@/components/glass-dropdown";
 import { contactInitials, readableTextOn, collectContactReach, openAddressInMaps } from "@/lib/contact-card";
+import { glassShineStyle } from "@/lib/glass-shine";
 
 type ContactCategoryOption = { name: string; color: string };
 
@@ -86,6 +87,13 @@ const text = "var(--text-main)";
 const textSoft = "var(--text-muted)";
 
 const emptyContactForm = { name: "", email: "", phone: "", address: "", notes: "", category: "" };
+
+// The contacts list as last loaded (per company, person and scope), kept for CONTACTS_REUSE_MS: coming back to Contacts
+// within that shows it again rather than asking /api/clients — which reads every contact and every project each time.
+// Kept in step with changes made here (see the effect that follows clients), so it's never behind this person's own
+// edits; someone else's show once it's older than that (or on a reload).
+const CONTACTS_REUSE_MS = 5 * 60 * 1000;
+const contactsListCache = new Map<string, { rows: CompanyClientRow[]; at: number }>();
 
 // Same starter set company-settings/page.tsx falls back to when a company has never saved any, so
 // this page and the settings page agree on what the categories are.
@@ -255,6 +263,15 @@ function ClientsPageInner() {
   const canAccessClients =
     access.status === "ready" &&
     (isOwnerOrAdmin(access.role) || hasPermissionKey(access.permissionKeys, "clients.view") || canViewAllClients);
+  // (contactsListCache's key: this company, this person, and whether they see everyone's contacts or just theirs.)
+  const contactsCacheKey = `${activeCompanyId}|${String(user?.uid || "").trim()}|${canViewAllClients ? "all" : "mine"}`;
+  // The kept list follows what's on the page (a contact added, changed or archived here) — staff contacts aside (they're
+  // added from the members each time) — still timed from when it was loaded.
+  useEffect(() => {
+    const cached = contactsListCache.get(contactsCacheKey);
+    if (!cached) return;
+    contactsListCache.set(contactsCacheKey, { rows: clients.filter((client) => !isStaffContactId(client.id)), at: cached.at });
+  }, [clients, contactsCacheKey]);
   // Opened from Contacts' own home-screen icon: just Contacts, without the app around it (no sidebars,
   // tab bar, pull-down menu or side drawers — lib/home-screen-app.ts). Not when this person can't see
   // contacts, so they aren't left on a dead end.
@@ -286,6 +303,8 @@ function ClientsPageInner() {
       setLoading(true);
       // The contacts list starts loading straight away, alongside the company doc (it doesn't need it).
       const loadClients = async (): Promise<CompanyClientRow[]> => {
+        const cached = contactsListCache.get(contactsCacheKey);
+        if (cached && Date.now() - cached.at < CONTACTS_REUSE_MS) return cached.rows;
         let companyClients: CompanyClientRow[] = [];
         try {
           companyClients = await retryAsync(
@@ -318,6 +337,7 @@ function ClientsPageInner() {
             { attempts: 2, delayMs: 300 },
           );
         }
+        contactsListCache.set(contactsCacheKey, { rows: companyClients, at: Date.now() });
         return companyClients;
       };
       const clientsLoad = canAccessClients ? loadClients().catch(() => [] as CompanyClientRow[]) : null;
@@ -361,7 +381,7 @@ function ClientsPageInner() {
     return () => {
       cancelled = true;
     };
-  }, [access.status, activeCompanyId, canAccessClients, canViewAllClients, reloadTick, user?.uid]);
+  }, [access.status, activeCompanyId, canAccessClients, canViewAllClients, contactsCacheKey, reloadTick, user?.uid]);
 
   const filteredClients = useMemo(() => {
     const q = String(search || "").trim().toLowerCase();
@@ -991,6 +1011,8 @@ function ClientsPageInner() {
       }
       setAddContactMessage(result.merged ? "Matched an existing contact." : "Contact added.");
       setContactForm(emptyContactForm);
+      // Loaded afresh (not the kept list) — with the new contact in it.
+      contactsListCache.delete(contactsCacheKey);
       setReloadTick((tick) => tick + 1);
       window.setTimeout(() => {
         setIsAddContactOpen(false);
@@ -1050,9 +1072,11 @@ function ClientsPageInner() {
     backdropFilter: "none",
     WebkitBackdropFilter: "none",
   };
+  // A phone: < (the contact slides back out to the right, the list in from the left). From md up — the contact a drawer
+  // on the right that slides away to the right — it points that way: >.
   const backButtonMobile = (
     <button type="button" onClick={closeContact} className={mobileRoundButtonClass} aria-label="Back to contacts">
-      <ChevronLeft size={22} />
+      <ChevronLeft size={22} className="md:-scale-x-100" />
     </button>
   );
   // Edit / Done — turns the profile fields editable (and back). Glass pill normally, brand-coloured while editing.
@@ -1209,10 +1233,13 @@ function ClientsPageInner() {
         // bar does) holding two side-by-side panes — the contact list and the contact page — that slide
         // together with a transform-only transition. Each pane scrolls on its own, so the list keeps its
         // scroll position while a contact is open. overflow-clip (not hidden) so the stage clips the
-        // off-screen pane without becoming a scroll container.
+        // off-screen pane without becoming a scroll container — on a phone: from md up the list doesn't
+        // move, and the contact drawer reaches up over the top tab bar (as the notifications panel does) —
+        // the stage above the bar (z 96, the bar's 95) while a contact is showing, so the drawer and its
+        // shadow are over it too.
         <div
-          className="app-top-bar-sidebar-offset fixed bottom-0 left-0 right-0 top-12 overflow-clip"
-          style={{ color: text, backgroundColor: pageBg }}
+          className="app-top-bar-sidebar-offset fixed bottom-0 left-0 right-0 top-12 overflow-clip md:overflow-visible"
+          style={{ color: text, backgroundColor: pageBg, zIndex: isDesktopViewport && activeClientId ? 96 : undefined }}
         >
           {/* LIST PANE */}
           <div
@@ -1223,10 +1250,9 @@ function ClientsPageInner() {
             inert={isDetailOpen && !isDesktopViewport}
           >
             <div className="glass-page-header relative z-[2] shrink-0">
-              <div
-                className="flex min-h-[56px] items-center justify-between gap-3 border-b px-4 py-2 md:px-5"
-                style={{ borderColor: border }}
-              >
+              {/* The title bar — no line under it: it runs straight on into the bar below (the column headings; on a
+                  phone, the search and filter). */}
+              <div className="flex min-h-[56px] items-center justify-between gap-3 px-4 py-2 md:px-5">
                 <div className="flex min-w-0 items-center gap-2">
                   <Users size={16} strokeWidth={2.1} style={{ color: text }} />
                   <p className="truncate text-[14px] font-medium uppercase tracking-[1px]" style={{ color: text }}>
@@ -1248,30 +1274,36 @@ function ClientsPageInner() {
                       onChange={setCategoryFilter}
                       ariaLabel="Filter by category"
                       menuMinWidth={180}
-                      triggerClassName="h-9 w-[190px] rounded-[10px] border px-3 text-[12px] font-medium"
+                      triggerClassName="h-9 w-[190px] rounded-full border px-3.5 text-[12px] font-medium"
                       triggerStyle={{ borderColor: border, backgroundColor: panelBg, color: text }}
                     />
                   ) : null}
-                  <div
-                    className="flex h-9 items-center gap-2 rounded-[10px] border px-3"
-                    style={{ width: 280, minWidth: 220, borderColor: border, backgroundColor: panelBg }}
-                  >
-                    <Search size={14} className="shrink-0" style={{ color: textSoft }} />
+                  {/* The Dashboard's search bar: a round-ended box, its icon inside at the left, the brand blue
+                      round it while typing (cs-own-fill: its own fill and border in dark mode too — globals.css). */}
+                  <div className="relative w-[280px] min-w-[220px]">
+                    <Search size={14} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2" style={{ color: textSoft }} />
                     <input
                       value={search}
                       onChange={(e) => setSearch(e.target.value)}
                       placeholder="Search contacts..."
-                      className="h-8 w-full bg-transparent text-[12px] outline-none"
-                      style={{ color: text }}
+                      className="cs-own-fill h-9 w-full rounded-full border pl-9 pr-3.5 text-[12px] font-semibold outline-none transition-colors focus:border-[var(--brand)]"
+                      style={{
+                        borderColor: border,
+                        backgroundColor: panelBg,
+                        color: text,
+                        ["--field-bg" as string]: panelBg,
+                        ["--field-border" as string]: border,
+                      }}
                     />
                   </div>
+                  {/* Round-ended, with the glass shine (lib/glass-shine.ts) in the brand blue — as Leads' Create Lead. */}
                   <button
                     type="button"
                     onClick={openAddContact}
-                    className="inline-flex h-9 items-center gap-1.5 rounded-[9px] border px-3 text-[12px] font-bold text-white hover:brightness-95"
-                    style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                    className="glass-shine inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full px-4 text-[12px] font-bold text-white hover:brightness-105"
+                    style={glassShineStyle("var(--brand)")}
                   >
-                    <Plus size={20} />
+                    <Plus size={14} />
                     Add Contact
                   </button>
                 </div>
@@ -1293,8 +1325,8 @@ function ClientsPageInner() {
                 <button
                   type="button"
                   onClick={openAddContact}
-                  className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-white hover:brightness-95"
-                  style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                  className="glass-shine inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white hover:brightness-105"
+                  style={glassShineStyle("var(--brand)")}
                   aria-label="Add contact"
                 >
                   <Plus size={20} />
@@ -1316,7 +1348,7 @@ function ClientsPageInner() {
                   </div>
                 ) : null}
                 <div
-                  className={`flex h-9 min-w-0 items-center overflow-hidden rounded-full border transition-all duration-200 ${isMobileSearchOpen ? "max-w-[500px] flex-1 justify-start gap-2 pl-0 pr-3" : "w-9 max-w-9 shrink-0 justify-center gap-0 px-0"}`}
+                  className={`flex h-9 min-w-0 items-center overflow-hidden rounded-full border transition-all duration-200 focus-within:border-[var(--brand)] ${isMobileSearchOpen ? "max-w-[500px] flex-1 justify-start gap-2 pl-0 pr-3" : "w-9 max-w-9 shrink-0 justify-center gap-0 px-0"}`}
                   style={{ borderColor: border, backgroundColor: panelBg }}
                 >
                   <button
@@ -1338,7 +1370,7 @@ function ClientsPageInner() {
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
                         placeholder="Search contacts..."
-                        className="h-8 w-full min-w-0 bg-transparent text-[12px] outline-none"
+                        className="h-8 w-full min-w-0 bg-transparent text-[12px] font-semibold outline-none"
                         style={{ color: text }}
                       />
                       <button
@@ -1512,7 +1544,8 @@ function ClientsPageInner() {
           </div>
 
           {/* CONTACT PANE — slides in from the right: over the whole stage on a phone, as a 440px drawer over
-              the list from md up; the same phone layout either way. data-horizontal-swipe-scroll keeps a sideways swipe
+              the list from md up, the full height of the screen (md:-top-12: up over the top tab bar — see the stage);
+              the same phone layout either way. data-horizontal-swipe-scroll keeps a sideways swipe
               here from opening the nav drawer / notifications (the shell's own gestures), while the
               vertical pull-down still works; a rightward swipe is this pane's own "back to the list"
               (onDetailTouch*). touch-pan-y leaves vertical scrolling to the browser and hands
@@ -1523,7 +1556,7 @@ function ClientsPageInner() {
             onTouchMove={onDetailTouchMove}
             onTouchEnd={onDetailTouchEnd}
             onTouchCancel={onDetailTouchEnd}
-            className={`cs-contact-pane @container absolute inset-y-0 right-0 z-[5] flex w-full touch-pan-y flex-col overflow-hidden md:w-[min(440px,100%)] md:border-l md:border-[var(--glass-border)] ${STAGE_SLIDE_CLASS} ${skipStageTransition ? "!transition-none" : ""} motion-reduce:!transition-none data-[swipe-dragging=true]:!transition-none`}
+            className={`cs-contact-pane @container absolute inset-y-0 right-0 z-[5] flex w-full touch-pan-y flex-col overflow-hidden md:-top-12 md:w-[min(440px,100%)] md:border-l md:border-[var(--glass-border)] ${STAGE_SLIDE_CLASS} ${skipStageTransition ? "!transition-none" : ""} motion-reduce:!transition-none data-[swipe-dragging=true]:!transition-none`}
             style={
               {
                 transform: isDetailOpen ? "translate3d(0, 0, 0)" : "translate3d(100%, 0, 0)",

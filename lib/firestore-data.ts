@@ -457,13 +457,74 @@ function normalizeProject(id: string, data: Record<string, unknown>, options?: {
   return withProjectArchiveFields(project, data);
 }
 
+// A company's projects (companies/{companyId}/jobs, every one — archived and deleted too), read live and shared by
+// everything that needs them all: the Dashboard, the Calendar, the Archived page, the daily auto-archive, the tag
+// counts, the contacts fallback. They used to be read in full on every visit to each (every project, each time); now
+// the first read is the whole list and after that Firestore sends just what changes, so going back to any of them
+// costs nothing. The read is kept open COMPANY_JOBS_LINGER_MS after it was last asked for, then stopped (each project
+// that changes while it's open costs one read). If this browser can't read them live, it reads them once each time
+// instead, as before (and doesn't try live again this session).
+const COMPANY_JOBS_LINGER_MS = 15 * 60 * 1000;
+type SharedCompanyJobs = {
+  docs: QueryDocumentSnapshot[] | null;
+  ready: Promise<QueryDocumentSnapshot[]>;
+  stop: () => void;
+  lingerTimer: ReturnType<typeof setTimeout> | null;
+};
+const sharedCompanyJobs = new Map<string, SharedCompanyJobs>();
+const companyJobsLiveRefused = new Set<string>();
+
+async function companyJobsDocs(companyId: string): Promise<QueryDocumentSnapshot[]> {
+  const cid = String(companyId || "").trim();
+  if (!db || !cid) return [];
+  const database = db;
+  if (companyJobsLiveRefused.has(cid)) return (await getDocs(collection(database, "companies", cid, "jobs"))).docs;
+  let shared = sharedCompanyJobs.get(cid);
+  if (!shared) {
+    let settle: { resolve: (docs: QueryDocumentSnapshot[]) => void; reject: (error: unknown) => void } | null = null;
+    const ready = new Promise<QueryDocumentSnapshot[]>((resolve, reject) => {
+      settle = { resolve, reject };
+    });
+    const created: SharedCompanyJobs = { docs: null, ready, stop: () => {}, lingerTimer: null };
+    sharedCompanyJobs.set(cid, created);
+    created.stop = onSnapshot(
+      collection(database, "companies", cid, "jobs"),
+      (snap) => {
+        created.docs = snap.docs;
+        settle?.resolve(snap.docs);
+      },
+      (error) => {
+        // Firestore's already dropped the listen. Not tried live again (see above); whoever's waiting reads once instead.
+        companyJobsLiveRefused.add(cid);
+        if (sharedCompanyJobs.get(cid) === created) sharedCompanyJobs.delete(cid);
+        if (created.lingerTimer) clearTimeout(created.lingerTimer);
+        settle?.reject(error);
+      },
+    );
+    shared = created;
+  }
+  // Asked for again: kept open another COMPANY_JOBS_LINGER_MS from now.
+  const entry = shared;
+  if (entry.lingerTimer) clearTimeout(entry.lingerTimer);
+  entry.lingerTimer = setTimeout(() => {
+    if (sharedCompanyJobs.get(cid) === entry) sharedCompanyJobs.delete(cid);
+    entry.stop();
+  }, COMPANY_JOBS_LINGER_MS);
+  if (entry.docs) return entry.docs;
+  try {
+    return await entry.ready;
+  } catch {
+    return (await getDocs(collection(database, "companies", cid, "jobs"))).docs;
+  }
+}
+
 async function syncCompanyProjectTagUsage(companyId: string): Promise<void> {
   const cid = String(companyId || "").trim();
   if (!db || !cid) {
     return;
   }
   try {
-    const jobsSnap = await getDocs(collection(db, "companies", cid, "jobs"));
+    const jobsSnap = { docs: await companyJobsDocs(cid) };
     const counts = new Map<string, { value: string; count: number }>();
 
     for (const item of jobsSnap.docs) {
@@ -668,40 +729,6 @@ function normalizeChange(id: string, data: Record<string, unknown>): ProjectChan
   };
 }
 
-function normalizeCutlist(id: string, data: Record<string, unknown>): Cutlist {
-  return {
-    id,
-    projectId: String(data.projectId ?? ""),
-    type: (String(data.type ?? "initial") as Cutlist["type"]),
-    revision: Number(data.revision ?? 1),
-    generatedAt: toIsoString(data.generatedAt, new Date().toISOString()),
-    parts: Array.isArray(data.parts)
-      ? data.parts.map((part, index) => {
-          const item = (part ?? {}) as Record<string, unknown>;
-          return {
-            id: String(item.id ?? `part_${index + 1}`),
-            label: String(item.label ?? item.Name ?? "Part"),
-            material: String(item.material ?? item.Board ?? "Unknown"),
-            qty: Number(item.qty ?? item.Quantity ?? 1),
-            length: Number(item.length ?? item.Height ?? 0),
-            width: Number(item.width ?? item.Width ?? 0),
-            edgeBanding: Boolean(item.edgeBanding),
-            partType: String(item.partType ?? item["Part Type"] ?? item.Part ?? item.part ?? ""),
-            room: String(item.room ?? item.Room ?? ""),
-            depth: Number(item.depth ?? item.Depth ?? 0),
-            clashing: String(item.clashing ?? item.Clashing ?? ""),
-            fixedShelf: String(item.fixedShelf ?? item["Fixed Shelf"] ?? ""),
-            adjustableShelf: String(item.adjustableShelf ?? item["Adjustable Shelf"] ?? ""),
-            fixedShelfDrilling: String(item.fixedShelfDrilling ?? item["Fixed Shelf Drilling"] ?? ""),
-            adjustableShelfDrilling: String(item.adjustableShelfDrilling ?? item["Adjustable Shelf Drilling"] ?? ""),
-            information: String(item.information ?? item.Information ?? ""),
-            grain: String(item.grain ?? item.Grain ?? "").toLowerCase() === "yes" || Boolean(item.grain),
-          };
-        })
-      : [],
-  };
-}
-
 async function fetchCompanyIdsForUser(uid: string): Promise<string[]> {
   if (!db || !uid) {
     return [];
@@ -737,7 +764,6 @@ async function fetchProjectsFromCompanyJobs(
   if (!db || !uid) {
     return [];
   }
-  const database = db;
 
   const companyIds = companyIdsAlreadyResolved
     ? Array.from(new Set((preferredCompanyIds ?? []).map((v) => String(v || "").trim()).filter(Boolean)))
@@ -760,7 +786,7 @@ async function fetchProjectsFromCompanyJobs(
         const [companyDocData, companyAccess, jobsSnap] = await Promise.all([
           fetchCompanyDoc(companyId),
           fetchCompanyAccess(companyId, uid),
-          getDocs(collection(database, "companies", companyId, "jobs")),
+          companyJobsDocs(companyId).then((docs) => ({ docs })),
         ]);
         const companyData = companyDocData ?? {};
         const displayNameOverridesByUid = normalizeCompanyStaffDisplayNameOverrides(companyData.staffDisplayNamesByUid);
@@ -1267,16 +1293,9 @@ export async function fetchCutlists(
   if (!db) {
     return projectId ? mockCutlists.filter((item) => item.projectId === projectId) : mockCutlists;
   }
-
-  try {
-    const snap = await getDocs(collection(db, "cutlists"));
-    if (!snap.empty) {
-      const all = snap.docs.map((item) => normalizeCutlist(item.id, item.data() as Record<string, unknown>));
-      return projectId ? all.filter((item) => item.projectId === projectId) : all;
-    }
-  } catch {
-    // continue into company/jobs fallback
-  }
+  const database = db;
+  // (A top-level "cutlists" collection used to be read first — every company's — but no rule allows it, so it was only
+  // ever a refused request.)
 
   if (!projectId) {
     return hasFirebaseConfig ? [] : mockCutlists;
@@ -1288,8 +1307,12 @@ export async function fetchCutlists(
   }
 
   try {
-    const jobsSnap = await getDocs(collection(db, "companies", project.companyId, "jobs"));
-    for (const job of jobsSnap.docs) {
+    // Just this project's own job doc — by its id, or one whose "id" field is it (it used to read every project in the
+    // company to find it).
+    const jobs = collection(database, "companies", project.companyId, "jobs");
+    const direct = await getDoc(doc(jobs, projectId));
+    const jobDocs = direct.exists() ? [direct] : (await getDocs(query(jobs, where("id", "==", projectId), limit(1)))).docs;
+    for (const job of jobDocs) {
       const data = (job.data() ?? {}) as Record<string, unknown>;
       const id = String(data.id ?? job.id);
       if (id !== projectId) {
@@ -1825,7 +1848,7 @@ export async function archiveDueCompletedProjects(companyId: string, uid: string
   try {
     const isCompletedStatus = completedStatusMatcher(companyDoc.projectStatuses);
     const nowMs = Date.now();
-    const snap = await getDocs(collection(database, "companies", cid, "jobs"));
+    const snap = { docs: await companyJobsDocs(cid) };
     const due = snap.docs.filter((item) => {
       const data = (item.data() ?? {}) as Record<string, unknown>;
       return data.isArchived !== true && data.isDeleted !== true && isPastArchiveDelay(data, isCompletedStatus, delay, nowMs);
@@ -1911,23 +1934,35 @@ export async function permanentlyDeleteProject(project: Project): Promise<boolea
 // in both updateProjectPatch and grantTempProductionAccess; also reused by the version-history
 // subcollection helpers below, since a subcollection has to hang off whichever of these two
 // locations the project doc actually lives in.
+//
+// Once found, a project's location is remembered (it doesn't move): every save to it, and each of its subcollection
+// helpers (cutlist, sales grids, images…), used to spend these 2 reads finding it again first.
+const resolvedProjectDocRefs = new Map<string, DocumentReference>();
 export async function resolveProjectDocRef(project: Project): Promise<DocumentReference | null> {
   if (!db || !project) return null;
-  try {
-    const topLevelRef = doc(db, "projects", project.id);
-    if ((await getDoc(topLevelRef)).exists()) return topLevelRef;
-  } catch {
-    // continue into nested company/jobs fallback
-  }
-  if (!project.companyId) return null;
-  try {
-    const jobsSnap = await getDocs(
-      query(collection(db, "companies", project.companyId, "jobs"), where("id", "==", project.id), limit(1)),
-    );
-    return jobsSnap.empty ? null : jobsSnap.docs[0].ref;
-  } catch {
-    return null;
-  }
+  const key = `${String(project.companyId || "").trim()}|${project.id}`;
+  const known = resolvedProjectDocRefs.get(key);
+  if (known) return known;
+  const found = async (): Promise<DocumentReference | null> => {
+    try {
+      const topLevelRef = doc(db!, "projects", project.id);
+      if ((await getDoc(topLevelRef)).exists()) return topLevelRef;
+    } catch {
+      // continue into nested company/jobs fallback
+    }
+    if (!project.companyId) return null;
+    try {
+      const jobsSnap = await getDocs(
+        query(collection(db!, "companies", project.companyId, "jobs"), where("id", "==", project.id), limit(1)),
+      );
+      return jobsSnap.empty ? null : jobsSnap.docs[0].ref;
+    } catch {
+      return null;
+    }
+  };
+  const ref = await found();
+  if (ref) resolvedProjectDocRefs.set(key, ref);
+  return ref;
 }
 
 export async function grantTempProductionAccess(
@@ -3439,7 +3474,7 @@ async function collectCompanyProjectsForClients(companyId: string): Promise<Proj
   const projectDocsById = new Map<string, Record<string, unknown>>();
 
   try {
-    const jobsSnap = await getDocs(collection(db, "companies", cid, "jobs"));
+    const jobsSnap = { docs: await companyJobsDocs(cid) };
     for (const docSnap of jobsSnap.docs) {
       projectDocsById.set(String(docSnap.id || "").trim(), (docSnap.data() ?? {}) as Record<string, unknown>);
     }
@@ -4258,6 +4293,23 @@ export type LeadNote = {
 // date as they change (as the Dashboard reads its projects), rather than through the server each time. Returns an
 // unsubscribe function. onError when this browser can't read them (e.g. the leads rule isn't deployed yet) — the
 // page then falls back to /api/leads.
+//
+// One live read per company, shared, and kept open LEADS_LISTEN_LINGER_MS after its last subscriber lets go: turning
+// the same Firestore listen off and straight back on (React's development mode runs every effect twice; or leaving and
+// coming back to the page) — above all while Firestore is still answering the first, e.g. refusing it — trips an
+// internal assertion in the Firestore SDK ("Unexpected state (ID: ca9)") that breaks every Firestore read on the page
+// until it's reloaded. A late subscriber gets the latest leads straight away. And once a company's read has been
+// refused, it isn't tried again this session: every later subscriber is told at once (onError), and uses the server.
+const LEADS_LISTEN_LINGER_MS = 15_000;
+type SharedLeadsListen = {
+  subscribers: Set<{ onLeads: (leads: CompanyLeadRow[]) => void; onError: (error: unknown) => void }>;
+  latest: CompanyLeadRow[] | null;
+  error: unknown;
+  stop: () => void;
+  lingerTimer: ReturnType<typeof setTimeout> | null;
+};
+const sharedLeadsListens = new Map<string, SharedLeadsListen>();
+
 export function subscribeCompanyLeads(
   companyId: string,
   onLeads: (leads: CompanyLeadRow[]) => void,
@@ -4268,20 +4320,56 @@ export function subscribeCompanyLeads(
     onError(new Error("leads-direct-unavailable"));
     return () => {};
   }
-  const q = query(collection(db, "companies", cid, "leads"), orderBy("createdAt", "desc"), limit(500));
-  return onSnapshot(
-    q,
-    (snap) => onLeads(snap.docs.map((d) => buildLeadRow(cid, d.id, (d.data() ?? {}) as Record<string, unknown>, "summary"))),
-    (error) => onError(error),
-  );
+  const firestore = db;
+  let listen = sharedLeadsListens.get(cid);
+  if (!listen) {
+    const created: SharedLeadsListen = { subscribers: new Set(), latest: null, error: null, stop: () => {}, lingerTimer: null };
+    sharedLeadsListens.set(cid, created);
+    const q = query(collection(firestore, "companies", cid, "leads"), orderBy("createdAt", "desc"), limit(500));
+    created.stop = onSnapshot(
+      q,
+      (snap) => {
+        created.latest = snap.docs.map((d) => buildLeadRow(cid, d.id, (d.data() ?? {}) as Record<string, unknown>, "summary"));
+        created.subscribers.forEach((subscriber) => subscriber.onLeads(created.latest!));
+      },
+      (error) => {
+        // Firestore has already dropped the listen; it stays in the map, refused, so nothing listens again.
+        created.error = error ?? new Error("leads-direct-refused");
+        created.subscribers.forEach((subscriber) => subscriber.onError(created.error));
+      },
+    );
+    listen = created;
+  }
+  const shared = listen;
+  if (shared.lingerTimer !== null) {
+    clearTimeout(shared.lingerTimer);
+    shared.lingerTimer = null;
+  }
+  const subscriber = { onLeads, onError };
+  shared.subscribers.add(subscriber);
+  // Already refused, or already read: told straight away (just after this returns, as a fresh listen would be).
+  if (shared.error) queueMicrotask(() => shared.subscribers.has(subscriber) && onError(shared.error));
+  else if (shared.latest) queueMicrotask(() => shared.subscribers.has(subscriber) && shared.latest && onLeads(shared.latest));
+  return () => {
+    if (!shared.subscribers.delete(subscriber) || shared.subscribers.size > 0 || shared.error) return;
+    shared.lingerTimer = setTimeout(() => {
+      shared.lingerTimer = null;
+      if (shared.subscribers.size > 0 || sharedLeadsListens.get(cid) !== shared) return;
+      sharedLeadsListens.delete(cid);
+      shared.stop();
+    }, LEADS_LISTEN_LINGER_MS);
+  };
 }
 
-// One lead in full (its pop-up), straight from Firestore. undefined when this browser can't read it (fall back to
-// /api/leads); null when there's no such lead.
+// One lead in full (its pop-up), straight from Firestore — only once the company's live read (above) has shown this
+// browser may read its leads: otherwise undefined at once, for the caller to ask /api/leads, rather than another read
+// for Firestore to refuse (see the assertion above). null: there's no such lead.
 export async function fetchCompanyLeadDirect(companyId: string, leadId: string): Promise<CompanyLeadRow | null | undefined> {
   const cid = String(companyId || "").trim();
   const id = String(leadId || "").trim();
   if (!db || !cid || !id) return undefined;
+  const listen = sharedLeadsListens.get(cid);
+  if (!listen || listen.error || !listen.latest) return undefined;
   try {
     const snap = await getDoc(doc(db, "companies", cid, "leads", id));
     if (!snap.exists()) return null;
@@ -4788,7 +4876,7 @@ export async function removeTagsFromCompanyProjects(companyId: string, tagsToRem
   }
 
   try {
-    const jobsSnap = await getDocs(collection(db, "companies", cid, "jobs"));
+    const jobsSnap = { docs: await companyJobsDocs(cid) };
     let batch = writeBatch(db);
     let ops = 0;
     let changed = 0;
@@ -4924,6 +5012,83 @@ export async function fetchUserNotifications(
   }
 }
 
+// fetchUserNotifications kept up to date: the same notifications (the last two weeks from sinceMs, plus any a "Remind
+// me" has brought back), read once and then kept live — Firestore sends just what changes — instead of re-read every
+// time (the bell used to poll every 50 seconds, re-reading the whole two weeks each time). A snoozed one comes back at
+// its own time without anything changing in the database, so a timer re-shows the list then. onUpdate: each change.
+// Returns a stop function.
+export function subscribeUserNotifications(
+  uid: string,
+  companyId: string | undefined,
+  sinceMs: number,
+  onUpdate: (update: { rows: UserNotificationRow[]; hasOlder: boolean }) => void,
+): () => void {
+  const userId = String(uid || "").trim();
+  if (!db || !userId) {
+    onUpdate({ rows: [], hasOlder: false });
+    return () => {};
+  }
+  const cid = String(companyId || "").trim();
+  const notifications = collection(db, "users", userId, "notifications");
+  let recent: UserNotificationRow[] | null = null;
+  let reminded: UserNotificationRow[] | null = null;
+  let hasOlder = false;
+  let stopped = false;
+  let snoozeTimer: ReturnType<typeof setTimeout> | null = null;
+  const emit = () => {
+    if (stopped || recent === null || reminded === null) return;
+    const byId = new Map<string, UserNotificationRow>();
+    for (const row of [...recent, ...reminded]) byId.set(row.id, row);
+    const all = [...byId.values()];
+    onUpdate({ rows: shownUserNotifications(all, cid), hasOlder });
+    // The next snoozed one due back: shown again then.
+    if (snoozeTimer) clearTimeout(snoozeTimer);
+    snoozeTimer = null;
+    const now = Date.now();
+    const nextBack = all.reduce((soonest, row) => {
+      const at = row.snoozedUntilIso ? Date.parse(row.snoozedUntilIso) : NaN;
+      return Number.isFinite(at) && at > now && at < soonest ? at : soonest;
+    }, Infinity);
+    if (Number.isFinite(nextBack)) snoozeTimer = setTimeout(emit, Math.min(nextBack - now + 250, 2_000_000_000));
+  };
+  const stopRecent = onSnapshot(
+    query(notifications, where("createdAt", ">=", Timestamp.fromMillis(sinceMs)), orderBy("createdAt", "desc"), limit(NOTIFICATIONS_PAGE_CAP)),
+    (snap) => {
+      recent = snap.docs.map(userNotificationFromDoc);
+      emit();
+    },
+    () => {
+      recent = recent ?? [];
+      emit();
+    },
+  );
+  // An older one someone asked to be reminded about, back (or coming back) in these two weeks.
+  const stopReminded = onSnapshot(
+    query(notifications, where("snoozedUntilIso", ">=", new Date(sinceMs).toISOString()), limit(50)),
+    (snap) => {
+      reminded = snap.docs.map(userNotificationFromDoc);
+      emit();
+    },
+    () => {
+      reminded = reminded ?? [];
+      emit();
+    },
+  );
+  // Whether there are any before sinceMs ("Load more") — once.
+  void newestUserNotificationBeforeMs(userId, sinceMs)
+    .then((olderMs) => {
+      hasOlder = olderMs !== null;
+      emit();
+    })
+    .catch(() => undefined);
+  return () => {
+    stopped = true;
+    if (snoozeTimer) clearTimeout(snoozeTimer);
+    stopRecent();
+    stopReminded();
+  };
+}
+
 // "Load more": the two weeks before beforeMs — counted from the newest notification before it, so a quiet spell
 // doesn't load an empty page. sinceMs: where these reach back to (the next "Load more" carries on before it).
 export async function fetchOlderUserNotifications(
@@ -4972,14 +5137,21 @@ export async function setAllUserNotificationsRead(uid: string, read: boolean, co
     return false;
   }
   const scopeCompanyId = String(companyId || "").trim();
+  const database = db;
   try {
-    const snap = await getDocs(collection(db, "users", userId, "notifications"));
-    const batch = writeBatch(db);
-    for (const docSnap of snap.docs) {
-      if (scopeCompanyId && String((docSnap.data() ?? {}).companyId ?? "").trim() !== scopeCompanyId) continue;
-      batch.update(docSnap.ref, { read: Boolean(read), updatedAt: serverTimestamp(), updatedAtIso: new Date().toISOString() });
+    // Just the ones that aren't that already (it used to read the whole inbox, every time), written 400 at a time (a
+    // batch takes at most 500).
+    const snap = await getDocs(query(collection(database, "users", userId, "notifications"), where("read", "==", !read)));
+    const changing = snap.docs.filter(
+      (docSnap) => !scopeCompanyId || String((docSnap.data() ?? {}).companyId ?? "").trim() === scopeCompanyId,
+    );
+    for (let i = 0; i < changing.length; i += 400) {
+      const batch = writeBatch(database);
+      for (const docSnap of changing.slice(i, i + 400)) {
+        batch.update(docSnap.ref, { read: Boolean(read), updatedAt: serverTimestamp(), updatedAtIso: new Date().toISOString() });
+      }
+      await batch.commit();
     }
-    await batch.commit();
     return true;
   } catch {
     return false;

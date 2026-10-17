@@ -43,23 +43,44 @@ function readKeyboardInset(vv: VisualViewport): KeyboardInset {
   };
 }
 
-// Called right after a pop-up panel has been capped to the space above the keyboard. The cap can turn
-// part of the panel into a scroll area, and the browser only scrolled the focused field into view at the
-// moment it was focused (before the cap) — so bring it back into the visible part of whichever scroll
-// area(s) inside the panel now hold it.
+// Called right after a pop-up panel has been capped to the space above the keyboard (or, a phone's full-screen
+// pop-up — data-phone-fullscreen in globals.css — held in place under it), and when another field is tapped with
+// the keyboard already up. The cap can turn part of the panel into a scroll area, and the browser only scrolled the
+// focused field into view at the moment it was focused (before the cap) — so bring it back into the visible part of
+// whichever scroll area(s) inside the panel now hold it. Visible: inside the scroll area, and on screen above the
+// keyboard (a full-screen pop-up's scroll area reaches down behind it).
 function revealFocusedFieldInPanel(): void {
   const field = document.activeElement;
   if (!(field instanceof HTMLElement) || !field.closest(".glass-modal-panel")) return;
+  // (Only a full-screen pop-up's scroll area reaches behind the keyboard; a capped one's is all above it already.)
+  const vv = window.visualViewport;
+  const behindKeyboard = Boolean(field.closest('.glass-modal-panel[data-phone-fullscreen="true"]'));
+  const visibleTop = vv && behindKeyboard ? vv.offsetTop : -Infinity;
+  const visibleBottom = vv && behindKeyboard ? vv.offsetTop + vv.height : Infinity;
   for (let node = field.parentElement; node; node = node.parentElement) {
     const { overflowY } = getComputedStyle(node);
     if ((overflowY === "auto" || overflowY === "scroll") && node.scrollHeight > node.clientHeight) {
       const box = node.getBoundingClientRect();
+      const top = Math.max(box.top, visibleTop);
+      const bottom = Math.min(box.bottom, visibleBottom);
       const rect = field.getBoundingClientRect();
-      if (rect.bottom > box.bottom) node.scrollTop += rect.bottom - box.bottom + REVEAL_MARGIN_PX;
-      else if (rect.top < box.top) node.scrollTop -= box.top - rect.top + REVEAL_MARGIN_PX;
+      if (rect.bottom > bottom) node.scrollTop += rect.bottom - bottom + REVEAL_MARGIN_PX;
+      else if (rect.top < top) node.scrollTop -= top - rect.top + REVEAL_MARGIN_PX;
     }
     if (node.classList.contains("glass-modal-panel")) return;
   }
+}
+
+// Whether what's being typed in is in a pop-up that stays the whole screen on a phone with the keyboard up
+// (data-phone-fullscreen — see app/globals.css): it moves with the visible area rather than being capped to it, so its
+// field needs bringing into view whenever that moves, or another field is tapped.
+function focusInPhoneFullscreenPanel(): boolean {
+  const field = document.activeElement;
+  return (
+    field instanceof HTMLElement &&
+    Boolean(field.closest('.glass-modal-panel[data-phone-fullscreen="true"]')) &&
+    window.matchMedia("(max-width: 639.98px)").matches
+  );
 }
 
 type PublishedViewport = KeyboardInset & {
@@ -100,7 +121,12 @@ export function usePublishKeyboardInsetVars(): void {
       ) {
         return;
       }
-      const panelCapChanged = next.keyboardOpen && (!last?.keyboardOpen || last.visibleHeightPx !== next.visibleHeightPx);
+      // (And, for a phone's full-screen pop-up, where the visible area starts: it moves with that, and its field too.)
+      const panelCapChanged =
+        next.keyboardOpen &&
+        (!last?.keyboardOpen ||
+          last.visibleHeightPx !== next.visibleHeightPx ||
+          (last.offsetTopPx !== next.offsetTopPx && focusInPhoneFullscreenPanel()));
       last = next;
       root.style.setProperty("--keyboard-inset-px", `${next.insetPx}px`);
       root.style.setProperty("--keyboard-offset-top-px", `${next.offsetTopPx}px`);
@@ -115,13 +141,26 @@ export function usePublishKeyboardInsetVars(): void {
     const schedule = () => {
       if (frame === null) frame = requestAnimationFrame(publish);
     };
+    // Another field tapped in a phone's full-screen pop-up while the keyboard's up (no viewport change to go on): into
+    // view, once it has the focus.
+    let revealFrame: number | null = null;
+    const onFocusIn = () => {
+      if (!last?.keyboardOpen || revealFrame !== null || !focusInPhoneFullscreenPanel()) return;
+      revealFrame = requestAnimationFrame(() => {
+        revealFrame = null;
+        revealFocusedFieldInPanel();
+      });
+    };
     publish();
     vv.addEventListener("resize", schedule);
     vv.addEventListener("scroll", schedule);
+    document.addEventListener("focusin", onFocusIn);
     return () => {
       vv.removeEventListener("resize", schedule);
       vv.removeEventListener("scroll", schedule);
+      document.removeEventListener("focusin", onFocusIn);
       if (frame !== null) cancelAnimationFrame(frame);
+      if (revealFrame !== null) cancelAnimationFrame(revealFrame);
       root.removeAttribute(KEYBOARD_OPEN_ATTR);
     };
   }, []);

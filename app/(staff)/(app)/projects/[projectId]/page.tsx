@@ -1,17 +1,17 @@
 "use client";
 
-import { Fragment, startTransition, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type FocusEvent as ReactFocusEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, type TouchEvent as ReactTouchEvent, type WheelEvent as ReactWheelEvent } from "react";
+import { createContext, Fragment, startTransition, useCallback, useContext, useDeferredValue, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type FocusEvent as ReactFocusEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type TouchEvent as ReactTouchEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { glassShineStyle } from "@/lib/glass-shine";
 import { createPortal } from "react-dom";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Great_Vibes } from "next/font/google";
-import { ArrowLeft, ArrowLeftRight, ArrowRight, Bell, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, File as FileIcon, FileSpreadsheet, FileUp, FileText, GitBranch, Eraser, GripVertical, HardHat, Image as ImageIcon, ImagePlus, Import as ImportIcon, Info, Link2, ListChecks, Lock, Mail, MapPin, Minus, MoreHorizontal, NotebookPen, Pencil, Phone, Plus, Printer, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, Unlock, User, UserPlus, Users, Wrench, X } from "lucide-react";
+import { ArrowLeft, ArrowLeftRight, ArrowRight, Bell, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, File as FileIcon, FileSpreadsheet, FileUp, FileText, GitBranch, Eraser, GripVertical, HardHat, Image as ImageIcon, ImagePlus, Import as ImportIcon, Info, Link2, ListChecks, Lock, Mail, MapPin, Maximize2, Minus, PanelRightClose, MoreHorizontal, NotebookPen, Pencil, Phone, Plus, Printer, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, Unlock, User, UserPlus, Users, Wrench, X } from "lucide-react";
 import type { DecoupledEditor, ModelWriter } from "ckeditor5";
 import type { RichText as ExcelRichText } from "exceljs";
 import type { CellInput as AutoTableCellInput, RowInput as AutoTableRowInput } from "jspdf-autotable";
 import { deleteObject, getBlob, getDownloadURL, ref as storageRef, uploadBytesResumable } from "firebase/storage";
 import { FullscreenImageViewerShell } from "@/components/fullscreen-image-viewer-shell";
-import { GlassActionMenu, GlassDropdown, type GlassActionMenuItem } from "@/components/glass-dropdown";
+import { GlassActionMenu, GlassDropdown, type GlassActionMenuItem, GLASS_MENU_CLASS, GLASS_MENU_MIN_WIDTH_PHONE_PX, GLASS_MENU_MIN_WIDTH_PX, GLASS_MENU_STYLE, GlassMenuOption, glassMenuHeight } from "@/components/glass-dropdown";
 import { BoardColumnFrame, ColumnCollapseChevrons } from "@/components/board-column-frame";
 import { collapseBoardColumnAnimated, expandBoardColumnAnimated } from "@/lib/board-column-collapse";
 import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
@@ -44,6 +44,7 @@ import { normalizeBoardFinishes, normalizeHardwareRows, normalizeMmOptions, norm
 import { GlassSwitch, modalCloseButtonClass } from "@/components/settings-ui";
 import { ContactCardPopup } from "@/components/contact-card-popup";
 import { UploadDropZone } from "@/components/upload-drop-zone";
+import { FloatingBarSlot } from "@/components/floating-bar-slot";
 import { contactInitials } from "@/lib/contact-card";
 import {
   cutlistTemplateBoardLabel,
@@ -1520,227 +1521,6 @@ function QuoteExtraToggleSwitch({
   );
 }
 
-// One slot inside the Quote/Specs floating action-button pill (Save/Reset/Send/Accepted Version/
-// Client Portal) — membership varies with project/version state (Save and Reset only show for the
-// live draft, Send hides once it's locked, etc.), which used to mean an instant, jarring pill-width
-// jump every time a condition flipped. This turns that into a deliberate two-step animation instead
-// of a plain `{visible && <button/>}` mount/unmount: shrinking pops the button THEN slides the pill
-// shut around the gap it leaves; growing slides the pill open FIRST, then fades the new button in
-// once there's actually room for it. Always stays mounted (never returns null) — a fully collapsed
-// slot is zero-width and `overflow: hidden`, so it's already invisible and unclickable without
-// needing to leave the DOM.
-function FloatingBarSlot({
-  visible,
-  children,
-  orientation = "horizontal",
-  bounceStyle,
-}: {
-  visible: boolean;
-  children: ReactNode;
-  // "vertical" collapses maxHeight instead of maxWidth — used when this slot sits in a stacked
-  // list (Quote/Specifications' own mobile action sheet) instead of the default horizontal pill.
-  orientation?: "horizontal" | "vertical";
-  // Optional entrance bounce (mobileActionsBubbleStyle's own return value) for the mobile Actions
-  // sheet's own buttons. Applied to the OUTERMOST div below (the one `removedFromFlow` toggles
-  // `display: none` on), never to `wrapperRef`'s own overflow:hidden box one level in — that box is
-  // sized tightly to the content's natural (untransformed) height/width to drive its OWN collapse/
-  // expand transition, so any transform-based animation applied directly to it (or to a child inside
-  // it) gets clipped the instant it moves past that box's own edge. An earlier version of this
-  // instead wrapped a whole separate `<div>` AROUND `<FloatingBarSlot>` from the outside to dodge
-  // that clipping — which avoided the clip, but that wrapper had no idea about `removedFromFlow` and
-  // so never left flex layout the way THIS slot's own root div does, leaving a zero-height-but-
-  // still-gap-contributing ghost item behind for every OTHER currently-hidden button and visibly
-  // uneven gaps between whichever buttons happened to be visible. Taking the prop here instead keeps
-  // `removedFromFlow` as the one, single source of truth for whether this slot participates in the
-  // flex row/column's layout at all.
-  bounceStyle?: React.CSSProperties;
-}) {
-  const [collapsed, setCollapsed] = useState(!visible);
-  // Once a slot has FULLY collapsed (maxWidth finished animating to 0 — not the same moment
-  // `collapsed` itself flips true), this pulls it out of the flex row's layout entirely via
-  // `display: none`, so the parent pill/strip can go back to plain `gap` spacing (simple,
-  // naturally symmetric) instead of each slot managing its own margin. `gap` only ever applies
-  // BETWEEN actual participating flex items — a `display: none` slot contributes none on either
-  // side of it, which a merely zero-width one still did on both, and a per-slot marginRight
-  // couldn't either: margin has no idea whether IT happens to be the last VISIBLE slot in a row
-  // whose true last member varies with state, so whichever slot ended up last always carried an
-  // extra, asymmetric-looking trailing gap beyond the pill's own edge padding. Flipping this the
-  // MOMENT `collapsed` does would skip the slide-shut transition outright (no time for the width
-  // to animate before the element leaves the layout); growing reverses the order for the same
-  // reason — rejoin the layout first, still at maxWidth 0, and only expand a tick after that.
-  const [removedFromFlow, setRemovedFromFlow] = useState(!visible);
-  // The pop plays as an independent, position:fixed ghost portaled to <body> (see the JSX below),
-  // positioned at a snapshot of exactly where the real button sat on screen the instant it started
-  // leaving. A portal is outside every ancestor's own box/overflow entirely, so its scale(1.1)
-  // bulge can freely render past the real slot's edges — visually "escaping" the bar, on top of
-  // whatever's there — without growing the slot's own box (an earlier fix, giving the box padding
-  // headroom to avoid clipping the bulge, worked but visibly grew the bar) and without affecting
-  // any ancestor's scrollable-overflow bookkeeping the way an in-flow transform still does (which
-  // is what briefly flashed a scrollbar on the mobile bottom strip's own overflow-x-auto in an
-  // even earlier version of this).
-  const [poppingRect, setPoppingRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
-  // The entrance's own equivalent of poppingRect above, for exactly the same reason: `wrapperRef`
-  // below is overflow:hidden (needed to clip the width/height SLIDE itself), so a scale(1.12) bounce
-  // played in-place there gets its edges cut off the instant the real button's own natural size gets
-  // anywhere close to the wrapper's generous-but-finite 260px/200px ceiling (worst for a vertical
-  // w-full mobile button, which has zero horizontal slack at all). Portaled to <body> for the same
-  // "escapes every ancestor's box/overflow" reason poppingRect's own comment explains, and measured
-  // from `contentRef` (the real button's own natural box), not the wrapper, so the pop plays at
-  // EXACTLY the same size as it would un-clipped — matching Import from Quote/Mark for Confirmation's
-  // own identical pop-in (specs-grid-editor.tsx), not a scaled-to-fit stand-in.
-  const [poppingInRect, setPoppingInRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
-  // Drives the child's own opacity, deliberately SEPARATE from `collapsed` above even though it
-  // moves in lockstep with it — see the render below for why the actual fade needs a transition
-  // rule that's constant across renders (never toggled to "none"), which in turn means its target
-  // VALUE has to be controlled independently rather than reusing collapsed's own true/false
-  // directly as that value.
-  const [contentVisible, setContentVisible] = useState(visible);
-  const wrapperRef = useRef<HTMLDivElement | null>(null);
-  const contentRef = useRef<HTMLDivElement | null>(null);
-  const prevVisibleRef = useRef(visible);
-
-  useEffect(() => {
-    if (visible === prevVisibleRef.current) return;
-    prevVisibleRef.current = visible;
-    const timers: number[] = [];
-    const rafs: number[] = [];
-    if (visible) {
-      // Growing: rejoin the flex row on one animation frame (still collapsed, maxWidth 0 — this
-      // alone doesn't visibly move anything), then start the actual width transition on the NEXT
-      // frame. This has to be a real double-rAF, not a guessed setTimeout delay: an element that
-      // was `display: none` has no previous computed box AT ALL to animate from, the same way a
-      // brand-new element wouldn't — the browser needs an actual PAINTED frame of "now in the
-      // layout, still at maxWidth 0" to interpolate the following change from, and nothing about a
-      // plain millisecond delay guarantees a real paint happened in between (this is what was
-      // making the bar jump straight to its open width instead of sliding open). 300ms after that —
-      // a real elapsed-time wait for the width transition's own known duration to finish, not a
-      // "did this paint yet" concern, so a plain setTimeout is fine here — the content div is
-      // already laid out at its own real, natural size (still opacity:0), safe to measure for the
-      // pop-in ghost exactly like the shrink branch below measures wrapperRef before anything moves.
-      // The real content only actually becomes visible once that ghost's own pop has finished
-      // playing, same staggering the shrink branch already uses in reverse.
-      rafs.push(requestAnimationFrame(() => {
-        setRemovedFromFlow(false);
-        rafs.push(requestAnimationFrame(() => {
-          setCollapsed(false);
-          timers.push(window.setTimeout(() => {
-            const rect = contentRef.current?.getBoundingClientRect();
-            if (!rect) {
-              setContentVisible(true);
-              return;
-            }
-            setPoppingInRect({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
-            timers.push(window.setTimeout(() => {
-              setPoppingInRect(null);
-              // The ghost is ALREADY sitting at opacity:1/scale:1 (its own keyframe's end state) the
-              // instant before it disappears — handing off to the real content via the normal
-              // React-driven opacity:0 -> 1 + "opacity 200ms ease" transition (same rule the hide
-              // path uses) would restart a fresh 200ms fade from 0, i.e. a real, visible dip back to
-              // invisible right after the pop finishes, then a slower fade back in — the "flash away
-              // and back" this is fixing. Snapping the real element to fully opaque with its
-              // transition briefly disabled (classic "transition: none -> change -> force reflow ->
-              // restore transition" sequence, same technique useGlassModalPopOrigin already uses
-              // elsewhere in this file) makes the handoff invisible instead: by the time React's own
-              // re-render applies contentVisible's normal opacity:1/transition style a moment later,
-              // the DOM is already sitting at those exact same values, so it's a no-op repaint, not a
-              // second animation.
-              const el = contentRef.current;
-              if (el) {
-                el.style.transition = "none";
-                el.style.opacity = "1";
-                void el.offsetWidth;
-                el.style.transition = "opacity 200ms ease";
-              }
-              setContentVisible(true);
-            }, 380));
-          }, 300));
-        }));
-      }));
-    } else {
-      // Shrinking: measure now (synchronously, before anything moves), then a tick later hide the
-      // real button and spawn the ghost at that exact spot — a plain setTimeout is fine here since
-      // the slot is already `display: block` with a real, already-painted width (never `none`), so
-      // there's no equivalent "nothing to animate from" risk. Once the ghost's own pop has
-      // finished, the real slot collapses (sliding the bar shut); only once THAT transition has
-      // also had time to finish does the slot actually leave the layout (see removedFromFlow's own
-      // comment above for why this can't happen any earlier).
-      const rect = wrapperRef.current?.getBoundingClientRect();
-      timers.push(window.setTimeout(() => {
-        setContentVisible(false);
-        if (rect) setPoppingRect({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
-      }, 0));
-      timers.push(window.setTimeout(() => {
-        setPoppingRect(null);
-        setCollapsed(true);
-      }, 180));
-      timers.push(window.setTimeout(() => setRemovedFromFlow(true), 180 + 320));
-    }
-    return () => {
-      timers.forEach((timer) => window.clearTimeout(timer));
-      rafs.forEach((raf) => cancelAnimationFrame(raf));
-    };
-  }, [visible]);
-
-  return (
-    <>
-      <div
-        className={orientation === "vertical" ? "w-full" : undefined}
-        style={{ display: removedFromFlow ? "none" : "block", ...(bounceStyle ?? {}) }}
-      >
-        <div
-          ref={wrapperRef}
-          className={
-            orientation === "vertical"
-              ? "w-full overflow-hidden transition-[max-height] duration-300 ease-in-out"
-              : "overflow-hidden transition-[max-width] duration-300 ease-in-out"
-          }
-          style={orientation === "vertical" ? { maxHeight: collapsed ? 0 : 200 } : { maxWidth: collapsed ? 0 : 260 }}
-        >
-          {/* Plain opacity fade, unchanged from before the pop-in existed — still a CONSTANT
-              transition rule (never toggled to/from "none") for the reason explained below. The
-              actual POP (both directions) plays entirely on the separate portaled ghosts further
-              down (poppingInRect/poppingRect) instead of on this in-flow div: it sits inside
-              wrapperRef's own overflow:hidden box (needed to clip the width/height SLIDE itself),
-              so a scale(1.12) bounce played directly here would get its own edges cut off — see
-              poppingInRect's own comment. This div just needs to be invisible while its ghost plays,
-              then plainly fade to/from visible around that. transition is a CONSTANT rule here
-              (never toggled to/from "none", unlike an earlier version of this) — changing
-              transition-property in the exact same style update as the value it's supposed to cover
-              is a well-known case where browsers skip the animation outright, since there's no prior
-              painted frame under the NEW rule to interpolate from; that was silently turning the
-              fade into an instant snap. With the rule always active, only WHEN contentVisible itself
-              flips (fully independent of this) needs to be timed right — see the effect above. */}
-          <div ref={contentRef} style={{ opacity: contentVisible ? 1 : 0, transition: "opacity 200ms ease" }}>
-            {children}
-          </div>
-        </div>
-      </div>
-      {poppingInRect && typeof document !== "undefined"
-        ? createPortal(
-            <div
-              className="glass-bubble-pop pointer-events-none fixed"
-              style={{ left: poppingInRect.left, top: poppingInRect.top, width: poppingInRect.width, height: poppingInRect.height, zIndex: 2000 }}
-            >
-              {children}
-            </div>,
-            document.body,
-          )
-        : null}
-      {poppingRect && typeof document !== "undefined"
-        ? createPortal(
-            <div
-              className="floating-bar-slot-pop pointer-events-none fixed"
-              style={{ left: poppingRect.left, top: poppingRect.top, width: poppingRect.width, height: poppingRect.height, zIndex: 2000 }}
-            >
-              {children}
-            </div>,
-            document.body,
-          )
-        : null}
-    </>
-  );
-}
-
 // The chip's own colors, separate from its content — see TopBarStatusChip below for why: it owns
 // one persistent, styled shell element so it can cross-fade the COLORS of a border/background/text
 // change (a plain CSS `transition` on the shell handles that for free — just updating these values
@@ -2734,20 +2514,251 @@ function anchoredGlassPanelStyle(isDarkMode: boolean): React.CSSProperties {
 // rather than pushing it, sliding in and out from the right like the Contacts page's contact. Stays mounted while it
 // slides out, so it doesn't empty mid-slide.
 const CUTLIST_DRAWER_SLIDE_MS = 260;
+// The cutlist screen's floating bar: a button for each contractor when there are this many or fewer (and room for
+// them across the screen) — more, one "Contractors" menu of them.
+const CUTLIST_BAR_MAX_CONTRACTOR_BUTTONS = 5;
 // The cutlist screen's sidebar buttons (Add Room, Notes, Contractors, Import): rounded ends, icon and label centred.
 const CUTLIST_SIDEBAR_BUTTON_CLASS =
   "inline-flex w-full items-center justify-center gap-2 rounded-full border px-3 py-2.5 text-[13px] font-medium text-white transition hover:brightness-95 disabled:opacity-55";
+
+// A drawer popped out (see CutlistSideDrawer): where it is, how big, and whether it's shrunk to its pill — remembered
+// per drawer and per person on this device (localStorage, CUTLIST_DRAWER_FLOAT_KEY + its storageKey, which carries
+// who's signed in), for every project: the next one opened has it in the same place.
+type CutlistDrawerFloat = { x: number; y: number; w: number; h: number; minimized: boolean };
+const CUTLIST_DRAWER_FLOAT_KEY = "cutsmart_cutlist_drawer_float:";
+// Its narrowest: room for the notes' formatting bar on one line, popped out (its buttons take 294px, inside the header's
+// 8px padding each side and the window's 1px border — a little over).
+const CUTLIST_DRAWER_MIN_W = 320;
+const CUTLIST_DRAWER_MIN_H = 240;
+// How far its header is pulled before it pops out; how close to the screen's edges it can go; how near the right edge
+// the pointer is for letting go there to dock it; its grab bar's and its pill's height; its pill's widest.
+const CUTLIST_DRAWER_POP_OUT_PX = 60;
+const CUTLIST_DRAWER_EDGE_PX = 8;
+const CUTLIST_DRAWER_DOCK_ZONE_PX = 24;
+// (Its pill's height is its bar's, popped out: its title doesn't move as it shrinks to the pill or opens out of it.)
+const CUTLIST_DRAWER_PILL_H = 36;
+// The pill itself: that row and its 1px border above and below (the row fills it — its title centred in it).
+const CUTLIST_DRAWER_PILL_BOX_H = CUTLIST_DRAWER_PILL_H + 2;
+// Shrinking to its pill, opening out of it, and going back into the side: a glide from where it was to where it goes.
+const CUTLIST_DRAWER_MORPH_MS = 280;
+const CUTLIST_DRAWER_MORPH_EASING = "cubic-bezier(0.32, 0.72, 0, 1)";
+const CUTLIST_DRAWER_PILL_MAX_W = 240;
+
+// Kept on the screen (and no smaller than its least, no bigger than the screen).
+function clampCutlistDrawerFloat(float: CutlistDrawerFloat): CutlistDrawerFloat {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const edge = CUTLIST_DRAWER_EDGE_PX;
+  const w = Math.max(CUTLIST_DRAWER_MIN_W, Math.min(float.w, vw - edge * 2));
+  const h = Math.max(CUTLIST_DRAWER_MIN_H, Math.min(float.h, vh - edge * 2));
+  const boxW = float.minimized ? Math.min(CUTLIST_DRAWER_PILL_MAX_W, w) : w;
+  const boxH = float.minimized ? CUTLIST_DRAWER_PILL_BOX_H : h;
+  return {
+    ...float,
+    w,
+    h,
+    x: Math.max(edge, Math.min(float.x, vw - boxW - edge)),
+    y: Math.max(edge, Math.min(float.y, vh - boxH - edge)),
+  };
+}
+function readCutlistDrawerFloat(storageKey: string): CutlistDrawerFloat | null {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(CUTLIST_DRAWER_FLOAT_KEY + storageKey) || "null") as Partial<CutlistDrawerFloat> | null;
+    if (!parsed || ![parsed.x, parsed.y, parsed.w, parsed.h].every((value) => Number.isFinite(value))) return null;
+    return clampCutlistDrawerFloat({ x: parsed.x!, y: parsed.y!, w: parsed.w!, h: parsed.h!, minimized: parsed.minimized === true });
+  } catch {
+    return null;
+  }
+}
+// The cutlist drawers open on a project's cutlist ("notes", "contractor:<name>" — the one in front last), per person
+// and project on this device (CUTLIST_OPEN_DRAWERS_KEY + "<uid>:<projectId>"): opened again as they were the next time
+// they open that project's cutlist.
+const CUTLIST_OPEN_DRAWERS_KEY = "cutsmart_cutlist_open_drawers:";
+function readCutlistOpenDrawers(key: string): string[] {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(CUTLIST_OPEN_DRAWERS_KEY + key) || "[]") as unknown;
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
+}
+function writeCutlistOpenDrawers(key: string, drawers: string[]): void {
+  try {
+    if (drawers.length) window.localStorage.setItem(CUTLIST_OPEN_DRAWERS_KEY + key, JSON.stringify(drawers));
+    else window.localStorage.removeItem(CUTLIST_OPEN_DRAWERS_KEY + key);
+  } catch {
+    // just not remembered
+  }
+}
+
+// Whether the drawer is popped out (or, closed, opens popped out) — not in the side.
+function isCutlistDrawerOut(storageKey: string): boolean {
+  return (
+    typeof window !== "undefined" &&
+    window.matchMedia("(min-width: 768px) and (pointer: fine)").matches &&
+    readCutlistDrawerFloat(storageKey) !== null
+  );
+}
+function writeCutlistDrawerFloat(storageKey: string, float: CutlistDrawerFloat | null): void {
+  try {
+    if (float) window.localStorage.setItem(CUTLIST_DRAWER_FLOAT_KEY + storageKey, JSON.stringify(float));
+    else window.localStorage.removeItem(CUTLIST_DRAWER_FLOAT_KEY + storageKey);
+  } catch {
+    // just not remembered
+  }
+}
+
+// The cutlist drawers that can be dragged out of their floating bar button (by drawerId — registered while they're
+// on the page): given the pointer and the button, a drag of the drawer starts there, popped out under the pointer and
+// coming out of the button (from: none — it already has, opening there: pendingCutlistDragOut), carried on till it's
+// let go. released: let go already — it's just put there.
+const cutlistDrawerDragOutHandlers = new Map<string, (x: number, y: number, from: DOMRect | null, released: boolean) => void>();
+// A drag out of a floating bar button whose drawer isn't on the page yet (that drag opening it): where the pointer is
+// — kept up to date till the drawer takes the drag over — and the button. The drawer starts out there, coming out of
+// the button, from the first time it's drawn (not where it was left, for a moment first).
+const pendingCutlistDragOut: { current: { key: string; x: number; y: number; from: DOMRect } | null } = { current: null };
+// The default size of one popped out.
+const CUTLIST_DRAWER_FLOAT_W = 380;
+const cutlistDrawerDefaultFloatH = () => Math.max(CUTLIST_DRAWER_MIN_H, Math.min(640, Math.round(window.innerHeight * 0.7)));
+// Dragged out of its button: at the size it was last (opened out if it was shrunk), held by the middle of its bar at
+// the pointer — off the screen too, while it's dragged.
+function cutlistDrawerDraggedOutAt(saved: CutlistDrawerFloat | null, x: number, y: number): CutlistDrawerFloat {
+  const w = saved?.w ?? CUTLIST_DRAWER_FLOAT_W;
+  return { x: x - w / 2, y: y - CUTLIST_DRAWER_PILL_H / 2, w, h: saved?.h ?? cutlistDrawerDefaultFloatH(), minimized: false };
+}
+// A drawer sucked into its floating bar button: drawn in towards the button — narrowing faster than it shortens, so
+// it's pulled long as it goes — and into it at the button's size, fading as it gets there. Reversed (out), it's blown
+// back out of it. Keyframes for a transform with its origin at its top left; opacity: as it is now.
+const CUTLIST_DRAWER_SUCTION_MS = 220;
+function cutlistDrawerSuctionKeyframes(box: DOMRect, button: DOMRect, opacity: string | number, out = false): Keyframe[] {
+  const end = Math.max(0.04, Math.min(button.width / box.width, button.height / box.height));
+  const fromX = box.left + box.width / 2;
+  const fromY = box.top + box.height / 2;
+  const toX = button.left + button.width / 2;
+  const toY = button.top + button.height / 2;
+  // Its centre p of the way to the button's, at (sx, sy) of its size.
+  const at = (p: number, sx: number, sy: number) => {
+    const cx = fromX + (toX - fromX) * p;
+    const cy = fromY + (toY - fromY) * p;
+    return `translate(${cx - (sx * box.width) / 2 - box.left}px, ${cy - (sy * box.height) / 2 - box.top}px) scale(${sx}, ${sy})`;
+  };
+  const frames: Keyframe[] = [
+    { offset: 0, transformOrigin: "0 0", transform: at(0, 1, 1), opacity },
+    { offset: 0.4, transformOrigin: "0 0", transform: at(0.3, 0.62, 0.85), opacity },
+    { offset: 0.75, transformOrigin: "0 0", transform: at(0.75, 0.22, 0.42), opacity },
+    { offset: 1, transformOrigin: "0 0", transform: at(1, end, end), opacity: 0 },
+  ];
+  return out ? frames.map((frame) => ({ ...frame, offset: 1 - Number(frame.offset) })).reverse() : frames;
+}
+
+// Whether the CutlistSideDrawer it's in is popped out — its content's header (CutlistDrawerHeader) slims down then.
+const CutlistDrawerFloatingContext = createContext(false);
+
+// A cutlist drawer's header: its title and close (>), then the editor's toolbar (toolbarHostRef — the editor puts it
+// there), slim and flat (drawer-toolbar-slim — globals.css), its first button's icon under the title. Popped out, just
+// the toolbar — the drawer's own bar has the title and the close. The same elements either way (only hidden or
+// restyled): the editor's toolbar stays put in its host.
+function CutlistDrawerHeader({
+  title,
+  icon,
+  onClose,
+  closeDisabled,
+  closeTitle = "Close",
+  toolbarHostRef,
+  style,
+}: {
+  title: string;
+  icon?: ReactNode;
+  onClose: () => void;
+  closeDisabled?: boolean;
+  closeTitle?: string;
+  // None (read-only): no toolbar.
+  toolbarHostRef?: (element: HTMLDivElement | null) => void;
+  style?: React.CSSProperties;
+}) {
+  const floating = useContext(CutlistDrawerFloatingContext);
+  return (
+    // data-drawer-grab: pulled to pop the drawer out, or (out) to move it (CutlistSideDrawer).
+    <div
+      data-drawer-grab="true"
+      className={
+        floating
+          ? "drawer-toolbar-slim relative z-[2] shrink-0 border-b px-2 py-1"
+          : "drawer-toolbar-slim glass-modal-header relative z-[2] shrink-0 px-4 py-2"
+      }
+      style={{
+        ...(floating ? { borderBottomColor: "var(--glass-border)" } : style),
+        display: floating && !toolbarHostRef ? "none" : undefined,
+      }}
+    >
+      <div className="flex items-center justify-between gap-2" style={{ display: floating ? "none" : undefined }}>
+        <p className="flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+          {icon ? (
+            <span className="shrink-0" style={{ color: "var(--text-muted)" }}>
+              {icon}
+            </span>
+          ) : null}
+          <span className="min-w-0 truncate">{title}</span>
+        </p>
+        <button
+          type="button"
+          disabled={closeDisabled}
+          onClick={onClose}
+          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border hover:brightness-95 disabled:opacity-60"
+          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+          title={closeTitle}
+        >
+          <ChevronRight size={18} strokeWidth={1.75} />
+        </button>
+      </div>
+      {toolbarHostRef ? <div ref={toolbarHostRef} className={floating ? "min-w-0" : "-mx-2 mt-1 min-w-0"} /> : null}
+    </div>
+  );
+}
+
+// On a computer (a mouse or pen, 768px up) the drawer can be pulled out into a floating window: drag its header
+// (data-drawer-grab — anywhere on it but its buttons and the editor's toolbar) away from the edge and it pops out under
+// the pointer, then goes wherever it's dragged (by its grab bar or its header), kept on the screen. Resized from its
+// bottom-right corner; shrunk to a pill (its title) with the bar's – (drag the pill about; a click opens it again);
+// back into the drawer with the bar's dock button, or by letting go of it at the right edge of the screen (an outline
+// shows where it'll go). Its content stays the same throughout (same elements — an editor keeps what's being typed).
+// Closed while out, it opens out again, where it was.
 function CutlistSideDrawer({
   open,
   label,
+  title,
+  icon,
+  onClose,
+  onDock,
+  barButtonIds,
+  storageKey,
   isDarkMode,
-  panelRef,
+  zIndex,
+  onActivate,
+  drawerId,
   children,
 }: {
   open: boolean;
   label: string;
+  // Its bar's and its pill's words (else label), out — and its icon, and its close (the content's own header's title
+  // and close are hidden then: CutlistDrawerHeader).
+  title?: string;
+  icon?: ReactNode;
+  onClose?: () => void;
+  // Put back into the side (its button, or let go at the right edge): the one there before makes way (only one in the
+  // side at a time).
+  onDock?: () => void;
+  // Its button(s) in the cutlist's floating bar (their data-cutlist-bar-button): let go of it, popped out, on one of
+  // them and it goes back into it — closed (onClose: saved).
+  barButtonIds?: string[];
+  // Several can be open at once: the one touched last is in front (zIndex), and a press anywhere on it says so
+  // (onActivate). drawerId: on it as data-cutlist-drawer, to tell which one a press landed in.
+  zIndex?: number;
+  onActivate?: () => void;
+  drawerId?: string;
+  // Which drawer, and whose — for remembering where they popped it out to (on every project).
+  storageKey: string;
   isDarkMode: boolean;
-  panelRef?: RefObject<HTMLElement | null>;
   children: ReactNode;
 }) {
   const [present, setPresent] = useState(open);
@@ -2757,26 +2768,565 @@ function CutlistSideDrawer({
     const timer = window.setTimeout(() => setPresent(false), CUTLIST_DRAWER_SLIDE_MS + 60);
     return () => window.clearTimeout(timer);
   }, [open]);
+  const [canFloat] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(min-width: 768px) and (pointer: fine)").matches,
+  );
+  // Popped out (null: in the drawer) — and while it's being dragged or resized, where it is right now.
+  const [float, setFloat] = useState<CutlistDrawerFloat | null>(() =>
+    typeof window !== "undefined" && window.matchMedia("(min-width: 768px) and (pointer: fine)").matches ? readCutlistDrawerFloat(storageKey) : null,
+  );
+  // Someone else's (or the person only now known): their own.
+  const [floatKey, setFloatKey] = useState(storageKey);
+  if (floatKey !== storageKey) {
+    setFloatKey(storageKey);
+    setFloat(canFloat ? readCutlistDrawerFloat(storageKey) : null);
+  }
+  // Opened by a drag out of its floating bar button (pendingCutlistDragOut): it starts out under the pointer, coming out
+  // of the button — till it takes that drag over (dragOutOfButton, below).
+  const [mountDragOut] = useState(() => {
+    const pending = pendingCutlistDragOut.current;
+    return pending && drawerId && pending.key === drawerId && canFloat ? pending : null;
+  });
+  const [liveFloat, setLiveFloat] = useState<CutlistDrawerFloat | null>(() =>
+    mountDragOut ? cutlistDrawerDraggedOutAt(float, mountDragOut.x, mountDragOut.y) : null,
+  );
+  const [showDockTarget, setShowDockTarget] = useState(false);
+  const shown = canFloat ? (liveFloat ?? float) : null;
+  const commitFloat = (next: CutlistDrawerFloat | null) => {
+    setFloat(next);
+    writeCutlistDrawerFloat(storageKey, next);
+  };
+  // Shrunk, opened out, or put back into the side: it glides there from where it was (morphFromRef — taken just before
+  // the change, then animated from in the layout effect below, once it's laid out where it's going). Shrinking or
+  // opening out, its content keeps the window's full size meanwhile (morphContent — where it starts, below the pill or
+  // the bar, and the window's size), shown or hidden as the window's edges pass it, not squeezed as they move.
+  const asideRef = useRef<HTMLElement | null>(null);
+  const morphFromRef = useRef<{ left: number; top: number; width: number; height: number; radius: string } | null>(null);
+  const morphAnimationRef = useRef<Animation | null>(null);
+  const [morphContent, setMorphContent] = useState<{ top: number; w: number; h: number } | null>(null);
+  const markMorphFrom = () => {
+    const el = asideRef.current;
+    if (!el || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return null;
+    const box = el.getBoundingClientRect();
+    const from = { left: box.left, top: box.top, width: box.width, height: box.height, radius: window.getComputedStyle(el).borderRadius };
+    morphFromRef.current = from;
+    return from;
+  };
+  const minimize = () => {
+    if (!float) return;
+    const from = markMorphFrom();
+    if (from) setMorphContent({ top: CUTLIST_DRAWER_PILL_H, w: from.width, h: from.height });
+    commitFloat({ ...float, minimized: true });
+  };
+  const expand = () => {
+    if (!float) return;
+    const next = clampCutlistDrawerFloat({ ...float, minimized: false });
+    // (Below its bar.)
+    setMorphContent(markMorphFrom() ? { top: CUTLIST_DRAWER_PILL_H, w: next.w, h: next.h } : null);
+    commitFloat(next);
+  };
+  const dock = () => {
+    markMorphFrom();
+    setMorphContent(null);
+    commitFloat(null);
+    onDock?.();
+  };
+  useLayoutEffect(() => {
+    const from = morphFromRef.current;
+    const el = asideRef.current;
+    if (!from || !el) return;
+    morphFromRef.current = null;
+    // One still going is stopped where it is (that's where this one starts from).
+    morphAnimationRef.current?.cancel();
+    const to = el.getBoundingClientRect();
+    // (No max-width meanwhile: the pill's would cap the window's width from the start of its shrinking.)
+    const animation = el.animate(
+      [
+        {
+          left: `${from.left}px`,
+          top: `${from.top}px`,
+          width: `${from.width}px`,
+          height: `${from.height}px`,
+          maxWidth: "none",
+          borderRadius: from.radius,
+        },
+        {
+          left: `${to.left}px`,
+          top: `${to.top}px`,
+          width: `${to.width}px`,
+          height: `${to.height}px`,
+          maxWidth: "none",
+          borderRadius: window.getComputedStyle(el).borderRadius,
+        },
+      ],
+      { duration: CUTLIST_DRAWER_MORPH_MS, easing: CUTLIST_DRAWER_MORPH_EASING },
+    );
+    morphAnimationRef.current = animation;
+    // Done (or finished early — grabbed): its content back as it is (gone, shrunk). Stopped for another: that one's.
+    animation.finished.then(
+      () => {
+        if (morphAnimationRef.current !== animation) return;
+        morphAnimationRef.current = null;
+        setMorphContent(null);
+      },
+      () => undefined,
+    );
+  });
+
+  // Dragged onto its button in the floating bar (barButtonIds): it's put away into it — sucked in (held there, faded,
+  // till it's gone), then closed. Where it was before that drag is still where it opens next time.
+  const putAwayAnimationRef = useRef<Animation | null>(null);
+  // Put away (stowed): hidden from then till it's gone — not drawn again where it was by its pop-away on closing (an
+  // animation started later wins over the put-away's, holding it hidden in the button). Opened again: shown.
+  const [stowed, setStowed] = useState(false);
+  const [lastOpen, setLastOpen] = useState(open);
+  if (open !== lastOpen) {
+    setLastOpen(open);
+    if (open) setStowed(false);
+  }
+  const findBarButton = (x: number, y: number): HTMLElement | null => {
+    if (!barButtonIds?.length || !onClose) return null;
+    for (const button of Array.from(document.querySelectorAll<HTMLElement>("[data-cutlist-bar-button]"))) {
+      if (!barButtonIds.includes(button.dataset.cutlistBarButton ?? "")) continue;
+      const r = button.getBoundingClientRect();
+      if (r.width && x >= r.left - 6 && x <= r.right + 6 && y >= r.top - 6 && y <= r.bottom + 6) return button;
+    }
+    return null;
+  };
+  const putAwayInto = (button: HTMLElement) => {
+    const el = asideRef.current;
+    const done = () => {
+      button.removeAttribute("data-drop-target");
+      // The button takes it in: a little gulp. (Its own easing back from lit started first — read here — so this one,
+      // started after it, is the one that shows.)
+      void window.getComputedStyle(button).transform;
+      button.animate([{ transform: "scale(1.12)" }, { transform: "scale(0.94)", offset: 0.55 }, { transform: "scale(1)" }], {
+        duration: 260,
+        easing: "ease-out",
+      });
+      setStowed(true);
+      setLiveFloat(null);
+      onClose?.();
+    };
+    if (!el || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      done();
+      return;
+    }
+    morphAnimationRef.current?.finish();
+    putAwayAnimationRef.current?.cancel();
+    // Sucked into the button — faster and faster (under the floating bar, which is above it while its button's lit —
+    // globals.css).
+    const animation = el.animate(
+      cutlistDrawerSuctionKeyframes(el.getBoundingClientRect(), button.getBoundingClientRect(), window.getComputedStyle(el).opacity),
+      { duration: CUTLIST_DRAWER_SUCTION_MS, easing: "cubic-bezier(0.45, 0, 0.85, 0.4)", fill: "forwards" },
+    );
+    putAwayAnimationRef.current = animation;
+    animation.finished.then(done, () => undefined);
+  };
+  // Dragged out of its button: it comes out of it — the suction reversed, blown out of the button and slowing as it
+  // opens out (emergeFromRef: the button).
+  const emergeFromRef = useRef<DOMRect | null>(mountDragOut?.from ?? null);
+  useLayoutEffect(() => {
+    const from = emergeFromRef.current;
+    const el = asideRef.current;
+    if (!from || !el) return;
+    emergeFromRef.current = null;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    el.animate(cutlistDrawerSuctionKeyframes(el.getBoundingClientRect(), from, 1, true), {
+      duration: CUTLIST_DRAWER_SUCTION_MS,
+      easing: "cubic-bezier(0.15, 0.6, 0.55, 1)",
+    });
+  });
+  // Opened again before it's gone: not held faded in the button.
+  useEffect(() => {
+    if (!open) return;
+    putAwayAnimationRef.current?.cancel();
+    putAwayAnimationRef.current = null;
+  }, [open]);
+
+  // The screen resized: kept on it.
+  const isFloating = float !== null;
+  useEffect(() => {
+    if (!isFloating) return;
+    const onResize = () => setFloat((prev) => (prev ? clampCutlistDrawerFloat(prev) : prev));
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [isFloating]);
+
+  // A drag of it: pulled out of the side (pull — out once it's pulled far enough), moved by its bar or header (move),
+  // or resized by its corner (resize). Moved, it stays where the pointer has it — off the screen too — and let go
+  // partly off it, it slides back into view. Let go: put where it is — or into the side at the screen's right edge, or
+  // (over its floating bar button) put away into the button. moved: whether it's moved yet (no: let go, a click).
+  const startDrag = (start: {
+    x: number;
+    y: number;
+    mode: "pull" | "move" | "resize";
+    base: CutlistDrawerFloat;
+    grabX: number;
+    grabY: number;
+    moved: boolean;
+  }) => {
+    let { mode, base, grabX, grabY, moved } = start;
+    let current: CutlistDrawerFloat | null = null;
+    let docking = false;
+    // Its button sucks it in once it's dragged onto it — but not straight back in, dragged out of it: only once it's
+    // been off it.
+    let suctionArmed = !findBarButton(start.x, start.y);
+    const onMove = (moveEvent: PointerEvent) => {
+      const dx = moveEvent.clientX - start.x;
+      const dy = moveEvent.clientY - start.y;
+      if (!moved && Math.hypot(dx, dy) < 4) return;
+      moved = true;
+      if (mode === "pull") {
+        if (Math.hypot(dx, dy) < CUTLIST_DRAWER_POP_OUT_PX) return;
+        // Out it comes: a window under the pointer, held where it was grabbed.
+        const w = CUTLIST_DRAWER_FLOAT_W;
+        grabX = Math.min(grabX, w - 48);
+        grabY = Math.min(grabY, 40);
+        base = { x: 0, y: 0, w, h: cutlistDrawerDefaultFloatH(), minimized: false };
+        mode = "move";
+      }
+      if (mode === "move") {
+        current = { ...base, x: moveEvent.clientX - grabX, y: moveEvent.clientY - grabY };
+        const hit = findBarButton(moveEvent.clientX, moveEvent.clientY);
+        if (!hit) suctionArmed = true;
+        else if (suctionArmed) {
+          // Onto its button: sucked in, there and then (the button lit — data-drop-target, globals.css). The drag's
+          // over; the click its letting go makes, if that's on the button, isn't a press of it.
+          endDrag();
+          setShowDockTarget(false);
+          hit.setAttribute("data-drop-target", "true");
+          window.addEventListener("pointerup", () => swallowNextClick(), { once: true });
+          putAwayInto(hit);
+          return;
+        }
+        docking = !hit && !base.minimized && moveEvent.clientX >= window.innerWidth - CUTLIST_DRAWER_DOCK_ZONE_PX;
+        setShowDockTarget(docking);
+      } else {
+        current = clampCutlistDrawerFloat({ ...base, w: base.w + dx, h: base.h + dy });
+      }
+      setLiveFloat(current);
+    };
+    const endDrag = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+    const onUp = () => {
+      endDrag();
+      setShowDockTarget(false);
+      setLiveFloat(null);
+      if (!moved) {
+        // A click on the pill: open it out again.
+        if (float?.minimized && start.mode !== "resize") expand();
+        return;
+      }
+      if (docking) dock();
+      else if (current) {
+        const settled = clampCutlistDrawerFloat(current);
+        // Let go partly off the screen: it slides into view (the glide — from where it is now).
+        if (settled.x !== current.x || settled.y !== current.y) markMorphFrom();
+        commitFloat(settled);
+      }
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+  };
+
+  const onPointerDown = (event: ReactPointerEvent<HTMLElement>) => {
+    if (!canFloat || event.button !== 0) return;
+    // Grabbed mid-glide: there now.
+    morphAnimationRef.current?.finish();
+    const target = event.target as HTMLElement;
+    const resizing = Boolean(target.closest("[data-drawer-resize]"));
+    if (!resizing) {
+      if (!target.closest("[data-drawer-grab]")) return;
+      if (target.closest('button, a, input, textarea, select, [contenteditable="true"], .ck, [role="toolbar"]')) return;
+    }
+    event.preventDefault();
+    const box = event.currentTarget.getBoundingClientRect();
+    startDrag({
+      x: event.clientX,
+      y: event.clientY,
+      mode: resizing ? "resize" : float ? "move" : "pull",
+      base: float ?? { x: box.left, y: box.top, w: box.width, h: box.height, minimized: false },
+      grabX: event.clientX - box.left,
+      grabY: event.clientY - box.top,
+      moved: false,
+    });
+  };
+
+  // Dragged out of its floating bar button (the page hands the drag over — cutlistDrawerDragOutHandlers): popped out
+  // under the pointer, coming out of the button (from — unless it already has, opening there); then moved as it's
+  // dragged. Let go already (released): put there — into view.
+  const dragOutOfButton = (x: number, y: number, from: DOMRect | null, released: boolean) => {
+    morphAnimationRef.current?.finish();
+    putAwayAnimationRef.current?.cancel();
+    putAwayAnimationRef.current = null;
+    setMorphContent(null);
+    const at = cutlistDrawerDraggedOutAt(float, x, y);
+    if (released) {
+      setLiveFloat(null);
+      const settled = clampCutlistDrawerFloat(at);
+      if (settled.x !== at.x || settled.y !== at.y) markMorphFrom();
+      commitFloat(settled);
+      return;
+    }
+    if (from) emergeFromRef.current = from;
+    // Right under the pointer — partly off the screen, coming up out of the bar (into view once it's let go).
+    setLiveFloat(at);
+    startDrag({ x, y, mode: "move", base: at, grabX: x - at.x, grabY: y - at.y, moved: true });
+  };
+  useEffect(() => {
+    if (!drawerId || !canFloat) return;
+    cutlistDrawerDragOutHandlers.set(drawerId, dragOutOfButton);
+    return () => {
+      if (cutlistDrawerDragOutHandlers.get(drawerId) === dragOutOfButton) cutlistDrawerDragOutHandlers.delete(drawerId);
+    };
+  });
+
   if (!present || typeof document === "undefined") return null;
+  // The glass panel's look, its border as its parts (not the border shorthand) — the drawer has no right edge and the
+  // window does, and React won't swap one side of a shorthand cleanly.
+  const glassStyle: React.CSSProperties = {
+    ...anchoredGlassPanelStyle(isDarkMode),
+    border: undefined,
+    borderStyle: "solid",
+    borderColor: "var(--glass-border)",
+  };
+  const barButtonClass =
+    "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition hover:bg-[color-mix(in_srgb,var(--text-main)_8%,transparent)]";
   return createPortal(
-    <aside
-      ref={panelRef as RefObject<HTMLElement>}
-      aria-label={label}
-      aria-hidden={!open}
-      inert={!open}
-      className={`fixed bottom-0 right-0 top-[56px] z-[1450] flex w-[min(440px,100vw)] flex-col overflow-hidden transition-transform duration-[260ms] ease-[cubic-bezier(0.32,0.72,0,1)] starting:translate-x-full motion-reduce:transition-none ${
-        open ? "translate-x-0" : "translate-x-full"
-      }`}
-      style={{
-        ...anchoredGlassPanelStyle(isDarkMode),
-        borderRadius: "22px 0 0 22px",
-        borderRight: "none",
-        boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.07)" : "rgba(255,255,255,0.55)"}, -16px 0 48px rgba(15, 23, 42, ${isDarkMode ? 0.45 : 0.18})`,
-      }}
-    >
-      {children}
-    </aside>,
+    <>
+      {showDockTarget ? (
+        // Where it'll go back into, letting go here.
+        <div
+          aria-hidden="true"
+          className="pointer-events-none fixed bottom-0 right-0 top-[56px] z-[1449] w-[min(440px,100vw)] rounded-l-[22px] border-2 border-dashed"
+          style={{ borderColor: "var(--brand)", backgroundColor: "color-mix(in srgb, var(--brand) 8%, transparent)" }}
+        />
+      ) : null}
+      <aside
+        ref={asideRef}
+        aria-label={label}
+        aria-hidden={!open}
+        inert={!open}
+        data-cutlist-drawer={drawerId}
+        onPointerDownCapture={() => onActivate?.()}
+        onPointerDown={onPointerDown}
+        className={
+          shown
+            ? `fixed z-[1450] flex flex-col overflow-hidden ${open ? "glass-panel-pop" : stowed ? "" : "floating-bar-slot-pop"}`
+            : `fixed bottom-0 right-0 top-[56px] z-[1450] flex w-[min(440px,100vw)] flex-col overflow-hidden transition-transform duration-[260ms] ease-[cubic-bezier(0.32,0.72,0,1)] starting:translate-x-full motion-reduce:transition-none ${
+                open ? "translate-x-0" : "translate-x-full"
+              } ${canFloat ? "[&_[data-drawer-grab]]:cursor-grab" : ""}`
+        }
+        style={
+          shown
+            ? {
+                ...glassStyle,
+                zIndex,
+                borderWidth: 1,
+                left: shown.x,
+                top: shown.y,
+                width: shown.minimized ? "auto" : shown.w,
+                maxWidth: shown.minimized ? CUTLIST_DRAWER_PILL_MAX_W : undefined,
+                height: shown.minimized ? CUTLIST_DRAWER_PILL_BOX_H : shown.h,
+                visibility: stowed ? "hidden" : undefined,
+                // (Half its height, not 9999: it's animated between this and the window's.)
+                borderRadius: shown.minimized ? CUTLIST_DRAWER_PILL_BOX_H / 2 : 22,
+              }
+            : {
+                ...glassStyle,
+                zIndex,
+                visibility: stowed ? "hidden" : undefined,
+                borderWidth: "1px 0 1px 1px",
+                borderRadius: "22px 0 0 22px",
+                boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.07)" : "rgba(255,255,255,0.55)"}, -16px 0 48px rgba(15, 23, 42, ${isDarkMode ? 0.45 : 0.18})`,
+              }
+        }
+      >
+        {/* Out: its grab bar (– to shrink, dock to put it back) — or, shrunk, its pill. */}
+        {shown ? (
+          shown.minimized ? (
+            <div
+              data-drawer-grab="true"
+              className="flex shrink-0 cursor-grab select-none items-center gap-2 pl-4 pr-1.5 active:cursor-grabbing"
+              style={{ height: CUTLIST_DRAWER_PILL_H }}
+            >
+              {icon ? (
+                <span className="shrink-0" style={{ color: "var(--text-muted)" }}>
+                  {icon}
+                </span>
+              ) : null}
+              {/* Its title as on its bar opened out (the same words, size and capitals). */}
+              <span className="min-w-0 truncate text-[12px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                {title || label}
+              </span>
+              <button
+                type="button"
+                onClick={expand}
+                className={`${barButtonClass} h-7 w-7`}
+                style={{ color: "var(--text-main)" }}
+                title="Open"
+                aria-label={`Open ${label}`}
+              >
+                <Maximize2 size={14} />
+              </button>
+            </div>
+          ) : (
+            // Its one bar, out: its title (moved by), then shrink, back into the side, close.
+            <div
+              data-drawer-grab="true"
+              className="flex shrink-0 cursor-grab select-none items-center gap-2 pl-4 pr-1.5 active:cursor-grabbing"
+              style={{ height: CUTLIST_DRAWER_PILL_H }}
+            >
+              {icon ? (
+                <span className="shrink-0" style={{ color: "var(--text-muted)" }}>
+                  {icon}
+                </span>
+              ) : null}
+              <span className="min-w-0 flex-1 truncate text-[12px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                {title || label}
+              </span>
+              <div className="flex shrink-0 items-center gap-0.5">
+                <button
+                  type="button"
+                  onClick={minimize}
+                  className={barButtonClass}
+                  style={{ color: "var(--text-main)" }}
+                  title="Shrink"
+                  aria-label={`Shrink ${label}`}
+                >
+                  <Minus size={14} />
+                </button>
+                <button
+                  type="button"
+                  onClick={dock}
+                  className={barButtonClass}
+                  style={{ color: "var(--text-main)" }}
+                  title="Back into the side"
+                  aria-label={`Put ${label} back into the side`}
+                >
+                  <PanelRightClose size={14} />
+                </button>
+                {onClose ? (
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    className={barButtonClass}
+                    style={{ color: "var(--text-main)" }}
+                    title="Close"
+                    aria-label={`Close ${label}`}
+                  >
+                    <X size={15} />
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          )
+        ) : null}
+        <div
+          className="flex min-h-0 flex-1 flex-col"
+          style={
+            shown && morphContent
+              ? {
+                  position: "absolute",
+                  left: 0,
+                  top: morphContent.top,
+                  // (Inside its 1px border.)
+                  width: morphContent.w - 2,
+                  height: Math.max(0, morphContent.h - 2 - morphContent.top),
+                }
+              : shown?.minimized
+                ? { display: "none" }
+                : undefined
+          }
+        >
+          <CutlistDrawerFloatingContext.Provider value={Boolean(shown)}>{children}</CutlistDrawerFloatingContext.Provider>
+        </div>
+        {shown && !shown.minimized ? (
+          // Resized from here — in from the corner, inside its rounding (the corner itself is outside it).
+          <div
+            data-drawer-resize="true"
+            aria-hidden="true"
+            className="absolute bottom-1.5 right-1.5 z-[3] flex h-6 w-6 cursor-nwse-resize items-end justify-end p-1"
+            style={{ color: "var(--text-muted)" }}
+          >
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+              <path d="M9 1 1 9M9 5 5 9" />
+            </svg>
+          </div>
+        ) : null}
+      </aside>
+    </>,
     document.body,
+  );
+}
+
+// One contractor's notes, in a drawer of its own (CutlistSideDrawer — any number can be open at once): its header
+// (pulled to pop the drawer out; the editor's toolbar; close) and its editor — or, read-only, just the notes.
+function ContractorNotesDrawerBody({
+  name,
+  initialValue,
+  savedHtml,
+  readOnly,
+  onDraft,
+  onClose,
+}: {
+  name: string;
+  initialValue: string;
+  savedHtml: string;
+  readOnly: boolean;
+  onDraft: (value: string) => void;
+  onClose: () => void;
+}) {
+  const [toolbarHost, setToolbarHost] = useState<HTMLDivElement | null>(null);
+  return (
+    <>
+      <CutlistDrawerHeader
+        title={name}
+        icon={<HardHat size={15} />}
+        onClose={onClose}
+        toolbarHostRef={readOnly ? undefined : setToolbarHost}
+        style={{
+          backgroundColor: "color-mix(in srgb, var(--panel-muted) 35%, transparent)",
+          backdropFilter: "blur(6px)",
+          WebkitBackdropFilter: "blur(6px)",
+          borderBottomColor: "var(--panel-border)",
+        }}
+      />
+      {/* No box round the notes: the drawer's whole body is where they're typed (drawer-notes-editor — globals.css). */}
+      <div className="drawer-notes-editor flex min-h-0 flex-1 flex-col" style={{ color: "var(--text-main)" }}>
+        {!readOnly ? (
+          <QuoteDocumentEditor
+            key={`contractor-notes-${name}`}
+            mode="embedded"
+            toolbarPlacement="inline"
+            toolbarHost={toolbarHost}
+            toolbarDensity="compact"
+            embeddedChrome="flat"
+            embeddedMinHeight={180}
+            embeddedEditableMinHeight={120}
+            value={initialValue}
+            // Not read-only while a save's going (unlike the project's other notes): with several drawers open, a
+            // click from one into another saves the one left, which mustn't lock the one clicked into.
+            readOnly={readOnly}
+            autoFocus
+            fillHeight
+            toolbarGlassStyle
+            shellClassName="flex flex-col"
+            onChange={onDraft}
+          />
+        ) : (
+          <div
+            className="glass-scroll min-h-0 flex-1 overflow-auto px-4 pb-4 pt-3 notes-rich leading-[20px]"
+            dangerouslySetInnerHTML={{ __html: savedHtml }}
+          />
+        )}
+      </div>
+    </>
   );
 }
 
@@ -7540,13 +8090,21 @@ export default function ProjectDetailsPage() {
   const [isEditingProductionNotes, setIsEditingProductionNotes] = useState(false);
   const [isEditingDesignNotes, setIsEditingDesignNotes] = useState(false);
   const [isProductionNotesPanelOpen, setIsProductionNotesPanelOpen] = useState(false);
-  const [isContractorsPanelOpen, setIsContractorsPanelOpen] = useState(false);
-  const [activeContractorTab, setActiveContractorTab] = useState("");
-  const [contractorNotesEditorInitialValue, setContractorNotesEditorInitialValue] = useState("");
-  const contractorNotesEditorDraftRef = useRef("");
-  const [contractorsToolbarHost, setContractorsToolbarHost] = useState<HTMLDivElement | null>(null);
-  // The cutlist screen's Contractors drawer (a click anywhere outside it saves the contractor's note).
-  const contractorsDrawerRef = useRef<HTMLElement | null>(null);
+  // The cutlist screen's contractor notes: a drawer for each contractor opened — any number at once, alongside Notes,
+  // each docked or popped out and placed on its own (CutlistSideDrawer). Listed while open, and while sliding away
+  // (open: false). Each one's editor starts from its notes as they were when opened, and what's typed is kept per
+  // contractor (a press anywhere outside one saves it).
+  const [contractorDrawers, setContractorDrawers] = useState<Array<{ name: string; open: boolean }>>([]);
+  const [contractorNotesInitialByName, setContractorNotesInitialByName] = useState<Record<string, string>>({});
+  const contractorNotesDraftsRef = useRef<Record<string, string>>({});
+  const openContractorNames = contractorDrawers.filter((drawer) => drawer.open).map((drawer) => drawer.name);
+  // Which of the cutlist's drawers is in front: the one opened or touched last ("notes", "contractor:<name>").
+  const [cutlistDrawerStack, setCutlistDrawerStack] = useState<string[]>([]);
+  const bringCutlistDrawerToFront = (key: string) =>
+    setCutlistDrawerStack((prev) => (prev[prev.length - 1] === key ? prev : [...prev.filter((item) => item !== key), key]));
+  const dropCutlistDrawerFromStack = (key: string) => setCutlistDrawerStack((prev) => prev.filter((item) => item !== key));
+  const cutlistDrawerZ = (key: string) => 1450 + Math.max(0, cutlistDrawerStack.indexOf(key));
+  const frontCutlistDrawer = cutlistDrawerStack[cutlistDrawerStack.length - 1] ?? "";
   // The cutlist sidebar's Contractors menu (pick a contractor → their notes in the drawer); its left / width when
   // open (its top: useKeepMenuInView, below the button or above it).
   const [contractorsMenuRect, setContractorsMenuRect] = useState<{ left: number; width: number } | null>(null);
@@ -8293,6 +8851,41 @@ export default function ProjectDetailsPage() {
   const [cutlistPartTypeFilter, setCutlistPartTypeFilter] = useState("All Part Types");
   const [cutlistRoomFilter, setCutlistRoomFilter] = useState("Project Cutlist");
   const [cutlistRoomHighlightRect, setCutlistRoomHighlightRect] = useState<{ top: number; height: number } | null>(null);
+  // The production cutlist screen's Rooms column: popped out from the left side and back in (its toggle, "Rooms", in
+  // the band above it) — Nesting's Visibility panel's way: its bubbles slide in from the edge as it opens (staggered)
+  // and back out before it closes, the cutlist beside it moving over meanwhile.
+  const [isCutlistRoomsPanelOpen, setIsCutlistRoomsPanelOpen] = useState(true);
+  const [isCutlistRoomsPanelClosing, setIsCutlistRoomsPanelClosing] = useState(false);
+  const [isCutlistRoomsPanelJustOpened, setIsCutlistRoomsPanelJustOpened] = useState(false);
+  const cutlistRoomsPanelTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isCutlistRoomsPanelShown = isCutlistRoomsPanelOpen && !isCutlistRoomsPanelClosing;
+  const toggleCutlistRoomsPanel = () => {
+    if (cutlistRoomsPanelTimeoutRef.current) clearTimeout(cutlistRoomsPanelTimeoutRef.current);
+    if (!isCutlistRoomsPanelShown) {
+      setIsCutlistRoomsPanelOpen(true);
+      setIsCutlistRoomsPanelClosing(false);
+      setIsCutlistRoomsPanelJustOpened(true);
+      cutlistRoomsPanelTimeoutRef.current = setTimeout(() => {
+        setIsCutlistRoomsPanelJustOpened(false);
+        cutlistRoomsPanelTimeoutRef.current = null;
+      }, 800);
+      return;
+    }
+    setIsCutlistRoomsPanelClosing(true);
+    setIsCutlistRoomsPanelJustOpened(false);
+    cutlistRoomsPanelTimeoutRef.current = setTimeout(() => {
+      setIsCutlistRoomsPanelOpen(false);
+      setIsCutlistRoomsPanelClosing(false);
+      cutlistRoomsPanelTimeoutRef.current = null;
+    }, 360);
+  };
+  // One of its bubbles (key: its own — its place in the stagger): sliding in as it opens, out as it closes.
+  const cutlistRoomsBubbleAnimation = (key: string): React.CSSProperties =>
+    isCutlistRoomsPanelClosing
+      ? { animation: "glass-bubble-slide-out-left 280ms ease 0ms both" }
+      : isCutlistRoomsPanelJustOpened
+        ? { animation: `glass-bubble-slide-in-left 480ms cubic-bezier(0.34, 1.56, 0.64, 1) ${stableBubbleAnimationDelayMs(key)}ms both` }
+        : {};
   const cutlistRoomListRef = useRef<HTMLDivElement | null>(null);
   const cutlistRoomButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   // Singleton row-detail popup — mirrors CNC's own cncMobileRowDetail/isCncMobileRowDetailOpen
@@ -9095,6 +9688,89 @@ export default function ProjectDetailsPage() {
     },
   });
   const productionCutlistFullscreenScrollRef = useRef<HTMLDivElement | null>(null);
+  // The cutlist screen's floating bar (Notes, Contractors — see its render): out of the way once the screen's scrolled
+  // right down and there's something behind it — the cutlist reaching down under it — popping away, and back as soon as
+  // it's scrolled up. There to stay when there's nothing to scroll, or nothing under it.
+  const [productionCutlistScrollEl, setProductionCutlistScrollEl] = useState<HTMLDivElement | null>(null);
+  const productionCutlistFullscreenScrollCallbackRef = useCallback((el: HTMLDivElement | null) => {
+    productionCutlistFullscreenScrollRef.current = el;
+    setProductionCutlistScrollEl(el);
+  }, []);
+  const [isProductionCutlistBarInTheWay, setIsProductionCutlistBarInTheWay] = useState(false);
+  // The cutlist's own content (its sections, beside the rooms) — whether any of it is behind the bar.
+  const productionCutlistContentRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = productionCutlistScrollEl;
+    if (!el) return;
+    let frame = 0;
+    const check = () => {
+      frame = 0;
+      const scrollable = el.scrollHeight > el.clientHeight + 2;
+      const atBottom = scrollable && el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
+      // Something behind it: the cutlist's lowest section reaching down past the bar's top (it floats 24px off the
+      // bottom, 50px tall), less a little.
+      let contentBottom = -Infinity;
+      for (const child of Array.from(productionCutlistContentRef.current?.children ?? [])) {
+        const box = child.getBoundingClientRect();
+        if (box.height > 0) contentBottom = Math.max(contentBottom, box.bottom);
+      }
+      const hide = atBottom && contentBottom > window.innerHeight - 24 - 50 - 8;
+      setIsProductionCutlistBarInTheWay((prev) => (prev === hide ? prev : hide));
+    };
+    const schedule = () => {
+      if (!frame) frame = window.requestAnimationFrame(check);
+    };
+    schedule();
+    el.addEventListener("scroll", schedule, { passive: true });
+    window.addEventListener("resize", schedule);
+    // Rows added or removed change how far there is to scroll, and how far down the cutlist reaches.
+    const resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(schedule) : null;
+    resizeObserver?.observe(el);
+    Array.from(el.children).forEach((child) => resizeObserver?.observe(child));
+    Array.from(productionCutlistContentRef.current?.children ?? []).forEach((child) => resizeObserver?.observe(child));
+    return () => {
+      if (frame) window.cancelAnimationFrame(frame);
+      el.removeEventListener("scroll", schedule);
+      window.removeEventListener("resize", schedule);
+      resizeObserver?.disconnect();
+    };
+  }, [productionCutlistScrollEl]);
+  const wantProductionCutlistBar = !isProductionCutlistBarInTheWay;
+  const [productionCutlistBarShown, setProductionCutlistBarShown] = useState(wantProductionCutlistBar);
+  const [productionCutlistBarLeaving, setProductionCutlistBarLeaving] = useState(false);
+  if (wantProductionCutlistBar && (!productionCutlistBarShown || productionCutlistBarLeaving)) {
+    setProductionCutlistBarShown(true);
+    setProductionCutlistBarLeaving(false);
+  }
+  if (!wantProductionCutlistBar && productionCutlistBarShown && !productionCutlistBarLeaving) setProductionCutlistBarLeaving(true);
+  // Whether the floating bar has room across the screen for a button for each contractor (see its render): measured
+  // off a copy of it laid out with them, out of sight, in the same place. (Seen first when it's laid out.)
+  const [cutlistBarFitsContractors, setCutlistBarFitsContractors] = useState(true);
+  const [cutlistBarMeasureEl, setCutlistBarMeasureEl] = useState<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const wrap = cutlistBarMeasureEl;
+    const pill = wrap?.firstElementChild;
+    if (!wrap || !pill || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      const style = window.getComputedStyle(wrap);
+      const room = wrap.clientWidth - parseFloat(style.paddingLeft || "0") - parseFloat(style.paddingRight || "0");
+      const fits = pill.getBoundingClientRect().width <= room + 0.5;
+      setCutlistBarFitsContractors((prev) => (prev === fits ? prev : fits));
+    });
+    observer.observe(wrap);
+    observer.observe(pill);
+    return () => observer.disconnect();
+  }, [cutlistBarMeasureEl]);
+  useEffect(() => {
+    if (!productionCutlistBarLeaving) return;
+    // Gone once its pop's played (floating-bar-slot-pop's 180ms — globals.css), and the Contractors menu with it.
+    const timer = window.setTimeout(() => {
+      setProductionCutlistBarShown(false);
+      setProductionCutlistBarLeaving(false);
+      setContractorsMenuRect(null);
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [productionCutlistBarLeaving]);
   // The cutlist views' other scroll areas (Initial Measure phone/tablet + desktop, Production Cutlist
   // phone/tablet) — glass scrollbars, so the thumb starts below their sticky bars instead of running
   // underneath them.
@@ -13500,7 +14176,7 @@ export default function ProjectDetailsPage() {
     // actually mounts, not just when the room filter itself changes; otherwise
     // `cutlistRoomListRef.current` is still null on the first render after
     // switching into this tab and the highlight never appears until a click.
-  }, [cutlistRoomFilter, cutlistRoomTabs, resolvedTab, productionAccess.view, productionNav]);
+  }, [cutlistRoomFilter, cutlistRoomTabs, resolvedTab, productionAccess.view, productionNav, isCutlistRoomsPanelOpen]);
 
   const cutlistEntryRoomOptions = useMemo(
     () => Array.from(new Set(cutlistRoomTabs.map((tab) => tab.filter))),
@@ -16803,7 +17479,8 @@ export default function ProjectDetailsPage() {
   useEffect(() => {
     if (productionNav !== "cutlist") {
       setIsProductionNotesPanelOpen(false);
-      setIsContractorsPanelOpen(false);
+      setContractorDrawers([]);
+      setCutlistDrawerStack([]);
       setContractorsMenuRect(null);
     }
   }, [productionNav]);
@@ -18664,6 +19341,8 @@ export default function ProjectDetailsPage() {
     };
   }, []);
 
+  // The project whose old-style cutlist has been looked for (see loadCutlist below).
+  const legacyCutlistCheckedProjectIdRef = useRef("");
   useEffect(() => {
     const loadCutlist = async () => {
       if (!project?.id) {
@@ -18761,6 +19440,10 @@ export default function ProjectDetailsPage() {
         setProductionCutlist(null);
         return;
       }
+      // No rows saved: an old-style cutlist on the project's own doc, if it has one — looked for once per project (this
+      // runs again on every change to the project; it used to read the company's every project each time).
+      if (legacyCutlistCheckedProjectIdRef.current === project.id) return;
+      legacyCutlistCheckedProjectIdRef.current = project.id;
       const storedCompanyId =
         typeof window !== "undefined"
           ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim()
@@ -20082,6 +20765,7 @@ export default function ProjectDetailsPage() {
     setProductionNotesDraft(nextNotesValue);
     setIsEditingProductionNotes(true);
     setIsProductionNotesPanelOpen(true);
+    bringCutlistDrawerToFront("notes");
   };
 
   const closeProductionNotesPanel = async () => {
@@ -20092,33 +20776,303 @@ export default function ProjectDetailsPage() {
     }
     setIsEditingProductionNotes(false);
     setIsProductionNotesPanelOpen(false);
+    dropCutlistDrawerFromStack("notes");
   };
 
-  const commitContractorNoteForTab = async (contractorName: string, value: string) => {
-    if (!project || productionReadOnly || !contractorName) return;
-    if (String(project.contractorNotes?.[contractorName] ?? "") === value) return;
-    const ok = await saveGeneralDetailsPatch({
-      contractorNotes: { ...(project.contractorNotes || {}), [contractorName]: value },
-    });
-    if (ok) logProjectChange(`Contractor Notes (${contractorName}) updated`);
+  // A contractor's note saved: built on the contractor notes as last saved (or being saved) — not the project as this
+  // render had it — and one save after another. With several contractors' drawers open, two saved together would
+  // otherwise each put back the other's old note. (That copy follows the project only while nothing's being saved.)
+  const contractorNotesSavedRef = useRef<Record<string, string>>({});
+  const contractorNotesSavesInFlightRef = useRef(0);
+  const contractorNotesSaveChainRef = useRef<Promise<void>>(Promise.resolve());
+  useEffect(() => {
+    if (contractorNotesSavesInFlightRef.current === 0) contractorNotesSavedRef.current = { ...(project?.contractorNotes || {}) };
+  }, [project?.contractorNotes]);
+  const commitContractorNoteForTab = (contractorName: string, value: string): Promise<void> => {
+    const run = async () => {
+      if (!project || productionReadOnly || !contractorName) return;
+      const saved = contractorNotesSavedRef.current;
+      if (String(saved[contractorName] ?? "") === value) return;
+      const next = { ...saved, [contractorName]: value };
+      contractorNotesSavedRef.current = next;
+      contractorNotesSavesInFlightRef.current += 1;
+      try {
+        const ok = await saveGeneralDetailsPatch({ contractorNotes: next });
+        if (ok) logProjectChange(`Contractor Notes (${contractorName}) updated`);
+        else contractorNotesSavedRef.current = saved;
+      } finally {
+        contractorNotesSavesInFlightRef.current -= 1;
+      }
+    };
+    const queued = contractorNotesSaveChainRef.current.then(run, run);
+    contractorNotesSaveChainRef.current = queued.catch(() => undefined);
+    return queued;
   };
 
-  const loadContractorTabIntoEditor = (contractorName: string) => {
-    const nextValue = notesToDisplayHtml(project?.contractorNotes?.[contractorName] || "");
-    contractorNotesEditorDraftRef.current = nextValue;
-    setContractorNotesEditorInitialValue(nextValue);
-  };
-
-  // One contractor's notes in the drawer (picked from the sidebar's menu): the one open before is saved first, and
-  // the Notes drawer makes way.
-  const openContractorNotes = async (name: string) => {
+  // A contractor's notes in a drawer of its own (from the floating bar, or its Contractors menu) — or, open already,
+  // brought to the front. Opening in the side, it takes the place of the one there.
+  const openContractorNotes = (name: string, poppingOut = false) => {
     setContractorsMenuRect(null);
-    if (isContractorsPanelOpen && name === activeContractorTab) return;
-    if (isContractorsPanelOpen) await commitContractorNoteForTab(activeContractorTab, contractorNotesEditorDraftRef.current);
-    if (isProductionNotesPanelOpen) void closeProductionNotesPanel();
-    setActiveContractorTab(name);
-    loadContractorTabIntoEditor(name);
-    setIsContractorsPanelOpen(true);
+    bringCutlistDrawerToFront(`contractor:${name}`);
+    if (openContractorNames.includes(name)) return;
+    if (!poppingOut) closeOtherCutlistDrawersInTheSide(`contractor:${name}`);
+    const initial = notesToDisplayHtml(project?.contractorNotes?.[name] || "");
+    contractorNotesDraftsRef.current[name] = initial;
+    setContractorNotesInitialByName((prev) => ({ ...prev, [name]: initial }));
+    setContractorDrawers((prev) =>
+      prev.some((drawer) => drawer.name === name)
+        ? prev.map((drawer) => (drawer.name === name ? { ...drawer, open: true } : drawer))
+        : [...prev, { name, open: true }],
+    );
+  };
+
+  // Its note saved (as it is now — the saving carries on behind), and it slides away (and out of the list once it has).
+  const closeContractorNotes = (name: string) => {
+    void commitContractorNoteForTab(name, contractorNotesDraftsRef.current[name] ?? "");
+    setContractorDrawers((prev) => prev.map((drawer) => (drawer.name === name ? { ...drawer, open: false } : drawer)));
+    dropCutlistDrawerFromStack(`contractor:${name}`);
+    window.setTimeout(
+      () => setContractorDrawers((prev) => prev.filter((drawer) => drawer.name !== name || drawer.open)),
+      CUTLIST_DRAWER_SLIDE_MS + 120,
+    );
+  };
+
+  // The cutlist's drawers in the side (not popped out): one at a time there — the one opening there (keepKey: "notes",
+  // "contractor:<name>"), or put back there, takes the place of the one that was (saved and closed). Popped out, any
+  // number. (Whether one's out: as it was left — CutlistSideDrawer keeps that per person and drawer.)
+  const closeOtherCutlistDrawersInTheSide = (keepKey: string) => {
+    const uid = String(user?.uid || "").trim();
+    if (isCutlistDrawerOut(`${uid}:${keepKey}`)) return;
+    if (keepKey !== "notes" && isProductionNotesPanelOpen && !isCutlistDrawerOut(`${uid}:notes`)) void closeProductionNotesPanel();
+    for (const name of openContractorNames) {
+      const key = `contractor:${name}`;
+      if (key !== keepKey && !isCutlistDrawerOut(`${uid}:${key}`)) closeContractorNotes(name);
+    }
+  };
+
+  // The cutlist's drawers open when it was last on screen — per person and project (this device): opened again on
+  // coming back to this project's cutlist, each where it was (CutlistSideDrawer keeps that), the one in front in
+  // front. Kept as they open, close and come to the front while it's on screen (the stack is just the open ones) —
+  // not as it's left (they're all closed then), nor before they've been put back on coming to it. (Contractors
+  // since taken off the company's list aren't.)
+  const cutlistOpenDrawersUid = String(user?.uid || "").trim();
+  const cutlistOpenDrawersKey = project?.id && cutlistOpenDrawersUid ? `${cutlistOpenDrawersUid}:${project.id}` : "";
+  const cutlistDrawersRestoredForRef = useRef("");
+  const restoreCutlistDrawers = useEffectEvent(() => {
+    for (const key of readCutlistOpenDrawers(cutlistOpenDrawersKey)) {
+      if (key === "notes") openProductionNotesPanel();
+      else if (key.startsWith("contractor:")) {
+        const name = key.slice("contractor:".length);
+        if (contractorTabOptions.includes(name)) openContractorNotes(name, true);
+      }
+    }
+  });
+  // (Before the putting back below: in the same go, this would otherwise keep the none open yet.)
+  useEffect(() => {
+    if (productionNav !== "cutlist" || !cutlistOpenDrawersKey || cutlistDrawersRestoredForRef.current !== cutlistOpenDrawersKey) return;
+    writeCutlistOpenDrawers(cutlistOpenDrawersKey, cutlistDrawerStack);
+  }, [productionNav, cutlistOpenDrawersKey, cutlistDrawerStack]);
+  useEffect(() => {
+    if (productionNav !== "cutlist" || !cutlistOpenDrawersKey) {
+      cutlistDrawersRestoredForRef.current = "";
+      return;
+    }
+    // (Once the company's contractors are known.)
+    if (!companyDocLoaded || cutlistDrawersRestoredForRef.current === cutlistOpenDrawersKey) return;
+    cutlistDrawersRestoredForRef.current = cutlistOpenDrawersKey;
+    restoreCutlistDrawers();
+  }, [productionNav, cutlistOpenDrawersKey, companyDocLoaded]);
+
+  // A floating bar button dragged (more than a few px) rather than clicked: its drawer comes out of it, popped out
+  // under the pointer, and goes where it's dragged (CutlistSideDrawer takes the drag over — once it's on the page, for
+  // one only just opened). The click the press then makes, if it's let go on the button, isn't a press of it.
+  const cutlistBarButtonDraggedRef = useRef(false);
+  const dragOutOfCutlistBarButton = (event: ReactPointerEvent<HTMLButtonElement>, key: string, isOpen: boolean, open: () => void) => {
+    cutlistBarButtonDraggedRef.current = false;
+    // (Only where drawers can pop out: a mouse or pen, 768px up.)
+    if (event.button !== 0 || !window.matchMedia("(min-width: 768px) and (pointer: fine)").matches) return;
+    const button = event.currentTarget;
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const stop = (upEvent?: PointerEvent) => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+      // Let go before the drawer it opened took the drag over: put where it was let go (if it's on the page by now).
+      if (pendingCutlistDragOut.current?.key !== key) return;
+      pendingCutlistDragOut.current = null;
+      if (upEvent?.type === "pointerup") cutlistDrawerDragOutHandlers.get(key)?.(upEvent.clientX, upEvent.clientY, null, true);
+    };
+    const onMove = (moveEvent: PointerEvent) => {
+      if (!cutlistBarButtonDraggedRef.current) {
+        if (Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) < 8) return;
+        cutlistBarButtonDraggedRef.current = true;
+        // Only the click this press makes (straight after it's let go) — not one later, wherever it's let go.
+        window.addEventListener(
+          "pointerup",
+          () =>
+            window.setTimeout(() => {
+              cutlistBarButtonDraggedRef.current = false;
+            }, 0),
+          { once: true },
+        );
+        if (isOpen) bringCutlistDrawerToFront(key);
+        else {
+          // One not on the page yet starts out right here, coming out of the button (pendingCutlistDragOut).
+          if (!cutlistDrawerDragOutHandlers.has(key)) {
+            pendingCutlistDragOut.current = { key, x: moveEvent.clientX, y: moveEvent.clientY, from: button.getBoundingClientRect() };
+          }
+          open();
+        }
+      }
+      const pending = pendingCutlistDragOut.current?.key === key ? pendingCutlistDragOut.current : null;
+      const handOver = cutlistDrawerDragOutHandlers.get(key);
+      if (!handOver) {
+        if (pending) {
+          pending.x = moveEvent.clientX;
+          pending.y = moveEvent.clientY;
+        }
+        return;
+      }
+      if (pending) pendingCutlistDragOut.current = null;
+      stop();
+      // (Out of the button already, if it opened there.)
+      handOver(moveEvent.clientX, moveEvent.clientY, pending ? null : button.getBoundingClientRect(), false);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+  };
+
+  // A floating bar button for a drawer: opens it; open, brings it to the front — or, in front already, closes it.
+  // (Not after it was dragged — that was its drawer coming out of it.)
+  const pressCutlistDrawerButton = (key: string, isOpen: boolean, open: () => void, close: () => void) => {
+    if (cutlistBarButtonDraggedRef.current) {
+      cutlistBarButtonDraggedRef.current = false;
+      return;
+    }
+    if (!isOpen) open();
+    else if (frontCutlistDrawer === key) close();
+    else bringCutlistDrawerToFront(key);
+  };
+
+  // A contractor with notes (a dot by its name in the floating bar, and its menu).
+  const contractorHasNotes = (name: string) =>
+    Boolean(
+      String(project?.contractorNotes?.[name] ?? "")
+        .replace(/<[^>]*>/g, "")
+        .replace(/&nbsp;/g, " ")
+        .trim(),
+    );
+
+  // The cutlist screen's floating bar's buttons: Notes, then the contractors — a button each (separate), or one
+  // "Contractors" menu of them. A drawer's button in the brand blue, with the glass shine, while it's open. measure:
+  // for the copy laid out out of sight to see whether they fit (nothing in it pressable).
+  const renderCutlistBarButtons = (separate: boolean, measure = false) => {
+    const buttonClass = (on: boolean) =>
+      `inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3.5 text-[12px] font-bold transition hover:brightness-95 ${
+        on ? "glass-shine text-white" : ""
+      }`;
+    const buttonStyle = (on: boolean): React.CSSProperties =>
+      on ? glassShineStyle("var(--brand)") : { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" };
+    const tabIndex = measure ? -1 : undefined;
+    const anyContractorOpen = openContractorNames.length > 0;
+    return (
+      <>
+        <button
+          type="button"
+          tabIndex={tabIndex}
+          data-cutlist-bar-button={measure ? undefined : "notes"}
+          onPointerDown={
+            measure
+              ? undefined
+              : (event) =>
+                  dragOutOfCutlistBarButton(event, "notes", isProductionNotesPanelOpen, () => {
+                    openProductionNotesPanel();
+                  })
+          }
+          aria-pressed={isProductionNotesPanelOpen}
+          onClick={
+            measure
+              ? undefined
+              : () =>
+                  pressCutlistDrawerButton(
+                    "notes",
+                    isProductionNotesPanelOpen,
+                    () => {
+                      closeOtherCutlistDrawersInTheSide("notes");
+                      openProductionNotesPanel();
+                    },
+                    () => void closeProductionNotesPanel(),
+                  )
+          }
+          className={buttonClass(isProductionNotesPanelOpen)}
+          style={buttonStyle(isProductionNotesPanelOpen)}
+        >
+          <NotebookPen size={14} className="shrink-0" />
+          Notes
+        </button>
+        {separate ? (
+          <>
+            <span aria-hidden className="mx-0.5 h-5 w-px shrink-0" style={{ backgroundColor: "var(--glass-border)" }} />
+            {contractorTabOptions.map((name) => {
+              const open = openContractorNames.includes(name);
+              return (
+                <button
+                  key={name}
+                  type="button"
+                  tabIndex={tabIndex}
+                  data-cutlist-bar-button={measure ? undefined : `contractor:${name}`}
+                  onPointerDown={
+                    measure
+                      ? undefined
+                      : (event) => dragOutOfCutlistBarButton(event, `contractor:${name}`, open, () => openContractorNotes(name, true))
+                  }
+                  aria-pressed={open}
+                  title={name}
+                  onClick={
+                    measure
+                      ? undefined
+                      : () =>
+                          pressCutlistDrawerButton(
+                            `contractor:${name}`,
+                            open,
+                            () => openContractorNotes(name),
+                            () => closeContractorNotes(name),
+                          )
+                  }
+                  className={buttonClass(open)}
+                  style={buttonStyle(open)}
+                >
+                  <HardHat size={14} className="shrink-0" />
+                  <span className="max-w-[140px] truncate">{name}</span>
+                  {!open && contractorHasNotes(name) ? (
+                    <span title="Has notes" className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: "var(--brand)" }} />
+                  ) : null}
+                </button>
+              );
+            })}
+          </>
+        ) : (
+          // A menu of the company's contractors, opening above the bar.
+          <button
+            ref={measure ? undefined : contractorsMenuButtonRef}
+            type="button"
+            tabIndex={tabIndex}
+            data-cutlist-bar-button={measure ? undefined : "contractors"}
+            aria-haspopup="menu"
+            aria-expanded={Boolean(contractorsMenuRect)}
+            onClick={measure ? undefined : toggleContractorsMenu}
+            className={buttonClass(anyContractorOpen || Boolean(contractorsMenuRect))}
+            style={buttonStyle(anyContractorOpen || Boolean(contractorsMenuRect))}
+          >
+            <HardHat size={14} className="shrink-0" />
+            Contractors
+            <ChevronDown size={14} className={`shrink-0 transition-transform ${contractorsMenuRect ? "rotate-180" : ""}`} />
+          </button>
+        )}
+      </>
+    );
   };
 
   const toggleContractorsMenu = () => {
@@ -20154,10 +21108,6 @@ export default function ProjectDetailsPage() {
     };
   }, [contractorsMenuRect]);
 
-  const closeContractorsPanel = async () => {
-    await commitContractorNoteForTab(activeContractorTab, contractorNotesEditorDraftRef.current);
-    setIsContractorsPanelOpen(false);
-  };
 
   const commitRemedialsDetails = async () => {
     if (!project || productionReadOnly) return;
@@ -20180,7 +21130,7 @@ export default function ProjectDetailsPage() {
   };
 
   useEffect(() => {
-    if (!isEditingClientDetails && !isEditingNotes && !isEditingProductionNotes && !isEditingDesignNotes && !isContractorsPanelOpen) return;
+    if (!isEditingClientDetails && !isEditingNotes && !isEditingProductionNotes && !isEditingDesignNotes && !openContractorNames.length) return;
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target as Node | null;
       if (!target) return;
@@ -20210,10 +21160,12 @@ export default function ProjectDetailsPage() {
         }
       }
 
-      if (isContractorsPanelOpen) {
-        const root = contractorsDrawerRef.current;
-        if (root && !root.contains(target) && !contractorsMenuRef.current?.contains(target)) {
-          void commitContractorNoteForTab(activeContractorTab, contractorNotesEditorDraftRef.current);
+      // Each open contractor's note is saved by a press outside its own drawer (not in the Contractors menu).
+      if (openContractorNames.length && !contractorsMenuRef.current?.contains(target)) {
+        const pressedDrawer =
+          (target instanceof Element ? target : target.parentElement)?.closest("[data-cutlist-drawer]")?.getAttribute("data-cutlist-drawer") ?? "";
+        for (const name of openContractorNames) {
+          if (pressedDrawer !== `contractor:${name}`) void commitContractorNoteForTab(name, contractorNotesDraftsRef.current[name] ?? "");
         }
       }
 
@@ -20234,8 +21186,7 @@ export default function ProjectDetailsPage() {
     isEditingProductionNotes,
     isEditingDesignNotes,
     isProductionNotesPanelOpen,
-    isContractorsPanelOpen,
-    activeContractorTab,
+    openContractorNames,
     commitContractorNoteForTab,
     commitClientDetails,
     commitNotesDetails,
@@ -35215,15 +36166,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           >
             <p className="text-[14px] font-medium tracking-[1px]" style={{ color: "var(--text-main)" }}>EXTRA CHARGES</p>
           </div>
-          <div className="p-3 text-[12px]">
+          {/* Room between its columns (gap-x-5) and at its sides (px-4), so they don't run together. */}
+          <div className="px-4 py-3 text-[12px]">
             {salesExtraChargeRows.length > 0 ? (
               <>
-                <div className="mb-2 grid grid-cols-[40px_52px_1fr_auto] gap-2 text-[11px] font-bold" style={{ color: projectPalette.textMuted }}>
+                <div className="mb-2 grid grid-cols-[40px_52px_1fr_auto] gap-x-5 text-[11px] font-bold" style={{ color: projectPalette.textMuted }}>
                   <p></p><p className="text-center">Qty</p><p>Charge</p><p className="text-right">Price</p>
                 </div>
                 <div className="space-y-1">
                   {salesExtraChargeRows.map((row) => (
-                    <div key={row.id} className="grid grid-cols-[40px_52px_1fr_auto] items-center gap-2 border-b py-2 last:border-none" style={{ borderBottomColor: projectPalette.border }}>
+                    <div key={row.id} className="grid grid-cols-[40px_52px_1fr_auto] items-center gap-x-5 border-b py-2 last:border-none" style={{ borderBottomColor: projectPalette.border }}>
                       <QuoteExtraToggleSwitch
                         checked={row.selected}
                         disabled={salesReadOnly || isSavingSalesRooms}
@@ -41831,8 +42783,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <button
                 type="button"
                 onClick={() => void onSaveAndBackFromCutlist()}
-                className="relative z-[1] inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95"
-                style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                className="glass-shine relative z-[1] inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border hover:brightness-95"
+                style={glassShineStyle("var(--brand)")}
                 aria-label="Save and back"
                 title="Save and back"
               >
@@ -43023,8 +43975,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       <button
                         disabled={productionReadOnly}
                         onClick={() => void addDraftRowsToCutlist()}
-                        className="inline-flex h-[44px] w-full items-center justify-center rounded-[10px] border text-[18px] font-normal text-white hover:brightness-95 disabled:opacity-55"
-                        style={{ borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)" }}
+                        className="glass-shine inline-flex h-[44px] w-full items-center justify-center rounded-[10px] border text-[18px] font-normal text-white hover:brightness-95 disabled:opacity-55"
+                        style={glassShineStyle("var(--brand)")}
                       >
                         Add to Cutlist
                       </button>
@@ -44058,7 +45010,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     return (
       <ProtectedRoute>
         <div className="flex h-[100svh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
-          <div ref={productionCutlistFullscreenScrollRef} className="min-h-0 flex-1 overflow-y-auto hide-native-scrollbar">
+          <div ref={productionCutlistFullscreenScrollCallbackRef} className="min-h-0 flex-1 overflow-y-auto hide-native-scrollbar">
           {/* Split into a fixed backdrop + content pair — see Initial Measure's own identical
               mobile-branch comment for the full reasoning. Still fine to leave nested inside this
               view's own overflow-y-auto scroll wrapper — position:fixed always anchors to the
@@ -44094,23 +45046,40 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             <button
               type="button"
               onClick={() => void onSaveAndBackFromCutlist()}
-              className="relative z-[1] inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95"
-              style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+              className="glass-shine relative z-[1] inline-flex h-9 items-center gap-2 rounded-full border px-3.5 text-[12px] font-bold text-white hover:brightness-95"
+              style={glassShineStyle("var(--brand)")}
             >
               <ArrowLeft size={14} />
               Save & Back
             </button>
           </div>
           <div className="h-[56px] shrink-0" />
-          <div
-            className="overflow-hidden border-b px-3 py-1"
-            style={{
-              borderColor: "var(--glass-border)",
-              backgroundColor: "var(--glass-bg-strong)",
-              backdropFilter: "blur(14px) saturate(220%)",
-              WebkitBackdropFilter: "blur(14px) saturate(220%)",
-            }}
-          >
+          {/* The band under the top bar: the Rooms column's toggle (its title — over the column, like Nesting's
+              Visibility), then the feed of changes, floating bubbles with no bar of their own — from the column's edge,
+              fading out there as they're dragged along (and starting clear of the fade). */}
+          <div className="flex h-[44px] items-center">
+            <button
+              type="button"
+              onClick={toggleCutlistRoomsPanel}
+              aria-expanded={isCutlistRoomsPanelShown}
+              className="flex h-full w-[190px] shrink-0 items-center justify-center gap-1.5 text-[15px] font-medium transition hover:brightness-95"
+              style={{ color: isCutlistRoomsPanelShown ? "var(--brand-strong)" : "var(--text-main)" }}
+            >
+              Rooms
+              {/* Pointing to its own edge (where it slides out from) while it's closed, back toward the middle open —
+                  as Nesting's. */}
+              <ChevronDown
+                size={13}
+                style={{ transform: isCutlistRoomsPanelShown ? "rotate(-90deg)" : "rotate(90deg)", transition: "transform 140ms ease" }}
+              />
+            </button>
+            <div
+              className="min-w-0 flex-1 overflow-hidden py-1 pr-3"
+              style={{
+                maskImage: "linear-gradient(to right, transparent 0, #000 24px)",
+                WebkitMaskImage: "linear-gradient(to right, transparent 0, #000 24px)",
+              }}
+            >
             <div
               ref={cutlistActivityScrollRef}
               className="w-full max-w-full min-w-0 overflow-hidden whitespace-nowrap"
@@ -44120,7 +45089,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             >
               <div
                 ref={cutlistActivityInnerRef}
-                className="inline-flex w-max cursor-grab items-center gap-[10px] pr-2"
+                className="inline-flex w-max cursor-grab items-center gap-[10px] pl-6 pr-2"
                 dir="ltr"
                 style={{
                   userSelect: "none",
@@ -44279,11 +45248,24 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 })}
               </div>
             </div>
+            </div>
           </div>
-          <div className="grid min-h-[calc(100svh-56px)] gap-0 xl:grid-cols-[190px_1fr]">
-            <aside className="sticky top-[56px] self-start border-r border-[var(--glass-border)] bg-[var(--panel-bg)]" style={{ minHeight: "calc(100svh - 56px)", maxHeight: "calc(100svh - 56px)", overflowY: "auto" }}>
-              <div className="flex h-full flex-col p-2">
-                <p className="mb-2 px-2 text-[16px] font-medium" style={{ color: "var(--text-main)" }}>Rooms</p>
+          {/* The Rooms column (190px) beside the cutlist — or, put away, none: gliding open at once, and closed once its
+              bubbles have slid out. */}
+          <div
+            className="grid min-h-[calc(100svh-56px)] gap-0"
+            style={{
+              gridTemplateColumns: `${isCutlistRoomsPanelShown ? 190 : 0}px 1fr`,
+              transition: isCutlistRoomsPanelShown ? "grid-template-columns 180ms ease" : "grid-template-columns 200ms ease 280ms",
+            }}
+          >
+            {isCutlistRoomsPanelOpen && (
+            // Floating bubbles over the page (no box round them), as Nesting's Visibility — its title is the toggle above.
+            <aside
+              className="sticky top-[56px] col-start-1 row-start-1 self-start"
+              style={{ minHeight: "calc(100svh - 56px)", maxHeight: "calc(100svh - 56px)", overflowY: "auto" }}
+            >
+              <div className="flex h-full flex-col p-2 pt-0">
                 <div className="flex flex-1 flex-col">
                 <div ref={cutlistRoomListRef} className="relative space-y-1">
                   {cutlistRoomHighlightRect && (
@@ -44296,6 +45278,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         backgroundColor: "var(--brand-soft)",
                         transition: "top 260ms cubic-bezier(0.22, 1, 0.36, 1), height 260ms cubic-bezier(0.22, 1, 0.36, 1)",
                         zIndex: 0,
+                        // (With the room it's behind, sliding in and out.)
+                        ...cutlistRoomsBubbleAnimation(`room:${cutlistRoomFilter}`),
                       }}
                     />
                   )}
@@ -44310,12 +45294,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         className={`relative z-[1] w-full rounded-[9px] px-2 py-2 text-left text-[12px] font-semibold ${
                           active ? "text-[var(--brand-strong)]" : "text-[var(--text-main)] hover:bg-[var(--panel-muted)]"
                         }`}
+                        style={cutlistRoomsBubbleAnimation(`room:${roomTab.filter}`)}
                       >
                         {roomTab.label}
                       </button>
                     );
                   })}
-                  <div className="my-2 h-px bg-[var(--glass-border)]" />
+                  <div className="my-2 h-px bg-[var(--glass-border)]" style={cutlistRoomsBubbleAnimation("rooms-divider")} />
                   {cutlistRoomTabs
                     .filter((tab) => tab.filter === "Project Cutlist")
                     .map((roomTab) => {
@@ -44329,6 +45314,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           className={`relative z-[1] w-full rounded-[9px] px-2 py-2 text-left text-[12px] font-semibold ${
                             active ? "text-[var(--brand-strong)]" : "text-[var(--text-main)] hover:bg-[var(--panel-muted)]"
                           }`}
+                          style={cutlistRoomsBubbleAnimation(`room:${roomTab.filter}`)}
                         >
                           {roomTab.label}
                         </button>
@@ -44338,58 +45324,20 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     type="button"
                     disabled={!salesAccess.edit || isSavingSalesRooms}
                     onClick={(e) => { addRoomPilotOriginElRef.current = e.currentTarget; addRoomFullscreenOriginElRef.current = e.currentTarget; setRoomModalOrigin(captureGlassModalOrigin(e)); void onAddCutlistRoom(); }}
-                    className={`relative z-[1] mt-2 ${CUTLIST_SIDEBAR_BUTTON_CLASS}`}
-                    style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                    className={`glass-shine relative z-[1] mt-2 ${CUTLIST_SIDEBAR_BUTTON_CLASS}`}
+                    style={glassShineStyle("var(--brand)", cutlistRoomsBubbleAnimation("add-room"))}
                   >
                     <Plus size={16} strokeWidth={2.6} className="shrink-0" />
                     Add Room
                   </button>
                 </div>
-                  {/* Notes / Contractors: drawers down the right (one at a time); pressed again, closed. */}
-                  <button
-                    type="button"
-                    aria-pressed={isProductionNotesPanelOpen}
-                    onClick={() => {
-                      if (isProductionNotesPanelOpen) {
-                        void closeProductionNotesPanel();
-                        return;
-                      }
-                      if (isContractorsPanelOpen) void closeContractorsPanel();
-                      openProductionNotesPanel();
-                    }}
-                    className={`mt-2 ${CUTLIST_SIDEBAR_BUTTON_CLASS}`}
-                    style={{
-                      backgroundImage: "var(--brand-gradient)",
-                      borderColor: "var(--brand-strong)",
-                      boxShadow: isProductionNotesPanelOpen ? "inset 0 0 0 2px rgba(255,255,255,0.6)" : undefined,
-                    }}
-                  >
-                    <NotebookPen size={16} className="shrink-0" />
-                    Notes
-                  </button>
-                  {/* Contractors: a menu of the company's contractors — the one picked, its notes in the drawer. */}
-                  <button
-                    ref={contractorsMenuButtonRef}
-                    type="button"
-                    aria-haspopup="menu"
-                    aria-expanded={Boolean(contractorsMenuRect)}
-                    onClick={toggleContractorsMenu}
-                    className={`mt-2 ${CUTLIST_SIDEBAR_BUTTON_CLASS}`}
-                    style={{
-                      backgroundImage: "var(--brand-gradient)",
-                      borderColor: "var(--brand-strong)",
-                      boxShadow: isContractorsPanelOpen || contractorsMenuRect ? "inset 0 0 0 2px rgba(255,255,255,0.6)" : undefined,
-                    }}
-                  >
-                    <HardHat size={16} className="shrink-0" />
-                    Contractors
-                    <ChevronDown size={14} className={`shrink-0 transition-transform ${contractorsMenuRect ? "rotate-180" : ""}`} />
-                  </button>
+                  {/* Notes and Contractors: in the floating bar at the bottom of the screen (below). */}
                 </div>
               </div>
             </aside>
+            )}
 
-            <div className="flex flex-col gap-4 p-4">
+            <div ref={productionCutlistContentRef} className="col-start-2 row-start-1 flex flex-col gap-4 p-4">
               {cutlistRoomFilter !== "Project Cutlist" && (
               <section className="relative z-10 -mt-4 -mx-4 w-[calc(100%+2rem)] overflow-visible">
                 <div className="flex min-h-[50px] flex-wrap items-center gap-3 px-1">
@@ -45382,8 +46330,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   <button
                     disabled={productionReadOnly}
                     onClick={() => void addDraftRowsToCutlist()}
-                    className="inline-flex h-[50px] w-full items-center justify-center border-y text-[24px] font-normal text-white hover:brightness-95 disabled:opacity-55"
-                    style={{ borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)" }}
+                    className="glass-shine inline-flex h-[50px] w-full items-center justify-center border-y text-[24px] font-normal text-white hover:brightness-95 disabled:opacity-55"
+                    style={glassShineStyle("var(--brand)")}
                   >
                     Add to Cutlist
                   </button>
@@ -46493,74 +47441,93 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           {cutlistFieldWarningBubblesPortal}
           {addRoomModalPortal}
           {unlockEditModalPortal}
-          {/* Notes and Contractors: drawers down the right, over the cutlist (CutlistSideDrawer). */}
-          <CutlistSideDrawer open={isProductionNotesPanelOpen} label="Notes" isDarkMode={isDarkMode}>
+          {/* The floating bar: Notes and Contractors, at the bottom of the screen over the cutlist — the Quote window's
+              pill (its look, and popping in and out). Pops away once the screen's scrolled right down (and back up as
+              it's scrolled up again); stays when there's nothing to scroll. Centred on the cutlist (the rooms column's
+              190px off its left on a wide screen). */}
+          {productionCutlistBarShown ? (
+            <div
+              className="cutlist-floating-bar pointer-events-none fixed bottom-6 right-0 z-[96] flex justify-center px-4"
+              style={{ left: isCutlistRoomsPanelShown ? 190 : 0, transition: "left 200ms ease" }}
+            >
+              <div
+                className={`pointer-events-auto flex items-center gap-1.5 rounded-full border p-1.5 ${
+                  productionCutlistBarLeaving ? "floating-bar-slot-pop" : "glass-bubble-pop"
+                }`}
+                style={{
+                  borderColor: "var(--glass-border)",
+                  backgroundColor: "var(--glass-modal-bg)",
+                  backdropFilter: "blur(16px) saturate(200%)",
+                  WebkitBackdropFilter: "blur(16px) saturate(200%)",
+                  boxShadow: "inset 0 1px 0 var(--glass-highlight), var(--shadow-glass), 0 16px 40px rgba(15,23,42,0.25)",
+                }}
+                role="toolbar"
+                aria-label="Cutlist"
+              >
+                {/* Each one's drawer opened by its button; open, brought to the front — or, in front already, closed.
+                    The contractors a button each when there are few enough and room for them, else one menu. */}
+                {renderCutlistBarButtons(
+                  contractorOptions.length <= CUTLIST_BAR_MAX_CONTRACTOR_BUTTONS && cutlistBarFitsContractors,
+                )}
+              </div>
+            </div>
+          ) : null}
+          {/* The bar laid out with a button for each contractor, out of sight in the same place: whether it fits. */}
+          {contractorOptions.length <= CUTLIST_BAR_MAX_CONTRACTOR_BUTTONS ? (
+            <div
+              ref={setCutlistBarMeasureEl}
+              aria-hidden
+              inert
+              className="pointer-events-none invisible fixed bottom-6 right-0 flex justify-center px-4"
+              style={{ left: isCutlistRoomsPanelShown ? 190 : 0 }}
+            >
+              <div className="flex w-max shrink-0 items-center gap-1.5 rounded-full border p-1.5">{renderCutlistBarButtons(true, true)}</div>
+            </div>
+          ) : null}
+          {/* Notes, and a drawer for each contractor opened: down the right over the cutlist, or popped out anywhere
+              (CutlistSideDrawer) — any number at once, the one touched last in front. */}
+          <CutlistSideDrawer
+            open={isProductionNotesPanelOpen}
+            label="Notes"
+            storageKey={`${String(user?.uid || "").trim()}:notes`}
+            isDarkMode={isDarkMode}
+            icon={<NotebookPen size={14} />}
+            onClose={() => void closeProductionNotesPanel()}
+            onDock={() => closeOtherCutlistDrawersInTheSide("notes")}
+            barButtonIds={["notes"]}
+            zIndex={cutlistDrawerZ("notes")}
+            onActivate={() => bringCutlistDrawerToFront("notes")}
+            drawerId="notes"
+          >
             {renderProductionNotesCard("sidebar")}
           </CutlistSideDrawer>
-          <CutlistSideDrawer open={isContractorsPanelOpen} label="Contractors" isDarkMode={isDarkMode} panelRef={contractorsDrawerRef}>
-                    <div
-                      className="glass-modal-header relative z-[2] shrink-0 px-5 py-4"
-                      style={{
-                        backgroundColor: "color-mix(in srgb, var(--panel-muted) 35%, transparent)",
-                        backdropFilter: "blur(6px)",
-                        WebkitBackdropFilter: "blur(6px)",
-                        borderBottomColor: "var(--panel-border)",
-                      }}
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                          <HardHat size={15} className="shrink-0" style={{ color: "var(--text-muted)" }} />
-                          <span className="min-w-0 truncate">{activeContractorTab}</span>
-                        </p>
-                        <button
-                          type="button"
-                          onClick={() => void closeContractorsPanel()}
-                          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95"
-                          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                          title="Close"
-                        >
-                          <ChevronRight size={18} strokeWidth={1.75} />
-                        </button>
-                      </div>
-                      {!productionReadOnly ? <div ref={setContractorsToolbarHost} className="mt-2 min-w-0" /> : null}
-                    </div>
-                    <div className="glass-scroll flex min-h-0 flex-1 flex-col overflow-auto px-5 py-4">
-                      {!productionReadOnly ? (
-                        <QuoteDocumentEditor
-                          key={`contractor-notes-${activeContractorTab}`}
-                          mode="embedded"
-                          toolbarPlacement="inline"
-                          toolbarHost={contractorsToolbarHost}
-                          toolbarDensity="compact"
-                          embeddedChrome="card"
-                          embeddedMinHeight={180}
-                          embeddedEditableMinHeight={120}
-                          value={contractorNotesEditorInitialValue}
-                          readOnly={isSavingGeneralDetails || productionReadOnly}
-                          autoFocus
-                          fillHeight
-                          toolbarGlassStyle
-                          shellClassName="flex flex-col rounded-[10px] border"
-                          shellStyle={{
-                            borderColor: "var(--panel-border)",
-                            backgroundColor: "color-mix(in srgb, var(--panel-muted) 35%, transparent)",
-                            backdropFilter: "blur(6px)",
-                            WebkitBackdropFilter: "blur(6px)",
-                          }}
-                          onChange={(nextValue) => {
-                            contractorNotesEditorDraftRef.current = nextValue;
-                          }}
-                        />
-                      ) : (
-                        <div
-                          className="min-h-[180px] notes-rich leading-[20px]"
-                          dangerouslySetInnerHTML={{
-                            __html: notesToDisplayHtml(project?.contractorNotes?.[activeContractorTab] || ""),
-                          }}
-                        />
-                      )}
-                    </div>
-          </CutlistSideDrawer>
+          {contractorDrawers.map((drawer) => (
+            <CutlistSideDrawer
+              key={drawer.name}
+              open={drawer.open}
+              label={drawer.name}
+              storageKey={`${String(user?.uid || "").trim()}:contractor:${drawer.name}`}
+              isDarkMode={isDarkMode}
+              icon={<HardHat size={14} />}
+              onClose={() => closeContractorNotes(drawer.name)}
+              onDock={() => closeOtherCutlistDrawersInTheSide(`contractor:${drawer.name}`)}
+              barButtonIds={[`contractor:${drawer.name}`, "contractors"]}
+              zIndex={cutlistDrawerZ(`contractor:${drawer.name}`)}
+              onActivate={() => bringCutlistDrawerToFront(`contractor:${drawer.name}`)}
+              drawerId={`contractor:${drawer.name}`}
+            >
+              <ContractorNotesDrawerBody
+                name={drawer.name}
+                initialValue={contractorNotesInitialByName[drawer.name] ?? ""}
+                savedHtml={notesToDisplayHtml(project?.contractorNotes?.[drawer.name] || "")}
+                readOnly={productionReadOnly}
+                onDraft={(value) => {
+                  contractorNotesDraftsRef.current[drawer.name] = value;
+                }}
+                onClose={() => closeContractorNotes(drawer.name)}
+              />
+            </CutlistSideDrawer>
+          ))}
           {contractorsMenuRect && typeof document !== "undefined"
             ? createPortal(
                 <div
@@ -46572,19 +47539,23 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 >
                   {contractorTabOptions.length ? (
                     contractorTabOptions.map((name) => {
-                      const open = isContractorsPanelOpen && name === activeContractorTab;
-                      const hasNotes = Boolean(
-                        String(project?.contractorNotes?.[name] ?? "")
-                          .replace(/<[^>]*>/g, "")
-                          .replace(/&nbsp;/g, " ")
-                          .trim(),
-                      );
+                      // Picked: its drawer opened — open, brought to the front, or (in front already) closed.
+                      const open = openContractorNames.includes(name);
+                      const hasNotes = contractorHasNotes(name);
                       return (
                         <button
                           key={name}
                           type="button"
                           role="menuitem"
-                          onClick={() => void openContractorNotes(name)}
+                          onClick={() => {
+                            setContractorsMenuRect(null);
+                            pressCutlistDrawerButton(
+                              `contractor:${name}`,
+                              open,
+                              () => openContractorNotes(name),
+                              () => closeContractorNotes(name),
+                            );
+                          }}
                           className="flex w-full min-w-0 items-center gap-2 rounded-[8px] px-2.5 py-2 text-left text-[13px] font-medium transition hover:bg-[color-mix(in_srgb,var(--brand)_12%,transparent)]"
                           style={{ color: "var(--text-main)", ...(open ? { backgroundColor: "color-mix(in srgb, var(--brand) 10%, transparent)" } : {}) }}
                         >
@@ -54206,11 +55177,20 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               // (The editor only reports changes from here on, so this one's passed on by hand.)
               opts.onDraftChange(editor.getData());
             }
-            // Into the editor before the stand-in text box goes, so a phone's keyboard stays up.
+            // Into the editor before the stand-in text box goes, so a phone's keyboard stays up — straight into its typing
+            // area too if the editor's own focus didn't land there.
+            const editable = editor.ui.getEditableElement();
             try {
               editor.editing.view.focus();
             } catch {
               // focused again by autoFocus
+            }
+            if (editable && !editable.contains(document.activeElement)) {
+              try {
+                editable.focus({ preventScroll: true });
+              } catch {
+                // focused again by autoFocus
+              }
             }
             typeAhead?.stop();
           }}
@@ -54300,37 +55280,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               wrapper already uses the theme's var(--glass-border)/var(--glass-bg-strong), but this
               header bar was hardcoded to fixed light-mode hex values, so it never matched in dark
               mode (or the rest of Production's containers, which are all theme-var-driven). */}
-          <div
-            className="glass-modal-header relative z-[2] shrink-0 px-4 py-2"
-            style={{
-              backdropFilter: "blur(6px)",
-              WebkitBackdropFilter: "blur(6px)",
-            }}
-          >
-            <div className="flex items-center justify-between gap-2">
-              <p
-                className="text-[14px] font-medium uppercase tracking-[1px]"
-                style={{ color: "var(--text-main)" }}
-              >
-                Notes
-              </p>
-              <button
-                type="button"
-                disabled={isSavingGeneralDetails}
-                onClick={() => void closeProductionNotesPanel()}
-                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95 disabled:opacity-60"
-                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                title="Save and close notes"
-              >
-                <ChevronRight size={18} strokeWidth={1.75} />
-              </button>
-            </div>
-            <div
-              ref={setProductionNotesToolbarHost}
-              className={`${!productionReadOnly ? "mt-2 min-w-0" : "hidden"}`}
-            />
-          </div>
-          <div className="glass-scroll flex min-h-0 flex-1 flex-col overflow-auto px-4 pb-4 pt-3" style={{ color: "var(--text-main)" }}>
+          <CutlistDrawerHeader
+            title="Notes"
+            onClose={() => void closeProductionNotesPanel()}
+            closeDisabled={isSavingGeneralDetails}
+            closeTitle="Save and close notes"
+            toolbarHostRef={productionReadOnly ? undefined : setProductionNotesToolbarHost}
+            style={{ backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)" }}
+          />
+          {/* No box round the notes: the drawer's whole body is where they're typed (drawer-notes-editor — globals.css). */}
+          <div className="drawer-notes-editor flex min-h-0 flex-1 flex-col" style={{ color: "var(--text-main)" }}>
             {!productionReadOnly ? (
               <QuoteDocumentEditor
                 key="production-notes-sidebar"
@@ -54338,32 +55297,25 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 toolbarPlacement="inline"
                 toolbarHost={productionNotesToolbarHost}
                 toolbarDensity="compact"
-                embeddedChrome="card"
+                embeddedChrome="flat"
                 embeddedMinHeight={180}
                 embeddedEditableMinHeight={120}
                 value={productionNotesEditorInitialValue}
-                readOnly={isSavingGeneralDetails || productionReadOnly}
+                // Not read-only while saving: with a contractor's drawer open beside it, a click from one into the
+                // other saves the one left — which mustn't lock the one clicked into. (What's typed meanwhile is
+                // saved next time.)
+                readOnly={productionReadOnly}
                 autoFocus
                 fillHeight
                 toolbarGlassStyle
-                shellClassName="flex flex-col rounded-[10px] border"
-                shellStyle={{
-                  // glass-bg-strong (translucent), not panel-bg — panel-bg is a fully opaque solid
-                  // fill (#ffffff / #212121), which is exactly why this sat as an opaque box inside
-                  // an otherwise see-through glass panel while every other Production container
-                  // (e.g. the CNC board sections) uses this same translucent-plus-blur recipe.
-                  borderColor: "var(--glass-border)",
-                  backgroundColor: "var(--glass-bg-strong)",
-                  backdropFilter: "blur(20px) saturate(180%)",
-                  WebkitBackdropFilter: "blur(20px) saturate(180%)",
-                }}
+                shellClassName="flex flex-col"
                 onChange={(nextValue) => {
                   productionNotesEditorDraftRef.current = nextValue;
                 }}
               />
             ) : (
               <div
-                className="min-h-[235px] notes-rich leading-[20px]"
+                className="glass-scroll min-h-0 flex-1 overflow-auto px-4 pb-4 pt-3 notes-rich leading-[20px]"
                 dangerouslySetInnerHTML={{ __html: notesToDisplayHtml(project?.productionNotes || "") }}
               />
             )}
@@ -54466,9 +55418,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               opacity: 0,
             }}
           />
+          {/* data-title-bar-stuck (with the tab bar below): the page scrollbar starts under these two as they are once
+              stuck — at the top of the page too, so it doesn't jump (components/glass-scrollbar-thumb.tsx). */}
           <div
             ref={projectHeaderRowRef}
             data-continues-top-bar="true"
+            data-title-bar-stuck="true"
             className="glass-page-header sticky top-0 z-[31] -mx-4 px-4 py-[10px] md:-mx-5 md:px-5 lg:top-12"
             style={{
               // The page's grey until the header's glass shows, so the dates bar scrolls out of sight
@@ -54812,7 +55767,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       }
                       const trigger = e.currentTarget as HTMLButtonElement;
                       const rect = trigger.getBoundingClientRect();
-                      const estimatedMenuHeight = Math.max(156, statusOptions.length * 34);
+                      const isPhoneMenu = window.matchMedia("(max-width: 767px)").matches;
+                      const estimatedMenuHeight = glassMenuHeight(statusOptions.length, isPhoneMenu);
                       const hasRoomBelow = rect.bottom + estimatedMenuHeight <= window.innerHeight - 8;
                       const hasRoomAbove = rect.top - estimatedMenuHeight >= 8;
                       const shouldOpenUp = !hasRoomBelow && hasRoomAbove;
@@ -54821,10 +55777,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         document.documentElement?.clientWidth || window.innerWidth,
                       );
                       const menuWidth = Math.min(
-                        Math.max(120, Math.round(rect.width)),
+                        Math.max(isPhoneMenu ? GLASS_MENU_MIN_WIDTH_PHONE_PX : GLASS_MENU_MIN_WIDTH_PX, Math.round(rect.width)),
                         Math.max(120, viewportWidth - 16),
                       );
-                      const clampedLeft = Math.min(Math.max(8, rect.left), viewportWidth - menuWidth - 8);
+                      // Its right edge under the pill's (it's at the right of the bar).
+                      const clampedLeft = Math.min(Math.max(8, rect.right - menuWidth), viewportWidth - menuWidth - 8);
                       setProjectStatusMenuPos({
                         left: clampedLeft,
                         top: shouldOpenUp ? Math.max(8, rect.top - estimatedMenuHeight - 4) : rect.bottom + 4,
@@ -54846,10 +55803,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
           {/* Notifications/delete/status stays non-sticky (only the name+tags bar above sticks),
               combined into the SAME wrapper as Row 2 below it — one shared background/shadow, no
-              gap or seam between them, only Row 2's own bottom border closes it off. data-title-bar:
-              part of the header stack, so the page scrollbar starts below it and the tab bar. */}
+              gap or seam between them, only Row 2's own bottom border closes it off. Not a title bar
+              for the page scrollbar: that starts under the name bar and tab bar as they are once stuck
+              (this row scrolled away under them) — the same at the top of the page as further down, so
+              it doesn't jump (components/glass-scrollbar-thumb.tsx). */}
           <div
-            data-title-bar="true"
             className="-mx-4 md:-mx-5"
             style={projectHeaderGlass}
           >
@@ -55007,6 +55965,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <main>-scrolls-on-mobile split as Row 1's. */}
           <div
             ref={projectStickyBarRef}
+            data-title-bar-stuck="true"
             className="glass-page-header sticky z-[30] -mx-4 md:-mx-5"
             style={{
               top: projectHeaderRowHeight + (isLgUpViewport ? 48 : 0),
@@ -55350,38 +56309,31 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           {project &&
             projectStatusMenuPos &&
             createPortal(
+              // The glass dropdown's look (components/glass-dropdown.tsx — as the lead pop-up's status): each status a
+              // colour dot and its name, the current one in the brand blue.
               <div
                 data-status-menu="true"
-                className="fixed overflow-hidden rounded-[10px] border p-1 shadow-[var(--shadow-md)]"
+                role="listbox"
+                aria-label="Project status"
+                className={GLASS_MENU_CLASS}
                 style={{
+                  ...GLASS_MENU_STYLE,
                   left: projectStatusMenuPos.left,
                   top: projectStatusMenuPos.top,
                   width: projectStatusMenuPos.width,
-                  zIndex: 2147483647,
-                  ...GLASS_DROPDOWN_MENU_STYLE,
                 }}
                 onClick={(e) => e.stopPropagation()}
               >
-                {statusOptions.map((option) => {
-                  const active = String(project.statusLabel || "").trim().toLowerCase() === option.toLowerCase();
-                  const rowColor = projectStatusColorByName.get(String(option || "").trim().toLowerCase()) || "#64748B";
-                  return (
-                    <button
-                      key={`${project.id}_${option}`}
-                      type="button"
-                      disabled={isSavingStatus}
-                      onClick={() => void onChangeStatus(option)}
-                      className="glass-shine mb-1 block w-full rounded-full px-3 py-2 text-center text-[12px] font-semibold last:mb-0 disabled:opacity-55"
-                      style={glassShineStyle({
-                        backgroundColor: rowColor,
-                        color: isLightHex(rowColor, 0.75) ? "#0F172A" : "#FFFFFF",
-                        filter: active ? "brightness(0.96)" : "brightness(1)",
-                      })}
-                    >
-                      {option}
-                    </button>
-                  );
-                })}
+                {statusOptions.map((option) => (
+                  <GlassMenuOption
+                    key={`${project.id}_${option}`}
+                    label={option}
+                    color={projectStatusColorByName.get(String(option || "").trim().toLowerCase()) || "#64748B"}
+                    selected={String(project.statusLabel || "").trim().toLowerCase() === option.toLowerCase()}
+                    disabled={isSavingStatus}
+                    onSelect={() => void onChangeStatus(option)}
+                  />
+                ))}
               </div>,
               document.body,
             )}
@@ -55427,7 +56379,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
           {resolvedTab === "general" && (
             <div ref={projectTabContentRef} key={resolvedTab} className="-mx-4 -mb-4 md:-mx-5" style={{ backgroundColor: projectTabAreaBg, animation: projectTabSlideAnimation }}>
-              <div className="space-y-4 px-[22px] pb-4 pt-[22px] md:px-[22px] xl:px-[22px] xl:pb-4" style={{ backgroundColor: projectTabAreaBg }}>
+              {/* Its sides as Design's and Production's content: 12px on a phone, 16px, then 20px. */}
+              <div className="space-y-4 px-3 pb-4 pt-[22px] sm:px-4 md:px-5 xl:pb-4" style={{ backgroundColor: projectTabAreaBg }}>
                 <div className="grid gap-4 xl:grid-cols-2">
                   <div className="space-y-4">
                     <div ref={clientDetailsContainerRef}>
@@ -59730,7 +60683,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
           {resolvedTab === "settings" && settingsAccess.view && (
             <div ref={projectTabContentRef} key={resolvedTab} className="-mx-4 -mb-4 md:-mx-5" style={{ backgroundColor: projectTabAreaBg, animation: projectTabSlideAnimation }}>
-              <div className="space-y-4 px-[22px] pb-4 pt-[22px] md:px-[22px] xl:px-[22px] xl:pb-4" style={{ backgroundColor: projectTabAreaBg }}>
+              {/* Its sides as Design's and Production's content: 12px on a phone, 16px, then 20px. */}
+              <div className="space-y-4 px-3 pb-4 pt-[22px] sm:px-4 md:px-5 xl:pb-4" style={{ backgroundColor: projectTabAreaBg }}>
                 {!isProjectArchived(project) ? (
                   <button
                     type="button"

@@ -30,7 +30,7 @@ import { createPortal } from "react-dom";
 // render) is currently scrolled below the viewport.
 // Bars that can sit over the top of a scroll area: the app's tab bar and the fullscreen views' fixed top
 // bars (data-app-top-bar / -content), sticky glass title bars (.glass-page-header), or anything marked
-// data-title-bar="true".
+// data-title-bar="true" (and data-title-bar-stuck="true" on a page's sticky header stack — see below).
 const TITLE_BAR_SELECTOR = '[data-app-top-bar="true"], [data-app-top-bar-content="true"], .glass-page-header, [data-title-bar="true"]';
 
 // How far down from `top` the stack of title bars over the column [left, right] reaches — where a
@@ -41,43 +41,94 @@ const TITLE_BAR_SELECTOR = '[data-app-top-bar="true"], [data-app-top-bar-content
 // header stack (e.g. project details' Created/Modified row between its sticky name bar and tab bar),
 // so the track stays below the whole stack rather than starting in the middle of it.
 //
+// A page's header stack — sticky bars marked data-title-bar-stuck="true" (project details' name bar and tab bar) —
+// counts where it sticks, not where it is: near the top of the page, before it has stuck (the tab bar still lower
+// down, under the Created/Modified row), the track would otherwise start lower — then jump up as the bars stick on
+// scrolling, and back down at the top. So the track always starts below the stack as it is once stuck. (Other sticky
+// bars — a section's header further down a page, say — count where they are.)
+//
 // Finding the bars (a whole-document search plus each one's computed style) is the expensive part, and it
 // used to run for every scrollbar on every scroll frame. The list is now shared by all scrollbars and
 // rebuilt at most every TITLE_BARS_TTL_MS (or straight away after a resize); each frame only re-reads the
 // listed bars' positions, which is cheap.
 const TITLE_BARS_TTL_MS = 500;
-let titleBarsCache: { at: number; bars: HTMLElement[] } | null = null;
+type TitleBar = {
+  el: HTMLElement;
+  // A sticky bar's `top` (px) and what it sticks against — the nearest scrolling ancestor (null: the screen) — plus that
+  // ancestor's top padding (a sticky bar sticks inside it: <main>, on a phone, reaches up under the top bar).
+  sticky: { topPx: number; scroller: HTMLElement | null; scrollerPadTopPx: number } | null;
+};
+let titleBarsCache: { at: number; bars: TitleBar[] } | null = null;
+
+// The nearest ancestor a sticky element sticks against (the first one that clips or scrolls); null for the page.
+function stickyScroller(el: HTMLElement): HTMLElement | null {
+  for (let node = el.parentElement; node && node !== document.body && node !== document.documentElement; node = node.parentElement) {
+    const { overflowY } = getComputedStyle(node);
+    if (overflowY !== "visible" && overflowY !== "clip") return node;
+  }
+  return null;
+}
 
 function invalidateTitleBars() {
   titleBarsCache = null;
 }
 
-function titleBarCandidates(): HTMLElement[] {
+function titleBarCandidates(): TitleBar[] {
   const now = performance.now();
   if (titleBarsCache && now - titleBarsCache.at < TITLE_BARS_TTL_MS) return titleBarsCache.bars;
-  const bars: HTMLElement[] = [];
+  const bars: TitleBar[] = [];
   document.querySelectorAll<HTMLElement>(TITLE_BAR_SELECTOR).forEach((bar) => {
     const style = getComputedStyle(bar);
     const pinned = style.position === "fixed" || style.position === "sticky";
     if ((!pinned && bar.dataset.titleBar !== "true") || style.visibility === "hidden" || style.display === "none") return;
-    bars.push(bar);
+    const topPx = parseFloat(style.top);
+    const scroller = bar.dataset.titleBarStuck === "true" && style.position === "sticky" && Number.isFinite(topPx) ? stickyScroller(bar) : undefined;
+    bars.push({
+      el: bar,
+      sticky:
+        scroller !== undefined
+          ? { topPx, scroller, scrollerPadTopPx: scroller ? parseFloat(getComputedStyle(scroller).paddingTop) || 0 : 0 }
+          : null,
+    });
   });
   titleBarsCache = { at: now, bars };
   return bars;
 }
 
-function titleBarsBottom(top: number, bottom: number, left: number, right: number): number {
-  const rects: DOMRect[] = [];
+// Whether a header stack's bar sticks against the area this scrollbar is for (the page itself, or <main> where that
+// scrolls) — a pop-up's or full-screen view's own scrollbar, over the page, ignores the page's header stack.
+function sticksTo(bar: TitleBar, scrollEl: HTMLElement): boolean {
+  return Boolean(bar.sticky) && (bar.sticky!.scroller ?? document.documentElement) === scrollEl;
+}
+
+// Where a bar sits over the screen — a header stack's bar that hasn't stuck yet, where it will stick (see the top).
+function titleBarRect(bar: TitleBar, scrollEl: HTMLElement): { top: number; bottom: number; left: number; right: number; width: number; height: number } {
+  const r = bar.el.getBoundingClientRect();
+  if (!bar.sticky || !sticksTo(bar, scrollEl)) return r;
+  const scroller = bar.sticky.scroller;
+  const stuckTop =
+    (scroller ? scroller.getBoundingClientRect().top + scroller.clientTop + bar.sticky.scrollerPadTopPx : 0) + bar.sticky.topPx;
+  if (r.top <= stuckTop + 0.5) return r;
+  return { top: stuckTop, bottom: stuckTop + r.height, left: r.left, right: r.right, width: r.width, height: r.height };
+}
+
+function titleBarsBottom(top: number, bottom: number, left: number, right: number, scrollEl: HTMLElement): number {
+  const rects: Array<{ top: number; bottom: number }> = [];
+  // A header stack's bars (data-title-bar-stuck) are all over the top, touching or not (a gap of a few px between
+  // them — one measured a moment out of date, say — mustn't let the track start in the middle of the stack, over
+  // the tab bar): the track starts below the lowest of them.
+  let stackBottom = top;
   for (const bar of titleBarCandidates()) {
-    if (!bar.isConnected) continue;
-    const r = bar.getBoundingClientRect();
+    if (!bar.el.isConnected) continue;
+    const r = titleBarRect(bar, scrollEl);
     if (r.width <= 0 || r.height <= 0 || r.right < left || r.left > right) continue;
     rects.push(r);
+    if (sticksTo(bar, scrollEl) && r.bottom > stackBottom) stackBottom = r.bottom;
   }
   rects.sort((a, b) => a.top - b.top);
   let edge = top;
   for (const r of rects) if (r.top <= edge + 1 && r.bottom > edge) edge = r.bottom;
-  return Math.min(edge, bottom);
+  return Math.min(Math.max(edge, stackBottom), bottom);
 }
 
 // The page's own scrollbar (the document — desktop pages, the client portal), as the same glass thumb,
@@ -225,7 +276,7 @@ export function GlassScrollbarThumb({
       }
       const trackLeft = side === "left" ? anchorBox.left + insetPx : anchorBox.right - insetPx - thumbWidthPx;
       // Starts below any title bars over the container's top edge.
-      const trackTop = titleBarsBottom(anchorBox.top, anchorBox.bottom, trackLeft, trackLeft + thumbWidthPx);
+      const trackTop = titleBarsBottom(anchorBox.top, anchorBox.bottom, trackLeft, trackLeft + thumbWidthPx, el);
       const trackHeight = Math.max(0, anchorBox.bottom - trackTop);
       setTrackIfChanged({
         left: trackLeft,

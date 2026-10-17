@@ -710,6 +710,43 @@ body:has(.glass-modal-backdrop, [data-full-screen-window="true"]) [data-sidebar-
   ) {
   overscroll-behavior: contain;
 }
+/* The Notes and contractor notes drawers (the project's cutlist): no box round the notes — the typing area fills the
+   drawer's whole body below its header, and scrolls itself. Its padding is inside it, so a click anywhere there is a
+   click in the notes. (The editor's own rule gives it no padding across, and its chrome="flat" no box.) */
+.drawer-notes-editor .cutsmart-quote-document-shell[data-mode="embedded"] .ck.ck-content.ck-editor__editable {
+  padding: 12px 16px 16px !important;
+}
+
+/* ...and its formatting bar (CutlistDrawerHeader's drawer-toolbar-slim — in the side or popped out) slim and flat: no
+   box of its own (the header's line under it is enough), smaller buttons. Just the bar itself, not the one inside its
+   dropdowns. */
+body .drawer-toolbar-slim .cutsmart-quote-document-toolbar > .ck.ck-toolbar {
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
+}
+body .drawer-toolbar-slim .cutsmart-quote-document-toolbar > .ck.ck-toolbar > .ck-toolbar__items > .ck.ck-button,
+body .drawer-toolbar-slim .cutsmart-quote-document-toolbar > .ck.ck-toolbar > .ck-toolbar__items > .ck-dropdown > .ck-dropdown__button {
+  min-width: 26px;
+  min-height: 26px;
+  height: 26px;
+  padding: 2px 4px;
+  border-radius: 8px;
+}
+
+/* A cutlist floating bar button its drawer's being sucked into (CutlistSideDrawer — dragged onto it): a little bigger. */
+[data-cutlist-bar-button][data-drop-target="true"] {
+  transform: scale(1.12);
+}
+/* ...and the bar above the drawers meanwhile (they're over it otherwise): the drawer goes in under the button. */
+.cutlist-floating-bar:has([data-drop-target="true"]) {
+  z-index: 1600;
+}
+
 /* Pop-up and drawer backdrops reach below the bottom of the layout viewport by the keyboard's height
    (the vars are from lib/use-keyboard-inset.ts, 0px while it's closed). While the keyboard is up, iOS
    can scroll what's on screen down past that bottom edge to reveal the tapped field, and a
@@ -774,6 +811,29 @@ body:has(.glass-modal-backdrop, [data-full-screen-window="true"]) [data-sidebar-
 
 .glass-bubble-pop {
   animation: glass-bubble-pop-in 380ms cubic-bezier(0.34, 1.56, 0.64, 1);
+  transform-origin: center;
+}
+
+/* glass-bubble-pop's softer version, for something panel-sized — a cutlist drawer popping off the side of the
+   screen (CutlistSideDrawer in the project page): starts bigger and only just overshoots, on an easing that doesn't
+   bounce, where the bubble's big swing would look like a wobble on something that size. */
+@keyframes glass-panel-pop-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.85);
+  }
+  65% {
+    opacity: 1;
+    transform: scale(1.015);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.glass-panel-pop {
+  animation: glass-panel-pop-in 300ms cubic-bezier(0.22, 1, 0.36, 1);
   transform-origin: center;
 }
 
@@ -1035,8 +1095,42 @@ html[data-keyboard-open="true"] .glass-modal-panel {
   transform: translateY(calc(var(--keyboard-offset-top-px, 0px) + env(safe-area-inset-top, 0px)));
 }
 
+/* A pop-up that's the whole screen on a phone (data-phone-fullscreen="true" — the Leads page's lead pop-up and Create
+   Lead) isn't shrunk above the keyboard as the rule above does — shrunk, the page's pale backdrop showed under it and
+   through the see-through keyboard. It stays the whole screen with the keyboard over its bottom, held where it was:
+   moved down by however far iOS scrolled the view up for the tapped field (--keyboard-offset-top-px), at once (no
+   transition, so lib/use-keyboard-inset.ts can measure where it is). Its scrolling body (data-keyboard-scroll-pad) gets
+   room at the bottom for what the keyboard covers, and that file scrolls the field being typed in up above it. */
+@media (max-width: 639.98px) {
+  html[data-keyboard-open="true"] .glass-modal-panel[data-phone-fullscreen="true"] {
+    max-height: none !important;
+    overflow-y: hidden;
+    margin-bottom: 0;
+    transform: translateY(var(--keyboard-offset-top-px, 0px));
+    transition: none;
+  }
+  html[data-keyboard-open="true"] .glass-modal-panel[data-phone-fullscreen="true"] [data-keyboard-scroll-pad="true"] {
+    padding-bottom: calc(var(--keyboard-inset-px, 0px) + var(--keyboard-offset-top-px, 0px) + 16px);
+  }
+}
+
 body[data-theme="dark"] .glass-modal-panel {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), var(--shadow-glass), 0 24px 60px rgba(0, 0, 0, 0.45);
+}
+
+/* Phones: every pop-up's close X bigger — a 40px button, a 22px X (modalCloseButtonClass, components/settings-ui.tsx,
+   has the same sizes; this also covers the ones styled their own way: any button in a pop-up labelled "Close…" with
+   just an icon in it). Outside a layer, so it outranks their own size classes. */
+@media (max-width: 767.98px) {
+  :is(.glass-modal-panel, [role="dialog"]) button:is([aria-label="Close" i], [aria-label^="Close " i]):has(> svg:only-child) {
+    width: 40px;
+    height: 40px;
+    min-width: 40px;
+  }
+  :is(.glass-modal-panel, [role="dialog"]) button:is([aria-label="Close" i], [aria-label^="Close " i]):has(> svg:only-child) > svg {
+    width: 22px;
+    height: 22px;
+  }
 }
 
 .glass-modal-header {

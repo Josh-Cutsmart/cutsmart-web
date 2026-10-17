@@ -1,4 +1,4 @@
-import { FieldPath } from "firebase-admin/firestore";
+import { FieldPath, Timestamp } from "firebase-admin/firestore";
 import { adminDb } from "@/lib/firebase-admin";
 import { calendarCategoryLevel, normalizeCalendarCategories, type CalendarCategory } from "@/lib/calendar-categories";
 import { hasPermissionKey, resolveMemberAccess } from "@/lib/company-access-server";
@@ -24,21 +24,36 @@ import { isCompanyMemberUid, pushStoredNotification } from "@/lib/push-server";
 // app/api/cron/calendar-reminders (a scheduled call every few minutes) and, as a fallback, whenever
 // someone in the company has the app open (app/api/push/reminders-tick).
 //
-// Reminders start from when someone last changed their reminder times (users/{uid}.calendarRemindersChangedAt):
-// one that would have gone before then — turning on "the day before at 8am" on the day of an event, say — is just
-// marked done, never sent.
+// A reminder only goes at its own time (give or take SEND_WITHIN_MS, for the scheduled run's own timing). One whose
+// time had already gone — an event made or moved at short notice ("a week before at 8am" for an event 5 days away),
+// someone added to it late, or reminder times changed after one was due — is just marked done, never sent late.
+// (Likewise one due before someone last changed their reminder times, users/{uid}.calendarRemindersChangedAt.)
+//
+// Each company is only looked through when there's reason to (it was every company's every upcoming event, every
+// minute): calendarReminderRuns/{companyId} remembers when it was last looked through (scannedAtMs) and when its next
+// reminder falls due (nextDueAtMs). Each run, a company is looked through again only when that time's come, an event's
+// been saved since (its updatedAt — lib/calendar-data.ts), someone's changed their reminder times since
+// (users/{uid}.calendarRemindersChangedAt), or SCAN_AT_LEAST_EVERY_MS has gone by (anything else that changes who's told
+// what, or when: a project's assignee, the company's time zone…). Otherwise it costs the stamp and a query or two.
 //
 // Each of a person's reminder times is sent once per event time: the event remembers it
 // (remindersSent.{uid}_m{minutes} / {uid}_d{days} / {uid}_mo{months} — with _HHMM when not at 8am — = the startMs it was sent for), so moving the event
-// to a new time sends fresh ones. If several fall due at once (an event made at short notice), only the
-// nearest is sent — the rest are just marked done. (remindersSent.{uid} alone is from before there could
-// be several: those count as already sent.)
+// to a new time sends fresh ones. If several fall due at once, only the nearest is sent — the rest are just marked
+// done. (remindersSent.{uid} alone is from before there could be several: those count as already sent.)
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
 // The furthest ahead anyone can ask to be told (1 month — CALENDAR_REMINDER_UNITS' most), plus a couple of days.
 const LOOKAHEAD_MS = 33 * DAY_MS;
+// How late a reminder may still go after its own time — the scheduled run (every few minutes) and the open app's
+// fallback (every 5) both land well inside this. Any later and it's marked done instead (see the top).
+const SEND_WITHIN_MS = 30 * MINUTE_MS;
+// A company is looked through at least this often whatever else (see the top) — no more than SEND_WITHIN_MS, so
+// even a reminder only found then still goes.
+const SCAN_AT_LEAST_EVERY_MS = 30 * MINUTE_MS;
+// Saved "since it was last looked through" allows for this much difference between clocks.
+const CHANGE_MARGIN_MS = MINUTE_MS;
 // The company's time zone when it hasn't set one (Company Settings' own default).
 const DEFAULT_TIME_ZONE = "Pacific/Auckland";
 
@@ -123,11 +138,11 @@ export function timeUntilPhrase(msUntil: number, allDay: boolean): string {
 
 type ProjectInfo = { assigneeUid: string; creatorUid: string; name: string; closed: boolean } | null;
 
-export type CalendarReminderRunResult = { companies: number; events: number; sent: number };
+export type CalendarReminderRunResult = { companies: number; events: number; sent: number; skipped: number };
 
 // Checks the given companies (or every company) and sends whatever reminders are due.
 export async function runCalendarReminders(options: { siteOrigin: string; companyIds?: string[]; now?: number }): Promise<CalendarReminderRunResult> {
-  const result: CalendarReminderRunResult = { companies: 0, events: 0, sent: 0 };
+  const result: CalendarReminderRunResult = { companies: 0, events: 0, sent: 0, skipped: 0 };
   if (!adminDb) return result;
   const db = adminDb;
   const now = options.now ?? Date.now();
@@ -158,6 +173,32 @@ export async function runCalendarReminders(options: { siteOrigin: string; compan
   for (const companyId of companyIds) {
     result.companies += 1;
     const companyRef = db.collection("companies").doc(companyId);
+    // Whether it needs looking through now (see the top): its stamp first, and only if that doesn't already say so,
+    // whether an event's been saved — or anyone's reminder times changed — since.
+    const stampRef = db.collection("calendarReminderRuns").doc(companyId);
+    const stamp = (await stampRef.get().catch(() => null))?.data();
+    const scannedAtMs = Number(stamp?.scannedAtMs) || 0;
+    const nextDueAtMs = stamp?.nextDueAtMs == null ? Infinity : Number(stamp.nextDueAtMs);
+    let needsLook = !scannedAtMs || now - scannedAtMs >= SCAN_AT_LEAST_EVERY_MS || !(now < nextDueAtMs);
+    if (!needsLook) {
+      const sinceMs = Math.max(0, scannedAtMs - CHANGE_MARGIN_MS);
+      try {
+        const savedSince = await companyRef.collection("calendarEvents").where("updatedAt", ">", Timestamp.fromMillis(sinceMs)).limit(1).get();
+        needsLook = !savedSince.empty;
+        if (!needsLook) {
+          const prefsChangedSince = await db.collection("users").where("calendarRemindersChangedAt", ">", sinceMs).limit(1).get();
+          needsLook = !prefsChangedSince.empty;
+        }
+      } catch {
+        needsLook = true;
+      }
+    }
+    if (!needsLook) {
+      result.skipped += 1;
+      continue;
+    }
+    // The soonest reminder still to go, of everything looked through — the next time this company needs looking at.
+    let nextDueAt = Infinity;
     let eventsSnap;
     try {
       eventsSnap = await companyRef
@@ -258,6 +299,9 @@ export async function runCalendarReminders(options: { siteOrigin: string; compan
         const times = reminderTimes(uid, startMs, allDay, lead.reminders, timeZone).filter(
           (time) => !(allDay && now >= startMs && time.remindAt < startMs),
         );
+        for (const time of times) {
+          if (time.remindAt > now && time.remindAt < nextDueAt && sentMap[time.key] !== startMs && sentMap[uid] !== startMs) nextDueAt = time.remindAt;
+        }
         const due = times.filter((time) => now >= time.remindAt && sentMap[time.key] !== startMs);
         if (!due.length) continue;
         if (!counted) {
@@ -269,8 +313,9 @@ export async function runCalendarReminders(options: { siteOrigin: string; compan
         if (!(await canSeeCategory(uid, categoryId))) continue;
         const legacySent = sentMap[uid] === startMs;
 
-        // Claim them first (so two runs at once can't both send), then send the nearest one — unless they were all due
-        // before they last changed their reminder times (those are only marked done).
+        // Claim them first (so two runs at once can't both send), then send the nearest one — unless none of them is
+        // at its own time now (overdue — see the top) or they were all due before they last changed their reminder
+        // times: those are only marked done.
         const claimed = await db.runTransaction(async (tx) => {
           const fresh = await tx.get(eventSnap.ref);
           if (!fresh.exists) return false;
@@ -284,7 +329,7 @@ export async function runCalendarReminders(options: { siteOrigin: string; compan
             startMs,
             ...rest.flatMap((time) => [new FieldPath("remindersSent", time.key), startMs]),
           );
-          return stillDue.some((time) => time.remindAt >= prefs.changedAt);
+          return stillDue.some((time) => time.remindAt >= prefs.changedAt && now - time.remindAt <= SEND_WITHIN_MS);
         });
         if (!claimed || legacySent) continue;
 
@@ -307,6 +352,14 @@ export async function runCalendarReminders(options: { siteOrigin: string; compan
         result.sent += 1;
       }
     }
+    // When it was looked through (from when this run began — anything saved during it is caught next time) and its next
+    // reminder. (merge: the open app's fallback keeps its own lastRunMs here too — app/api/push/reminders-tick.)
+    await stampRef
+      .set(
+        { scannedAtMs: now, scannedAtIso: new Date(now).toISOString(), nextDueAtMs: Number.isFinite(nextDueAt) ? nextDueAt : null },
+        { merge: true },
+      )
+      .catch(() => undefined);
   }
   return result;
 }

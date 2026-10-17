@@ -8,7 +8,7 @@ import { createPortal } from "react-dom";
 import { Activity, Archive, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, FolderKanban, Kanban, ListFilter, RefreshCw, Rows3, Search, Users2, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
-import { GlassDropdown } from "@/components/glass-dropdown";
+import { GlassDropdown, GLASS_MENU_CLASS, GLASS_MENU_MIN_WIDTH_PHONE_PX, GLASS_MENU_MIN_WIDTH_PX, GLASS_MENU_STYLE, GlassMenuOption, glassMenuHeight } from "@/components/glass-dropdown";
 import { attachBoardArrowKeyScroll } from "@/lib/board-arrow-key-scroll";
 import { attachBoardDragScroll } from "@/lib/board-drag-scroll";
 import { useBoardStickyRef } from "@/lib/board-sticky-scroll";
@@ -3486,11 +3486,11 @@ export default function DashboardPage() {
                               const rect = trigger.getBoundingClientRect();
                               // Phones: its bigger rows (max-md: sizes below).
                               const isPhoneMenu = window.matchMedia("(max-width: 767px)").matches;
-                              const estimatedMenuHeight = isPhoneMenu ? 212 : 156;
+                              const estimatedMenuHeight = glassMenuHeight(statusOptions.length, isPhoneMenu);
                               const hasRoomBelow = rect.bottom + estimatedMenuHeight <= window.innerHeight - 8;
                               const hasRoomAbove = rect.top - estimatedMenuHeight >= 8;
                               const shouldOpenUp = !hasRoomBelow && hasRoomAbove;
-                              const menuWidth = Math.max(isPhoneMenu ? 170 : 120, Math.round(rect.width));
+                              const menuWidth = Math.max(isPhoneMenu ? GLASS_MENU_MIN_WIDTH_PHONE_PX : GLASS_MENU_MIN_WIDTH_PX, Math.round(rect.width));
                               const clampedLeft = Math.min(
                                 Math.max(8, rect.left),
                                 window.innerWidth - menuWidth - 8,
@@ -3889,11 +3889,11 @@ export default function DashboardPage() {
                               const rect = trigger.getBoundingClientRect();
                               // Phones: its bigger rows (max-md: sizes below).
                               const isPhoneMenu = window.matchMedia("(max-width: 767px)").matches;
-                              const estimatedMenuHeight = isPhoneMenu ? 212 : 156;
+                              const estimatedMenuHeight = glassMenuHeight(statusOptions.length, isPhoneMenu);
                               const hasRoomBelow = rect.bottom + estimatedMenuHeight <= window.innerHeight - 8;
                               const hasRoomAbove = rect.top - estimatedMenuHeight >= 8;
                               const shouldOpenUp = !hasRoomBelow && hasRoomAbove;
-                              const menuWidth = Math.max(isPhoneMenu ? 170 : 120, Math.round(rect.width));
+                              const menuWidth = Math.max(isPhoneMenu ? GLASS_MENU_MIN_WIDTH_PHONE_PX : GLASS_MENU_MIN_WIDTH_PX, Math.round(rect.width));
                               const clampedLeft = Math.min(
                                 Math.max(8, rect.left),
                                 window.innerWidth - menuWidth - 8,
@@ -3939,45 +3939,29 @@ export default function DashboardPage() {
           )}
           </div>
 
+              {/* A row's status menu: the glass dropdown's look (components/glass-dropdown.tsx — as the lead pop-up's
+                  status) — each status a colour dot and its name, the current one in the brand blue. */}
               {statusMenuProject &&
                 statusMenuPos &&
                 createPortal(
                   <div
                     data-status-menu="true"
-                    className="fixed overflow-hidden rounded-[10px] border p-1 shadow-[var(--shadow-md)]"
-                    style={{
-                      left: statusMenuPos.left,
-                      top: statusMenuPos.top,
-                      width: statusMenuPos.width,
-                      zIndex: 2147483647,
-                      borderColor: "var(--glass-border)",
-                      backgroundColor: "var(--glass-modal-bg)",
-                      backdropFilter: "blur(12px) saturate(220%)",
-                      WebkitBackdropFilter: "blur(12px) saturate(220%)",
-                    }}
+                    role="listbox"
+                    aria-label="Project status"
+                    className={GLASS_MENU_CLASS}
+                    style={{ ...GLASS_MENU_STYLE, left: statusMenuPos.left, top: statusMenuPos.top, width: statusMenuPos.width }}
                     onClick={(e) => e.stopPropagation()}
                   >
-                    {statusOptions.map((option) => {
-                      const active =
-                        String(statusMenuProject.statusLabel || "").trim().toLowerCase() === option.toLowerCase();
-                      const rowColor = statusColorByName.get(String(option || "").trim().toLowerCase()) || "#64748B";
-                      return (
-                        <button
-                          key={`${statusMenuProject.id}_${option}`}
-                          type="button"
-                          disabled={statusUpdatingProjectId === statusMenuProject.id}
-                          onClick={() => void onSelectProjectStatus(statusMenuProject, option)}
-                          className="glass-shine mb-1 block w-full rounded-full px-3 py-2 text-center text-[12px] font-semibold last:mb-0 disabled:opacity-55 max-md:py-3 max-md:text-[15px]"
-                          style={glassShineStyle({
-                            backgroundColor: rowColor,
-                            color: rowTextColorForFill(rowColor),
-                            filter: active ? "brightness(0.96)" : "brightness(1)",
-                          })}
-                        >
-                          {option}
-                        </button>
-                      );
-                    })}
+                    {statusOptions.map((option) => (
+                      <GlassMenuOption
+                        key={`${statusMenuProject.id}_${option}`}
+                        label={option}
+                        color={statusColorByName.get(String(option || "").trim().toLowerCase()) || "#64748B"}
+                        selected={String(statusMenuProject.statusLabel || "").trim().toLowerCase() === option.toLowerCase()}
+                        disabled={statusUpdatingProjectId === statusMenuProject.id}
+                        onSelect={() => void onSelectProjectStatus(statusMenuProject, option)}
+                      />
+                    ))}
                   </div>,
                   document.body,
                 )}

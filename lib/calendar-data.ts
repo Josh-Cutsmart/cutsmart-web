@@ -6,7 +6,7 @@
 // to local midnight of the day after its last day (end is exclusive), so a one-day all-day event is
 // exactly 24h long and multi-day spans are easy to lay out.
 
-import { collection, deleteDoc, deleteField, doc, getDoc, getDocs, onSnapshot, query, setDoc, where, writeBatch } from "@/lib/firestore-client";
+import { collection, deleteDoc, deleteField, doc, getDoc, getDocs, onSnapshot, query, serverTimestamp, setDoc, where, writeBatch } from "@/lib/firestore-client";
 import { db } from "@/lib/firebase";
 import { invalidateUserCache, readUserDocCached } from "@/lib/firestore-cache";
 
@@ -255,9 +255,11 @@ export async function saveCalendarEvent(companyId: string, event: CalendarEvent)
   // An event from before staff (staffUids null) keeps none saved — its project's people still count (see staffUids).
   const { staffUids, ...fields } = event;
   try {
+    // updatedAt (the server's time, not this device's): how the calendar reminders job notices an event's been saved
+    // since it last looked (lib/calendar-reminders-server.ts).
     await setDoc(
       doc(db, "companies", cid, "calendarEvents", event.id),
-      { ...fields, ...(staffUids ? { staffUids } : {}), companyId: cid, updatedAtIso: new Date().toISOString() },
+      { ...fields, ...(staffUids ? { staffUids } : {}), companyId: cid, updatedAtIso: new Date().toISOString(), updatedAt: serverTimestamp() },
       { merge: true },
     );
     return { ok: true };

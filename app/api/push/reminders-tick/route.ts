@@ -29,7 +29,8 @@ export async function POST(request: NextRequest) {
     const snap = await tx.get(stampRef);
     const lastMs = Number(snap.data()?.lastRunMs ?? 0);
     if (Number.isFinite(lastMs) && now - lastMs < MIN_GAP_MS) return false;
-    tx.set(stampRef, { lastRunMs: now, lastRunIso: new Date(now).toISOString() });
+    // merge: the reminders job keeps when it last looked through this company here too (lib/calendar-reminders-server.ts).
+    tx.set(stampRef, { lastRunMs: now, lastRunIso: new Date(now).toISOString() }, { merge: true });
     return true;
   });
   if (!due) return NextResponse.json({ ok: true, skipped: "recently-checked" });

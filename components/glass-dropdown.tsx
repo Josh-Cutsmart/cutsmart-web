@@ -212,6 +212,59 @@ function GlassMenuPortal({
 const menuRowClass =
   "flex w-full items-center gap-2 rounded-[8px] px-3 text-left text-[12px] font-medium transition-colors hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] focus-visible:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] focus-visible:outline-none max-md:gap-2.5 max-md:rounded-[10px] max-md:px-3.5 max-md:text-[15px]";
 
+// The glass menu's box and rows for a menu that opens and places itself (e.g. a list row's status menu) — so it looks
+// exactly like GlassDropdown's: the same frosted box, each option a colour dot then its name, the chosen one in the
+// brand blue. glassMenuHeight is its height for a number of rows (to open it above its trigger when there's no room
+// below): GlassDropdown's row heights, bigger on a phone.
+export const GLASS_MENU_CLASS =
+  "glass-scroll fixed overflow-y-auto rounded-[10px] border p-1 shadow-[var(--shadow-md)] max-md:rounded-[14px] max-md:p-1.5";
+export const GLASS_MENU_STYLE: CSSProperties = {
+  zIndex: 2147483647,
+  borderColor: "var(--glass-border)",
+  backgroundColor: "var(--glass-modal-bg)",
+  backdropFilter: "blur(12px) saturate(220%)",
+  WebkitBackdropFilter: "blur(12px) saturate(220%)",
+};
+export function glassMenuHeight(rowCount: number, phone: boolean): number {
+  return rowCount * (phone ? MENU_ROW_HEIGHT_PHONE_PX : MENU_ROW_HEIGHT_PX) + (phone ? MENU_CHROME_PHONE_PX : MENU_CHROME_PX);
+}
+// Its narrowest, on a computer and on a phone.
+export const GLASS_MENU_MIN_WIDTH_PX = 170;
+export const GLASS_MENU_MIN_WIDTH_PHONE_PX = MENU_MIN_WIDTH_PHONE_PX;
+export function GlassMenuOption({
+  label,
+  color,
+  selected,
+  disabled,
+  onSelect,
+}: {
+  label: string;
+  color?: string;
+  selected: boolean;
+  disabled?: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="option"
+      aria-selected={selected}
+      disabled={disabled}
+      onClick={onSelect}
+      className={`${menuRowClass} h-8 disabled:cursor-wait disabled:opacity-60 max-md:h-11`}
+      style={{ backgroundImage: selected ? "var(--brand-gradient)" : "none", color: selected ? "#FFFFFF" : "var(--text-main)" }}
+    >
+      {color ? (
+        <span
+          className="h-2.5 w-2.5 shrink-0 rounded-full"
+          style={{ backgroundColor: color, boxShadow: selected ? "0 0 0 1.5px rgba(255,255,255,0.85)" : undefined }}
+        />
+      ) : null}
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+    </button>
+  );
+}
+
 export type GlassDropdownOption = {
   value: string;
   label: string;

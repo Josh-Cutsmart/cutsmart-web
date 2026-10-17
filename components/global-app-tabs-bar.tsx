@@ -49,7 +49,7 @@ import {
   addUserNotification,
   deleteUserNotification,
   fetchOlderUserNotifications,
-  fetchUserNotifications,
+  subscribeUserNotifications,
   NOTIFICATIONS_PAGE_MS,
   markUserNotificationRead,
   setAllUserNotificationsRead,
@@ -58,7 +58,6 @@ import {
   type UserNotificationRow,
 } from "@/lib/firestore-data";
 
-const NOTIF_POLL_INTERVAL_MS = 50000;
 
 // "<date> | 8:57pm" — the date in the company's date format, the time in the viewer's own local time.
 function formatNotificationTime(iso: string) {
@@ -845,22 +844,15 @@ export function GlobalAppTabsBar() {
       setNotifRows([]);
       return;
     }
-    let cancelled = false;
     let lastSignature = "";
     let isFirstLoad = true;
     seenNotifIdsRef.current = null;
-    notifSinceMsRef.current = null;
-    notifOldestMsRef.current = null;
-    const load = async () => {
-      // A hidden tab doesn't need fresh notifications; it catches up on the next poll after it's shown.
-      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
-      if (notifSinceMsRef.current === null) {
-        notifSinceMsRef.current = Date.now() - NOTIFICATIONS_PAGE_MS;
-        notifOldestMsRef.current = notifSinceMsRef.current;
-      }
-      const sinceMs = notifSinceMsRef.current;
-      const { rows, hasOlder } = await fetchUserNotifications(uid, activeCompanyId, sinceMs);
-      if (cancelled) return;
+    // The last two weeks, from now — kept live (subscribeUserNotifications): read once, then just what changes —
+    // rather than re-read every 50 seconds as they used to be.
+    const sinceMs = Date.now() - NOTIFICATIONS_PAGE_MS;
+    notifSinceMsRef.current = sinceMs;
+    notifOldestMsRef.current = sinceMs;
+    const apply = ({ rows, hasOlder }: { rows: UserNotificationRow[]; hasOlder: boolean }) => {
       // Until "Load more" has been used: whether there's anything before these two weeks.
       if (notifOldestMsRef.current === sinceMs) setNotifHasOlder(hasOlder);
       setNotifsLoadedKey(`${uid}|${activeCompanyId}`);
@@ -889,21 +881,18 @@ export function GlobalAppTabsBar() {
         ...prev.filter((row) => (Date.parse(row.createdAtIso) || 0) < sinceMs && !rows.some((item) => item.id === row.id)),
       ]);
     };
-    // The first load waits a moment, so it doesn't compete with the page's own data on open (opening
-    // Notifications before then loads it straight away — see below).
-    const firstLoadTimer = window.setTimeout(() => void load(), 2000);
-    const intervalId = window.setInterval(() => void load(), NOTIF_POLL_INTERVAL_MS);
-    // Coming back to the tab: caught up straight away, not at the next poll (a hidden tab skips them).
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") void load();
+    let stop: (() => void) | null = null;
+    const start = () => {
+      if (!stop) stop = subscribeUserNotifications(uid, activeCompanyId, sinceMs, apply);
     };
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    loadNotifsNowRef.current = () => void load();
+    // Starts a moment after the page opens, so it doesn't compete with the page's own data (opening Notifications,
+    // or a push arriving, before then starts it straight away — see loadNotifsNowRef's uses); once it's going it's
+    // always up to date, so those have nothing more to do.
+    const firstLoadTimer = window.setTimeout(start, 2000);
+    loadNotifsNowRef.current = start;
     return () => {
-      cancelled = true;
       window.clearTimeout(firstLoadTimer);
-      window.clearInterval(intervalId);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
+      stop?.();
       loadNotifsNowRef.current = null;
     };
   }, [activeCompanyId, user?.uid]);
