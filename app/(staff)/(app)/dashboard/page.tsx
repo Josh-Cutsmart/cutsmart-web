@@ -1,11 +1,11 @@
 "use client";
 
-import { activeDate, activeDateTime, useCompanyFormats } from "@/lib/company-formats";
+import { activeDateTime, useCompanyFormats } from "@/lib/company-formats";
 import { glassShineStyle } from "@/lib/glass-shine";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { useRouter } from "next/navigation";
 import { createPortal } from "react-dom";
-import { Activity, Archive, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, FolderKanban, Kanban, ListFilter, RefreshCw, Rows3, Search, Users2, X } from "lucide-react";
+import { Activity, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, FolderKanban, Kanban, ListFilter, Lock, RefreshCw, Rows3, Search, Users2, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
 import { GlassDropdown, GLASS_MENU_CLASS, GLASS_MENU_MIN_WIDTH_PHONE_PX, GLASS_MENU_MIN_WIDTH_PX, GLASS_MENU_STYLE, GlassMenuOption, glassMenuHeight } from "@/components/glass-dropdown";
@@ -53,6 +53,10 @@ import { hedgedAsync } from "@/lib/load-retry";
 import { readLastKnown, saveLastKnown } from "@/lib/last-known";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { modalCloseButtonClass } from "@/components/settings-ui";
+import { CompletedProjectsModal } from "@/components/completed-projects-modal";
+import { bonusLockMessage, bonusLockOf, fetchBonusLock, fetchCompletedProjectRecords, type CompletedProjectRecord } from "@/lib/completed-projects";
+import { completionBonusSettingsFrom, type CompletionBonusSettings } from "@/lib/completion-bonus";
+import { useFloatingNotice } from "@/components/floating-notice";
 import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
 import { completedStatusMatcher, isProjectArchived, PROJECTS_ARCHIVED_EVENT, type ProjectsArchivedDetail } from "@/lib/project-archive";
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
@@ -68,7 +72,6 @@ const statCards = [
   { label: "Completed", key: "completed", icon: CheckCircle2, iconFrom: "#6BC79A", iconTo: "#2E8C5C" },
   { label: "Staff", key: "staff", icon: Users2, iconFrom: "#A796F0", iconTo: "#6E56D9" },
 ] as const;
-type DashboardLegendRow = { id: string; name: string; color: string };
 
 function normalizeRoleKey(value: unknown): string {
   return String(value ?? "")
@@ -194,74 +197,6 @@ function normalizeStatuses(raw: unknown): StatusRow[] {
       ];
 }
 
-function normalizeDashboardLegend(raw: unknown): DashboardLegendRow[] {
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((item) => item && typeof item === "object")
-    .map((item, idx) => {
-      const row = item as Record<string, unknown>;
-      return {
-        id: String(row.id ?? `legend_${idx + 1}`).trim(),
-        name: String(row.name ?? "").trim(),
-        color: String(row.color ?? "").trim() || "#2A7A3B",
-      };
-    })
-    .filter((row) => row.name);
-}
-
-function completedProjectIso(project: Project): string {
-  const raw = project as unknown as Record<string, unknown>;
-  const completedAtIso = String(raw.completedAtIso ?? "").trim();
-  if (completedAtIso) return completedAtIso;
-  const completedAtRaw = raw.completedAt;
-  if (completedAtRaw instanceof Date && !Number.isNaN(completedAtRaw.getTime())) {
-    return completedAtRaw.toISOString();
-  }
-  if (
-    completedAtRaw &&
-    typeof completedAtRaw === "object" &&
-    typeof (completedAtRaw as { toDate?: () => Date }).toDate === "function"
-  ) {
-    const asDate = (completedAtRaw as { toDate: () => Date }).toDate();
-    if (asDate instanceof Date && !Number.isNaN(asDate.getTime())) {
-      return asDate.toISOString();
-    }
-  }
-  return String(project.createdAt ?? "").trim();
-}
-
-function monthKeyForOffset(monthsAgo: number): string {
-  const d = new Date();
-  d.setDate(1);
-  d.setMonth(d.getMonth() - monthsAgo);
-  const month = `${d.getMonth() + 1}`.padStart(2, "0");
-  return `${d.getFullYear()}-${month}`;
-}
-
-function monthKeyFromIso(iso: string): string {
-  const d = new Date(String(iso || ""));
-  if (Number.isNaN(d.getTime())) return "";
-  const year = d.getFullYear();
-  const month = `${d.getMonth() + 1}`.padStart(2, "0");
-  return `${year}-${month}`;
-}
-
-function monthLabelFromKey(monthKey: string): string {
-  const [yearRaw, monthRaw] = String(monthKey || "").split("-");
-  const year = Number(yearRaw);
-  const month = Number(monthRaw);
-  if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) return "Unknown Month";
-  return new Intl.DateTimeFormat("en-NZ", { month: "long", year: "numeric" }).format(new Date(year, month - 1, 1));
-}
-
-function monthSortValue(monthKey: string): number {
-  const [yearRaw, monthRaw] = String(monthKey || "").split("-");
-  const year = Number(yearRaw);
-  const month = Number(monthRaw);
-  if (!Number.isFinite(year) || !Number.isFinite(month)) return -1;
-  return year * 100 + month;
-}
-
 // White by default (the common case for typical mid/dark status & column colors) — only switches
 // to dark text once a color is genuinely too light for white to stay readable against it. 0.75 is
 // a deliberately high bar (vs. a more "balanced" ~0.5-0.6 contrast-ratio cutoff) so pastel/lighter
@@ -309,27 +244,6 @@ function dashboardDate(value: string) {
   return activeDateTime(value) || "-";
 }
 
-function dashboardDateOnly(value: string) {
-  return activeDate(value) || "-";
-}
-
-function isoToDateInputValue(value: string) {
-  const d = new Date(String(value || ""));
-  if (Number.isNaN(d.getTime())) return "";
-  const year = d.getFullYear();
-  const month = `${d.getMonth() + 1}`.padStart(2, "0");
-  const day = `${d.getDate()}`.padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function dateInputValueToCompletedIso(value: string) {
-  const clean = String(value || "").trim();
-  if (!clean) return "";
-  const next = new Date(`${clean}T12:00:00`);
-  if (Number.isNaN(next.getTime())) return "";
-  return next.toISOString();
-}
-
 function initials(text: string) {
   const cleaned = String(text || "").trim();
   if (!cleaned) return "CU";
@@ -355,7 +269,6 @@ type DashboardSnapshot = {
   projects: Project[];
   colors: Record<string, string>;
   statusRows: StatusRow[];
-  legendRows: DashboardLegendRow[];
   members: CompanyMemberOption[];
   roleRows: RoleRow[];
   themeColor: string;
@@ -625,7 +538,6 @@ export default function DashboardPage() {
   // board would render a beat of columns in the placeholder names/colors before snapping to the
   // real ones the instant the company doc arrives, visible as a flash on every load.
   const [statusRowsLoaded, setStatusRowsLoaded] = useState(false);
-  const [dashboardLegendRows, setDashboardLegendRows] = useState<DashboardLegendRow[]>([]);
   const [companyMembers, setCompanyMembers] = useState<CompanyMemberOption[]>([]);
   const [roleRows, setRoleRows] = useState<RoleRow[]>([]);
   const [creatorColorByUid, setCreatorColorByUid] = useState<Record<string, string>>({});
@@ -639,15 +551,17 @@ export default function DashboardPage() {
   } | null>(null);
   const openingProjectTimerRef = useRef<number | null>(null);
   const [showCompletedProjectsModal, setShowCompletedProjectsModal] = useState(false);
+  // The completed-projects record (lib/completed-projects.ts) — for the Completed count's deleted ones (deleted while
+  // completed, they're only in the record). Read again as the pop-up closes (it may have filled some in).
+  const [completionRecords, setCompletionRecords] = useState<CompletedProjectRecord[]>([]);
+  // Jobs locked into a bonus period there (their key by project id): their status can't change — their cards show a
+  // lock, and moving one to another column says why instead — in a floating bar at the bottom (statusLockNotice). The
+  // company's bonus settings name the period, for those who can see the bonus.
+  const [bonusSettings, setBonusSettings] = useState<CompletionBonusSettings | null>(null);
+  const statusLockNotice = useFloatingNotice({ tone: "yellow" });
   const [completedModalOrigin, setCompletedModalOrigin] = useState<GlassModalOrigin>(null);
   const completedModalPanelRef = useRef<HTMLDivElement | null>(null);
-  const [completedMonthFrom, setCompletedMonthFrom] = useState("");
-  const [completedMonthTo, setCompletedMonthTo] = useState("");
-  const [completedDateUpdatingProjectId, setCompletedDateUpdatingProjectId] = useState("");
-  const [completedLegendUpdatingProjectId, setCompletedLegendUpdatingProjectId] = useState("");
-  const [activeCompletedLegendId, setActiveCompletedLegendId] = useState("");
   const completedCardRef = useRef<HTMLDivElement | null>(null);
-  const completedDateInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const completedProjectsScrollRef = useRef<HTMLDivElement | null>(null);
   const [showStaffModal, setShowStaffModal] = useState(false);
   const [staffModalOrigin, setStaffModalOrigin] = useState<GlassModalOrigin>(null);
@@ -658,6 +572,9 @@ export default function DashboardPage() {
   const shouldRenderCompletedModal = useGlassModalPopOrigin(showCompletedProjectsModal, completedModalOrigin, completedModalPanelRef, undefined, completedCardRef);
   const shouldRenderStaffModal = useGlassModalPopOrigin(showStaffModal, staffModalOrigin, staffModalPanelRef, undefined, staffCardRef);
   const access = useCompanyAccess();
+  // The completion bonus (the Completed pop-up's bonus periods): Company Settings › Roles' dashboard.complete.bonus —
+  // owners and admins have every permission.
+  const canSeeCompletionBonus = isOwnerOrAdmin(access.role) || hasPermissionKey(access.permissionKeys, "dashboard.complete.bonus");
   useEffect(() => {
     if (typeof window === "undefined" || !user?.uid) return;
     try {
@@ -908,7 +825,6 @@ export default function DashboardPage() {
         setCreatorColorByUid(next.colors);
         setStatusRows(next.statusRows);
         setStatusRowsLoaded(true);
-        setDashboardLegendRows(next.legendRows);
         setCompanyMembers(next.members);
         setRoleRows(next.roleRows);
         if (next.themeColor) setCompanyThemeColor(next.themeColor);
@@ -983,7 +899,6 @@ export default function DashboardPage() {
           projects: items,
           colors: userColorMap,
           statusRows: normalizeStatuses(companyDoc?.projectStatuses),
-          legendRows: bundle ? normalizeDashboardLegend(companyDoc?.dashboardCompleteLegend) : [],
           members: bundle ? bundle[1] : [],
           roleRows: bundle ? normalizeRoleRows(companyDoc?.roles) : [],
           themeColor: String(companyDoc?.themeColor ?? "").trim(),
@@ -998,7 +913,6 @@ export default function DashboardPage() {
         setCreatorColorByUid({});
         setStatusRows(normalizeStatuses(undefined));
         setStatusRowsLoaded(true);
-        setDashboardLegendRows([]);
         setCompanyMembers([]);
         setRoleRows([]);
       } finally {
@@ -1193,6 +1107,14 @@ export default function DashboardPage() {
   // boardOrder: where it was dropped on the board (lib/board-drop-order.ts), saved in the same write.
   const onSelectProjectStatus = async (project: Project, nextStatus: string, boardOrder?: number) => {
     if (!nextStatus || statusUpdatingProjectId === project.id || !canEditProjectFromDashboard(project)) return;
+    const changesStatus = nextStatus.trim().toLowerCase() !== String(project.statusLabel || "").trim().toLowerCase();
+    const knownLock = changesStatus ? bonusLockById.get(project.id) : "";
+    if (knownLock) {
+      setStatusMenuProjectId("");
+      setStatusMenuPos(null);
+      showStatusLockNotice(knownLock);
+      return;
+    }
     const previousStatus = project.statusLabel;
     const previousSubStageId = String((project as unknown as Record<string, unknown>).dashboardSubStageId ?? "");
     // A card entering a column with sub-stages lands in whichever one is marked "Default" in
@@ -1227,6 +1149,12 @@ export default function DashboardPage() {
     setStatusMenuPos(null);
     const ok = await updateProjectStatus(project, nextStatus, nextSubStageId, boardOrder !== undefined ? { dashboardBoardOrder: boardOrder } : undefined);
     if (!ok) {
+      // Locked since the records were read (someone sorted it meanwhile) — say so.
+      if (changesStatus && project.companyId) {
+        void fetchBonusLock(project.companyId, project.id).then((lock) => {
+          if (lock) showStatusLockNotice(lock);
+        });
+      }
       // Persist failed — put it back where it actually is.
       setAllProjects((prev) =>
         prev.map((row) =>
@@ -1844,7 +1772,18 @@ export default function DashboardPage() {
           cursor: isDragging ? "grabbing" : "pointer",
         }}
       >
-        <p className="truncate text-[12.5px] font-bold" style={{ color: cardText }}>{project.name}</p>
+        <p className="flex min-w-0 items-center gap-1 text-[12.5px] font-bold" style={{ color: cardText }}>
+          <span className="truncate">{project.name}</span>
+          {bonusLockById.has(project.id) ? (
+            <span
+              className="inline-flex shrink-0"
+              title={bonusLockMessage(bonusLockById.get(project.id) ?? "", canSeeCompletionBonus ? bonusSettings : null)}
+              aria-label="Locked — its status can't change"
+            >
+              <Lock size={11} strokeWidth={2.4} />
+            </span>
+          ) : null}
+        </p>
         {project.tags.length > 0 && (
           <div className="flex flex-wrap gap-1">
             {project.tags.slice(0, 3).map((tag) => (
@@ -2360,10 +2299,53 @@ export default function DashboardPage() {
     };
   }, [filtered.length, pageSize, visibleCount]);
 
+  useEffect(() => {
+    if (!dashboardCompanyId || showCompletedProjectsModal) return;
+    let cancelled = false;
+    fetchCompletedProjectRecords(dashboardCompanyId).then(
+      (records) => {
+        if (!cancelled) setCompletionRecords(records);
+      },
+      () => undefined,
+    );
+    if (canSeeCompletionBonus) {
+      fetchCompanyDoc(dashboardCompanyId).then(
+        (companyDoc) => {
+          if (!cancelled) setBonusSettings(completionBonusSettingsFrom(companyDoc));
+        },
+        () => undefined,
+      );
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [canSeeCompletionBonus, dashboardCompanyId, showCompletedProjectsModal]);
+
+  const bonusLockById = useMemo(() => {
+    const locks = new Map<string, string>();
+    for (const record of completionRecords) {
+      const lock = bonusLockOf(record);
+      if (lock) locks.set(record.projectId, lock);
+    }
+    return locks;
+  }, [completionRecords]);
+  const showStatusLockNotice = (lockKey: string) => {
+    statusLockNotice.show(bonusLockMessage(lockKey, canSeeCompletionBonus ? bonusSettings : null), <Lock size={14} />);
+  };
+
   const stats = useMemo(() => {
     const total = liveProjects.length;
     const active = liveProjects.filter((p) => !isCompletedStatus(p.statusLabel)).length;
-    const completed = liveProjects.filter((p) => isCompletedStatus(p.statusLabel)).length;
+    // Completed: every project in the completed status — archived ones too — and every one deleted while it was
+    // (only in the completed-projects record now; as the Completed pop-up shows them). One moved out of the completed
+    // status isn't.
+    const completedProjects = allProjects.filter((p) => isCompletedStatus(p.statusLabel));
+    const projectIds = new Set(allProjects.map((p) => p.id));
+    const canSeeEveryRecord = isOwnerOrAdmin(access.role);
+    const deletedCompleted = completionRecords.filter(
+      (record) => record.deletedAtIso && !projectIds.has(record.projectId) && (canSeeEveryRecord || record.markedByUid === String(user?.uid || "")),
+    );
+    const completed = completedProjects.length + deletedCompleted.length;
     const staff = companyMembers.length;
 
     const now = new Date();
@@ -2384,10 +2366,13 @@ export default function DashboardPage() {
     const activeThisWeek = liveProjects.filter(
       (p) => !isCompletedStatus(p.statusLabel) && wasCreatedThisWeek(p.createdAt),
     ).length;
-    const completedThisWeek = liveProjects.filter((p) => {
-      if (!isCompletedStatus(p.statusLabel)) return false;
-      const updatedMs = new Date(String(p.updatedAt || "")).getTime();
-      return Number.isFinite(updatedMs) && updatedMs >= weekStartMs;
+    // (Completed this week: by when it was completed — its last update for one from before completion dates were kept.)
+    const completedThisWeek = [
+      ...completedProjects.map((p) => String(p.completedAtIso || p.updatedAt || "")),
+      ...deletedCompleted.map((record) => record.completedAtIso),
+    ].filter((iso) => {
+      const completedMs = new Date(iso).getTime();
+      return Number.isFinite(completedMs) && completedMs >= weekStartMs;
     }).length;
 
     const staffThisWeek = companyMembers.filter((member) => {
@@ -2408,81 +2393,7 @@ export default function DashboardPage() {
         staff: staffThisWeek,
       },
     };
-  }, [companyMembers, isCompletedStatus, liveProjects]);
-
-  // The history in the Completed Projects pop-up, archived projects included (they're still completed
-  // jobs — archiving only tidies them off the board).
-  const completedProjects = useMemo(() => {
-    return allProjects
-      .filter((project) => isCompletedStatus(project.statusLabel))
-      .map((project) => ({
-        project,
-        completedIso: completedProjectIso(project),
-        monthKey: monthKeyFromIso(completedProjectIso(project)),
-      }))
-      .sort((a, b) => String(b.completedIso).localeCompare(String(a.completedIso)));
-  }, [allProjects, isCompletedStatus]);
-
-  const completedMonthOptions = useMemo(() => {
-    return Array.from(new Set(completedProjects.map((row) => row.monthKey).filter(Boolean))).sort(
-      (a, b) => monthSortValue(b) - monthSortValue(a),
-    );
-  }, [completedProjects]);
-
-  const completedDatePresets = useMemo(() => {
-    const thisMonth = monthKeyForOffset(0);
-    const oldest = completedMonthOptions[completedMonthOptions.length - 1] || thisMonth;
-    const newest = completedMonthOptions[0] || thisMonth;
-    return [
-      { id: "thisMonth", label: "This Month", from: thisMonth, to: thisMonth },
-      { id: "last3", label: "Last 3 Months", from: monthKeyForOffset(2), to: thisMonth },
-      { id: "allTime", label: "All Time", from: oldest, to: newest },
-    ];
-  }, [completedMonthOptions]);
-
-  useEffect(() => {
-    if (!completedMonthOptions.length) {
-      setCompletedMonthFrom("");
-      setCompletedMonthTo("");
-      return;
-    }
-    setCompletedMonthFrom((prev) => (prev && completedMonthOptions.includes(prev) ? prev : completedMonthOptions[completedMonthOptions.length - 1]));
-    setCompletedMonthTo((prev) => (prev && completedMonthOptions.includes(prev) ? prev : completedMonthOptions[0]));
-  }, [completedMonthOptions]);
-
-  useEffect(() => {
-    if (!dashboardLegendRows.length) {
-      if (activeCompletedLegendId) {
-        setActiveCompletedLegendId("");
-      }
-      return;
-    }
-    if (dashboardLegendRows.some((row) => row.id === activeCompletedLegendId)) return;
-    setActiveCompletedLegendId(dashboardLegendRows[0]?.id || "");
-  }, [activeCompletedLegendId, dashboardLegendRows]);
-
-  const filteredCompletedProjects = useMemo(() => {
-    const fromValue = monthSortValue(completedMonthFrom);
-    const toValue = monthSortValue(completedMonthTo);
-    const lower = fromValue > 0 && toValue > 0 ? Math.min(fromValue, toValue) : null;
-    const upper = fromValue > 0 && toValue > 0 ? Math.max(fromValue, toValue) : null;
-    return completedProjects.filter((row) => {
-      if (!row.monthKey || lower == null || upper == null) return true;
-      const value = monthSortValue(row.monthKey);
-      return value >= lower && value <= upper;
-    });
-  }, [completedMonthFrom, completedMonthTo, completedProjects]);
-
-  const completedProjectsByMonth = useMemo(() => {
-    const groups = new Map<string, typeof filteredCompletedProjects>();
-    filteredCompletedProjects.forEach((row) => {
-      const key = row.monthKey || "unknown";
-      const existing = groups.get(key);
-      if (existing) existing.push(row);
-      else groups.set(key, [row]);
-    });
-    return Array.from(groups.entries()).sort((a, b) => monthSortValue(b[0]) - monthSortValue(a[0]));
-  }, [filteredCompletedProjects]);
+  }, [access.role, allProjects, companyMembers, completionRecords, isCompletedStatus, liveProjects, user?.uid]);
 
   // Opened from the Completed / Staff stat cards; the pop-up grows out of the card (keyboard opens too).
   const onOpenCompletedProjectsModal = (e?: ReactMouseEvent<HTMLElement>) => {
@@ -2499,284 +2410,32 @@ export default function DashboardPage() {
 
   const onCloseStaffModal = () => setShowStaffModal(false);
 
-  const onSelectCompletedProjectDate = async (project: Project, nextDateValue: string) => {
-    const nextIso = dateInputValueToCompletedIso(nextDateValue);
-    if (!nextIso || !user?.verified) return;
-    setCompletedDateUpdatingProjectId(project.id);
-    const ok = await updateProjectPatch(project, { completedAtIso: nextIso });
-    if (ok) {
-      setAllProjects((prev) =>
-        prev.map((row) =>
-          row.id === project.id
-            ? (Object.assign({}, row, { completedAtIso: nextIso, updatedAt: new Date().toISOString() }) as Project)
-            : row,
-        ),
-      );
-    }
-    setCompletedDateUpdatingProjectId("");
-  };
-
-  const onApplyCompletedProjectLegend = async (project: Project) => {
-    const nextLegendId = String(activeCompletedLegendId || "").trim();
-    if (!nextLegendId || !user?.verified) return;
-    const rawProject = project as unknown as Record<string, unknown>;
-    const currentLegendId = String(rawProject.dashboardCompleteStatusId ?? "").trim();
-    if (currentLegendId === nextLegendId) return;
-    const stableCompletedIso = completedProjectIso(project);
-    setCompletedLegendUpdatingProjectId(project.id);
-    const patch: Record<string, unknown> = { dashboardCompleteStatusId: nextLegendId };
-    if (!String(rawProject.completedAtIso ?? "").trim() && stableCompletedIso) {
-      patch.completedAtIso = stableCompletedIso;
-    }
-    const ok = await updateProjectPatch(project, patch);
-    if (ok) {
-      setAllProjects((prev) =>
-        prev.map((row) =>
-          row.id === project.id
-            ? (Object.assign(
-                {},
-                row,
-                {
-                  dashboardCompleteStatusId: nextLegendId,
-                  completedAtIso: String((row as unknown as Record<string, unknown>).completedAtIso ?? "").trim() || stableCompletedIso,
-                },
-              ) as Project)
-            : row,
-        ),
-      );
-    }
-    setCompletedLegendUpdatingProjectId("");
-  };
-
-  const openCompletedDatePicker = (projectId: string) => {
-    const input = completedDateInputRefs.current[projectId];
-    if (!input) return;
-    const picker = input as HTMLInputElement & { showPicker?: () => void };
-    try {
-      if (typeof picker.showPicker === "function") {
-        picker.showPicker();
-        return;
-      }
-    } catch {
-      // Fall back to focus/click for browsers that gate showPicker.
-    }
-    input.focus();
-    input.click();
-  };
-
-  const completedProjectsModal =
-    shouldRenderCompletedModal && typeof document !== "undefined"
-      ? createPortal(
-          // The same pop-up as everywhere else: glass backdrop, and the panel grows out of the card that
-          // opened it (useGlassModalPopOrigin) and shrinks back into it on close.
-          <div className="fixed inset-0 z-[1600] flex items-center justify-center px-4 py-4">
-            <button type="button" aria-label="Close completed projects backdrop" onClick={onCloseCompletedProjectsModal} className="glass-modal-backdrop absolute inset-0" />
-            <div
-              ref={completedModalPanelRef}
-              data-completed-projects-modal="true"
-              className="glass-modal-panel relative z-[1601] flex h-[min(760px,86svh)] w-full max-w-[920px] flex-col overflow-hidden"
-            >
-              <div className="glass-modal-header flex h-[56px] shrink-0 items-center justify-between px-5">
-                <div className="flex items-center gap-2.5">
-                  <div
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-full text-white"
-                    style={{ backgroundImage: "linear-gradient(135deg, #6BC79A 0%, #2E8C5C 100%)" }}
-                  >
-                    <CheckCircle2 size={14} strokeWidth={2.6} />
-                  </div>
-                  <p className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>Completed Projects</p>
-                  <span
-                    className="rounded-full border px-2 py-[2px] text-[11px] font-bold"
-                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
-                  >
-                    {filteredCompletedProjects.length}
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={onCloseCompletedProjectsModal}
-                  className={modalCloseButtonClass}
-                  aria-label="Close"
-                >
-                  <X size={16} />
-                </button>
-              </div>
-              <div
-                className="flex flex-wrap items-center gap-3 border-b px-5 py-3"
-                style={{ borderColor: "var(--glass-border)" }}
-              >
-                {dashboardLegendRows.length > 0 ? (
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>Status</span>
-                    {dashboardLegendRows.map((item) => {
-                      const isActive = activeCompletedLegendId === item.id;
-                      return (
-                        <button
-                          key={item.id}
-                          type="button"
-                          onClick={() => setActiveCompletedLegendId((prev) => (prev === item.id ? "" : item.id))}
-                          className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition hover:brightness-95"
-                          style={{
-                            borderColor: isActive ? "var(--brand-strong)" : "var(--glass-border)",
-                            backgroundColor: isActive ? "var(--brand-soft)" : "var(--panel-muted)",
-                            color: "var(--text-main)",
-                            boxShadow: isActive ? "0 0 0 1px var(--brand)" : "none",
-                          }}
-                          title={item.name || "Completed color"}
-                        >
-                          <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: item.color }} />
-                          {item.name || "Status"}
-                        </button>
-                      );
-                    })}
-                  </div>
-                ) : null}
-                <div className="ml-auto flex flex-wrap items-center gap-1.5">
-                  {completedDatePresets.map((preset) => {
-                    const isActive = completedMonthFrom === preset.from && completedMonthTo === preset.to;
-                    return (
-                      <button
-                        key={preset.id}
-                        type="button"
-                        onClick={() => {
-                          setCompletedMonthFrom(preset.from);
-                          setCompletedMonthTo(preset.to);
-                        }}
-                        className="inline-flex h-8 items-center rounded-full border px-3 text-[12px] font-semibold transition hover:brightness-95"
-                        style={
-                          isActive
-                            ? { backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)", color: "#fff" }
-                            : { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }
-                        }
-                      >
-                        {preset.label}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-              <div ref={completedProjectsScrollRef} className="glass-scroll hide-native-scrollbar min-h-0 flex-1 overflow-auto px-5 py-4">
-                {!completedProjectsByMonth.length ? (
-                  <div
-                    className="flex flex-col items-center gap-2 rounded-[14px] border border-dashed px-4 py-10 text-center"
-                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}
-                  >
-                    <CheckCircle2 size={22} style={{ color: "var(--text-muted)" }} />
-                    <p className="text-[13px] font-semibold" style={{ color: "var(--text-muted)" }}>No completed projects yet.</p>
-                  </div>
-                ) : (
-                  <div>
-                    {completedProjectsByMonth.map(([monthKey, rows]) => (
-                      <div key={`completed_month_${monthKey}`}>
-                        <div
-                          className="sticky top-0 z-10 -mx-5 flex items-center justify-between border-b px-5 py-2"
-                          style={{
-                            borderColor: "var(--glass-border)",
-                            backgroundColor: "var(--glass-modal-bg)",
-                            backdropFilter: "blur(12px) saturate(220%)",
-                            WebkitBackdropFilter: "blur(12px) saturate(220%)",
-                          }}
-                        >
-                          <p className="text-[13px] font-bold uppercase tracking-[0.5px]" style={{ color: "var(--text-main)" }}>{monthLabelFromKey(monthKey)}</p>
-                          <span
-                            className="inline-flex rounded-full border px-2.5 py-[2px] text-[11px] font-bold"
-                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
-                          >
-                            {rows.length}
-                          </span>
-                        </div>
-                        <div className="py-1">
-                          {rows.map(({ project, completedIso }, index) => {
-                            const rawProject = project as unknown as Record<string, unknown>;
-                            const legendId = String(rawProject.dashboardCompleteStatusId ?? "").trim();
-                            const legendMatch = dashboardLegendRows.find((row) => row.id === legendId);
-                            const rowFillColor = legendMatch?.color || "";
-                            const rowHasFill = Boolean(rowFillColor);
-                            const rowTextColor = rowHasFill ? rowTextColorForFill(rowFillColor) : "var(--text-main)";
-                            const rowDateColor = rowHasFill ? rowTextColor : "var(--text-muted)";
-                            const isDateUpdating = completedDateUpdatingProjectId === project.id;
-                            const isLegendUpdating = completedLegendUpdatingProjectId === project.id;
-                            const canApplyLegend = Boolean(activeCompletedLegendId) && !isDateUpdating && !isLegendUpdating;
-                            return (
-                              <div
-                                key={`completed_project_${project.id}`}
-                                className="relative flex items-center justify-between gap-3 rounded-[10px] px-3 py-2.5 transition hover:brightness-95"
-                                onClick={() => {
-                                  if (!canApplyLegend) return;
-                                  void onApplyCompletedProjectLegend(project);
-                                }}
-                                style={{
-                                  borderTop: !rowHasFill && index > 0 ? "1px solid var(--glass-border)" : "1px solid transparent",
-                                  marginTop: index > 0 ? 1 : 0,
-                                  backgroundColor: rowFillColor || "transparent",
-                                  cursor: canApplyLegend ? "pointer" : "default",
-                                }}
-                              >
-                                <div className="flex min-w-0 flex-1 items-center gap-1">
-                                  <button
-                                    type="button"
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      onCloseCompletedProjectsModal();
-                                      void openProjectInDashboard(project.id, project.name);
-                                    }}
-                                    className="inline-flex min-w-0 max-w-full text-left transition hover:opacity-80"
-                                  >
-                                    <span className="block truncate pr-3 text-[13px] font-bold" style={{ color: rowTextColor }}>
-                                      {project.name || "Untitled"}
-                                    </span>
-                                  </button>
-                                  {isProjectArchived(project) ? (
-                                    <span
-                                      className="inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-[1px] text-[10.5px] font-medium"
-                                      style={{ color: rowDateColor, borderColor: "color-mix(in srgb, currentColor 35%, transparent)" }}
-                                      title="Archived — see the Archive"
-                                    >
-                                      <Archive size={11} />
-                                      Archived
-                                    </span>
-                                  ) : null}
-                                </div>
-                                <div className="relative flex shrink-0 items-center gap-1.5">
-                                  <CalendarDays size={13} style={{ color: rowDateColor, opacity: 0.7 }} />
-                                  <input
-                                    type="date"
-                                    ref={(node) => {
-                                      completedDateInputRefs.current[project.id] = node;
-                                    }}
-                                    value={isoToDateInputValue(completedIso)}
-                                    onChange={(event) => void onSelectCompletedProjectDate(project, event.currentTarget.value)}
-                                    tabIndex={-1}
-                                    aria-hidden="true"
-                                    className="pointer-events-none absolute h-0 w-0 opacity-0"
-                                  />
-                                  <button
-                                    type="button"
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      openCompletedDatePicker(project.id);
-                                    }}
-                                    disabled={isDateUpdating}
-                                    className="text-[12px] font-bold transition hover:opacity-80 disabled:cursor-wait"
-                                    style={{ color: rowDateColor }}
-                                  >
-                                    {dashboardDateOnly(completedIso)}
-                                  </button>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>,
-          document.body,
+  // The completed-projects record (components/completed-projects-modal.tsx) — what completion bonuses are worked out
+  // from. A date or category changed there is kept in step on the dashboard's own copy of the project.
+  const completedProjectsModal = shouldRenderCompletedModal ? (
+    <CompletedProjectsModal
+      panelRef={completedModalPanelRef}
+      scrollRef={completedProjectsScrollRef}
+      onClose={onCloseCompletedProjectsModal}
+      companyId={dashboardCompanyId}
+      projects={allProjects}
+      isCompletedStatus={isCompletedStatus}
+      isAdmin={isOwnerOrAdmin(access.role)}
+      canEdit={Boolean(user?.verified)}
+      // Bonus quarters: Company Settings › Roles' dashboard.complete.bonus (owners and admins have every permission).
+      canSortBonus={canSeeCompletionBonus}
+      uid={String(user?.uid || "")}
+      onOpenProject={(project) => {
+        onCloseCompletedProjectsModal();
+        void openProjectInDashboard(project.id, project.name);
+      }}
+      onProjectPatched={(projectId, patch) =>
+        setAllProjects((prev) =>
+          prev.map((row) => (row.id === projectId ? (Object.assign({}, row, patch, { updatedAt: new Date().toISOString() }) as Project) : row)),
         )
-      : null;
+      }
+    />
+  ) : null;
 
   const roleNameById = useMemo(() => {
     const map = new Map<string, string>();
@@ -4121,6 +3780,7 @@ export default function DashboardPage() {
             )}
             {openingProjectOverlay}
             <DragGhostLayer controller={projectBoardDragGhost} />
+            {statusLockNotice.element}
           </>
           )}
     </>

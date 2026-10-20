@@ -1,0 +1,109 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" width="640" height="360" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title>A lead form on a company's website is filled in and sent, and an email is forwarded to the company's leads address — both arrive in the New column of Leads</title>
+  <style>
+    .f1 { animation: f1 7s ease-out infinite both; }
+    .f2 { animation: f2 7s ease-out infinite both; }
+    .f3 { animation: f3 7s ease-out infinite both; }
+    @keyframes f1 { 0%, 6% { opacity: 0; } 10%, 94% { opacity: 1; } 98%, 100% { opacity: 0; } }
+    @keyframes f2 { 0%, 12% { opacity: 0; } 16%, 94% { opacity: 1; } 98%, 100% { opacity: 0; } }
+    @keyframes f3 { 0%, 18% { opacity: 0; } 22%, 94% { opacity: 1; } 98%, 100% { opacity: 0; } }
+    .send { transform-box: fill-box; transform-origin: center; animation: send 7s ease-in-out infinite both; }
+    @keyframes send { 0%, 30% { transform: scale(1); } 32% { transform: scale(.94); } 35%, 100% { transform: scale(1); } }
+    .card1 { animation: card1 7s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes card1 { 0%, 36% { opacity: 0; transform: translate(-26px, 0); } 42%, 55% { opacity: 1; transform: translate(0, 0); } 61%, 94% { opacity: 1; transform: translate(0, 76px); } 98%, 100% { opacity: 0; transform: translate(0, 76px); } }
+    .mere { animation: mere 7s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes mere { 0%, 36% { opacity: 1; transform: translateY(0); } 42%, 55% { opacity: 1; transform: translateY(76px); } 61%, 94% { opacity: 1; transform: translateY(152px); } 97% { opacity: 0; transform: translateY(152px); } 98% { opacity: 0; transform: translateY(0); } 100% { opacity: 1; transform: translateY(0); } }
+    .mail { animation: mail 7s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes mail { 0%, 48% { opacity: 1; transform: translateX(0); } 56% { opacity: 0; transform: translateX(60px); } 57%, 94% { opacity: 0; transform: translateX(0); } 98% { opacity: 0; } 100% { opacity: 1; } }
+    .card2 { animation: card2 7s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes card2 { 0%, 55% { opacity: 0; transform: translateX(-26px); } 61%, 94% { opacity: 1; transform: translateX(0); } 98%, 100% { opacity: 0; } }
+    .count1 { animation: count1 7s step-end infinite both; }
+    .count2 { animation: count2 7s step-end infinite both; }
+    .count3 { animation: count3 7s step-end infinite both; }
+    @keyframes count1 { 0% { opacity: 1; } 40% { opacity: 0; } 98% { opacity: 1; } }
+    @keyframes count2 { 0% { opacity: 0; } 40% { opacity: 1; } 59% { opacity: 0; } }
+    @keyframes count3 { 0% { opacity: 0; } 59% { opacity: 1; } 98% { opacity: 0; } }
+    .cursor { animation: cursor 7s ease-in-out infinite both; }
+    @keyframes cursor {
+      0%, 22% { transform: translate(300px, 250px); opacity: 0; }
+      25% { opacity: 1; }
+      30%, 33% { transform: translate(214px, 214px); opacity: 1; }
+      44%, 100% { transform: translate(300px, 250px); opacity: 0; }
+    }
+  </style>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#EEF3FB"/>
+      <stop offset="1" stop-color="#E1E9F7"/>
+    </linearGradient>
+    <filter id="pop" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#0F172A" flood-opacity=".16"/>
+    </filter>
+  </defs>
+  <rect width="640" height="360" fill="url(#bg)"/>
+
+  <!-- the company's website, with its lead form -->
+  <rect x="28" y="24" width="270" height="222" rx="18" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+  <circle cx="46" cy="42" r="4" fill="#F87171"/>
+  <circle cx="59" cy="42" r="4" fill="#FBBF24"/>
+  <circle cx="72" cy="42" r="4" fill="#34D399"/>
+  <rect x="90" y="34" width="120" height="16" rx="8" fill="#F1F5F9"/>
+  <text x="150" y="45.5" text-anchor="middle" font-size="9" font-weight="500" fill="#64748B">kitchenco.nz</text>
+  <path d="M28 58 H298" stroke="#E2E8F0"/>
+  <text x="48" y="84" font-size="15" font-weight="700" fill="#0F172A">Get a free quote</text>
+  <rect x="48" y="96" width="230" height="26" rx="9" fill="#F8FAFC" stroke="#CBD5E1"/>
+  <text class="f1" x="58" y="113" font-size="11" font-weight="500" fill="#0F172A">Anil Patel</text>
+  <rect x="48" y="128" width="230" height="26" rx="9" fill="#F8FAFC" stroke="#CBD5E1"/>
+  <text class="f2" x="58" y="145" font-size="11" font-weight="500" fill="#0F172A">021 555 0117</text>
+  <rect x="48" y="160" width="230" height="36" rx="9" fill="#F8FAFC" stroke="#CBD5E1"/>
+  <text class="f3" x="58" y="177" font-size="11" font-weight="500" fill="#0F172A">New kitchen and scullery</text>
+  <g class="send">
+    <rect x="178" y="204" width="100" height="28" rx="14" fill="#2563EB"/>
+    <text x="228" y="222" text-anchor="middle" font-size="11.5" font-weight="600" fill="#FFFFFF">Send</text>
+  </g>
+
+  <!-- an email forwarded to the leads address -->
+  <g class="mail">
+    <rect x="28" y="262" width="270" height="72" rx="18" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+    <rect x="46" y="280" width="34" height="24" rx="5" fill="#FFF7ED" stroke="#FB923C"/>
+    <path d="M47 282 L63 294 L79 282" fill="none" stroke="#FB923C" stroke-width="1.6"/>
+    <text x="92" y="290" font-size="10" font-weight="500" fill="#64748B">To: kitchenco_8f2ks@leads.cutsmart.nz</text>
+    <text x="92" y="307" font-size="11.5" font-weight="700" fill="#0F172A">Laundry quote please</text>
+    <text x="92" y="323" font-size="10" font-weight="500" fill="#334155">2 photos attached</text>
+  </g>
+
+  <!-- the Leads board's first column -->
+  <rect x="330" y="24" width="282" height="310" rx="20" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+  <rect x="330" y="24" width="282" height="46" rx="20" fill="#FFF4E5"/>
+  <rect x="330" y="50" width="282" height="20" fill="#FFF4E5"/>
+  <circle cx="352" cy="47" r="5" fill="#EA8A1A"/>
+  <text x="366" y="52" font-size="14" font-weight="700" fill="#0F172A">New</text>
+  <rect x="566" y="36" width="30" height="22" rx="11" fill="#FFFFFF"/>
+  <text class="count1" x="581" y="51" text-anchor="middle" font-size="11" font-weight="700" fill="#0F172A">1</text>
+  <text class="count2" x="581" y="51" text-anchor="middle" font-size="11" font-weight="700" fill="#0F172A">2</text>
+  <text class="count3" x="581" y="51" text-anchor="middle" font-size="11" font-weight="700" fill="#0F172A">3</text>
+
+  <g class="card2">
+    <rect x="346" y="84" width="250" height="66" rx="14" fill="#FFFFFF" stroke="#E2E8F0"/>
+    <text x="362" y="106" font-size="12" font-weight="700" fill="#0F172A">New Lead</text>
+    <text x="362" y="123" font-size="10.5" font-weight="500" fill="#334155">From Email: jo.hart@example.com</text>
+    <rect x="362" y="130" width="66" height="14" rx="7" fill="#FFEDD5"/>
+    <text x="395" y="140.5" text-anchor="middle" font-size="8.5" font-weight="600" fill="#C2410C">2 photos</text>
+  </g>
+  <g class="mere">
+    <rect x="346" y="84" width="250" height="66" rx="14" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="362" y="106" font-size="12" font-weight="700" fill="#0F172A">Mere Tawhiri</text>
+    <text x="362" y="123" font-size="10.5" font-weight="500" fill="#334155">Phone call</text>
+    <text x="362" y="139" font-size="10" font-weight="500" fill="#64748B">Wardrobes for two bedrooms</text>
+  </g>
+  <g class="card1">
+    <rect x="346" y="84" width="250" height="66" rx="14" fill="#FFFFFF" stroke="#E2E8F0"/>
+    <text x="362" y="106" font-size="12" font-weight="700" fill="#0F172A">New Lead</text>
+    <text x="362" y="123" font-size="10.5" font-weight="500" fill="#334155">From Form: Anil Patel</text>
+    <text x="362" y="139" font-size="10" font-weight="500" fill="#64748B">021 555 0117</text>
+  </g>
+
+  <g class="cursor">
+    <path d="M0 0 l0 20 l5 -5 l4 9 l3.4 -1.5 l-4 -9 l7 0 z" fill="#0F172A" stroke="#FFFFFF" stroke-width="1.4" stroke-linejoin="round"/>
+  </g>
+</svg>

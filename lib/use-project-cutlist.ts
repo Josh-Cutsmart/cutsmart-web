@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getDoc } from "@/lib/firestore-client";
+import { doc, getDoc, onSnapshot } from "@/lib/firestore-client";
 import type { Project } from "@/lib/types";
 import {
+  cutlistDataRev,
   extractLegacySalesFieldFromRawDoc,
   fetchCutlistData,
   parseCutlistRows,
@@ -16,12 +17,17 @@ export type CutlistDataKind = "production" | "initialMeasure";
 export interface ProjectCutlistRawState {
   status: "idle" | "loading" | "ready" | "error";
   rawRows: unknown[];
+  // The rows' revision (cutlistDataRev) — what a save adds one to.
+  rev: number;
   error: unknown;
   retry: () => void;
   // Lets a save function optimistically advance the last-known rows right after a successful
   // write, without waiting for a re-fetch — mirrors the old `setProject(prev => ({...prev,
   // cutlist: nextCutlist}))` pattern this hook replaces.
-  setRawRowsOptimistic: (rows: unknown[]) => void;
+  setRawRowsOptimistic: (rows: unknown[], rev?: number) => void;
+  // The rows and revision as last heard of, now — not as of the render a save was started in (a save waiting for the
+  // one before it to finish would otherwise merge onto rows from before that one).
+  latest: () => { rawRows: unknown[]; rev: number };
 }
 
 // Lazily fetches one project's cutlist rows from their own subcollection (fetchCutlistData/
@@ -33,17 +39,26 @@ export interface ProjectCutlistRawState {
 // a non-blocking write to migrate this project's cutlist to the subcollection immediately (rather
 // than waiting for the next edit) — safe because viewing a job doc and writing to it require the
 // same permission in this app's Firestore rules.
+// Once loaded, kept up to date: someone else's save in the same cutlist shows here as they make it (an older copy
+// arriving after a newer one — told apart by its revision — is passed over). What the screen then does with rows that
+// change under it is the project page's (its hydrate effects, which keep any edits there not saved yet).
 export function useProjectCutlistRaw(
   project: Project | null,
   kind: CutlistDataKind,
   enabled: boolean,
 ): ProjectCutlistRawState {
-  const [state, setState] = useState<Omit<ProjectCutlistRawState, "retry" | "setRawRowsOptimistic">>({
+  const [state, setStateRaw] = useState<Omit<ProjectCutlistRawState, "retry" | "setRawRowsOptimistic" | "latest">>({
     status: "idle",
     rawRows: [],
+    rev: 0,
     error: null,
   });
   const [retryTick, setRetryTick] = useState(0);
+  const latestRowsRef = useRef<{ rawRows: unknown[]; rev: number }>({ rawRows: [], rev: 0 });
+  const setState = useCallback((next: Omit<ProjectCutlistRawState, "retry" | "setRawRowsOptimistic" | "latest">) => {
+    latestRowsRef.current = { rawRows: next.rawRows, rev: next.rev };
+    setStateRaw(next);
+  }, []);
 
   // Re-fetch only for a different project (id/company) — not on every change to the project object,
   // which the project page makes on every save (it used to re-download all of this each time). Saves
@@ -57,20 +72,46 @@ export function useProjectCutlistRaw(
   useEffect(() => {
     const project = latestProjectRef.current;
     let cancelled = false;
+    let unsubscribe: (() => void) | null = null;
+
+    const listen = async () => {
+      const ref = project ? await resolveProjectDocRef(project) : null;
+      if (cancelled || !ref) return;
+      unsubscribe = onSnapshot(
+        doc(ref, "cutlistData", kind),
+        (snap) => {
+          if (!snap.exists()) return;
+          const data = snap.data() as Record<string, unknown>;
+          const rows = Array.isArray(data.rows) ? data.rows : [];
+          const rev = cutlistDataRev(data);
+          const current = latestRowsRef.current;
+          // (No revision — saved by a screen from before them, still open somewhere: taken as it comes.)
+          if (rev && rev < current.rev) return;
+          const nextRev = Math.max(rev, current.rev);
+          if (JSON.stringify(rows) === JSON.stringify(current.rawRows)) {
+            if (nextRev !== current.rev) setState({ status: "ready", rawRows: current.rawRows, rev: nextRev, error: null });
+            return;
+          }
+          setState({ status: "ready", rawRows: rows, rev: nextRev, error: null });
+        },
+        (error) => console.warn(`[useProjectCutlistRaw] ${kind} listener failed:`, error),
+      );
+    };
 
     const run = async () => {
       if (!enabled || !project?.id) {
-        if (!cancelled) setState({ status: "idle", rawRows: [], error: null });
+        if (!cancelled) setState({ status: "idle", rawRows: [], rev: 0, error: null });
         return;
       }
 
-      if (!cancelled) setState((prev) => ({ ...prev, status: "loading", error: null }));
+      if (!cancelled) setStateRaw((prev) => ({ ...prev, status: "loading", error: null }));
 
       try {
         const stored = await fetchCutlistData(project, kind);
         if (cancelled) return;
         if (stored) {
-          setState({ status: "ready", rawRows: stored.rows, error: null });
+          setState({ status: "ready", rawRows: stored.rows, rev: stored.rev, error: null });
+          void listen();
           return;
         }
 
@@ -94,26 +135,32 @@ export function useProjectCutlistRaw(
                 return Array.isArray(rows) ? rows : [];
               })();
         if (cancelled) return;
-        setState({ status: "ready", rawRows: legacyRows, error: null });
+        setState({ status: "ready", rawRows: legacyRows, rev: 0, error: null });
         // Self-heal: write straight to the subcollection now that we've read the legacy data,
         // instead of waiting for the user to make an actual edit.
         void saveCutlistData(project, kind, legacyRows);
+        void listen();
       } catch (error) {
         if (cancelled) return;
-        setState({ status: "error", rawRows: [], error });
+        setState({ status: "error", rawRows: [], rev: 0, error });
       }
     };
 
     void run();
     return () => {
       cancelled = true;
+      unsubscribe?.();
     };
-  }, [projectKey, kind, enabled, retryTick]);
+  }, [projectKey, kind, enabled, retryTick, setState]);
 
   const retry = useCallback(() => setRetryTick((tick) => tick + 1), []);
-  const setRawRowsOptimistic = useCallback((rows: unknown[]) => {
-    setState((prev) => ({ ...prev, status: "ready", rawRows: rows, error: null }));
-  }, []);
+  const setRawRowsOptimistic = useCallback(
+    (rows: unknown[], rev?: number) => {
+      setState({ status: "ready", rawRows: rows, rev: Math.max(latestRowsRef.current.rev, rev ?? 0), error: null });
+    },
+    [setState],
+  );
+  const latest = useCallback(() => latestRowsRef.current, []);
 
-  return { ...state, retry, setRawRowsOptimistic };
+  return { ...state, retry, setRawRowsOptimistic, latest };
 }

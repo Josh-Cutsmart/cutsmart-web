@@ -46,6 +46,12 @@ export type SpecsShareLinkDoc = {
   quoteVersionId?: string;
   quoteAcceptedAt?: string;
   quoteAcceptedByName?: string;
+  // Accepted by staff for the client (app/api/specs-share/[shareId]/on-behalf) — quoteAcceptedByName is then the
+  // client's name; this, who did it. The same for the specifications (submittedOnBehalfByName).
+  quoteAcceptedOnBehalfByName?: string;
+  quoteAcceptedOnBehalfByUid?: string;
+  submittedOnBehalfByName?: string;
+  submittedOnBehalfByUid?: string;
   // The client declined the quote instead (app/api/specs-share/[shareId]/decline) — with their name and
   // the reason they gave, if any. Locks it the same way accepting does, until staff reopen it.
   quoteDeclinedAt?: string;

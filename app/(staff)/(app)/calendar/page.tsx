@@ -12,6 +12,7 @@ import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { CalendarDays, ChevronLeft, ChevronRight, Clock, Copy, ExternalLink, Filter, FolderKanban, Lock, MapPin, MoreHorizontal, Pencil, Plus, Search, Trash2, Users, X } from "lucide-react";
+import { SubscribeBellIcon } from "@/components/subscribe-bell-icon";
 import { useAuth } from "@/lib/auth-context";
 import { fetchCompanyDoc, fetchCompanyMembers, fetchProjects } from "@/lib/firestore-data";
 import { isProjectArchived } from "@/lib/project-archive";
@@ -36,6 +37,7 @@ import {
   projectEventStaffUids,
   DEFAULT_CALENDAR_WORKDAYS,
   saveCalendarEvent,
+  setCalendarEventSubscribed,
   subscribeCalendarEvents,
   calendarCategoryLevel,
   type CalendarAccessLevel,
@@ -1019,6 +1021,32 @@ function CalendarPageContent() {
     setEvents((prev) => prev.map((e) => (e.id === event.id ? { ...e, startMs, endMs } : e)));
     const result = await saveCalendarEvent(companyId, editedByMe({ ...event, startMs, endMs }));
     if (!result.ok) setLoadError("Couldn't move that event — try again.");
+  };
+
+  // The event view's bell: subscribes whoever's looking (anyone — they don't need to be on it) so they're reminded
+  // before it at their own reminder times (User Settings), or unsubscribes them. Saves straight away.
+  const [subscribingEventId, setSubscribingEventId] = useState("");
+  // Bumped by each click on it — its wobble (as the project's own bell); 0: never clicked, so opening doesn't play it.
+  const [eventBellWobbleKey, setEventBellWobbleKey] = useState(0);
+  const setEventSubscribed = async (eventId: string, on: boolean) => {
+    const me = String(user?.uid || "").trim();
+    if (!companyId || !me || subscribingEventId) return;
+    const apply = (value: boolean) =>
+      setEvents((prev) =>
+        prev.map((e) =>
+          e.id === eventId
+            ? { ...e, subscriberUids: value ? Array.from(new Set([...(e.subscriberUids ?? []), me])) : (e.subscriberUids ?? []).filter((id) => id !== me) }
+            : e,
+        ),
+      );
+    setSubscribingEventId(eventId);
+    apply(on);
+    const ok = await setCalendarEventSubscribed(companyId, eventId, me, on);
+    if (!ok) {
+      apply(!on);
+      setModalError(on ? "Couldn't subscribe you to it — try again." : "Couldn't unsubscribe you — try again.");
+    }
+    setSubscribingEventId("");
   };
 
   // The event view's "Show on client portal" switch: saves straight away, without opening Edit.
@@ -2706,6 +2734,38 @@ function CalendarPageContent() {
                   <>
                     <div className="relative px-5 pb-4 pt-5">
                       <div className="absolute right-3 top-3 flex items-center gap-1">
+                        {(() => {
+                          // Its bell: subscribed (reminded before it at your own reminder times), or not. Someone on
+                          // it is reminded anyway — theirs just shows it.
+                          const me = String(user?.uid || "").trim();
+                          const live = events.find((e) => e.id === d.id);
+                          const onIt = Boolean(me && live?.staffUids?.includes(me));
+                          const subscribed = onIt || Boolean(me && live?.subscriberUids?.includes(me));
+                          return (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEventBellWobbleKey((prev) => prev + 1);
+                                void setEventSubscribed(d.id, !subscribed);
+                              }}
+                              disabled={!me || onIt || subscribingEventId === d.id}
+                              aria-pressed={subscribed}
+                              aria-label={subscribed ? "Unsubscribe from this event" : "Subscribe to this event"}
+                              title={
+                                onIt
+                                  ? "You're on this event, so you're reminded before it already."
+                                  : subscribed
+                                    ? "Subscribed — you'll be reminded before it at your reminder times (User Settings). Click to unsubscribe."
+                                    : "Subscribe — get reminded before it at your reminder times (User Settings)."
+                              }
+                              className={`${eventMenuButtonClass} disabled:cursor-default`}
+                            >
+                              <span key={eventBellWobbleKey} className={eventBellWobbleKey > 0 ? "inline-flex bell-wobble" : "inline-flex"}>
+                                <SubscribeBellIcon on={subscribed} />
+                              </span>
+                            </button>
+                          );
+                        })()}
                         {eventMenuItems.length ? (
                           <GlassActionMenu items={eventMenuItems} ariaLabel="More options" openWithOneItem menuMinWidth={180} triggerClassName={eventMenuButtonClass}>
                             <MoreHorizontal size={16} />
@@ -2716,7 +2776,7 @@ function CalendarPageContent() {
                         </button>
                       </div>
                       <span
-                        className="inline-flex max-w-[calc(100%-64px)] items-center gap-1.5 truncate rounded-full border px-2.5 py-[3px] text-[12px] font-medium"
+                        className="inline-flex max-w-[calc(100%-100px)] items-center gap-1.5 truncate rounded-full border px-2.5 py-[3px] text-[12px] font-medium"
                         style={{
                           borderColor: `color-mix(in srgb, ${draftCategory.color} 45%, transparent)`,
                           backgroundColor: `color-mix(in srgb, ${draftCategory.color} 18%, transparent)`,
@@ -2726,7 +2786,7 @@ function CalendarPageContent() {
                         <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: draftCategory.color }} />
                         {draftCategory.name}
                       </span>
-                      <h2 className="mt-2.5 pr-16 text-[22px] font-semibold leading-tight" style={{ color: "var(--text-main)" }}>
+                      <h2 className="mt-2.5 pr-24 text-[22px] font-semibold leading-tight" style={{ color: "var(--text-main)" }}>
                         {viewEvent.title || "Untitled event"}
                       </h2>
                       {(() => {

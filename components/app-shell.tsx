@@ -31,6 +31,7 @@ import { useAuth } from "@/lib/auth-context";
 import { DownloadsModal } from "@/components/downloads-modal";
 import { authorizedFetch } from "@/lib/api-fetch";
 import { useAppTabs } from "@/lib/app-tabs-context";
+import { setCompletionActor } from "@/lib/completed-projects";
 import { MOBILE_TOP_BAR_UPDATED_EVENT, readMobileTopBarEnabled, readSidebarResizeLockEnabled, SIDEBAR_RESIZE_LOCK_UPDATED_EVENT } from "@/lib/ui-preferences";
 // Side-effect only — registers the `beforeinstallprompt` listener as early as possible (this
 // component mounts on every staff page), since the browser only ever delivers that event once and
@@ -1904,6 +1905,12 @@ export function AppShell({
       window.clearTimeout(startTimer);
     };
   }, [user?.uid, user?.companyId]);
+
+  // Who's marking projects complete, for the completed-projects record's "Marked by" (lib/completed-projects.ts).
+  useEffect(() => {
+    const uid = String(user?.uid || "").trim();
+    setCompletionActor(uid ? { uid, name: String(user?.displayName || user?.email || "").trim() } : null);
+  }, [user?.displayName, user?.email, user?.uid]);
 
   // Moves the active company's finished projects into Archived once they're past Company Settings'
   // archive delay. There's no server scheduler, so it runs from here, in the background a few seconds

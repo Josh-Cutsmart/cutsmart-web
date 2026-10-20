@@ -747,6 +747,25 @@ body .drawer-toolbar-slim .cutsmart-quote-document-toolbar > .ck.ck-toolbar > .c
   z-index: 1600;
 }
 
+/* Room at the end of a scroll area while the keyboard's up, for a notes box near its end to be scrolled up to the middle
+   of what's visible above the keyboard (lib/use-keyboard-inset.ts sets it, and takes it away as the keyboard goes). */
+[data-keyboard-room]::after {
+  content: "";
+  display: block;
+  flex-shrink: 0;
+  height: var(--keyboard-room-px, 0px);
+}
+
+/* A cutlist / trade notes drawer in the side (CutlistSideDrawer) on a phone — the whole screen — kept to what's visible
+   above the keyboard while it's up, so what's being typed (its editor scrolls itself) isn't behind it. */
+@media (max-width: 639.98px) {
+  html[data-keyboard-open="true"] .cutlist-drawer-docked {
+    top: var(--keyboard-offset-top-px, 0px) !important;
+    bottom: auto !important;
+    height: var(--visual-viewport-height-px) !important;
+  }
+}
+
 /* Pop-up and drawer backdrops reach below the bottom of the layout viewport by the keyboard's height
    (the vars are from lib/use-keyboard-inset.ts, 0px while it's closed). While the keyboard is up, iOS
    can scroll what's on screen down past that bottom edge to reveal the tapped field, and a
@@ -834,6 +853,49 @@ body .drawer-toolbar-slim .cutsmart-quote-document-toolbar > .ck.ck-toolbar > .c
 
 .glass-panel-pop {
   animation: glass-panel-pop-in 300ms cubic-bezier(0.22, 1, 0.36, 1);
+  transform-origin: center;
+}
+
+/* The cutlist's floating bar and Add to Cutlist popping in and out (as the screen's scrolled right down, and back):
+   between the bubble's bounce and the panel's none — in from a little smaller, just past its size and back; out with a
+   pop, a little bigger first, then shrinking away. 180ms out, as floating-bar-slot-pop's (what's waiting on it). */
+@keyframes glass-bar-pop-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.05);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.glass-bar-pop {
+  animation: glass-bar-pop-in 320ms cubic-bezier(0.22, 1, 0.36, 1);
+  transform-origin: center;
+}
+
+@keyframes glass-bar-pop-away {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  35% {
+    opacity: 1;
+    transform: scale(1.05);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.3);
+  }
+}
+
+.glass-bar-pop-away {
+  animation: glass-bar-pop-away 180ms ease-in both;
   transform-origin: center;
 }
 
@@ -1410,6 +1472,27 @@ body[data-theme="dark"] .row-glow--brand {
 
 .hide-native-scrollbar::-webkit-scrollbar {
   display: none;
+}
+
+/* Mobile: the top bar's tab strip (GlobalAppTabsBar) fades out towards the menu button and the bell instead of cutting
+   off — a quick fade, only on a side there's more to scroll to (--tabs-fade-left/right, set by the bar as it scrolls). */
+@media (max-width: 1023px) {
+  [data-app-tabs-strip="1"] {
+    -webkit-mask-image: linear-gradient(
+      to right,
+      transparent 0,
+      #000 var(--tabs-fade-left, 0px),
+      #000 calc(100% - var(--tabs-fade-right, 0px)),
+      transparent 100%
+    );
+    mask-image: linear-gradient(
+      to right,
+      transparent 0,
+      #000 var(--tabs-fade-left, 0px),
+      #000 calc(100% - var(--tabs-fade-right, 0px)),
+      transparent 100%
+    );
+  }
 }
 
 /* Left sidebar's own width, published by AppShell (see its --sidebar-width-px effect) as the

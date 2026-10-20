@@ -291,6 +291,10 @@ type GlassDropdownProps = {
   placeholder?: string;
   // No colour dot in the trigger — for a trigger that's already in the chosen option's colour (e.g. a status pill).
   hideTriggerDot?: boolean;
+  // What the trigger shows instead of the chosen option's dot and label — for a trigger that's its own chip (the
+  // Completed pop-up's bonus period chip: an icon and a short name).
+  triggerContent?: ReactNode;
+  triggerTitle?: string;
 };
 
 // A select-style dropdown: the trigger shows the chosen option (with its colour dot) and a chevron.
@@ -307,6 +311,8 @@ export function GlassDropdown({
   menuAlign = "left",
   placeholder,
   hideTriggerDot = false,
+  triggerContent,
+  triggerTitle,
 }: GlassDropdownProps) {
   const { position, isOpen, triggerRef, menuRef, toggle, close } = useAnchoredGlassMenu({
     rowCount: options.length,
@@ -331,16 +337,19 @@ export function GlassDropdown({
         aria-expanded={isOpen}
         className={`inline-flex items-center gap-2 text-left disabled:opacity-60 ${triggerClassName ?? ""}`}
         style={triggerStyle}
+        title={triggerTitle}
       >
-        {selected?.color && !hideTriggerDot ? (
+        {triggerContent !== undefined ? triggerContent : selected?.color && !hideTriggerDot ? (
           <span
             className="h-2.5 w-2.5 shrink-0 rounded-full transition-colors duration-700 ease-in-out motion-reduce:transition-none"
             style={{ backgroundColor: selected.color }}
           />
         ) : null}
-        <span className="min-w-0 flex-1 truncate" style={selected ? undefined : { color: "var(--text-muted)" }}>
-          {selected?.label ?? placeholder ?? ""}
-        </span>
+        {triggerContent !== undefined ? null : (
+          <span className="min-w-0 flex-1 truncate" style={selected ? undefined : { color: "var(--text-muted)" }}>
+            {selected?.label ?? placeholder ?? ""}
+          </span>
+        )}
         {hideChevron ? null : (
           <ChevronDown
             size={14}

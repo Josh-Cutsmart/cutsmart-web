@@ -71,6 +71,93 @@ function revealFocusedFieldInPanel(): void {
   }
 }
 
+// A notes box (data-keyboard-center — a lead's new note, a project's Notes cards) being typed in with the keyboard up:
+// brought to the middle of what's visible above the keyboard — the box centred if it fits (or, taller, its top just
+// under whatever's over the top of it: a page's stuck title bars), by scrolling whatever scrolls it. Where there isn't
+// enough below it to scroll that far (a box near the end of a page, or of a phone's full-screen pop-up), room's added
+// at the end of that scroll area while the keyboard's up (data-keyboard-room — app/globals.css). Left where the
+// browser put it, it was often behind the keyboard.
+const CENTER_MARGIN_PX = 12;
+const KEYBOARD_ROOM_ATTR = "data-keyboard-room";
+const KEYBOARD_ROOM_VAR = "--keyboard-room-px";
+
+function focusedKeyboardCenterBox(): HTMLElement | null {
+  const field = document.activeElement;
+  return field instanceof HTMLElement ? field.closest<HTMLElement>("[data-keyboard-center]") : null;
+}
+
+// Room at the end of a scroll area (its ::after) — only where that's what it gives (not a box that would just grow
+// taller, nor one using its ::after for something else).
+function addKeyboardRoom(node: HTMLElement, style: CSSStyleDeclaration, px: number): void {
+  const had = node.hasAttribute(KEYBOARD_ROOM_ATTR);
+  if (!had) {
+    if (style.display.includes("grid")) return;
+    const after = getComputedStyle(node, "::after").content;
+    if (after !== "none" && after !== "normal") return;
+  }
+  const previous = node.style.getPropertyValue(KEYBOARD_ROOM_VAR);
+  const heightBefore = node.clientHeight;
+  node.style.setProperty(KEYBOARD_ROOM_VAR, `${Math.ceil((parseFloat(previous) || 0) + px)}px`);
+  node.setAttribute(KEYBOARD_ROOM_ATTR, "true");
+  if (node.clientHeight > heightBefore + 0.5) {
+    // (It grew instead: not a scroll area of a set height.)
+    if (previous) node.style.setProperty(KEYBOARD_ROOM_VAR, previous);
+    else {
+      node.style.removeProperty(KEYBOARD_ROOM_VAR);
+      node.removeAttribute(KEYBOARD_ROOM_ATTR);
+    }
+  }
+}
+
+function clearKeyboardRoom(): void {
+  document.querySelectorAll<HTMLElement>(`[${KEYBOARD_ROOM_ATTR}]`).forEach((node) => {
+    node.removeAttribute(KEYBOARD_ROOM_ATTR);
+    node.style.removeProperty(KEYBOARD_ROOM_VAR);
+  });
+}
+
+function centerFocusedNotesBox(): void {
+  const box = focusedKeyboardCenterBox();
+  const vv = window.visualViewport;
+  if (!box || !vv) return;
+  const visibleTop = vv.offsetTop;
+  const visibleBottom = vv.offsetTop + vv.height;
+  // Each scroll area it's in, innermost first — not the document itself (on a phone the page scrolls in <main>; moving
+  // the document as well just shifts everything, fixed bars and all, out from under the visible area).
+  const areas: HTMLElement[] = [];
+  for (let node = box.parentElement; node && node !== document.body; node = node.parentElement) {
+    const { overflowY } = getComputedStyle(node);
+    if (overflowY === "auto" || overflowY === "scroll") areas.push(node);
+  }
+  for (const area of areas) {
+    const style = getComputedStyle(area);
+    const areaBox = area.getBoundingClientRect();
+    // Under whatever's stuck over its top (its title bars).
+    let coveredTo = areaBox.top;
+    area.querySelectorAll<HTMLElement>("[data-title-bar-stuck]").forEach((bar) => {
+      const barStyle = getComputedStyle(bar);
+      if (barStyle.position === "sticky") coveredTo = Math.max(coveredTo, areaBox.top + (parseFloat(barStyle.top) || 0) + bar.offsetHeight);
+    });
+    const top = Math.max(coveredTo, visibleTop) + CENTER_MARGIN_PX;
+    const bottom = Math.min(areaBox.bottom, visibleBottom) - CENTER_MARGIN_PX;
+    if (bottom - top < 40) continue;
+    const rect = box.getBoundingClientRect();
+    const target = rect.height <= bottom - top ? top + (bottom - top - rect.height) / 2 : top;
+    const delta = rect.top - target;
+    if (Math.abs(delta) < 1) continue;
+    // (Measured again after adding it: what's in a scroll area can reach past the end of its flow, which room after
+    // the flow only adds to once past that — topped up till there's enough, a few tries at most.)
+    for (let tries = 0; delta > 0 && tries < 3; tries += 1) {
+      const short = area.scrollTop + delta - (area.scrollHeight - area.clientHeight);
+      if (short <= 0.5) break;
+      const roomBefore = area.style.getPropertyValue(KEYBOARD_ROOM_VAR);
+      addKeyboardRoom(area, style, short);
+      if (area.style.getPropertyValue(KEYBOARD_ROOM_VAR) === roomBefore) break;
+    }
+    area.scrollTop += delta;
+  }
+}
+
 // Whether what's being typed in is in a pop-up that stays the whole screen on a phone with the keyboard up
 // (data-phone-fullscreen — see app/globals.css): it moves with the visible area rather than being capped to it, so its
 // field needs bringing into view whenever that moves, or another field is tapped.
@@ -122,6 +209,8 @@ export function usePublishKeyboardInsetVars(): void {
         return;
       }
       // (And, for a phone's full-screen pop-up, where the visible area starts: it moves with that, and its field too.)
+      const keyboardCameOrResized = next.keyboardOpen && (!last?.keyboardOpen || last.visibleHeightPx !== next.visibleHeightPx);
+      const keyboardWent = !next.keyboardOpen && Boolean(last?.keyboardOpen);
       const panelCapChanged =
         next.keyboardOpen &&
         (!last?.keyboardOpen ||
@@ -136,19 +225,25 @@ export function usePublishKeyboardInsetVars(): void {
       } else {
         root.removeAttribute(KEYBOARD_OPEN_ATTR);
       }
-      if (panelCapChanged) revealFocusedFieldInPanel();
+      // A notes box: to the middle (as the keyboard comes up or changes size — not as the visible area's moved about,
+      // which is the person scrolling). Anything else in a pop-up: just into view.
+      if (keyboardWent) clearKeyboardRoom();
+      if (keyboardCameOrResized && focusedKeyboardCenterBox()) centerFocusedNotesBox();
+      else if (panelCapChanged && !focusedKeyboardCenterBox()) revealFocusedFieldInPanel();
     };
     const schedule = () => {
       if (frame === null) frame = requestAnimationFrame(publish);
     };
-    // Another field tapped in a phone's full-screen pop-up while the keyboard's up (no viewport change to go on): into
-    // view, once it has the focus.
+    // Another field tapped in a phone's full-screen pop-up, or into a notes box, while the keyboard's up (no viewport
+    // change to go on): into view — a notes box to the middle — once it has the focus.
     let revealFrame: number | null = null;
     const onFocusIn = () => {
-      if (!last?.keyboardOpen || revealFrame !== null || !focusInPhoneFullscreenPanel()) return;
+      if (!last?.keyboardOpen || revealFrame !== null) return;
+      if (!focusedKeyboardCenterBox() && !focusInPhoneFullscreenPanel()) return;
       revealFrame = requestAnimationFrame(() => {
         revealFrame = null;
-        revealFocusedFieldInPanel();
+        if (focusedKeyboardCenterBox()) centerFocusedNotesBox();
+        else revealFocusedFieldInPanel();
       });
     };
     publish();
@@ -162,6 +257,7 @@ export function usePublishKeyboardInsetVars(): void {
       if (frame !== null) cancelAnimationFrame(frame);
       if (revealFrame !== null) cancelAnimationFrame(revealFrame);
       root.removeAttribute(KEYBOARD_OPEN_ATTR);
+      clearKeyboardRoom();
     };
   }, []);
 }

@@ -702,6 +702,33 @@ export function GlobalAppTabsBar() {
     [groupedGlobalTabs],
   );
 
+  // Mobile: the tab strip fades out at an edge there's more to scroll to (globals.css, [data-app-tabs-strip]) — kept
+  // in step as it scrolls, resizes, or its tabs change.
+  useEffect(() => {
+    const strip = topTabsStripRef.current;
+    if (!strip) return;
+    const update = () => {
+      const fadeLeft = strip.scrollLeft > 1;
+      const fadeRight = strip.scrollLeft + strip.clientWidth < strip.scrollWidth - 1;
+      strip.style.setProperty("--tabs-fade-left", fadeLeft ? "20px" : "0px");
+      strip.style.setProperty("--tabs-fade-right", fadeRight ? "20px" : "0px");
+    };
+    update();
+    strip.addEventListener("scroll", update, { passive: true });
+    strip.addEventListener("transitionend", update);
+    const resizes = new ResizeObserver(update);
+    resizes.observe(strip);
+    const changes = new MutationObserver(update);
+    changes.observe(strip, { childList: true, subtree: true });
+    return () => {
+      strip.removeEventListener("scroll", update);
+      strip.removeEventListener("transitionend", update);
+      resizes.disconnect();
+      changes.disconnect();
+    };
+    // (Again whenever the tabs change — the strip only appears with them.)
+  }, [scrollableTabGroups.length]);
+
   useLayoutEffect(() => {
     const nextMode = readThemeMode();
     setThemeMode(nextMode);
@@ -1539,7 +1566,8 @@ export function GlobalAppTabsBar() {
   // if a signed-in staff member opens the link themselves (e.g. to preview it), this bar must
   // still stay hidden rather than rendering internal app chrome on top of a page an external
   // client might also be looking at.
-  const isPreAppRoute = pathname === "/" || pathname === "/company-onboarding" || pathname.startsWith("/client/");
+  const isPreAppRoute =
+    pathname === "/" || pathname === "/company-onboarding" || pathname === "/reset-password" || pathname.startsWith("/client/");
   if (!user || !groupedGlobalTabs.length || chromeHidden || isPreAppRoute) {
     return null;
   }

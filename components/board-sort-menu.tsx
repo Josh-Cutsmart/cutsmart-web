@@ -21,9 +21,12 @@ const MENU_CLASS = "fixed z-[2147483647] overflow-hidden rounded-[10px] border s
 
 type MenuPos = { left: number; top: number };
 
+// Under its button: on a computer, from its left edge (a column's, from its right); on mobile, centred on it. Kept on
+// screen either way.
 function menuPosUnder(el: HTMLElement, alignRight = false): MenuPos {
   const rect = el.getBoundingClientRect();
-  const left = alignRight ? rect.right - MENU_WIDTH : rect.left;
+  const centred = window.matchMedia("(max-width: 1023px)").matches;
+  const left = centred ? rect.left + rect.width / 2 - MENU_WIDTH / 2 : alignRight ? rect.right - MENU_WIDTH : rect.left;
   return { left: Math.max(8, Math.min(left, window.innerWidth - MENU_WIDTH - 8)), top: rect.bottom + 6 };
 }
 

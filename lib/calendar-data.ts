@@ -6,7 +6,7 @@
 // to local midnight of the day after its last day (end is exclusive), so a one-day all-day event is
 // exactly 24h long and multi-day spans are easy to lay out.
 
-import { collection, deleteDoc, deleteField, doc, getDoc, getDocs, onSnapshot, query, serverTimestamp, setDoc, where, writeBatch } from "@/lib/firestore-client";
+import { arrayRemove, arrayUnion, collection, deleteDoc, deleteField, doc, getDoc, getDocs, onSnapshot, query, serverTimestamp, setDoc, where, writeBatch } from "@/lib/firestore-client";
 import { db } from "@/lib/firebase";
 import { invalidateUserCache, readUserDocCached } from "@/lib/firestore-cache";
 
@@ -47,6 +47,9 @@ export type CalendarEvent = {
   // that project's assignee on it (its creator, when no one's assigned). null: saved before events had staff — those
   // count as its staff then (projectEventStaffUids), and it's saved with them the next time it's edited.
   staffUids: string[] | null;
+  // Anyone in the company who's subscribed to it (the bell in its pop-up) — on it or not, they're reminded before it
+  // like its staff, at their own reminder times. Only ever changed by setCalendarEventSubscribed, never by saving it.
+  subscriberUids?: string[];
 };
 
 // Who from a project goes on an event linked to it as its staff: whoever it's assigned to — or, with no one assigned,
@@ -173,6 +176,9 @@ function toEvent(id: string, data: Record<string, unknown>): CalendarEvent | nul
     staffUids: Array.isArray(data.staffUids)
       ? Array.from(new Set(data.staffUids.map((uid) => String(uid ?? "").trim()).filter(Boolean)))
       : null,
+    subscriberUids: Array.isArray(data.subscriberUids)
+      ? Array.from(new Set(data.subscriberUids.map((uid) => String(uid ?? "").trim()).filter(Boolean)))
+      : [],
   };
 }
 
@@ -253,7 +259,10 @@ export async function saveCalendarEvent(companyId: string, event: CalendarEvent)
   const cid = String(companyId || "").trim();
   if (!db || !cid || !event.id) return { ok: false, error: "missing-company" };
   // An event from before staff (staffUids null) keeps none saved — its project's people still count (see staffUids).
-  const { staffUids, ...fields } = event;
+  // Its subscribers aren't saved with it (setCalendarEventSubscribed changes them, one at a time), so an edit from a
+  // copy that's out of date can't drop anyone.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { staffUids, subscriberUids, ...fields } = event;
   try {
     // updatedAt (the server's time, not this device's): how the calendar reminders job notices an event's been saved
     // since it last looked (lib/calendar-reminders-server.ts).
@@ -265,6 +274,26 @@ export async function saveCalendarEvent(companyId: string, event: CalendarEvent)
     return { ok: true };
   } catch (error) {
     return { ok: false, error: String((error as { code?: string })?.code || "save-failed") };
+  }
+}
+
+// Subscribes someone to an event, or unsubscribes them — anyone in the company, whether they're on it or not: they're
+// reminded before it at their own reminder times (lib/calendar-reminders-server.ts). Just them, added or taken out (two
+// people at once can't undo each other); updatedAt so the reminders job looks at it again, but not who modified it.
+export async function setCalendarEventSubscribed(companyId: string, eventId: string, uid: string, subscribed: boolean): Promise<boolean> {
+  const cid = String(companyId || "").trim();
+  const id = String(eventId || "").trim();
+  const who = String(uid || "").trim();
+  if (!db || !cid || !id || !who) return false;
+  try {
+    await setDoc(
+      doc(db, "companies", cid, "calendarEvents", id),
+      { subscriberUids: subscribed ? arrayUnion(who) : arrayRemove(who), updatedAt: serverTimestamp() },
+      { merge: true },
+    );
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -299,6 +328,35 @@ export async function archiveOldCalendarEvents(companyId: string, cutoffMs: numb
     return stale.length;
   } catch {
     return 0;
+  }
+}
+
+// The archived events (archiveOldCalendarEvents), for the Archive page's filing cabinet — each with when it was
+// archived. Throws if they can't be read (the page offers Try again).
+export type ArchivedCalendarEvent = CalendarEvent & { archivedAtIso: string };
+export async function fetchArchivedCalendarEvents(companyId: string): Promise<ArchivedCalendarEvent[]> {
+  const cid = String(companyId || "").trim();
+  if (!db || !cid) return [];
+  const snap = await getDocs(query(collection(db, "companies", cid, "calendarEvents"), where("archived", "==", true)));
+  return snap.docs
+    .map((d) => {
+      const data = (d.data() ?? {}) as Record<string, unknown>;
+      const event = toEvent(d.id, { ...data, archived: false });
+      return event ? { ...event, archivedAtIso: String(data.archivedAtIso ?? "") } : null;
+    })
+    .filter((e): e is ArchivedCalendarEvent => Boolean(e));
+}
+
+// Back onto the calendar (from the Archive page) — only worth it for an event that ended after the company's
+// "Archive events after" cut-off, or the calendar hides it again straight away.
+export async function restoreArchivedCalendarEvent(companyId: string, eventId: string): Promise<boolean> {
+  const cid = String(companyId || "").trim();
+  if (!db || !cid || !eventId) return false;
+  try {
+    await setDoc(doc(db, "companies", cid, "calendarEvents", eventId), { archived: false, archivedAtIso: deleteField() }, { merge: true });
+    return true;
+  } catch {
+    return false;
   }
 }
 

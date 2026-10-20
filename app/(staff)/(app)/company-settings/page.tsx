@@ -61,6 +61,7 @@ import {
   formatDate,
   formatLength,
   formatMoney,
+  currencySymbol,
   normalizeCurrencyCode,
   normalizeDateFormat,
   normalizeMeasurementUnit,
@@ -69,6 +70,7 @@ import {
   activeDateTime,
 } from "@/lib/company-formats";
 import { CompanyJoinCodesModal } from "@/components/company-join-codes-modal";
+import { BONUS_PAID_OPTIONS, BONUS_PERIOD_MONTH_OPTIONS, completionBonusSettingsFrom } from "@/lib/completion-bonus";
 import { LeadFormsPanel, LeadInboxPanel } from "@/components/lead-forms-settings";
 import { normalizeLeadForms, type LeadForm } from "@/lib/lead-forms";
 import {
@@ -121,7 +123,6 @@ type StatusRow = { name: string; color: string; subStages?: SubStageRow[]; isCom
 type SheetSizeRow = { h: string; w: string; isDefault: boolean };
 type BoardEdgingMemoryRow = { value: string; count: string };
 type BoardColourMemoryRow = { value: string; count: string; edgings: BoardEdgingMemoryRow[] };
-type DashboardLegendRow = { id: string; name: string; color: string };
 type TagUsageRow = { value: string; count: string };
 // Every pop-up on this page is put on the page's top level (document.body), not inside the settings content it's
 // written in — inside it, it sat in <main>, the page's scroll area: focusing a field in a pop-up scrolled the settings
@@ -560,7 +561,7 @@ const SETTINGS_SEARCH_INDEX: Array<{ section: SettingsSection; label: string; ca
   { section: "company", card: "Regional formats", label: "Date format" },
   { section: "dashboard", card: "Project statuses", label: "Project statuses", keywords: "sub-stages board columns" },
   { section: "dashboard", card: "Contact categories", label: "Contact categories" },
-  { section: "dashboard", card: "Completed project legend", label: "Completed project legend" },
+  { section: "dashboard", card: "Completion bonus", label: "Completion bonus", keywords: "bonus period quarter paid non qualified minimum quote" },
   { section: "dashboard", card: "Tags", label: "Tags" },
   { section: "dashboard", card: "Finished projects", label: "Archive completed projects", keywords: "archived client portal link completed instantly recently deleted trash" },
   { section: "calendar", card: "Calendar categories", label: "Calendar categories", keywords: "events sub-calendars colours teamup" },
@@ -698,6 +699,7 @@ function Panel({
 // value syntax (bg-[var(--panel-bg)] etc.) instead of inline `style` keeps these compact enough
 // to read at a glance across the hundreds of fields in this file.
 const fieldInputClass = glassFieldClass;
+const BONUS_MONTH_NAMES = Array.from({ length: 12 }, (_, month) => new Intl.DateTimeFormat("en-NZ", { month: "long" }).format(new Date(2024, month, 1)));
 // Same purpose as fieldInputClass but chromeless — no border/background of its own — for a
 // spreadsheet-style grid where the row/column lines already do the separating and a bordered
 // textbox per cell would just be visual noise. Only becomes visible on focus, so it's still
@@ -938,22 +940,6 @@ function normalizeSheetSizes(raw: unknown): SheetSizeRow[] {
     })
     .filter((r) => r.h && r.w);
   return rows.length ? rows : [{ h: "2440", w: "1220", isDefault: true }];
-}
-
-function normalizeDashboardLegend(raw: unknown): DashboardLegendRow[] {
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((item) => item && typeof item === "object")
-    .map((item, idx) => {
-      const row = item as Record<string, unknown>;
-      const name = toStr(row.name);
-      return {
-        id: toStr(row.id, name.toLowerCase().replace(/\s+/g, "_") || `legend_${idx + 1}`),
-        name,
-        color: toStr(row.color, "#2A7A3B"),
-      };
-    })
-    .filter((r) => r.name);
 }
 
 function contrastTextForFill(fill: string): string {
@@ -1788,9 +1774,13 @@ export default function CompanySettingsPage() {
   const [leadStatuses, setLeadStatuses] = useState<StatusRow[]>([]);
   // The company's lead forms (Company Settings → Leads — components/lead-forms-settings.tsx; lib/lead-forms.ts).
   const [leadForms, setLeadForms] = useState<LeadForm[]>([]);
-  const [dashboardLegend, setDashboardLegend] = useState<DashboardLegendRow[]>([]);
-  const [legendDragIndex, setLegendDragIndex] = useState<number | null>(null);
-  const [legendDragOverIndex, setLegendDragOverIndex] = useState<number | null>(null);
+  // Dashboard > Completion bonus (lib/completion-bonus.ts — seen only with dashboard.complete.bonus): the bonus period's
+  // length and the month it starts in, how many months after it it's paid, and the least a job's quote can be to qualify
+  // (as typed; "" for no minimum).
+  const [bonusPeriodMonths, setBonusPeriodMonths] = useState(3);
+  const [bonusStartMonth, setBonusStartMonth] = useState(0);
+  const [bonusPaidMonthsAfter, setBonusPaidMonthsAfter] = useState(1);
+  const [bonusMinimumQuote, setBonusMinimumQuote] = useState("");
   const [statusDragIndex, setStatusDragIndex] = useState<number | null>(null);
   const [statusDragOverIndex, setStatusDragOverIndex] = useState<number | null>(null);
   const [leadStatusDragIndex, setLeadStatusDragIndex] = useState<number | null>(null);
@@ -2166,7 +2156,13 @@ export default function CompanySettingsPage() {
         setStatuses(normalizeStatuses(doc.projectStatuses));
         setLeadStatuses(normalizeLeadStatuses((doc as Record<string, unknown>).leadStatuses));
         setLeadForms(normalizeLeadForms((doc as Record<string, unknown>).leadForms));
-        setDashboardLegend(normalizeDashboardLegend(doc.dashboardCompleteLegend));
+        {
+          const bonus = completionBonusSettingsFrom(doc);
+          setBonusPeriodMonths(bonus.periodMonths);
+          setBonusStartMonth(bonus.startMonth);
+          setBonusPaidMonthsAfter(bonus.paidMonthsAfter);
+          setBonusMinimumQuote(bonus.minimumQuote === null ? "" : String(bonus.minimumQuote));
+        }
         setProjectTagUsage(normalizeProjectTagUsage(doc.projectTagUsage));
         setBoardColourMemory(normalizeBoardColourMemory(doc.boardMaterialUsage));
         setBoardThicknesses(normalizeStringList(doc.boardThicknesses, ["16", "18"]));
@@ -2443,6 +2439,13 @@ export default function CompanySettingsPage() {
     }
     const perms = access.status === "ready" ? access.permissionKeys : Array.isArray(user?.permissions) ? user.permissions : [];
     return hasPermissionKey(perms, "company.settings");
+  }, [access.permissionKeys, access.status, currentMemberRole, user?.permissions]);
+
+  // Dashboard > Completion bonus: only with dashboard.complete.bonus (owners and admins have every permission).
+  const canSeeCompletionBonus = useMemo(() => {
+    if (isOwnerOrAdmin(currentMemberRole)) return true;
+    const perms = access.status === "ready" ? access.permissionKeys : Array.isArray(user?.permissions) ? user.permissions : [];
+    return hasPermissionKey(perms, "dashboard.complete.bonus");
   }, [access.permissionKeys, access.status, currentMemberRole, user?.permissions]);
 
   // The same people the server lets manage join codes (lib/company-join-codes-server.ts).
@@ -3350,6 +3353,14 @@ export default function CompanySettingsPage() {
     void run();
   }, [active, activeCompanyId, leadFieldsLoadedFor]);
 
+  // The company doc's completion bonus fields (lib/completion-bonus.ts).
+  const completionBonusPatch = {
+    bonusPeriodMonths,
+    completedPeriodStartMonth: bonusStartMonth,
+    bonusPaidMonthsAfter,
+    bonusMinimumQuote: Number.parseFloat(bonusMinimumQuote.replace(/[^\d.]/g, "")) > 0 ? Number.parseFloat(bonusMinimumQuote.replace(/[^\d.]/g, "")) : null,
+  };
+
   const downloadBackupSnapshot = () => {
     const snapshot = {
       companyId: activeCompanyId,
@@ -3357,7 +3368,7 @@ export default function CompanySettingsPage() {
       settings: {
         form,
         statuses,
-        dashboardLegend,
+        completionBonus: { bonusPeriodMonths, bonusStartMonth, bonusPaidMonthsAfter, bonusMinimumQuote },
         projectTagUsage,
         boardThicknesses,
         boardFinishes,
@@ -3595,17 +3606,7 @@ export default function CompanySettingsPage() {
         color: toStr(row.color, "#64748B"),
       })),
       leadForms: normalizeLeadForms(leadForms),
-      dashboardCompleteLegend: dashboardLegend
-        .map((row, idx) => {
-          const name = toStr(row.name);
-          if (!name) return null;
-          return {
-            id: toStr(row.id, name.toLowerCase().replace(/\s+/g, "_") || `legend_${idx + 1}`),
-            name,
-            color: toStr(row.color, "#2A7A3B"),
-          };
-        })
-        .filter(Boolean),
+      ...completionBonusPatch,
       projectTagUsage: {
         tags: projectTagUsage
           .map((row) => {
@@ -3871,7 +3872,7 @@ export default function CompanySettingsPage() {
         projectStatuses: statuses,
         leadStatuses,
         leadForms,
-        dashboardCompleteLegend: dashboardLegend,
+        ...completionBonusPatch,
         projectTagUsage: { tags: projectTagUsage },
         boardThicknesses,
         boardFinishes,
@@ -4289,7 +4290,10 @@ export default function CompanySettingsPage() {
     statuses,
     leadStatuses,
     leadForms,
-    dashboardLegend,
+    bonusPeriodMonths,
+    bonusStartMonth,
+    bonusPaidMonthsAfter,
+    bonusMinimumQuote,
     calendarCategories,
     calendarWorkdays,
     calendarRetention,
@@ -6700,69 +6704,84 @@ export default function CompanySettingsPage() {
                       </button>
                     </div>
                   </Panel>
-                  <Panel title="Completed project legend" icon={Award} description="Categories for the completed-projects breakdown on the Dashboard.">
-                    <div className="space-y-1.5">
-                      {dashboardLegend.map((row, idx) => (
-                        <div
-                          key={`${row.id}_${idx}`}
-                          id={`settings_legend_${idx}`}
-                          className={listRowClass}
-                          style={{ opacity: legendDragIndex === idx ? 0.45 : 1 }}
-                          onDragOver={(e) => {
-                            e.preventDefault();
-                            e.dataTransfer.dropEffect = "move";
-                          }}
-                          onDragEnter={(e) => {
-                            e.preventDefault();
-                            if (legendDragIndex == null || legendDragIndex === idx) return;
-                            setDashboardLegend((prev) => moveRowTo(prev, legendDragIndex, idx));
-                            setLegendDragIndex(idx);
-                            setLegendDragOverIndex(idx);
-                          }}
-                          onDrop={(e) => {
-                            e.preventDefault();
-                            setLegendDragIndex(null);
-                            setLegendDragOverIndex(null);
-                            endRowDrag();
-                            triggerAutosaveAfterRowDrop();
-                          }}
-                        >
-                          <button
-                            type="button"
-                            draggable
-                            onDragStart={(e) => {
-                              setLegendDragIndex(idx);
-                              setLegendDragOverIndex(idx);
-                              e.dataTransfer.setData("text/plain", `${idx}`);
-                              startRowDrag(e, `settings_legend_${idx}`, row.name, row.color);
-                            }}
-                            onDragEnd={() => {
-                              setLegendDragIndex(null);
-                              setLegendDragOverIndex(null);
-                              endRowDrag();
-                            }}
-                            className={gripClass}
-                            title="Drag to reorder"
-                          >
-                            <GripVertical size={15} />
-                          </button>
-                          <ColorCircle value={row.color || "#2A7A3B"} onChange={(hex) => setDashboardLegend((prev) => prev.map((v, i) => (i === idx ? { ...v, color: hex } : v)))} />
-                          <input
-                            value={row.name}
-                            placeholder="Legend name"
-                            onChange={(e) => setDashboardLegend((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))}
-                            className={gridCellInputClass}
-                          />
-                          <button type="button" onClick={() => setDashboardLegend((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} title="Remove">
-                            <X size={15} />
-                          </button>
+                  {canSeeCompletionBonus ? (
+                    <Panel
+                      title="Completion bonus"
+                      icon={Award}
+                      description="Jobs completed within a bonus period count towards that period's bonus, paid after it ends — the Completed pop-up on the Dashboard sorts them into these periods. Only people with dashboard.complete.bonus see this."
+                      allowOverflow
+                    >
+                      {/* Labels above full-width fields — this panel sits in a half-width column, too narrow for
+                          FieldRow's label column. */}
+                      <div className="grid gap-3.5">
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <div className="grid min-w-0 gap-1.5">
+                            <p className="text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>Bonus period</p>
+                            <GlassDropdown
+                              value={String(bonusPeriodMonths)}
+                              options={BONUS_PERIOD_MONTH_OPTIONS.map((option) => ({ value: String(option.value), label: option.label }))}
+                              onChange={(next) => setBonusPeriodMonths(Number(next) || 3)}
+                              ariaLabel="Bonus period"
+                              disabled={!canEditCompanySettings}
+                              triggerClassName={`${fieldInputClass} w-full justify-between`}
+                            />
+                          </div>
+                          <div className="grid min-w-0 gap-1.5">
+                            <p className="text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>Starting in</p>
+                            <GlassDropdown
+                              value={String(bonusStartMonth)}
+                              options={BONUS_MONTH_NAMES.map((name, month) => ({ value: String(month), label: name }))}
+                              onChange={(next) => setBonusStartMonth(Number(next) || 0)}
+                              ariaLabel="Bonus period starts in"
+                              disabled={!canEditCompanySettings}
+                              triggerClassName={`${fieldInputClass} w-full justify-between`}
+                            />
+                          </div>
                         </div>
-                      ))}
-                      <button type="button" onClick={() => setDashboardLegend((prev) => [...prev, { id: `legend_${prev.length + 1}`, name: "", color: form.themeColor || "#2A7A3B" }])} className={`${secondaryButtonClass} mt-1.5`}>
-                        <Plus size={14} /> Add legend item
-                      </button>
-                    </div>
-                  </Panel>
+                        <div className="grid min-w-0 gap-1.5 border-t border-[var(--glass-border)] pt-3.5">
+                          <p className="text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>Bonus paid</p>
+                          <GlassDropdown
+                            value={String(bonusPaidMonthsAfter)}
+                            options={BONUS_PAID_OPTIONS.map((option) => ({ value: String(option.value), label: option.label }))}
+                            onChange={(next) => setBonusPaidMonthsAfter(Number(next))}
+                            ariaLabel="Bonus paid"
+                            disabled={!canEditCompanySettings}
+                            triggerClassName={`${fieldInputClass} w-full justify-between`}
+                          />
+                          <p className="text-[12px] leading-[1.45]" style={{ color: "var(--text-muted)" }}>
+                            {(() => {
+                              // An example: this cycle's first period and the month it's paid in.
+                              const last = (bonusStartMonth + bonusPeriodMonths - 1) % 12;
+                              const paid = (bonusStartMonth + bonusPeriodMonths - 1 + bonusPaidMonthsAfter) % 12;
+                              const span =
+                                bonusPeriodMonths === 1
+                                  ? BONUS_MONTH_NAMES[bonusStartMonth]
+                                  : `${BONUS_MONTH_NAMES[bonusStartMonth].slice(0, 3)} – ${BONUS_MONTH_NAMES[last].slice(0, 3)}`;
+                              return `e.g. jobs completed ${span} are paid in ${BONUS_MONTH_NAMES[paid]}.`;
+                            })()}
+                          </p>
+                        </div>
+                        <div className="grid min-w-0 gap-1.5 border-t border-[var(--glass-border)] pt-3.5">
+                          <p className="text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>Non qualified below</p>
+                          <label className={`${fieldInputClass} flex w-full items-center gap-1`}>
+                            <span style={{ color: "var(--text-muted)" }}>{currencySymbol(companyCurrency)}</span>
+                            <input
+                              value={bonusMinimumQuote}
+                              onChange={(e) => setBonusMinimumQuote(e.target.value.replace(/[^\d.]/g, ""))}
+                              inputMode="decimal"
+                              placeholder="No minimum"
+                              aria-label="Non qualified below"
+                              disabled={!canEditCompanySettings}
+                              className="min-w-0 flex-1 bg-transparent outline-none"
+                            />
+                          </label>
+                          <p className="text-[12px] leading-[1.45]" style={{ color: "var(--text-muted)" }}>
+                            A completed job whose accepted quote is under this is flagged in the Completed pop-up. Leave blank for no minimum.
+                          </p>
+                        </div>
+                      </div>
+                    </Panel>
+                  ) : null}
                   <Panel title="Tags" icon={Tags} description="Tags you can put on projects. The number is how many projects use each one.">
                     <div className="flex flex-wrap items-center gap-1.5">
                       {projectTagUsage.map((row, idx) => (
@@ -9378,7 +9397,7 @@ export default function CompanySettingsPage() {
   projectArchiveAfter,
   projectStatuses: statuses,
   leadStatuses,
-  dashboardCompleteLegend: dashboardLegend,
+  completionBonus: completionBonusPatch,
   projectTagUsage,
   quoteTemplatePageSize: backupTemplate.quoteTemplatePageSize,
   quoteTemplateMarginMm: backupTemplate.quoteTemplateMarginMm,

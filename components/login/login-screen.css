@@ -541,6 +541,35 @@ circle.lg-lead-dot-won[data-on] {
   cursor: pointer;
 }
 
+/* Remember me, with "Forgot password?" across from it (onto its own line when there isn't room). */
+.lg-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  margin-top: 14px;
+}
+
+.lg-row > .lg-check {
+  margin-top: 0;
+}
+
+.lg-text-link {
+  flex: none;
+  border: 0;
+  background: transparent;
+  padding: 2px 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--brand);
+  cursor: pointer;
+}
+
+.lg-text-link:hover {
+  text-decoration: underline;
+}
+
 .lg-check input {
   width: 16px;
   height: 16px;

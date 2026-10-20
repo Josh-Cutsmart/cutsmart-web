@@ -62,8 +62,13 @@ function applyOriginArrival(panel: HTMLElement, el: HTMLElement, dx: number, dy:
   // shrink, so by this point it's already invisible regardless of stacking order, and the panel
   // itself has shrunk down to exactly the origin's own box, so there's nothing else on screen for
   // dropping behind normal content to visibly disturb.
+  // (What it was is kept on the wrapper — data-pop-arrival-z — for opening it again before it's gone: see the opening
+  // branch below. Left sunk, an opened-again pop-up sat invisible behind the page, with no way to close it.)
   const wrapper = panel.parentElement;
-  if (wrapper) wrapper.style.zIndex = "-1";
+  if (wrapper) {
+    if (wrapper.dataset.popArrivalZ === undefined) wrapper.dataset.popArrivalZ = wrapper.style.zIndex;
+    wrapper.style.zIndex = "-1";
+  }
 
   // Belt-and-braces alongside sinking the wrapper above: the origin element's own ancestor chain
   // runs through the whole app shell (sidebar, main scroll area, page layout), any link of which
@@ -71,18 +76,32 @@ function applyOriginArrival(panel: HTMLElement, el: HTMLElement, dx: number, dy:
   // modal's own short, single-level portal wrapper, which this hook fully controls. Directly
   // lifting the origin itself covers that case too, so whichever side actually decides the
   // ordering, the origin ends up on top either way. Restored once the hold window ends.
-  const previousPosition = el.style.position;
-  const previousZIndex = el.style.zIndex;
-  if (getComputedStyle(el).position === "static") {
-    el.style.position = "relative";
+  // (Once at a time: a second landing within the hold would otherwise take the lifted values as the ones to go back to,
+  // leaving it lifted for good.)
+  if (el.dataset.popArrivalLift === undefined) {
+    el.dataset.popArrivalLift = `${el.style.position}|${el.style.zIndex}`;
+    if (getComputedStyle(el).position === "static") {
+      el.style.position = "relative";
+    }
+    el.style.zIndex = "10000";
+    window.setTimeout(() => {
+      const [previousPosition = "", previousZIndex = ""] = (el.dataset.popArrivalLift ?? "|").split("|");
+      el.style.position = previousPosition;
+      el.style.zIndex = previousZIndex;
+      delete el.dataset.popArrivalLift;
+    }, ORIGIN_ARRIVAL_HOLD_MS);
   }
-  el.style.zIndex = "10000";
-  window.setTimeout(() => {
-    el.style.position = previousPosition;
-    el.style.zIndex = previousZIndex;
-  }, ORIGIN_ARRIVAL_HOLD_MS);
 
   bounceOriginElement(el, dx, dy);
+}
+
+// A pop-up opened again before it had gone (still mounted): back above the page if its landing had sunk it behind
+// (applyOriginArrival) — left there, it sat invisible behind the page, with no way to close it.
+function restoreSunkPopup(panel: HTMLElement | null) {
+  const wrapper = panel?.parentElement;
+  if (!wrapper || wrapper.dataset.popArrivalZ === undefined) return;
+  wrapper.style.zIndex = wrapper.dataset.popArrivalZ;
+  delete wrapper.dataset.popArrivalZ;
 }
 
 // The nudge an origin element (a button) gives as a pop-up lands back in it: pushed a little the way the pop-up
@@ -268,6 +287,7 @@ export function useGlassModalPopOrigin(
     const activeOrigin = lastOriginRef.current;
 
     if (isOpen) {
+      restoreSunkPopup(panel);
       const backdrop = findGlassModalBackdrop(panel);
       if (backdrop) {
         backdrop.style.transition = "";
@@ -383,8 +403,12 @@ export function useGlassModalShrinkOnClose(
 
   useLayoutEffect(() => {
     // Opening: deliberately does nothing — no grow-from-origin, no fade. The panel appears in
-    // React's own normal mount position immediately, "already open."
-    if (isOpen) return;
+    // React's own normal mount position immediately, "already open." (Opened again before it had gone: back above the
+    // page if its landing had sunk it behind — see applyOriginArrival.)
+    if (isOpen) {
+      restoreSunkPopup(panelRef.current);
+      return;
+    }
 
     const panel = panelRef.current;
     if (!panel) {

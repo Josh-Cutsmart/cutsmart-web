@@ -3,18 +3,23 @@
 //
 // "Dashboard" (first): Project Details; Global Job Selections (Existing Cabinetry's thicknesses, Cabinetry's heights,
 // the hardware and handles); Project Sections (the rooms — a company room, a name after it, and its own drawer type or
-// Global); Board Types & Finishes (with the company's thicknesses / finishes / sheet sizes as dropdowns — they make
+// Global); Board Types & Finishes (ten, with the company's thicknesses / finishes / sheet sizes as dropdowns — they make
 // the rooms' Board dropdowns); and the Order Section (drawers counted from the rooms, hinges, other and misc).
-// "Room 1"…: a sheet per room — its Room picked from Project Sections, its drawer type (and so its drawer rows' Height
-// dropdown) following that section — and the cutlist's columns, the cabinetry-only ones grouped at the end and greyed
-// out for other part types. "Notes": a box for the project's notes and each contractor's. "Lists": the company's
-// settings the dropdowns use (part types, drawer types and sizes, hardware, boards' options, staff, rooms), as they
-// are in Company Settings at download.
+// "Room 1"…: a sheet per room — its Room picked from Project Sections, its drawer type following that section — and the
+// cutlist's columns, the cabinetry-only ones grouped at the end and greyed out for other part types, each row in its
+// part type's colour, and Height a dropdown of the drawer type's heights on a drawer row only. "Notes": a box for the
+// project's notes and each contractor's. "Lists": the company's settings the dropdowns use (part types and their
+// colours, drawer types and sizes, hardware, boards' options, staff, rooms), as they are in Company Settings at
+// download.
+//
+// Built for Excel: each dropdown is a plain range of cells (the Lists sheet's, or worked-out cells beside them) rather
+// than a named range or INDIRECT; the yes / no ones (Top Scribers, Grain, Lacquer, Full Top) are Excel's own tick boxes
+// (addCellCheckboxes — ticked is yes).
 //
 // parseCutlistTemplateWorkbook reads one back (recognised by the Lists sheet's first cell — or an older template's
 // "Data" sheet), by its headings and labels rather than fixed cells.
 
-import type { DataValidation, Workbook, Worksheet } from "exceljs";
+import type { Cell, DataValidation, Workbook, Worksheet } from "exceljs";
 
 export const CUTLIST_TEMPLATE_MARKER = "CutSmart Cutlist Template";
 const DASHBOARD_SHEET = "Dashboard";
@@ -23,9 +28,10 @@ const LISTS_SHEET = "Lists";
 // An older template's sheet of boards and lists (before the Dashboard).
 const LEGACY_DATA_SHEET = "Data";
 const NOT_ROOM_SHEETS = [DASHBOARD_SHEET, NOTES_SHEET, LISTS_SHEET, LEGACY_DATA_SHEET].map((name) => name.toLowerCase());
-// The rooms' rows, the Dashboard's sections / boards rows, and its order rows, that get dropdowns.
+// The rooms' rows, the Dashboard's sections rows (its boards' beside them: fewer), and its order rows, that get dropdowns.
 const TEMPLATE_PART_ROWS = 300;
 const DASHBOARD_TABLE_ROWS = 20;
+const BOARD_ROWS = 10;
 const ORDER_ROWS = 15;
 const NOTE_BOX_ROWS = 8;
 // The Notes sheet's hidden column holding each box's key ("notes", or "contractor:<name>") on its title row.
@@ -69,7 +75,8 @@ export type CutlistTemplateInput = {
   sheetSizes: string[];
   // The company's default sheet size ("2440 x 1220"), the boards' to start with.
   defaultSheetSize: string;
-  partTypes: Array<{ name: string; kind: CutlistTemplatePartKind }>;
+  // Each one's colour ("#F2D57A") — its rows' in the rooms.
+  partTypes: Array<{ name: string; kind: CutlistTemplatePartKind; color?: string }>;
   hardware: CutlistTemplateHardware[];
   // The company's default hardware and its default drawer type — Global Job Selections' to start with.
   defaultHardware: string;
@@ -293,6 +300,27 @@ const listValidation = (formula: string, strict = true): DataValidation => ({
   errorTitle: "Not in the list",
   error: "This isn't one of the options — it'll be imported as written.",
 });
+// A colour ("#F2D57A", "#ABC") as Excel takes it ("FFF2D57A") — "" if it isn't one.
+function argbOf(hex: string | undefined): string {
+  const clean = String(hex ?? "").trim().replace(/^#/, "");
+  const full = /^[0-9a-f]{3}$/i.test(clean) ? clean.replace(/./g, (c) => c + c) : clean;
+  return /^[0-9a-f]{6}$/i.test(full) ? `FF${full.toUpperCase()}` : "";
+}
+// Text on a colour: black on a light one, near-white on a dark one (the Production tab's own cut-off).
+function textArgbOn(hex: string): string {
+  const argb = argbOf(hex);
+  if (!argb) return "FF000000";
+  const [r, g, b] = [2, 4, 6].map((at) => Number.parseInt(argb.slice(at, at + 2), 16));
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 > 0.62 ? "FF000000" : "FFF8FAFC";
+}
+// A yes / no cell: a tick box (ticked is yes) — FALSE to start, marked by this number format so addCellCheckboxes can
+// make its style one (a format of its own that shows TRUE / FALSE as they are — what an Excel without tick boxes shows).
+const CHECKBOX_NUMBER_FORMAT = "0;-0;0;@";
+function tickBox(cell: Cell) {
+  cell.value = false;
+  cell.numFmt = CHECKBOX_NUMBER_FORMAT;
+  cell.alignment = { horizontal: "center", vertical: "middle" };
+}
 function styleHeading(sheet: Worksheet, row: number, from: number, to: number, fill: string) {
   for (let c = from; c <= to; c += 1) {
     const cell = sheet.getCell(row, c);
@@ -385,26 +413,36 @@ export async function buildCutlistTemplateWorkbook(input: CutlistTemplateInput):
   lists.getCell("A3").value = "The company's settings the Dashboard's and rooms' dropdowns use, as they were at download. Leave this sheet as it is.";
   lists.getCell("A3").font = { italic: true, size: 9, color: { argb: COLOURS.muted } };
   let row = 5;
-  // A list down a column (from `top`), named when it has anything in it.
-  const writeColumn = (column: number, top: number, values: string[], name?: string) => {
+  // A range of the Lists sheet, as a dropdown takes it ("Lists!$A$8:$A$11") — plain cells, not a named range.
+  const listRange = (fromColumn: number, fromRow: number, toRow: number, toColumn = fromColumn) =>
+    `${LISTS_SHEET}!${abs(fromColumn, fromRow)}:${abs(toColumn, toRow)}`;
+  // A list down a column (from `top`) — its range ("" when there's nothing in it).
+  const writeColumn = (column: number, top: number, values: string[]) => {
     values.forEach((value, index) => {
       const cell = lists.getCell(top + index, column);
       cell.value = value;
       cell.border = boxBorder;
     });
-    if (name && values.length) {
-      const letter = columnLetter(column);
-      workbook.definedNames.add(`${LISTS_SHEET}!$${letter}$${top}:$${letter}$${top + values.length - 1}`, name);
-    }
+    return values.length ? listRange(column, top, top + values.length - 1) : "";
   };
 
-  sectionTitle(lists, row, "Part Types", "Cabinetry ones use the rooms' cabinetry columns; the rest leave them empty.", 8);
+  // Part types: each one's kind, and the cabinetry and drawer ones on their own (what greys the rooms' columns out, and
+  // gives a drawer row its Height dropdown) — each name in its own colour, its rows' colour in the rooms.
+  sectionTitle(lists, row, "Part Types", "Cabinetry ones use the rooms' cabinetry columns, drawer ones get the Height dropdown — and each one's colour is its rows' in the rooms.", 8);
   row += 2;
-  lists.getCell(row, 1).value = "Part Type";
-  lists.getCell(row, 2).value = "Kind";
-  styleHeading(lists, row, 1, 2, COLOURS.heading);
-  writeColumn(1, row + 1, input.partTypes.map((partType) => partType.name), "PartTypeNames");
-  writeColumn(2, row + 1, input.partTypes.map((partType) => partType.kind), "PartTypeKinds");
+  ["Part Type", "Kind", "Cabinetry", "Drawers"].forEach((text, index) => (lists.getCell(row, index + 1).value = text));
+  styleHeading(lists, row, 1, 4, COLOURS.heading);
+  const partTypesRange = writeColumn(1, row + 1, input.partTypes.map((partType) => partType.name));
+  writeColumn(2, row + 1, input.partTypes.map((partType) => partType.kind));
+  const cabinetryTypesRange = writeColumn(3, row + 1, input.partTypes.filter((partType) => partType.kind === "Cabinetry").map((partType) => partType.name));
+  const drawerPartTypesRange = writeColumn(4, row + 1, input.partTypes.filter((partType) => partType.kind === "Drawer").map((partType) => partType.name));
+  input.partTypes.forEach((partType, index) => {
+    const colour = argbOf(partType.color);
+    if (!colour) return;
+    const cell = lists.getCell(row + 1 + index, 1);
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: colour } };
+    cell.font = { color: { argb: textArgbOn(partType.color ?? "") } };
+  });
   row += 1 + Math.max(1, input.partTypes.length) + 1;
 
   // Drawer types (every hardware's), each with its heights — a room's drawer rows' Height dropdown lists its own.
@@ -416,56 +454,83 @@ export async function buildCutlistTemplateWorkbook(input: CutlistTemplateInput):
       .map((drawer) => ({ label: cutlistTemplateDrawerLabel(hardware.name, drawer.name), heights: drawer.heights })),
   );
   const drawerLabelRow = row;
+  const mostDrawerHeights = Math.max(1, ...drawerTypes.map((drawer) => drawer.heights.length));
   drawerTypes.forEach((drawer, index) => {
     lists.getCell(drawerLabelRow, index + 1).value = drawer.label;
-    writeColumn(index + 1, drawerLabelRow + 1, drawer.heights.map((height) => heightOptionText(height.letter, height.size)), `Drawer_${index + 1}`);
+    writeColumn(index + 1, drawerLabelRow + 1, drawer.heights.map((height) => heightOptionText(height.letter, height.size)));
   });
+  const drawerLabelsRange = drawerTypes.length ? listRange(1, drawerLabelRow, drawerLabelRow, drawerTypes.length) : "";
+  const drawerHeightsBlock = drawerTypes.length ? listRange(1, drawerLabelRow + 1, drawerLabelRow + mostDrawerHeights, drawerTypes.length) : "";
   if (drawerTypes.length) {
     styleHeading(lists, drawerLabelRow, 1, drawerTypes.length, COLOURS.heading);
-    workbook.definedNames.add(`${LISTS_SHEET}!$A$${drawerLabelRow}:$${columnLetter(drawerTypes.length)}$${drawerLabelRow}`, "DrawerTypes");
   } else {
     lists.getCell(drawerLabelRow, 1).value = "No drawer types in Company Settings › Hardware.";
     lists.getCell(drawerLabelRow, 1).font = { italic: true, color: { argb: COLOURS.muted } };
   }
-  row = drawerLabelRow + 1 + Math.max(1, ...drawerTypes.map((drawer) => drawer.heights.length)) + 1;
+  row = drawerLabelRow + 1 + mostDrawerHeights + 1;
 
-  // Hardware: each brand's drawer types, hinges and other items (Global Job Selections' and the Order Section's).
-  const hardwareTable = (title: string, hint: string, pick: (hardware: CutlistTemplateHardware) => string[], prefix: string) => {
+  // Hardware: each brand's drawer types, hinges and other items (Global Job Selections' and the Order Section's) — its
+  // names along the top (`names`), each one's list below its name (`block`).
+  const hardwareTable = (title: string, hint: string, pick: (hardware: CutlistTemplateHardware) => string[]) => {
     sectionTitle(lists, row, title, hint, 8);
     row += 2;
     const top = row;
+    const longest = Math.max(1, ...input.hardware.map((hardware) => pick(hardware).length));
     input.hardware.forEach((hardware, index) => {
       lists.getCell(top, index + 1).value = hardware.name;
-      writeColumn(index + 1, top + 1, pick(hardware), `${prefix}_${index + 1}`);
+      writeColumn(index + 1, top + 1, pick(hardware));
     });
     if (input.hardware.length) styleHeading(lists, top, 1, input.hardware.length, COLOURS.heading);
-    row = top + 1 + Math.max(1, ...input.hardware.map((hardware) => pick(hardware).length)) + 1;
-    return top;
+    row = top + 1 + longest + 1;
+    return {
+      names: input.hardware.length ? listRange(1, top, top, input.hardware.length) : "",
+      block: input.hardware.length ? listRange(1, top + 1, top + longest, input.hardware.length) : "",
+      longest,
+    };
   };
-  const hardwareNamesRow = hardwareTable("Hardware · Drawer Types", "Global Job Selections' Drawer Type follows its Hardware.", (hardware) => hardware.drawers.map((drawer) => drawer.name), "Drawers");
-  if (input.hardware.length) {
-    workbook.definedNames.add(`${LISTS_SHEET}!$A$${hardwareNamesRow}:$${columnLetter(input.hardware.length)}$${hardwareNamesRow}`, "HardwareNames");
-  }
-  hardwareTable("Hardware · Hinges", "The Order Section's Hinge Type follows Global Job Selections' Hardware.", (hardware) => hardware.hinges, "Hinges");
-  hardwareTable("Hardware · Other", "The Order Section's Other items follow Global Job Selections' Hardware.", (hardware) => hardware.other, "Others");
+  const hardwareDrawers = hardwareTable("Hardware · Drawer Types", "Global Job Selections' Drawer Type follows its Hardware.", (hardware) => hardware.drawers.map((drawer) => drawer.name));
+  const hardwareHinges = hardwareTable("Hardware · Hinges", "The Order Section's Hinge Type follows Global Job Selections' Hardware.", (hardware) => hardware.hinges);
+  const hardwareOther = hardwareTable("Hardware · Other", "The Order Section's Other items follow Global Job Selections' Hardware.", (hardware) => hardware.other);
+  const hardwareNamesRange = hardwareDrawers.names;
 
   sectionTitle(lists, row, "Company Settings", "Board options, staff, rooms, and the sections' drawer types.", 8);
   row += 2;
   const sectionDrawerTypes = [GLOBAL_DRAWER_TYPE, ...drawerTypes.map((drawer) => drawer.label)];
-  const companyLists: Array<[string, string[], string]> = [
-    ["Thicknesses", input.thicknesses, "Thicknesses"],
-    ["Finishes", input.finishes, "Finishes"],
-    ["Sheet Sizes", input.sheetSizes, "SheetSizes"],
-    ["Staff", input.staff, "Staff"],
-    ["Rooms", input.roomNames, "RoomNames"],
-    ["Section Drawer Types", sectionDrawerTypes, "SectionDrawerTypes"],
+  const companyLists: Array<[string, string[]]> = [
+    ["Thicknesses", input.thicknesses],
+    ["Finishes", input.finishes],
+    ["Sheet Sizes", input.sheetSizes],
+    ["Staff", input.staff],
+    ["Rooms", input.roomNames],
+    ["Section Drawer Types", sectionDrawerTypes],
   ];
-  companyLists.forEach(([heading, values, name], index) => {
+  const companyRange: Record<string, string> = {};
+  companyLists.forEach(([heading, values], index) => {
     lists.getCell(row, index + 1).value = heading;
-    writeColumn(index + 1, row + 1, values, name);
+    companyRange[heading] = writeColumn(index + 1, row + 1, values);
   });
   styleHeading(lists, row, 1, companyLists.length, COLOURS.heading);
-  const hasList = (name: string) => companyLists.some(([, values, listName]) => listName === name && values.length);
+
+  // Worked out (hidden, beside the lists): the Dashboard's Hardware's own drawer types, hinges and other items, one
+  // under another — the lists its Drawer Type and the Order Section's dropdowns show (each only as long as it is).
+  const hardwareRef = abs(globalCell("hardware").column, globalCell("hardware").row);
+  const pickedColumn = Math.max(8, drawerTypes.length, input.hardware.length) + 3;
+  const pickedList = (offset: number, heading: string, table: ReturnType<typeof hardwareTable>) => {
+    const column = pickedColumn + offset;
+    lists.getColumn(column).hidden = true;
+    lists.getCell(5, column).value = heading;
+    if (!table.names) return "";
+    for (let k = 1; k <= table.longest; k += 1) {
+      lists.getCell(5 + k, column).value = {
+        formula: `IFERROR(INDEX(${table.block},${k},MATCH(${DASHBOARD_SHEET}!${hardwareRef},${table.names},0))&"","")`,
+        result: "",
+      };
+    }
+    return `OFFSET(${LISTS_SHEET}!${abs(column, 6)},0,0,MAX(1,COUNTIF(${LISTS_SHEET}!${abs(column, 6)}:${abs(column, 5 + table.longest)},"?*")),1)`;
+  };
+  const pickedDrawersList = pickedList(0, "Its drawer types", hardwareDrawers);
+  const pickedHingesList = pickedList(1, "Its hinges", hardwareHinges);
+  const pickedOtherList = pickedList(2, "Its other items", hardwareOther);
   lists.views = [{ state: "normal", showGridLines: false }];
 
   // ---- Dashboard
@@ -496,7 +561,7 @@ export async function buildCutlistTemplateWorkbook(input: CutlistTemplateInput):
     // (Typed in — a date entered shows as one.)
     if (text === "Current Date") cell.numFmt = "dd-mm-yyyy";
   });
-  if (hasList("Staff")) addValidation(dashboard, `${columnLetter(C.c)}${ROW.topFirst + 2}`, listValidation("Staff", false));
+  if (companyRange.Staff) addValidation(dashboard, `${columnLetter(C.c)}${ROW.topFirst + 2}`, listValidation(companyRange.Staff, false));
   zebraRows(dashboard, ROW.topFirst, topLast, C.b, C.d, []);
   card(dashboard, ROW.topTitle, topLast, C.b, C.d, "📄  PROJECT DETAILS");
 
@@ -508,19 +573,19 @@ export async function buildCutlistTemplateWorkbook(input: CutlistTemplateInput):
     if (field.label) label(r, group.labelColumn, group.labelTo, field.label);
     const cell = value(r, field.column ?? group.valueColumn, field.column ?? group.valueTo);
     const address = `${columnLetter(field.column ?? group.valueColumn)}${r}`;
-    if (["carcassThickness", "panelThickness", "frontsThickness"].includes(field.key) && hasList("Thicknesses")) {
-      addValidation(dashboard, address, listValidation("Thicknesses"));
+    if (["carcassThickness", "panelThickness", "frontsThickness"].includes(field.key) && companyRange.Thicknesses) {
+      addValidation(dashboard, address, listValidation(companyRange.Thicknesses));
     }
-    if (field.key === "topScribers") addValidation(dashboard, address, listValidation(quoteList(["Yes", "No"])));
+    if (field.key === "topScribers") tickBox(cell);
     if (field.key === "hobSide") addValidation(dashboard, address, listValidation(quoteList(["RH", "LH"])));
     if (field.key === "handles") addValidation(dashboard, address, listValidation(quoteList(["Front Fixed", "Profile"])));
-    if ((field.key === "hardware" || field.key === "hingeType") && input.hardware.length) {
-      addValidation(dashboard, address, listValidation("HardwareNames"));
+    // Hinge Type: whose hinges (a hardware brand, as the Production tab has it).
+    if ((field.key === "hardware" || field.key === "hingeType") && hardwareNamesRange) {
+      addValidation(dashboard, address, listValidation(hardwareNamesRange));
       cell.value = defaultHardware?.name ?? "";
     }
-    if (field.key === "drawerType" && input.hardware.length) {
-      const hardwareCell = globalCell("hardware");
-      addValidation(dashboard, address, listValidation(`INDIRECT("Drawers_"&MATCH(${abs(hardwareCell.column, hardwareCell.row)},HardwareNames,0))`));
+    if (field.key === "drawerType" && pickedDrawersList) {
+      addValidation(dashboard, address, listValidation(pickedDrawersList));
       const drawer = defaultHardware?.drawers.find((item) => item.name === input.defaultDrawer) ?? defaultHardware?.drawers[0];
       cell.value = drawer?.name ?? "";
     }
@@ -532,7 +597,6 @@ export async function buildCutlistTemplateWorkbook(input: CutlistTemplateInput):
   hobSideCell.border = { ...(hobSideCell.border ?? {}), right: thinBorder };
   card(dashboard, ROW.topTitle, topLast, C.f, C.n, "🌐  GLOBAL JOB SELECTIONS");
   // The Dashboard's drawer type, as a label ("Blum · Legrabox") — a Global section's, and so its rooms'.
-  const hardwareRef = abs(globalCell("hardware").column, globalCell("hardware").row);
   const drawerRef = abs(globalCell("drawerType").column, globalCell("drawerType").row);
   const globalDrawerLabelFormula = `IF(OR(${hardwareRef}="",${drawerRef}=""),"",${hardwareRef}&" · "&${drawerRef})`;
   const defaultDrawerLabel = defaultHardware
@@ -555,14 +619,15 @@ export async function buildCutlistTemplateWorkbook(input: CutlistTemplateInput):
     };
     for (const column of [C.b, C.c, C.d]) dashboard.getCell(r, column).font = { size: 10 };
   }
-  if (hasList("RoomNames")) addValidation(dashboard, `B${ROW.tablesFirst}:B${tablesLast}`, listValidation("RoomNames", false));
-  addValidation(dashboard, `D${ROW.tablesFirst}:D${tablesLast}`, listValidation("SectionDrawerTypes"));
+  if (companyRange.Rooms) addValidation(dashboard, `B${ROW.tablesFirst}:B${tablesLast}`, listValidation(companyRange.Rooms, false));
+  addValidation(dashboard, `D${ROW.tablesFirst}:D${tablesLast}`, listValidation(companyRange["Section Drawer Types"]));
   zebraRows(dashboard, ROW.tablesFirst, tablesLast, C.b, C.d, [C.b, C.c]);
   card(dashboard, ROW.tablesTitle, tablesLast, C.b, C.d, "📌  PROJECT SECTIONS");
   const sectionRoomRange = `${DASHBOARD_SHEET}!$${columnLetter(C.sectionRoom)}$${ROW.tablesFirst}:$${columnLetter(C.sectionRoom)}$${tablesLast}`;
   const sectionDrawerRange = `${DASHBOARD_SHEET}!$${columnLetter(C.sectionDrawer)}$${ROW.tablesFirst}:$${columnLetter(C.sectionDrawer)}$${tablesLast}`;
 
-  // Board Types & Finishes — each one's name worked out (hidden), for the rooms' Board dropdowns.
+  // Board Types & Finishes (BOARD_ROWS of them) — each one's name worked out (hidden), for the rooms' Board dropdowns.
+  const boardsLast = ROW.tablesFirst + BOARD_ROWS - 1;
   tableHead(
     dashboard,
     ROW.tablesHead,
@@ -572,27 +637,28 @@ export async function buildCutlistTemplateWorkbook(input: CutlistTemplateInput):
   const thickness = columnLetter(boardColumn("Thickness"));
   const finish = columnLetter(boardColumn("Finish"));
   const boardRange = (heading: (typeof BOARD_COLUMNS)[number]["heading"]) =>
-    `${columnLetter(boardColumn(heading))}${ROW.tablesFirst}:${columnLetter(boardColumn(heading))}${tablesLast}`;
-  for (let r = ROW.tablesFirst; r <= tablesLast; r += 1) {
+    `${columnLetter(boardColumn(heading))}${ROW.tablesFirst}:${columnLetter(boardColumn(heading))}${boardsLast}`;
+  for (let r = ROW.tablesFirst; r <= boardsLast; r += 1) {
     for (const column of BOARD_COLUMNS) if (column.to > column.from) dashboard.mergeCells(r, column.from, r, column.to);
     dashboard.getCell(r, boardColumn("Sheet Size")).value = input.defaultSheetSize;
     dashboard.getCell(r, boardColumn("Edging")).value = "Matching";
-    // Grain / Lacquer: blank is no — ticked (✓) is yes.
-    for (const heading of ["Grain", "Lacquer"] as const) dashboard.getCell(r, boardColumn(heading)).alignment = { horizontal: "center" };
     for (let column = C.f; column <= C.n; column += 1) dashboard.getCell(r, column).font = { size: 10 };
     dashboard.getCell(r, C.boardName).value = {
       formula: `IF(TRIM(${colour}${r})="","",TRIM(TRIM(${colour}${r})&" "&IF(TRIM(${thickness}${r})="","",IF(RIGHT(LOWER(TRIM(${thickness}${r})),2)="mm",TRIM(${thickness}${r}),TRIM(${thickness}${r})&"mm"))&" "&TRIM(${finish}${r})))`,
       result: "",
     };
   }
-  if (hasList("Thicknesses")) addValidation(dashboard, boardRange("Thickness"), listValidation("Thicknesses"));
-  if (hasList("Finishes")) addValidation(dashboard, boardRange("Finish"), listValidation("Finishes"));
-  if (hasList("SheetSizes")) addValidation(dashboard, boardRange("Sheet Size"), listValidation("SheetSizes"));
-  for (const heading of ["Grain", "Lacquer"] as const) addValidation(dashboard, boardRange(heading), listValidation(quoteList(["✓"])));
-  zebraRows(dashboard, ROW.tablesFirst, tablesLast, C.f, C.n, BOARD_COLUMNS.slice(0, -1).map((column) => column.to));
-  card(dashboard, ROW.tablesTitle, tablesLast, C.f, C.n, "📁  BOARD TYPES & FINISHES");
+  if (companyRange.Thicknesses) addValidation(dashboard, boardRange("Thickness"), listValidation(companyRange.Thicknesses));
+  if (companyRange.Finishes) addValidation(dashboard, boardRange("Finish"), listValidation(companyRange.Finishes));
+  if (companyRange["Sheet Sizes"]) addValidation(dashboard, boardRange("Sheet Size"), listValidation(companyRange["Sheet Sizes"]));
+  zebraRows(dashboard, ROW.tablesFirst, boardsLast, C.f, C.n, BOARD_COLUMNS.slice(0, -1).map((column) => column.to));
+  // Grain / Lacquer: tick boxes (ticked is yes) — after the zebra, so each keeps its row's shade.
+  for (let r = ROW.tablesFirst; r <= boardsLast; r += 1) {
+    for (const heading of ["Grain", "Lacquer"] as const) tickBox(dashboard.getCell(r, boardColumn(heading)));
+  }
+  card(dashboard, ROW.tablesTitle, boardsLast, C.f, C.n, "📁  BOARD TYPES & FINISHES");
   const boardNameColumn = columnLetter(C.boardName);
-  const boardNamesList = `OFFSET(${DASHBOARD_SHEET}!$${boardNameColumn}$${ROW.tablesFirst},0,0,MAX(1,COUNTIF(${DASHBOARD_SHEET}!$${boardNameColumn}$${ROW.tablesFirst}:$${boardNameColumn}$${tablesLast},"?*")),1)`;
+  const boardNamesList = `OFFSET(${DASHBOARD_SHEET}!$${boardNameColumn}$${ROW.tablesFirst},0,0,MAX(1,COUNTIF(${DASHBOARD_SHEET}!$${boardNameColumn}$${ROW.tablesFirst}:$${boardNameColumn}$${boardsLast},"?*")),1)`;
 
   // Order Section: hinges, other items and misc (drawers are worked out from the cutlist once it's imported).
   const orderRows = ORDER_ROWS;
@@ -630,18 +696,11 @@ export async function buildCutlistTemplateWorkbook(input: CutlistTemplateInput):
     for (let column = C.b; column <= C.n; column += 1) dashboard.getCell(r, column).font = { size: 10 };
     for (const table of orderTables) dashboard.getCell(r, table.qty).alignment = { horizontal: "center" };
   }
-  if (input.hardware.length) {
+  {
     const [hinges, other] = orderTables;
-    addValidation(
-      dashboard,
-      `${columnLetter(hinges.from)}${orderFirst}:${columnLetter(hinges.from)}${orderLast}`,
-      listValidation(`INDIRECT("Hinges_"&MATCH(${hardwareRef},HardwareNames,0))`),
-    );
-    addValidation(
-      dashboard,
-      `${columnLetter(other.from)}${orderFirst}:${columnLetter(other.from)}${orderLast}`,
-      listValidation(`INDIRECT("Others_"&MATCH(${hardwareRef},HardwareNames,0))`),
-    );
+    // The Dashboard's Hardware's own hinges and other items.
+    if (pickedHingesList) addValidation(dashboard, `${columnLetter(hinges.from)}${orderFirst}:${columnLetter(hinges.from)}${orderLast}`, listValidation(pickedHingesList));
+    if (pickedOtherList) addValidation(dashboard, `${columnLetter(other.from)}${orderFirst}:${columnLetter(other.from)}${orderLast}`, listValidation(pickedOtherList));
   }
   zebraRows(dashboard, orderFirst, orderLast, C.b, C.n, orderTables.map((table) => table.nameTo));
   card(dashboard, ROW.orderTitle, orderLast, C.b, C.n, "💼  ORDER SECTION");
@@ -678,11 +737,17 @@ export async function buildCutlistTemplateWorkbook(input: CutlistTemplateInput):
   const sectionNamesList = `OFFSET(${DASHBOARD_SHEET}!$${columnLetter(C.sectionRoom)}$${ROW.tablesFirst},0,0,MAX(1,COUNTIF(${sectionRoomRange},"?*")),1)`;
   const partsFirst = 8;
   const partsLast = partsFirst + TEMPLATE_PART_ROWS - 1;
-  // A hidden cell on each room's sheet with the drawer type its drawers are on (the Height dropdown's).
+  // Hidden on each room's sheet: the drawer type its drawers are on; that drawer type's heights, one under another (its
+  // drawer rows' Height dropdown); and an empty cell (the "dropdown" of every other row — nothing in it).
   const effectiveDrawerColumn = PART_COLUMNS.length + 2;
+  const heightsColumn = PART_COLUMNS.length + 3;
+  const emptyColumn = PART_COLUMNS.length + 4;
+  // Each part type's colour across its rows (as the Production tab's cutlist entry has them) — text dark or light to
+  // suit it.
+  const colouredPartTypes = input.partTypes.filter((partType) => argbOf(partType.color));
   for (const sheet of roomSheets) {
     PART_COLUMNS.forEach((column, index) => (sheet.getColumn(index + 1).width = column.width));
-    sheet.getColumn(effectiveDrawerColumn).hidden = true;
+    for (const hidden of [effectiveDrawerColumn, heightsColumn, emptyColumn]) sheet.getColumn(hidden).hidden = true;
     // Along the top: the project and room on the left, the company and its designer on the right.
     const field = (r: number, labelColumn: number, from: number, to: number, text: string, align: "left" | "right", cellValue: unknown = "") => {
       const labelCell = sheet.getCell(r, labelColumn);
@@ -745,7 +810,8 @@ export async function buildCutlistTemplateWorkbook(input: CutlistTemplateInput):
     // Its Room: one of the Dashboard's Project Sections (or typed in).
     addValidation(sheet, "B2", listValidation(sectionNamesList, false));
 
-    // Its drawer type: picked from the drawer types — left blank, its section's own, or else the Dashboard's.
+    // Its drawer type: picked from the drawer types — left blank, its section's own (no Room picked, or one that isn't a
+    // section: the Dashboard's).
     const drawerRow = 4;
     const drawerLabel = sheet.getCell(drawerRow, 1);
     drawerLabel.value = "Drawer Type";
@@ -755,13 +821,22 @@ export async function buildCutlistTemplateWorkbook(input: CutlistTemplateInput):
     const drawerCell = sheet.getCell(drawerRow, 2);
     drawerCell.border = boxBorder;
     drawerCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: COLOURS.sectionFill } };
-    if (drawerTypes.length) addValidation(sheet, `B${drawerRow}`, listValidation("DrawerTypes"));
+    if (drawerLabelsRange) addValidation(sheet, `B${drawerRow}`, listValidation(drawerLabelsRange));
     const effectiveDrawer = sheet.getCell(drawerRow, effectiveDrawerColumn);
     effectiveDrawer.value = {
-      formula: `IF(TRIM($B$${drawerRow})<>"",$B$${drawerRow},IFERROR(INDEX(${sectionDrawerRange},MATCH($B$2,${sectionRoomRange},0)),${dashboardDrawerLabel}))`,
+      formula: `IF(TRIM($B$${drawerRow})<>"",$B$${drawerRow},IF(TRIM($B$2)="",${dashboardDrawerLabel},IFERROR(INDEX(${sectionDrawerRange},MATCH(TRIM($B$2),${sectionRoomRange},0)),${dashboardDrawerLabel})))`,
       result: defaultDrawerLabel,
     };
     const effectiveDrawerRef = abs(effectiveDrawerColumn, drawerRow);
+    // That drawer type's heights ("A · 140mm"), one under another.
+    if (drawerTypes.length) {
+      for (let k = 1; k <= mostDrawerHeights; k += 1) {
+        sheet.getCell(partsFirst + k - 1, heightsColumn).value = {
+          formula: `IFERROR(INDEX(${drawerHeightsBlock},${k},MATCH(${effectiveDrawerRef},${drawerLabelsRange},0))&"","")`,
+          result: "",
+        };
+      }
+    }
 
     // The columns, grouped: the parts', then the cabinetry-only ones.
     const groupRow = drawerRow + 2;
@@ -784,16 +859,30 @@ export async function buildCutlistTemplateWorkbook(input: CutlistTemplateInput):
     styleHeading(sheet, headingRow, firstCabinetryColumn, lastColumn, COLOURS.cabinetryHeading);
     sheet.getRow(headingRow).height = 20;
 
-    for (let rr = partsFirst; rr <= partsLast; rr += 1) {
-      for (let c = 1; c <= lastColumn; c += 1) sheet.getCell(rr, c).border = boxBorder;
-    }
     const col = (field: PartField) => columnLetter(PART_COLUMNS.findIndex((column) => column.field === field) + 1);
     const range = (field: PartField) => `${col(field)}${partsFirst}:${col(field)}${partsLast}`;
-    if (input.partTypes.length) addValidation(sheet, range("partType"), listValidation("PartTypeNames"));
+    const fullTopColumn = PART_COLUMNS.findIndex((column) => column.field === "fullTop") + 1;
+    for (let rr = partsFirst; rr <= partsLast; rr += 1) {
+      for (let c = 1; c <= lastColumn; c += 1) sheet.getCell(rr, c).border = boxBorder;
+      // Full Top: a tick box (ticked is yes).
+      tickBox(sheet.getCell(rr, fullTopColumn));
+    }
+    if (partTypesRange) addValidation(sheet, range("partType"), listValidation(partTypesRange));
     addValidation(sheet, range("board"), listValidation(boardNamesList));
-    // Height: a drawer's from its room's drawer type — anything else (a size in mm) typed in as it is.
-    if (drawerTypes.length) {
-      addValidation(sheet, range("height"), listValidation(`INDIRECT("Drawer_"&MATCH(${effectiveDrawerRef},DrawerTypes,0))`, false));
+    // Height: a dropdown of its drawer type's heights on a drawer part type's row — on any other, nothing in it (a size
+    // in mm typed in as it is).
+    const typeCell = `$${col("partType")}${partsFirst}`;
+    if (drawerTypes.length && drawerPartTypesRange) {
+      const heightsTop = abs(heightsColumn, partsFirst);
+      const heightsAll = `${heightsTop}:${abs(heightsColumn, partsFirst + mostDrawerHeights - 1)}`;
+      addValidation(
+        sheet,
+        range("height"),
+        listValidation(
+          `IF(COUNTIF(${drawerPartTypesRange},${typeCell})>0,OFFSET(${heightsTop},0,0,MAX(1,COUNTIF(${heightsAll},"?*")),1),${abs(emptyColumn, partsFirst)})`,
+          false,
+        ),
+      );
     }
     addValidation(sheet, range("clashLong"), listValidation(quoteList(["1L", "2L"])));
     addValidation(sheet, range("clashShort"), listValidation(quoteList(["1S", "2S"])));
@@ -802,23 +891,42 @@ export async function buildCutlistTemplateWorkbook(input: CutlistTemplateInput):
     addValidation(sheet, range("fixedDrilling"), listValidation(quoteList(["No", "Even Spacing", "Centre"])));
     addValidation(sheet, range("adjustableDrilling"), listValidation(quoteList(["No", "Even Spacing", "Centre"])));
     addValidation(sheet, range("clashBottom"), listValidation(quoteList(["Bottom", "Top/Bottom"])));
-    addValidation(sheet, range("fullTop"), listValidation(quoteList(["Yes", "No"])));
 
-    // Greyed out where they don't apply: the cabinetry columns for other part types, clashing for cabinetry.
-    const typeCell = `$${col("partType")}${partsFirst}`;
-    const isCabinetry = `COUNTIFS(PartTypeNames,${typeCell},PartTypeKinds,"Cabinetry")>0`;
+    // Greyed out where they don't apply (the cabinetry columns for other part types, clashing for cabinetry) — over each
+    // part type's colour across its row.
     const greyed = {
       fill: { type: "pattern" as const, pattern: "solid" as const, bgColor: { argb: COLOURS.greyedFill } },
       font: { color: { argb: COLOURS.greyedText } },
     };
-    if (input.partTypes.length) {
+    let priority = 1;
+    if (cabinetryTypesRange) {
+      const isCabinetry = `COUNTIF(${cabinetryTypesRange},${typeCell})>0`;
       sheet.addConditionalFormatting({
         ref: `${columnLetter(firstCabinetryColumn)}${partsFirst}:${columnLetter(lastColumn)}${partsLast}`,
-        rules: [{ type: "expression", priority: 1, formulae: [`AND(${typeCell}<>"",NOT(${isCabinetry}))`], style: greyed }],
+        rules: [{ type: "expression", priority: priority++, formulae: [`AND(${typeCell}<>"",NOT(${isCabinetry}))`], style: greyed }],
       });
       sheet.addConditionalFormatting({
         ref: `${col("clashLong")}${partsFirst}:${col("clashShort")}${partsLast}`,
-        rules: [{ type: "expression", priority: 2, formulae: [isCabinetry], style: greyed }],
+        rules: [{ type: "expression", priority: priority++, formulae: [isCabinetry], style: greyed }],
+      });
+    } else if (input.partTypes.length) {
+      sheet.addConditionalFormatting({
+        ref: `${columnLetter(firstCabinetryColumn)}${partsFirst}:${columnLetter(lastColumn)}${partsLast}`,
+        rules: [{ type: "expression", priority: priority++, formulae: [`${typeCell}<>""`], style: greyed }],
+      });
+    }
+    if (colouredPartTypes.length) {
+      sheet.addConditionalFormatting({
+        ref: `A${partsFirst}:${columnLetter(lastColumn)}${partsLast}`,
+        rules: colouredPartTypes.map((partType) => ({
+          type: "expression" as const,
+          priority: priority++,
+          formulae: [`${typeCell}="${partType.name.replace(/"/g, '""')}"`],
+          style: {
+            fill: { type: "pattern" as const, pattern: "solid" as const, bgColor: { argb: argbOf(partType.color) } },
+            font: { color: { argb: textArgbOn(partType.color ?? "") } },
+          },
+        })),
       });
     }
     sheet.views = [{ state: "frozen", ySplit: headingRow, xSplit: 0, showGridLines: false }];
@@ -854,7 +962,66 @@ export async function buildCutlistTemplateWorkbook(input: CutlistTemplateInput):
   notesSheet.views = [{ state: "normal", showGridLines: false }];
 
   const buffer = await workbook.xlsx.writeBuffer();
-  return new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  const withTickBoxes = await addCellCheckboxes(buffer as ArrayBuffer);
+  return new Blob([withTickBoxes as BlobPart], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+}
+
+// Excel's cell tick boxes (Insert › Checkbox) — which exceljs can't write: each yes / no cell is written with
+// CHECKBOX_NUMBER_FORMAT (tickBox), and here every cell style with that format gets the tick box's extension, with the
+// feature property bag part it points to (as Excel itself — and XlsxWriter — write them). Excel without tick boxes
+// shows the cell's TRUE / FALSE.
+async function addCellCheckboxes(buffer: ArrayBuffer): Promise<Uint8Array | ArrayBuffer> {
+  const { default: JSZip } = await import("jszip");
+  const zip = await JSZip.loadAsync(buffer);
+  const stylesFile = zip.file("xl/styles.xml");
+  const typesFile = zip.file("[Content_Types].xml");
+  const relsFile = zip.file("xl/_rels/workbook.xml.rels");
+  if (!stylesFile || !typesFile || !relsFile) return buffer;
+  let styles = await stylesFile.async("string");
+  const unescape = (text: string) => text.replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  const formatId = Array.from(styles.matchAll(/<numFmt\s+numFmtId="(\d+)"\s+formatCode="([^"]*)"\s*\/>/g)).find(
+    (match) => unescape(match[2]) === CHECKBOX_NUMBER_FORMAT,
+  )?.[1];
+  const xfsMatch = styles.match(/<cellXfs\b[^>]*>([\s\S]*?)<\/cellXfs>/);
+  if (!formatId || !xfsMatch || xfsMatch.index === undefined) return buffer;
+  const extension =
+    '<extLst><ext uri="{C7286773-470A-42A8-94C5-96B5CB345126}" xmlns:xfpb="http://schemas.microsoft.com/office/spreadsheetml/2022/featurepropertybag"><xfpb:xfComplement i="0"/></ext></extLst>';
+  const xfs = xfsMatch[1].replace(/<xf\b([^>]*?)(\/>|>([\s\S]*?)<\/xf>)/g, (whole, attributes: string, _end: string, inner?: string) => {
+    if (!new RegExp(`\\bnumFmtId="${formatId}"`).test(attributes)) return whole;
+    return `<xf${attributes}>${inner ?? ""}${extension}</xf>`;
+  });
+  const xfsStart = xfsMatch.index + xfsMatch[0].indexOf(">") + 1;
+  styles = styles.slice(0, xfsStart) + xfs + styles.slice(xfsStart + xfsMatch[1].length);
+  zip.file("xl/styles.xml", styles, { createFolders: false });
+  zip.file(
+    "xl/featurePropertyBag/featurePropertyBag.xml",
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<FeaturePropertyBags xmlns="http://schemas.microsoft.com/office/spreadsheetml/2022/featurepropertybag"><bag type="Checkbox"/><bag type="XFControls"><bagId k="CellControl">0</bagId></bag><bag type="XFComplement"><bagId k="XFControls">1</bagId></bag><bag type="XFComplements" extRef="XFComplementsMapperExtRef"><a k="MappedFeaturePropertyBags"><bagId>2</bagId></a></bag></FeaturePropertyBags>',
+    { createFolders: false },
+  );
+  const types = await typesFile.async("string");
+  if (!types.includes("featurepropertybag")) {
+    zip.file(
+      "[Content_Types].xml",
+      types.replace(
+        "</Types>",
+        '<Override PartName="/xl/featurePropertyBag/featurePropertyBag.xml" ContentType="application/vnd.ms-excel.featurepropertybag+xml"/></Types>',
+      ),
+      { createFolders: false },
+    );
+  }
+  const rels = await relsFile.async("string");
+  if (!rels.includes("FeaturePropertyBag")) {
+    const nextId = Math.max(0, ...Array.from(rels.matchAll(/Id="rId(\d+)"/g)).map((match) => Number(match[1]))) + 1;
+    zip.file(
+      "xl/_rels/workbook.xml.rels",
+      rels.replace(
+        "</Relationships>",
+        `<Relationship Id="rId${nextId}" Type="http://schemas.microsoft.com/office/2022/11/relationships/FeaturePropertyBag" Target="featurePropertyBag/featurePropertyBag.xml"/></Relationships>`,
+      ),
+      { createFolders: false },
+    );
+  }
+  return zip.generateAsync({ type: "uint8array", compression: "DEFLATE" });
 }
 
 // ---- Reading it back

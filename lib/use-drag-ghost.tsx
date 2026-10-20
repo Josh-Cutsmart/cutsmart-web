@@ -12,6 +12,8 @@ import { forwardRef, useImperativeHandle, useRef, useState, type RefObject } fro
 // A Kanban card (the Dashboard's and Leads' boards — anything inside a [data-board-card-id] wrapper)
 // gets the whole card instead of the pill: a see-through copy of it, hanging from the cursor by its
 // top edge with a slight tilt, lifted straight off the card's own spot and swinging the same way.
+// A wide row marked data-drag-ghost="compact" (the Dashboard's Completed pop-up) is lifted the same way
+// as a shorter card: just its left part — anything in it marked data-drag-ghost-hide left off — on glass.
 
 // badge: shown in a green circle on the pill's top-left corner (e.g. how many of an item are being dragged). tint: the
 // pill washed with a light tint of this colour (as the row it was picked up from), instead of plain glass.
@@ -29,6 +31,8 @@ const CARD_GHOST_OPACITY = "0.85";
 const CARD_GHOST_SHADOW = "0 18px 38px rgba(15, 23, 42, 0.28)";
 // Its resting tilt, hanging from the cursor — the swing is added to it.
 const CARD_TILT_DEG = 3;
+// A compact row's copy: as wide as what's left of it needs, up to this.
+const COMPACT_GHOST_MAX_WIDTH = 360;
 
 const DragGhostPill = forwardRef<DragGhostHandle>(function DragGhostPill(_props, ref) {
   const [content, setContent] = useState<DragGhostContent>(null);
@@ -383,11 +387,22 @@ export function useDragGhost(): DragGhostController {
     copy.style.opacity = CARD_GHOST_OPACITY;
     copy.style.boxShadow = CARD_GHOST_SHADOW;
     copy.style.cursor = "grabbing";
+    const compact = card.dataset.dragGhost === "compact";
+    if (compact) {
+      copy.querySelectorAll("[data-drag-ghost-hide]").forEach((node) => node.remove());
+      copy.style.width = "max-content";
+      copy.style.maxWidth = `${Math.min(rect.width, COMPACT_GHOST_MAX_WIDTH)}px`;
+      copy.style.backgroundColor = "var(--glass-modal-bg)";
+      copy.style.backdropFilter = "blur(12px) saturate(220%)";
+      copy.style.setProperty("-webkit-backdrop-filter", "blur(12px) saturate(220%)");
+    }
     slot.replaceChildren(copy);
     edgeScroll.begin(card);
+    // Lifted from the card's own spot — a compact copy from its left end.
+    const liftWidth = compact ? copy.offsetWidth || rect.width : rect.width;
     ghost.style.transition = "none";
     ghost.style.transformOrigin = "50% 0";
-    ghost.style.transform = `translate(${rect.left + rect.width / 2}px, ${rect.top}px) translate(-50%, 0) rotate(0deg)`;
+    ghost.style.transform = `translate(${rect.left + liftWidth / 2}px, ${rect.top}px) translate(-50%, 0) rotate(0deg)`;
     ghost.style.opacity = "1";
     growFrameRef.current = requestAnimationFrame(() => {
       growFrameRef.current = null;
@@ -489,8 +504,10 @@ export function useDragGhost(): DragGhostController {
           landingRef.current = false;
         };
         landingFinishRef.current = finish;
+        // (A compact copy lands on the row's left end, where it was lifted from.)
+        const landWidth = copy?.dataset.dragGhost === "compact" ? copy.offsetWidth || rect.width : rect.width;
         ghost.style.transition = "transform 280ms cubic-bezier(0.22, 1, 0.36, 1)";
-        ghost.style.transform = `translate(${rect.left + rect.width / 2}px, ${rect.top}px) translate(-50%, 0px) rotate(0deg)`;
+        ghost.style.transform = `translate(${rect.left + landWidth / 2}px, ${rect.top}px) translate(-50%, 0px) rotate(0deg)`;
         if (copy) {
           copy.style.transition = "opacity 280ms ease, box-shadow 280ms ease";
           copy.style.opacity = "1";

@@ -183,6 +183,14 @@ service cloud.firestore {
         allow read, write: if isCompanyMember(companyId);
       }
 
+      // The completed-projects record (lib/completed-projects.ts — the Dashboard's Completed pop-up, for completion
+      // bonuses): one doc per project, written as it's marked complete, stamped reopened / deleted, never removed —
+      // so nobody can delete one here either. Same company-member access as the jobs themselves for the rest.
+      match /completedProjects/{projectId} {
+        allow read, create, update: if isCompanyMember(companyId);
+        allow delete: if false;
+      }
+
       // Leads (Leads page) — read straight from here so the page shows them quickly and stays live
       // (subscribeCompanyLeads in lib/firestore-data.ts). Same as /api/leads already gives any member:
       // which leads someone sees (all, or only their own) is the app's leads.view.others permission.

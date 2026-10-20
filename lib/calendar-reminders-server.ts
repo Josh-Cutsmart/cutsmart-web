@@ -14,7 +14,8 @@ import { isCompanyMemberUid, pushStoredNotification } from "@/lib/push-server";
 
 // Calendar reminders: "<event> for <project> is in 2 days" ("<event> is in 2 days" with no project). An event
 // reminds each of its staff (staffUids — linking a project puts that project's assignee on it, or its creator with no
-// one assigned; an event saved before events had staff: the same), as far ahead as they chose (User
+// one assigned; an event saved before events had staff: the same) and everyone subscribed to it (subscriberUids — the
+// bell in its pop-up; anyone in the company, on it or not), as far ahead as they chose (User
 // Settings > Phone & Desktop Notifications > Upcoming events) — each calendar category's own reminders, or their usual ones
 // (users/{uid}.calendarReminderCategories / calendarReminderLead), one list for timed and all-day events: minutes
 // and hours exactly that long before a timed event (an all-day event: 8am on the day); days, weeks and months on
@@ -278,10 +279,14 @@ export async function runCalendarReminders(options: { siteOrigin: string; compan
       // Linked to a project that's gone, archived or deleted: none.
       const project = projectId ? await projectFor(projectId) : null;
       if (projectId && (!project || project.closed)) continue;
-      // Its staff — or, saved before events had staff, its project's assignee (its creator, with no one assigned).
+      // Its staff — or, saved before events had staff, its project's assignee (its creator, with no one assigned) — and
+      // its subscribers.
       const staffUids = Array.from(
         new Set(
-          (Array.isArray(event.staffUids) ? event.staffUids.map(str) : [project?.assigneeUid || project?.creatorUid || ""]).filter(Boolean),
+          [
+            ...(Array.isArray(event.staffUids) ? event.staffUids.map(str) : [project?.assigneeUid || project?.creatorUid || ""]),
+            ...(Array.isArray(event.subscriberUids) ? event.subscriberUids.map(str) : []),
+          ].filter(Boolean),
         ),
       );
       if (!staffUids.length) continue;

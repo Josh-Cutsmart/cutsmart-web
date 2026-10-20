@@ -611,6 +611,12 @@ export async function seedPreviewDatabase(db: Firestore): Promise<void> {
       { id: "converted", name: "Converted", color: "#2A7A3B" },
     ],
     dashboardCompleteLegend: [],
+    // Company Settings › Dashboard › Completion bonus (lib/completion-bonus.ts): quarterly from December, paid the month
+    // after, jobs quoted under $5,000 flagged.
+    bonusPeriodMonths: 3,
+    completedPeriodStartMonth: 11,
+    bonusPaidMonthsAfter: 1,
+    bonusMinimumQuote: 5000,
     projectArchiveAfter: "never",
     projectTagUsage: {
       tags: [
@@ -905,6 +911,235 @@ export async function seedPreviewDatabase(db: Firestore): Promise<void> {
       createdAtIso: iso(daysAgo(3 * DAY)),
       updatedAtIso: iso(daysAgo(3 * DAY)),
     });
+  });
+
+  // The Archive's filing cabinet: things put away over the past few months — the one part of the preview that reaches
+  // back before this month, since old things are what it's for (none of it shows anywhere else). Projects archived
+  // with their contacts (linked, so the contacts don't come back from the projects), a supplier, leads (isDeleted —
+  // read straight from here in the preview, which holds /api/leads) and calendar events archived once they'd ended.
+  const monthsAgoAt = (months: number, day: number, hour = 10, minute = 0) => {
+    const d = new Date(now.getFullYear(), now.getMonth() - months, 1);
+    d.setDate(Math.min(day, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()));
+    d.setHours(hour, minute, 0, 0);
+    return d.getTime();
+  };
+  const archivedJobs = [
+    { id: "prv_job_arch_1", name: "Whitmore Scullery", first: "Claire", last: "Whitmore", address: "17 Kauri Street, Morrinsville", status: "Completed", assigned: 2, created: monthsAgoAt(4, 3), completed: monthsAgoAt(2, 20, 16, 0), archived: monthsAgoAt(1, 12, 15, 40), tags: ["kitchen", "full makeover"] },
+    { id: "prv_job_arch_2", name: "Bennett Study Desk", first: "Sam", last: "Bennett", address: "4 Weka Place, Hamilton", status: "Completed", assigned: 3, created: monthsAgoAt(4, 18), completed: monthsAgoAt(2, 4, 11, 0), archived: monthsAgoAt(2, 6, 9, 15), tags: ["small project"] },
+    { id: "prv_job_arch_3", name: "Aldridge Kitchen", first: "Ruth", last: "Aldridge", address: "220 River Road, Ngaruawahia", status: "Design", assigned: 1, created: monthsAgoAt(4, 9), completed: 0, archived: monthsAgoAt(3, 22, 16, 5), tags: ["kitchen"] },
+    { id: "prv_job_arch_4", name: "Ruapehu Lodge Bunks", first: "Ruapehu", last: "Lodge Trust", address: "1 Bruce Road, Whakapapa", status: "Completed", assigned: 2, created: monthsAgoAt(5, 1), completed: monthsAgoAt(5, 2, 15, 0), archived: monthsAgoAt(5, 3, 11, 30), tags: ["full makeover"] },
+  ];
+  archivedJobs.forEach((job, index) => {
+    const assignee = TEAM[job.assigned];
+    const customer = `${job.first} ${job.last}`;
+    const email = `${slug(job.first)}.${slug(job.last)}@example.com`;
+    const phone = `021 555 03${String(10 + index)}`;
+    const clientId = `prv_client_arch_${index + 1}`;
+    put(`${company}/jobs/${job.id}`, {
+      id: job.id,
+      companyId: PREVIEW_COMPANY_ID,
+      name: job.name,
+      customer,
+      clientFirstName: job.first,
+      clientLastName: job.last,
+      clientName: customer,
+      client: customer,
+      clientNumber: phone,
+      clientPhone: phone,
+      clientEmail: email,
+      clientAddress: job.address,
+      clientId,
+      notes: "",
+      createdByUid: PREVIEW_UID,
+      createdByName: PREVIEW_NAME,
+      assignedTo: assignee.name,
+      assignedToName: assignee.name,
+      assignedToUid: assignee.uid,
+      createdAtIso: iso(job.created),
+      updatedAtIso: iso(job.archived),
+      createdAt: Timestamp.fromMillis(job.created),
+      updatedAt: Timestamp.fromMillis(job.archived),
+      status: job.status,
+      tags: job.tags,
+      isDeleted: false,
+      isArchived: true,
+      archivedAtIso: iso(job.archived),
+      ...(job.completed ? { completedAtIso: iso(job.completed), completedAt: Timestamp.fromMillis(job.completed) } : {}),
+      projectSettings: { boardTypes: [{ ...BOARDS[0], sheets: "2" }], projectPermissions: {} },
+    });
+    put(`${company}/clients/${clientId}`, {
+      id: clientId,
+      companyId: PREVIEW_COMPANY_ID,
+      name: customer,
+      email,
+      emailNormalized: email,
+      phone,
+      address: job.address,
+      notes: "",
+      category: "Clients",
+      archived: true,
+      archivedAtIso: iso(job.archived + 4 * 60_000),
+      createdAtIso: iso(job.created),
+      updatedAtIso: iso(job.archived + 4 * 60_000),
+      firstProjectAtIso: iso(job.created),
+      lastProjectAtIso: iso(job.created),
+      lastProjectId: job.id,
+      projectCount: 1,
+      createdByUids: [PREVIEW_UID],
+      assignedToUids: [assignee.uid],
+      completedProjectIds: job.completed ? [job.id] : [],
+      history: [],
+    });
+  });
+  put(`${company}/clients/prv_contact_arch_hinges`, {
+    id: "prv_contact_arch_hinges",
+    companyId: PREVIEW_COMPANY_ID,
+    name: "Northern Hinges Ltd",
+    email: "sales@example.com",
+    emailNormalized: "sales@example.com",
+    phone: "09 555 0177",
+    address: "8 Foundry Lane, Penrose, Auckland",
+    notes: "Stopped stocking soft-close runners — switched supplier.",
+    category: "Supplier",
+    archived: true,
+    archivedAtIso: iso(monthsAgoAt(4, 15, 14, 0)),
+    createdAtIso: iso(monthsAgoAt(5, 2)),
+    updatedAtIso: iso(monthsAgoAt(4, 15, 14, 0)),
+    projectCount: 0,
+    createdByUids: [PREVIEW_UID],
+    assignedToUids: [],
+    completedProjectIds: [],
+    history: [],
+  });
+  [
+    { name: "Grace Turner", message: "Kitchen refresh — just after a rough price for now.", status: "Contacted", created: monthsAgoAt(1, 3, 19, 10), archived: monthsAgoAt(1, 18, 11, 20), assigned: 1 },
+    { name: "Hemi Walker", message: "Built-in wardrobes for three bedrooms.", status: "New", created: monthsAgoAt(2, 21, 8, 45), archived: monthsAgoAt(2, 25, 13, 45), assigned: 3 },
+    { name: "Isla Morgan", message: "Wall-hung vanity, 750 wide, with a stone top.", status: "Qualified", created: monthsAgoAt(3, 2, 12, 5), archived: monthsAgoAt(3, 9, 10, 5), assigned: 1 },
+    { name: "Jack Fraser", message: "Laundry cupboards — went with a flat-pack option in the end.", status: "New", created: monthsAgoAt(4, 24, 20, 30), archived: monthsAgoAt(4, 28, 17, 30), assigned: 2 },
+  ].forEach((lead, index) => {
+    const id = `prv_lead_arch_${index + 1}`;
+    const email = `${slug(lead.name)}@example.com`;
+    const phone = `022 555 03${String(10 + index)}`;
+    const assignee = TEAM[lead.assigned];
+    put(`${company}/leads/${id}`, {
+      id,
+      companyId: PREVIEW_COMPANY_ID,
+      name: lead.name,
+      email,
+      phone,
+      message: lead.message,
+      formName: "Website enquiry",
+      submittedAtIso: iso(lead.created),
+      createdAtIso: iso(lead.created),
+      updatedAtIso: iso(lead.archived),
+      createdAt: Timestamp.fromMillis(lead.created),
+      deletedAtIso: iso(lead.archived),
+      isDeleted: true,
+      source: "zapier-form",
+      status: lead.status,
+      assignedToUid: assignee.uid,
+      assignedToName: assignee.name,
+      assignedTo: assignee.name,
+      imageItems: [],
+      imageUrls: [],
+      rawFields: { FullName: lead.name, Email: email, Phone: phone, Message: lead.message },
+    });
+  });
+  [
+    { title: "Site measure — Whitmore Scullery", categoryId: "measures", start: monthsAgoAt(3, 4, 9, 0), end: monthsAgoAt(3, 4, 10, 0), job: 0, location: "17 Kauri Street, Morrinsville" },
+    { title: "Install — Whitmore Scullery", categoryId: "installs", start: monthsAgoAt(2, 14, 0), end: monthsAgoAt(2, 15, 0), allDay: true, job: 0, location: "17 Kauri Street, Morrinsville" },
+    { title: "Design meeting — Bennett Study Desk", categoryId: "meetings", start: monthsAgoAt(3, 11, 14, 0), end: monthsAgoAt(3, 11, 15, 0), job: 1, location: "Showroom" },
+    { title: "Deliver — Bennett Study Desk", categoryId: "installs", start: monthsAgoAt(2, 4, 8, 30), end: monthsAgoAt(2, 4, 10, 0), job: 1, location: "4 Weka Place, Hamilton" },
+    { title: "Team planning day", categoryId: "meetings", start: monthsAgoAt(1, 8, 9, 0), end: monthsAgoAt(1, 8, 12, 0), location: "Showroom", notes: "Winter schedule and the new edgebander." },
+    { title: "Workshop clean-up", categoryId: "factory", start: monthsAgoAt(1, 26, 13, 0), end: monthsAgoAt(1, 26, 16, 0), location: "Workshop" },
+    { title: "Liam — annual leave", categoryId: "leave", start: monthsAgoAt(4, 17, 0), end: monthsAgoAt(4, 20, 0), allDay: true },
+    { title: "Bunks install — Ruapehu Lodge", categoryId: "installs", start: monthsAgoAt(5, 1, 0), end: monthsAgoAt(5, 2, 0), allDay: true, job: 3, location: "1 Bruce Road, Whakapapa" },
+  ].forEach((event, index) => {
+    const id = `prv_event_arch_${String(index + 1).padStart(2, "0")}`;
+    const job = event.job === undefined ? null : archivedJobs[event.job];
+    put(`${company}/calendarEvents/${id}`, {
+      id,
+      companyId: PREVIEW_COMPANY_ID,
+      title: event.title,
+      categoryId: event.categoryId,
+      allDay: Boolean(event.allDay),
+      startMs: event.start,
+      endMs: event.end,
+      location: event.location ?? "",
+      notes: event.notes ?? "",
+      projectId: job?.id ?? "",
+      projectName: job?.name ?? "",
+      createdByUid: PREVIEW_UID,
+      createdByName: PREVIEW_NAME,
+      showToClient: false,
+      staffUids: job ? [TEAM[job.assigned].uid] : [PREVIEW_UID],
+      createdAtIso: iso(event.start - 14 * DAY),
+      updatedAtIso: iso(event.start - 14 * DAY),
+      archived: true,
+      archivedAtIso: iso(Math.min(event.end + 30 * DAY, nowMs - DAY)),
+    });
+  });
+
+  // Accepted quotes for two of the completed jobs — one under the bonus minimum, one over (the Completed pop-up flags the
+  // first). Just a total cell each: what the pop-up reads (lib/firestore-data.ts fetchAcceptedQuoteTotalText).
+  [
+    { job: "prv_job_11", total: "$3,200.00" },
+    { job: "prv_job_12", total: "$12,800.00" },
+  ].forEach((quote, index) => {
+    const acceptedMs = daysAgo((20 + index * 5) * DAY);
+    put(`${company}/jobs/${quote.job}/quoteGridVersions/prv_quote_${index + 1}`, {
+      name: "Quote",
+      version: 1,
+      savedAtIso: iso(acceptedMs - DAY),
+      savedByName: PREVIEW_NAME,
+      sentToClient: true,
+      acceptedAtIso: iso(acceptedMs),
+      acceptedByName: "Client",
+      grid: {
+        columnWidths: [240],
+        rows: [{ id: `prv_quote_row_${index + 1}`, heightPx: 24, cells: [{ text: `Total ${quote.total}`, quoteTotalText: quote.total }] }],
+      },
+    });
+  });
+
+  // A live Quote and Specifications sheet for one job — what its Sales tab shows, and what a deleted project's emailed
+  // copy attaches (lib/project-email-copy.ts).
+  const sheetRows = (lines: Array<[string, string]>) =>
+    lines.map(([left, right], index) => ({
+      id: `prv_sheet_row_${index + 1}`,
+      heightPx: 26,
+      cells: [{ text: left, ...(index === 0 ? { style: { bold: true } } : {}) }, { text: right, style: { align: "right" } }],
+    }));
+  put(`${company}/jobs/prv_job_08/salesGrids/quote`, {
+    grid: {
+      pageSize: "A4",
+      columnWidths: [420, 180],
+      rows: sheetRows([
+        ["Patel Kitchen & Scullery — Quote", ""],
+        ["Kitchen cabinetry, supply and install", "$14,200.00"],
+        ["Scullery cabinetry, supply and install", "$5,850.00"],
+        ["Benchtops (engineered stone)", "$4,600.00"],
+        ["Total", "$24,650.00"],
+      ]),
+      groups: [],
+    },
+    updatedAtIso: iso(daysAgo(30 * DAY)),
+  });
+  put(`${company}/jobs/prv_job_08/salesGrids/specifications`, {
+    grid: {
+      pageSize: "A4",
+      columnWidths: [240, 360],
+      rows: sheetRows([
+        ["Patel Kitchen & Scullery — Specifications", ""],
+        ["Carcass", "White melamine 16mm"],
+        ["Doors & drawer fronts", "Matt lacquer, Resene Black White"],
+        ["Handles", "Finger pull, brushed brass"],
+        ["Hinges & runners", "Soft-close throughout"],
+        ["Benchtop", "Engineered stone, 20mm, pencil round edge"],
+      ]),
+      groups: [],
+    },
+    updatedAtIso: iso(daysAgo(30 * DAY)),
   });
 
   const notifications = [

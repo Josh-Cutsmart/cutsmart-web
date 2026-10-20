@@ -4400,7 +4400,8 @@ export default function LeadsPage() {
     const canDeleteAny = isOwnerOrAdmin(access.role);
     const newestFirst = [...notes].reverse();
     const composer = canAdd ? (
-      <div>
+      // (Brought to the middle of what's visible above a phone's keyboard as it's written in — lib/use-keyboard-inset.ts.)
+      <div data-keyboard-center="true">
         {/* In a see-through box like each of the lead's fields — the text box itself clear (bg-transparent and no border
             of its own: the app's blanket text-box colours, a solid grey in dark mode, would cover the box). */}
         <div className="rounded-[14px] border px-3 py-2.5 transition focus-within:border-[var(--brand)]" style={LEAD_POPUP_BOX_STYLE}>

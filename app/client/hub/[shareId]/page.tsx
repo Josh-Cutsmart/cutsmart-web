@@ -12,6 +12,7 @@ import { buildSpecsGridPdfBlob, openPdfBlobInPrintWindow } from "@/lib/specs-gri
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { usePublishKeyboardInsetVars } from "@/lib/use-keyboard-inset";
 import { swallowNextClick } from "@/lib/swallow-dismiss-click";
+import { actedByLabel } from "@/lib/on-behalf";
 
 type Phase = "loading" | "ready" | "load-error";
 type Tab = "specs" | "quote" | "schedule";
@@ -218,6 +219,8 @@ export default function ClientSpecsSharePage() {
   const [grid, setGrid] = useState<SpecsGrid | null>(null);
   const [confirmationSubmittedAt, setConfirmationSubmittedAt] = useState<string | null>(null);
   const [confirmationSubmittedByName, setConfirmationSubmittedByName] = useState<string | null>(null);
+  // Submitted / accepted by staff for the client (app/api/specs-share/[shareId]/on-behalf): who.
+  const [confirmationSubmittedOnBehalfByName, setConfirmationSubmittedOnBehalfByName] = useState<string | null>(null);
   const [answeringKey, setAnsweringKey] = useState<string | null>(null);
 
   // Schedule tab: the project's calendar events staff chose to show the client. The tab only exists
@@ -243,6 +246,7 @@ export default function ClientSpecsSharePage() {
   const [quoteGrid, setQuoteGrid] = useState<SpecsGrid | null>(null);
   const [quoteAcceptedAt, setQuoteAcceptedAt] = useState<string | null>(null);
   const [quoteAcceptedByName, setQuoteAcceptedByName] = useState<string | null>(null);
+  const [quoteAcceptedOnBehalfByName, setQuoteAcceptedOnBehalfByName] = useState<string | null>(null);
   const [quoteDeclinedAt, setQuoteDeclinedAt] = useState<string | null>(null);
   const [quoteDeclinedByName, setQuoteDeclinedByName] = useState<string | null>(null);
 
@@ -324,6 +328,7 @@ export default function ClientSpecsSharePage() {
               assignedContact?: { name: string; email: string; mobile: string } | null;
               confirmationSubmittedAt?: string | null;
               confirmationSubmittedByName?: string | null;
+              confirmationSubmittedOnBehalfByName?: string | null;
               sentVersion?: string;
             }>,
           fetch(`/api/specs-share/${shareId}/quote-grid`)
@@ -336,6 +341,7 @@ export default function ClientSpecsSharePage() {
               assignedContact?: { name: string; email: string; mobile: string } | null;
               quoteAcceptedAt?: string | null;
               quoteAcceptedByName?: string | null;
+              quoteAcceptedOnBehalfByName?: string | null;
               quoteDeclinedAt?: string | null;
               quoteDeclinedByName?: string | null;
               sentVersion?: string;
@@ -354,6 +360,7 @@ export default function ClientSpecsSharePage() {
           setAssignedContact((prev) => prev || specsData.assignedContact || null);
           setConfirmationSubmittedAt(specsData.confirmationSubmittedAt || null);
           setConfirmationSubmittedByName(specsData.confirmationSubmittedByName || null);
+          setConfirmationSubmittedOnBehalfByName(specsData.confirmationSubmittedOnBehalfByName || null);
           setSpecsAvailable(true);
           anyAvailable = true;
         } else if (!isNotSentError(specsData.error)) {
@@ -366,6 +373,7 @@ export default function ClientSpecsSharePage() {
           setAssignedContact((prev) => prev || quoteData.assignedContact || null);
           setQuoteAcceptedAt(quoteData.quoteAcceptedAt || null);
           setQuoteAcceptedByName(quoteData.quoteAcceptedByName || null);
+          setQuoteAcceptedOnBehalfByName(quoteData.quoteAcceptedOnBehalfByName || null);
           setQuoteDeclinedAt(quoteData.quoteDeclinedAt || null);
           setQuoteDeclinedByName(quoteData.quoteDeclinedByName || null);
           setQuoteAvailable(true);
@@ -949,7 +957,7 @@ export default function ClientSpecsSharePage() {
                     {locked ? (
                       <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-[10px] border px-4 py-3 text-[13px] font-bold" style={{ borderColor: "#15803D", backgroundColor: "#F0FDF4", color: "#15803D" }}>
                         <span>
-                          Submitted by {confirmationSubmittedByName || "you"} on{" "}
+                          {actedByLabel("Submitted", confirmationSubmittedByName, confirmationSubmittedOnBehalfByName, "you")} on{" "}
                           {confirmationSubmittedAt
                             ? `${new Date(confirmationSubmittedAt).toLocaleDateString()} at ${new Date(confirmationSubmittedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
                             : ""}
@@ -1016,7 +1024,7 @@ export default function ClientSpecsSharePage() {
                       </div>
                     ) : quoteLocked ? (
                       <div className="mb-4 rounded-[10px] border px-4 py-3 text-[13px] font-bold" style={{ borderColor: "#15803D", backgroundColor: "#F0FDF4", color: "#15803D" }}>
-                        Accepted by {quoteAcceptedByName || "you"} on{" "}
+                        {actedByLabel("Accepted", quoteAcceptedByName, quoteAcceptedOnBehalfByName, "you")} on{" "}
                         {quoteAcceptedAt
                           ? `${new Date(quoteAcceptedAt).toLocaleDateString()} at ${new Date(quoteAcceptedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
                           : ""}

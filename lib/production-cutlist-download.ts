@@ -56,8 +56,9 @@ export async function downloadProductionCutlistTemplate(companyId: string): Prom
   const partTypeRows = (Array.isArray(companyDoc.partTypes) ? companyDoc.partTypes : []).filter(
     (row): row is Record<string, unknown> => Boolean(row) && typeof row === "object",
   );
+  // (Each with its colour, as it is now — its rows' colour in the rooms.)
   const partTypes = partTypeRows.length
-    ? partTypeRows.map((row) => ({ name: toStr(row.name), kind: partTypeKind(row) })).filter((row) => row.name)
+    ? partTypeRows.map((row) => ({ name: toStr(row.name), kind: partTypeKind(row), color: toStr(row.color ?? row.colour) })).filter((row) => row.name)
     : ["Cabinet", "Drawer", "Panel", "Front"].map((name) => ({ name, kind: "" as CutlistTemplatePartKind }));
 
   const hardwareRows = normalizeHardwareRows(companyDoc.hardwareSettings);

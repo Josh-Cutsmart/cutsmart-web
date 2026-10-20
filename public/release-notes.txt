@@ -1,74 +1,120 @@
-Version: v0.5.7
+Version: v0.5.8
 
 highlights: [
-A new Items window | Your item library sorted by category and sub-category in their own colours, and each room a column like the Dashboard's | /whats-new/v0.5.7/items.svg
-Cutlists in Excel | Download the Production Cutlist from Downloads, fill it in offline, and Import it straight into a project | /whats-new/v0.5.7/import.svg
-Hardware for each room | Give a room its own brand, drawer type and handles — changing them shows the drawers it affects first | /whats-new/v0.5.7/room-hardware.svg
-Staff on events | Add staff to a calendar event and they get its reminders — a project's creator and assigned person are added for you | /whats-new/v0.5.7/event-staff.svg
-Custom prices | Set an item to a custom price, and staff enter its price each time it's added to a room | /whats-new/v0.5.7/custom-price.svg
+Lead forms and your leads inbox | Build your own lead forms, put them on your website, and forward emails to your company's leads address — they all land in Leads | /whats-new/v0.5.8/lead-forms.svg
+Accept for your client | Client said yes on the phone? Accept their quote or answer their specifications for them — marked as done on their behalf, by you | /whats-new/v0.5.8/accept-for-client.svg
+The Archive, as a filing cabinet | Old projects, leads, contacts and events filed month by month — and delete a project with a copy emailed to your team first | /whats-new/v0.5.8/archive.svg
+Notes that pop out | Drag a contractor's notes out of the Production cutlist into a floating bubble — move it, resize it, keep several open | /whats-new/v0.5.8/notes-bubbles.svg
+Working together on a cutlist | See each other's changes as they're made, saves that never undo someone else's, and who else is in there | /whats-new/v0.5.8/cutlist-together.svg
 ]
 
 whatsNew: [
-<u><b>Items</b></u>
+<u><b>Leads</b></u>
 <ul>
-<li>The item library groups each category's items by sub-category, under bars in their own colours</li>
-<li>Click a category or sub-category to fold it away — it stays the way you left it</li>
-<li>Searching opens the groups with a match</li>
-<li>Type a quantity on an item before you click or drag it in — an <b>Added</b> pill shows it went in</li>
-<li>Each room is a column like the Dashboard's: collapse it, see its count, and use its <b>…</b> menu to Rename, Duplicate, Clear or Delete</li>
-<li>Drag a room by its header to put your rooms in order</li>
-<li>A room's items sit under coloured bars like the library, with − and + when you point at them</li>
-<li>Removing an item (or taking it down from 1) asks first</li>
-<li>The Summary floats on the right, with <b>Add Room</b> under it</li>
-<li>A tidier <b>Add Item</b> pop-up with its own search</li>
-<li>Phones: rooms are cards down the page (hold a card's header to move it), and Add Item fills the screen</li>
-<li>Two items with the same name no longer cause errors</li>
+<li>A simpler page like the Dashboard: one bar on top with the same search, a status filter and sort menus, and rounded buttons</li>
+<li>Stat cards for <b>Active</b>, <b>New</b>, <b>Converted</b> and <b>Unassigned</b></li>
+<li>A list view laid out like the Dashboard's — and both pages stay in the view you picked</li>
+<li>Build lead forms in Company Settings › <b>Leads</b> — as many as you like, with your own questions — and put them on your website</li>
+<li>Your company has its own leads email address: forward an email to it and it comes in as a lead, photos and all</li>
+<li>New leads come in as <b>New Lead · From Email</b> or <b>New Lead · From Form</b>, in your first status</li>
+<li>Click a lead to edit any field, change its status, see its photos, and add notes and checklists beside it</li>
+<li><b>+ Create Lead</b> floats in the bottom corner and opens a pop-up</li>
+<li>Leads load faster</li>
+</ul>
+
+<u><b>Dashboard</b></u>
+<ul>
+<li><b>Completed</b> is rebuilt: every job moved into a completed status is stamped with its day and time, and stays — even if it's archived or deleted</li>
+<li>See how many were completed by month, quarter, half year or year, with a chart of the periods before it to drag through</li>
+<li>Bonus quarters (with the bonus permission): drag a job onto a quarter — its left half for the bonus, its right half for small jobs — and its status locks</li>
+<li><b>Copy quarter</b> copies its jobs as tables, ready for an email or spreadsheet</li>
+<li>Jobs with an accepted quote under your bonus minimum show <b>Below $…</b></li>
+<li>Change a job's completed date from a small calendar, or drag it to the bin to take it off the list</li>
+<li>A floating bar on desktop for opening sub-status boards</li>
+<li>The status filter is a dropdown, and the Kanban gets a sort button</li>
+<li>Empty columns no longer say "No Projects"</li>
+</ul>
+
+<u><b>Archive</b></u>
+<ul>
+<li>Redesigned as a filing cabinet: projects, leads, contacts and calendar events, filed by year and month</li>
+<li>Filter by type, search, and fold away the years and months — it opens the way you left it</li>
+<li>Deleting a project for good can email a copy to your team first: its client details, quote, specifications, cutlists and images</li>
+<li>A deleted project's files and images are cleared away too</li>
 </ul>
 
 <u><b>Projects</b></u>
 <ul>
-<li>New <b>Schedule</b> button in Design: the Calendar's events for the project, in a list</li>
-<li>New <b>Specifications</b> button in Production: the specifications the client confirmed — or the latest, marked <b>Unconfirmed</b></li>
-<li>Adding a room offers your company's room names, and you can still type your own</li>
-<li>The Product box in Design widens to fit long product names</li>
-<li><b>Specifications</b> and <b>Upgrades</b> have swapped places in Design</li>
-<li>Phones: Notes bring the keyboard up on the first tap</li>
+<li>Client Details and their contact card stay the same — change one and the other (and their other projects) follow</li>
+<li>Click the client's badge to open their contact card right there</li>
+<li>Design: <b>Extra Charges</b> to switch on for each project, with a quantity</li>
+<li>Design: prices show <b>incl GST</b> or <b>excl GST</b></li>
+<li>Design: <b>Nesting</b> on each product in Sheets shows how the parts fit on the sheets</li>
+<li>Design: a simpler Project Cost Breakdown, and room breakdowns use your item category pills</li>
+<li>Quote window: <b>Accept</b> for the client, and Specifications: <b>Submit</b> for the client — marked "on behalf of" the client, with who did it</li>
+<li>Images and Files: drag in to add, delete shows when something's selected, and their buttons show on hover</li>
+<li>Locked jobs say why in a bar at the bottom when you try to change their status</li>
+<li>The bell now fills in when you're subscribed</li>
+<li>The scrollbar no longer jumps under the sticky bars</li>
 </ul>
 
 <u><b>Production</b></u>
 <ul>
-<li>New <b>Import</b>: bring in the Excel cutlist (or an older cutlist sheet), choose which parts and rooms, then add to or replace what's there</li>
-<li>Rooms can have their own hardware — the Hardware box lists Global, then each room</li>
-<li>Changing a brand or drawer type shows the drawers it affects first, with quick fixes</li>
-<li>Drawer heights show their size in mm</li>
-<li>Notes open in a drawer on the right that stays open while you work</li>
-<li><b>Contractors</b> is now a menu — pick one to open their notes</li>
-<li>Changing a board in Board Settings asks whether to update the cutlist rows using it</li>
-<li>Order groups drawers by brand and drawer type when rooms differ</li>
+<li>Pop a contractor's notes out into a floating bubble: drag it anywhere, resize it, shrink it to a pill, and drag it back onto its button to put it away</li>
+<li>Notes open where you left them for that project</li>
+<li>Up to 5 contractors get their own buttons</li>
+<li>Two people in the same cutlist (Production or Initial Measure) see each other's changes as they're made, and saves never undo someone else's</li>
+<li>A cutlist shows who else is editing it</li>
+<li>A cutlist with one room opens on that room</li>
+<li>The Cutlist Entry sits beside the Rooms button, with <b>Add to Cutlist</b> at its bottom</li>
+<li>The part type menu takes the part type's colour</li>
+<li>The Excel cutlist: working dropdowns, tickboxes for yes/no, boards that link up, and rows coloured by part type</li>
+<li>Specifications just say <b>Confirmed</b> or <b>Unconfirmed</b></li>
+</ul>
+
+<u><b>Contacts</b></u>
+<ul>
+<li>A <b>Share</b> button to send a contact's details through another app</li>
+<li>The same search as the Dashboard, and rounded buttons</li>
+<li>Desktop: a contact opens over the top bar</li>
+<li>All your contacts show every time you open the page</li>
 </ul>
 
 <u><b>Calendar</b></u>
 <ul>
-<li>Add staff to an event — they get its reminders</li>
-<li>Linking a project adds its creator and assigned person</li>
-<li>Search stays open while there's something in it</li>
-<li>Phones: the Categories button's icon no longer gets squashed</li>
+<li>Ring the bell on an event to get its reminders — you don't need to be on it</li>
+<li>A project's creator is only added to its events when no one's assigned</li>
+<li>Reminders only come at the times you set — turning one on no longer sends ones already gone</li>
 </ul>
 
 <u><b>Company Settings</b></u>
 <ul>
-<li>New <b>Rooms</b> list (in Sales and Production): the room names offered when adding a room</li>
-<li>Item categories: a <b>Custom</b> price — staff enter it each time it's added, with your markup on top</li>
-<li>The sidebar's resize bar no longer shows over Item Categories and the layout builders</li>
+<li>New <b>Leads</b> tab: your lead forms and your leads email address</li>
+<li>Sales: Products is a table — sheet sizes with their own prices and margins, edge tape and lacquer, and row colours</li>
+<li>Sales: <b>Extra Charges</b>, each one on every quote by default or not</li>
+<li>Sales: include GST on quotes, at your rate</li>
+<li>Dashboard: your bonus period, when it's paid, and the minimum quote for it</li>
+<li>Statuses are numbered — the first is where new projects and leads start</li>
+<li>Comes back to the tab you were on after a refresh</li>
 </ul>
 
 <u><b>App-Wide</b></u>
 <ul>
-<li>New <b>Downloads</b> in the sidebar, with the Production Cutlist for Excel</li>
-<li>Menus open upwards when there's no room below them</li>
-<li>User Settings: Non-Work Days can be Company, Show or Hide</li>
-<li>Contacts: badges show letters only</li>
-<li>Dashboard: the faint line near the bottom of the columns is gone</li>
-<li>A rounded glass formatting toolbar in Notes</li>
+<li><b>Forgot password?</b> on the log in screen emails you a link to set a new one</li>
+<li>A glassier look for buttons, pills, stat cards and rows</li>
+<li>Status dropdowns are simpler, with just a coloured dot</li>
+<li>Pop-ups all share the same clear X</li>
+<li>A project's creator only gets its notifications when they've rung its bell</li>
+<li>Notifications that came in while your phone or computer was off arrive as one group</li>
+<li>What's New no longer shows on every visit after an update</li>
+</ul>
+
+<u><b>Phones</b></u>
+<ul>
+<li>Notes stay in view above the keyboard</li>
+<li>Number fields bring up the number pad</li>
+<li>The top tabs fade out at the edges</li>
+<li>Sort menus open centred under their button</li>
+<li>A lead opens full screen</li>
 </ul>
 ]

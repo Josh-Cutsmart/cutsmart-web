@@ -266,8 +266,12 @@ function ClientsPageInner() {
   // (contactsListCache's key: this company, this person, and whether they see everyone's contacts or just theirs.)
   const contactsCacheKey = `${activeCompanyId}|${String(user?.uid || "").trim()}|${canViewAllClients ? "all" : "mine"}`;
   // The kept list follows what's on the page (a contact added, changed or archived here) — staff contacts aside (they're
-  // added from the members each time) — still timed from when it was loaded.
+  // added from the members each time) — still timed from when it was loaded. Only once the page's list IS that list
+  // (shownContactsKeyRef, set as it's put on the page): until then it's still the empty one the page opens with, and
+  // writing that over the kept list left only the staff showing when Contacts was opened again.
+  const shownContactsKeyRef = useRef("");
   useEffect(() => {
+    if (shownContactsKeyRef.current !== contactsCacheKey) return;
     const cached = contactsListCache.get(contactsCacheKey);
     if (!cached) return;
     contactsListCache.set(contactsCacheKey, { rows: clients.filter((client) => !isStaffContactId(client.id)), at: cached.at });
@@ -299,6 +303,7 @@ function ClientsPageInner() {
       return;
     }
     let cancelled = false;
+    shownContactsKeyRef.current = "";
     const load = async () => {
       setLoading(true);
       // The contacts list starts loading straight away, alongside the company doc (it doesn't need it).
@@ -360,6 +365,7 @@ function ClientsPageInner() {
         }
         const companyClients = withStaffContacts(await clientsLoad, (await membersLoad) ?? [], activeCompanyId);
         if (cancelled) return;
+        shownContactsKeyRef.current = contactsCacheKey;
         setClients(companyClients);
         setClientDetailsById(
           Object.fromEntries(
@@ -881,12 +887,14 @@ function ClientsPageInner() {
     }
     setSaveError("");
     patchClientById(clientId, patch);
+    // (A change to their name, email, phone or address is made on their projects too.)
     const result = await updateCompanyClientProfile(
       activeCompanyId,
       clientId,
       patch,
       { viewerUid: String(user?.uid || "").trim(), includeAll: canViewAllClients },
       contact,
+      String(user?.displayName || user?.email || "Staff").trim() || "Staff",
     );
     if (!result.ok) {
       patchClientById(clientId, previous);

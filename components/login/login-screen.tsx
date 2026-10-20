@@ -44,10 +44,29 @@ import { useAccountVerification } from "@/lib/use-account-verification";
 // the card is the whole screen. Someone already signed in (Remember me, or a PIN — lib/device-pin.ts)
 // goes straight through to their company.
 
-type Step = "checking" | "login" | "register" | "pin-unlock" | "pin-setup" | "verify" | "company" | "join" | "create" | "opening";
+type Step = "checking" | "login" | "forgot" | "register" | "pin-unlock" | "pin-setup" | "verify" | "company" | "join" | "create" | "opening";
 
 // The order steps come in — going to a later one slides forward, an earlier one slides back.
-const STEP_ORDER: Step[] = ["checking", "login", "register", "pin-unlock", "pin-setup", "verify", "company", "join", "create", "opening"];
+const STEP_ORDER: Step[] = ["checking", "login", "forgot", "register", "pin-unlock", "pin-setup", "verify", "company", "join", "create", "opening"];
+
+// Handed over from the reset password page (reset-password-screen.tsx), for this tab only: the email to fill in once a
+// new password's been set, or to open on "Forgot your password?" when its link had expired.
+export const LOGIN_HANDOFF_EMAIL_KEY = "cutsmart_login_prefill_email";
+export const LOGIN_HANDOFF_FORGOT_KEY = "cutsmart_login_open_forgot";
+// Read on opening (left for the effect that clears them, so a second read — React's dev double render — finds them too).
+function readLoginHandoff(): { email: string; forgot: boolean } {
+  if (typeof window === "undefined") return { email: "", forgot: false };
+  try {
+    return {
+      email: window.sessionStorage.getItem(LOGIN_HANDOFF_EMAIL_KEY) || "",
+      forgot: window.sessionStorage.getItem(LOGIN_HANDOFF_FORGOT_KEY) === "1",
+    };
+  } catch {
+    return { email: "", forgot: false };
+  }
+}
+// After asking for a reset link: when another can be asked for (app/api/auth/password-reset allows one a minute).
+const RESET_RESEND_SECONDS = 60;
 
 const REMEMBER_DEVICE_STORAGE_KEY = "cutsmart_web_remember_device";
 const DEFAULT_REGISTER_USER_COLOR = "#2F6BFF";
@@ -196,7 +215,7 @@ const NO_AUTOFILL = {
   "data-form-type": "other",
 } as const;
 
-function PasswordField({
+export function PasswordField({
   label,
   value,
   onChange,
@@ -251,7 +270,7 @@ export function LoginScreen() {
   const { user, isLoading, membershipStatus, signIn, signInDemo, register, logout, retryMembershipLoad } = useAuth();
   const pinLocked = usePinLocked(user?.uid);
 
-  const [signedOutView, setSignedOutView] = useState<"login" | "register">("login");
+  const [signedOutView, setSignedOutView] = useState<"login" | "forgot" | "register">(() => (readLoginHandoff().forgot ? "forgot" : "login"));
   const [companyView, setCompanyView] = useState<"company" | "join" | "create">("company");
   const [pinSetupPending, setPinSetupPending] = useState(false);
   const [justRegistered, setJustRegistered] = useState(false);
@@ -260,8 +279,12 @@ export function LoginScreen() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(() => readLoginHandoff().email);
   const [password, setPassword] = useState("");
+  // "Forgot your password?": the email a reset link's asked for, where it was sent, and the wait before another.
+  const [resetEmail, setResetEmail] = useState("");
+  const [resetSentTo, setResetSentTo] = useState("");
+  const [resetWait, setResetWait] = useState(0);
   const [remember, setRemember] = useState(readRememberChoice);
   const [regEmail, setRegEmail] = useState("");
   const [regMobile, setRegMobile] = useState("");
@@ -300,6 +323,23 @@ export function LoginScreen() {
   useEffect(() => {
     if (isPreviewMode()) exitPreview();
   }, []);
+
+  // What the reset password page handed over has been read (readLoginHandoff) — used once.
+  useEffect(() => {
+    try {
+      window.sessionStorage.removeItem(LOGIN_HANDOFF_EMAIL_KEY);
+      window.sessionStorage.removeItem(LOGIN_HANDOFF_FORGOT_KEY);
+    } catch {
+      // storage unavailable
+    }
+  }, []);
+
+  // The wait before another reset link, counting down.
+  useEffect(() => {
+    if (resetWait <= 0) return;
+    const timer = window.setTimeout(() => setResetWait((seconds) => Math.max(0, seconds - 1)), 1000);
+    return () => window.clearTimeout(timer);
+  }, [resetWait]);
 
   // Signed in with nothing left to do: open their company, or ask them to join or create one.
   useEffect(() => {
@@ -425,6 +465,58 @@ export function LoginScreen() {
     } catch {
       setBusy(false);
       setError("That email and password don't match. Try again.");
+    }
+  };
+
+  const openForgotPassword = () => {
+    setResetEmail(email.trim());
+    setResetSentTo("");
+    setSignedOutView("forgot");
+  };
+
+  const backToLogin = () => {
+    if (resetEmail.trim()) setEmail(resetEmail.trim());
+    setSignedOutView("login");
+  };
+
+  // Emails a link to set a new password (app/api/auth/password-reset). The answer's the same whether or not the
+  // address has an account, so the screen never says which.
+  const onSendResetLink = async (event?: FormEvent) => {
+    event?.preventDefault();
+    setError("");
+    const cleanEmail = resetEmail.trim();
+    if (!cleanEmail) {
+      setError("Enter your email address.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await fetch("/api/auth/password-reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: cleanEmail }),
+      });
+      const json = (await res.json().catch(() => null)) as { ok?: boolean; error?: string; retryAfterSeconds?: number } | null;
+      if (res.ok && json?.ok) {
+        setResetSentTo(cleanEmail);
+        setResetWait(RESET_RESEND_SECONDS);
+      } else if (res.status === 429) {
+        const seconds = Math.max(1, Number(json?.retryAfterSeconds) || RESET_RESEND_SECONDS);
+        setResetWait(seconds);
+        setError(
+          seconds > 90
+            ? "Too many reset emails for that address. Try again later."
+            : `A link was sent a moment ago — check your email. You can send another in ${seconds}s.`,
+        );
+      } else if (json?.error === "invalid-email") {
+        setError("That email address doesn't look right.");
+      } else {
+        setError("Couldn't send the email. Try again.");
+      }
+    } catch {
+      setError("Couldn't send the email. Check your connection and try again.");
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -676,24 +768,75 @@ export function LoginScreen() {
               />
             </label>
             <PasswordField label="Password" value={password} onChange={setPassword} autoComplete="current-password" placeholder="Your password" />
-            <label className="lg-check">
-              <input
-                type="checkbox"
-                checked={remember}
-                onChange={(event) => {
-                  setRemember(event.target.checked);
-                  try {
-                    window.localStorage.setItem(REMEMBER_DEVICE_STORAGE_KEY, event.target.checked ? "1" : "0");
-                  } catch {
-                    // storage unavailable
-                  }
-                }}
-              />
-              Remember me on this device
-            </label>
+            <div className="lg-row">
+              <label className="lg-check">
+                <input
+                  type="checkbox"
+                  checked={remember}
+                  onChange={(event) => {
+                    setRemember(event.target.checked);
+                    try {
+                      window.localStorage.setItem(REMEMBER_DEVICE_STORAGE_KEY, event.target.checked ? "1" : "0");
+                    } catch {
+                      // storage unavailable
+                    }
+                  }}
+                />
+                Remember me on this device
+              </label>
+              <button type="button" className="lg-text-link" onClick={() => goTo(openForgotPassword)}>
+                Forgot password?
+              </button>
+            </div>
             {errorLine}
             <button type="submit" className="lg-primary" disabled={busy}>
               {busy ? "Logging in…" : "Log in"}
+            </button>
+          </form>
+        );
+      case "forgot":
+        return resetSentTo ? (
+          <>
+            <div className="lg-icon-badge">
+              <MailCheck size={26} />
+            </div>
+            {title(
+              "Check your email",
+              <>
+                If there&apos;s a CutSmart account for <b>{resetSentTo}</b>, we&apos;ve sent it a link to set a new password.
+              </>,
+            )}
+            <p className="lg-note">The link works for an hour. Can&apos;t see it? Check your junk folder.</p>
+            {errorLine}
+            <button type="button" className="lg-primary" onClick={() => goTo(backToLogin)}>
+              Back to log in
+            </button>
+            <button type="button" className="lg-secondary" disabled={busy || resetWait > 0} onClick={() => void onSendResetLink()}>
+              {busy ? "Sending…" : resetWait > 0 ? `Send it again (${resetWait}s)` : "Send it again"}
+            </button>
+          </>
+        ) : (
+          <form onSubmit={(event) => void onSendResetLink(event)} noValidate>
+            {title("Forgot your password?", "We'll email you a link to set a new one")}
+            <label className="lg-field">
+              <span>Email</span>
+              <input
+                className="lg-input"
+                type="email"
+                value={resetEmail}
+                onChange={(event) => setResetEmail(event.target.value)}
+                autoComplete="username"
+                placeholder="you@company.co.nz"
+                autoFocus
+              />
+            </label>
+            {errorLine}
+            <button type="submit" className="lg-primary" disabled={busy || resetWait > 0}>
+              {busy ? "Sending…" : resetWait > 0 ? `Send reset link (${resetWait}s)` : "Send reset link"}
+            </button>
+            <button type="button" className="lg-link" onClick={() => goTo(backToLogin)}>
+              <ArrowLeft size={14} />
+              Back to log in
             </button>
           </form>
         );

@@ -876,6 +876,10 @@ export type SpecsGridVersion = {
   // reopenSpecsConfirmationForEditing in app/(app)/projects/[projectId]/page.tsx.
   submittedAtIso?: string;
   submittedByName?: string;
+  // Accepted / submitted by staff for the client (app/api/specs-share/[shareId]/on-behalf): who did it — the
+  // ...ByName above is then the client's name ("Accepted on behalf of <client> by <staff>", lib/on-behalf.ts).
+  acceptedOnBehalfByName?: string;
+  submittedOnBehalfByName?: string;
 };
 
 export function normalizeSpecsGridVersions(raw: unknown): SpecsGridVersion[] {
@@ -895,6 +899,8 @@ export function normalizeSpecsGridVersions(raw: unknown): SpecsGridVersion[] {
     const declinedByName = typeof row.declinedByName === "string" && row.declinedByName ? row.declinedByName : "";
     const submittedAtIso = typeof row.submittedAtIso === "string" && row.submittedAtIso ? row.submittedAtIso : "";
     const submittedByName = typeof row.submittedByName === "string" && row.submittedByName ? row.submittedByName : "";
+    const acceptedOnBehalfByName = typeof row.acceptedOnBehalfByName === "string" && row.acceptedOnBehalfByName ? row.acceptedOnBehalfByName : "";
+    const submittedOnBehalfByName = typeof row.submittedOnBehalfByName === "string" && row.submittedOnBehalfByName ? row.submittedOnBehalfByName : "";
     out.push({
       id: typeof row.id === "string" && row.id ? row.id : genSpecsRowId(),
       name: typeof row.name === "string" ? row.name : "",
@@ -914,6 +920,8 @@ export function normalizeSpecsGridVersions(raw: unknown): SpecsGridVersion[] {
       ...(declinedByName ? { declinedByName } : {}),
       ...(submittedAtIso ? { submittedAtIso } : {}),
       ...(submittedByName ? { submittedByName } : {}),
+      ...(acceptedOnBehalfByName ? { acceptedOnBehalfByName } : {}),
+      ...(submittedOnBehalfByName ? { submittedOnBehalfByName } : {}),
       grid,
     });
   }

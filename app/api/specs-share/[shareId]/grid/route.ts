@@ -68,10 +68,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   // doc — see lib/specs-share.ts's SpecsShareLinkDoc comment for why.
   const confirmationSubmittedAt = shareDoc.submittedAt || null;
   const confirmationSubmittedByName = shareDoc.submittedByName || null;
+  // Submitted by staff for them (on-behalf/route.ts): who.
+  const confirmationSubmittedOnBehalfByName = shareDoc.submittedOnBehalfByName || null;
   // Which send this is — the portal compares it with what the client last saw to flag the tab as new.
   const sentVersion = String(shareDoc.versionId || shareDoc.lastSentAt || "");
   // A company-logo cell shows the company's current logo (its own address can be an old logo's).
   const companyData = (await adminDb.collection("companies").doc(String(shareDoc.companyId || "")).get()).data() ?? {};
   const companyLogo = String(companyData.logoPath ?? companyData.logoUrl ?? (companyData.theme as Record<string, unknown> | undefined)?.logoPath ?? "").trim();
-  return NextResponse.json({ ok: true, grid: withCurrentCompanyLogo(grid, companyLogo), projectName, assignedContact, confirmationSubmittedAt, confirmationSubmittedByName, sentVersion });
+  return NextResponse.json({ ok: true, grid: withCurrentCompanyLogo(grid, companyLogo), projectName, assignedContact, confirmationSubmittedAt, confirmationSubmittedByName, confirmationSubmittedOnBehalfByName, sentVersion });
 }

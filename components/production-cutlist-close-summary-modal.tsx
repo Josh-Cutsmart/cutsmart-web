@@ -3,6 +3,7 @@
 import { useRef, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
+import { modalCloseButtonClass } from "@/components/settings-ui";
 import { summarizeCutlistRowsByPartType, type CutlistRow } from "@/lib/cutlist-types";
 import { contrastTextForFill } from "@/lib/user-profile-format";
 import { useGlassModalShrinkOnClose, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
@@ -82,20 +83,9 @@ export function ProductionCutlistCloseSummaryModal({
           <p className="text-[15px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
             Production Cutlist Summary
           </p>
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] border hover:brightness-95"
-            style={{
-              borderColor: "var(--danger-glass-border)",
-              backgroundColor: "var(--danger-glass-bg)",
-              backdropFilter: "blur(10px) saturate(180%)",
-              WebkitBackdropFilter: "blur(10px) saturate(180%)",
-              color: "#FFFFFF",
-            }}
-            aria-label="Close"
-          >
-            <X size={16} strokeWidth={2.4} />
+          {/* The same X as the app's other pop-ups (components/settings-ui.tsx). */}
+          <button type="button" onClick={onClose} className={modalCloseButtonClass} aria-label="Close">
+            <X size={16} />
           </button>
         </div>
         <div className="glass-scroll min-h-0 flex-1 space-y-4 overflow-y-auto p-4 sm:p-5">

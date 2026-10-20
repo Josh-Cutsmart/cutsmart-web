@@ -1,0 +1,124 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" width="640" height="360" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title>The Archive as a filing cabinet: archived projects, leads, contacts and events filed under a month, filtered down to just projects, and one restored</title>
+  <style>
+    .chipAll { animation: chipAll 8s step-end infinite both; }
+    .chipProj { animation: chipProj 8s step-end infinite both; }
+    @keyframes chipAll { 0% { opacity: 1; } 34% { opacity: 0; } 96% { opacity: 1; } }
+    @keyframes chipProj { 0% { opacity: 0; } 34% { opacity: 1; } 96% { opacity: 0; } }
+    .other { animation: other 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes other { 0%, 34% { opacity: 1; } 40%, 92% { opacity: .16; } 96%, 100% { opacity: 1; } }
+    .proj { animation: proj 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes proj { 0%, 60% { opacity: 1; transform: translateX(0); } 66%, 92% { opacity: 0; transform: translateX(48px); } 96%, 100% { opacity: 1; transform: translateX(0); } }
+    .restore { animation: restore 8s ease-out infinite both; }
+    @keyframes restore { 0%, 44% { opacity: 0; } 47%, 100% { opacity: 1; } }
+    .press { transform-box: fill-box; transform-origin: center; animation: press 8s ease-in-out infinite both; }
+    @keyframes press { 0%, 56% { transform: scale(1); } 58% { transform: scale(.9); } 61%, 100% { transform: scale(1); } }
+    .toast { animation: toast 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes toast { 0%, 62% { opacity: 0; transform: translateY(12px); } 67%, 88% { opacity: 1; transform: translateY(0); } 93%, 100% { opacity: 0; transform: translateY(0); } }
+    .cursor { animation: cursor 8s ease-in-out infinite both; }
+    @keyframes cursor {
+      0%, 18% { transform: translate(600px, 340px); opacity: 0; }
+      22% { opacity: 1; }
+      30%, 34% { transform: translate(172px, 66px); opacity: 1; }
+      52%, 58% { transform: translate(560px, 186px); opacity: 1; }
+      70%, 100% { transform: translate(600px, 340px); opacity: 0; }
+    }
+  </style>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#EEF3FB"/>
+      <stop offset="1" stop-color="#E1E9F7"/>
+    </linearGradient>
+    <filter id="pop" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#0F172A" flood-opacity=".16"/>
+    </filter>
+  </defs>
+  <rect width="640" height="360" fill="url(#bg)"/>
+
+  <!-- what to show: everything, or one kind -->
+  <g class="chipAll">
+    <rect x="28" y="50" width="94" height="28" rx="14" fill="#2563EB"/>
+    <text x="75" y="68" text-anchor="middle" font-size="11" font-weight="600" fill="#FFFFFF">Everything</text>
+    <rect x="130" y="50" width="80" height="28" rx="14" fill="#FFFFFF" stroke="#D9E2F1"/>
+    <text x="170" y="68" text-anchor="middle" font-size="11" font-weight="600" fill="#0F172A">Projects</text>
+  </g>
+  <g class="chipProj">
+    <rect x="28" y="50" width="94" height="28" rx="14" fill="#FFFFFF" stroke="#D9E2F1"/>
+    <text x="75" y="68" text-anchor="middle" font-size="11" font-weight="600" fill="#0F172A">Everything</text>
+    <rect x="130" y="50" width="80" height="28" rx="14" fill="#2563EB"/>
+    <text x="170" y="68" text-anchor="middle" font-size="11" font-weight="600" fill="#FFFFFF">Projects</text>
+  </g>
+  <rect x="218" y="50" width="66" height="28" rx="14" fill="#FFFFFF" stroke="#D9E2F1"/>
+  <text x="251" y="68" text-anchor="middle" font-size="11" font-weight="600" fill="#0F172A">Leads</text>
+  <rect x="292" y="50" width="78" height="28" rx="14" fill="#FFFFFF" stroke="#D9E2F1"/>
+  <text x="331" y="68" text-anchor="middle" font-size="11" font-weight="600" fill="#0F172A">Contacts</text>
+  <rect x="378" y="50" width="68" height="28" rx="14" fill="#FFFFFF" stroke="#D9E2F1"/>
+  <text x="412" y="68" text-anchor="middle" font-size="11" font-weight="600" fill="#0F172A">Events</text>
+  <rect x="460" y="50" width="152" height="28" rx="14" fill="#FFFFFF" stroke="#D9E2F1"/>
+  <circle cx="478" cy="63" r="5" fill="none" stroke="#94A3B8" stroke-width="1.6"/>
+  <path d="M482 67 l4 4" stroke="#94A3B8" stroke-width="1.6" stroke-linecap="round"/>
+  <text x="494" y="68" font-size="11" font-weight="500" fill="#94A3B8">Search the archive</text>
+
+  <!-- the year -->
+  <rect x="28" y="92" width="584" height="34" rx="17" fill="#FFFFFF" stroke="#D9E2F1"/>
+  <text x="48" y="114" font-size="13" font-weight="700" fill="#0F172A">2026</text>
+  <circle cx="92" cy="109" r="4" fill="#2563EB"/>
+  <rect x="580" y="99" width="24" height="20" rx="10" fill="#F1F5F9"/>
+  <text x="592" y="113" text-anchor="middle" font-size="10" font-weight="700" fill="#0F172A">4</text>
+
+  <!-- the month's drawer -->
+  <rect x="28" y="140" width="584" height="196" rx="20" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+  <rect x="44" y="130" width="96" height="22" rx="11" fill="#2563EB"/>
+  <text x="92" y="145" text-anchor="middle" font-size="10" font-weight="700" letter-spacing=".6" fill="#FFFFFF">OCTOBER</text>
+
+  <!-- a project, restored -->
+  <g class="proj">
+    <rect x="44" y="164" width="552" height="40" rx="12" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <rect x="44" y="164" width="5" height="40" rx="2.5" fill="#2563EB"/>
+    <text x="64" y="189" font-size="12" font-weight="700" fill="#0F172A">Whitmore Scullery</text>
+    <text x="190" y="189" font-size="10.5" font-weight="500" fill="#64748B">Claire Whitmore</text>
+    <rect x="352" y="175" width="72" height="18" rx="9" fill="#DCFCE7"/>
+    <text x="388" y="187.5" text-anchor="middle" font-size="9" font-weight="600" fill="#166534">Completed</text>
+    <text x="434" y="188" font-size="10" font-weight="500" fill="#64748B">12 Oct · 3:40pm</text>
+    <g class="restore">
+      <rect class="press" x="526" y="171" width="62" height="26" rx="13" fill="#2563EB"/>
+      <text x="557" y="188" text-anchor="middle" font-size="10.5" font-weight="600" fill="#FFFFFF">Restore</text>
+    </g>
+  </g>
+
+  <!-- a lead, a contact, an event -->
+  <g class="other">
+    <rect x="44" y="212" width="552" height="38" rx="12" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <rect x="44" y="212" width="5" height="38" rx="2.5" fill="#EA8A1A"/>
+    <text x="64" y="236" font-size="12" font-weight="700" fill="#0F172A">Grace Turner</text>
+    <text x="170" y="236" font-size="10.5" font-weight="500" fill="#64748B">Kitchen refresh</text>
+    <rect x="352" y="222" width="72" height="18" rx="9" fill="#FFEDD5"/>
+    <text x="388" y="234.5" text-anchor="middle" font-size="9" font-weight="600" fill="#C2410C">Lead</text>
+    <text x="434" y="235" font-size="10" font-weight="500" fill="#64748B">18 Oct · 11:20am</text>
+  </g>
+  <g class="other">
+    <rect x="44" y="258" width="552" height="38" rx="12" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <rect x="44" y="258" width="5" height="38" rx="2.5" fill="#7C3AED"/>
+    <text x="64" y="282" font-size="12" font-weight="700" fill="#0F172A">Northern Hinges Ltd</text>
+    <text x="196" y="282" font-size="10.5" font-weight="500" fill="#64748B">Supplier</text>
+    <rect x="352" y="268" width="72" height="18" rx="9" fill="#EDE9FE"/>
+    <text x="388" y="280.5" text-anchor="middle" font-size="9" font-weight="600" fill="#6D28D9">Contact</text>
+    <text x="434" y="281" font-size="10" font-weight="500" fill="#64748B">9 Oct · 9:05am</text>
+  </g>
+  <g class="other">
+    <rect x="44" y="304" width="552" height="24" rx="12" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <rect x="44" y="304" width="5" height="24" rx="2.5" fill="#16A34A"/>
+    <text x="64" y="320" font-size="11" font-weight="700" fill="#0F172A">Site measure · Bennett Study Desk</text>
+    <rect x="352" y="307" width="72" height="18" rx="9" fill="#DCFCE7"/>
+    <text x="388" y="319.5" text-anchor="middle" font-size="9" font-weight="600" fill="#166534">Event</text>
+  </g>
+
+  <g class="toast">
+    <rect x="200" y="240" width="240" height="36" rx="18" fill="#0F172A" filter="url(#pop)"/>
+    <text x="320" y="263" text-anchor="middle" font-size="11.5" font-weight="600" fill="#FFFFFF">Whitmore Scullery restored</text>
+  </g>
+
+  <g class="cursor">
+    <path d="M0 0 l0 20 l5 -5 l4 9 l3.4 -1.5 l-4 -9 l7 0 z" fill="#0F172A" stroke="#FFFFFF" stroke-width="1.4" stroke-linejoin="round"/>
+  </g>
+</svg>

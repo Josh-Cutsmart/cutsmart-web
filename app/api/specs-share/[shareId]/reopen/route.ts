@@ -71,10 +71,16 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
             sentToClient: FieldValue.delete(),
             acceptedAtIso: FieldValue.delete(),
             acceptedByName: FieldValue.delete(),
+            acceptedOnBehalfByName: FieldValue.delete(),
             declinedAtIso: FieldValue.delete(),
             declinedByName: FieldValue.delete(),
           }
-        : { sentToClient: FieldValue.delete(), submittedAtIso: FieldValue.delete(), submittedByName: FieldValue.delete() };
+        : {
+            sentToClient: FieldValue.delete(),
+            submittedAtIso: FieldValue.delete(),
+            submittedByName: FieldValue.delete(),
+            submittedOnBehalfByName: FieldValue.delete(),
+          };
     for (const id of ids) {
       versionWrites.push(
         versions
@@ -95,6 +101,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           quoteVersionId: FieldValue.delete(),
           quoteAcceptedAt: FieldValue.delete(),
           quoteAcceptedByName: FieldValue.delete(),
+          quoteAcceptedOnBehalfByName: FieldValue.delete(),
+          quoteAcceptedOnBehalfByUid: FieldValue.delete(),
           quoteDeclinedAt: FieldValue.delete(),
           quoteDeclinedByName: FieldValue.delete(),
           quoteDeclineReason: FieldValue.delete(),
@@ -104,6 +112,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           versionId: FieldValue.delete(),
           submittedAt: FieldValue.delete(),
           submittedByName: FieldValue.delete(),
+          submittedOnBehalfByName: FieldValue.delete(),
+          submittedOnBehalfByUid: FieldValue.delete(),
           specsSentFromLive: FieldValue.delete(),
         },
   );

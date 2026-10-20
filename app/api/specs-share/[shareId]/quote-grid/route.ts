@@ -56,6 +56,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   const assignedContact = await resolveAssignedContactAdmin(adminDb, shareDoc.companyId, projectData);
   const quoteAcceptedAt = shareDoc.quoteAcceptedAt || null;
   const quoteAcceptedByName = shareDoc.quoteAcceptedByName || null;
+  // Accepted by staff for them (on-behalf/route.ts): who.
+  const quoteAcceptedOnBehalfByName = shareDoc.quoteAcceptedOnBehalfByName || null;
   const quoteDeclinedAt = shareDoc.quoteDeclinedAt || null;
   const quoteDeclinedByName = shareDoc.quoteDeclinedByName || null;
   // Which send this is — the portal compares it with what the client last saw to flag the tab as new.
@@ -63,5 +65,5 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   // A company-logo cell shows the company's current logo (its own address can be an old logo's).
   const companyData = (await adminDb.collection("companies").doc(String(shareDoc.companyId || "")).get()).data() ?? {};
   const companyLogo = String(companyData.logoPath ?? companyData.logoUrl ?? (companyData.theme as Record<string, unknown> | undefined)?.logoPath ?? "").trim();
-  return NextResponse.json({ ok: true, grid: withCurrentCompanyLogo(grid, companyLogo), projectName, assignedContact, quoteAcceptedAt, quoteAcceptedByName, quoteDeclinedAt, quoteDeclinedByName, sentVersion });
+  return NextResponse.json({ ok: true, grid: withCurrentCompanyLogo(grid, companyLogo), projectName, assignedContact, quoteAcceptedAt, quoteAcceptedByName, quoteAcceptedOnBehalfByName, quoteDeclinedAt, quoteDeclinedByName, sentVersion });
 }

@@ -1,4 +1,5 @@
 import { cachedValue, invalidateCompanyCache, invalidateUserCache, readCompanyDocCached, readUserDocCached } from "@/lib/firestore-cache";
+import { fetchBonusLock, noteProjectCompleted, noteProjectDeleted, noteProjectReopened } from "@/lib/completed-projects";
 import {
   collection,
   collectionGroup,
@@ -12,6 +13,7 @@ import {
   onSnapshot,
   orderBy,
   query,
+  runTransaction,
   serverTimestamp,
   setDoc,
   Timestamp,
@@ -20,10 +22,12 @@ import {
   where,
   writeBatch,
 } from "@/lib/firestore-client";
-import { auth, db, hasFirebaseConfig } from "@/lib/firebase";
+import { auth, db, hasFirebaseConfig, storage } from "@/lib/firebase";
+import { deleteObject, listAll, ref as storageRef, type StorageReference } from "firebase/storage";
+import { isPreviewMode } from "@/lib/preview-mode";
 import { fetchCompanyAccess, type CompanyAccessInfo } from "@/lib/membership";
 import { mockChanges, mockCutlists, mockProjects, mockQuotes } from "@/lib/mock-data";
-import { normalizeSpecsGrid, normalizeSpecsGridVersion, type SpecsGrid, type SpecsGridVersion } from "@/lib/specs-grid-types";
+import { normalizeSpecsGrid, normalizeSpecsGridVersion, quoteGridTotalText, type SpecsGrid, type SpecsGridVersion } from "@/lib/specs-grid-types";
 import {
   completedStatusMatcher,
   isPastArchiveDelay,
@@ -1603,6 +1607,12 @@ export async function updateProjectStatus(
   if (!db || !project || !newStatus) {
     return false;
   }
+  // A job locked into a bonus period (the Dashboard's Completed pop-up) keeps its status — until someone with
+  // dashboard.complete.bonus takes it back out of the period (lib/completed-projects.ts). Its sub-stage can still move.
+  const changesStatus = newStatus.trim().toLowerCase() !== String(project.statusLabel || "").trim().toLowerCase();
+  if (changesStatus && project.companyId && (await fetchBonusLock(project.companyId, project.id))) {
+    return false;
+  }
 
   const nowIso = new Date().toISOString();
   // Which statuses are "completed" is the company's own call (Company Settings > Project statuses >
@@ -1616,6 +1626,8 @@ export async function updateProjectStatus(
   // restore sticks). The daily background sweep (archiveDueCompletedProjects) catches anything missed.
   const archivesOnCompletion = normalizeProjectArchiveDelay(companyDoc?.projectArchiveAfter) === "instant";
   let archivedNow = false;
+  // Into or out of a completed status — for the completed-projects record (lib/completed-projects.ts).
+  let completionChange: "completed" | "reopened" | null = null;
   // Worked out from the stored project, not the caller's copy (a page that reopened and then
   // re-completed a project can still hold the old completedAtIso): the completion date carries over
   // only while the project moves between completed statuses, and is stamped fresh when it enters one.
@@ -1643,6 +1655,7 @@ export async function updateProjectStatus(
       }
     }
     archivedNow = false;
+    completionChange = completedStatus && !isCompletedStatus(stored.status) ? "completed" : !completedStatus && isCompletedStatus(stored.status) ? "reopened" : null;
     if (archivesOnCompletion && completedStatus && !isCompletedStatus(stored.status) && stored.isArchived !== true) {
       patch.isArchived = true;
       patch.archivedAtIso = nowIso;
@@ -1657,6 +1670,12 @@ export async function updateProjectStatus(
         detail: { companyId: String(project.companyId || "").trim(), projectIds: [project.id], archivedAtIso: nowIso },
       }),
     );
+  };
+  // Its completed-projects record: started (or completed again) as it's completed, stamped reopened as it leaves —
+  // never removed.
+  const noteCompletion = async (completedAtIso: string) => {
+    if (completionChange === "completed") await noteProjectCompleted(project, completedAtIso || nowIso);
+    else if (completionChange === "reopened") await noteProjectReopened(project, nowIso);
   };
   const syncClientProfile = async (completedAtIso: string) => {
     const nextProjectSnapshot: Project = {
@@ -1684,6 +1703,7 @@ export async function updateProjectStatus(
       const patch = statusPatchFor((topLevelSnap.data() ?? {}) as Record<string, unknown>);
       await updateDoc(topLevelRef, patch);
       announceArchived();
+      await noteCompletion(String(patch.completedAtIso ?? ""));
       await syncClientProfile(String(patch.completedAtIso ?? ""));
       return true;
     }
@@ -1709,6 +1729,7 @@ export async function updateProjectStatus(
     const patch = statusPatchFor((jobsSnap.docs[0].data() ?? {}) as Record<string, unknown>);
     await updateDoc(jobsSnap.docs[0].ref, patch);
     announceArchived();
+    await noteCompletion(String(patch.completedAtIso ?? ""));
     await syncClientProfile(String(patch.completedAtIso ?? ""));
     return true;
   } catch {
@@ -1874,8 +1895,109 @@ export async function archiveDueCompletedProjects(companyId: string, uid: string
 }
 
 // Removes a project for good — only ever from the Archived page, by someone choosing to (archived
-// projects are never deleted automatically).
+// projects are never deleted automatically). Only its history is kept: its line in its contact's project history and,
+// if it was completed, its completion record (lib/completed-projects.ts, stamped deleted). Everything else of it goes
+// with it — not just its own doc (deleteProjectContent below).
 export async function permanentlyDeleteProject(project: Project): Promise<boolean> {
+  // Where it is, and what its own doc holds (older projects keep their image and file paths on it) — read before it goes.
+  const projectRef = await resolveProjectDocRef(project).catch(() => null);
+  const projectData = projectRef
+    ? await getDoc(projectRef).then(
+        (snap) => (snap.exists() ? ((snap.data() ?? {}) as Record<string, unknown>) : null),
+        () => null,
+      )
+    : null;
+  const deleted = await deleteProjectEverywhere(project);
+  if (deleted) {
+    await noteProjectDeleted(project);
+    await deleteProjectContent(project, projectRef, projectData);
+  }
+  return deleted;
+}
+
+// Where a project keeps its content beside its own doc — the jobs/{jobId} subcollections in firestore.rules.
+const PROJECT_CONTENT_SUBCOLLECTIONS = [
+  "quoteGridVersions",
+  "specificationsVersions",
+  "productComparisons",
+  "cutlistData",
+  "checklists",
+  "salesGrids",
+  "projectMedia",
+] as const;
+
+// Everything a deleted project would otherwise leave behind (Firestore doesn't remove a doc's subcollections with it):
+// its subcollections' docs, its changelog entries, and its uploaded files in Storage — images, files and quote
+// snapshots, under companies/{companyId}/jobs/{projectId}/ (only ever files in its own folder). Best effort: the project
+// is already gone, so a failure here only leaves that part behind.
+async function deleteProjectContent(project: Project, projectRef: DocumentReference | null, projectData: Record<string, unknown> | null) {
+  const database = db;
+  if (!database) return;
+  const companyId = String(project.companyId || "").trim();
+  // Its files that its data points at (paths or download URLs) — from its own doc and its image/file lists.
+  const fileMentions = new Set<string>();
+  const noteFiles = (value: unknown, depth = 0) => {
+    if (depth > 8 || value === null || value === undefined) return;
+    if (typeof value === "string") {
+      const text = value.trim();
+      if (/^(https?:\/\/firebasestorage\.googleapis\.com\/|gs:\/\/)/i.test(text)) fileMentions.add(text);
+      else if (text.replace(/^\/+/, "").startsWith("companies/")) fileMentions.add(text.replace(/^\/+/, ""));
+      return;
+    }
+    if (Array.isArray(value)) value.forEach((item) => noteFiles(item, depth + 1));
+    else if (typeof value === "object") Object.values(value as Record<string, unknown>).forEach((item) => noteFiles(item, depth + 1));
+  };
+  if (projectData) noteFiles(projectData);
+
+  if (projectRef) {
+    for (const name of PROJECT_CONTENT_SUBCOLLECTIONS) {
+      try {
+        const snap = await getDocs(collection(projectRef, name));
+        if (name === "projectMedia") snap.docs.forEach((item) => noteFiles(item.data()));
+        await Promise.all(snap.docs.map((item) => deleteDoc(item.ref).catch(() => undefined)));
+      } catch {
+        // that part stays
+      }
+    }
+  }
+  try {
+    const changes = await getDocs(query(collection(database, "changelog"), where("projectId", "==", project.id)));
+    await Promise.all(changes.docs.map((item) => deleteDoc(item.ref).catch(() => undefined)));
+  } catch {
+    // its changelog stays
+  }
+
+  // Its files — never from Preview (nothing in it is real, and nothing's sent from it).
+  const storageClient = storage;
+  if (!storageClient || !companyId || isPreviewMode()) return;
+  const folders = Array.from(new Set([project.id, projectRef?.id ?? ""].filter(Boolean))).map((id) => `companies/${companyId}/jobs/${id}`);
+  const inItsFolder = (fileRef: StorageReference) => folders.some((folder) => fileRef.fullPath.startsWith(`${folder}/`));
+  const files = new Map<string, StorageReference>();
+  for (const mention of fileMentions) {
+    try {
+      const fileRef = storageRef(storageClient, mention);
+      if (inItsFolder(fileRef)) files.set(fileRef.fullPath, fileRef);
+    } catch {
+      // not a Storage file
+    }
+  }
+  // And whatever else is in its folders (its quote snapshots…), where the Storage rules let a folder be listed.
+  const listInto = async (folderRef: StorageReference): Promise<void> => {
+    const listing = await listAll(folderRef);
+    listing.items.forEach((item) => files.set(item.fullPath, item));
+    for (const prefix of listing.prefixes) await listInto(prefix);
+  };
+  for (const folder of folders) {
+    try {
+      await listInto(storageRef(storageClient, folder));
+    } catch {
+      // not listable — the files its data points at still go
+    }
+  }
+  await Promise.all([...files.values()].map((fileRef) => deleteObject(fileRef).catch(() => undefined)));
+}
+
+async function deleteProjectEverywhere(project: Project): Promise<boolean> {
   if (!db || !project) {
     return false;
   }
@@ -2184,6 +2306,24 @@ export async function fetchGridVersion(project: Project, kind: GridVersionKind, 
   }
 }
 
+// The total of a project's accepted quote — the quote version its client accepted (acceptedAtIso; the latest, if more
+// than one was), as its grid shows it ("$18,450.00"). null: no accepted quote (or it couldn't be read); "": one accepted
+// whose total wasn't marked. For the Completed pop-up's bonus minimum (lib/completion-bonus.ts).
+export async function fetchAcceptedQuoteTotalText(project: Project): Promise<string | null> {
+  const ref = await resolveProjectDocRef(project);
+  if (!ref) return null;
+  try {
+    const snap = await getDocs(query(collection(ref, "quoteGridVersions"), where("acceptedAtIso", ">", "")));
+    const accepted = snap.docs
+      .map((d) => normalizeSpecsGridVersion({ ...d.data(), id: d.id }))
+      .filter((version): version is SpecsGridVersion => Boolean(version?.acceptedAtIso))
+      .sort((a, b) => String(b.acceptedAtIso).localeCompare(String(a.acceptedAtIso)));
+    return accepted[0] ? quoteGridTotalText(accepted[0].grid) : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function saveGridVersion(
   project: Project,
   kind: GridVersionKind,
@@ -2286,14 +2426,14 @@ export async function deleteGridVersion(project: Project, kind: GridVersionKind,
 // data, rather than this module doing it implicitly.
 type CutlistDataKind = "production" | "initialMeasure";
 
-export async function fetchCutlistData(project: Project, kind: CutlistDataKind): Promise<{ rows: unknown[] } | null> {
+export async function fetchCutlistData(project: Project, kind: CutlistDataKind): Promise<{ rows: unknown[]; rev: number } | null> {
   const ref = await resolveProjectDocRef(project);
   if (!ref) return null;
   try {
     const snap = await getDoc(doc(ref, "cutlistData", kind));
     if (!snap.exists()) return null;
     const data = snap.data() as Record<string, unknown>;
-    return { rows: Array.isArray(data.rows) ? data.rows : [] };
+    return { rows: Array.isArray(data.rows) ? data.rows : [], rev: cutlistDataRev(data) };
   } catch (error) {
     console.warn(`[fetchCutlistData] ${kind} read failed:`, error);
     return null;
@@ -2303,7 +2443,8 @@ export async function fetchCutlistData(project: Project, kind: CutlistDataKind):
 // Writes the subcollection doc AND clears the legacy embedded field on the parent job doc in one
 // atomic batch — never two independent awaited calls, since a partial failure between them would
 // silently lose data (subcollection written but legacy field still present, or vice versa).
-export async function saveCutlistData(project: Project, kind: CutlistDataKind, rows: unknown[]): Promise<boolean> {
+// (`rev`: one more on every save — see saveCutlistDataMerged.)
+export async function saveCutlistData(project: Project, kind: CutlistDataKind, rows: unknown[], rev?: number): Promise<boolean> {
   if (!db) return false;
   const ref = await resolveProjectDocRef(project);
   if (!ref) return false;
@@ -2312,27 +2453,79 @@ export async function saveCutlistData(project: Project, kind: CutlistDataKind, r
     batch.set(doc(ref, "cutlistData", kind), {
       rows: JSON.parse(JSON.stringify(rows)),
       updatedAtIso: new Date().toISOString(),
+      ...(rev ? { rev } : {}),
     });
-    if (kind === "production") {
-      batch.update(ref, { cutlist: deleteField(), cutlistJson: deleteField(), updatedAtIso: new Date().toISOString() });
-    } else {
-      // initialMeasure's legacy source is nested inside the sales blob (sales.initialCutlist),
-      // not a top-level field — dot-path delete clears it from the live `sales`/
-      // `projectSettings.sales` object copies; the `salesJson`/`projectSettingsJson` string
-      // mirrors are left as inert, unread dead weight (extractSalesPayloadFromProject/
-      // extractLegacySalesFieldFromRawDoc both prefer the live object fields over those strings).
-      batch.update(ref, {
-        "sales.initialCutlist": deleteField(),
-        "projectSettings.sales.initialCutlist": deleteField(),
-        updatedAtIso: new Date().toISOString(),
-      });
-    }
+    batch.update(ref, cutlistLegacyFieldsCleared(kind));
     await batch.commit();
     return true;
   } catch (error) {
     console.warn(`[saveCutlistData] ${kind} write failed:`, error);
     return false;
   }
+}
+
+function cutlistLegacyFieldsCleared(kind: CutlistDataKind) {
+  if (kind === "production") return { cutlist: deleteField(), cutlistJson: deleteField(), updatedAtIso: new Date().toISOString() };
+  // initialMeasure's legacy source is nested inside the sales blob (sales.initialCutlist),
+  // not a top-level field — dot-path delete clears it from the live `sales`/
+  // `projectSettings.sales` object copies; the `salesJson`/`projectSettingsJson` string
+  // mirrors are left as inert, unread dead weight (extractSalesPayloadFromProject/
+  // extractLegacySalesFieldFromRawDoc both prefer the live object fields over those strings).
+  return {
+    "sales.initialCutlist": deleteField(),
+    "projectSettings.sales.initialCutlist": deleteField(),
+    updatedAtIso: new Date().toISOString(),
+  };
+}
+
+// A cutlist's revision: one more on every save. Lets a screen tell an older copy of the rows (arriving late) from the
+// one it already has (lib/use-project-cutlist.ts).
+export function cutlistDataRev(data: unknown): number {
+  const rev = Number((data as Record<string, unknown> | null | undefined)?.rev);
+  return Number.isFinite(rev) && rev > 0 ? rev : 0;
+}
+
+// Saves one cutlist as `merge` makes it from the rows stored right now (lib/cutlist-merge.ts: only what this person
+// changed, put onto everyone else's latest) — read and written together in one transaction, which Firestore runs again
+// if someone else's save lands in between, so it never puts back rows someone has just changed or removed. With no
+// connection (and in the CutSmart Preview, whose database never reaches a server) there's no transaction to be had:
+// merged onto the rows last heard of (`knownRows`, revision `knownRev`) instead, and saved as it always was.
+// The rows saved come back, with their revision.
+export async function saveCutlistDataMerged(
+  project: Project,
+  kind: CutlistDataKind,
+  merge: (storedRows: unknown[]) => unknown[],
+  knownRows: unknown[],
+  knownRev: number,
+): Promise<{ ok: boolean; rows: unknown[]; rev: number }> {
+  const database = db;
+  if (!database) return { ok: false, rows: [], rev: knownRev };
+  const ref = await resolveProjectDocRef(project);
+  if (!ref) return { ok: false, rows: [], rev: knownRev };
+  const online = typeof navigator === "undefined" || navigator.onLine !== false;
+  if (!isPreviewMode() && online) {
+    try {
+      const dataRef = doc(ref, "cutlistData", kind);
+      const saved = await runTransaction(database, async (transaction) => {
+        const snap = await transaction.get(dataRef);
+        const data = snap.exists() ? (snap.data() as Record<string, unknown>) : null;
+        // (Not saved here yet — still in its old place on the project: the rows read from there.)
+        const stored = data && Array.isArray(data.rows) ? data.rows : knownRows;
+        const rows = JSON.parse(JSON.stringify(merge(stored))) as unknown[];
+        const rev = Math.max(cutlistDataRev(data), knownRev) + 1;
+        transaction.set(dataRef, { rows, updatedAtIso: new Date().toISOString(), rev });
+        transaction.update(ref, cutlistLegacyFieldsCleared(kind));
+        return { rows, rev };
+      });
+      return { ok: true, ...saved };
+    } catch (error) {
+      console.warn(`[saveCutlistDataMerged] ${kind} transaction failed, saving without it:`, error);
+    }
+  }
+  const rows = JSON.parse(JSON.stringify(merge(knownRows))) as unknown[];
+  const rev = knownRev + 1;
+  const ok = await saveCutlistData(project, kind, rows, rev);
+  return { ok, rows, rev: ok ? rev : knownRev };
 }
 
 // Sales — live Quote grid and Specifications grid, one document per kind (same one-doc-per-kind
@@ -3587,8 +3780,9 @@ async function syncCompanyClientProfileFromProjectInternal(
     const projectCreatedIso = String(project.createdAt || project.updatedAt || "").trim();
     const projectUpdatedIso = String(project.updatedAt || project.createdAt || "").trim();
     // An existing contact card's own details are never overwritten from a project here — the project
-    // only fills in fields the card doesn't have yet. Changing a card's details from project client
-    // details is an explicit choice the project page asks the user about ("Update contact card?").
+    // only fills in fields the card doesn't have yet. A project's Client Details being changed changes
+    // the card through applyProjectClientDetailsToContact instead (and a new project for an existing
+    // client with different details asks first — "Update contact card?" on the project page).
     const cardEmail = String(currentRow?.email || "").trim();
     const payload: Record<string, unknown> = {
       id: clientId,
@@ -3968,6 +4162,191 @@ export async function createOrAttachManualCompanyClient(
   }
 }
 
+// --- A client's details, the same everywhere --------------------------------------------------------
+// A contact card and its projects show the same client: their name, email, phone and address changed in one
+// place (the Contacts page, or a project's Client Details) are changed in the other too — on the card (every
+// saved doc that is the same person) and on every project of theirs.
+export type ClientDetailsPatch = Partial<Record<"name" | "email" | "phone" | "address", string>>;
+
+const CLIENT_DETAILS_CHANGE_LABELS: Record<keyof ClientDetailsPatch, string> = {
+  name: "Client Name",
+  email: "Client Email",
+  phone: "Client Phone",
+  address: "Client Address",
+};
+
+function clientDetailsOnly(patch: Partial<Record<string, unknown>>): ClientDetailsPatch {
+  const out: ClientDetailsPatch = {};
+  for (const field of ["name", "email", "phone", "address"] as const) {
+    if (typeof patch[field] === "string") out[field] = String(patch[field]).trim();
+  }
+  // (Never a name taken away — a client without one isn't anyone.)
+  if (out.name === "") delete out.name;
+  return out;
+}
+
+// What a project's own fields become with the change (only what's actually different on it).
+function projectPatchFromClientDetails(project: Project, patch: ClientDetailsPatch): { patch: Record<string, unknown>; changes: string[] } {
+  const out: Record<string, unknown> = {};
+  const changes: string[] = [];
+  const note = (field: keyof ClientDetailsPatch, before: string, after: string) =>
+    changes.push(`${CLIENT_DETAILS_CHANGE_LABELS[field]}: ${before || "-"} → ${after || "-"}`);
+  const name = patch.name;
+  if (typeof name === "string" && name !== String(project.customer || "").trim()) {
+    out.customer = name;
+    // A name also kept as first / last (lead forms, older projects): kept in step.
+    if (String(project.clientFirstName || "").trim() || String(project.clientLastName || "").trim()) {
+      const words = name.split(/\s+/).filter(Boolean);
+      out.clientFirstName = words[0] || "";
+      out.clientLastName = words.slice(1).join(" ");
+    }
+    note("name", String(project.customer || "").trim(), name);
+  }
+  const fields = [
+    ["email", "clientEmail"],
+    ["phone", "clientPhone"],
+    ["address", "clientAddress"],
+  ] as const;
+  for (const [field, key] of fields) {
+    const value = patch[field];
+    const current = String(project[key] || "").trim();
+    if (typeof value !== "string" || value === current) continue;
+    out[key] = value;
+    note(field, current, value);
+  }
+  return { patch: out, changes };
+}
+
+// The change on every project of this client's: linked to one of their cards (`cardIds`), or not linked to any
+// yet but with the card's details from before the change (the email -> phone -> name(+address) match the
+// Contacts page lists them by — and then linked to it, `linkToId`). A project linked to someone else's card is
+// never touched. `skipProjectId`: where the change came from (it has it already). Written without moving the
+// projects' "last updated" (an old job isn't new work because its client's phone changed), with a line in each
+// one's changelog saying so. Best effort, project by project.
+async function applyClientDetailsToProjects(
+  companyId: string,
+  cardIds: Set<string>,
+  before: { name: string; email: string; phone: string; address: string },
+  patch: ClientDetailsPatch,
+  options: { linkToId?: string; skipProjectId?: string; actorName?: string },
+): Promise<void> {
+  const cid = String(companyId || "").trim();
+  if (!db || !cid || !Object.keys(patch).length) return;
+  const beforeRow = {
+    name: before.name,
+    email: before.email,
+    emailNormalized: normalizeClientEmail(before.email),
+    phone: before.phone,
+    address: before.address,
+  } as CompanyClientRow;
+  const projects = await collectCompanyProjectsForClients(cid);
+  await Promise.all(
+    projects.map(async (project) => {
+      if (!project.id || project.id === options.skipProjectId) return;
+      const linkedId = String(project.clientId || "").trim();
+      if (linkedId ? !cardIds.has(linkedId) : !projectMatchesClientRow(project, beforeRow)) return;
+      const { patch: projectPatch, changes } = projectPatchFromClientDetails(project, patch);
+      if (!linkedId && options.linkToId) projectPatch.clientId = options.linkToId;
+      if (!Object.keys(projectPatch).length) return;
+      try {
+        const ref = await resolveProjectDocRef(project);
+        if (!ref) return;
+        await updateDoc(ref, projectPatch);
+        if (changes.length) void addProjectChange(project.id, options.actorName || "Staff", `${changes.join(", ")} (from the contact card)`);
+      } catch (error) {
+        console.warn("[applyClientDetailsToProjects] project write failed:", project.id, error);
+      }
+    }),
+  );
+}
+
+function clientDetailsCardPayload(patch: ClientDetailsPatch, nowIso: string): Record<string, unknown> {
+  const payload: Record<string, unknown> = { updatedAt: serverTimestamp(), updatedAtIso: nowIso };
+  if (typeof patch.name === "string") payload.name = patch.name;
+  if (typeof patch.email === "string") {
+    payload.email = patch.email;
+    payload.emailNormalized = normalizeClientEmail(patch.email);
+  }
+  if (typeof patch.phone === "string") payload.phone = patch.phone;
+  if (typeof patch.address === "string") payload.address = patch.address;
+  return payload;
+}
+
+// A project's Client Details changed (`before`: what they were): the same change on the client's contact card —
+// the card the project is linked to, or the one its old details match — and on the client's other projects.
+// - New email or phone that's already someone else's card: the project is theirs now — linked to that card, and
+//   nobody's details are changed (it'd otherwise rewrite one person's card as another's).
+// - No card for them yet: one made from the project and linked, as before.
+// Done for anyone who can edit the project's details (the card is only the client's details, shared). Returns
+// the card the project's linked to.
+export async function applyProjectClientDetailsToContact(
+  project: Project,
+  before: { name: string; email: string; phone: string; address: string },
+  changed: ClientDetailsPatch,
+  actorName?: string,
+): Promise<{ ok: boolean; clientId?: string }> {
+  const cid = String(project?.companyId || "").trim();
+  const patch = clientDetailsOnly(changed);
+  if (!db || !cid || !project?.id) return { ok: false };
+  try {
+    const all = (await getDocs(collection(db, "companies", cid, "clients"))).docs
+      .filter((docSnap) => docSnap.id !== "__meta")
+      .map((docSnap) => buildCompanyClientRowFromDoc(cid, docSnap.id, (docSnap.data() ?? {}) as Record<string, unknown>));
+    const live = all.filter((row) => !row.deleted);
+    const linkedId = String(project.clientId || "").trim();
+    const beforeProject: Project = {
+      ...project,
+      customer: before.name,
+      clientEmail: before.email,
+      clientPhone: before.phone,
+      clientAddress: before.address,
+    };
+    const card = linkedId ? all.find((row) => row.id === linkedId) : live.find((row) => projectMatchesClientRow(beforeProject, row));
+    if (!card || card.deleted) {
+      if (!String(project.clientId || "").trim() && !String(project.clientEmail || "").trim()) return { ok: true };
+      return await syncCompanyClientProfileFromProjectInternal(project, { syncOnly: false });
+    }
+    const identity = { name: card.name, email: card.email || card.emailNormalized, phone: card.phone, address: card.address };
+    const twins = live.filter((row) => row.id === card.id || inputMatchesClientRow(identity, row));
+    const twinIds = new Set([card.id, ...twins.map((row) => row.id)]);
+
+    // (By phone only where neither has an email — as cards are matched: email first, then phone.)
+    const newEmail = normalizeClientEmail(patch.email);
+    const newPhone = normalizeClientPhone(patch.phone);
+    const projectHasEmail = Boolean(normalizeClientEmail(project.clientEmail));
+    const someoneElse = live.find((row) => {
+      if (twinIds.has(row.id)) return false;
+      const rowEmail = normalizeClientEmail(row.emailNormalized || row.email);
+      if (newEmail && rowEmail === newEmail) return true;
+      return Boolean(newPhone && !projectHasEmail && !rowEmail && normalizeClientPhone(row.phone) === newPhone);
+    });
+    if (someoneElse) {
+      await updateProjectPatch(project, { clientId: someoneElse.id });
+      await syncCompanyClientProfileFromProjectInternal({ ...project, clientId: someoneElse.id }, { syncOnly: true });
+      return { ok: true, clientId: someoneElse.id };
+    }
+
+    if (Object.keys(patch).length) {
+      const payload = clientDetailsCardPayload(patch, new Date().toISOString());
+      for (const id of twinIds) {
+        await setDoc(doc(db, "companies", cid, "clients", id), payload, { merge: true });
+      }
+    }
+    // Linked to the card, with its row in the card's history brought up to date (the card's details are now the
+    // project's, so nothing of the card's is put back on it).
+    if (linkedId !== card.id) await updateProjectPatch(project, { clientId: card.id });
+    await syncCompanyClientProfileFromProjectInternal({ ...project, clientId: card.id }, { syncOnly: true });
+    await applyClientDetailsToProjects(cid, twinIds, identity, patch, {
+      linkToId: card.id,
+      skipProjectId: project.id,
+      actorName,
+    });
+    return { ok: true, clientId: card.id };
+  } catch {
+    return { ok: false };
+  }
+}
+
 // A contact row on the Contacts page is not always a persisted client doc: the read path keys
 // job-derived contacts by an identity key (client_<email>, client_<name>, ...) while the doc project sync
 // persisted for the same person has a random uid, and a contact that only exists as job data has no doc
@@ -3975,12 +4354,15 @@ export async function createOrAttachManualCompanyClient(
 // doc that is the same person (the row's own id, plus the same email -> phone -> name matching used for
 // dedup), and if there is none one is created at the row's id carrying the row's identity. Without that,
 // an archive/edit aimed at the derived id found no doc and silently did nothing.
+// A change to the client's name, email, phone or address is made on every project of theirs too
+// (applyClientDetailsToProjects; `actorName` goes in those projects' changelogs).
 export async function updateCompanyClientProfile(
   companyId: string,
   clientId: string,
   patch: Partial<Pick<CompanyClientRow, "name" | "email" | "phone" | "address" | "notes" | "category" | "archived">>,
   filter?: CompanyClientViewerFilter,
   contact?: CompanyClientRow | null,
+  actorName?: string,
 ): Promise<{ ok: boolean }> {
   const cid = String(companyId || "").trim();
   const id = String(clientId || "").trim();
@@ -4024,11 +4406,31 @@ export async function updateCompanyClientProfile(
       // The date it's filed under on the Archived page.
       payload.archivedAtIso = patch.archived ? nowIso : "";
     }
+    // The client's details changed: on their projects too, once the card's saved. Matched by the card's
+    // details from before the change; the projects not linked to a card yet are linked to this one.
+    const details = clientDetailsOnly(patch);
+    const beforeRow = contact ?? targets[0] ?? null;
+    const onProjects = async (cardIds: string[], linkToId: string) => {
+      if (!Object.keys(details).length || !beforeRow) return;
+      try {
+        await applyClientDetailsToProjects(
+          cid,
+          new Set(cardIds),
+          { name: beforeRow.name, email: beforeRow.email || beforeRow.emailNormalized, phone: beforeRow.phone, address: beforeRow.address },
+          details,
+          { linkToId, actorName },
+        );
+      } catch {
+        // The card's saved; its projects are best effort.
+      }
+    };
 
     if (targets.length > 0) {
       for (const target of targets) {
         await setDoc(doc(db, "companies", cid, "clients", target.id), payload, { merge: true });
       }
+      const targetIds = targets.map((target) => target.id);
+      await onProjects([id, ...targetIds], targetIds.includes(id) ? id : targetIds[0]);
       return { ok: true };
     }
     if (!contact) return { ok: false };
@@ -4038,6 +4440,7 @@ export async function updateCompanyClientProfile(
     const existingAtId = await getDoc(doc(db, "companies", cid, "clients", id));
     if (existingAtId.exists()) {
       await setDoc(doc(db, "companies", cid, "clients", id), payload, { merge: true });
+      await onProjects([id], id);
       return { ok: true };
     }
 
@@ -4069,6 +4472,7 @@ export async function updateCompanyClientProfile(
       },
       { merge: true },
     );
+    await onProjects([id], id);
     return { ok: true };
   } catch {
     return { ok: false };

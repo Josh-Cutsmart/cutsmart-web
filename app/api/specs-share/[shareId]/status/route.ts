@@ -40,6 +40,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     quoteVersionId: shareDoc.quoteVersionId || null,
     quoteAcceptedAt: shareDoc.quoteAcceptedAt || null,
     quoteAcceptedByName: shareDoc.quoteAcceptedByName || null,
+    quoteAcceptedOnBehalfByName: shareDoc.quoteAcceptedOnBehalfByName || null,
+    submittedOnBehalfByName: shareDoc.submittedOnBehalfByName || null,
     quoteDeclinedAt: shareDoc.quoteDeclinedAt || null,
     quoteDeclinedByName: shareDoc.quoteDeclinedByName || null,
     quoteDeclineReason: shareDoc.quoteDeclineReason || null,
