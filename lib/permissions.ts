@@ -97,8 +97,15 @@ export function projectTabAccess(
   const hasProjectViewAccess = directProjectPermission === "view" || directProjectPermission === "edit";
   const hasProjectEditAccess = directProjectPermission === "edit";
   const hasCompanyWideEditAccess = hasPermission(permissionKeys, "projects.edit.others");
+  // Whether they can see this project at all (as lib/firestore-data.ts's canUserViewProject) — which of its tabs, their
+  // role's permissions then say.
   const baseProjectVisibility =
-    privileged || hasCompanyWideEditAccess || isProjectCreator || isAssignedProjectManager || hasProjectViewAccess;
+    privileged ||
+    hasCompanyWideEditAccess ||
+    hasPermission(permissionKeys, "projects.view.others") ||
+    isProjectCreator ||
+    isAssignedProjectManager ||
+    hasProjectViewAccess;
 
   if (tab === "general") {
     const canEdit =
@@ -124,18 +131,21 @@ export function projectTabAccess(
   let canView = privileged;
   let canEdit = false;
 
+  // Design (sales) and Production: only with their role's permission to see them (Company Settings › Roles) — creating
+  // the project, being assigned it, or a grant on just this project lets them see the project, not every tab of it.
   if (tab === "sales") {
     canView =
       canView ||
       (baseProjectVisibility && (hasPermission(permissionKeys, "sales.view") || hasPermission(permissionKeys, "sales.edit")));
+    // (Theirs — created, assigned, or edit on it — they can change what they can see of it.)
     canEdit =
-      canEdit ||
-      (baseProjectVisibility && hasPermission(permissionKeys, "sales.edit")) ||
       privileged ||
-      hasCompanyWideEditAccess ||
-      isProjectCreator ||
-      isAssignedProjectManager ||
-      hasProjectEditAccess;
+      (canView &&
+        (hasPermission(permissionKeys, "sales.edit") ||
+          hasCompanyWideEditAccess ||
+          isProjectCreator ||
+          isAssignedProjectManager ||
+          hasProjectEditAccess));
   }
 
   if (tab === "production") {
@@ -143,10 +153,8 @@ export function projectTabAccess(
       hasPermission(permissionKeys, "production.key") ||
       hasPermission(permissionKeys, "production.view") ||
       hasPermission(permissionKeys, "production.edit");
-    canView = canView || baseProjectVisibility || (baseProjectVisibility && hasProdPerm);
-    canEdit =
-      canEdit ||
-      hasPermission(permissionKeys, "production.edit");
+    canView = canView || (baseProjectVisibility && hasProdPerm);
+    canEdit = canEdit || (baseProjectVisibility && hasPermission(permissionKeys, "production.edit"));
   }
 
   const settings = (project?.projectSettings ?? {}) as Record<string, unknown>;
@@ -172,11 +180,6 @@ export function projectTabAccess(
       canView = true;
       canEdit = true;
     }
-  }
-
-  if (tab !== "production" && (isProjectCreator || isAssignedProjectManager || privileged || hasCompanyWideEditAccess || hasProjectEditAccess)) {
-    canView = true;
-    canEdit = true;
   }
 
   return { view: canView, edit: canEdit };

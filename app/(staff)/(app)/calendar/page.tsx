@@ -11,7 +11,7 @@ import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, use
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { CalendarDays, ChevronLeft, ChevronRight, Clock, Copy, ExternalLink, Filter, FolderKanban, Lock, MapPin, MoreHorizontal, Pencil, Plus, Search, Trash2, Users, X } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, Clock, Copy, ExternalLink, Filter, FolderKanban, MapPin, MoreHorizontal, Pencil, Plus, Search, Trash2, Users, X } from "lucide-react";
 import { SubscribeBellIcon } from "@/components/subscribe-bell-icon";
 import { useAuth } from "@/lib/auth-context";
 import { fetchCompanyDoc, fetchCompanyMembers, fetchProjects } from "@/lib/firestore-data";
@@ -2808,11 +2808,6 @@ function CalendarPageContent() {
                       })()}
                     </div>
                     <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-5 pb-4">
-                      {restrictedIds.has(d.id) ? (
-                        <p className="flex items-center gap-2 rounded-[14px] border px-3 py-2.5 text-[12.5px]" style={{ borderColor: "var(--glass-border)", color: "var(--text-main)" }}>
-                          <Lock size={14} className="shrink-0" /> Linked to a project you don&apos;t have access to — its details are hidden.
-                        </p>
-                      ) : null}
                       {viewEvent.location ? (
                         <a
                           href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(viewEvent.location)}`}

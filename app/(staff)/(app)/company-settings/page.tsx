@@ -397,14 +397,13 @@ const desktopPermissionKeys = [
   "staff.change.role",
   "staff.change.display_name",
   "company.settings",
-  "company.updates",
   "dashboard.complete.bonus",
   "calendar.view",
 ];
 
 // The role pop-up lists permissions in these groups (any key not matched lands in "Other").
 const PERMISSION_GROUPS: Array<{ label: string; match: (key: string) => boolean }> = [
-  { label: "Company", match: (k) => k === "company.*" || k === "company.settings" || k === "company.updates" },
+  { label: "Company", match: (k) => k === "company.*" || k === "company.settings" },
   { label: "Dashboard & Contacts", match: (k) => k.startsWith("company.dashboard") || k.startsWith("dashboard.") || k.startsWith("clients.") },
   { label: "Leads", match: (k) => k.startsWith("leads.") },
   { label: "Projects", match: (k) => k.startsWith("projects.") },
@@ -450,7 +449,6 @@ const permissionLabels: Record<string, string> = {
   "staff.change.role": "staff.change.role - Change Staff Member Role",
   "staff.change.display_name": "staff.change.display_name - Change Staff Display Name",
   "company.settings": "company.settings - View/Change Company Settings",
-  "company.updates": "company.updates - Access Company Update Feed",
   "dashboard.complete.bonus": "dashboard.complete.bonus - Bonus Completed Projects Dashboard View",
 };
 
@@ -1939,6 +1937,8 @@ export default function CompanySettingsPage() {
   const [cutlistInitial, setCutlistInitial] = useState<string[]>([]);
   const [cutlistColumnOrder, setCutlistColumnOrder] = useState<string[]>([...cutlistColumnDefaults]);
   const [cutlistColumnDragIndex, setCutlistColumnDragIndex] = useState<number | null>(null);
+  // Production › Part types dragged into order — the order they're in on both cutlists (Initial Measure and Production).
+  const [partTypeDragIndex, setPartTypeDragIndex] = useState<number | null>(null);
   const [cutlistColumnDragOverIndex, setCutlistColumnDragOverIndex] = useState<number | null>(null);
   const [edgebandingRules, setEdgebandingRules] = useState<EdgebandingRuleRow[]>([]);
   const [edgebandingExcessPerEndMm, setEdgebandingExcessPerEndMm] = useState("");
@@ -5730,8 +5730,9 @@ export default function CompanySettingsPage() {
                   </Panel>
                   <Panel className="xl:col-span-2" title="Part types" icon={Shapes} description="The kinds of part in a cutlist — their colour, behaviour and where they're included." allowOverflow>
                     <div className="overflow-x-auto" data-horizontal-swipe-scroll="true">
-                      <div className="min-w-[860px] space-y-1.5">
-                        <div className="grid grid-cols-[36px_minmax(140px,1fr)_150px_210px_96px_86px_80px_32px] items-center gap-2 px-2">
+                      <div className="min-w-[900px] space-y-1.5">
+                        <div className="grid grid-cols-[28px_36px_minmax(140px,1fr)_150px_210px_96px_86px_80px_32px] items-center gap-2 px-2">
+                          <span />
                           <span />
                           <span className={columnHeadClass}>Name</span>
                           <span className={columnHeadClass}>Type</span>
@@ -5742,7 +5743,46 @@ export default function CompanySettingsPage() {
                           <span />
                         </div>
                         {partTypes.map((row, idx) => (
-                          <div key={`part_type_${idx}`} className={`${listRowClass} grid grid-cols-[36px_minmax(140px,1fr)_150px_210px_96px_86px_80px_32px]`}>
+                          // Dragged by its grip into the order the cutlists show them in.
+                          <div
+                            key={`part_type_${idx}`}
+                            id={`settings_part_type_${idx}`}
+                            className={`${listRowClass} grid grid-cols-[28px_36px_minmax(140px,1fr)_150px_210px_96px_86px_80px_32px]`}
+                            style={{ opacity: partTypeDragIndex === idx ? 0.45 : 1 }}
+                            onDragOver={(e) => {
+                              e.preventDefault();
+                              e.dataTransfer.dropEffect = "move";
+                            }}
+                            onDragEnter={(e) => {
+                              e.preventDefault();
+                              if (partTypeDragIndex == null || partTypeDragIndex === idx) return;
+                              setPartTypes((prev) => moveRowTo(prev, partTypeDragIndex, idx));
+                              setPartTypeDragIndex(idx);
+                            }}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              setPartTypeDragIndex(null);
+                              endRowDrag();
+                              triggerAutosaveAfterRowDrop();
+                            }}
+                          >
+                            <button
+                              type="button"
+                              draggable
+                              onDragStart={(e) => {
+                                setPartTypeDragIndex(idx);
+                                startRowDrag(e, `settings_part_type_${idx}`, row.name || "Part type", row.color || "#7D99B3");
+                              }}
+                              onDragEnd={() => {
+                                setPartTypeDragIndex(null);
+                                endRowDrag();
+                              }}
+                              className={gripClass}
+                              title="Drag to reorder"
+                              aria-label="Drag to reorder"
+                            >
+                              <GripVertical size={15} />
+                            </button>
                             <span className="flex justify-center">
                               <ColorCircle value={row.color || "#7D99B3"} onChange={(hex) => setPartTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, color: hex } : v)))} />
                             </span>

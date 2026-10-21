@@ -42,6 +42,7 @@ import type { ProductComparison } from "@/lib/cutlist-types";
 import type { ChecklistTemplate, Cutlist, Project, ProjectChange, ProjectChecklist, ProjectImageItem, SalesQuote } from "@/lib/types";
 import { normalizeWhatsNewHighlights, type UpdateChangelogEntry } from "@/lib/update-notes-utils";
 import { buildLeadRow } from "@/lib/lead-row";
+import { mergeStoredCutlistRows } from "@/lib/cutlist-merge";
 
 function toIsoString(value: unknown, fallback = "") {
   if (!value) {
@@ -269,6 +270,18 @@ export function normalizeProjectChecklists(value: unknown): ProjectChecklist[] {
   return checklists;
 }
 
+// A project's per-person access grants (projectSettings' projectPermissionsByUid / userAccessByUid / memberAccessByUid),
+// on their own — all a lightweight project keeps of its settings.
+function lightweightProjectAccessSettings(raw: unknown): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
+  const source = raw as Record<string, unknown>;
+  for (const key of ["projectPermissionsByUid", "userAccessByUid", "memberAccessByUid"]) {
+    if (source[key] && typeof source[key] === "object") out[key] = source[key];
+  }
+  return out;
+}
+
 function normalizeProject(id: string, data: Record<string, unknown>, options?: { lightweight?: boolean }): Project {
   const lightweight = options?.lightweight === true;
   const clientBlock =
@@ -281,8 +294,10 @@ function normalizeProject(id: string, data: Record<string, unknown>, options?: {
   // Lightweight mode (dashboard list rendering) skips every field below that the dashboard
   // never reads, so opening the dashboard doesn't pay for parsing every project's full
   // cutlist/sales/checklist/image payload just to show a name and a status pill.
+  // (Lightweight still keeps who's been given access to just this project — canUserViewProject judges a list's projects
+  // by it, as it does one opened on its own.)
   const settings = lightweight
-    ? ({} as Record<string, unknown>)
+    ? lightweightProjectAccessSettings(data.projectSettings)
     : typeof data.projectSettings === "object" && data.projectSettings !== null
       ? ({ ...(data.projectSettings as Record<string, unknown>) } as Record<string, unknown>)
       : ({} as Record<string, unknown>);
@@ -1027,6 +1042,27 @@ export function prefetchProjectById(projectId: string, uid?: string, preferredCo
   if (existing && Date.now() - existing.at < PROJECT_PREFETCH_MS) return;
   const promise = loadProjectById(id, uid, preferredCompanyIds).catch(() => null);
   projectPrefetches.set(id, { at: Date.now(), promise });
+}
+
+// Whether the signed-in user can still open a project — a top-bar tab's (components/global-app-tabs-bar.tsx): "no" when
+// it's gone or isn't theirs to see, "unknown" when that couldn't be told (offline, a slow read), so a tab's never taken
+// away on a guess.
+export async function projectViewableByUser(projectId: string, uid: string, companyId: string): Promise<"yes" | "no" | "unknown"> {
+  const id = String(projectId || "").trim();
+  const userId = String(uid || "").trim();
+  const cid = String(companyId || "").trim();
+  if (!db || !id || !userId || !cid) return "unknown";
+  try {
+    const snap = await getDoc(doc(db, "companies", cid, "jobs", id));
+    if (!snap.exists()) return snap.metadata.fromCache ? "unknown" : "no";
+    const companyAccess = await fetchCompanyAccess(cid, userId);
+    if (!companyAccess) return "unknown";
+    const project = normalizeProject(id, snap.data() as Record<string, unknown>);
+    project.companyId = cid;
+    return canUserViewProject(project, userId, companyAccess) ? "yes" : "no";
+  } catch {
+    return "unknown";
+  }
 }
 
 export async function fetchProjectById(
@@ -2456,7 +2492,8 @@ export async function saveCutlistData(project: Project, kind: CutlistDataKind, r
       ...(rev ? { rev } : {}),
     });
     batch.update(ref, cutlistLegacyFieldsCleared(kind));
-    await batch.commit();
+    // (Offline: on this device, and sent when it can be — not waited on.)
+    await committedOrQueued(batch.commit(), `saveCutlistData ${kind}`);
     return true;
   } catch (error) {
     console.warn(`[saveCutlistData] ${kind} write failed:`, error);
@@ -2478,6 +2515,37 @@ function cutlistLegacyFieldsCleared(kind: CutlistDataKind) {
   };
 }
 
+// Whether the database can't be reached, as near as the app can tell: the browser says it's offline, or a live cutlist
+// listener's latest news came from this device's copy rather than the server (lib/use-project-cutlist.ts reports that).
+let listenerOnDeviceCopy = false;
+export function reportCutlistListenerFromCache(fromCache: boolean) {
+  listenerOnDeviceCopy = fromCache;
+}
+export function isLikelyOffline(): boolean {
+  if (typeof navigator !== "undefined" && navigator.onLine === false) return true;
+  return listenerOnDeviceCopy;
+}
+
+// A write's promise only settles once the server has it — never, while offline. The write itself is on this device the
+// moment it's made (and kept there — lib/firebase.ts — till it can be sent), so offline it isn't waited on, and one that
+// hasn't heard back in a few seconds is taken as made: a save after it isn't held up behind it. (A cutlist's changes
+// made offline aren't written at all — they're kept: keepOfflineCutlistChange, below.) Turned down by the server after
+// that (rare — no permission), it's only logged; the database then puts the rows back as they were.
+const WRITE_QUEUED_AFTER_MS = 2500;
+async function committedOrQueued(commit: Promise<void>, label: string): Promise<void> {
+  commit.catch((error) => console.warn(`[${label}] write turned down:`, error));
+  if (isLikelyOffline()) return;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const queued = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, WRITE_QUEUED_AFTER_MS);
+  });
+  try {
+    await Promise.race([commit, queued]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 // A cutlist's revision: one more on every save. Lets a screen tell an older copy of the rows (arriving late) from the
 // one it already has (lib/use-project-cutlist.ts).
 export function cutlistDataRev(data: unknown): number {
@@ -2485,16 +2553,144 @@ export function cutlistDataRev(data: unknown): number {
   return Number.isFinite(rev) && rev > 0 ? rev : 0;
 }
 
-// Saves one cutlist as `merge` makes it from the rows stored right now (lib/cutlist-merge.ts: only what this person
-// changed, put onto everyone else's latest) — read and written together in one transaction, which Firestore runs again
-// if someone else's save lands in between, so it never puts back rows someone has just changed or removed. With no
-// connection (and in the CutSmart Preview, whose database never reaches a server) there's no transaction to be had:
-// merged onto the rows last heard of (`knownRows`, revision `knownRev`) instead, and saved as it always was.
-// The rows saved come back, with their revision.
+// A save's change to a cutlist: the rows it was made from (`base` — the ones last had from the database; null: none yet,
+// its rows then saved as they are) and its rows.
+export type CutlistChange = { base: unknown[] | null; rows: unknown[] };
+// That change put onto `onto`: only what it changed (lib/cutlist-merge.ts) — the rest as `onto` has it.
+const withCutlistChange = (change: CutlistChange, onto: unknown[]): unknown[] =>
+  change.base ? (mergeStoredCutlistRows(change.base, change.rows, onto) ?? change.rows) : change.rows;
+
+// ---- A cutlist's changes made offline. Not saved into the database while it can't be reached: a whole cutlist saved
+// then — sent once it can be — would put back every row as this device last had it, over whatever anyone else did
+// meanwhile. Kept on this device instead (localStorage, OFFLINE_CUTLIST_KEY + "<uid>:<the project's path>:<kind>" —
+// through a refresh, or the app being closed): the rows when the connection went (`base`) and as they are here now
+// (`rows`). Once it's back they're put onto the cutlist as it is then — only what was changed here, as any save is
+// (writeCutlistMerged) — and let go.
+type OfflineCutlistChange = CutlistChange & { base: unknown[]; stamp: string };
+const OFFLINE_CUTLIST_KEY = "cutsmart_offline_cutlist:";
+const offlineCutlistKey = (uid: string, path: string, kind: CutlistDataKind) => `${OFFLINE_CUTLIST_KEY}${uid}:${path}:${kind}`;
+const signedInUid = () => String(auth?.currentUser?.uid || "").trim();
+
+function readOfflineCutlistChange(uid: string, path: string, kind: CutlistDataKind): OfflineCutlistChange | null {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(offlineCutlistKey(uid, path, kind)) || "null") as Partial<OfflineCutlistChange> | null;
+    if (!parsed || !Array.isArray(parsed.base) || !Array.isArray(parsed.rows) || typeof parsed.stamp !== "string") return null;
+    return { base: parsed.base, rows: parsed.rows, stamp: parsed.stamp };
+  } catch {
+    return null;
+  }
+}
+// Told when one's kept or let go — in this tab, or another (its storage event).
+const offlineCutlistListeners = new Set<() => void>();
+const offlineCutlistChanged = () => offlineCutlistListeners.forEach((listener) => listener());
+export function subscribeOfflineCutlistChanges(listener: () => void): () => void {
+  offlineCutlistListeners.add(listener);
+  const onStorage = (event: StorageEvent) => {
+    if (!event.key || event.key.startsWith(OFFLINE_CUTLIST_KEY)) listener();
+  };
+  window.addEventListener("storage", onStorage);
+  return () => {
+    offlineCutlistListeners.delete(listener);
+    window.removeEventListener("storage", onStorage);
+  };
+}
+// Whether a cutlist (its project's path, and kind) has changes kept here, not sent yet.
+export function hasOfflineCutlistChange(path: string, kind: CutlistDataKind): boolean {
+  const uid = signedInUid();
+  if (!uid || !path || typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(offlineCutlistKey(uid, path, kind)) !== null;
+  } catch {
+    return false;
+  }
+}
+// A save's change added to what's kept (the rows when the connection went stay its base) — false when it can't be:
+// nobody signed in, or no room left on this device.
+function keepOfflineCutlistChange(path: string, kind: CutlistDataKind, change: CutlistChange, knownRows: unknown[]): boolean {
+  const uid = signedInUid();
+  if (!uid || typeof window === "undefined") return false;
+  const kept = readOfflineCutlistChange(uid, path, kind);
+  const next: OfflineCutlistChange = {
+    base: kept ? kept.base : (change.base ?? knownRows),
+    rows: kept ? withCutlistChange(change, kept.rows) : change.rows,
+    stamp: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+  };
+  try {
+    window.localStorage.setItem(offlineCutlistKey(uid, path, kind), JSON.stringify(next));
+  } catch {
+    return false;
+  }
+  offlineCutlistChanged();
+  return true;
+}
+// Let go once it's in the database — unless more's been kept since (`stamp`: the one sent): that goes next time.
+function letGoOfflineCutlistChange(uid: string, path: string, kind: CutlistDataKind, stamp: string) {
+  try {
+    if (readOfflineCutlistChange(uid, path, kind)?.stamp !== stamp) return;
+    window.localStorage.removeItem(offlineCutlistKey(uid, path, kind));
+  } catch {
+    return;
+  }
+  offlineCutlistChanged();
+}
+
+// One write to a cutlist at a time from this tab — its saves, and what's kept from being offline going out — in the
+// order they come.
+const cutlistWriteChains = new Map<string, Promise<unknown>>();
+function oneCutlistWriteAtATime<T>(key: string, write: () => Promise<T>): Promise<T> {
+  const next = (cutlistWriteChains.get(key) ?? Promise.resolve()).catch(() => undefined).then(write);
+  cutlistWriteChains.set(key, next);
+  return next;
+}
+// Turned down by the server (no permission, the project gone), rather than not reaching it.
+const cutlistWriteTurnedDown = (error: unknown) =>
+  ["permission-denied", "unauthenticated", "invalid-argument", "not-found"].includes(String((error as { code?: unknown } | null)?.code ?? ""));
+
+// Writes a cutlist in one transaction, which Firestore runs again if someone else's save lands in between: the rows
+// stored now (`fallback` while it's still in its old place on the project) with what's kept here from being offline put
+// onto them, then this save's change — so it never puts back rows someone else has just changed or removed. The rows
+// written come back, with their revision (null: nothing to write). Throws when the server can't be reached, or turns
+// it down.
+async function writeCutlistMerged(
+  database: NonNullable<typeof db>,
+  ref: DocumentReference,
+  kind: CutlistDataKind,
+  change: CutlistChange | null,
+  fallback: unknown[] | null,
+  knownRev: number,
+): Promise<{ rows: unknown[]; rev: number } | null> {
+  return oneCutlistWriteAtATime(`${ref.path}:${kind}`, async () => {
+    const uid = signedInUid();
+    const kept = uid ? readOfflineCutlistChange(uid, ref.path, kind) : null;
+    if (!change && !kept) return null;
+    const dataRef = doc(ref, "cutlistData", kind);
+    const saved = await runTransaction(database, async (transaction) => {
+      const snap = await transaction.get(dataRef);
+      const data = snap.exists() ? (snap.data() as Record<string, unknown>) : null;
+      let rows = data && Array.isArray(data.rows) ? data.rows : (fallback ?? kept?.base ?? []);
+      if (kept) rows = withCutlistChange(kept, rows);
+      if (change) rows = withCutlistChange(change, rows);
+      rows = JSON.parse(JSON.stringify(rows)) as unknown[];
+      const rev = Math.max(cutlistDataRev(data), knownRev) + 1;
+      transaction.set(dataRef, { rows, updatedAtIso: new Date().toISOString(), rev });
+      transaction.update(ref, cutlistLegacyFieldsCleared(kind));
+      return { rows, rev };
+    });
+    if (kept && uid) letGoOfflineCutlistChange(uid, ref.path, kind, kept.stamp);
+    return saved;
+  });
+}
+
+// Saves a change to one cutlist (writeCutlistMerged: only what this person changed, put onto everyone else's latest).
+// With no connection — the browser says so, the cutlist's listener is on this device's copy, or the server just can't
+// be reached — kept on this device till it's back (keepOfflineCutlistChange), and shown here meanwhile as put onto the
+// rows last heard of (`knownRows`, revision `knownRev`). The CutSmart Preview (whose database never reaches a server,
+// with nobody else in it) — or a change there's no room left to keep — saves the whole cutlist, as it always did. The
+// rows to show come back, with their revision.
 export async function saveCutlistDataMerged(
   project: Project,
   kind: CutlistDataKind,
-  merge: (storedRows: unknown[]) => unknown[],
+  change: CutlistChange,
   knownRows: unknown[],
   knownRev: number,
 ): Promise<{ ok: boolean; rows: unknown[]; rev: number }> {
@@ -2502,30 +2698,68 @@ export async function saveCutlistDataMerged(
   if (!database) return { ok: false, rows: [], rev: knownRev };
   const ref = await resolveProjectDocRef(project);
   if (!ref) return { ok: false, rows: [], rev: knownRev };
-  const online = typeof navigator === "undefined" || navigator.onLine !== false;
-  if (!isPreviewMode() && online) {
-    try {
-      const dataRef = doc(ref, "cutlistData", kind);
-      const saved = await runTransaction(database, async (transaction) => {
-        const snap = await transaction.get(dataRef);
-        const data = snap.exists() ? (snap.data() as Record<string, unknown>) : null;
-        // (Not saved here yet — still in its old place on the project: the rows read from there.)
-        const stored = data && Array.isArray(data.rows) ? data.rows : knownRows;
-        const rows = JSON.parse(JSON.stringify(merge(stored))) as unknown[];
-        const rev = Math.max(cutlistDataRev(data), knownRev) + 1;
-        transaction.set(dataRef, { rows, updatedAtIso: new Date().toISOString(), rev });
-        transaction.update(ref, cutlistLegacyFieldsCleared(kind));
-        return { rows, rev };
-      });
-      return { ok: true, ...saved };
-    } catch (error) {
-      console.warn(`[saveCutlistDataMerged] ${kind} transaction failed, saving without it:`, error);
+  const shown = () => JSON.parse(JSON.stringify(withCutlistChange(change, knownRows))) as unknown[];
+  if (!isPreviewMode()) {
+    if (!isLikelyOffline()) {
+      try {
+        const saved = await writeCutlistMerged(database, ref, kind, change, knownRows, knownRev);
+        if (saved) return { ok: true, ...saved };
+      } catch (error) {
+        if (cutlistWriteTurnedDown(error)) {
+          console.warn(`[saveCutlistDataMerged] ${kind} turned down:`, error);
+          return { ok: false, rows: [], rev: knownRev };
+        }
+        console.warn(`[saveCutlistDataMerged] ${kind} couldn't reach the server — kept on this device till it can:`, error);
+      }
     }
+    if (keepOfflineCutlistChange(ref.path, kind, change, knownRows)) return { ok: true, rows: shown(), rev: knownRev };
   }
-  const rows = JSON.parse(JSON.stringify(merge(knownRows))) as unknown[];
+  const rows = shown();
   const rev = knownRev + 1;
   const ok = await saveCutlistData(project, kind, rows, rev);
   return { ok, rows, rev: ok ? rev : knownRev };
+}
+
+// What's kept from being offline sent, now the connection's back (a cutlist's listener hearing from the server again —
+// lib/use-project-cutlist.ts; the app opening, or the browser coming back online — components/app-shell.tsx): one
+// cutlist's (`only`), or every one this person has kept on this device. Still not reachable: kept, for next time.
+const sendingOfflineCutlists = new Map<string, Promise<void>>();
+export function sendOfflineCutlistChanges(only?: { path: string; kind: CutlistDataKind }): Promise<void> {
+  const database = db;
+  const uid = signedInUid();
+  if (!database || !uid || isPreviewMode() || typeof window === "undefined") return Promise.resolve();
+  const targets: Array<{ path: string; kind: CutlistDataKind }> = [];
+  if (only) {
+    targets.push(only);
+  } else {
+    const prefix = `${OFFLINE_CUTLIST_KEY}${uid}:`;
+    try {
+      for (let i = 0; i < window.localStorage.length; i += 1) {
+        const key = window.localStorage.key(i) || "";
+        if (!key.startsWith(prefix)) continue;
+        const rest = key.slice(prefix.length);
+        const at = rest.lastIndexOf(":");
+        const kind = rest.slice(at + 1);
+        if (at > 0 && (kind === "production" || kind === "initialMeasure")) targets.push({ path: rest.slice(0, at), kind });
+      }
+    } catch {
+      return Promise.resolve();
+    }
+  }
+  return Promise.all(
+    targets.map((target) => {
+      const key = `${target.path}:${target.kind}`;
+      const sending = sendingOfflineCutlists.get(key);
+      if (sending) return sending;
+      if (!hasOfflineCutlistChange(target.path, target.kind)) return Promise.resolve();
+      const next = writeCutlistMerged(database, doc(database, target.path), target.kind, null, null, 0)
+        .then(() => undefined)
+        .catch((error) => console.warn(`[sendOfflineCutlistChanges] ${key} not sent yet:`, error))
+        .finally(() => sendingOfflineCutlists.delete(key));
+      sendingOfflineCutlists.set(key, next);
+      return next;
+    }),
+  ).then(() => undefined);
 }
 
 // Sales — live Quote grid and Specifications grid, one document per kind (same one-doc-per-kind

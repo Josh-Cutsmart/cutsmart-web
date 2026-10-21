@@ -52,7 +52,6 @@ const ALL_PERMISSIONS = {
   "staff.change.role": true,
   "staff.change.display_name": true,
   "company.settings": true,
-  "company.updates": true,
   "dashboard.complete.bonus": true,
 };
 

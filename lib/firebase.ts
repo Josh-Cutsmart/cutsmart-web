@@ -1,6 +1,15 @@
 import { getApp, getApps, initializeApp } from "firebase/app";
 import { getAuth, inMemoryPersistence, initializeAuth, type Auth } from "firebase/auth";
-import { disableNetwork, getFirestore, initializeFirestore, memoryLocalCache, setLogLevel, type Firestore } from "firebase/firestore";
+import {
+  disableNetwork,
+  getFirestore,
+  initializeFirestore,
+  memoryLocalCache,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+  setLogLevel,
+  type Firestore,
+} from "firebase/firestore";
 import { getStorage } from "firebase/storage";
 import { isPreviewMode } from "@/lib/preview-mode";
 import { installPreviewRuntime } from "@/lib/preview-runtime";
@@ -61,8 +70,22 @@ function previewDb(): Firestore | null {
   return previewFirestore;
 }
 
+// The live database, kept on this device too (IndexedDB, one copy shared by every open tab): what's been read stays
+// readable offline, and a change made offline waits here — through a refresh, or the app being closed — until it can be
+// sent (lib/firestore-data.ts's saves don't hang on it meanwhile). Where the browser can't keep one (some private
+// windows) the SDK falls back to memory by itself. Not in the server's render: no device there to keep it on.
+function liveDb(): Firestore | null {
+  if (!app) return null;
+  if (typeof window === "undefined") return getFirestore(app);
+  try {
+    return initializeFirestore(app, { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) });
+  } catch {
+    return getFirestore(app); // already set up (hot reload)
+  }
+}
+
 export const auth = previewMode ? previewAuth() : app ? getAuth(app) : null;
-export const db = previewMode ? previewDb() : app ? getFirestore(app) : null;
+export const db = previewMode ? previewDb() : liveDb();
 export const storage = app ? getStorage(app) : null;
 
 // TEMPORARY mobile loading-speed diagnostic — remove once done. Piggybacks on the same debug flag

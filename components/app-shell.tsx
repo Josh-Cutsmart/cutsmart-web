@@ -46,6 +46,7 @@ import {
   fetchUserUpdateNoticeSeenVersions,
   markUserUpdateNoticeSeen,
   resyncCompanyProjectTagUsage,
+  sendOfflineCutlistChanges,
     syncCompanyClientProfileFromProject,
     upsertCompanyClientProfileOnProjectCreate,
   } from "@/lib/firestore-data";
@@ -502,6 +503,15 @@ export function AppShell({
   usePublishKeyboardInsetVars();
   // Phone/desktop notifications (lib/push-client.ts): keep this device current, clear the icon badge.
   usePushNotificationsOnAppOpen(user?.uid);
+  // Cutlist changes made offline and kept on this device (lib/firestore-data.ts): sent as the app opens, and whenever
+  // the browser's back online — whichever page is open.
+  useEffect(() => {
+    if (!user?.uid) return;
+    const send = () => void sendOfflineCutlistChanges();
+    send();
+    window.addEventListener("online", send);
+    return () => window.removeEventListener("online", send);
+  }, [user?.uid]);
   const [projectName, setProjectName] = useState("");
   const [clientFirstName, setClientFirstName] = useState("");
   const [clientLastName, setClientLastName] = useState("");
@@ -1435,8 +1445,10 @@ export function AppShell({
     return hasPermissionKey(normalizedEffectivePermissions, "projects.create.others");
   }, [normalizedEffectivePermissions, roleForUi]);
 
+  // Their role's Create Projects permission (Company Settings › Roles) — every way into New Project goes by it: the
+  // sidebar's button, the dashboard's, a lead's Create Project, and saving it.
   const canCreateProject = useMemo(() => {
-    if (user) return true;
+    if (!user) return false;
     const role = roleForUi;
     if (role === "owner" || role === "admin") return true;
     return (
@@ -1523,6 +1535,7 @@ export function AppShell({
       return { firstName: parts[0] || "", lastName: parts.slice(1).join(" ") };
     };
     const onOpenNewProject = (event: Event) => {
+      if (!canCreateProject) return;
       const detail = (event as CustomEvent<NewProjectPrefillPayload | undefined>).detail ?? {};
       const fallbackName = splitFullName(String(detail.clientName || "").trim());
       const prefilledAssigneeUid = String(detail.assignedToUid || "").trim();
@@ -1603,7 +1616,7 @@ export function AppShell({
     return () => {
       window.removeEventListener(OPEN_NEW_PROJECT_EVENT, onOpenNewProject as EventListener);
     };
-  }, []);
+  }, [canCreateProject]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -2808,6 +2821,10 @@ export function AppShell({
     // comment in app/(app)/projects/[projectId]/page.tsx.
     if (!user?.verified) {
       setProjectFormError("Verify your account (in User Settings) before creating a project.");
+      return;
+    }
+    if (!canCreateProject) {
+      setProjectFormError("Your role can't create projects.");
       return;
     }
     const name = String(projectName || "").trim();

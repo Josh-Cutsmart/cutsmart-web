@@ -44,7 +44,7 @@ import { GlassDropdown } from "@/components/glass-dropdown";
 import { useAppTabs, type AppWorkspaceTab } from "@/lib/app-tabs-context";
 import { applyThemeMode, readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
 import { useAuth } from "@/lib/auth-context";
-import { prefetchProjectById } from "@/lib/firestore-data";
+import { prefetchProjectById, projectViewableByUser } from "@/lib/firestore-data";
 import {
   addUserNotification,
   deleteUserNotification,
@@ -751,6 +751,36 @@ export function GlobalAppTabsBar() {
     restoreScope(currentScopeKey);
     setHiddenScopeKeys((prev) => (prev.includes(currentScopeKey) ? prev.filter((key) => key !== currentScopeKey) : prev));
   }, [currentScopeKey, restoreScope]);
+
+  // A project's tab for a project they can't open any more (taken off them, or gone): checked once a session, in the
+  // background, and taken away. Not one whose check couldn't be done (offline), nor the one open now (its page sees to
+  // that itself).
+  const checkedProjectTabsRef = useRef<Set<string>>(new Set());
+  const projectTabScopeKeys = useMemo(
+    () => Array.from(new Set(globalAppTabs.map((tab) => tab.scopeKey).filter((key) => key.startsWith("project:")))).join("|"),
+    [globalAppTabs],
+  );
+  useEffect(() => {
+    const uid = String(user?.uid || "").trim();
+    if (!uid || !projectTabScopeKeys) return;
+    let companyId = "";
+    try {
+      companyId = String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim();
+    } catch {
+      // No stored company — the user's own.
+    }
+    companyId = companyId || String(user?.companyId || "").trim();
+    for (const scopeKey of projectTabScopeKeys.split("|")) {
+      const checkKey = `${uid}|${scopeKey}`;
+      if (scopeKey === currentScopeKey || checkedProjectTabsRef.current.has(checkKey)) continue;
+      checkedProjectTabsRef.current.add(checkKey);
+      void projectViewableByUser(scopeKey.slice("project:".length), uid, companyId).then((result) => {
+        if (result !== "no") return;
+        suppressScope(scopeKey);
+        restoreScope(scopeKey);
+      });
+    }
+  }, [projectTabScopeKeys, currentScopeKey, user?.uid, user?.companyId, suppressScope, restoreScope]);
 
   useEffect(() => {
     if (!pendingActiveAppTabKey) return;

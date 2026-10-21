@@ -818,6 +818,12 @@ export default function LeadsPage() {
     return () => setChromeHidden(false);
   }, [leadsChromeless, setChromeHidden]);
   const canViewOtherLeads = access.status === "ready" && (isOwnerOrAdmin(access.role) || hasPermissionKey(access.permissionKeys, "leads.view.others"));
+  // A lead's Create Project: only for a role that can create projects.
+  const canCreateProject =
+    access.status === "ready" &&
+    (isOwnerOrAdmin(access.role) ||
+      hasPermissionKey(access.permissionKeys, "projects.create") ||
+      hasPermissionKey(access.permissionKeys, "projects.create.others"));
   const [leads, setLeads] = useState<CompanyLeadRow[]>([]);
   const [leadDetailsById, setLeadDetailsById] = useState<Record<string, CompanyLeadRow>>({});
   const [search, setSearch] = useState("");
@@ -4579,7 +4585,7 @@ export default function LeadsPage() {
         <div
           ref={leadDetailModalPanelRef}
           onClick={(e) => e.stopPropagation()}
-          className="flex items-stretch gap-3 max-sm:h-[100dvh] max-sm:w-full"
+          className="flex items-stretch gap-3 max-sm:h-full max-sm:w-full"
         >
         {/* Its Checklists: as tall as the pop-up (at least 440px), scrolling inside. */}
         <aside className="glass-modal-panel relative isolate hidden min-h-[440px] w-[320px] shrink-0 overflow-hidden xl:block" aria-label="Lead checklists">
@@ -4589,8 +4595,10 @@ export default function LeadsPage() {
         <div
           // On a phone it takes the whole screen, square-cornered (its top and bottom clear of the notch / home bar) —
           // and stays that way with the keyboard up, the keyboard over its bottom (data-phone-fullscreen, app/globals.css).
+          // (As tall as the screen it's laid out on — not 100dvh, which stays the full height on a phone that shrinks the
+          // page for its keyboard instead, leaving the pop-up's bottom, and the notes box, behind the keyboard.)
           data-phone-fullscreen="true"
-          className="glass-modal-panel relative isolate flex max-h-[min(720px,90vh)] w-[min(560px,96vw)] flex-col overflow-hidden max-sm:h-[100dvh] max-sm:max-h-none max-sm:w-full max-sm:rounded-none! max-sm:border-0!"
+          className="glass-modal-panel relative isolate flex max-h-[min(720px,90vh)] w-[min(560px,96vw)] flex-col overflow-hidden max-sm:h-full max-sm:max-h-none max-sm:w-full max-sm:rounded-none! max-sm:border-0!"
         >
           {/* The Calendar event pop-up's look: its status's colour washed across it, the X alone in the top right corner,
               the status (a dropdown pill) over the lead's name, and each field in a white see-through box. All its text
@@ -4792,14 +4800,17 @@ export default function LeadsPage() {
           </div>
           {/* Its buttons along the bottom, under its fields. */}
           <div className="flex shrink-0 flex-wrap gap-2 border-t px-5 py-4 max-sm:pb-[calc(1rem+env(safe-area-inset-bottom))]" style={{ borderTopColor: "var(--glass-border)" }}>
-            <button
-              type="button"
-              onClick={() => void handleCreateProjectFromLead(renderLead)}
-              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95"
-              style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
-            >
-              Create Project
-            </button>
+            {/* (Only for a role that can create projects — Company Settings › Roles.) */}
+            {canCreateProject ? (
+              <button
+                type="button"
+                onClick={() => void handleCreateProjectFromLead(renderLead)}
+                className="inline-flex h-9 items-center justify-center gap-1.5 rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95"
+                style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+              >
+                Create Project
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={(e) => {
@@ -5789,7 +5800,7 @@ export default function LeadsPage() {
                   ref={leadFormModalPanelRef}
                   // As the lead pop-up: the whole screen on a phone, keyboard up or not (data-phone-fullscreen, app/globals.css).
                   data-phone-fullscreen="true"
-                  className="glass-modal-panel relative flex h-[100dvh] w-full flex-col overflow-hidden max-sm:rounded-none! max-sm:border-0! sm:h-auto sm:max-h-[min(860px,92vh)] sm:w-[min(600px,96vw)]"
+                  className="glass-modal-panel relative flex h-full w-full flex-col overflow-hidden max-sm:rounded-none! max-sm:border-0! sm:h-auto sm:max-h-[min(860px,92vh)] sm:w-[min(600px,96vw)]"
                 >
                   <div className="flex shrink-0 items-center gap-2 px-5 pb-3 pt-4 max-sm:pt-[calc(16px+env(safe-area-inset-top))]">
                     <h2 className="min-w-0 flex-1 truncate text-[20px] font-semibold" style={{ color: "var(--text-main)" }}>

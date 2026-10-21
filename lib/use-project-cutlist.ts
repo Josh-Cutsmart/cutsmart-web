@@ -1,15 +1,19 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { doc, getDoc, onSnapshot } from "@/lib/firestore-client";
 import type { Project } from "@/lib/types";
 import {
   cutlistDataRev,
   extractLegacySalesFieldFromRawDoc,
   fetchCutlistData,
+  hasOfflineCutlistChange,
   parseCutlistRows,
+  reportCutlistListenerFromCache,
   resolveProjectDocRef,
   saveCutlistData,
+  sendOfflineCutlistChanges,
+  subscribeOfflineCutlistChanges,
 } from "@/lib/firestore-data";
 
 export type CutlistDataKind = "production" | "initialMeasure";
@@ -28,7 +32,17 @@ export interface ProjectCutlistRawState {
   // The rows and revision as last heard of, now — not as of the render a save was started in (a save waiting for the
   // one before it to finish would otherwise merge onto rows from before that one).
   latest: () => { rawRows: unknown[]; rev: number };
+  // Whether its saves have reached the server: offline (the browser says so, or the database has stayed on this
+  // device's copy), and whether it has changes made here not sent yet (kept from being offline — lib/firestore-data.ts —
+  // or the database's own flag) — a cutlist's save chip.
+  sync: CutlistSyncState;
 }
+
+export type CutlistSyncState = { offline: boolean; pending: boolean };
+
+// The database on this device's copy for a moment — as a listener starts, before the server's caught up with it — isn't
+// being offline: only once it's stayed so this long.
+const CACHE_ONLY_OFFLINE_AFTER_MS = 2000;
 
 // Lazily fetches one project's cutlist rows from their own subcollection (fetchCutlistData/
 // saveCutlistData in lib/firestore-data.ts), only once `enabled` (the owning tab is actually
@@ -47,7 +61,7 @@ export function useProjectCutlistRaw(
   kind: CutlistDataKind,
   enabled: boolean,
 ): ProjectCutlistRawState {
-  const [state, setStateRaw] = useState<Omit<ProjectCutlistRawState, "retry" | "setRawRowsOptimistic" | "latest">>({
+  const [state, setStateRaw] = useState<Omit<ProjectCutlistRawState, "retry" | "setRawRowsOptimistic" | "latest" | "sync">>({
     status: "idle",
     rawRows: [],
     rev: 0,
@@ -55,7 +69,29 @@ export function useProjectCutlistRaw(
   });
   const [retryTick, setRetryTick] = useState(0);
   const latestRowsRef = useRef<{ rawRows: unknown[]; rev: number }>({ rawRows: [], rev: 0 });
-  const setState = useCallback((next: Omit<ProjectCutlistRawState, "retry" | "setRawRowsOptimistic" | "latest">) => {
+  // Its live listener's news: from this device's copy only (not the server's), and changes here not sent yet.
+  const [listenerSync, setListenerSync] = useState<{ fromCache: boolean; pending: boolean }>({ fromCache: false, pending: false });
+  // ...and it's been so CACHE_ONLY_OFFLINE_AFTER_MS.
+  const [cacheOnlySettled, setCacheOnlySettled] = useState(false);
+  // Where it is in the database (once found): what's kept from being offline is by it.
+  const [docPath, setDocPath] = useState("");
+  const keptOffline = useSyncExternalStore(
+    subscribeOfflineCutlistChanges,
+    () => (docPath ? hasOfflineCutlistChange(docPath, kind) : false),
+    () => false,
+  );
+  // The browser's own online / offline.
+  const [browserOffline, setBrowserOffline] = useState(() => typeof navigator !== "undefined" && navigator.onLine === false);
+  useEffect(() => {
+    const update = () => setBrowserOffline(navigator.onLine === false);
+    window.addEventListener("online", update);
+    window.addEventListener("offline", update);
+    return () => {
+      window.removeEventListener("online", update);
+      window.removeEventListener("offline", update);
+    };
+  }, []);
+  const setState = useCallback((next: Omit<ProjectCutlistRawState, "retry" | "setRawRowsOptimistic" | "latest" | "sync">) => {
     latestRowsRef.current = { rawRows: next.rawRows, rev: next.rev };
     setStateRaw(next);
   }, []);
@@ -73,13 +109,35 @@ export function useProjectCutlistRaw(
     const project = latestProjectRef.current;
     let cancelled = false;
     let unsubscribe: (() => void) | null = null;
+    let settleTimer: number | null = null;
 
     const listen = async () => {
       const ref = project ? await resolveProjectDocRef(project) : null;
       if (cancelled || !ref) return;
+      setDocPath(ref.path);
       unsubscribe = onSnapshot(
         doc(ref, "cutlistData", kind),
+        // (With its metadata's changes too: a save reaching the server, the connection going and coming.)
+        { includeMetadataChanges: true },
         (snap) => {
+          const fromCache = snap.metadata.fromCache;
+          const pending = snap.metadata.hasPendingWrites;
+          reportCutlistListenerFromCache(fromCache);
+          setListenerSync((prev) => (prev.fromCache === fromCache && prev.pending === pending ? prev : { fromCache, pending }));
+          if (fromCache) {
+            if (settleTimer === null) {
+              settleTimer = window.setTimeout(() => {
+                settleTimer = null;
+                setCacheOnlySettled(true);
+              }, CACHE_ONLY_OFFLINE_AFTER_MS);
+            }
+          } else {
+            if (settleTimer !== null) window.clearTimeout(settleTimer);
+            settleTimer = null;
+            setCacheOnlySettled(false);
+            // Hearing from the server again: changes kept here from being offline sent now.
+            if (hasOfflineCutlistChange(ref.path, kind)) void sendOfflineCutlistChanges({ path: ref.path, kind });
+          }
           if (!snap.exists()) return;
           const data = snap.data() as Record<string, unknown>;
           const rows = Array.isArray(data.rows) ? data.rows : [];
@@ -150,6 +208,12 @@ export function useProjectCutlistRaw(
     return () => {
       cancelled = true;
       unsubscribe?.();
+      if (settleTimer !== null) window.clearTimeout(settleTimer);
+      setListenerSync({ fromCache: false, pending: false });
+      setCacheOnlySettled(false);
+      setDocPath("");
+      // (Nothing listening now to say it's offline.)
+      reportCutlistListenerFromCache(false);
     };
   }, [projectKey, kind, enabled, retryTick, setState]);
 
@@ -161,6 +225,9 @@ export function useProjectCutlistRaw(
     [setState],
   );
   const latest = useCallback(() => latestRowsRef.current, []);
+  const offline = browserOffline || (listenerSync.fromCache && cacheOnlySettled);
+  const pending = listenerSync.pending || keptOffline;
+  const sync = useMemo<CutlistSyncState>(() => ({ offline, pending }), [offline, pending]);
 
-  return { ...state, retry, setRawRowsOptimistic, latest };
+  return { ...state, retry, setRawRowsOptimistic, latest, sync };
 }

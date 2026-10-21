@@ -165,7 +165,14 @@ export function AppTabsProvider({ children }: { children: React.ReactNode }) {
     const stored = String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim();
     return stored || String(user?.companyId || "").trim();
   }, [user?.companyId]);
-  const tabsStorageKey = activeCompanyId ? `${APP_TABS_STORAGE_KEY}:${activeCompanyId}` : APP_TABS_STORAGE_KEY;
+  // ...and to who's signed in: another account in the same company on the same device has its own tabs, never the last
+  // person's (whose projects it mightn't be able to see). None till they're known.
+  const tabsUid = String(user?.uid || "").trim();
+  const tabsStorageKey = tabsUid
+    ? activeCompanyId
+      ? `${APP_TABS_STORAGE_KEY}:${activeCompanyId}:${tabsUid}`
+      : `${APP_TABS_STORAGE_KEY}:${tabsUid}`
+    : "";
   // Set synchronously by the hydration effect below and consumed synchronously by the persist
   // effect right after it (both effects run in the same commit) — without this, the persist
   // effect would fire first with the PREVIOUS company's still-in-state `tabs` and immediately
@@ -176,6 +183,10 @@ export function AppTabsProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (typeof window === "undefined") return;
     skipNextPersistRef.current = true;
+    if (!tabsStorageKey) {
+      setTabs([]);
+      return;
+    }
     try {
       const raw = window.localStorage.getItem(tabsStorageKey);
       if (!raw) {
@@ -210,6 +221,7 @@ export function AppTabsProvider({ children }: { children: React.ReactNode }) {
       skipNextPersistRef.current = false;
       return;
     }
+    if (!tabsStorageKey) return;
     try {
       window.localStorage.setItem(tabsStorageKey, JSON.stringify(tabs));
     } catch {

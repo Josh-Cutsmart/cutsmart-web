@@ -158,6 +158,19 @@ function centerFocusedNotesBox(): void {
   }
 }
 
+// A notes box just tapped: brought to the middle again a few times as things settle — while it's still the one being
+// typed in, and the keyboard's up or the box isn't all in view. A phone can still be moving what's visible for a moment
+// after the keyboard's come up (iOS revealing the field its own way, after the box was centred), and one that shrinks
+// the page itself for the keyboard never reports it as up at all.
+const SETTLE_CHECKS_MS = [180, 450, 900];
+
+function notesBoxOutOfView(box: HTMLElement): boolean {
+  const vv = window.visualViewport;
+  if (!vv) return false;
+  const rect = box.getBoundingClientRect();
+  return rect.top < vv.offsetTop || rect.bottom > vv.offsetTop + vv.height;
+}
+
 // Whether what's being typed in is in a pop-up that stays the whole screen on a phone with the keyboard up
 // (data-phone-fullscreen — see app/globals.css): it moves with the visible area rather than being capped to it, so its
 // field needs bringing into view whenever that moves, or another field is tapped.
@@ -190,6 +203,19 @@ export function usePublishKeyboardInsetVars(): void {
     const root = document.documentElement;
     let last: PublishedViewport | null = null;
     let frame: number | null = null;
+    let settleTimers: number[] = [];
+    const settleNotesBox = () => {
+      settleTimers.forEach((timer) => window.clearTimeout(timer));
+      const box = focusedKeyboardCenterBox();
+      settleTimers = box
+        ? SETTLE_CHECKS_MS.map((ms) =>
+            window.setTimeout(() => {
+              if (focusedKeyboardCenterBox() !== box) return;
+              if (last?.keyboardOpen || notesBoxOutOfView(box)) centerFocusedNotesBox();
+            }, ms),
+          )
+        : [];
+    };
     const publish = () => {
       frame = null;
       // Pinch-zoom also shrinks the visual viewport, but at a scale above 1 — that isn't the keyboard.
@@ -228,8 +254,10 @@ export function usePublishKeyboardInsetVars(): void {
       // A notes box: to the middle (as the keyboard comes up or changes size — not as the visible area's moved about,
       // which is the person scrolling). Anything else in a pop-up: just into view.
       if (keyboardWent) clearKeyboardRoom();
-      if (keyboardCameOrResized && focusedKeyboardCenterBox()) centerFocusedNotesBox();
-      else if (panelCapChanged && !focusedKeyboardCenterBox()) revealFocusedFieldInPanel();
+      if (keyboardCameOrResized && focusedKeyboardCenterBox()) {
+        centerFocusedNotesBox();
+        settleNotesBox();
+      } else if (panelCapChanged && !focusedKeyboardCenterBox()) revealFocusedFieldInPanel();
     };
     const schedule = () => {
       if (frame === null) frame = requestAnimationFrame(publish);
@@ -238,6 +266,8 @@ export function usePublishKeyboardInsetVars(): void {
     // change to go on): into view — a notes box to the middle — once it has the focus.
     let revealFrame: number | null = null;
     const onFocusIn = () => {
+      // (A notes box: checked on again as the keyboard comes up and things settle, whether it's reported up yet or not.)
+      if (focusedKeyboardCenterBox()) settleNotesBox();
       if (!last?.keyboardOpen || revealFrame !== null) return;
       if (!focusedKeyboardCenterBox() && !focusInPhoneFullscreenPanel()) return;
       revealFrame = requestAnimationFrame(() => {
@@ -246,16 +276,24 @@ export function usePublishKeyboardInsetVars(): void {
         else revealFocusedFieldInPanel();
       });
     };
+    // The page itself resized while a notes box is being typed in — a phone that shrinks it for the keyboard rather than
+    // covering it: checked on as above.
+    const onWindowResize = () => {
+      if (focusedKeyboardCenterBox()) settleNotesBox();
+    };
     publish();
     vv.addEventListener("resize", schedule);
     vv.addEventListener("scroll", schedule);
     document.addEventListener("focusin", onFocusIn);
+    window.addEventListener("resize", onWindowResize);
     return () => {
       vv.removeEventListener("resize", schedule);
       vv.removeEventListener("scroll", schedule);
       document.removeEventListener("focusin", onFocusIn);
+      window.removeEventListener("resize", onWindowResize);
       if (frame !== null) cancelAnimationFrame(frame);
       if (revealFrame !== null) cancelAnimationFrame(revealFrame);
+      settleTimers.forEach((timer) => window.clearTimeout(timer));
       root.removeAttribute(KEYBOARD_OPEN_ATTR);
       clearKeyboardRoom();
     };

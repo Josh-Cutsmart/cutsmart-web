@@ -76,6 +76,27 @@ function grainAxis(row: CutlistRow): "height" | "width" | "depth" | null {
   return toStr(row.height) ? "height" : toStr(row.width) ? "width" : toStr(row.depth) ? "depth" : null;
 }
 
+// A Drawer row's depth for each of its drawers (CutlistRow.drawerDepths, by "B#2" — the first drawer's is the row's
+// Depth, the others' their own if set, else that), as "A 560, B 500, B 480" — only for a row of more than one drawer.
+function drawerDepthsText(row: CutlistRow, size: (value: unknown) => Cell): string {
+  const counts = new Map<string, number>();
+  const keys: string[] = [];
+  for (const token of toStr(row.height).split(/[,+/\\\s]+/)) {
+    const height = token.trim().toUpperCase();
+    if (!height) continue;
+    const nth = (counts.get(height) ?? 0) + 1;
+    counts.set(height, nth);
+    keys.push(`${height}#${nth}`);
+  }
+  if (keys.length < 2) return "";
+  return keys
+    .map((key, index) => {
+      const height = key.split("#")[0];
+      return `${height} ${size(index === 0 ? row.depth : toStr(row.drawerDepths?.[key]) || row.depth)}`;
+    })
+    .join(", ");
+}
+
 export async function buildCutlistExcelBlob(input: CutlistExcelInput): Promise<Blob | null> {
   const rows = input.rows.filter((row) => toStr(row.name) || toStr(row.height) || toStr(row.width));
   if (!rows.length) return null;
@@ -101,6 +122,8 @@ export async function buildCutlistExcelBlob(input: CutlistExcelInput): Promise<B
     { key: "height", header: `Height${unitSuffix}`, width: 12, value: (row) => size(row.height), length: "height", align: "center" },
     { key: "width", header: `Width${unitSuffix}`, width: 12, value: (row) => size(row.width), length: "width", align: "center" },
     { key: "depth", header: `Depth${unitSuffix}`, width: 12, value: (row) => size(row.depth), length: "depth", align: "center", optional: true },
+    // A drawer bank's depth for each of its drawers, when it's more than one ("A 560, B 500, B 480").
+    { key: "drawerDepths", header: `Drawer Depths${unitSuffix}`, width: 20, value: (row) => drawerDepthsText(row, size), optional: true },
     {
       key: "quantity",
       header: "Quantity",

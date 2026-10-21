@@ -5,7 +5,7 @@ import { glassShineStyle } from "@/lib/glass-shine";
 import { createPortal } from "react-dom";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Great_Vibes } from "next/font/google";
-import { ArrowLeft, ArrowLeftRight, ArrowRight, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, File as FileIcon, FileSpreadsheet, FileUp, FileText, GitBranch, Eraser, GripVertical, HardHat, Image as ImageIcon, ImagePlus, Import as ImportIcon, Info, Link2, ListChecks, Lock, Mail, MapPin, Maximize2, Minimize2, Minus, PanelRightClose, MoreHorizontal, NotebookPen, Pencil, Phone, Plus, Printer, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, Unlock, User, UserPlus, Users, Wrench, X } from "lucide-react";
+import { ArrowLeft, ArrowLeftRight, ArrowRight, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, CloudCheck, CloudOff, CloudUpload, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, File as FileIcon, FileSpreadsheet, FileUp, FileText, GitBranch, Eraser, GripVertical, HardHat, Image as ImageIcon, ImagePlus, Import as ImportIcon, Info, Link2, ListChecks, Lock, Mail, MapPin, Maximize2, Minimize2, Minus, PanelRightClose, MoreHorizontal, NotebookPen, Pencil, Phone, Plus, Printer, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, Unlock, User, UserPlus, Users, Wrench, X } from "lucide-react";
 import type { DecoupledEditor, ModelWriter } from "ckeditor5";
 import type { RichText as ExcelRichText } from "exceljs";
 import type { CellInput as AutoTableCellInput, RowInput as AutoTableRowInput } from "jspdf-autotable";
@@ -120,8 +120,10 @@ import { bonusLockMessage, fetchBonusLock } from "@/lib/completed-projects";
 import { completionBonusSettingsFrom } from "@/lib/completion-bonus";
 import { useProjectCutlistRaw } from "@/lib/use-project-cutlist";
 import { alsoEditingText, useCutlistPresence } from "@/lib/use-cutlist-presence";
-import { mergeCutlistRows, mergeStoredCutlistRows } from "@/lib/cutlist-merge";
+import { mergeCutlistRows } from "@/lib/cutlist-merge";
 import { downloadCutlistExcel } from "@/lib/cutlist-excel";
+import { buildCutlistPrintPdf } from "@/lib/cutlist-print-pdf";
+import { drawPrintTitlePage, loadPrintTitleLogo, notesHtmlToPlainText, type PrintTitleLogo, type PrintTitlePage } from "@/lib/print-title-page";
 import { useProjectChecklists } from "@/lib/use-project-checklists";
 import { useProjectSalesGrid } from "@/lib/use-project-sales-grid";
 import { useProjectMedia } from "@/lib/use-project-media";
@@ -1555,6 +1557,28 @@ const TOP_BAR_CHIP_SHELL_CLASSNAME = "inline-flex items-center gap-3 rounded-[10
 //    shell resizes to the new content's own natural width, its border/background/text color
 //    cross-fade (free, via the shell's own constant `transition` — see its style below), and the
 //    content itself fades out then back in across the swap.
+// An element's width as it changes (ResizeObserver): the ref to put on it, and its width — null until it's measured.
+function useMeasuredWidth(): [(el: HTMLElement | null) => void, number | null] {
+  const [width, setWidth] = useState<number | null>(null);
+  const observerRef = useRef<ResizeObserver | null>(null);
+  const ref = useCallback((el: HTMLElement | null) => {
+    observerRef.current?.disconnect();
+    observerRef.current = null;
+    if (!el) return;
+    // (Measured straight away as well — not left to the observer's first report — and again once it's had a moment to
+    // settle: something sliding in is measured mid-slide.)
+    setWidth(Math.round(el.clientWidth));
+    window.setTimeout(() => {
+      if (el.isConnected) setWidth(Math.round(el.clientWidth));
+    }, 450);
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => setWidth(Math.round(el.clientWidth)));
+    observer.observe(el);
+    observerRef.current = observer;
+  }, []);
+  return [ref, width];
+}
+
 function TopBarStatusChip({ data }: { data: TopBarChipData }) {
   const [renderedData, setRenderedData] = useState(data);
   const [fadeIn, setFadeIn] = useState(false);
@@ -2536,8 +2560,10 @@ const CUTLIST_SIDEBAR_BUTTON_CLASS =
 type CutlistDrawerFloat = { x: number; y: number; w: number; h: number; minimized: boolean };
 const CUTLIST_DRAWER_FLOAT_KEY = "cutsmart_cutlist_drawer_float:";
 // Its narrowest: room for the notes' formatting bar on one line, popped out (its buttons take 294px, inside the header's
-// 8px padding each side and the window's 1px border — a little over).
+// 8px padding each side and the window's 1px border — a little over). One with no formatting bar (minWidth): as narrow as
+// its own bar goes — its icon, a little of its title, its three buttons (CUTLIST_DRAWER_BAR_MIN_W).
 const CUTLIST_DRAWER_MIN_W = 320;
+const CUTLIST_DRAWER_BAR_MIN_W = 150;
 const CUTLIST_DRAWER_MIN_H = 240;
 // How far its header is pulled before it pops out; how close to the screen's edges it can go; how near the right edge
 // the pointer is for letting go there to dock it; its grab bar's and its pill's height; its pill's widest.
@@ -2554,11 +2580,11 @@ const CUTLIST_DRAWER_MORPH_EASING = "cubic-bezier(0.32, 0.72, 0, 1)";
 const CUTLIST_DRAWER_PILL_MAX_W = 240;
 
 // Kept on the screen (and no smaller than its least, no bigger than the screen).
-function clampCutlistDrawerFloat(float: CutlistDrawerFloat): CutlistDrawerFloat {
+function clampCutlistDrawerFloat(float: CutlistDrawerFloat, minW = CUTLIST_DRAWER_MIN_W): CutlistDrawerFloat {
   const vw = window.innerWidth;
   const vh = window.innerHeight;
   const edge = CUTLIST_DRAWER_EDGE_PX;
-  const w = Math.max(CUTLIST_DRAWER_MIN_W, Math.min(float.w, vw - edge * 2));
+  const w = Math.max(minW, Math.min(float.w, vw - edge * 2));
   const h = Math.max(CUTLIST_DRAWER_MIN_H, Math.min(float.h, vh - edge * 2));
   const boxW = float.minimized ? Math.min(CUTLIST_DRAWER_PILL_MAX_W, w) : w;
   const boxH = float.minimized ? CUTLIST_DRAWER_PILL_BOX_H : h;
@@ -2570,11 +2596,11 @@ function clampCutlistDrawerFloat(float: CutlistDrawerFloat): CutlistDrawerFloat 
     y: Math.max(edge, Math.min(float.y, vh - boxH - edge)),
   };
 }
-function readCutlistDrawerFloat(storageKey: string): CutlistDrawerFloat | null {
+function readCutlistDrawerFloat(storageKey: string, minW = CUTLIST_DRAWER_MIN_W): CutlistDrawerFloat | null {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(CUTLIST_DRAWER_FLOAT_KEY + storageKey) || "null") as Partial<CutlistDrawerFloat> | null;
     if (!parsed || ![parsed.x, parsed.y, parsed.w, parsed.h].every((value) => Number.isFinite(value))) return null;
-    return clampCutlistDrawerFloat({ x: parsed.x!, y: parsed.y!, w: parsed.w!, h: parsed.h!, minimized: parsed.minimized === true });
+    return clampCutlistDrawerFloat({ x: parsed.x!, y: parsed.y!, w: parsed.w!, h: parsed.h!, minimized: parsed.minimized === true }, minW);
   } catch {
     return null;
   }
@@ -2745,6 +2771,8 @@ function CutlistSideDrawer({
   zIndex,
   onActivate,
   drawerId,
+  lockPage,
+  minWidth = CUTLIST_DRAWER_MIN_W,
   children,
 }: {
   open: boolean;
@@ -2765,6 +2793,12 @@ function CutlistSideDrawer({
   zIndex?: number;
   onActivate?: () => void;
   drawerId?: string;
+  // A phone's / tablet's notes box: while it's open in the side, the page behind holds still — no pulling down for
+  // Reload / Dashboard / Save & Back, no swiping the menus in, no scrolling it (app-shell.tsx's gestures and the scroll
+  // lock both stand down for a data-scroll-lock pop-up) — and scrolling in it doesn't carry on into the page.
+  lockPage?: boolean;
+  // Its narrowest, popped out: the notes' formatting bar's room (CUTLIST_DRAWER_MIN_W), unless it has none.
+  minWidth?: number;
   // Which drawer, and whose — for remembering where they popped it out to (on every project).
   storageKey: string;
   isDarkMode: boolean;
@@ -2782,13 +2816,13 @@ function CutlistSideDrawer({
   );
   // Popped out (null: in the drawer) — and while it's being dragged or resized, where it is right now.
   const [float, setFloat] = useState<CutlistDrawerFloat | null>(() =>
-    typeof window !== "undefined" && window.matchMedia("(min-width: 768px) and (pointer: fine)").matches ? readCutlistDrawerFloat(storageKey) : null,
+    typeof window !== "undefined" && window.matchMedia("(min-width: 768px) and (pointer: fine)").matches ? readCutlistDrawerFloat(storageKey, minWidth) : null,
   );
   // Someone else's (or the person only now known): their own.
   const [floatKey, setFloatKey] = useState(storageKey);
   if (floatKey !== storageKey) {
     setFloatKey(storageKey);
-    setFloat(canFloat ? readCutlistDrawerFloat(storageKey) : null);
+    setFloat(canFloat ? readCutlistDrawerFloat(storageKey, minWidth) : null);
   }
   // Opened by a drag out of its floating bar button (pendingCutlistDragOut): it starts out under the pointer, coming out
   // of the button — till it takes that drag over (dragOutOfButton, below).
@@ -2851,7 +2885,7 @@ function CutlistSideDrawer({
   };
   const expand = () => {
     if (!float) return;
-    const next = clampCutlistDrawerFloat({ ...float, minimized: false });
+    const next = clampCutlistDrawerFloat({ ...float, minimized: false }, minWidth);
     // (Below its bar.)
     setMorphContent(markMorphFrom() ? { top: CUTLIST_DRAWER_PILL_H, w: next.w, h: next.h } : null);
     commitFloat(next);
@@ -2995,10 +3029,10 @@ function CutlistSideDrawer({
   const isFloating = float !== null;
   useEffect(() => {
     if (!isFloating) return;
-    const onResize = () => setFloat((prev) => (prev ? clampCutlistDrawerFloat(prev) : prev));
+    const onResize = () => setFloat((prev) => (prev ? clampCutlistDrawerFloat(prev, minWidth) : prev));
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
-  }, [isFloating]);
+  }, [isFloating, minWidth]);
 
   // A drag of it: pulled out of the side (pull — out once it's pulled far enough), moved by its bar or header (move),
   // or resized by its corner (resize). Moved, it stays where the pointer has it — off the screen too — and let go
@@ -3016,9 +3050,16 @@ function CutlistSideDrawer({
     let { mode, base, grabX, grabY, moved } = start;
     let current: CutlistDrawerFloat | null = null;
     let docking = false;
-    // Its button sucks it in once it's dragged onto it — but not straight back in, dragged out of it: only once it's
-    // been off it.
+    // Its button lights up while it's dragged over it, and takes it in if it's let go there — but not straight back in,
+    // dragged out of it: only once it's been off it.
     let suctionArmed = !findBarButton(start.x, start.y);
+    let dropTarget: HTMLElement | null = null;
+    const setDropTarget = (next: HTMLElement | null) => {
+      if (dropTarget === next) return;
+      dropTarget?.removeAttribute("data-drop-target");
+      dropTarget = next;
+      dropTarget?.setAttribute("data-drop-target", "true");
+    };
     const onMove = (moveEvent: PointerEvent) => {
       const dx = moveEvent.clientX - start.x;
       const dy = moveEvent.clientY - start.y;
@@ -3037,20 +3078,12 @@ function CutlistSideDrawer({
         current = { ...base, x: moveEvent.clientX - grabX, y: moveEvent.clientY - grabY };
         const hit = findBarButton(moveEvent.clientX, moveEvent.clientY);
         if (!hit) suctionArmed = true;
-        else if (suctionArmed) {
-          // Onto its button: sucked in, there and then (the button lit — data-drop-target, globals.css). The drag's
-          // over; the click its letting go makes, if that's on the button, isn't a press of it.
-          endDrag();
-          setShowDockTarget(false);
-          hit.setAttribute("data-drop-target", "true");
-          window.addEventListener("pointerup", () => swallowNextClick(), { once: true });
-          putAwayInto(hit);
-          return;
-        }
+        // Over its button: the button lit (data-drop-target, globals.css) — let go there and it's sucked in (onUp).
+        setDropTarget(hit && suctionArmed ? hit : null);
         docking = !hit && !base.minimized && moveEvent.clientX >= window.innerWidth - CUTLIST_DRAWER_DOCK_ZONE_PX;
         setShowDockTarget(docking);
       } else {
-        current = clampCutlistDrawerFloat({ ...base, w: base.w + dx, h: base.h + dy });
+        current = clampCutlistDrawerFloat({ ...base, w: base.w + dx, h: base.h + dy }, minWidth);
       }
       setLiveFloat(current);
     };
@@ -3059,9 +3092,21 @@ function CutlistSideDrawer({
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
     };
-    const onUp = () => {
+    const onUp = (upEvent: PointerEvent) => {
       endDrag();
       setShowDockTarget(false);
+      if (dropTarget) {
+        const button = dropTarget;
+        dropTarget = null;
+        if (upEvent.type === "pointerup") {
+          // Let go over its button: sucked into it, from where it's been dragged to. (The click letting go makes, on
+          // the button, isn't a press of it.)
+          swallowNextClick();
+          putAwayInto(button);
+          return;
+        }
+        button.removeAttribute("data-drop-target");
+      }
       setLiveFloat(null);
       if (!moved) {
         // A click on the pill: open it out again.
@@ -3070,7 +3115,7 @@ function CutlistSideDrawer({
       }
       if (docking) dock();
       else if (current) {
-        const settled = clampCutlistDrawerFloat(current);
+        const settled = clampCutlistDrawerFloat(current, minWidth);
         // Let go partly off the screen: it slides into view (the glide — from where it is now).
         if (settled.x !== current.x || settled.y !== current.y) markMorphFrom();
         commitFloat(settled);
@@ -3115,7 +3160,7 @@ function CutlistSideDrawer({
     const at = cutlistDrawerDraggedOutAt(float, x, y);
     if (released) {
       setLiveFloat(null);
-      const settled = clampCutlistDrawerFloat(at);
+      const settled = clampCutlistDrawerFloat(at, minWidth);
       if (settled.x !== at.x || settled.y !== at.y) markMorphFrom();
       commitFloat(settled);
       return;
@@ -3160,12 +3205,14 @@ function CutlistSideDrawer({
         aria-hidden={!open}
         inert={!open}
         data-cutlist-drawer={drawerId}
+        data-scroll-lock={lockPage && open && !shown ? "true" : undefined}
+        data-app-gesture-exempt={lockPage && open && !shown ? "true" : undefined}
         onPointerDownCapture={() => onActivate?.()}
         onPointerDown={onPointerDown}
         className={
           shown
             ? `fixed z-[1450] flex flex-col overflow-hidden ${open ? "glass-panel-pop" : stowed ? "" : "floating-bar-slot-pop"}`
-            : `cutlist-drawer-docked fixed bottom-0 right-0 top-[56px] z-[1450] flex w-[min(440px,100vw)] flex-col overflow-hidden transition-transform duration-[260ms] ease-[cubic-bezier(0.32,0.72,0,1)] starting:translate-x-full motion-reduce:transition-none max-sm:top-0 max-sm:rounded-none! max-sm:border-0! max-sm:pt-[env(safe-area-inset-top)] ${
+            : `cutlist-drawer-docked fixed bottom-0 right-0 top-[56px] z-[1450] flex w-[min(440px,100vw)] flex-col overflow-hidden overscroll-contain transition-transform duration-[260ms] ease-[cubic-bezier(0.32,0.72,0,1)] starting:translate-x-full motion-reduce:transition-none max-sm:top-0 max-sm:rounded-none! max-sm:border-0! max-sm:pt-[env(safe-area-inset-top)] ${
                 open ? "translate-x-0" : "translate-x-full"
               } ${canFloat ? "[&_[data-drawer-grab]]:cursor-grab" : ""}`
         }
@@ -5390,6 +5437,58 @@ function parseDrawerHeightTokens(value: string): string[] {
     .filter(Boolean);
 }
 
+// A Drawer row's depth for each of its drawers (CutlistRow.drawerDepths): a key for each drawer, in the order its heights
+// come — its height and which of that height it is ("B#2": the second B), so a depth stays with its drawer when the
+// heights are put in another order; its label (just its height); its depth (the first drawer's is the row's own Depth,
+// the rest theirs if set, else that); and the row with one of them changed.
+function drawerDepthKeys(row: { height?: string }): string[] {
+  const counts = new Map<string, number>();
+  const keys: string[] = [];
+  for (const token of parseDrawerHeightTokens(String(row.height ?? ""))) {
+    const height = sanitizeDerivedValue(token).toUpperCase();
+    if (!height) continue;
+    const nth = (counts.get(height) ?? 0) + 1;
+    counts.set(height, nth);
+    keys.push(`${height}#${nth}`);
+  }
+  return keys;
+}
+function drawerDepthLabel(key: string): string {
+  return key.split("#")[0];
+}
+function drawerDepthFor(row: { height?: string; depth?: string; drawerDepths?: Record<string, string> }, key: string): string {
+  const keys = drawerDepthKeys(row);
+  if (key && keys.length && key !== keys[0]) {
+    const own = String(row.drawerDepths?.[key] ?? "").trim();
+    if (own) return own;
+  }
+  return String(row.depth ?? "").trim();
+}
+function withDrawerDepth<T extends { height?: string; depth?: string; drawerDepths?: Record<string, string> }>(
+  row: T,
+  key: string,
+  value: string,
+): T {
+  const keys = drawerDepthKeys(row);
+  if (!keys.length || key === keys[0]) return { ...row, depth: value };
+  const drawerDepths = { ...(row.drawerDepths ?? {}) };
+  if (value.trim() && value.trim() !== String(row.depth ?? "").trim()) drawerDepths[key] = value.trim();
+  else delete drawerDepths[key];
+  return { ...row, drawerDepths };
+}
+// Kept depths as stored — only drawers with a depth ("B#2"; a height on its own, its first).
+function normalizeDrawerDepths(raw: unknown): Record<string, string> | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [token, value] of Object.entries(raw as Record<string, unknown>)) {
+    const name = String(token ?? "").trim().toUpperCase();
+    const key = name && !name.includes("#") ? `${name}#1` : name;
+    const depth = String(value ?? "").trim();
+    if (key && depth) out[key] = depth;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 function formatDrawerHeightTokens(values: string[]): string {
   return values
     .map((v) => String(v || "").trim().replace(/,+$/g, ""))
@@ -7129,6 +7228,7 @@ function serializeCutlistRowsForStorage(
         Height: row.height,
       Width: row.width,
       Depth: row.depth,
+      ...(normalizeDrawerDepths(row.drawerDepths) ? { DrawerDepths: normalizeDrawerDepths(row.drawerDepths) } : {}),
       Quantity: row.quantity,
         Clashing: isCabinetry
           ? ""
@@ -7175,6 +7275,7 @@ function serializeCutlistRowsSnapshot(rows: CutlistRow[]) {
         height: String(row.height ?? ""),
       width: String(row.width ?? ""),
       depth: String(row.depth ?? ""),
+      drawerDepths: normalizeDrawerDepths(row.drawerDepths) ?? null,
       quantity: String(row.quantity ?? ""),
       clashing: String(row.clashing ?? ""),
       clashLeft: String(row.clashLeft ?? ""),
@@ -8818,6 +8919,8 @@ export default function ProjectDetailsPage() {
   const [savedProjectLiveTabSnapshots, setSavedProjectLiveTabSnapshots] = useState<
     Record<string, ProjectLiveTabStateSnapshot>
   >({});
+  // The production cutlist's Cabinetry drawer (renderCutlistCabinetryDrawer): open or not.
+  const [isCutlistCabinetryOpen, setIsCutlistCabinetryOpen] = useState(false);
   const [isProductionPrintModalOpen, setIsProductionPrintModalOpen] = useState(false);
   const [printModalOrigin, setPrintModalOrigin] = useState<GlassModalOrigin>(null);
   const printModalPanelRef = useRef<HTMLDivElement | null>(null);
@@ -8830,7 +8933,10 @@ export default function ProjectDetailsPage() {
     summary: true,
     nesting: true,
     cnc: true,
+    cutlist: false,
   });
+  // The Print dialog's production cutlist's page count: worked out as it opens (null: not yet).
+  const [cutlistPrintPageCount, setCutlistPrintPageCount] = useState<number | null>(null);
   const [nestingFullscreen, setNestingFullscreen] = useState(false);
   const boardColourEditStartRef = useRef<Record<string, string>>({});
   // The board rows list gives each row its own stacking context (via the
@@ -9045,6 +9151,10 @@ export default function ProjectDetailsPage() {
   // entry point rather than comparing against a stale one from a previous visit.
   const initialMeasureEntrySnapshotRef = useRef<string | null>(null);
   const productionCutlistEntrySnapshotRef = useRef<string | null>(null);
+  // Whether this person changed the cutlist while it's been open (noteCutlistSessionChange) — its close summary's only
+  // shown then: not for rows that were still loading as it opened, nor for someone else's changes coming in.
+  const initialMeasureSessionChangedRef = useRef(false);
+  const productionCutlistSessionChangedRef = useRef(false);
   const [initialCutlistSearch, setInitialCutlistSearch] = useState("");
   const [initialCutlistPartTypeFilter, setInitialCutlistPartTypeFilter] = useState("All Part Types");
   const [initialCutlistRoomFilter, setInitialCutlistRoomFilter] = useState("Project Cutlist");
@@ -9898,6 +10008,8 @@ export default function ProjectDetailsPage() {
   // convention as every other cutlist cell, rather than the whole Up/Down group dropping into edit
   // mode the instant the row is expanded.
   const [editingHingeCell, setEditingHingeCell] = useState<{ rowId: string; direction: "up" | "down"; index: number } | null>(null);
+  // A list Drawer row's depth for one of its drawers being changed (renderDrawerDepthLines).
+  const [editingDrawerDepth, setEditingDrawerDepth] = useState<{ rowId: string; key: string; value: string } | null>(null);
   const [editingHingeCellDraft, setEditingHingeCellDraft] = useState("");
   const editingFixedShelfRef = useRef("");
   const editingAdjustableShelfRef = useRef("");
@@ -10803,6 +10915,7 @@ export default function ProjectDetailsPage() {
     if (salesNav === "initial") {
       if (initialMeasureEntrySnapshotRef.current === null) {
         initialMeasureEntrySnapshotRef.current = serializeCutlistRowsSnapshot(initialCutlistRows);
+        initialMeasureSessionChangedRef.current = false;
       }
     } else {
       initialMeasureEntrySnapshotRef.current = null;
@@ -10813,6 +10926,7 @@ export default function ProjectDetailsPage() {
     if (productionNav === "cutlist") {
       if (productionCutlistEntrySnapshotRef.current === null) {
         productionCutlistEntrySnapshotRef.current = serializeCutlistRowsSnapshot(cutlistRows);
+        productionCutlistSessionChangedRef.current = false;
       }
     } else {
       productionCutlistEntrySnapshotRef.current = null;
@@ -10895,6 +11009,7 @@ export default function ProjectDetailsPage() {
             cabinetryFullTop: normalizeCabinetryClashBottomValue(item.cabinetryFullTop ?? item.CabinetryFullTop),
             hingesUp: normalizeDoorHingeValues(item.hingesUp ?? item.HingesUp ?? item.hingeUp ?? item.HingeUp),
             hingesDown: normalizeDoorHingeValues(item.hingesDown ?? item.HingesDown ?? item.hingeDown ?? item.HingeDown),
+            drawerDepths: normalizeDrawerDepths(item.DrawerDepths ?? item.drawerDepths),
             information: String(item.Information ?? item.information ?? ""),
             grain: grainParsed.grain,
             grainValue: grainParsed.grainValue,
@@ -11606,6 +11721,37 @@ export default function ProjectDetailsPage() {
       // Left unloaded; each print/export handler retries the load itself when clicked.
     });
   }, [pdfExportModules, resolvedTab, shouldRenderPrintModal]);
+  // The company logo for the production prints' title sheets (lib/print-title-page.ts) — loaded as the Production tab
+  // opens too, so a print made from it needn't wait for it.
+  const printTitleLogoRef = useRef<{ raw: string; logo: PrintTitleLogo | null } | null>(null);
+  const printTitleLogoRaw = String(
+    companyDoc?.logoPath ?? companyDoc?.logoUrl ?? ((companyDoc?.theme as Record<string, unknown> | undefined)?.logoPath ?? ""),
+  ).trim();
+  const ensurePrintTitleLogo = async () => {
+    const cached = printTitleLogoRef.current;
+    if (cached && cached.raw === printTitleLogoRaw) return cached.logo;
+    const logo = await loadPrintTitleLogo(printTitleLogoRaw);
+    printTitleLogoRef.current = { raw: printTitleLogoRaw, logo };
+    return logo;
+  };
+  useEffect(() => {
+    if (resolvedTab !== "production") return;
+    void ensurePrintTitleLogo();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolvedTab, printTitleLogoRaw]);
+  // A production print's title sheet: its tab's name, the company, the project, who it's for (its assigned user, else
+  // whoever created it — assignedDisplayName), and its production Notes (the Production Cutlist's — not the contractors').
+  const printTitlePageFor = (heading: string): PrintTitlePage => ({
+    heading,
+    companyName:
+      String(
+        companyDoc?.companyName ?? companyDoc?.name ?? ((companyDoc?.company as Record<string, unknown> | undefined)?.name ?? ""),
+      ).trim() || "Company",
+    projectName: toStr(project?.name, "-"),
+    person: toStr(assignedDisplayName, "-"),
+    notes: notesHtmlToPlainText(project?.productionNotes),
+    logo: printTitleLogoRef.current?.raw === printTitleLogoRaw ? printTitleLogoRef.current.logo : null,
+  });
 
   const shouldComputeCnc =
     productionNav === "overview" || productionNav === "cnc" || isProductionPrintModalOpen;
@@ -11643,6 +11789,9 @@ export default function ProjectDetailsPage() {
     salesAccess.edit,
     cutlistPresenceMe,
   );
+  // How wide each cutlist's list is — so its columns keep their usual widths whenever they fit (the list's tables).
+  const [cutlistListWrapRef, cutlistListWrapWidth] = useMeasuredWidth();
+  const [initialCutlistListWrapRef, initialCutlistListWrapWidth] = useMeasuredWidth();
   // Beside the project's name in the top bar; on a phone or tablet (no room there), just under it.
   const renderCutlistAlsoEditing = (names: string[], compact: boolean) => {
     const text = alsoEditingText(names);
@@ -12510,6 +12659,143 @@ export default function ProjectDetailsPage() {
         title={empty ? "Nothing in the cutlist to download yet" : "Download the cutlist as Excel"}
       >
         <Download size={large ? 16 : 15} color="#ffffff" strokeWidth={2.4} />
+      </button>
+    );
+  };
+  // A cutlist's save chip, in its top bar: whether its changes have reached the server (the cutlist's own sync —
+  // lib/use-project-cutlist.ts). Saved; Saving… (sent, not heard back yet); Offline, in amber — changes made are kept on
+  // this device (lib/firebase.ts), through a refresh, and sent once the connection's back. On a phone / tablet just its
+  // icon (with Offline's word). Not in the CutSmart Preview, which saves nothing (its banner says so).
+  const renderCutlistSaveStatus = (kind: "production" | "initialMeasure", large: boolean) => {
+    const state = kind === "production" ? productionCutlistState : initialCutlistState;
+    if (isPreviewMode() || state.status !== "ready") return null;
+    const { offline, pending } = state.sync;
+    const amber = "var(--accent-amber)";
+    const look = offline
+      ? {
+          label: pending ? "Offline — saved on this device" : "Offline",
+          icon: CloudOff,
+          color: `color-mix(in srgb, ${amber} 72%, var(--text-main))`,
+          bg: `color-mix(in srgb, ${amber} 16%, transparent)`,
+          border: `color-mix(in srgb, ${amber} 55%, transparent)`,
+          title: pending
+            ? "You're offline. Your changes are saved on this device and will sync when you're back online."
+            : "You're offline. Changes you make are saved on this device and sync when you're back online.",
+        }
+      : pending
+        ? {
+            label: "Saving…",
+            icon: CloudUpload,
+            color: "var(--text-muted)",
+            bg: "var(--panel-bg)",
+            border: "var(--glass-border)",
+            title: "Saving your changes…",
+          }
+        : {
+            label: "Saved",
+            icon: CloudCheck,
+            color: "var(--success-strong)",
+            bg: "var(--success-soft)",
+            border: "var(--success-border)",
+            title: "All changes saved",
+          };
+    const Icon = look.icon;
+    const showLabel = large || offline;
+    return (
+      <span
+        role="status"
+        aria-live="polite"
+        aria-label={look.label}
+        title={look.title}
+        className={`inline-flex shrink-0 items-center justify-center gap-1.5 rounded-full border font-medium ${large ? "h-9 text-[12px]" : "h-8 text-[11px]"} ${
+          showLabel ? (large ? "px-3" : "px-2.5") : large ? "w-9" : "w-8"
+        }`}
+        style={{ color: look.color, backgroundColor: look.bg, borderColor: look.border }}
+      >
+        <Icon size={large ? 15 : 14} className="shrink-0" />
+        {showLabel ? <span className="whitespace-nowrap">{large ? look.label : "Offline"}</span> : null}
+      </span>
+    );
+  };
+  // The production cutlist to print, laid out as the old cutlist sheet (lib/cutlist-print-pdf.ts) — every room's parts,
+  // each part type on its own page(s), and everything else a row has on a second line under it. From the print button
+  // in the cutlist's top bar, and Production's Print dialog.
+  const buildProductionCutlistPrint = (jsPDF: PdfExportModules["jsPDF"]) => {
+    if (!project || !cutlistRows.length) return null;
+    const lengthNote = (value: unknown) => (toStr(value) ? activeLength(toStr(value)) : "");
+    const unitLabel = activeUnitLabel();
+    return buildCutlistPrintPdf(jsPDF, {
+      companyName: toStr(
+        companyDoc?.companyName ??
+          companyDoc?.name ??
+          ((companyDoc?.applicationPreferences as Record<string, unknown> | undefined)?.companyName ?? ""),
+      ),
+      projectName: toStr(project.name, "Project"),
+      rows: cutlistRows,
+      partTypeColors,
+      partTypeOrder: partTypeOptions,
+      // (A row keeps its board as "<name> @@ <sheet>": the project's board's name for it, else the name part.)
+      boardOf: (value) => boardMetaByKey[resolveBoardKey(value)]?.label ?? value.split(" @@ ")[0].trim(),
+      kindOf: (row) =>
+        isCabinetryPartType(row.partType) ? "cabinetry" : isDrawerPartType(row.partType) ? "drawer" : isDoorPartType(row.partType) ? "door" : "",
+      // A door set up as doors or drawers: its fronts as the list's breakdown shows them.
+      frontsOf: (row) =>
+        normalizeDoorModeValue(row.doorMode) === "manual"
+          ? []
+          : buildConfiguredDoorListSubrows(row).map((piece) => ({ name: piece.partName, height: piece.height, width: piece.width, quantity: piece.quantity })),
+      // A drawer: its bottom and backs (as the list breaks it down), printed under its name instead of its own row.
+      piecesOf: (row) =>
+        isDrawerPartType(row.partType)
+          ? buildDrawerDerivedPieces(row).map((piece) => ({
+              name: piece.partName,
+              height: piece.height,
+              width: piece.width,
+              depth: piece.depth,
+              quantity: piece.quantity,
+              clashLeft: piece.clashLeft,
+              clashRight: piece.clashRight,
+            }))
+          : [],
+      hingeTypeOf: (row) => {
+        const hardware = hardwareForRoom(row.room);
+        return toStr(hardware.hingeType) || toStr(hardware.hardwareCategory);
+      },
+      notes: {
+        carcassThickness: lengthNote(productionForm.existing.carcassThickness),
+        baseCabHeight: lengthNote(productionForm.cabinetry.baseCabHeight),
+        tallCabHeight: lengthNote(productionForm.cabinetry.tallCabHeight),
+        hingeType: toStr(productionForm.hardware.hingeType) || toStr(productionForm.hardware.hardwareCategory),
+      },
+      footer: [`Printed ${activeDate(new Date())}`, unitLabel ? `Sizes in ${unitLabel}` : ""].filter(Boolean).join("   ·   "),
+      titlePage: printTitlePageFor("CUTLIST"),
+    });
+  };
+  // (Only waits for the PDF modules when they aren't loaded yet — so, as usual, its print window opens within the click.)
+  const printProductionCutlist = async () => {
+    try {
+      if (printTitleLogoRef.current?.raw !== printTitleLogoRaw) await ensurePrintTitleLogo();
+      const modules = loadedPdfExportModules ?? (await loadPdfExportModules());
+      const made = buildProductionCutlistPrint(modules.jsPDF);
+      if (made) modules.openPdfBlobInPrintWindow(made.blob);
+    } catch (error) {
+      console.warn("[cutlist print] couldn't make the PDF:", error);
+      setLockMessage("Couldn't print the cutlist — please try again.");
+    }
+  };
+  // Its button: a small round blue printer icon, beside the download one.
+  const renderCutlistPrintButton = (large: boolean) => {
+    const empty = cutlistRows.length === 0;
+    return (
+      <button
+        type="button"
+        onClick={() => void printProductionCutlist()}
+        disabled={empty}
+        className={`glass-shine relative z-[1] inline-flex ${large ? "h-9 w-9" : "h-8 w-8"} shrink-0 items-center justify-center rounded-full border hover:brightness-95 disabled:opacity-50`}
+        style={glassShineStyle("var(--brand)")}
+        aria-label="Print the cutlist"
+        title={empty ? "Nothing in the cutlist to print yet" : "Print the cutlist"}
+      >
+        <Printer size={large ? 16 : 15} color="#ffffff" strokeWidth={2.4} />
       </button>
     );
   };
@@ -14513,6 +14799,29 @@ export default function ProjectDetailsPage() {
     setInitialCutlistRoomFilter(initialOnlyRoom);
   }, [initialCutlistOpen, initialCutlistState.status, initialOnlyRoom]);
 
+  // A row's clashing as its board's Lacquer says: on a lacquered board, none of its part type's autoclash (Company
+  // Settings › Part types) — clashing that isn't that is left as it is; on one that isn't, its autoclash when it has no
+  // clashing at all (as choosing the board for it in the Cutlist Entry does). The same row back when that's no change.
+  const withBoardLacquerClashing = <T extends { board?: string; partType?: string; clashing?: string; clashLeft?: string; clashRight?: string }>(
+    row: T,
+  ): T => {
+    const auto = partTypeAutoClashMap[String(row.partType || "").trim().toLowerCase()] ?? { left: "", right: "" };
+    const split = splitClashing(String(row.clashing ?? ""));
+    const left = String(row.clashLeft ?? split.left ?? "").trim().toUpperCase();
+    const right = String(row.clashRight ?? split.right ?? "").trim().toUpperCase();
+    let nextLeft = left;
+    let nextRight = right;
+    if (boardLacquerFor(String(row.board ?? "").trim())) {
+      if (left && left === auto.left) nextLeft = "";
+      if (right && right === auto.right) nextRight = "";
+    } else if (!left && !right) {
+      nextLeft = auto.left;
+      nextRight = auto.right;
+    }
+    if (nextLeft === left && nextRight === right) return row;
+    return { ...row, clashLeft: nextLeft, clashRight: nextRight, clashing: joinClashing(nextLeft, nextRight) };
+  };
+
   const defaultClashingForPartType = (partType: string, boardLabel: string) => {
     const board = String(boardLabel || "").trim();
     if (board && boardLacquerFor(board)) {
@@ -14657,6 +14966,22 @@ export default function ProjectDetailsPage() {
     (scope && productionForm.roomHardware[scope]) || productionForm.hardware;
   const categoryOfHardware = (hardware: ProductionHardwareSettings) =>
     String(hardware.hardwareCategory || defaultHardwareCategory()).trim();
+  // A drawer's depth too shallow for its room's drawer hardware (Company Settings › Hardware: its runner lengths, and the
+  // space each needs behind it) — what it needs, in words; "" when a runner fits, or there's nothing set up to go by.
+  const drawerDepthHardwareIssue = (room: unknown, depthValue: unknown): string => {
+    const depth = toNum(depthValue);
+    if (!(depth > 0)) return "";
+    const breakdown = drawerBreakdownForRoom(room);
+    const lengths = breakdown.hardwareLengths.map(Number).filter((length) => length > 0);
+    if (!lengths.length) return "";
+    const space = Math.max(0, Number(breakdown.spaceRequirement ?? 0));
+    if (lengths.some((length) => length <= depth - space)) return "";
+    const shortest = Math.min(...lengths);
+    const drawerType = String(hardwareForRoom(room).newDrawerType || "").trim();
+    return `No ${drawerType ? `${drawerType} ` : ""}runner fits ${activeLength(depth)} deep — the shortest is ${activeLength(shortest)}${
+      space ? ` and needs ${activeLength(space)} behind it` : ""
+    }, so it needs at least ${activeLength(shortest + space)}.`;
+  };
   const drawerBreakdownForRoom = (room: unknown): DrawerBreakdown => {
     const key = String(room ?? "").trim();
     if (!key || !productionForm.roomHardware[key]) return selectedDrawerBreakdown;
@@ -14713,10 +15038,11 @@ export default function ProjectDetailsPage() {
     if (!tokens.length && rawHeight) tokens = [rawHeight];
     if (!tokens.length) tokens = [""];
 
-    const bottomQty = Math.max(1, tokens.length);
-    let depthBase: number | null = depthVal > 0 ? depthVal : null;
-    if (depthBase != null) {
-      let depthForHardware = depthBase;
+    // Its bottoms: one piece for each depth its drawers are at (each drawer's own — drawerDepthFor), named by their
+    // drawers' heights ("A", "B ×2") when there's more than one.
+    const bottomDepthFor = (depthValue: number): number | null => {
+      if (!(depthValue > 0)) return null;
+      let depthForHardware = depthValue;
       if (drawerBreakdown.spaceRequirement != null) {
         depthForHardware = Math.max(0, depthForHardware - drawerBreakdown.spaceRequirement);
       }
@@ -14725,8 +15051,8 @@ export default function ProjectDetailsPage() {
         const candidates = drawerBreakdown.hardwareLengths.filter((v) => v <= depthForHardware);
         if (candidates.length) roundedHardwareDepth = Math.max(...candidates);
       }
-      depthBase = roundedHardwareDepth;
-    }
+      return drawerBreakdown.bottomsDepthMinus != null ? roundedHardwareDepth - drawerBreakdown.bottomsDepthMinus : roundedHardwareDepth;
+    };
 
     const bottomW =
       widthVal > 0 && drawerBreakdown.bottomsWidthMinus != null
@@ -14734,10 +15060,6 @@ export default function ProjectDetailsPage() {
         : widthVal > 0
           ? widthVal
           : null;
-    const bottomD =
-      depthBase != null && drawerBreakdown.bottomsDepthMinus != null
-        ? depthBase - drawerBreakdown.bottomsDepthMinus
-        : depthBase;
     const backW =
       widthVal > 0 && drawerBreakdown.backsWidthMinus != null
         ? widthVal - drawerBreakdown.backsWidthMinus
@@ -14746,15 +15068,38 @@ export default function ProjectDetailsPage() {
           : null;
 
     const pieces: DrawerDerivedPiece[] = [];
-    pieces.push({
-      key: "drawer_bottom",
-      partName: "Bottom",
-      height: "",
-      width: bottomW != null ? formatMm(bottomW) : "",
-      depth: bottomD != null ? formatMm(bottomD) : "",
-      quantity: String(bottomQty),
-      clashLeft: "",
-      clashRight: "",
+    const bottomsByDepth = new Map<string, { depth: number | null; count: number; heights: string[] }>();
+    const drawerKeys = drawerDepthKeys(row);
+    tokens.forEach((_token, index) => {
+      const drawerKey = drawerKeys[index] ?? "";
+      const ownDepth = drawerKey ? toNum(drawerDepthFor(row, drawerKey)) : depthVal;
+      const bottomD = bottomDepthFor(ownDepth > 0 ? ownDepth : depthVal);
+      const groupKey = bottomD == null ? "" : String(bottomD);
+      const bottom = bottomsByDepth.get(groupKey) ?? { depth: bottomD, count: 0, heights: [] };
+      bottom.count += 1;
+      if (drawerKey) bottom.heights.push(drawerDepthLabel(drawerKey));
+      bottomsByDepth.set(groupKey, bottom);
+    });
+    const bottoms = Array.from(bottomsByDepth.values());
+    bottoms.forEach((bottom, index) => {
+      pieces.push({
+        key: index === 0 ? "drawer_bottom" : `drawer_bottom_${index + 1}`,
+        partName:
+          bottoms.length > 1 && bottom.heights.length
+            ? `Bottom (${Array.from(new Set(bottom.heights))
+                .map((height) => {
+                  const count = bottom.heights.filter((other) => other === height).length;
+                  return count > 1 ? `${height} ×${count}` : height;
+                })
+                .join(", ")})`
+            : "Bottom",
+        height: "",
+        width: bottomW != null ? formatMm(bottomW) : "",
+        depth: bottom.depth != null ? formatMm(bottom.depth) : "",
+        quantity: String(Math.max(1, bottom.count)),
+        clashLeft: "",
+        clashRight: "",
+      });
     });
 
     const grouped: Record<string, number> = {};
@@ -17483,6 +17828,7 @@ export default function ProjectDetailsPage() {
         height: String(seed?.height ?? ""),
         width: String(seed?.width ?? ""),
       depth: String(seed?.depth ?? ""),
+      drawerDepths: normalizeDrawerDepths(seed?.drawerDepths),
       quantity: String(seed?.quantity ?? ""),
       clashing: joinClashing(left, right),
       clashLeft: left,
@@ -19641,6 +19987,7 @@ export default function ProjectDetailsPage() {
             hingesUp: normalizeDoorHingeValues(item.hingesUp ?? item.HingesUp ?? item.hingeUp ?? item.HingeUp),
             hingesDown: normalizeDoorHingeValues(item.hingesDown ?? item.HingesDown ?? item.hingeDown ?? item.HingeDown),
             hingeSide: normalizeHingeSideValue(item.hingeSide ?? item.HingeSide),
+            drawerDepths: normalizeDrawerDepths(item.DrawerDepths ?? item.drawerDepths),
               information: String(item.Information ?? item.information ?? item.info ?? ""),
               grain: grainParsed.grain,
               grainValue: grainParsed.grainValue,
@@ -21107,6 +21454,7 @@ export default function ProjectDetailsPage() {
     const uid = String(user?.uid || "").trim();
     if (isCutlistDrawerOut(`${uid}:${keepKey}`)) return;
     if (keepKey !== "notes" && isProductionNotesPanelOpen && !isCutlistDrawerOut(`${uid}:notes`)) void closeProductionNotesPanel();
+    if (keepKey !== "cabinetry" && isCutlistCabinetryOpen && !isCutlistDrawerOut(`${uid}:cabinetry`)) closeCutlistCabinetryDrawer();
     for (const name of openContractorNames) {
       const key = `contractor:${name}`;
       if (key !== keepKey && !isCutlistDrawerOut(`${uid}:${key}`)) closeContractorNotes(name);
@@ -21124,6 +21472,7 @@ export default function ProjectDetailsPage() {
   const restoreCutlistDrawers = useEffectEvent(() => {
     for (const key of readCutlistOpenDrawers(cutlistOpenDrawersKey)) {
       if (key === "notes") openProductionNotesPanel();
+      else if (key === "cabinetry") openCutlistCabinetryDrawer();
       else if (key.startsWith("contractor:")) {
         const name = key.slice("contractor:".length);
         if (contractorTabOptions.includes(name)) openContractorNotes(name, true);
@@ -21234,6 +21583,7 @@ export default function ProjectDetailsPage() {
       zIndex={cutlistDrawerZ("notes")}
       onActivate={() => bringCutlistDrawerToFront("notes")}
       drawerId="notes"
+      lockPage={isCompactProjectViewport}
     >
       {renderProductionNotesCard("sidebar")}
     </CutlistSideDrawer>
@@ -21253,6 +21603,7 @@ export default function ProjectDetailsPage() {
         zIndex={cutlistDrawerZ(`contractor:${drawer.name}`)}
         onActivate={() => bringCutlistDrawerToFront(`contractor:${drawer.name}`)}
         drawerId={`contractor:${drawer.name}`}
+        lockPage={isCompactProjectViewport}
       >
         <ContractorNotesDrawerBody
           name={drawer.name}
@@ -21279,6 +21630,99 @@ export default function ProjectDetailsPage() {
   // The cutlist screen's floating bar's buttons: Notes, then the contractors — a button each (separate), or one
   // "Contractors" menu of them. A drawer's button in the brand blue, with the glass shine, while it's open. measure:
   // for the copy laid out out of sight to see whether they fit (nothing in it pressable).
+  // The production cutlist's Cabinetry drawer (its bar's Cabinetry button, at its left): the project's Existing Cabinetry
+  // and Cabinetry as set on Production — in the order Production has them — to look at while working on the cutlist. A
+  // drawer like Notes: in the side, or dragged out of its button to anywhere (CutlistSideDrawer).
+  const openCutlistCabinetryDrawer = () => {
+    setIsCutlistCabinetryOpen(true);
+    bringCutlistDrawerToFront("cabinetry");
+  };
+  const closeCutlistCabinetryDrawer = () => {
+    setIsCutlistCabinetryOpen(false);
+    dropCutlistDrawerFromStack("cabinetry");
+  };
+  const renderCutlistCabinetryDrawer = () => {
+    const unit = activeUnitLabel();
+    // Lengths in the company's unit — "-" for one not set.
+    const length = (value: unknown) => {
+      const raw = toStr(value);
+      return raw ? `${activeLength(raw, { withUnit: false })}${unit ? ` ${unit}` : ""}` : "-";
+    };
+    const hobCentre = [toStr(productionForm.cabinetry.hobSide), toStr(productionForm.cabinetry.hobCentre) ? length(productionForm.cabinetry.hobCentre) : ""]
+      .filter(Boolean)
+      .join(" ");
+    const sections: Array<{ title: string; rows: Array<[string, string]> }> = [
+      {
+        title: "Existing Cabinetry",
+        rows: [
+          ["Carcass Thickness", length(productionForm.existing.carcassThickness)],
+          ["Panel Thickness", length(productionForm.existing.panelThickness)],
+          ["Fronts Thickness", length(productionForm.existing.frontsThickness)],
+        ],
+      },
+      {
+        title: "Cabinetry",
+        rows: [
+          ["Base Cab Height", length(productionForm.cabinetry.baseCabHeight)],
+          ["Tall Cab Height", length(productionForm.cabinetry.tallCabHeight)],
+          ["Foot Distance Back", length(productionForm.cabinetry.footDistanceBack)],
+          ["Foot Height", length(productionForm.cabinetry.footHeight)],
+          ["Hob Centre", hobCentre || "-"],
+          ["Top Scribers", productionForm.cabinetry.topScribers ? "Yes" : "No"],
+        ],
+      },
+    ];
+    return (
+      <CutlistSideDrawer
+        open={isCutlistCabinetryOpen}
+        label="Cabinetry"
+        storageKey={`${String(user?.uid || "").trim()}:cabinetry`}
+        isDarkMode={isDarkMode}
+        icon={<Ruler size={14} />}
+        onClose={closeCutlistCabinetryDrawer}
+        onDock={() => closeOtherCutlistDrawersInTheSide("cabinetry")}
+        barButtonIds={["cabinetry"]}
+        minWidth={CUTLIST_DRAWER_BAR_MIN_W}
+        zIndex={cutlistDrawerZ("cabinetry")}
+        onActivate={() => bringCutlistDrawerToFront("cabinetry")}
+        drawerId="cabinetry"
+      >
+        <CutlistDrawerHeader
+          title="Cabinetry"
+          icon={<Ruler size={15} />}
+          onClose={closeCutlistCabinetryDrawer}
+          style={{
+            backgroundColor: "color-mix(in srgb, var(--panel-muted) 35%, transparent)",
+            backdropFilter: "blur(6px)",
+            WebkitBackdropFilter: "blur(6px)",
+            borderBottomColor: "var(--panel-border)",
+          }}
+        />
+        {/* Each section's rows the drawer's full width — lines between them, none down the sides. */}
+        <div className="glass-scroll min-h-0 flex-1 overflow-auto pb-4" style={{ color: "var(--text-main)" }}>
+          {sections.map((section) => (
+            <div key={section.title}>
+              <p className="px-4 pb-1.5 pt-4 text-[11px] font-bold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
+                {section.title}
+              </p>
+              <div className="border-y" style={{ borderColor: "var(--glass-border)" }}>
+                {section.rows.map(([label, value], index) => (
+                  <div
+                    key={label}
+                    className={`flex items-center justify-between gap-3 px-4 py-2.5 text-[13px] ${index > 0 ? "border-t" : ""}`}
+                    style={{ borderColor: "var(--glass-border)" }}
+                  >
+                    <span className="font-medium" style={{ color: "var(--text-main)" }}>{label}</span>
+                    <span className="font-medium" style={{ color: "var(--text-main)" }}>{value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </CutlistSideDrawer>
+    );
+  };
   const renderCutlistBarButtons = (separate: boolean, measure = false) => {
     const buttonClass = (on: boolean) =>
       `inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3.5 text-[12px] font-bold transition hover:brightness-95 ${
@@ -21290,6 +21734,37 @@ export default function ProjectDetailsPage() {
     const anyContractorOpen = openContractorNames.length > 0;
     return (
       <>
+        <button
+          type="button"
+          tabIndex={tabIndex}
+          data-cutlist-bar-button={measure ? undefined : "cabinetry"}
+          onPointerDown={
+            measure
+              ? undefined
+              : (event) => dragOutOfCutlistBarButton(event, "cabinetry", isCutlistCabinetryOpen, openCutlistCabinetryDrawer)
+          }
+          aria-pressed={isCutlistCabinetryOpen}
+          onClick={
+            measure
+              ? undefined
+              : () =>
+                  pressCutlistDrawerButton(
+                    "cabinetry",
+                    isCutlistCabinetryOpen,
+                    () => {
+                      closeOtherCutlistDrawersInTheSide("cabinetry");
+                      openCutlistCabinetryDrawer();
+                    },
+                    closeCutlistCabinetryDrawer,
+                  )
+          }
+          className={buttonClass(isCutlistCabinetryOpen)}
+          style={buttonStyle(isCutlistCabinetryOpen)}
+        >
+          <Ruler size={14} className="shrink-0" />
+          Cabinetry
+        </button>
+        <span aria-hidden className="mx-0.5 h-5 w-px shrink-0" style={{ backgroundColor: "var(--glass-border)" }} />
         <button
           type="button"
           tabIndex={tabIndex}
@@ -22656,6 +23131,10 @@ export default function ProjectDetailsPage() {
     setProductionForm(next);
     const ok = await persistProductionForm(next);
     if (ok) offerBoardChangeForCutlist(id, prevRows, next.boardTypes);
+    if (ok && patch.lacquer !== undefined) {
+      const board = next.boardTypes.find((row) => row.id === id);
+      if (board) applyBoardLacquerToCutlist(board, Boolean(patch.lacquer));
+    }
     if (ok && bumpColour) {
       const oldColour = String(previousColourRaw ?? prevRows.find((row) => row.id === id)?.colour ?? "").trim();
       const newColour = String(patch.colour ?? "").trim();
@@ -22671,6 +23150,38 @@ export default function ProjectDetailsPage() {
         await syncBoardEdgingMemorySingleChange(rowColour, oldEdging, newEdging);
       }
     }
+  };
+
+  // A board ticked Lacquer in Board Settings: the cutlist's pieces on it (the list's, and the Cutlist Entry's) without
+  // their part type's autoclash; unticked, those with no clashing get it back (withBoardLacquerClashing). (As the board
+  // settings themselves aren't in the rows yet, the board's lacquer is told it here rather than looked up.)
+  const applyBoardLacquerToCutlist = (board: ProductionBoardRow, lacquer: boolean) => {
+    const key = boardKeyFromRow(board);
+    if (!key) return;
+    const adjust = <T extends { board?: string; partType?: string; clashing?: string; clashLeft?: string; clashRight?: string }>(row: T): T => {
+      if (resolveBoardKey(String(row.board ?? "")) !== key) return row;
+      const auto = partTypeAutoClashMap[String(row.partType || "").trim().toLowerCase()] ?? { left: "", right: "" };
+      const split = splitClashing(String(row.clashing ?? ""));
+      const left = String(row.clashLeft ?? split.left ?? "").trim().toUpperCase();
+      const right = String(row.clashRight ?? split.right ?? "").trim().toUpperCase();
+      let nextLeft = left;
+      let nextRight = right;
+      if (lacquer) {
+        if (left && left === auto.left) nextLeft = "";
+        if (right && right === auto.right) nextRight = "";
+      } else if (!left && !right) {
+        nextLeft = auto.left;
+        nextRight = auto.right;
+      }
+      if (nextLeft === left && nextRight === right) return row;
+      return { ...row, clashLeft: nextLeft, clashRight: nextRight, clashing: joinClashing(nextLeft, nextRight) };
+    };
+    const nextRows = cutlistRows.map(adjust);
+    if (nextRows.some((row, index) => row !== cutlistRows[index])) {
+      setCutlistRows(nextRows);
+      void persistCutlistRows(nextRows);
+    }
+    setCutlistDraftRows((prev) => (prev.some((row) => adjust(row) !== row) ? prev.map(adjust) : prev));
   };
 
   // After a Board Settings row is saved: if that changed its name (colour, thickness, finish or sheet size) and cutlist
@@ -22829,18 +23340,14 @@ export default function ProjectDetailsPage() {
       if (!width) errors.push({ field: "width", message: `${rowLabel}: Width is required for drawer parts.` });
       if (!depth) errors.push({ field: "depth", message: `${rowLabel}: Depth is required for drawer parts.` });
       if (!drawerTokens.length) errors.push({ field: "height", message: `${rowLabel}: Height selection is required for drawer parts.` });
-      const rowDrawerBreakdown = drawerBreakdownForRoom(row.room);
-      const compareDepth = depth == null
-        ? null
-        : Math.max(0, Number(depth) - Number(rowDrawerBreakdown.spaceRequirement ?? 0));
-      const hasValidHardwareDepth =
-        compareDepth != null &&
-        (
-          !rowDrawerBreakdown.hardwareLengths.length ||
-          rowDrawerBreakdown.hardwareLengths.some((opt) => Number(opt) <= compareDepth)
-        );
-      if (compareDepth != null && !hasValidHardwareDepth) {
-        errors.push({ field: "depth", message: `${rowLabel}: Depth is too small for selected drawer hardware.` });
+      // Each drawer at a depth a runner fits (its room's drawer hardware — drawerDepthHardwareIssue): its own depth, or
+      // the row's.
+      const drawerKeys = drawerDepthKeys(row);
+      const tooShallow = (drawerKeys.length ? drawerKeys.map((key) => drawerDepthFor(row, key)) : [String(row.depth ?? "")])
+        .map((value) => drawerDepthHardwareIssue(row.room, value))
+        .find(Boolean);
+      if (tooShallow) {
+        errors.push({ field: "depth", message: `${rowLabel}: ${tooShallow}` });
       }
     }
 
@@ -23304,8 +23811,27 @@ export default function ProjectDetailsPage() {
     });
   };
 
+  // A save of this person's that changes the cutlist (its rows not the ones they last had from the database): noted for its
+  // close summary. Not someone else's changes coming in — those arrive by the database, not a save from here.
+  const noteCutlistSessionChange = (kind: "production" | "initialMeasure", nextRows: CutlistRow[]) => {
+    const synced = (kind === "production" ? productionSyncedRowsRef : initialSyncedRowsRef).current;
+    if (synced && synced.projectId === project?.id && serializeCutlistRowsSnapshot(synced.rows) === serializeCutlistRowsSnapshot(nextRows)) return;
+    (kind === "production" ? productionCutlistSessionChangedRef : initialMeasureSessionChangedRef).current = true;
+  };
+  // Whether this person's changed it while it's been open: saved changes (above), or ones not saved yet. (With nothing
+  // from the database yet to tell by: against the rows as it opened.)
+  const cutlistChangedThisSession = (kind: "production" | "initialMeasure") => {
+    const production = kind === "production";
+    if ((production ? productionCutlistSessionChangedRef : initialMeasureSessionChangedRef).current) return true;
+    const rows = production ? cutlistRows : initialCutlistRows;
+    const synced = (production ? productionSyncedRowsRef : initialSyncedRowsRef).current;
+    if (synced && synced.projectId === project?.id) return serializeCutlistRowsSnapshot(rows) !== serializeCutlistRowsSnapshot(synced.rows);
+    const entry = (production ? productionCutlistEntrySnapshotRef : initialMeasureEntrySnapshotRef).current;
+    return entry === null || entry !== serializeCutlistRowsSnapshot(rows);
+  };
   // One save at a time, in the order they're made (as Initial Measure's) — each put onto the one before it.
   const persistCutlistContainer = (nextRows: CutlistRow[]): Promise<boolean> => {
+    noteCutlistSessionChange("production", nextRows);
     const next = persistCutlistRowsChainRef.current.catch(() => false).then(() => persistCutlistContainerNow(nextRows));
     persistCutlistRowsChainRef.current = next;
     return next;
@@ -23322,13 +23848,7 @@ export default function ProjectDetailsPage() {
     const prevRawRows = baseRows ?? known.rawRows;
     isPersistingCutlistRowsRef.current = true;
     try {
-      const saved = await saveCutlistDataMerged(
-        project,
-        "production",
-        (storedRows) => (baseRows ? (mergeStoredCutlistRows(baseRows, rows, storedRows) ?? rows) : rows),
-        known.rawRows,
-        known.rev,
-      );
+      const saved = await saveCutlistDataMerged(project, "production", { base: baseRows, rows }, known.rawRows, known.rev);
       const ok = saved.ok;
       if (ok) {
         productionSyncedRowsRef.current = { projectId: project.id, rows: nextRows };
@@ -23407,6 +23927,7 @@ export default function ProjectDetailsPage() {
   };
   const persistCutlistRows = async (nextRows: CutlistRow[]) => persistCutlistContainer(nextRows);
   const persistInitialCutlistRows = (nextRows: CutlistRow[]): Promise<boolean> => {
+    noteCutlistSessionChange("initialMeasure", nextRows);
     const run = async (): Promise<boolean> => {
       if (!project) return false;
       const rows = serializeCutlistRowsForStorage(nextRows, isCabinetryPartType);
@@ -23417,13 +23938,7 @@ export default function ProjectDetailsPage() {
       const known = initialCutlistState.latest();
       isPersistingInitialCutlistRowsRef.current = true;
       try {
-        const saved = await saveCutlistDataMerged(
-          project,
-          "initialMeasure",
-          (storedRows) => (baseRows ? (mergeStoredCutlistRows(baseRows, rows, storedRows) ?? rows) : rows),
-          known.rawRows,
-          known.rev,
-        );
+        const saved = await saveCutlistDataMerged(project, "initialMeasure", { base: baseRows, rows }, known.rawRows, known.rev);
         if (saved.ok) {
           initialSyncedRowsRef.current = { projectId: project.id, rows: nextRows };
           initialCutlistState.setRawRowsOptimistic(saved.rows, saved.rev);
@@ -26827,7 +27342,7 @@ export default function ProjectDetailsPage() {
     const sourceDraftRowIds = new Set(sourceDraftRows.map((row) => row.id));
     const rejectedIds = new Set<string>();
     const nextWarnings: Record<string, Record<string, string>> = {};
-    const accepted = sourceDraftRows
+    const checkedRows = sourceDraftRows
       .map((row, idx) => {
           const partType = String(row.partType || activeCutlistPartType || "").trim();
           const isCabinetry = isCabinetryPartType(partType);
@@ -26897,8 +27412,19 @@ export default function ProjectDetailsPage() {
           return null;
         }
         return normalizedRow;
-      })
-      .filter(Boolean) as CutlistDraftRow[];
+      });
+    // A main row and the sub parts under it go in together or not at all: one of them not finished holds them all back
+    // in the Cutlist Entry (its unfinished cells flagged) — not the rest added and it left behind on its own, with no main
+    // row above it any more.
+    const groupOfIndex: number[] = [];
+    let group = -1;
+    sourceDraftRows.forEach((row, index) => {
+      if (!(subPartDraftRowIds.has(row.id) && group >= 0)) group += 1;
+      groupOfIndex[index] = group;
+    });
+    const heldGroups = new Set(sourceDraftRows.flatMap((row, index) => (rejectedIds.has(row.id) ? [groupOfIndex[index]] : [])));
+    const heldIds = new Set(sourceDraftRows.filter((_, index) => heldGroups.has(groupOfIndex[index])).map((row) => row.id));
+    const accepted = checkedRows.filter((row, index): row is NonNullable<typeof row> => Boolean(row) && !heldGroups.has(groupOfIndex[index])) as CutlistDraftRow[];
     setCutlistCellWarnings(nextWarnings);
     flashCutlistWarningCells(nextWarnings);
     if (!accepted.length) return;
@@ -26909,13 +27435,7 @@ export default function ProjectDetailsPage() {
       });
     }
     setCutlistRows(nextRows);
-    if (rejectedIds.size > 0) {
-      setCutlistDraftRows((prev) =>
-        prev.filter((row) => !sourceDraftRowIds.has(row.id) || rejectedIds.has(row.id)),
-      );
-    } else {
-      setCutlistDraftRows((prev) => prev.filter((row) => !sourceDraftRowIds.has(row.id)));
-    }
+    setCutlistDraftRows((prev) => prev.filter((row) => !sourceDraftRowIds.has(row.id) || heldIds.has(row.id)));
     await persistCutlistRows(nextRows);
   };
 
@@ -26971,6 +27491,117 @@ export default function ProjectDetailsPage() {
   // Same direct-persist pattern as commitDoorHingeValue, for the door's hinge-side (LH/RH) picker
   // that sits alongside the hinge position textboxes — independent of the shared editingCell
   // machinery since it's a single standalone field, not a whole cell's worth.
+  // A list row's drawer at a depth of its own (withDrawerDepth): saved straight away, as a hinge is.
+  const commitDrawerDepth = async (rowId: string, key: string, value: string) => {
+    const row = cutlistRows.find((r) => r.id === rowId);
+    if (!row) return;
+    const next = withDrawerDepth(row, key, numericDimensionText(value));
+    if (next.depth === row.depth && JSON.stringify(next.drawerDepths ?? {}) === JSON.stringify(row.drawerDepths ?? {})) return;
+    const nextRows = cutlistRows.map((r) => (r.id === rowId ? next : r));
+    setCutlistRows(nextRows);
+    await persistCutlistRows(nextRows);
+  };
+  // A Drawer row in the list: each drawer's depth on a line of its own, its height's letter before it — in the row's own
+  // colours, as its other cells; double-clicked (tapped, on a phone or tablet) to change just that one, saved as it's
+  // left (or Enter; Escape leaves it as it was). Red, saying why, at a depth no runner of its room's drawer hardware fits.
+  const renderDrawerDepthLines = (row: CutlistRow, keys: string[], textColor: string, compact: boolean) => (
+    <div className="flex w-full flex-col items-center gap-[2px]">
+      {keys.map((key) => {
+        const saved = drawerDepthFor(row, key);
+        const issue = drawerDepthHardwareIssue(row.room, saved);
+        const editingThis = editingDrawerDepth?.rowId === row.id && editingDrawerDepth.key === key;
+        if (editingThis) {
+          return (
+            <input
+              key={key}
+              autoFocus
+              inputMode="decimal"
+              title={`Depth for this ${drawerDepthLabel(key)} drawer`}
+              value={editingDrawerDepth.value}
+              onChange={(e) => setEditingDrawerDepth({ rowId: row.id, key, value: numericDimensionText(e.target.value) })}
+              onBlur={() => {
+                setEditingDrawerDepth(null);
+                void commitDrawerDepth(row.id, key, editingDrawerDepth.value);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  e.currentTarget.blur();
+                }
+                if (e.key === "Escape") setEditingDrawerDepth(null);
+              }}
+              className={`${compact ? "h-8 text-[12px]" : "h-6 text-[11px]"} w-full max-w-[96px] rounded-[6px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-1 text-center text-[var(--text-main)]`}
+            />
+          );
+        }
+        const open = () => setEditingDrawerDepth({ rowId: row.id, key, value: saved });
+        return (
+          <button
+            key={key}
+            type="button"
+            disabled={productionReadOnly}
+            onDoubleClick={compact ? undefined : open}
+            onClick={compact ? open : undefined}
+            title={issue || `Depth for this ${drawerDepthLabel(key)} drawer`}
+            className="inline-flex cursor-text items-center gap-1 whitespace-nowrap rounded-[6px] px-1 disabled:cursor-default disabled:opacity-100"
+            style={{ color: issue ? "var(--danger-strong)" : textColor }}
+          >
+            {/* (Its height's letter in a small round pill.) */}
+            <span
+              className="inline-flex h-[15px] min-w-[15px] items-center justify-center rounded-full px-[3px] text-[9px] font-normal leading-none"
+              style={{
+                backgroundColor: "color-mix(in srgb, currentColor 12%, transparent)",
+                border: "1px solid color-mix(in srgb, currentColor 35%, transparent)",
+              }}
+            >
+              {drawerDepthLabel(key)}
+            </span>
+            <span>{saved || "-"}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+  // ...and in the Cutlist Entry: a depth box for each drawer, its height's letter small inside the box's left (red, saying
+  // why, as the list's).
+  const renderDrawerDepthBoxes = (draft: CutlistDraftRow, keys: string[], className: string, style: React.CSSProperties) => (
+    <div className="flex w-full flex-col gap-1">
+      {keys.map((key) => {
+        const issue = drawerDepthHardwareIssue(draft.room, drawerDepthFor(draft, key));
+        return (
+        <div key={key} className="relative">
+          <span
+            className="pointer-events-none absolute left-1 top-1/2 inline-flex h-[15px] min-w-[15px] -translate-y-1/2 items-center justify-center rounded-full px-[3px] text-[9px] font-normal leading-none"
+            style={{
+              color: style.color,
+              backgroundColor: "color-mix(in srgb, currentColor 12%, transparent)",
+              border: "1px solid color-mix(in srgb, currentColor 35%, transparent)",
+            }}
+          >
+            {drawerDepthLabel(key)}
+          </span>
+          <input
+            disabled={productionReadOnly}
+            inputMode="decimal"
+            title={issue || `Depth for this ${drawerDepthLabel(key)} drawer`}
+            aria-invalid={issue ? true : undefined}
+            value={drawerDepthFor(draft, key)}
+            onChange={(e) => {
+              const next = withDrawerDepth(draft, key, numericDimensionText(e.target.value));
+              updateDraftCutlistRow(draft.id, { depth: next.depth, drawerDepths: next.drawerDepths });
+            }}
+            className={`${className} pl-6`}
+            style={
+              issue
+                ? { ...style, borderColor: "var(--danger)", color: "var(--danger-strong)", boxShadow: "0 0 0 2px var(--danger-ring)" }
+                : style
+            }
+          />
+        </div>
+        );
+      })}
+    </div>
+  );
   const commitDoorHingeSideValue = async (rowId: string, value: "" | "LH" | "RH" | "Mirror" | "Top") => {
     const nextRows = cutlistRows.map((r) => (r.id === rowId ? { ...r, hingeSide: value } : r));
     setCutlistRows(nextRows);
@@ -27645,7 +28276,8 @@ export default function ProjectDetailsPage() {
     if (!accepted.length) return;
     const next = [...initialCutlistRows, ...accepted];
     setInitialCutlistRows(next);
-    setInitialCutlistDraftRows([]);
+    // (The ones not finished stay in the Cutlist Entry, flagged — not cleared away with the ones that went in.)
+    setInitialCutlistDraftRows((prev) => prev.filter((row) => Boolean(nextWarnings[row.id])));
     for (const item of nonBlockingSheetIssues) {
       logCutlistValidationIssues(item.issues, item.partType, "initial");
     }
@@ -27811,29 +28443,29 @@ export default function ProjectDetailsPage() {
   );
 
   const renderDoorHingeDisplay = (upValues: string[], downValues: string[], hingeSide?: "" | "LH" | "RH" | "Mirror" | "Top") => (
-    <div className="grid min-h-[40px] w-full min-w-0 content-center gap-[2px] text-left text-[9px]">
-      <div className="flex items-center gap-[3px] whitespace-nowrap">
-        <span className="inline-flex w-[42px] shrink-0 items-center justify-end text-[11px] font-bold leading-none text-[#000000]">
+    <div className="grid min-h-[52px] w-full min-w-0 content-center gap-[3px] text-left text-[12px]">
+      <div className="flex items-center gap-[4px] whitespace-nowrap">
+        <span className="inline-flex w-[50px] shrink-0 items-center justify-end text-[12px] font-bold leading-none text-[#000000]">
           Hinges
         </span>
-        <span className="inline-flex w-[42px] shrink-0 items-center justify-end font-bold leading-none">{hingeSide === "Top" ? "LH" : "Up"}</span>
-        <div className="flex min-w-0 flex-1 flex-nowrap gap-[4px] overflow-visible">
+        <span className="inline-flex w-[50px] shrink-0 items-center justify-end font-bold leading-none">{hingeSide === "Top" ? "LH" : "Up"}</span>
+        <div className="flex min-w-0 flex-1 flex-nowrap gap-[6px] overflow-visible">
           {normalizeDoorHingeValues(upValues).length > 0
             ? normalizeDoorHingeValues(upValues).map((value, index) => (
-                <span key={`hinge_up_view_${index}`} className="inline-flex w-[44px] shrink-0 items-center justify-center">
+                <span key={`hinge_up_view_${index}`} className="inline-flex w-[52px] shrink-0 items-center justify-center text-[12.5px] font-medium">
                   {value}
                 </span>
               ))
             : <span></span>}
         </div>
       </div>
-      <div className="flex items-center gap-[3px] whitespace-nowrap">
-        <span className="inline-flex w-[42px] shrink-0 items-center justify-end text-[11px] font-bold leading-none"></span>
-        <span className="inline-flex w-[42px] shrink-0 items-center justify-end font-bold leading-none">{hingeSide === "Top" ? "RH" : "Down"}</span>
-        <div className="flex min-w-0 flex-1 flex-nowrap gap-[4px] overflow-visible">
+      <div className="flex items-center gap-[4px] whitespace-nowrap">
+        <span className="inline-flex w-[50px] shrink-0 items-center justify-end text-[12px] font-bold leading-none"></span>
+        <span className="inline-flex w-[50px] shrink-0 items-center justify-end font-bold leading-none">{hingeSide === "Top" ? "RH" : "Down"}</span>
+        <div className="flex min-w-0 flex-1 flex-nowrap gap-[6px] overflow-visible">
           {normalizeDoorHingeValues(downValues).length > 0
             ? normalizeDoorHingeValues(downValues).map((value, index) => (
-                <span key={`hinge_down_view_${index}`} className="inline-flex w-[44px] shrink-0 items-center justify-center">
+                <span key={`hinge_down_view_${index}`} className="inline-flex w-[52px] shrink-0 items-center justify-center text-[12.5px] font-medium">
                   {value}
                 </span>
               ))
@@ -27871,7 +28503,7 @@ export default function ProjectDetailsPage() {
             setEditingHingeCell(null);
           }
         }}
-        className="h-[18px] w-[44px] shrink-0 rounded-[5px] border border-[#94A3B8] bg-white px-0 text-center text-[9px] text-[#0F172A]"
+        className="h-[24px] w-[52px] shrink-0 rounded-[6px] border border-[#94A3B8] bg-white px-0 text-center text-[12.5px] font-medium text-[#0F172A]"
       />
     );
     const renderGroup = (direction: "up" | "down", values: string[]) => {
@@ -27880,7 +28512,7 @@ export default function ProjectDetailsPage() {
       const isAddingNew =
         editingHingeCell?.rowId === row.id && editingHingeCell.direction === direction && editingHingeCell.index === addIndex;
       return (
-        <div className="flex min-w-0 flex-1 flex-nowrap items-center gap-[4px] overflow-visible">
+        <div className="flex min-w-0 flex-1 flex-nowrap items-center gap-[6px] overflow-visible">
           {realValues.map((value, index) => {
             const isEditingThis =
               editingHingeCell?.rowId === row.id &&
@@ -27894,7 +28526,7 @@ export default function ProjectDetailsPage() {
                   setEditingHingeCellDraft(value);
                   setEditingHingeCell({ rowId: row.id, direction, index });
                 }}
-                className="inline-flex w-[44px] shrink-0 cursor-text items-center justify-center text-[#000000]"
+                className="inline-flex w-[52px] shrink-0 cursor-text items-center justify-center text-[12.5px] font-medium text-[#000000]"
               >
                 {value}
               </span>
@@ -27910,32 +28542,32 @@ export default function ProjectDetailsPage() {
                 setEditingHingeCell({ rowId: row.id, direction, index: addIndex });
               }}
               title="Add a hinge position"
-              className="inline-flex h-[17px] w-[17px] shrink-0 items-center justify-center rounded-[5px] border hover:brightness-95"
-              style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
+              className="glass-shine inline-flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full border hover:brightness-95"
+              style={glassShineStyle("#16A34A")}
             >
-              <Plus size={11} strokeWidth={3} color="#FFFFFF" />
+              <Plus size={13} strokeWidth={3} color="#FFFFFF" />
             </button>
           )}
         </div>
       );
     };
     return (
-      <div className="grid min-h-[40px] w-full min-w-0 content-center gap-[2px] text-left text-[9px]">
+      <div className="grid min-h-[52px] w-full min-w-0 content-center gap-[3px] text-left text-[12px]">
         <div className="flex items-center gap-[6px]">
-          <span className="inline-flex w-[42px] shrink-0 items-center justify-end text-[11px] font-bold leading-none text-[#000000]">Hinges</span>
+          <span className="inline-flex w-[50px] shrink-0 items-center justify-end text-[12px] font-bold leading-none text-[#000000]">Hinges</span>
           <GlassSelectDropdown
             value={row.hingeSide ?? ""}
             options={["", "LH", "RH", "Mirror", "Top"]}
             onChange={(v) => void commitDoorHingeSideValue(row.id, v as "" | "LH" | "RH" | "Mirror" | "Top")}
-            className="h-[16px] rounded-[4px] border border-[#94A3B8] bg-white px-1 text-[9px] font-bold text-[var(--text-main)]"
+            className="h-[22px] rounded-[6px] border border-[#94A3B8] bg-white px-1.5 text-[11.5px] font-bold text-[var(--text-main)]"
           />
         </div>
-        <div className="flex items-center gap-[3px] whitespace-nowrap">
-          <span className="inline-flex w-[42px] shrink-0 items-center justify-end font-bold leading-none text-[#000000]">{row.hingeSide === "Top" ? "LH" : "Up"}</span>
+        <div className="flex items-center gap-[4px] whitespace-nowrap">
+          <span className="inline-flex w-[50px] shrink-0 items-center justify-end font-bold leading-none text-[#000000]">{row.hingeSide === "Top" ? "LH" : "Up"}</span>
           {renderGroup("up", row.hingesUp ?? [])}
         </div>
-        <div className="flex items-center gap-[3px] whitespace-nowrap">
-          <span className="inline-flex w-[42px] shrink-0 items-center justify-end font-bold leading-none text-[#000000]">{row.hingeSide === "Top" ? "RH" : "Down"}</span>
+        <div className="flex items-center gap-[4px] whitespace-nowrap">
+          <span className="inline-flex w-[50px] shrink-0 items-center justify-end font-bold leading-none text-[#000000]">{row.hingeSide === "Top" ? "RH" : "Down"}</span>
           {renderGroup("down", row.hingesDown ?? [])}
         </div>
       </div>
@@ -28147,6 +28779,7 @@ export default function ProjectDetailsPage() {
       height: isClassicDrawerMode ? formatDrawerHeightTokens(drawerTokens) : effectiveConfiguredDoorHeight,
       width: effectiveConfiguredDoorWidth,
       depth: String(source.depth ?? ""),
+      drawerDepths: normalizeDrawerDepths(source.drawerDepths),
       quantity: isClassicDrawerMode
         ? String(Math.max(1, drawerTokens.length))
         : isConfiguredDoorMode && !String(source.quantity ?? "").trim()
@@ -29952,14 +30585,14 @@ export default function ProjectDetailsPage() {
     panel.style.transition = "transform 280ms cubic-bezier(0.32, 0.72, 0, 1)";
     panel.style.transform = "translateY(0px)";
   };
-  const nestingPrintPageCount = useMemo(
-    () =>
-      nestingBoardLayouts.reduce(
-        (sum, group) => sum + Math.ceil(group.sheets.filter((sheet) => sheet.placements.length > 0).length / 4),
-        0,
-      ),
-    [nestingBoardLayouts],
-  );
+  // (Its sheets' pages, and its title sheet.)
+  const nestingPrintPageCount = useMemo(() => {
+    const sheetPages = nestingBoardLayouts.reduce(
+      (sum, group) => sum + Math.ceil(group.sheets.filter((sheet) => sheet.placements.length > 0).length / 4),
+      0,
+    );
+    return sheetPages > 0 ? sheetPages + 1 : 0;
+  }, [nestingBoardLayouts]);
   const cncPrintPageCount = useMemo(() => {
     if (typeof window === "undefined") return 0;
     if (cncPrintSourceRows.length === 0) return 0;
@@ -30643,13 +31276,19 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       if (row.id !== target.rowId) return row;
       const updated: CutlistRow = { ...row };
       switch (target.key) {
-        case "board":
+        case "board": {
           updated.board = value;
           if (!boardGrainFor(String(updated.board ?? "").trim())) {
             updated.grainValue = "";
             updated.grain = false;
           }
+          // (Its clashing: a lacquered board's pieces without their part type's autoclash, and back.)
+          const clashed = withBoardLacquerClashing(updated);
+          updated.clashLeft = clashed.clashLeft;
+          updated.clashRight = clashed.clashRight;
+          updated.clashing = clashed.clashing;
           break;
+        }
         case "hinges":
           updated.hingesUp = normalizeDoorHingeValues(editingHingesUpRef.current);
           updated.hingesDown = normalizeDoorHingeValues(editingHingesDownRef.current);
@@ -33328,8 +33967,19 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     () => JSON.stringify(projectLoadingAppShellTabRegistration.tabs),
     [projectLoadingAppShellTabRegistration.tabs],
   );
+  // A project they can't open (not found, or not theirs to see): no tab for it up top — any it had (from the link they
+  // followed, or the loading placeholder) taken away. (Not one that just didn't load — offline: its tab stays to retry.)
+  const projectUnavailable = !isLoading && !project && !projectLoadError;
+  useEffect(() => {
+    if (!projectUnavailable) return;
+    const scopeKey = projectLoadingAppShellTabRegistration.scopeKey;
+    suppressScope(scopeKey);
+    restoreScope(scopeKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectUnavailable, projectLoadingAppShellTabRegistration.scopeKey]);
   useEffect(() => {
     if (!(isLoading || !project)) return;
+    if (projectUnavailable) return;
     if (openedFromArchive) return;
     const scopeKey = projectLoadingAppShellTabRegistration.scopeKey;
     // Don't downgrade an already-registered richer tab group (e.g. reopening a
@@ -33343,6 +33993,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   }, [
     isLoading,
     project,
+    projectUnavailable,
     globalWorkspaceTabs,
     projectLoadingAppShellTabRegistration.scopeKey,
     projectLoadingAppShellTabRegistrationJson,
@@ -37100,9 +37751,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       const selectedCategory = categoryOfHardware(rowHardware) || "Unassigned";
       const selectedDrawerType = String(rowHardware.newDrawerType || "").trim() || "Unassigned";
       const selectedDrawerBreakdown = drawerBreakdownForRoom(row.room);
-      const depthVal = toNum(row.depth);
-      let hardwareDepthLabel = "-";
-      if (depthVal > 0) {
+      // Each drawer's runners at its own depth (a bank's drawers can each have their own — drawerDepthFor).
+      const hardwareDepthLabelFor = (drawerKey: string) => {
+        const depthVal = toNum(drawerKey ? drawerDepthFor(row, drawerKey) : row.depth);
+        if (!(depthVal > 0)) return "-";
         let depthForHardware = depthVal;
         if (selectedDrawerBreakdown.spaceRequirement != null) {
           depthForHardware = Math.max(0, depthForHardware - selectedDrawerBreakdown.spaceRequirement);
@@ -37112,15 +37764,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           const candidates = selectedDrawerBreakdown.hardwareLengths.filter((v) => v <= depthForHardware);
           if (candidates.length) roundedHardwareDepth = Math.max(...candidates);
         }
-        hardwareDepthLabel = formatMm(roundedHardwareDepth);
-      }
+        return formatMm(roundedHardwareDepth);
+      };
 
       const rawHeight = String(row.height || "").trim();
       let tokens = parseDrawerHeightTokens(rawHeight);
       if (!tokens.length && rawHeight) tokens = [rawHeight];
       if (!tokens.length) tokens = ["-"];
-      const groupedHeights: Record<string, number> = {};
-      for (const token of tokens) {
+      // (By height and runner length: a bank's drawers of one height can be at different depths.)
+      const drawerKeys = drawerDepthKeys(row);
+      const groupedHeights: Record<string, { height: string; hardwareDepthLabel: string; count: number }> = {};
+      tokens.forEach((token, index) => {
         const tokenClean = sanitizeDerivedValue(token);
         const tokenWithCountMatch = tokenClean.match(/^(.*?)(?:\s*\(\s*x\s*(\d+)\s*\))$/i);
         const tokenBase = sanitizeDerivedValue(tokenWithCountMatch?.[1] ?? tokenClean);
@@ -37129,9 +37783,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           Number.parseInt(String(tokenWithCountMatch?.[2] ?? "1"), 10) || 1,
         );
         const displayHeight = tokenBase || "-";
-        groupedHeights[displayHeight] = (groupedHeights[displayHeight] ?? 0) + tokenCount;
-      }
-      for (const [height, perDrawerQty] of Object.entries(groupedHeights)) {
+        const drawerDepthLabelHere = hardwareDepthLabelFor(displayHeight === "-" ? "" : (drawerKeys[index] ?? ""));
+        const groupedKey = `${displayHeight}|${drawerDepthLabelHere}`;
+        const grouped = groupedHeights[groupedKey] ?? { height: displayHeight, hardwareDepthLabel: drawerDepthLabelHere, count: 0 };
+        grouped.count += tokenCount;
+        groupedHeights[groupedKey] = grouped;
+      });
+      for (const { height, hardwareDepthLabel, count: perDrawerQty } of Object.values(groupedHeights)) {
         const groupKey = `${selectedCategory}|${selectedDrawerType}|${hardwareDepthLabel}|${height}`;
         if (!groups[groupKey]) {
           groups[groupKey] = {
@@ -37466,13 +38124,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   };
 
   const saveAndBackFromInitialMeasure = async () => {
-    // Only pop the close-summary open if something in the cutlist actually changed since this tab
-    // was opened — see initialMeasureEntrySnapshotRef's own comment. A null entry snapshot (the tab
-    // somehow wasn't marked "entered" before Save & Back fired) falls back to showing the summary
-    // rather than silently hiding a real change we have no baseline to rule out.
-    const initialMeasureRowsChanged =
-      initialMeasureEntrySnapshotRef.current === null ||
-      initialMeasureEntrySnapshotRef.current !== serializeCutlistRowsSnapshot(initialCutlistRows);
+    // Only pop the close-summary open if this person changed something in the cutlist while it was open
+    // (cutlistChangedThisSession).
+    const initialMeasureRowsChanged = cutlistChangedThisSession("initialMeasure");
     setSalesNav("overview");
     setInitialMeasureSummaryBaseline(initialMeasureSessionBaselineRef.current);
     if (!initialMeasureSessionBaselineRef.current) {
@@ -37613,11 +38267,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     await persistOrderMiscDraft(next);
   };
   const onSaveAndBackFromCutlist = async () => {
-    // See saveAndBackFromInitialMeasure's own identical comment — only show the close summary when
-    // something in the cutlist actually changed since this tab was opened.
-    const productionCutlistRowsChanged =
-      productionCutlistEntrySnapshotRef.current === null ||
-      productionCutlistEntrySnapshotRef.current !== serializeCutlistRowsSnapshot(cutlistRows);
+    // As saveAndBackFromInitialMeasure's — the close summary only when this person changed it while it was open.
+    const productionCutlistRowsChanged = cutlistChangedThisSession("production");
     setProductionNav("overview");
     setNestingFullscreen(false);
     setProductionSummaryBaseline(productionSessionBaselineRef.current);
@@ -37696,6 +38347,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     if (printableGroups.length === 0) return null;
 
     const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4", compress: true });
+    // Its title sheet (lib/print-title-page.ts), then its sheets from the next page.
+    drawPrintTitlePage(doc, printTitlePageFor("NESTING"));
+    doc.addPage();
     const pageWidth = doc.internal.pageSize.getWidth();
     const pageHeight = doc.internal.pageSize.getHeight();
     const margin = 8;
@@ -38431,7 +39085,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     return doc.output("blob");
   };
 
-  const onPrintNesting = () => {
+  const onPrintNesting = async () => {
+    // (Its title sheet's logo: already loaded with the Production tab, normally — only waited for when it isn't.)
+    if (printTitleLogoRef.current?.raw !== printTitleLogoRaw) await ensurePrintTitleLogo();
     withPdfExportModules((modules) => {
       const pdfBlob = buildNestingPdfBlob(modules);
       if (!pdfBlob) return;
@@ -39436,7 +40092,24 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     // Part rows: a left border on these columns (B, C, D, E, H, K, L, M, N, O, Q, R) and a right one on U.
     const LEFT_BORDER_COLS = new Set([2, 3, 4, 5, 8, 11, 12, 13, 14, 15, 17, 18]);
 
-    const groups = [...cncRowsByBoard].sort((a, b) => a.boardLabel.toLowerCase().localeCompare(b.boardLabel.toLowerCase()));
+    // A cabinet's shelves aren't parts of their own here (as the CNC list shows them): they go in its Information.
+    const isShelfRow = (row: CncDisplayRow) =>
+      isCabinetryPartType(row.partType) && Boolean(row.cncCabinetryRowKind) && row.cncCabinetryRowKind !== "main";
+    const groups = [...cncRowsByBoard]
+      .map((group) => ({ ...group, rows: group.rows.filter((row) => !isShelfRow(row as CncDisplayRow)) }))
+      .filter((group) => group.rows.length > 0)
+      .sort((a, b) => a.boardLabel.toLowerCase().localeCompare(b.boardLabel.toLowerCase()));
+    // Its shelves, at the start of its Information: "2 x Fixed Shelves", "1 x Adjustable Shelf" (only the ones it has).
+    const shelfNotesFor = (row: CncDisplayRow): string[] =>
+      isCabinetryPartType(row.partType)
+        ? ([
+            ["Fixed Shelf", "Fixed Shelves", row.fixedShelf],
+            ["Adjustable Shelf", "Adjustable Shelves", row.adjustableShelf],
+          ] as const).map(([one, many, value]) => {
+            const count = Math.max(0, Math.floor(toNum(value)));
+            return count > 0 ? `${count} x ${count === 1 ? one : many}` : "";
+          })
+        : [];
     let r = 6;
     let partId = 1;
     groups.forEach((group, groupIndex) => {
@@ -39471,7 +40144,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         const isLastInGroup = rowIndex === group.rows.length - 1;
         const zebra = rowIndex % 2 === 1;
         const partType = String(row.partType ?? "").trim();
-        const information = [String(row.information ?? ""), cncBankCutNoteForRow(row as CncDisplayRow)]
+        const information = [...shelfNotesFor(row as CncDisplayRow), String(row.information ?? ""), cncBankCutNoteForRow(row as CncDisplayRow)]
           .filter((value) => String(value || "").trim().length > 0)
           .join("; ");
         const values: Record<number, string | number> = {
@@ -39651,111 +40324,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       );
     }
 
-    const companyName = String(
-      companyDoc?.companyName ??
-      companyDoc?.name ??
-      ((companyDoc?.company as Record<string, unknown> | undefined)?.name ?? ""),
-    ).trim() || "Company";
-    const projectName = String(project?.name || "-").trim() || "-";
-    const projectCreator = String(project?.createdByName || "-").trim() || "-";
-    const titleLeft = "PROJECT CUTLIST";
-
-    const logoRaw = String(
-      companyDoc?.logoPath ??
-      companyDoc?.logoUrl ??
-      ((companyDoc?.theme as Record<string, unknown> | undefined)?.logoPath ?? ""),
-    ).trim();
-    const logoResolvedUrl = logoRaw
-      ? (await resolveProjectImageUrl(logoRaw)) || (/^https?:\/\//i.test(logoRaw) ? logoRaw : "")
-      : "";
-    const blobToDataUrl = (blob: Blob) =>
-      new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || ""));
-        reader.onerror = () => reject(new Error("file-reader-failed"));
-        reader.readAsDataURL(blob);
-      });
-    const imageNaturalSize = (dataUrl: string) =>
-      new Promise<{ w: number; h: number }>((resolve) => {
-        const img = new Image();
-        img.onload = () => resolve({ w: Math.max(1, img.naturalWidth || 1), h: Math.max(1, img.naturalHeight || 1) });
-        img.onerror = () => resolve({ w: 1, h: 1 });
-        img.src = dataUrl;
-      });
-    let logoDataUrl = "";
-    let logoFormat: "PNG" | "JPEG" | "WEBP" = "PNG";
-    let logoW = 1;
-    let logoH = 1;
-    if (logoResolvedUrl) {
-      try {
-        const resp = await fetch(logoResolvedUrl);
-        if (resp.ok) {
-          const blob = await resp.blob();
-          const mime = String(blob.type || "").toLowerCase();
-          if (mime.includes("jpeg") || mime.includes("jpg")) logoFormat = "JPEG";
-          else if (mime.includes("webp")) logoFormat = "WEBP";
-          else logoFormat = "PNG";
-          logoDataUrl = await blobToDataUrl(blob);
-          const size = await imageNaturalSize(logoDataUrl);
-          logoW = size.w;
-          logoH = size.h;
-        }
-      } catch {
-        logoDataUrl = "";
-      }
-    }
-
-    // Full-page title sheet (shared by PDF export and Print).
-    {
-      const left = sidePad;
-      const right = pageWidth - sidePad;
-
-      // Top-right company logo
-      if (logoDataUrl) {
-        const maxW = 190;
-        const maxH = 90;
-        const ratio = logoW / Math.max(1, logoH);
-        let drawW = maxW;
-        let drawH = drawW / Math.max(0.0001, ratio);
-        if (drawH > maxH) {
-          drawH = maxH;
-          drawW = drawH * ratio;
-        }
-        const logoX = right - drawW;
-        const logoY = topPad + 6;
-        doc.addImage(logoDataUrl, logoFormat, logoX, logoY, drawW, drawH);
-      }
-
-      // Center the entire title content block on the page.
-      const contentHeight = 232;
-      const contentTop = Math.max(28, (pageHeight - contentHeight) / 2);
-      const titleY = contentTop + 20;
-      const firstRuleY = contentTop + 38;
-      const projectNameY = contentTop + 66;
-      const secondRuleY = contentTop + 90;
-      const notesLabelY = contentTop + 132;
-
-      doc.setTextColor(17, 17, 17);
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(18);
-      doc.text(titleLeft, left, titleY, { align: "left" });
-      doc.text(companyName, right, titleY, { align: "right" });
-
-      doc.setDrawColor(17, 17, 17);
-      doc.setLineWidth(0.8);
-      doc.line(left, firstRuleY, right, firstRuleY);
-
-      doc.setFontSize(14);
-      doc.text(projectName, left, projectNameY, { align: "left" });
-      doc.setFontSize(12);
-      doc.text(projectCreator, right, projectNameY, { align: "right" });
-
-      doc.line(left, secondRuleY, right, secondRuleY);
-
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(13);
-      doc.text("NOTES", left, notesLabelY, { align: "left" });
-    }
+    // Its title sheet (lib/print-title-page.ts) — its tables from the next page.
+    drawPrintTitlePage(doc, { ...printTitlePageFor("CNC CUTLIST"), logo: await ensurePrintTitleLogo() });
 
     // Start CNC tables on the next page after title sheet.
     doc.addPage();
@@ -40496,6 +41066,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   const canPrintProductionSummary = Boolean(project);
   const canPrintNesting = nestingBoardLayouts.some((group) => group.sheets.length > 0);
   const canPrintCnc = cncPrintSourceRows.length > 0;
+  const canPrintCutlist = cutlistRows.length > 0;
   const productionPrintOptions = [
     {
       id: "summary",
@@ -40519,13 +41090,32 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       enabled: canPrintCnc,
       onPrint: onPrintCnc,
     },
+    {
+      id: "cutlist",
+      label: "Production Cutlist",
+      description:
+        cutlistPrintPageCount === null ? "Counting pages…" : `${cutlistPrintPageCount} page${cutlistPrintPageCount === 1 ? "" : "s"}`,
+      enabled: canPrintCutlist,
+      onPrint: () => void printProductionCutlist(),
+    },
   ] as const;
   const openProductionPrintModal = () => {
-    setProductionPrintSelections({
+    setProductionPrintSelections((current) => ({
       summary: canPrintProductionSummary,
       nesting: canPrintNesting,
       cnc: canPrintCnc,
-    });
+      cutlist: canPrintCutlist && Boolean(current.cutlist),
+    }));
+    setCutlistPrintPageCount(null);
+    if (canPrintCutlist) {
+      withPdfExportModules((modules) => {
+        try {
+          setCutlistPrintPageCount(buildProductionCutlistPrint(modules.jsPDF)?.pageCount ?? 0);
+        } catch (error) {
+          console.warn("[cutlist print] couldn't count its pages:", error);
+        }
+      });
+    }
     setIsProductionPrintModalOpen(true);
   };
   const closeProductionPrintModal = () => {
@@ -40543,8 +41133,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     }
 
     // Same "only await if not loaded yet" as onExportCncPdf, so a lone PDF out of this can still
-    // open its print window within the click.
+    // open its print window within the click. (And the title sheets' logo.)
     const pdfModules = loadedPdfExportModules ?? (await loadPdfExportModules());
+    if (printTitleLogoRef.current?.raw !== printTitleLogoRaw) await ensurePrintTitleLogo();
     const blobs: Blob[] = [];
     for (const option of selected) {
       if (option.id === "summary") {
@@ -40560,6 +41151,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       if (option.id === "cnc") {
         const blob = await onExportCncPdf("blob");
         if (blob instanceof Blob) blobs.push(blob);
+        continue;
+      }
+      if (option.id === "cutlist") {
+        const made = buildProductionCutlistPrint(pdfModules.jsPDF);
+        if (made) blobs.push(made.blob);
       }
     }
     if (blobs.length === 0) return;
@@ -41148,6 +41744,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 {renderCutlistAlsoEditing(initialAlsoEditing, true)}
               </div>
               <div className="flex shrink-0 items-center gap-2">
+                {renderCutlistSaveStatus("initialMeasure", false)}
                 {renderCutlistExcelButton("initialMeasure", false)}
                 <button
                   type="button"
@@ -42180,6 +42777,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               {renderCutlistAlsoEditing(initialAlsoEditing, isCompactProjectViewport)}
             </div>
             <div className="flex shrink-0 items-center gap-2">
+            {renderCutlistSaveStatus("initialMeasure", !isCompactProjectViewport)}
             {renderCutlistExcelButton("initialMeasure", !isCompactProjectViewport)}
             {isCompactProjectViewport ? (
               <button
@@ -42922,7 +43520,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   </div>
                 </div>
                 <div className="flex flex-col space-y-2 px-0 pb-0">
-                  <div className="overflow-visible bg-transparent">
+                  <div ref={initialCutlistListWrapRef} className="overflow-visible bg-transparent">
                     {groupedInitialCutlistRows.length === 0 && (
                       <div className="px-3 py-6 text-center text-[12px]" style={{ color: "var(--text-muted)" }}>No cutlist rows yet.</div>
                     )}
@@ -42964,7 +43562,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         78 +
                         (showRoomColumnInInitialList ? initialCutlistRoomColumnWidthPx : 0) +
                         initialCutlistListColumnDefs.reduce((sum, col) => sum + initialListColumnPx(col.key as CutlistEditableField), 0);
-                      const initialListColumnWidth = (px: number) => `${((px / initialListColumnsTotalPx) * 100).toFixed(4)}%`;
+                      // (As the production cutlist's: usual widths when they fit, their shares of the table when not.)
+                      const initialListTableWidth =
+                        initialCutlistListWrapWidth === null ? null : initialCutlistListWrapWidth - (isCutlistRoomsPanelShown ? 26 : 0);
+                      const initialListColumnsFit = initialListTableWidth === null || initialListTableWidth >= initialListColumnsTotalPx + 96;
+                      const initialListColumnWidth = (px: number) =>
+                        initialListColumnsFit ? `${px}px` : `${((px / initialListColumnsTotalPx) * 100).toFixed(4)}%`;
                       return (
                         // (As the production cutlist's tables: beside the Rooms column clear of both sides, round-cornered;
                         // without it edge to edge, square — its edge moving with it.)
@@ -43386,6 +43989,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 {renderCutlistAlsoEditing(productionAlsoEditing, true)}
               </div>
               <div className="flex shrink-0 items-center gap-2">
+                {renderCutlistSaveStatus("production", false)}
+                {renderCutlistPrintButton(false)}
                 {renderCutlistExcelButton("production", false)}
                 <button
                   type="button"
@@ -44350,7 +44955,18 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   {isFrontBankRow || draftIsDoor ? null : (
                                     <div className="space-y-1 text-center">
                                       <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Depth</p>
-                                      <input ref={registerCutlistWarnCellRef(draft.id, "depth")} disabled={productionReadOnly} inputMode="decimal" title={depthWarn || undefined} value={draft.depth} onChange={(e) => updateDraftCutlistRow(draft.id, { depth: numericDimensionText(e.target.value) })} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "depth")}`} style={{ ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                                      {isDrawerPartType(draft.partType) && drawerDepthKeys(draft).length > 0 ? (
+                                        <div ref={registerCutlistWarnCellRef(draft.id, "depth")}>
+                                          {renderDrawerDepthBoxes(
+                                            draft,
+                                            drawerDepthKeys(draft),
+                                            `h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "depth")}`,
+                                            { ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) },
+                                          )}
+                                        </div>
+                                      ) : (
+                                        <input ref={registerCutlistWarnCellRef(draft.id, "depth")} disabled={productionReadOnly} inputMode="decimal" title={depthWarn || undefined} value={draft.depth} onChange={(e) => updateDraftCutlistRow(draft.id, { depth: numericDimensionText(e.target.value) })} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "depth")}`} style={{ ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                                      )}
                                     </div>
                                   )}
                                 </div>
@@ -44952,7 +45568,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     )}
                                   </div>
                                   <div>
-                                    {isEditing(row.id, "depth") ? (
+                                    {isDrawerPartType(row.partType) && drawerDepthKeys(row).length > 0 ? (
+                                      renderDrawerDepthLines(row, drawerDepthKeys(row), detailPalette.text, true)
+                                    ) : isEditing(row.id, "depth") ? (
                                       <input
                                         autoFocus
                                         defaultValue={editingCellValue}
@@ -45617,11 +46235,28 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             {/* The Notes bar along the bottom (the Quote's Actions bar), its sheet Notes and the trades — the company's
                 contractors, and Other — as bubbles (the Actions sheet's); each opens in its drawer (CutlistSideDrawer —
                 the whole screen on a phone). */}
-            <div className="fixed inset-x-0 bottom-0 z-[95] h-[56px] border-t" style={{ borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)" }}>
+            <div className="fixed inset-x-0 bottom-0 z-[95] flex h-[56px] border-t" style={{ borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)" }}>
+              {/* (On its left: the Cabinetry drawer.) */}
+              <button
+                type="button"
+                onClick={() => {
+                  if (isCutlistCabinetryOpen) {
+                    closeCutlistCabinetryDrawer();
+                    return;
+                  }
+                  closeOtherCutlistDrawersInTheSide("cabinetry");
+                  openCutlistCabinetryDrawer();
+                }}
+                className="flex h-full shrink-0 items-center gap-2 border-r px-4 text-[15px] font-medium hover:brightness-95"
+                style={{ color: "#ffffff", borderRightColor: "rgba(255,255,255,0.35)" }}
+              >
+                <Ruler size={17} className="shrink-0" />
+                Cabinetry
+              </button>
               <button
                 type="button"
                 onClick={() => productionNotesMobileSheet.setIsOpen(!productionNotesMobileSheet.isOpen)}
-                className="flex h-full w-full items-center justify-center text-[18px] font-medium hover:brightness-95"
+                className="flex h-full min-w-0 flex-1 items-center justify-center text-[18px] font-medium hover:brightness-95"
                 style={{ color: "#ffffff" }}
               >
                 Notes
@@ -45689,6 +46324,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               : null}
             {renderProductionNotesDrawer()}
             {renderContractorNotesDrawers()}
+            {renderCutlistCabinetryDrawer()}
           </div>
         </ProtectedRoute>
       );
@@ -45911,6 +46547,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               {renderCutlistAlsoEditing(productionAlsoEditing, isCompactProjectViewport)}
             </div>
             <div className="flex shrink-0 items-center gap-2">
+              {renderCutlistSaveStatus("production", true)}
+              {renderCutlistPrintButton(true)}
               {renderCutlistExcelButton("production", true)}
               <button
                 type="button"
@@ -46916,7 +47554,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             )}
                           </div>
                           <div ref={registerCutlistWarnCellRef(draft.id, "depth")} style={{ ...cutlistEntryCellStyle("depth"), ...subCellCenterStyle }}>
-                            {isFrontBankRow || draftIsDoor ? null : (
+                            {isFrontBankRow || draftIsDoor ? null : isDrawerPartType(draft.partType) && drawerDepthKeys(draft).length > 0 ? (
+                              // (Drawers: a depth for each.)
+                              renderDrawerDepthBoxes(
+                                draft,
+                                drawerDepthKeys(draft),
+                                `${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} w-full rounded-[8px] border bg-transparent px-2 text-center ${warningClassForCell(draft.id, "depth")}`,
+                                { ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) },
+                              )
+                            ) : (
                               <input disabled={productionReadOnly} inputMode="decimal" title={depthWarn || undefined} value={draft.depth} onChange={(e) => updateDraftCutlistRow(draft.id, { depth: numericDimensionText(e.target.value) })} className={`${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} w-full rounded-[8px] border bg-transparent px-2 text-center ${warningClassForCell(draft.id, "depth")}`} style={{ ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
                             )}
                           </div>
@@ -47146,7 +47792,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   </div>
                 </div>
                 <div className="flex flex-col space-y-2 px-0 pb-0">
-                  <div className="overflow-visible bg-transparent">
+                  <div ref={cutlistListWrapRef} className="overflow-visible bg-transparent">
                     {groupedCutlistRows.length === 0 && (
                       <div className="px-3 py-6 text-center text-[12px]" style={{ color: "var(--text-muted)" }}>No cutlist rows yet.</div>
                     )}
@@ -47180,7 +47826,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         78 +
                         (showRoomColumnInList ? cutlistRoomColumnWidthPx : 0) +
                         groupColumnDefs.reduce((sum, col) => sum + listColumnPx(col.key as CutlistEditableField), 0);
-                      const listColumnWidth = (px: number) => `${((px / listColumnsTotalPx) * 100).toFixed(4)}%`;
+                      // Each at its usual width, Information taking the rest — whenever the table has room for them all
+                      // (Information at least its 216px). Narrower than that (the Rooms column out, a small window): their
+                      // shares of it, so it still fits without scrolling sideways.
+                      const listTableWidth = cutlistListWrapWidth === null ? null : cutlistListWrapWidth - (isCutlistRoomsPanelShown ? 26 : 0);
+                      const listColumnsFit = listTableWidth === null || listTableWidth >= listColumnsTotalPx + 96;
+                      const listColumnWidth = (px: number) => (listColumnsFit ? `${px}px` : `${((px / listColumnsTotalPx) * 100).toFixed(4)}%`);
                       return (
                         // Beside the Rooms column (out): clear of both sides, as wide as Add to Cutlist, round-cornered
                         // (overflow: clip — its header and rows kept inside the corners, without making it a scroll area
@@ -47558,6 +48209,18 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                               )}
                                             </div>
                                           ) : null}
+                                        </td>
+                                      );
+                                    }
+                                    // A Drawer row: a depth for each of its drawers (renderDrawerDepthLines).
+                                    if (col.key === "depth" && isDrawerPartType(row.partType) && drawerDepthKeys(row).length > 0) {
+                                      return (
+                                        <td
+                                          key={`${row.id}_${col.label}`}
+                                          className={`px-2 py-[3px] align-middle ${alignClass}`}
+                                          style={{ ...cutlistListColumnStyle("depth"), color: groupTextColor }}
+                                        >
+                                          {renderDrawerDepthLines(row, drawerDepthKeys(row), groupTextColor, false)}
                                         </td>
                                       );
                                     }
@@ -48295,6 +48958,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               (CutlistSideDrawer) — any number at once, the one touched last in front. */}
           {renderProductionNotesDrawer()}
           {renderContractorNotesDrawers()}
+          {renderCutlistCabinetryDrawer()}
           {contractorsMenuRect && typeof document !== "undefined"
             ? createPortal(
                 <div
@@ -56958,9 +57622,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     rows.map((row) => {
                       const height = pending.heights[row.id] ?? "";
                       const notOffered = drawerHeightsNotIn(height, letters);
-                      const depthLeft = toNum(row.depth) - Number(breakdown.spaceRequirement ?? 0);
+                      // (Its shallowest drawer — a bank's drawers can each have their own depth.)
+                      const depths = [row.depth, ...drawerDepthKeys(row).map((key) => drawerDepthFor(row, key))].map(toNum).filter((v) => v > 0);
+                      const shallowest = depths.length ? Math.min(...depths) : 0;
+                      const depthLeft = shallowest - Number(breakdown.spaceRequirement ?? 0);
                       const tooShallow =
-                        toNum(row.depth) > 0 &&
+                        shallowest > 0 &&
                         breakdown.hardwareLengths.length > 0 &&
                         !breakdown.hardwareLengths.some((length) => Number(length) <= depthLeft);
                       return [row.id, { notOffered, empty: !parseDrawerHeightTokens(height).length, tooShallow }] as const;

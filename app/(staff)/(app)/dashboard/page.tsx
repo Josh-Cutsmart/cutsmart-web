@@ -575,6 +575,11 @@ export default function DashboardPage() {
   // The completion bonus (the Completed pop-up's bonus periods): Company Settings › Roles' dashboard.complete.bonus —
   // owners and admins have every permission.
   const canSeeCompletionBonus = isOwnerOrAdmin(access.role) || hasPermissionKey(access.permissionKeys, "dashboard.complete.bonus");
+  // No Projects Yet's Create First Project: only for a role that can create them (Company Settings › Roles).
+  const canCreateProject =
+    isOwnerOrAdmin(access.role) ||
+    hasPermissionKey(access.permissionKeys, "projects.create") ||
+    hasPermissionKey(access.permissionKeys, "projects.create.others");
   useEffect(() => {
     if (typeof window === "undefined" || !user?.uid) return;
     try {
@@ -2132,13 +2137,15 @@ export default function DashboardPage() {
       {!showProjectsLoadingState && statusRowsLoaded && filtered.length === 0 && (
         <div className="flex flex-col items-center gap-3 px-4 py-10">
           <p className="text-[14px] font-bold" style={{ color: dashboardPalette.textSoft }}>No Projects Yet</p>
-          <button
-            type="button"
-            onClick={openNewProjectModal}
-            className="rounded-[10px] bg-[image:var(--brand-gradient)] px-4 py-2 text-[12px] font-bold text-white shadow-[var(--shadow-sm)] transition hover:brightness-105"
-          >
-            Create First Project
-          </button>
+          {canCreateProject ? (
+            <button
+              type="button"
+              onClick={openNewProjectModal}
+              className="rounded-[10px] bg-[image:var(--brand-gradient)] px-4 py-2 text-[12px] font-bold text-white shadow-[var(--shadow-sm)] transition hover:brightness-105"
+            >
+              Create First Project
+            </button>
+          ) : null}
         </div>
       )}
       {!showProjectsLoadingState && statusRowsLoaded && filtered.length > 0 && dashboardStatusBoardColumns.columns.map((column) => {
@@ -3092,13 +3099,15 @@ export default function DashboardPage() {
                   <div className="px-3 py-10">
                     <div className="flex flex-col items-center gap-3">
                       <p className="text-[14px] font-bold" style={{ color: dashboardPalette.textSoft }}>No Projects Yet</p>
-                      <button
-                        type="button"
-                        onClick={openNewProjectModal}
-                        className="rounded-[10px] bg-[image:var(--brand-gradient)] px-4 py-2 text-[12px] font-bold text-white shadow-[var(--shadow-sm)] transition hover:brightness-105"
-                      >
-                        Create First Project
-                      </button>
+                      {canCreateProject ? (
+                        <button
+                          type="button"
+                          onClick={openNewProjectModal}
+                          className="rounded-[10px] bg-[image:var(--brand-gradient)] px-4 py-2 text-[12px] font-bold text-white shadow-[var(--shadow-sm)] transition hover:brightness-105"
+                        >
+                          Create First Project
+                        </button>
+                      ) : null}
                     </div>
                   </div>
                 )}
@@ -3449,13 +3458,15 @@ export default function DashboardPage() {
                       <td className="py-10 text-center" colSpan={hideTagsColumnInList ? 5 : 6}>
                         <div className="flex flex-col items-center gap-3">
                           <p className="text-[14px] font-bold" style={{ color: dashboardPalette.textSoft }}>No Projects Yet</p>
-                          <button
-                            type="button"
-                            onClick={openNewProjectModal}
-                            className="rounded-[10px] bg-[image:var(--brand-gradient)] px-4 py-2 text-[12px] font-bold text-white shadow-[var(--shadow-sm)] transition hover:brightness-105"
-                          >
-                            Create First Project
-                          </button>
+                          {canCreateProject ? (
+                            <button
+                              type="button"
+                              onClick={openNewProjectModal}
+                              className="rounded-[10px] bg-[image:var(--brand-gradient)] px-4 py-2 text-[12px] font-bold text-white shadow-[var(--shadow-sm)] transition hover:brightness-105"
+                            >
+                              Create First Project
+                            </button>
+                          ) : null}
                         </div>
                       </td>
                     </tr>

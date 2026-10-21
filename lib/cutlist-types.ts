@@ -28,6 +28,9 @@ export type CutlistRow = {
   height: string;
   width: string;
   depth: string;
+  // A Drawer row's drawers at depths of their own: by drawer — its height and which of that height it is ("B#2", the
+  // second B). The first drawer's depth is the row's depth, and any drawer not here is that too.
+  drawerDepths?: Record<string, string>;
   quantity: string;
   clashing: string;
   clashLeft?: string;
