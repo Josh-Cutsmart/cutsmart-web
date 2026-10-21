@@ -42,7 +42,7 @@ import type { ProductComparison } from "@/lib/cutlist-types";
 import type { ChecklistTemplate, Cutlist, Project, ProjectChange, ProjectChecklist, ProjectImageItem, SalesQuote } from "@/lib/types";
 import { normalizeWhatsNewHighlights, type UpdateChangelogEntry } from "@/lib/update-notes-utils";
 import { buildLeadRow } from "@/lib/lead-row";
-import { mergeStoredCutlistRows } from "@/lib/cutlist-merge";
+import { mergeCutlistRows, mergeStoredCutlistRows } from "@/lib/cutlist-merge";
 
 function toIsoString(value: unknown, fallback = "") {
   if (!value) {
@@ -2556,22 +2556,78 @@ export function cutlistDataRev(data: unknown): number {
 // A save's change to a cutlist: the rows it was made from (`base` — the ones last had from the database; null: none yet,
 // its rows then saved as they are) and its rows.
 export type CutlistChange = { base: unknown[] | null; rows: unknown[] };
-// That change put onto `onto`: only what it changed (lib/cutlist-merge.ts) — the rest as `onto` has it.
-const withCutlistChange = (change: CutlistChange, onto: unknown[]): unknown[] =>
-  change.base ? (mergeStoredCutlistRows(change.base, change.rows, onto) ?? change.rows) : change.rows;
+// What's kept on this device till the database has it (below): a cutlist's rows — or, kept and sent the same way, Sales ›
+// Items' rooms ("salesItems": each room and the items in it), and Production › Order's hinges, other items and misc
+// lines (OrderListKind: flattenOrderLines' rows).
+export type OrderListKind = "orderHinges" | "orderOther" | "orderMisc";
+type KeptListKind = CutlistDataKind | "salesItems" | OrderListKind;
+const isOrderListKind = (kind: KeptListKind): kind is OrderListKind => kind === "orderHinges" || kind === "orderOther" || kind === "orderMisc";
+// Where each of Order's lists is on the project (in `projectSettings`, by hardware category).
+const ORDER_LIST_FIELD: Record<OrderListKind, string> = {
+  orderHinges: "orderHingeRowsByCategory",
+  orderOther: "orderOtherRowsByCategory",
+  orderMisc: "orderMiscDraftByCategory",
+};
+// One of Order's lists, as stored (by hardware category: hinges' / other items' a list of lines each, misc's its lines by
+// key) — as one list of its lines, each knowing its category (and key), so it's merged line by line as any other
+// list; and back.
+export function flattenOrderLines(kind: OrderListKind, byCategory: unknown): Array<Record<string, unknown>> {
+  const out: Array<Record<string, unknown>> = [];
+  const categories = asRecord(byCategory) ?? {};
+  for (const [category, lines] of Object.entries(categories)) {
+    if (kind === "orderMisc") {
+      for (const [line, row] of Object.entries(asRecord(lines) ?? {})) {
+        if (asRecord(row)) out.push({ ...(row as Record<string, unknown>), __key: `${category}::${line}`, __category: category, __line: line });
+      }
+    } else if (Array.isArray(lines)) {
+      for (const row of lines) {
+        const id = String(asRecord(row)?.id ?? "").trim();
+        if (id) out.push({ ...(row as Record<string, unknown>), __key: `${category}::${id}`, __category: category });
+      }
+    }
+  }
+  return out;
+}
+function unflattenOrderLines(kind: OrderListKind, rows: unknown[]): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const item of rows) {
+    const { __key: _key, __category, __line, ...row } = (asRecord(item) ?? {}) as Record<string, unknown>;
+    void _key;
+    const category = String(__category ?? "");
+    if (kind === "orderMisc") {
+      const lines = (out[category] as Record<string, unknown> | undefined) ?? {};
+      lines[String(__line ?? "")] = row;
+      out[category] = lines;
+    } else {
+      out[category] = [...((out[category] as unknown[] | undefined) ?? []), row];
+    }
+  }
+  return out;
+}
+// That change put onto `onto`: only what it changed (lib/cutlist-merge.ts) — the rest as `onto` has it. Items' rooms by
+// their id, a room changed here as it is here (items and all); Order's lines by category and line.
+const withCutlistChange = (change: CutlistChange, onto: unknown[], kind: KeptListKind = "production"): unknown[] => {
+  if (!change.base) return change.rows;
+  if (kind === "salesItems" || isOrderListKind(kind)) {
+    const keyOf = (row: unknown) => String((row as Record<string, unknown> | null)?.[kind === "salesItems" ? "id" : "__key"] ?? "").trim();
+    return mergeCutlistRows(change.base, change.rows, onto, keyOf, (row) => JSON.stringify(row)) ?? change.rows;
+  }
+  return mergeStoredCutlistRows(change.base, change.rows, onto) ?? change.rows;
+};
 
-// ---- A cutlist's changes made offline. Not saved into the database while it can't be reached: a whole cutlist saved
-// then — sent once it can be — would put back every row as this device last had it, over whatever anyone else did
-// meanwhile. Kept on this device instead (localStorage, OFFLINE_CUTLIST_KEY + "<uid>:<the project's path>:<kind>" —
-// through a refresh, or the app being closed): the rows when the connection went (`base`) and as they are here now
-// (`rows`). Once it's back they're put onto the cutlist as it is then — only what was changed here, as any save is
-// (writeCutlistMerged) — and let go.
+// ---- A cutlist's changes, kept on this device till the database has them. Each the moment it's made (keepCutlistChange)
+// — so one waiting its turn to be sent, or on its way, isn't lost if the browser's closed — and let go once it's in.
+// While the database can't be reached they stay (a whole cutlist saved then, sent once it can be, would put back every
+// row as this device last had it, over whatever anyone else did meanwhile). In localStorage, OFFLINE_CUTLIST_KEY +
+// "<uid>:<the project's path>:<kind>" — through a refresh, or the app being closed: the rows as the database last had
+// them from here (`base`) and as they are here now (`rows`). Sent, they're put onto the cutlist as it is then — only
+// what was changed here, as any save is (writeCutlistMerged).
 type OfflineCutlistChange = CutlistChange & { base: unknown[]; stamp: string };
 const OFFLINE_CUTLIST_KEY = "cutsmart_offline_cutlist:";
-const offlineCutlistKey = (uid: string, path: string, kind: CutlistDataKind) => `${OFFLINE_CUTLIST_KEY}${uid}:${path}:${kind}`;
+const offlineCutlistKey = (uid: string, path: string, kind: KeptListKind) => `${OFFLINE_CUTLIST_KEY}${uid}:${path}:${kind}`;
 const signedInUid = () => String(auth?.currentUser?.uid || "").trim();
 
-function readOfflineCutlistChange(uid: string, path: string, kind: CutlistDataKind): OfflineCutlistChange | null {
+function readOfflineCutlistChange(uid: string, path: string, kind: KeptListKind): OfflineCutlistChange | null {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(offlineCutlistKey(uid, path, kind)) || "null") as Partial<OfflineCutlistChange> | null;
     if (!parsed || !Array.isArray(parsed.base) || !Array.isArray(parsed.rows) || typeof parsed.stamp !== "string") return null;
@@ -2595,7 +2651,7 @@ export function subscribeOfflineCutlistChanges(listener: () => void): () => void
   };
 }
 // Whether a cutlist (its project's path, and kind) has changes kept here, not sent yet.
-export function hasOfflineCutlistChange(path: string, kind: CutlistDataKind): boolean {
+export function hasOfflineCutlistChange(path: string, kind: KeptListKind): boolean {
   const uid = signedInUid();
   if (!uid || !path || typeof window === "undefined") return false;
   try {
@@ -2606,13 +2662,13 @@ export function hasOfflineCutlistChange(path: string, kind: CutlistDataKind): bo
 }
 // A save's change added to what's kept (the rows when the connection went stay its base) — false when it can't be:
 // nobody signed in, or no room left on this device.
-function keepOfflineCutlistChange(path: string, kind: CutlistDataKind, change: CutlistChange, knownRows: unknown[]): boolean {
+function keepOfflineCutlistChange(path: string, kind: KeptListKind, change: CutlistChange, knownRows: unknown[]): boolean {
   const uid = signedInUid();
   if (!uid || typeof window === "undefined") return false;
   const kept = readOfflineCutlistChange(uid, path, kind);
   const next: OfflineCutlistChange = {
     base: kept ? kept.base : (change.base ?? knownRows),
-    rows: kept ? withCutlistChange(change, kept.rows) : change.rows,
+    rows: kept ? withCutlistChange(change, kept.rows, kind) : change.rows,
     stamp: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
   };
   try {
@@ -2623,15 +2679,45 @@ function keepOfflineCutlistChange(path: string, kind: CutlistDataKind, change: C
   offlineCutlistChanged();
   return true;
 }
-// Let go once it's in the database — unless more's been kept since (`stamp`: the one sent): that goes next time.
-function letGoOfflineCutlistChange(uid: string, path: string, kind: CutlistDataKind, stamp: string) {
+// Let go once it's in the database (`sent`). More kept since — another save, while that one was on its way: that's
+// left to send, with what's just gone as its base now (so only what's newer goes).
+function letGoOfflineCutlistChange(uid: string, path: string, kind: KeptListKind, sent: OfflineCutlistChange) {
+  const key = offlineCutlistKey(uid, path, kind);
   try {
-    if (readOfflineCutlistChange(uid, path, kind)?.stamp !== stamp) return;
+    const now = readOfflineCutlistChange(uid, path, kind);
+    if (now && now.stamp !== sent.stamp) {
+      window.localStorage.setItem(key, JSON.stringify({ ...now, base: sent.rows }));
+      return;
+    }
+    window.localStorage.removeItem(key);
+  } catch {
+    return;
+  }
+  offlineCutlistChanged();
+}
+// Turned down by the server: it would be every time — let go of, rather than kept trying.
+function dropOfflineCutlistChange(uid: string, path: string, kind: KeptListKind) {
+  try {
     window.localStorage.removeItem(offlineCutlistKey(uid, path, kind));
   } catch {
     return;
   }
   offlineCutlistChanged();
+}
+// Whether this person has cutlist changes on this device the database doesn't have yet, on any project (closing the
+// app while they're being sent: components/app-shell.tsx).
+export function hasUnsentCutlistChanges(): boolean {
+  const uid = signedInUid();
+  if (!uid || typeof window === "undefined") return false;
+  const prefix = `${OFFLINE_CUTLIST_KEY}${uid}:`;
+  try {
+    for (let i = 0; i < window.localStorage.length; i += 1) {
+      if ((window.localStorage.key(i) || "").startsWith(prefix)) return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
 }
 
 // One write to a cutlist at a time from this tab — its saves, and what's kept from being offline going out — in the
@@ -2654,7 +2740,7 @@ const cutlistWriteTurnedDown = (error: unknown) =>
 async function writeCutlistMerged(
   database: NonNullable<typeof db>,
   ref: DocumentReference,
-  kind: CutlistDataKind,
+  kind: KeptListKind,
   change: CutlistChange | null,
   fallback: unknown[] | null,
   knownRev: number,
@@ -2663,36 +2749,112 @@ async function writeCutlistMerged(
     const uid = signedInUid();
     const kept = uid ? readOfflineCutlistChange(uid, ref.path, kind) : null;
     if (!change && !kept) return null;
-    const dataRef = doc(ref, "cutlistData", kind);
-    const saved = await runTransaction(database, async (transaction) => {
-      const snap = await transaction.get(dataRef);
-      const data = snap.exists() ? (snap.data() as Record<string, unknown>) : null;
-      let rows = data && Array.isArray(data.rows) ? data.rows : (fallback ?? kept?.base ?? []);
-      if (kept) rows = withCutlistChange(kept, rows);
-      if (change) rows = withCutlistChange(change, rows);
-      rows = JSON.parse(JSON.stringify(rows)) as unknown[];
-      const rev = Math.max(cutlistDataRev(data), knownRev) + 1;
-      transaction.set(dataRef, { rows, updatedAtIso: new Date().toISOString(), rev });
-      transaction.update(ref, cutlistLegacyFieldsCleared(kind));
-      return { rows, rev };
-    });
-    if (kept && uid) letGoOfflineCutlistChange(uid, ref.path, kind, kept.stamp);
+    let saved: { rows: unknown[]; rev: number };
+    try {
+      saved = await runTransaction(database, async (transaction) => {
+        // One of Order's lists: the project's `projectSettings.<its field>` — just it, not the rest of its settings.
+        if (isOrderListKind(kind)) {
+          const projectSnap = await transaction.get(ref);
+          const projectData = projectSnap.exists() ? (projectSnap.data() as Record<string, unknown>) : null;
+          if (!projectData) throw Object.assign(new Error("The project is gone"), { code: "not-found" });
+          const field = ORDER_LIST_FIELD[kind];
+          let settings = asRecord(projectData.projectSettings);
+          const settingsIsObject = Boolean(settings);
+          if (!settings && typeof projectData.projectSettingsJson === "string") {
+            try {
+              settings = asRecord(JSON.parse(projectData.projectSettingsJson));
+            } catch {
+              settings = null;
+            }
+          }
+          let lines: unknown[] = settings && field in settings ? flattenOrderLines(kind, settings[field]) : (fallback ?? kept?.base ?? []);
+          if (kept) lines = withCutlistChange(kept, lines, kind);
+          if (change) lines = withCutlistChange(change, lines, kind);
+          lines = JSON.parse(JSON.stringify(lines)) as unknown[];
+          const value = unflattenOrderLines(kind, lines);
+          const updatedAtIso = new Date().toISOString();
+          if (settingsIsObject) {
+            transaction.update(ref, { [`projectSettings.${field}`]: value, updatedAtIso });
+          } else {
+            // (Its settings only in their old copy still: all of them, this list and all, moved to `projectSettings`.)
+            transaction.update(ref, { ...withoutLegacyCopies({ projectSettings: { ...(settings ?? {}), [field]: value } }), updatedAtIso });
+          }
+          return { rows: lines, rev: 0 };
+        }
+        // Items' rooms: the project's own `sales.rooms` — just them, not the rest of Sales.
+        if (kind === "salesItems") {
+          const projectSnap = await transaction.get(ref);
+          const projectData = projectSnap.exists() ? (projectSnap.data() as Record<string, unknown>) : null;
+          if (!projectData) throw Object.assign(new Error("The project is gone"), { code: "not-found" });
+          const storedRooms = extractLegacySalesFieldFromRawDoc(projectData, "rooms");
+          let rooms = Array.isArray(storedRooms) ? storedRooms : (fallback ?? kept?.base ?? []);
+          if (kept) rooms = withCutlistChange(kept, rooms, kind);
+          if (change) rooms = withCutlistChange(change, rooms, kind);
+          rooms = JSON.parse(JSON.stringify(rooms)) as unknown[];
+          const updatedAtIso = new Date().toISOString();
+          if (asRecord(projectData.sales)) {
+            transaction.update(ref, { "sales.rooms": rooms, updatedAtIso });
+          } else {
+            // (Sales only in one of its old copies still: the whole of it, rooms and all, moved to `sales`.)
+            const legacySales =
+              [projectData.salesJson, asRecord(projectData.projectSettings)?.sales, asRecord(projectData.projectSettings)?.salesJson]
+                .map((candidate) => {
+                  if (asRecord(candidate)) return asRecord(candidate);
+                  try {
+                    return typeof candidate === "string" ? asRecord(JSON.parse(candidate)) : null;
+                  } catch {
+                    return null;
+                  }
+                })
+                .find(Boolean) ?? {};
+            transaction.update(ref, { ...withoutLegacyCopies({ sales: { ...legacySales, rooms } }), updatedAtIso });
+          }
+          return { rows: rooms, rev: 0 };
+        }
+        const dataRef = doc(ref, "cutlistData", kind);
+        const snap = await transaction.get(dataRef);
+        const data = snap.exists() ? (snap.data() as Record<string, unknown>) : null;
+        let rows = data && Array.isArray(data.rows) ? data.rows : (fallback ?? kept?.base ?? []);
+        if (kept) rows = withCutlistChange(kept, rows, kind);
+        if (change) rows = withCutlistChange(change, rows, kind);
+        rows = JSON.parse(JSON.stringify(rows)) as unknown[];
+        const rev = Math.max(cutlistDataRev(data), knownRev) + 1;
+        transaction.set(dataRef, { rows, updatedAtIso: new Date().toISOString(), rev });
+        transaction.update(ref, cutlistLegacyFieldsCleared(kind));
+        return { rows, rev };
+      });
+    } catch (error) {
+      if (kept && uid && cutlistWriteTurnedDown(error)) dropOfflineCutlistChange(uid, ref.path, kind);
+      throw error;
+    }
+    if (kept && uid) letGoOfflineCutlistChange(uid, ref.path, kind, kept);
     return saved;
   });
 }
 
-// Saves a change to one cutlist (writeCutlistMerged: only what this person changed, put onto everyone else's latest).
+// A cutlist save's change kept on this device the moment it's made — before it waits its turn to be sent
+// (saveCutlistDataMerged, told it's kept already): the browser closed meanwhile, or while it's on its way, and it's sent
+// the next time the app opens. false: it couldn't be (the CutSmart Preview, nobody signed in, no room left).
+export async function keepCutlistChange(project: Project, kind: CutlistDataKind, change: CutlistChange, knownRows: unknown[]): Promise<boolean> {
+  if (!db || isPreviewMode()) return false;
+  const ref = await resolveProjectDocRef(project);
+  return ref ? keepOfflineCutlistChange(ref.path, kind, change, knownRows) : false;
+}
+
+// Saves a change to one cutlist: kept on this device first (unless it is already — `kept`: keepCutlistChange), then
+// what's kept sent (writeCutlistMerged: only what this person changed, put onto everyone else's latest) and let go.
 // With no connection — the browser says so, the cutlist's listener is on this device's copy, or the server just can't
-// be reached — kept on this device till it's back (keepOfflineCutlistChange), and shown here meanwhile as put onto the
-// rows last heard of (`knownRows`, revision `knownRev`). The CutSmart Preview (whose database never reaches a server,
-// with nobody else in it) — or a change there's no room left to keep — saves the whole cutlist, as it always did. The
-// rows to show come back, with their revision.
+// be reached — it stays kept till it's back, and shows here meanwhile as put onto the rows last heard of (`knownRows`,
+// revision `knownRev`). The CutSmart Preview (whose database never reaches a server, with nobody else in it) — or a
+// change there's no room left to keep — saves the whole cutlist, as it always did. The rows to show come back, with
+// their revision.
 export async function saveCutlistDataMerged(
   project: Project,
   kind: CutlistDataKind,
   change: CutlistChange,
   knownRows: unknown[],
   knownRev: number,
+  kept = false,
 ): Promise<{ ok: boolean; rows: unknown[]; rev: number }> {
   const database = db;
   if (!database) return { ok: false, rows: [], rev: knownRev };
@@ -2700,10 +2862,13 @@ export async function saveCutlistDataMerged(
   if (!ref) return { ok: false, rows: [], rev: knownRev };
   const shown = () => JSON.parse(JSON.stringify(withCutlistChange(change, knownRows))) as unknown[];
   if (!isPreviewMode()) {
+    const keptHere = kept || keepOfflineCutlistChange(ref.path, kind, change, knownRows);
     if (!isLikelyOffline()) {
       try {
-        const saved = await writeCutlistMerged(database, ref, kind, change, knownRows, knownRev);
+        const saved = await writeCutlistMerged(database, ref, kind, keptHere ? null : change, knownRows, knownRev);
         if (saved) return { ok: true, ...saved };
+        // (Nothing kept left to send: a save before it took it with it.)
+        return { ok: true, rows: shown(), rev: knownRev };
       } catch (error) {
         if (cutlistWriteTurnedDown(error)) {
           console.warn(`[saveCutlistDataMerged] ${kind} turned down:`, error);
@@ -2712,7 +2877,7 @@ export async function saveCutlistDataMerged(
         console.warn(`[saveCutlistDataMerged] ${kind} couldn't reach the server — kept on this device till it can:`, error);
       }
     }
-    if (keepOfflineCutlistChange(ref.path, kind, change, knownRows)) return { ok: true, rows: shown(), rev: knownRev };
+    if (keptHere) return { ok: true, rows: shown(), rev: knownRev };
   }
   const rows = shown();
   const rev = knownRev + 1;
@@ -2720,15 +2885,55 @@ export async function saveCutlistDataMerged(
   return { ok, rows, rev: ok ? rev : knownRev };
 }
 
+// Saves Sales › Items' rooms (each room, and the items in it) as a cutlist is saved (saveCutlistDataMerged): kept on this
+// device first, then put onto the rooms as they are in the database now — only the rooms changed here (one changed
+// here and by someone else too: as it is here) — and written to them alone (`sales.rooms`), not the rest of Sales.
+// With no connection it stays kept till there is (sendOfflineCutlistChanges), the screen going on meanwhile as if it
+// were saved. `rooms`: as they're stored; `base`: as the database last had them. null: not this way — the CutSmart
+// Preview, nobody signed in, or no room left on this device to keep it (the caller saves as it always has).
+export async function saveSalesItemsRoomsMerged(
+  project: Project,
+  change: CutlistChange,
+): Promise<{ ok: boolean; rooms: unknown[]; offline: boolean } | null> {
+  const saved = await saveProjectListMerged(project, "salesItems", change);
+  return saved ? { ok: saved.ok, rooms: saved.rows, offline: saved.offline } : null;
+}
+// ...and the same for Production › Order's hinges, other items and misc lines (flattenOrderLines' rows): each written to
+// its own field of the project's settings alone.
+export async function saveProjectListMerged(
+  project: Project,
+  kind: "salesItems" | OrderListKind,
+  change: CutlistChange,
+): Promise<{ ok: boolean; rows: unknown[]; offline: boolean } | null> {
+  const database = db;
+  if (!database || isPreviewMode()) return null;
+  const ref = await resolveProjectDocRef(project);
+  if (!ref || !keepOfflineCutlistChange(ref.path, kind, change, change.base ?? [])) return null;
+  const shown = JSON.parse(JSON.stringify(change.rows)) as unknown[];
+  if (!isLikelyOffline()) {
+    try {
+      const saved = await writeCutlistMerged(database, ref, kind, null, change.base, 0);
+      return { ok: true, rows: saved ? saved.rows : shown, offline: false };
+    } catch (error) {
+      if (cutlistWriteTurnedDown(error)) {
+        console.warn(`[saveProjectListMerged] ${kind} turned down:`, error);
+        return { ok: false, rows: [], offline: false };
+      }
+      console.warn(`[saveProjectListMerged] ${kind} couldn't reach the server — kept on this device till it can:`, error);
+    }
+  }
+  return { ok: true, rows: shown, offline: true };
+}
+
 // What's kept from being offline sent, now the connection's back (a cutlist's listener hearing from the server again —
 // lib/use-project-cutlist.ts; the app opening, or the browser coming back online — components/app-shell.tsx): one
 // cutlist's (`only`), or every one this person has kept on this device. Still not reachable: kept, for next time.
 const sendingOfflineCutlists = new Map<string, Promise<void>>();
-export function sendOfflineCutlistChanges(only?: { path: string; kind: CutlistDataKind }): Promise<void> {
+export function sendOfflineCutlistChanges(only?: { path: string; kind: KeptListKind }): Promise<void> {
   const database = db;
   const uid = signedInUid();
   if (!database || !uid || isPreviewMode() || typeof window === "undefined") return Promise.resolve();
-  const targets: Array<{ path: string; kind: CutlistDataKind }> = [];
+  const targets: Array<{ path: string; kind: KeptListKind }> = [];
   if (only) {
     targets.push(only);
   } else {
@@ -2740,7 +2945,9 @@ export function sendOfflineCutlistChanges(only?: { path: string; kind: CutlistDa
         const rest = key.slice(prefix.length);
         const at = rest.lastIndexOf(":");
         const kind = rest.slice(at + 1);
-        if (at > 0 && (kind === "production" || kind === "initialMeasure")) targets.push({ path: rest.slice(0, at), kind });
+        if (at > 0 && (kind === "production" || kind === "initialMeasure" || kind === "salesItems" || isOrderListKind(kind as KeptListKind))) {
+          targets.push({ path: rest.slice(0, at), kind: kind as KeptListKind });
+        }
       }
     } catch {
       return Promise.resolve();

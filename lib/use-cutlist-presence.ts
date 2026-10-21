@@ -17,13 +17,15 @@ import type { CutlistDataKind } from "@/lib/use-project-cutlist";
 // (cutlistData/{kind} is open to the project's company in firestore.rules — the same as the cutlist itself.)
 
 type PresenceEntry = { uid?: string; name?: string; at?: string };
+// Someone else in the cutlist: who (their emblem's colour is by it) and their name.
+export type CutlistPresencePerson = { uid: string; name: string };
 
 const BEAT_MS = 60_000;
 // Two refreshes' time and a bit — one that's late or lost on the way doesn't drop anyone.
 const FRESH_MS = 130_000;
 const CHECK_MS = 15_000;
 const LEFT_OVER_MS = 10 * 60_000;
-const NO_ONE: string[] = [];
+const NO_ONE: CutlistPresencePerson[] = [];
 
 export function useCutlistPresence(
   project: Project | null,
@@ -31,7 +33,7 @@ export function useCutlistPresence(
   open: boolean,
   announce: boolean,
   me: { uid: string; name: string } | null,
-): string[] {
+): CutlistPresencePerson[] {
   const latestProjectRef = useRef(project);
   useEffect(() => {
     latestProjectRef.current = project;
@@ -41,7 +43,7 @@ export function useCutlistPresence(
   const name = me?.name ?? "";
   const listenKey = open && projectKey && uid ? `${projectKey}::${kind}` : "";
   const [tabKey] = useState(() => `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`);
-  const [others, setOthers] = useState<{ key: string; names: string[] }>({ key: "", names: NO_ONE });
+  const [others, setOthers] = useState<{ key: string; people: CutlistPresencePerson[] }>({ key: "", people: NO_ONE });
 
   useEffect(() => {
     const project = latestProjectRef.current;
@@ -64,9 +66,10 @@ export function useCutlistPresence(
         const entryUid = String(entry.uid || key);
         if (!byUid.has(entryUid)) byUid.set(entryUid, String(entry.name || "").trim() || "Someone");
       }
-      const names = [...byUid.values()].sort((a, b) => a.localeCompare(b));
+      const people = [...byUid.entries()].map(([uid, name]) => ({ uid, name })).sort((a, b) => a.name.localeCompare(b.name));
+      const sameAs = (list: CutlistPresencePerson[]) => list.map((person) => `${person.uid}:${person.name}`).join("\n");
       setOthers((prev) =>
-        prev.key === listenKey && prev.names.join("\n") === names.join("\n") ? prev : { key: listenKey, names: names.length ? names : NO_ONE },
+        prev.key === listenKey && sameAs(prev.people) === sameAs(people) ? prev : { key: listenKey, people: people.length ? people : NO_ONE },
       );
     };
     const beat = () => {
@@ -121,7 +124,7 @@ export function useCutlistPresence(
     };
   }, [listenKey, kind, announce, uid, name, tabKey]);
 
-  return listenKey && others.key === listenKey ? others.names : NO_ONE;
+  return listenKey && others.key === listenKey ? others.people : NO_ONE;
 }
 
 // "Anna is also editing", "Anna and Ben are also editing", "Anna, Ben and 2 others are also editing".

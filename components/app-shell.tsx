@@ -44,6 +44,8 @@ import {
   fetchCompanyDoc,
   fetchCompanyMembers,
   fetchUserUpdateNoticeSeenVersions,
+  hasUnsentCutlistChanges,
+  isLikelyOffline,
   markUserUpdateNoticeSeen,
   resyncCompanyProjectTagUsage,
   sendOfflineCutlistChanges,
@@ -512,6 +514,19 @@ export function AppShell({
     window.addEventListener("online", send);
     return () => window.removeEventListener("online", send);
   }, [user?.uid]);
+  // Closing or reloading the app while cutlist changes are on their way to the database: the browser asks first — left,
+  // they'd wait on this device till it's next opened. Not while offline: they're kept here till then anyway, and staying
+  // wouldn't send them.
+  useEffect(() => {
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (isLikelyOffline() || !hasUnsentCutlistChanges()) return;
+      event.preventDefault();
+      // (Older browsers ask only with this set.)
+      event.returnValue = true;
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, []);
   const [projectName, setProjectName] = useState("");
   const [clientFirstName, setClientFirstName] = useState("");
   const [clientLastName, setClientLastName] = useState("");

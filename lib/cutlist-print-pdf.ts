@@ -61,6 +61,8 @@ export type CutlistPrintInput = {
   footer: string;
   // A title sheet first (lib/print-title-page.ts) — not numbered with the pages after it.
   titlePage?: PrintTitlePage;
+  // false: no "Page n of m" of its own (in a project folder, which numbers all its pages — the project's page).
+  pageNumbers?: boolean;
 };
 
 type Rgb = [number, number, number];
@@ -837,7 +839,9 @@ export function buildCutlistPrintPdf(jsPDF: JsPdfCtor, input: CutlistPrintInput)
     doc.setFontSize(7.5);
     doc.setTextColor(110, 110, 110);
     doc.text(`${input.projectName} — Production Cutlist${input.footer ? `   ·   ${input.footer}` : ""}`, MARGIN, pageHeight - 14);
-    doc.text(`Page ${page - firstNumbered + 1} of ${pageCount - firstNumbered + 1}`, pageWidth - MARGIN, pageHeight - 14, { align: "right" });
+    if (input.pageNumbers !== false) {
+      doc.text(`Page ${page - firstNumbered + 1} of ${pageCount - firstNumbered + 1}`, pageWidth - MARGIN, pageHeight - 14, { align: "right" });
+    }
   }
   return { blob: doc.output("blob"), pageCount };
 }

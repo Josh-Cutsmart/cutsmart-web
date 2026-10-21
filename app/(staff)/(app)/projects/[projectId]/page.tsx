@@ -96,6 +96,11 @@ import {
   findCompanyClientForProject,
   archiveProject,
   saveCutlistDataMerged,
+  saveSalesItemsRoomsMerged,
+  saveProjectListMerged,
+  flattenOrderLines,
+  keepCutlistChange,
+  type CutlistChange,
   saveProjectChecklist,
   deleteProjectChecklist,
   saveSalesGridData,
@@ -119,7 +124,7 @@ import { actedByLabel } from "@/lib/on-behalf";
 import { bonusLockMessage, fetchBonusLock } from "@/lib/completed-projects";
 import { completionBonusSettingsFrom } from "@/lib/completion-bonus";
 import { useProjectCutlistRaw } from "@/lib/use-project-cutlist";
-import { alsoEditingText, useCutlistPresence } from "@/lib/use-cutlist-presence";
+import { alsoEditingText, useCutlistPresence, type CutlistPresencePerson } from "@/lib/use-cutlist-presence";
 import { mergeCutlistRows } from "@/lib/cutlist-merge";
 import { downloadCutlistExcel } from "@/lib/cutlist-excel";
 import { buildCutlistPrintPdf } from "@/lib/cutlist-print-pdf";
@@ -7866,39 +7871,6 @@ export default function ProjectDetailsPage() {
     quoteCustomPriceModalOriginElRef,
   );
   const [quoteCustomPriceDraftRows, setQuoteCustomPriceDraftRows] = useState<{ id: string; name: string; price: string }[]>([]);
-  // "Download" button (top bar, both Quote and Specs) — opens a small glass dropdown with the
-  // available export formats (just "PDF" for now) instead of downloading immediately, so more
-  // formats can be added later without the button itself needing to change. Same
-  // anchor-rect-plus-outside-click-close pattern as SpecsGridEditor's own alignDropdown. One state
-  // per window (only one can ever be open at a time, but kept separate rather than shared to
-  // match this file's existing quote/specs naming convention throughout).
-  const [quoteDownloadMenuAnchor, setQuoteDownloadMenuAnchor] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
-  const quoteDownloadMenuRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!quoteDownloadMenuAnchor) return;
-    // A press outside only closes the menu — it doesn't also act on what it landed on (pressing the
-    // Download button itself again therefore just closes it, rather than closing and reopening it).
-    const onPointerDown = (e: PointerEvent) => {
-      if (quoteDownloadMenuRef.current?.contains(e.target as Node)) return;
-      setQuoteDownloadMenuAnchor(null);
-      swallowNextClick();
-    };
-    document.addEventListener("pointerdown", onPointerDown);
-    return () => document.removeEventListener("pointerdown", onPointerDown);
-  }, [quoteDownloadMenuAnchor]);
-  const [specsDownloadMenuAnchor, setSpecsDownloadMenuAnchor] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
-  const specsDownloadMenuRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!specsDownloadMenuAnchor) return;
-    // Same outside-press rule as Quote's own Download menu above.
-    const onPointerDown = (e: PointerEvent) => {
-      if (specsDownloadMenuRef.current?.contains(e.target as Node)) return;
-      setSpecsDownloadMenuAnchor(null);
-      swallowNextClick();
-    };
-    document.addEventListener("pointerdown", onPointerDown);
-    return () => document.removeEventListener("pointerdown", onPointerDown);
-  }, [specsDownloadMenuAnchor]);
   // Tracks whether the Quote fullscreen view was already showing on the PREVIOUS render — lets the
   // isSalesQuoteFullscreen effect further down (near where that flag is computed) tell "freshly
   // entered this view" apart from "still sitting in it," to fire the bubbles' entrance animation
@@ -8506,6 +8478,80 @@ export default function ProjectDetailsPage() {
       return true;
     });
   }, []);
+  // Production › Order (desktop): its hardware library — the project's hardware's hinges and other items (Company
+  // Settings › Hardware) — floats down the left in the same way, from the bar's Hardware Library toggle; one dragged
+  // from it onto the hardware container (or clicked) goes on the order. Its search, its lists shut, and what's being
+  // dragged from it (the container lights the part it'll go in).
+  const [isOrderLibraryOpen, setIsOrderLibraryOpen] = useState(true);
+  const [isOrderLibraryClosing, setIsOrderLibraryClosing] = useState(false);
+  const [isOrderLibraryJustOpened, setIsOrderLibraryJustOpened] = useState(false);
+  const orderLibraryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Whether it's put away — and (below) which of its lists are shut — stays as each person left it (in this browser, by
+  // person: the hardware's the company's, the same in every project). Read once they're known; saved as they go.
+  const orderLibraryPutAwayKey = user?.uid ? `cutsmart.web.order.library.putAway.${user.uid}` : "";
+  const orderLibraryPutAwayKeyRef = useRef(orderLibraryPutAwayKey);
+  const [orderLibraryOpenReadFor, setOrderLibraryOpenReadFor] = useState("");
+  if (orderLibraryPutAwayKey && orderLibraryOpenReadFor !== orderLibraryPutAwayKey) {
+    setOrderLibraryOpenReadFor(orderLibraryPutAwayKey);
+    let putAway = false;
+    try {
+      putAway = window.localStorage.getItem(orderLibraryPutAwayKey) === "1";
+    } catch {
+      // Storage unavailable — open, as it starts.
+    }
+    setIsOrderLibraryOpen(!putAway);
+  }
+  useEffect(() => {
+    orderLibraryPutAwayKeyRef.current = orderLibraryPutAwayKey;
+  }, [orderLibraryPutAwayKey]);
+  const toggleOrderLibrary = useCallback(() => {
+    if (orderLibraryTimeoutRef.current) clearTimeout(orderLibraryTimeoutRef.current);
+    setIsOrderLibraryOpen((wasOpen) => {
+      try {
+        if (orderLibraryPutAwayKeyRef.current) window.localStorage.setItem(orderLibraryPutAwayKeyRef.current, wasOpen ? "1" : "0");
+      } catch {
+        // Storage unavailable — it just won't be remembered.
+      }
+      if (!wasOpen) {
+        setIsOrderLibraryClosing(false);
+        setIsOrderLibraryJustOpened(true);
+        orderLibraryTimeoutRef.current = setTimeout(() => setIsOrderLibraryJustOpened(false), 800);
+        return true;
+      }
+      setIsOrderLibraryClosing(true);
+      orderLibraryTimeoutRef.current = setTimeout(() => {
+        setIsOrderLibraryOpen(false);
+        setIsOrderLibraryClosing(false);
+      }, 360);
+      return true;
+    });
+  }, []);
+  const [orderLibrarySearch, setOrderLibrarySearch] = useState("");
+  const orderLibraryCollapsedKey = user?.uid ? `cutsmart.web.order.library.collapsed.${user.uid}` : "";
+  const [orderLibraryCollapsedState, setOrderLibraryCollapsedState] = useState<{ key: string; collapsed: Record<string, boolean> }>({
+    key: "",
+    collapsed: {},
+  });
+  const orderLibraryCollapsed =
+    orderLibraryCollapsedState.key === orderLibraryCollapsedKey
+      ? orderLibraryCollapsedState.collapsed
+      : readSalesItemsLibraryCollapsed(orderLibraryCollapsedKey);
+  const setOrderLibraryListCollapsed = (list: string, collapsed: boolean) => {
+    const next = { ...orderLibraryCollapsed };
+    if (collapsed) next[list] = true;
+    else delete next[list];
+    setOrderLibraryCollapsedState({ key: orderLibraryCollapsedKey, collapsed: next });
+    if (!orderLibraryCollapsedKey) return;
+    try {
+      window.localStorage.setItem(orderLibraryCollapsedKey, JSON.stringify(next));
+    } catch {
+      // Storage unavailable — it just won't be remembered.
+    }
+  };
+  const [orderLibraryDrag, setOrderLibraryDrag] = useState<{ kind: "hinges" | "other"; name: string; qty: number } | null>(null);
+  // How many of one to add (clicked or dragged), typed in the box on its row — by "<kind>:<name>"; none, one.
+  const [orderLibraryQuantities, setOrderLibraryQuantities] = useState<Record<string, string>>({});
+  const [isOrderLibraryDropOver, setIsOrderLibraryDropOver] = useState(false);
   // ...and the Summary floats down the right the same way, from the bar's Summary toggle (the same slide, from the right).
   const [isSalesItemsSummaryOpen, setIsSalesItemsSummaryOpen] = useState(true);
   const [isSalesItemsSummaryClosing, setIsSalesItemsSummaryClosing] = useState(false);
@@ -8634,6 +8680,8 @@ export default function ProjectDetailsPage() {
   if (salesItemsCustomPricePending) lastSalesItemsCustomPricePendingRef.current = salesItemsCustomPricePending;
   const displaySalesItemsCustomPricePending = salesItemsCustomPricePending ?? lastSalesItemsCustomPricePendingRef.current;
   const salesItemsDragGhost = useDragGhost();
+  // Production › Order's hardware library: its items dragged with the same ghost.
+  const orderLibraryDragGhost = useDragGhost();
   const [notifyBellWobbleKey, setNotifyBellWobbleKey] = useState(0);
   const projectNameHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const [isEditingProjectName, setIsEditingProjectName] = useState(false);
@@ -8899,6 +8947,8 @@ export default function ProjectDetailsPage() {
   const [productionNav, setProductionNav] = useState<ProductionNav>("overview");
   const [projectManagementChecklistTemplates, setProjectManagementChecklistTemplates] = useState<ChecklistTemplate[]>([]);
   const [isAddChecklistMenuOpen, setIsAddChecklistMenuOpen] = useState(false);
+  // Project Management's checklist whose remove is waiting for its second click (as a lead's).
+  const [confirmRemoveProjectChecklistId, setConfirmRemoveProjectChecklistId] = useState("");
   const [isQuickAssignOpen, setIsQuickAssignOpen] = useState(false);
   // anchorTop: the Assign button's own top edge, for when the menu has to move above it (below).
   const [quickAssignRect, setQuickAssignRect] = useState<{ left: number; top: number; width: number; anchorTop: number } | null>(null);
@@ -9174,7 +9224,6 @@ export default function ProjectDetailsPage() {
   const initialCutlistHydratedProjectIdRef = useRef("");
   const [cncSearch] = useState("");
   const [cncPartTypeFilter] = useState("All Part Types");
-  const [cncExportMenuOpen, setCncExportMenuOpen] = useState(false);
   const [cncActiveGrainInfoKey, setCncActiveGrainInfoKey] = useState<string | null>(null);
   // Mobile: the cutlist pager (one board type per page) is always the main view now — Visibility
   // is a full-screen overlay reached via the bottom bar's own button (matching Quote's mobile
@@ -9624,7 +9673,6 @@ export default function ProjectDetailsPage() {
       document.removeEventListener("keydown", onKeyDown);
     };
   }, [initialEditingCell]);
-  const cncExportMenuRef = useRef<HTMLDivElement | null>(null);
   const cncVisibilityScrollRef = useRef<HTMLElement | null>(null);
   const cncTableScrollRef = useRef<HTMLElement | null>(null);
   const nestingVisibilityScrollRef = useRef<HTMLElement | null>(null);
@@ -11741,6 +11789,9 @@ export default function ProjectDetailsPage() {
   }, [resolvedTab, printTitleLogoRaw]);
   // A production print's title sheet: its tab's name, the company, the project, who it's for (its assigned user, else
   // whoever created it — assignedDisplayName), and its production Notes (the Production Cutlist's — not the contractors').
+  // Several prints together (Production's Print dialog) make one PROJECT FOLDER: while they're being made, none has a
+  // title sheet of its own — the folder's (projectFolderTitlePage) goes in front of them all.
+  const printingFolderRef = useRef(false);
   const printTitlePageFor = (heading: string): PrintTitlePage => ({
     heading,
     companyName:
@@ -11792,15 +11843,24 @@ export default function ProjectDetailsPage() {
   // How wide each cutlist's list is — so its columns keep their usual widths whenever they fit (the list's tables).
   const [cutlistListWrapRef, cutlistListWrapWidth] = useMeasuredWidth();
   const [initialCutlistListWrapRef, initialCutlistListWrapWidth] = useMeasuredWidth();
-  // Beside the project's name in the top bar; on a phone or tablet (no room there), just under it.
-  const renderCutlistAlsoEditing = (names: string[], compact: boolean) => {
-    const text = alsoEditingText(names);
+  // In its top bar, before the save chip: a pulsing green dot (as the Quote's Live Quote), then each of them — their
+  // emblem, in their colour (as the project's Creator / Assigned), and their name (first name only on a phone or
+  // tablet). Two at most; more, as "+N".
+  const renderCutlistAlsoEditing = (people: CutlistPresencePerson[], compact: boolean) => {
+    const text = alsoEditingText(people.map((person) => person.name));
     if (!text) return null;
-    const pill = (
+    const shown = people.slice(0, 2);
+    const more = people.length - shown.length;
+    const colorOf = (uid: string) =>
+      staffPickerMembers.find((member) => member.uid === uid)?.color ||
+      toStr((companyDoc as Record<string, unknown> | null)?.themeColor) ||
+      "#7D99B3";
+    return (
       <span
         role="status"
         title={text}
-        className="glass-bar-pop inline-flex h-7 min-w-0 max-w-full shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-[12px] font-medium normal-case tracking-normal"
+        aria-label={text}
+        className={`glass-bar-pop inline-flex ${compact ? "h-8" : "h-9"} min-w-0 shrink-0 items-center gap-2 rounded-full border pl-3 pr-2.5 text-[12px] font-medium normal-case tracking-normal`}
         style={{
           borderColor: "var(--glass-border)",
           backgroundColor: "var(--glass-modal-bg)",
@@ -11810,15 +11870,26 @@ export default function ProjectDetailsPage() {
           color: "var(--text-main)",
         }}
       >
-        <span className="relative inline-flex h-2 w-2 shrink-0">
-          <span className="absolute inset-0 animate-ping rounded-full opacity-60" style={{ backgroundColor: "#22C55E" }} />
-          <span className="relative inline-flex h-2 w-2 rounded-full" style={{ backgroundColor: "#22C55E" }} />
+        <span className="relative flex h-2.5 w-2.5 shrink-0">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full opacity-75" style={{ backgroundColor: "#22C55E" }} />
+          <span className="relative inline-flex h-2.5 w-2.5 rounded-full" style={{ backgroundColor: "#16A34A" }} />
         </span>
-        <span className="truncate">{text}</span>
+        {shown.map((person) => (
+          <span key={person.uid} className="inline-flex min-w-0 items-center gap-1.5">
+            <span
+              className="glass-shine inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white"
+              style={glassShineStyle(colorOf(person.uid))}
+            >
+              {initials(person.name)}
+            </span>
+            <span className={`truncate ${compact ? "max-w-[72px]" : "max-w-[160px]"}`}>
+              {compact ? person.name.split(/\s+/)[0] : person.name}
+            </span>
+          </span>
+        ))}
+        {more > 0 ? <span className="shrink-0" style={{ color: "var(--text-muted)" }}>+{more}</span> : null}
       </span>
     );
-    if (!compact) return pill;
-    return <span className="pointer-events-none fixed inset-x-0 top-[64px] z-[94] flex justify-center px-4">{pill}</span>;
   };
   const isOnSalesTab = resolvedTab === "sales" && salesAccess.view;
   const isOnQuoteGridPage = isOnSalesTab && salesNav === "quote";
@@ -12648,19 +12719,14 @@ export default function ProjectDetailsPage() {
   // The button: a small round blue download icon (beside Save & Back). Nothing to download in an empty cutlist.
   const renderCutlistExcelButton = (kind: "production" | "initialMeasure", large: boolean) => {
     const empty = (kind === "production" ? cutlistRows : initialCutlistRows).length === 0;
-    return (
-      <button
-        type="button"
-        onClick={() => void downloadCutlistAsExcel(kind)}
-        disabled={empty || cutlistExcelBusy === kind}
-        className={`glass-shine relative z-[1] inline-flex ${large ? "h-9 w-9" : "h-8 w-8"} shrink-0 items-center justify-center rounded-full border hover:brightness-95 disabled:opacity-50`}
-        style={glassShineStyle("var(--brand)")}
-        aria-label="Download the cutlist as Excel"
-        title={empty ? "Nothing in the cutlist to download yet" : "Download the cutlist as Excel"}
-      >
-        <Download size={large ? 16 : 15} color="#ffffff" strokeWidth={2.4} />
-      </button>
-    );
+    return renderTopBarButton({
+      icon: Download,
+      label: "Download the cutlist as Excel",
+      title: empty ? "Nothing in the cutlist to download yet" : "Download the cutlist as Excel",
+      onClick: () => void downloadCutlistAsExcel(kind),
+      disabled: empty || cutlistExcelBusy === kind,
+      large,
+    });
   };
   // A cutlist's save chip, in its top bar: whether its changes have reached the server (the cutlist's own sync —
   // lib/use-project-cutlist.ts). Saved; Saving… (sent, not heard back yet); Offline, in amber — changes made are kept on
@@ -12717,11 +12783,12 @@ export default function ProjectDetailsPage() {
       </span>
     );
   };
-  // The production cutlist to print, laid out as the old cutlist sheet (lib/cutlist-print-pdf.ts) — every room's parts,
-  // each part type on its own page(s), and everything else a row has on a second line under it. From the print button
-  // in the cutlist's top bar, and Production's Print dialog.
-  const buildProductionCutlistPrint = (jsPDF: PdfExportModules["jsPDF"]) => {
-    if (!project || !cutlistRows.length) return null;
+  // A cutlist to print (the production one, or Initial Measure's), laid out as the old cutlist sheet
+  // (lib/cutlist-print-pdf.ts) — every room's parts, each part type on its own page(s), and everything else a row has on
+  // a second line under it. From the print button in the cutlist's top bar, and Production's Print dialog.
+  const buildProductionCutlistPrint = (jsPDF: PdfExportModules["jsPDF"], kind: "production" | "initialMeasure" = "production") => {
+    const printRows = kind === "production" ? cutlistRows : initialCutlistRows;
+    if (!project || !printRows.length) return null;
     const lengthNote = (value: unknown) => (toStr(value) ? activeLength(toStr(value)) : "");
     const unitLabel = activeUnitLabel();
     return buildCutlistPrintPdf(jsPDF, {
@@ -12731,7 +12798,7 @@ export default function ProjectDetailsPage() {
           ((companyDoc?.applicationPreferences as Record<string, unknown> | undefined)?.companyName ?? ""),
       ),
       projectName: toStr(project.name, "Project"),
-      rows: cutlistRows,
+      rows: printRows,
       partTypeColors,
       partTypeOrder: partTypeOptions,
       // (A row keeps its board as "<name> @@ <sheet>": the project's board's name for it, else the name part.)
@@ -12767,37 +12834,125 @@ export default function ProjectDetailsPage() {
         hingeType: toStr(productionForm.hardware.hingeType) || toStr(productionForm.hardware.hardwareCategory),
       },
       footer: [`Printed ${activeDate(new Date())}`, unitLabel ? `Sizes in ${unitLabel}` : ""].filter(Boolean).join("   ·   "),
-      titlePage: printTitlePageFor("CUTLIST"),
+      titlePage: printingFolderRef.current ? undefined : printTitlePageFor(kind === "production" ? "CUTLIST" : "INITIAL MEASURE"),
+      // (In a folder, the folder numbers every page.)
+      pageNumbers: !printingFolderRef.current,
     });
   };
   // (Only waits for the PDF modules when they aren't loaded yet — so, as usual, its print window opens within the click.)
-  const printProductionCutlist = async () => {
+  const printProductionCutlist = async (kind: "production" | "initialMeasure" = "production") => {
     try {
       if (printTitleLogoRef.current?.raw !== printTitleLogoRaw) await ensurePrintTitleLogo();
       const modules = loadedPdfExportModules ?? (await loadPdfExportModules());
-      const made = buildProductionCutlistPrint(modules.jsPDF);
+      const made = buildProductionCutlistPrint(modules.jsPDF, kind);
       if (made) modules.openPdfBlobInPrintWindow(made.blob);
     } catch (error) {
       console.warn("[cutlist print] couldn't make the PDF:", error);
       setLockMessage("Couldn't print the cutlist — please try again.");
     }
   };
-  // Its button: a small round blue printer icon, beside the download one.
-  const renderCutlistPrintButton = (large: boolean) => {
-    const empty = cutlistRows.length === 0;
-    return (
+  // ---- The top bars of the project's full-page views (its cutlists, Items, Quote, Specifications, Upgrades, Nesting,
+  // CNC Cutlist, Order), all as the Production cutlist's: on their right, round blue buttons (print, download, …) and
+  // the green Save & Back last — a pill with its words, or on a phone / tablet just its arrow, round.
+  const renderTopBarButton = ({
+    icon: Icon,
+    label,
+    onClick,
+    large,
+    disabled = false,
+    title,
+    active = false,
+  }: {
+    icon: typeof Printer;
+    label: string;
+    onClick: (event: ReactMouseEvent<HTMLButtonElement>) => void;
+    large: boolean;
+    disabled?: boolean;
+    title?: string;
+    // (Its menu open: a little darker.)
+    active?: boolean;
+  }) => (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`glass-shine relative z-[1] inline-flex ${large ? "h-9 w-9" : "h-8 w-8"} shrink-0 items-center justify-center rounded-full border hover:brightness-95 disabled:opacity-50 ${active ? "brightness-90" : ""}`}
+      style={glassShineStyle("var(--brand)")}
+      aria-label={label}
+      title={title ?? label}
+    >
+      <Icon size={large ? 16 : 15} color="#ffffff" strokeWidth={2.4} />
+    </button>
+  );
+  // (`stopGestures`: a tap on it isn't also taken by the page's own swipes — the Quote's and Specifications' — or the
+  // app's nav-drawer swipe, should it move a few pixels.)
+  const renderSaveAndBackButton = (
+    onClick: () => void,
+    compact: boolean,
+    options: { label?: string; disabled?: boolean; stopGestures?: boolean } = {},
+  ) => {
+    const label = options.label ?? "Save & Back";
+    const gestures = options.stopGestures
+      ? {
+          onTouchStart: (e: ReactTouchEvent) => e.stopPropagation(),
+          onTouchMove: (e: ReactTouchEvent) => e.stopPropagation(),
+          onTouchEnd: (e: ReactTouchEvent) => e.stopPropagation(),
+        }
+      : {};
+    return compact ? (
       <button
         type="button"
-        onClick={() => void printProductionCutlist()}
-        disabled={empty}
-        className={`glass-shine relative z-[1] inline-flex ${large ? "h-9 w-9" : "h-8 w-8"} shrink-0 items-center justify-center rounded-full border hover:brightness-95 disabled:opacity-50`}
-        style={glassShineStyle("var(--brand)")}
-        aria-label="Print the cutlist"
-        title={empty ? "Nothing in the cutlist to print yet" : "Print the cutlist"}
+        onClick={(e) => {
+          if (options.stopGestures) e.stopPropagation();
+          onClick();
+        }}
+        {...gestures}
+        disabled={options.disabled}
+        className="glass-shine relative z-[1] inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border hover:brightness-95 disabled:opacity-60"
+        style={glassShineStyle("#16A34A")}
+        aria-label={label}
+        title={label}
       >
-        <Printer size={large ? 16 : 15} color="#ffffff" strokeWidth={2.4} />
+        <ChevronLeft size={18} color="#ffffff" strokeWidth={2.5} />
+      </button>
+    ) : (
+      <button
+        type="button"
+        onClick={onClick}
+        {...gestures}
+        disabled={options.disabled}
+        className="glass-shine relative z-[1] inline-flex h-9 shrink-0 items-center gap-2 rounded-full border px-3.5 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-60"
+        style={glassShineStyle("#16A34A")}
+      >
+        <ArrowLeft size={17} strokeWidth={2.6} className="shrink-0" />
+        {label}
       </button>
     );
+  };
+  // A download button with its choices (PDF, …) in the app's glass menu — the same round blue icon. None: it's off.
+  const renderTopBarDownloadMenu = (choices: GlassActionMenuItem[], large: boolean, label = "Download") => (
+    <GlassActionMenu
+      items={choices}
+      openWithOneItem
+      menuMinWidth={180}
+      ariaLabel={label}
+      triggerClassName={`glass-shine relative z-[1] inline-flex ${large ? "h-9 w-9" : "h-8 w-8"} shrink-0 items-center justify-center rounded-full border hover:brightness-95`}
+      triggerStyle={glassShineStyle("var(--brand)")}
+    >
+      <Download size={large ? 16 : 15} color="#ffffff" strokeWidth={2.4} />
+    </GlassActionMenu>
+  );
+  // A cutlist's print button: a small round blue printer icon, beside the download one.
+  const renderCutlistPrintButton = (large: boolean, kind: "production" | "initialMeasure" = "production") => {
+    const empty = (kind === "production" ? cutlistRows : initialCutlistRows).length === 0;
+    return renderTopBarButton({
+      icon: Printer,
+      label: "Print the cutlist",
+      title: empty ? "Nothing in the cutlist to print yet" : "Print the cutlist",
+      onClick: () => void printProductionCutlist(kind),
+      disabled: empty,
+      large,
+    });
   };
   const activityColorsForPart = (partType: string, kind?: string) => {
     if (String(kind || "").toLowerCase() === "clear") {
@@ -13288,27 +13443,49 @@ export default function ProjectDetailsPage() {
       }),
     }));
     const roomsWithTotals = syncSalesItemsRoomTotals(roomsWithResolvedPrices);
-    const nextSales = {
-      ...salesPayload,
-      rooms: roomsWithTotals.map((room) => ({
-        id: room.id,
-        name: room.name,
-        included: room.included,
-        totalPrice: room.totalPrice,
-        items: room.items.map((item) => ({
-          itemId: item.itemId,
-          name: item.name,
-          categoryId: item.categoryId,
-          categoryName: item.categoryName,
-          categoryColor: item.categoryColor,
-          price: item.price,
-          quantity: item.quantity,
-          ...(item.customPrice ? { customPrice: true, enteredPrice: item.enteredPrice ?? item.price } : {}),
-        })),
-      })),
-    } as Record<string, unknown>;
+    // As they're stored on the project (`sales.rooms`).
+    const roomsForStorage = (rooms: SalesItemsRoomBoardRow[]) =>
+      JSON.parse(
+        JSON.stringify(
+          rooms.map((room) => ({
+            id: room.id,
+            name: room.name,
+            included: room.included,
+            totalPrice: room.totalPrice,
+            items: room.items.map((item) => ({
+              itemId: item.itemId,
+              name: item.name,
+              categoryId: item.categoryId,
+              categoryName: item.categoryName,
+              categoryColor: item.categoryColor,
+              price: item.price,
+              quantity: item.quantity,
+              ...(item.customPrice ? { customPrice: true, enteredPrice: item.enteredPrice ?? item.price } : {}),
+            })),
+          })),
+        ),
+      ) as unknown[];
+    const nextSales = { ...salesPayload, rooms: roomsForStorage(roomsWithTotals) } as Record<string, unknown>;
     setIsSavingSalesRooms(true);
-    const ok = await persistSalesPatch(nextSales);
+    // Saved as a cutlist is (saveSalesItemsRoomsMerged): kept on this device first, and only the rooms changed here put
+    // onto everyone else's latest — offline, kept till the connection's back, and back to the overview meanwhile. Not
+    // that way (the CutSmart Preview): the whole of Sales saved, as it always was.
+    const merged = await saveSalesItemsRoomsMerged(project, { base: roomsForStorage(beforeRooms), rows: nextSales.rooms as unknown[] });
+    const ok = merged ? merged.ok : await persistSalesPatch(nextSales);
+    if (merged?.ok) {
+      // (Here, as persistSalesPatch leaves it.)
+      const localSales = JSON.parse(JSON.stringify({ ...nextSales, rooms: merged.rooms })) as Record<string, unknown>;
+      setProject((prevProject) =>
+        prevProject
+          ? {
+              ...prevProject,
+              sales: localSales as never,
+              salesJson: JSON.stringify(localSales),
+              projectSettings: { ...(prevProject.projectSettings ?? {}), sales: localSales },
+            }
+          : prevProject,
+      );
+    }
     setIsSavingSalesRooms(false);
     if (ok) {
       lastSyncedSalesItemsRoomsRef.current = JSON.stringify(roomsWithTotals);
@@ -22589,10 +22766,19 @@ export default function ProjectDetailsPage() {
       ...orderSettingsWithLatestLists(currentSettings),
       orderMiscDraftByCategory: nextByCategory,
     };
-    const ok = await updateProjectPatch(project, {
-      projectSettings: nextSettings,
-      projectSettingsJson: JSON.stringify(nextSettings),
+    // Saved as a cutlist is (saveProjectListMerged): kept on this device first, then only the lines changed here put onto
+    // everyone else's latest, and only this list written — offline, kept till the connection's back. Not that way (the
+    // CutSmart Preview): the settings saved whole, as they always were.
+    const merged = await saveProjectListMerged(project, "orderMisc", {
+      base: flattenOrderLines("orderMisc", currentSettings.orderMiscDraftByCategory),
+      rows: flattenOrderLines("orderMisc", nextByCategory),
     });
+    const ok = merged
+      ? merged.ok
+      : await updateProjectPatch(project, {
+          projectSettings: nextSettings,
+          projectSettingsJson: JSON.stringify(nextSettings),
+        });
     if (ok) {
       setProject({ ...project, projectSettings: nextSettings });
       const categoryKeys = new Set([...Object.keys(beforeByCategory), ...Object.keys(nextByCategory)]);
@@ -22628,10 +22814,19 @@ export default function ProjectDetailsPage() {
       ...orderSettingsWithLatestLists(currentSettings),
       orderHingeRowsByCategory: nextByCategory,
     };
-    const ok = await updateProjectPatch(project, {
-      projectSettings: nextSettings,
-      projectSettingsJson: JSON.stringify(nextSettings),
+    // Saved as a cutlist is (saveProjectListMerged): kept on this device first, then only the lines changed here put onto
+    // everyone else's latest, and only this list written — offline, kept till the connection's back. Not that way (the
+    // CutSmart Preview): the settings saved whole, as they always were.
+    const merged = await saveProjectListMerged(project, "orderHinges", {
+      base: flattenOrderLines("orderHinges", currentSettings.orderHingeRowsByCategory),
+      rows: flattenOrderLines("orderHinges", nextByCategory),
     });
+    const ok = merged
+      ? merged.ok
+      : await updateProjectPatch(project, {
+          projectSettings: nextSettings,
+          projectSettingsJson: JSON.stringify(nextSettings),
+        });
     if (ok) {
       setProject({ ...project, projectSettings: nextSettings });
       const categoryKeys = new Set([...Object.keys(beforeByCategory), ...Object.keys(nextByCategory)]);
@@ -22692,10 +22887,19 @@ export default function ProjectDetailsPage() {
       ...orderSettingsWithLatestLists(currentSettings),
       orderOtherRowsByCategory: nextByCategory,
     };
-    const ok = await updateProjectPatch(project, {
-      projectSettings: nextSettings,
-      projectSettingsJson: JSON.stringify(nextSettings),
+    // Saved as a cutlist is (saveProjectListMerged): kept on this device first, then only the lines changed here put onto
+    // everyone else's latest, and only this list written — offline, kept till the connection's back. Not that way (the
+    // CutSmart Preview): the settings saved whole, as they always were.
+    const merged = await saveProjectListMerged(project, "orderOther", {
+      base: flattenOrderLines("orderOther", currentSettings.orderOtherRowsByCategory),
+      rows: flattenOrderLines("orderOther", nextByCategory),
     });
+    const ok = merged
+      ? merged.ok
+      : await updateProjectPatch(project, {
+          projectSettings: nextSettings,
+          projectSettingsJson: JSON.stringify(nextSettings),
+        });
     if (ok) {
       setProject({ ...project, projectSettings: nextSettings });
       const categoryKeys = new Set([...Object.keys(beforeByCategory), ...Object.keys(nextByCategory)]);
@@ -23829,14 +24033,34 @@ export default function ProjectDetailsPage() {
     const entry = (production ? productionCutlistEntrySnapshotRef : initialMeasureEntrySnapshotRef).current;
     return entry === null || entry !== serializeCutlistRowsSnapshot(rows);
   };
+  // A cutlist save's change as it's made: its rows, and the ones last had from the database they were changed from (null:
+  // none yet) — as they're stored (serializeCutlistRowsForStorage).
+  const cutlistChangeFor = (kind: "production" | "initialMeasure", nextRows: CutlistRow[]): CutlistChange => {
+    const synced = (kind === "production" ? productionSyncedRowsRef : initialSyncedRowsRef).current;
+    return {
+      base: project && synced?.projectId === project.id ? serializeCutlistRowsForStorage(synced.rows, isCabinetryPartType) : null,
+      rows: serializeCutlistRowsForStorage(nextRows, isCabinetryPartType),
+    };
+  };
+  // ...kept on this device the moment it's made (keepCutlistChange — lib/firestore-data.ts), before it waits its turn to
+  // be sent: the browser closed meanwhile, or while it's on its way, and it isn't lost — it's sent the next time the app
+  // opens.
+  const keepCutlistChangeNow = (kind: "production" | "initialMeasure", nextRows: CutlistRow[]): Promise<boolean> => {
+    if (!project) return Promise.resolve(false);
+    const known = (kind === "production" ? productionCutlistState : initialCutlistState).latest();
+    return keepCutlistChange(project, kind, cutlistChangeFor(kind, nextRows), known.rawRows);
+  };
   // One save at a time, in the order they're made (as Initial Measure's) — each put onto the one before it.
   const persistCutlistContainer = (nextRows: CutlistRow[]): Promise<boolean> => {
     noteCutlistSessionChange("production", nextRows);
-    const next = persistCutlistRowsChainRef.current.catch(() => false).then(() => persistCutlistContainerNow(nextRows));
+    const kept = keepCutlistChangeNow("production", nextRows);
+    const next = persistCutlistRowsChainRef.current
+      .catch(() => false)
+      .then(async () => persistCutlistContainerNow(nextRows, await kept));
     persistCutlistRowsChainRef.current = next;
     return next;
   };
-  const persistCutlistContainerNow = async (nextRows: CutlistRow[]) => {
+  const persistCutlistContainerNow = async (nextRows: CutlistRow[], kept = false) => {
     if (!project) return false;
     const rows = serializeCutlistRowsForStorage(nextRows, isCabinetryPartType);
     // What this person changed: these rows against the ones they last had from the database (productionSyncedRowsRef).
@@ -23848,7 +24072,7 @@ export default function ProjectDetailsPage() {
     const prevRawRows = baseRows ?? known.rawRows;
     isPersistingCutlistRowsRef.current = true;
     try {
-      const saved = await saveCutlistDataMerged(project, "production", { base: baseRows, rows }, known.rawRows, known.rev);
+      const saved = await saveCutlistDataMerged(project, "production", { base: baseRows, rows }, known.rawRows, known.rev, kept);
       const ok = saved.ok;
       if (ok) {
         productionSyncedRowsRef.current = { projectId: project.id, rows: nextRows };
@@ -23928,7 +24152,9 @@ export default function ProjectDetailsPage() {
   const persistCutlistRows = async (nextRows: CutlistRow[]) => persistCutlistContainer(nextRows);
   const persistInitialCutlistRows = (nextRows: CutlistRow[]): Promise<boolean> => {
     noteCutlistSessionChange("initialMeasure", nextRows);
+    const keptNow = keepCutlistChangeNow("initialMeasure", nextRows);
     const run = async (): Promise<boolean> => {
+      const kept = await keptNow;
       if (!project) return false;
       const rows = serializeCutlistRowsForStorage(nextRows, isCabinetryPartType);
       // Only what this person changed, put onto everyone else's latest — as the Production cutlist's
@@ -23938,7 +24164,7 @@ export default function ProjectDetailsPage() {
       const known = initialCutlistState.latest();
       isPersistingInitialCutlistRowsRef.current = true;
       try {
-        const saved = await saveCutlistDataMerged(project, "initialMeasure", { base: baseRows, rows }, known.rawRows, known.rev);
+        const saved = await saveCutlistDataMerged(project, "initialMeasure", { base: baseRows, rows }, known.rawRows, known.rev, kept);
         if (saved.ok) {
           initialSyncedRowsRef.current = { projectId: project.id, rows: nextRows };
           initialCutlistState.setRawRowsOptimistic(saved.rows, saved.rev);
@@ -32173,8 +32399,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               className="glass-modal-panel relative flex h-[min(640px,90vh)] w-[min(560px,96vw)] flex-col overflow-hidden"
               style={{ zIndex: 2147483647 }}
             >
+              {/* Its header as the other pop-ups' — its title (and icon), its X — and under it the editor's toolbar, slim and
+                  flat as the production cutlist's notes drawers' (drawer-toolbar-slim — globals.css). */}
               <div
-                className="glass-modal-header relative z-[2] shrink-0 px-5 py-4"
+                className="drawer-toolbar-slim glass-modal-header relative z-[2] shrink-0 px-5 pb-2 pt-4"
                 style={{
                   backgroundColor: "color-mix(in srgb, var(--panel-muted) 35%, transparent)",
                   backdropFilter: "blur(6px)",
@@ -32182,25 +32410,20 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   borderBottomColor: "var(--panel-border)",
                 }}
               >
-                <div className="flex items-center justify-between gap-2">
-                  <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                    Remedials
+                <div className="flex items-center justify-between gap-3">
+                  <p className="flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                    <Wrench size={15} className="shrink-0" style={{ color: "var(--text-muted)" }} />
+                    <span className="min-w-0 truncate">Remedials</span>
                   </p>
-                  <button
-                    type="button"
-                    onClick={() => void closeRemedialsPanel()}
-                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95"
-                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                    title="Close"
-                  >
+                  <button type="button" onClick={() => void closeRemedialsPanel()} className={modalCloseButtonClass} aria-label="Close">
                     <X size={16} />
                   </button>
                 </div>
-                {!productionReadOnly ? (
-                  <div ref={setRemedialsToolbarHost} className="mt-2 min-w-0" />
-                ) : null}
+                {!productionReadOnly ? <div ref={setRemedialsToolbarHost} className="-mx-2 mt-1 min-w-0" /> : null}
               </div>
-              <div className="glass-scroll flex min-h-0 flex-1 flex-col overflow-auto px-5 py-4">
+              {/* No box round the notes: the pop-up's whole body is where they're typed (drawer-notes-editor — globals.css),
+                  as in the notes drawers. */}
+              <div className="drawer-notes-editor flex min-h-0 flex-1 flex-col" style={{ color: "var(--text-main)" }}>
                 {!productionReadOnly ? (
                   <QuoteDocumentEditor
                     key="remedials"
@@ -32208,7 +32431,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     toolbarPlacement="inline"
                     toolbarHost={remedialsToolbarHost}
                     toolbarDensity="compact"
-                    embeddedChrome="card"
+                    embeddedChrome="flat"
                     embeddedMinHeight={180}
                     embeddedEditableMinHeight={120}
                     value={remedialsEditorInitialValue}
@@ -32216,20 +32439,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     autoFocus
                     fillHeight
                     toolbarGlassStyle
-                    shellClassName="flex flex-col rounded-[10px] border"
-                    shellStyle={{
-                      borderColor: "var(--panel-border)",
-                      backgroundColor: "color-mix(in srgb, var(--panel-muted) 35%, transparent)",
-                      backdropFilter: "blur(6px)",
-                      WebkitBackdropFilter: "blur(6px)",
-                    }}
+                    shellClassName="flex flex-col"
                     onChange={(nextValue) => {
                       remedialsEditorDraftRef.current = nextValue;
                     }}
                   />
                 ) : (
                   <div
-                    className="min-h-[180px] notes-rich leading-[20px]"
+                    className="glass-scroll min-h-0 flex-1 overflow-auto px-4 pb-4 pt-3 notes-rich leading-[20px]"
                     dangerouslySetInnerHTML={{ __html: notesToDisplayHtml(project?.remedials || "") }}
                   />
                 )}
@@ -32376,22 +32593,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           document.body,
         )
       : null;
-  useEffect(() => {
-    if (!cncExportMenuOpen) return;
-    const onDocPointerDown = (event: PointerEvent) => {
-      const target = event.target as Node | null;
-      if (!target) return;
-      if (cncExportMenuRef.current?.contains(target)) return;
-      setCncExportMenuOpen(false);
-      // That press only closes the menu — it doesn't also act on what it landed on.
-      swallowNextClick();
-    };
-    document.addEventListener("pointerdown", onDocPointerDown);
-    return () => {
-      document.removeEventListener("pointerdown", onDocPointerDown);
-    };
-  }, [cncExportMenuOpen]);
-
   const companyThemeColor =
     normalizeHexColor(
       String(
@@ -34978,45 +35179,28 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               className="quote-print-content min-h-0 flex-1 overflow-auto"
             >
               <div className="quote-print-chrome glass-page-header sticky top-0 z-[95] flex h-[56px] items-center justify-between px-4 md:px-5">
-                <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                  <Quote size={14} />
+                <div className="inline-flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                  <Quote size={14} className="shrink-0" />
                   <span>Quote</span>
                   <span style={{ color: "var(--text-muted)" }}>|</span>
                   <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
                 </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    disabled={isGeneratingQuotePdf}
-                    onClick={() => void onPrintSalesQuote()}
-                    className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
-                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                  >
-                    <Printer size={14} />
-                    {isGeneratingQuotePdf ? "Generating..." : "Print"}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isGeneratingQuotePdf}
-                    onClick={() => void onDownloadQuotePdf()}
-                    className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
-                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                  >
-                    <Download size={14} />
-                    {isGeneratingQuotePdf ? "Generating..." : "Download PDF"}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isSavingQuoteProjectText}
-                    onClick={() => {
-                      void leaveQuoteWindow("overview");
-                    }}
-                    className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
-                    style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
-                  >
-                    <ArrowLeft size={14} />
-                    {isSavingQuoteProjectText ? "Saving..." : "Save & Back"}
-                  </button>
+                <div className="flex shrink-0 items-center gap-2">
+                  {renderTopBarButton({
+                    icon: Printer,
+                    label: isGeneratingQuotePdf ? "Generating…" : "Print",
+                    onClick: () => void onPrintSalesQuote(),
+                    disabled: isGeneratingQuotePdf,
+                    large: !isCompactProjectViewport,
+                  })}
+                  {renderTopBarDownloadMenu(
+                    isGeneratingQuotePdf ? [] : [{ key: "pdf", label: "PDF", icon: <FileText size={14} />, onSelect: () => void onDownloadQuotePdf() }],
+                    !isCompactProjectViewport,
+                  )}
+                  {renderSaveAndBackButton(() => void leaveQuoteWindow("overview"), isCompactProjectViewport, {
+                    label: isSavingQuoteProjectText ? "Saving…" : "Save & Back",
+                    disabled: isSavingQuoteProjectText,
+                  })}
                 </div>
               </div>
               <div className="quote-print-content-shell mx-auto w-full max-w-[1600px] px-4 py-4 md:px-5">
@@ -36785,29 +36969,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   <HardHat size={16} style={{ color: "var(--text-main)" }} strokeWidth={2.1} />
                   <p className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>Project Management</p>
                 </div>
-                <button
-                  type="button"
-                  aria-label="Close"
-                  onClick={() => setIsProjectManagementModalOpen(false)}
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] hover:brightness-95"
-                  style={{ color: "var(--text-main)" }}
-                >
-                  <X size={16} />
-                </button>
-              </div>
-              <div className="glass-scroll min-h-0 flex-1 overflow-y-auto px-5 py-4">
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-[13px] font-extrabold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                      Checklists
-                    </h3>
+                {/* Add Checklist (its saved checklists' menu under it), then the X. */}
+                <div className="flex items-center gap-2">
                     <div className="relative">
                       <button
                         type="button"
                         disabled={salesReadOnly}
                         onClick={() => setIsAddChecklistMenuOpen((prev) => !prev)}
-                        className="inline-flex h-9 items-center gap-1.5 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-55"
-                        style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+                        // (Round-ended, with the glass shine — the darker blue.)
+                        className="glass-shine inline-flex h-9 items-center gap-1.5 rounded-full border px-3.5 text-[12px] font-bold text-white transition hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-55"
+                        style={glassShineStyle("var(--brand-strong)")}
                       >
                         <Plus size={14} />
                         Add Checklist
@@ -36866,70 +37037,115 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         </>
                       )}
                     </div>
+                  <button
+                    type="button"
+                    aria-label="Close"
+                    onClick={() => setIsProjectManagementModalOpen(false)}
+                    className={modalCloseButtonClass}
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+              </div>
+              <div className="glass-scroll min-h-0 flex-1 overflow-y-auto px-5 py-4">
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-[13px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                      Checklists
+                    </h3>
                   </div>
 
                   {projectChecklists.length ? (
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      {projectChecklists.map((checklist) => (
-                        <section
-                          key={checklist.id}
-                          className="overflow-hidden rounded-[18px] border"
-                          style={{
-                            borderColor: "var(--glass-border)",
-                            backgroundColor: "var(--glass-bg-strong)",
-                            backdropFilter: "blur(20px) saturate(180%)",
-                            WebkitBackdropFilter: "blur(20px) saturate(180%)",
-                            boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
-                          }}
-                        >
+                    <div className="grid items-start gap-2 sm:grid-cols-2">
+                      {/* Each as a lead's (leads/page.tsx): a see-through box — its name and how many are ticked off, a bar
+                          that fills as they are (green once they all are), its items with the glass-shine ticks, and a bin
+                          on hover (a second click — Remove — takes it off). */}
+                      {projectChecklists.map((checklist) => {
+                        const total = checklist.items.length;
+                        const done = checklist.items.filter((item) => item.checked).length;
+                        const complete = total > 0 && done === total;
+                        const armed = confirmRemoveProjectChecklistId === checklist.id;
+                        return (
                           <div
-                            className="flex items-center justify-between gap-2 border-b px-4 py-2.5"
-                            style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}
+                            key={checklist.id}
+                            className="group/checklist relative rounded-[14px] border px-3 py-2.5"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "color-mix(in srgb, var(--panel-bg) 55%, transparent)" }}
+                            onMouseLeave={() => {
+                              if (armed) setConfirmRemoveProjectChecklistId("");
+                            }}
                           >
-                            <p className="truncate text-[13px] font-extrabold" style={{ color: "var(--text-main)" }}>{checklist.name}</p>
-                            <button
-                              type="button"
-                              disabled={salesReadOnly}
-                              onClick={() => removeProjectChecklist(checklist.id)}
-                              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] transition hover:bg-[var(--danger-soft)] disabled:cursor-not-allowed disabled:opacity-40"
-                              style={{ color: "var(--danger-strong)" }}
-                              aria-label={`Remove ${checklist.name}`}
-                            >
-                              <Trash2 size={13} />
-                            </button>
-                          </div>
-                          <div className="space-y-1 p-3">
-                            {checklist.items.map((item) => (
-                              <button
-                                key={item.id}
-                                type="button"
-                                disabled={salesReadOnly}
-                                onClick={() => toggleProjectChecklistItemChecked(checklist.id, item.id)}
-                                className="flex w-full items-start gap-2.5 rounded-[8px] px-2 py-1.5 text-left transition hover:bg-[var(--panel-muted)] disabled:cursor-not-allowed"
-                              >
-                                <span
-                                  className="mt-0.5 inline-flex h-[16px] w-[16px] shrink-0 items-center justify-center rounded-[4px] border"
-                                  style={{
-                                    borderColor: item.checked ? "var(--brand-strong)" : "var(--glass-border)",
-                                    backgroundColor: item.checked ? "var(--brand-strong)" : "transparent",
-                                  }}
+                            <div className={`flex items-center gap-2 ${salesReadOnly ? "" : "pr-8"}`}>
+                              <p className="min-w-0 flex-1 truncate text-[14px] font-semibold" style={{ color: "var(--text-main)" }} title={checklist.name}>
+                                {checklist.name}
+                              </p>
+                              <span className="shrink-0 text-[11px] font-bold" style={{ color: complete ? "#15803D" : "var(--text-muted)" }}>
+                                {done}/{total}
+                              </span>
+                            </div>
+                            <div className="mt-2 h-1.5 overflow-hidden rounded-full" style={{ backgroundColor: "color-mix(in srgb, var(--text-main) 10%, transparent)" }}>
+                              <div
+                                className="h-full rounded-full transition-[width] duration-300"
+                                style={{ width: `${total ? (done / total) * 100 : 0}%`, backgroundColor: complete ? "#16A34A" : "var(--brand)" }}
+                              />
+                            </div>
+                            <div className="mt-1.5 space-y-0.5">
+                              {checklist.items.map((item) => (
+                                <button
+                                  key={item.id}
+                                  type="button"
+                                  disabled={salesReadOnly}
+                                  onClick={() => toggleProjectChecklistItemChecked(checklist.id, item.id)}
+                                  className="flex w-full items-start gap-2.5 rounded-[8px] px-1.5 py-1.5 text-left transition enabled:hover:bg-[color-mix(in_srgb,var(--text-main)_6%,transparent)] disabled:cursor-default"
+                                  aria-pressed={item.checked}
                                 >
-                                  {item.checked && <Check size={11} color="#ffffff" strokeWidth={3} />}
-                                </span>
-                                <span
-                                  className="text-[13px] font-medium"
-                                  style={{
-                                    color: item.checked ? "var(--text-muted)" : "var(--text-main)",
-                                    textDecoration: item.checked ? "line-through" : "none",
+                                  <span
+                                    className={`mt-px inline-flex h-[17px] w-[17px] shrink-0 items-center justify-center rounded-[5px] border ${item.checked ? "glass-shine" : ""}`}
+                                    style={
+                                      item.checked
+                                        ? glassShineStyle("var(--brand)")
+                                        : { borderColor: "color-mix(in srgb, var(--text-main) 28%, transparent)", backgroundColor: "var(--panel-bg)" }
+                                    }
+                                  >
+                                    {item.checked ? <Check size={12} color="#ffffff" strokeWidth={3} /> : null}
+                                  </span>
+                                  <span
+                                    className="min-w-0 break-words text-[13.5px] font-medium"
+                                    style={{ color: item.checked ? "var(--text-muted)" : "var(--text-main)", textDecoration: item.checked ? "line-through" : "none" }}
+                                  >
+                                    {item.text}
+                                  </span>
+                                </button>
+                              ))}
+                            </div>
+                            {!salesReadOnly ? (
+                              armed ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setConfirmRemoveProjectChecklistId("");
+                                    removeProjectChecklist(checklist.id);
                                   }}
+                                  className="glass-shine absolute right-2 top-2 inline-flex h-6 items-center justify-center rounded-full px-2.5 text-[11px] font-bold text-white hover:brightness-105"
+                                  style={glassShineStyle("#EF4444")}
                                 >
-                                  {item.text}
-                                </span>
-                              </button>
-                            ))}
+                                  Remove
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmRemoveProjectChecklistId(checklist.id)}
+                                  className="absolute right-2 top-2 inline-flex h-6 w-6 items-center justify-center rounded-full transition-opacity hover:bg-[var(--danger-soft)] hover:text-[var(--danger)] focus-visible:opacity-100 pointer-fine:opacity-0 pointer-fine:group-hover/checklist:opacity-100"
+                                  style={{ color: "var(--text-muted)" }}
+                                  title="Remove checklist"
+                                  aria-label={`Remove ${checklist.name}`}
+                                >
+                                  <Trash2 size={13} />
+                                </button>
+                              )
+                            ) : null}
                           </div>
-                        </section>
-                      ))}
+                        );
+                      })}
                     </div>
                   ) : (
                     <div
@@ -38200,6 +38416,29 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     const id = `${kind === "hinges" ? "ord_hinge" : "ord_other"}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     updateOrderLineRows(kind, (rows) => [...rows, { id, name: "", qty: "" }], false);
   };
+  // A hinge / other item from the hardware library (dragged onto the hardware container, or clicked): `qty` more of it
+  // (the number typed against it, or one) — its line's quantity up, or a new line for it. Its box empties once it's in.
+  const onAddOrderLibraryItem = (kind: OrderLineKind, name: string, qty: number) => {
+    if (productionReadOnly || !name) return;
+    const count = Math.max(1, qty || 1);
+    updateOrderLineRows(
+      kind,
+      (rows) => {
+        const existing = rows.find((row) => row.name === name);
+        if (existing) return rows.map((row) => (row.id === existing.id ? { ...row, qty: String((Number(row.qty) || 0) + count) } : row));
+        const id = `${kind === "hinges" ? "ord_hinge" : "ord_other"}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+        return [...rows, { id, name, qty: String(count) }];
+      },
+      true,
+    );
+    setOrderLibraryQuantities((prev) => {
+      const key = `${kind}:${name}`;
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  };
   const onOrderLineNameChange = (kind: OrderLineKind, rowId: string, value: string) => {
     updateOrderLineRows(kind, (rows) => rows.map((row) => (row.id === rowId ? { ...row, name: value } : row)), true);
   };
@@ -38347,9 +38586,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     if (printableGroups.length === 0) return null;
 
     const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4", compress: true });
-    // Its title sheet (lib/print-title-page.ts), then its sheets from the next page.
-    drawPrintTitlePage(doc, printTitlePageFor("NESTING"));
-    doc.addPage();
+    // Its title sheet (lib/print-title-page.ts), then its sheets from the next page (in a folder: just its sheets).
+    if (!printingFolderRef.current) {
+      drawPrintTitlePage(doc, printTitlePageFor("NESTING"));
+      doc.addPage();
+    }
     const pageWidth = doc.internal.pageSize.getWidth();
     const pageHeight = doc.internal.pageSize.getHeight();
     const margin = 8;
@@ -39095,156 +39336,167 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     });
   };
 
+  // The Project Summary (Production's Print): one A4 landscape page, as plain and tidy as the title sheets — the
+  // company's logo top right; PROJECT SUMMARY, the project and the company over a rule; then three columns: its
+  // specifications (hardware, existing thicknesses), its cabinetry, and its materials (each board and its sheets, the
+  // parts and rooms); and under them all its notes — general, production, and each contractor's that has any — three
+  // to a row, as many lines of each as fit.
   const buildProductionSummaryPdfBlob = ({ jsPDF }: PdfExportModules): Blob | null => {
     if (!project) return null;
 
     const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4", compress: true });
     const pageWidth = doc.internal.pageSize.getWidth();
     const pageHeight = doc.internal.pageSize.getHeight();
-    const margin = 12;
-    const titleY = margin;
-    const titleH = 26;
-    const bodyTop = titleY + titleH + 8;
-    const bodyBottom = pageHeight - margin;
-    const bodyH = bodyBottom - bodyTop;
-    const gap = 7;
-    const col1W = 78;
-    const col2W = 92;
-    const col3W = pageWidth - margin * 2 - col1W - col2W - gap * 2;
-    const col1X = margin;
-    const col2X = col1X + col1W + gap;
-    const col3X = col2X + col2W + gap;
-    const lineH = 5;
-
-    const drawSectionCard = (
-      x: number,
-      y: number,
-      w: number,
-      title: string,
-      rows: Array<{ label: string; value: string; suffix?: string }>,
-    ) => {
-      const rowH = 11;
-      const headerH = 12;
-      const h = headerH + rows.length * rowH;
-      doc.setFillColor(255, 255, 255);
-      doc.setDrawColor(216, 222, 232);
-      doc.setLineWidth(0.6);
-      doc.roundedRect(x, y, w, h, 4, 4, "FD");
-      doc.setFillColor(238, 244, 255);
-      doc.roundedRect(x, y, w, headerH, 4, 4, "F");
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(11);
-      doc.setTextColor(18, 52, 91);
-      doc.text(title, x + 4, y + 8);
-
-      rows.forEach((row, idx) => {
-        const rowY = y + headerH + idx * rowH;
-        if (idx > 0) {
-          doc.setDrawColor(228, 231, 238);
-          doc.setLineWidth(0.35);
-          doc.line(x + 4, rowY, x + w - 4, rowY);
-        }
-        doc.setFont("helvetica", "bold");
-        doc.setFontSize(8.5);
-        doc.setTextColor(71, 84, 103);
-        doc.text(row.label, x + 4, rowY + 7);
-        doc.setFont("helvetica", "normal");
-        doc.setFontSize(9.5);
-        doc.setTextColor(15, 23, 42);
-        const suffix = String(row.suffix || "").trim();
-        const valueText = String(row.value || "").trim() || "-";
-        const value = suffix && valueText !== "-" ? `${valueText} ${suffix}` : valueText;
-        doc.text(value, x + w - 4, rowY + 7, { align: "right" });
-      });
-
-      return h;
+    const margin = 14;
+    const right = pageWidth - margin;
+    const ink: [number, number, number] = [17, 17, 17];
+    const muted: [number, number, number] = [110, 116, 128];
+    const hairline: [number, number, number] = [214, 218, 226];
+    const setColor = (rgb: [number, number, number]) => doc.setTextColor(rgb[0], rgb[1], rgb[2]);
+    // A value cut to its room (… when it's cut).
+    const fit = (text: string, width: number) => {
+      const lines = doc.splitTextToSize(text || "-", width) as string[];
+      return lines.length > 1 ? `${lines[0].replace(/\s*\S*$/, "")}…` : lines[0] ?? "-";
     };
 
-    const textToLines = (text: string, width: number) => doc.splitTextToSize(text || "-", width) as string[];
-    const clientNameParts = toStr(project?.customer, "").split(/\s+/).filter(Boolean);
-    const projectClientFirstName = toStr(project?.clientFirstName, "") || clientNameParts[0] || "-";
-    const assignedName = toStr(project?.assignedToName, "") || toStr(project?.assignedTo, "") || "-";
-    const topScribersLabel = productionForm.cabinetry.topScribers ? "Yes" : "No";
-    const hobCentreValue = [toStr(productionForm.cabinetry.hobSide, ""), toStr(productionForm.cabinetry.hobCentre, "")]
-      .filter(Boolean)
-      .join(" ")
-      .trim() || "-";
-    const generalNotesLines = textToLines(stripHtmlToPlainText(project?.notes), col3W - 8);
-    const productionNotesLines = textToLines(stripHtmlToPlainText(project?.productionNotes), col3W - 8);
-
-    doc.setFillColor(247, 250, 255);
-    doc.setDrawColor(216, 222, 232);
-    doc.setLineWidth(0.75);
-    doc.roundedRect(margin, titleY, pageWidth - margin * 2, titleH, 5, 5, "FD");
+    // ---- Header
+    const logo = printTitleLogoRef.current?.raw === printTitleLogoRaw ? printTitleLogoRef.current.logo : null;
+    if (logo) {
+      const maxW = 52;
+      const maxH = 20;
+      const ratio = logo.width / Math.max(1, logo.height);
+      let drawW = maxW;
+      let drawH = drawW / Math.max(0.0001, ratio);
+      if (drawH > maxH) {
+        drawH = maxH;
+        drawW = drawH * ratio;
+      }
+      doc.addImage(logo.dataUrl, logo.format, right - drawW, margin, drawW, drawH);
+    }
+    const companyName = printTitlePageFor("").companyName;
     doc.setFont("helvetica", "bold");
+    doc.setFontSize(9);
+    setColor(muted);
+    doc.text("PROJECT SUMMARY", margin, margin + 5);
+    doc.setFontSize(20);
+    setColor(ink);
+    doc.text(fit(toStr(project.name, "Untitled Project"), right - margin - 70), margin, margin + 14);
+    doc.setFont("helvetica", "normal");
     doc.setFontSize(10);
-    doc.setTextColor(102, 112, 133);
-    doc.text("PROJECT SUMMARY", margin + 6, titleY + 8);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(23);
-    doc.setTextColor(15, 23, 42);
-    doc.text(toStr(project?.name, "Untitled Project"), margin + 6, titleY + 18);
+    setColor(muted);
+    doc.text(`${companyName}   ·   Printed ${activeDate(new Date())}`, margin, margin + 21);
+    doc.setDrawColor(ink[0], ink[1], ink[2]);
+    doc.setLineWidth(0.4);
+    doc.line(margin, margin + 26, right, margin + 26);
 
-    const detailsRows = [
-      { label: "Project Assigned", value: assignedName },
-      { label: "Project Client First Name", value: projectClientFirstName },
-      { label: "Project Address", value: toStr(project?.clientAddress, "-") },
-    ];
-    // Stored in mm; shown in the company's unit.
+    // ---- The three columns
+    const bodyTop = margin + 36;
+    const gap = 10;
+    const columnW = (right - margin - gap * 2) / 3;
+    const columnX = [margin, margin + columnW + gap, margin + (columnW + gap) * 2];
+    // A column's heading: small grey capitals, a hairline under it. Returns where its rows start.
+    const heading = (x: number, y: number, title: string) => {
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(8.5);
+      setColor(muted);
+      doc.text(title.toUpperCase(), x, y);
+      doc.setDrawColor(hairline[0], hairline[1], hairline[2]);
+      doc.setLineWidth(0.3);
+      doc.line(x, y + 2, x + columnW, y + 2);
+      return y + 8;
+    };
+    // A row: its label on the left, its value on the right, a hairline under it. Returns the next row's y.
+    const row = (x: number, y: number, label: string, value: string) => {
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      setColor(muted);
+      doc.text(label, x, y);
+      doc.setFontSize(10);
+      setColor(ink);
+      doc.text(fit(value || "-", columnW - doc.getTextWidth(label) - 6), x + columnW, y, { align: "right" });
+      doc.setDrawColor(hairline[0], hairline[1], hairline[2]);
+      doc.setLineWidth(0.2);
+      doc.line(x, y + 2.6, x + columnW, y + 2.6);
+      return y + 7.2;
+    };
+
+    // Its specifications. Stored in mm; shown in the company's unit.
     const unitText = activeUnitLabel();
-    const lengthValue = (value: string) => (value === "-" ? "-" : activeLength(value, { withUnit: false }));
-    const existingRows = [
-      { label: "Carcass Thickness", value: lengthValue(toStr(productionForm.existing.carcassThickness, "-")), suffix: unitText },
-      { label: "Panel Thickness", value: lengthValue(toStr(productionForm.existing.panelThickness, "-")), suffix: unitText },
-      { label: "Fronts Thickness", value: lengthValue(toStr(productionForm.existing.frontsThickness, "-")), suffix: unitText },
+    const length = (value: unknown) => {
+      const raw = toStr(value, "");
+      return raw ? `${activeLength(raw, { withUnit: false })}${unitText ? ` ${unitText}` : ""}` : "-";
+    };
+    const hobCentre = [toStr(productionForm.cabinetry.hobSide, ""), toStr(productionForm.cabinetry.hobCentre, "") ? length(productionForm.cabinetry.hobCentre) : ""]
+      .filter(Boolean)
+      .join(" ");
+    let y1 = heading(columnX[0], bodyTop, "Specifications");
+    y1 = row(columnX[0], y1, "Hardware", toStr(productionForm.hardware.hardwareCategory) || defaultHardwareCategory() || "-");
+    y1 = row(columnX[0], y1, "Drawers", toStr(productionForm.hardware.newDrawerType, "-"));
+    y1 = row(columnX[0], y1, "Hinges", toStr(productionForm.hardware.hingeType, "-"));
+    y1 = row(columnX[0], y1, "Carcass thickness", length(productionForm.existing.carcassThickness));
+    y1 = row(columnX[0], y1, "Panel thickness", length(productionForm.existing.panelThickness));
+    y1 = row(columnX[0], y1, "Fronts thickness", length(productionForm.existing.frontsThickness));
+    let y2 = heading(columnX[1], bodyTop, "Cabinetry");
+    y2 = row(columnX[1], y2, "Base cab height", length(productionForm.cabinetry.baseCabHeight));
+    y2 = row(columnX[1], y2, "Tall cab height", length(productionForm.cabinetry.tallCabHeight));
+    y2 = row(columnX[1], y2, "Foot distance back", length(productionForm.cabinetry.footDistanceBack));
+    y2 = row(columnX[1], y2, "Foot height", length(productionForm.cabinetry.footHeight));
+    y2 = row(columnX[1], y2, "Hob centre", hobCentre || "-");
+    y2 = row(columnX[1], y2, "Top scribers", productionForm.cabinetry.topScribers ? "Yes" : "No");
+
+    // Its materials: each board and how many sheets it takes (Nesting's), then the totals.
+    const boards = nestingBoardLayouts.filter((group) => group.sheets.length > 0);
+    const totalSheets = boards.reduce((sum, group) => sum + group.sheets.length, 0);
+    const rooms = new Set(cutlistRows.map((cutlistRow) => String(cutlistRow.room || "").trim()).filter(Boolean));
+    let y3 = heading(columnX[2], bodyTop, "Materials");
+    const shownBoards = boards.length > 6 ? boards.slice(0, 5) : boards;
+    if (shownBoards.length) {
+      for (const group of shownBoards) {
+        y3 = row(columnX[2], y3, fit(group.boardLabel, columnW - 26), `${group.sheets.length} sheet${group.sheets.length === 1 ? "" : "s"}`);
+      }
+      if (boards.length > shownBoards.length) y3 = row(columnX[2], y3, `+${boards.length - shownBoards.length} more boards`, "");
+    } else {
+      y3 = row(columnX[2], y3, "Boards", "None nested yet");
+    }
+    y3 = row(columnX[2], y3, "Sheets", String(totalSheets));
+    y3 = row(columnX[2], y3, "Parts", String(cutlistRows.length));
+    y3 = row(columnX[2], y3, "Rooms", String(rooms.size));
+
+    // ---- Notes, under it all: general, production, then each contractor's that has any (the company's contractors'
+    // order, then any others) — three to a row, each with as many lines as its share of the page has room for.
+    const contractorNotes = (project.contractorNotes || {}) as Record<string, string>;
+    const contractorNames = [
+      ...contractorTabOptions,
+      ...Object.keys(contractorNotes).filter((name) => !contractorTabOptions.includes(name)),
+    ].filter((name) => notesHtmlToPlainText(contractorNotes[name]).trim());
+    const noteBlocks = [
+      { title: "General notes", text: notesHtmlToPlainText(project.notes) },
+      { title: "Production notes", text: notesHtmlToPlainText(project.productionNotes) },
+      ...contractorNames.map((name) => ({ title: name, text: notesHtmlToPlainText(contractorNotes[name]) })),
     ];
-    const cabinetryRows = [
-      { label: "Base Cab Height", value: lengthValue(toStr(productionForm.cabinetry.baseCabHeight, "-")), suffix: unitText },
-      { label: "Foot Distance Back", value: lengthValue(toStr(productionForm.cabinetry.footDistanceBack, "-")), suffix: unitText },
-      { label: "Tall Cab Height", value: lengthValue(toStr(productionForm.cabinetry.tallCabHeight, "-")), suffix: unitText },
-      { label: "Foot Height", value: lengthValue(toStr(productionForm.cabinetry.footHeight, "-")), suffix: unitText },
-      { label: "Hob Centre", value: hobCentreValue === "-" ? "-" : hobCentreValue.replace(/[\d.]+/, (n) => activeLength(n, { withUnit: false })), suffix: hobCentreValue !== "-" ? unitText : "" },
-      { label: "Top Scribers", value: topScribersLabel },
-    ];
-
-    const existingH = drawSectionCard(col2X, bodyTop, col2W, "Existing", existingRows);
-    drawSectionCard(col1X, bodyTop, col1W, "Details", detailsRows);
-    drawSectionCard(col2X, bodyTop + existingH + 6, col2W, "Cabinetry", cabinetryRows);
-
-    doc.setFillColor(255, 255, 255);
-    doc.setDrawColor(216, 222, 232);
-    doc.setLineWidth(0.6);
-    doc.roundedRect(col3X, bodyTop, col3W, bodyH, 4, 4, "FD");
-    doc.setFillColor(238, 244, 255);
-    doc.roundedRect(col3X, bodyTop, col3W, 12, 4, 4, "F");
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(11);
-    doc.setTextColor(18, 52, 91);
-    doc.text("Notes", col3X + 4, bodyTop + 8);
-
-    const notesStartY = bodyTop + 18;
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(10);
-    doc.setTextColor(15, 23, 42);
-    doc.text("General Notes", col3X + 4, notesStartY);
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(9.5);
-    doc.setTextColor(51, 65, 85);
-    doc.text(generalNotesLines, col3X + 4, notesStartY + 6);
-
-    const generalBlockH = Math.max(lineH, generalNotesLines.length * lineH);
-    const productionTitleY = notesStartY + 6 + generalBlockH + 8;
-    doc.setDrawColor(228, 231, 238);
-    doc.setLineWidth(0.35);
-    doc.line(col3X + 4, productionTitleY - 4, col3X + col3W - 4, productionTitleY - 4);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(10);
-    doc.setTextColor(15, 23, 42);
-    doc.text("Production Notes", col3X + 4, productionTitleY);
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(9.5);
-    doc.setTextColor(51, 65, 85);
-    doc.text(productionNotesLines, col3X + 4, productionTitleY + 6);
+    const notesTop = Math.max(y1, y2, y3) + 6;
+    doc.setDrawColor(ink[0], ink[1], ink[2]);
+    doc.setLineWidth(0.4);
+    doc.line(margin, notesTop, right, notesTop);
+    const notesLineH = 4.6;
+    const blockRows = Math.ceil(noteBlocks.length / 3);
+    const rowH = (pageHeight - margin - notesTop - 4) / blockRows;
+    noteBlocks.forEach((block, index) => {
+      const x = columnX[index % 3];
+      const top = notesTop + 4 + Math.floor(index / 3) * rowH;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(8.5);
+      setColor(muted);
+      doc.text(fit(block.title.toUpperCase(), columnW), x, top + 5);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10);
+      setColor(ink);
+      const wrapped = block.text.trim() ? (doc.splitTextToSize(block.text.trim(), columnW) as string[]) : ["-"];
+      const maxLines = Math.max(1, Math.floor((rowH - 14) / notesLineH));
+      let lines = wrapped.slice(0, maxLines);
+      if (wrapped.length > maxLines) lines = [...lines.slice(0, -1), `${lines[lines.length - 1].replace(/\s*\S*$/, "")}…`];
+      doc.text(lines, x, top + 11.5, { lineHeightFactor: 1.3 });
+    });
 
     return doc.output("blob");
   };
@@ -40324,11 +40576,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       );
     }
 
-    // Its title sheet (lib/print-title-page.ts) — its tables from the next page.
-    drawPrintTitlePage(doc, { ...printTitlePageFor("CNC CUTLIST"), logo: await ensurePrintTitleLogo() });
-
-    // Start CNC tables on the next page after title sheet.
-    doc.addPage();
+    // Its title sheet (lib/print-title-page.ts) — its tables from the next page (in a folder: just its tables).
+    if (!printingFolderRef.current) {
+      drawPrintTitlePage(doc, { ...printTitlePageFor("CNC CUTLIST"), logo: await ensurePrintTitleLogo() });
+      doc.addPage();
+    }
 
     let runningId = 0;
     cncRowsByBoardNonCab.forEach((group, idx) => {
@@ -41063,6 +41315,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   window.setTimeout(() => URL.revokeObjectURL(url), 2500);
   };
 
+  // A project folder's details, for its title sheet (over the rule above NOTES): when it was printed, and by whom.
+  const projectFolderDetails = (): Array<{ label: string; value: string }> => [
+    { label: "Printed", value: activeDate(new Date()) },
+    { label: "Printed by", value: toStr(user?.displayName, "") || toStr(user?.email, "-") },
+  ];
   const canPrintProductionSummary = Boolean(project);
   const canPrintNesting = nestingBoardLayouts.some((group) => group.sheets.length > 0);
   const canPrintCnc = cncPrintSourceRows.length > 0;
@@ -41096,16 +41353,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       description:
         cutlistPrintPageCount === null ? "Counting pages…" : `${cutlistPrintPageCount} page${cutlistPrintPageCount === 1 ? "" : "s"}`,
       enabled: canPrintCutlist,
-      onPrint: () => void printProductionCutlist(),
+      onPrint: () => void printProductionCutlist("production"),
     },
   ] as const;
   const openProductionPrintModal = () => {
-    setProductionPrintSelections((current) => ({
+    // Everything there is to print, on.
+    setProductionPrintSelections({
       summary: canPrintProductionSummary,
       nesting: canPrintNesting,
       cnc: canPrintCnc,
-      cutlist: canPrintCutlist && Boolean(current.cutlist),
-    }));
+      cutlist: canPrintCutlist,
+    });
     setCutlistPrintPageCount(null);
     if (canPrintCutlist) {
       withPdfExportModules((modules) => {
@@ -41133,45 +41391,76 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     }
 
     // Same "only await if not loaded yet" as onExportCncPdf, so a lone PDF out of this can still
-    // open its print window within the click. (And the title sheets' logo.)
+    // open its print window within the click. (And the title sheet's logo.)
     const pdfModules = loadedPdfExportModules ?? (await loadPdfExportModules());
     if (printTitleLogoRef.current?.raw !== printTitleLogoRaw) await ensurePrintTitleLogo();
-    const blobs: Blob[] = [];
-    for (const option of selected) {
-      if (option.id === "summary") {
-        const blob = buildProductionSummaryPdfBlob(pdfModules);
-        if (blob) blobs.push(blob);
-        continue;
+    // One PROJECT FOLDER: each print without its own title sheet, and the folder's in front of them all.
+    const sections: Array<{ label: string; blob: Blob }> = [];
+    printingFolderRef.current = true;
+    try {
+      for (const option of selected) {
+        if (option.id === "summary") {
+          const blob = buildProductionSummaryPdfBlob(pdfModules);
+          if (blob) sections.push({ label: option.label, blob });
+          continue;
+        }
+        if (option.id === "nesting") {
+          const blob = buildNestingPdfBlob(pdfModules);
+          if (blob) sections.push({ label: option.label, blob });
+          continue;
+        }
+        if (option.id === "cnc") {
+          const blob = await onExportCncPdf("blob");
+          if (blob instanceof Blob) sections.push({ label: option.label, blob });
+          continue;
+        }
+        if (option.id === "cutlist") {
+          const made = buildProductionCutlistPrint(pdfModules.jsPDF);
+          if (made) sections.push({ label: option.label, blob: made.blob });
+        }
       }
-      if (option.id === "nesting") {
-        const blob = buildNestingPdfBlob(pdfModules);
-        if (blob) blobs.push(blob);
-        continue;
-      }
-      if (option.id === "cnc") {
-        const blob = await onExportCncPdf("blob");
-        if (blob instanceof Blob) blobs.push(blob);
-        continue;
-      }
-      if (option.id === "cutlist") {
-        const made = buildProductionCutlistPrint(pdfModules.jsPDF);
-        if (made) blobs.push(made.blob);
-      }
+    } finally {
+      printingFolderRef.current = false;
     }
-    if (blobs.length === 0) return;
-    if (blobs.length === 1) {
-      pdfModules.openPdfBlobInPrintWindow(blobs[0]);
-      return;
-    }
+    if (sections.length === 0) return;
 
-    const { PDFDocument } = await import("pdf-lib");
+    const { PDFDocument, StandardFonts, rgb } = await import("pdf-lib");
+    const loaded = await Promise.all(
+      sections.map(async (section) => ({ label: section.label, pdf: await PDFDocument.load(await section.blob.arrayBuffer()) })),
+    );
+    // Its contents: each print and the page it starts on (after the folder's sheet, page 1).
+    let nextPage = 2;
+    const contents = loaded.map(({ label, pdf }) => {
+      const entry = { label, page: nextPage };
+      nextPage += pdf.getPageCount();
+      return entry;
+    });
+    const titleDoc = new pdfModules.jsPDF({ orientation: "landscape", unit: "mm", format: "a4", compress: true });
+    drawPrintTitlePage(titleDoc, {
+      ...printTitlePageFor("PROJECT FOLDER"),
+      logo: await ensurePrintTitleLogo(),
+      details: projectFolderDetails(),
+      contents,
+    });
     const merged = await PDFDocument.create();
-    for (const blob of blobs) {
-      const bytes = await blob.arrayBuffer();
-      const source = await PDFDocument.load(bytes);
+    for (const source of [await PDFDocument.load(titleDoc.output("arraybuffer")), ...loaded.map((section) => section.pdf)]) {
       const pages = await merged.copyPages(source, source.getPageIndices());
       pages.forEach((page) => merged.addPage(page));
     }
+    // Every page numbered — "Page n of m", small and grey in its bottom right corner (where the cutlist's own was).
+    const numberFont = await merged.embedFont(StandardFonts.Helvetica);
+    const folderPages = merged.getPages();
+    folderPages.forEach((folderPage, index) => {
+      const label = `Page ${index + 1} of ${folderPages.length}`;
+      const size = 7.5;
+      folderPage.drawText(label, {
+        x: folderPage.getWidth() - 22 - numberFont.widthOfTextAtSize(label, size),
+        y: 12,
+        size,
+        font: numberFont,
+        color: rgb(0.43, 0.43, 0.43),
+      });
+    });
     const mergedBytes = await merged.save();
     const mergedUint8 = Uint8Array.from(mergedBytes);
     pdfModules.openPdfBlobInPrintWindow(new Blob([mergedUint8], { type: "application/pdf" }));
@@ -41191,16 +41480,29 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               className="glass-modal-panel relative flex w-[min(840px,96vw)] max-h-[min(720px,92vh)] flex-col overflow-hidden"
               style={{ zIndex: 2147483647 }}
             >
-              <div className="glass-modal-header flex h-[56px] items-center px-5">
+              {/* Its X in the top right corner, as the other pop-ups' (no Cancel). */}
+              <div className="glass-modal-header flex items-center justify-between gap-3 px-5 py-4">
                 <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Print</p>
+                <button type="button" onClick={closeProductionPrintModal} className={modalCloseButtonClass} aria-label="Close">
+                  <X size={16} />
+                </button>
               </div>
               <div className="glass-scroll min-h-0 flex-1 overflow-auto px-5 py-4">
                 <div className="space-y-2">
                   {productionPrintOptions.map((option) => {
                     const checked = Boolean(productionPrintSelections[option.id]);
+                    const setChecked = (nextChecked: boolean) =>
+                      setProductionPrintSelections((current) => ({
+                        ...current,
+                        [option.id]: nextChecked,
+                      }));
+                    // A toggle on its right (the app's own — GlassSwitch); a click anywhere on the row flips it too.
                     return (
-                      <label
+                      <div
                         key={option.id}
+                        onClick={() => {
+                          if (option.enabled) setChecked(!checked);
+                        }}
                         className={`flex items-center gap-3 rounded-[12px] border px-4 py-3 ${
                           option.enabled ? "cursor-pointer" : "cursor-not-allowed opacity-55"
                         }`}
@@ -41214,26 +41516,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               : "transparent",
                         }}
                       >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          disabled={!option.enabled}
-                          onChange={(event) => {
-                            const nextChecked = event.currentTarget.checked;
-                            setProductionPrintSelections((current) => ({
-                              ...current,
-                              [option.id]: nextChecked,
-                            }));
-                          }}
-                          className="h-4 w-4 shrink-0 rounded border-[#C7D2E2]"
-                        />
                         <span className="min-w-0 flex-1">
                           <span className="block text-[13px] font-bold" style={{ color: "var(--text-main)" }}>{option.label}</span>
                           <span className="mt-[2px] block text-[12px]" style={{ color: "var(--text-muted)" }}>
                             {option.enabled ? option.description : "Nothing available to print yet."}
                           </span>
                         </span>
-                      </label>
+                        {/* (Its own click isn't the row's too — that would flip it back.) */}
+                        <span className="shrink-0" onClick={(event) => event.stopPropagation()}>
+                          <GlassSwitch checked={checked && option.enabled} disabled={!option.enabled} onChange={setChecked} ariaLabel={`Print ${option.label}`} />
+                        </span>
+                      </div>
                     );
                   })}
                 </div>
@@ -41241,18 +41534,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <div className="flex items-center justify-end gap-2 border-t px-5 py-4" style={{ borderColor: "var(--glass-border)" }}>
                 <button
                   type="button"
-                  onClick={closeProductionPrintModal}
-                  className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95"
-                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
                   disabled={!productionPrintOptions.some((option) => option.enabled && productionPrintSelections[option.id])}
                   onClick={onConfirmProductionPrint}
-                  className="inline-flex h-9 items-center gap-2 rounded-[9px] border px-4 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-55"
-                  style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                  // (Round-ended, with the glass shine — the app's blue.)
+                  className="glass-shine inline-flex h-9 items-center gap-2 rounded-full border px-4 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-55"
+                  style={glassShineStyle("var(--brand)")}
                 >
                   <Printer size={13} />
                   Print
@@ -41265,6 +41551,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       : null;
 
   if (isOrderFullscreen) {
+    // On a computer: Drawers, Hinges, Other (the hardware container's parts) and Misc side by side, in columns, and
+    // Boards To Order under all four, across the page. A phone / tablet: one under another.
+    const orderColumns = !isCompactProjectViewport;
     // Glass containers like the rest of Production. The hardware container is themed in its brand's
     // own colour (Company Settings > Hardware); Misc and Boards stay neutral.
     const orderGlassSectionStyle: React.CSSProperties = {
@@ -41297,12 +41586,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         onClick={onDelete}
         onMouseEnter={() => setHoveredOrderDeleteRowId(rowId)}
         onMouseLeave={() => setHoveredOrderDeleteRowId((prev) => (prev === rowId ? "" : prev))}
-        className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border text-white hover:brightness-95 disabled:opacity-55"
-        style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
+        // (Round, with the glass shine — red, as the cutlist rows' X.)
+        className="glass-shine inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-white hover:brightness-95 disabled:opacity-55"
+        style={glassShineStyle("var(--danger)")}
         title="Remove"
         aria-label="Remove"
       >
-        <X size={13} strokeWidth={2.8} />
+        {/* (An even size: in its 26px inside its 1px border, it sits on whole pixels — dead centre, not half a pixel off.) */}
+        <X size={14} strokeWidth={2.8} />
       </button>
     );
     const orderAddButton = (label: string, onAdd: () => void, themed: boolean) => (
@@ -41310,21 +41601,42 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         type="button"
         disabled={productionReadOnly}
         onClick={onAdd}
-        className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[9px] border hover:brightness-95 disabled:opacity-55"
-        style={
-          themed
-            ? { backgroundColor: orderHardwareColor, borderColor: `color-mix(in srgb, ${orderHardwareColor} 80%, #000000)`, color: orderHwOnColor }
-            : { backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)", color: "#FFFFFF" }
-        }
+        // (Round, with the glass shine — in the hardware's colour, or Misc's the app's green.)
+        className="glass-shine inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border hover:brightness-95 disabled:opacity-55"
+        style={glassShineStyle(themed ? orderHardwareColor : "#16A34A", { color: themed ? orderHwOnColor : "#FFFFFF" })}
         title={label}
         aria-label={label}
       >
-        <Plus size={15} strokeWidth={2.6} />
+        {/* (An even size, so it sits dead centre — as the X.) */}
+        <Plus size={16} strokeWidth={2.6} />
       </button>
     );
     // One of the hardware container's three parts (Drawers / Hinges / Other).
-    const orderHardwarePart = (opts: { title: string; badge?: string; qtyTotal: number; addLabel?: string; onAdd?: () => void; first?: boolean; children: React.ReactNode }) => (
-      <div className={`space-y-2 px-3 py-3 ${opts.first ? "" : "border-t"}`} style={opts.first ? undefined : { borderColor: orderHwTint(28) }}>
+    const orderHardwarePart = (opts: {
+      title: string;
+      badge?: string;
+      qtyTotal: number;
+      addLabel?: string;
+      onAdd?: () => void;
+      first?: boolean;
+      // Where the hardware library's items of this kind go: lit while one's dragged (more, over the container).
+      dropKind?: OrderLineKind;
+      children: React.ReactNode;
+    }) => {
+      const lit = Boolean(opts.dropKind && orderLibraryDrag?.kind === opts.dropKind);
+      return (
+      <div
+        className={`min-w-0 space-y-2 px-3 py-3 transition-[background-color,box-shadow] duration-150 ${opts.first ? "" : orderColumns ? "border-l" : "border-t"}`}
+        style={{
+          ...(opts.first ? {} : { borderColor: orderHwTint(28) }),
+          ...(lit
+            ? {
+                backgroundColor: orderHwTint(isOrderLibraryDropOver ? 22 : 10),
+                boxShadow: `inset 0 0 0 2px ${isOrderLibraryDropOver ? orderHardwareColor : orderHwTint(60)}`,
+              }
+            : {}),
+        }}
+      >
         <div className="flex min-h-7 items-center justify-between gap-2">
           <div className="inline-flex min-w-0 items-center gap-2">
             <span className="h-4 w-[3px] shrink-0 rounded-full" style={{ backgroundColor: orderHardwareColor }} />
@@ -41346,7 +41658,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         </div>
         {opts.children}
       </div>
-    );
+      );
+    };
     // Hinges / Other lines: a pick from this project's hardware brand, and a quantity.
     const orderLineGrid = "28px minmax(0,1fr) 72px";
     const orderLineList = (kind: OrderLineKind, rows: OrderHingeRow[], options: string[], itemLabel: string, emptyText: string) =>
@@ -41395,8 +41708,181 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         </div>
       );
     const orderHardwareLabel = orderHardwareName || "this hardware";
+    // The hardware library (desktop): floats down the left over the page, under the bar — its search, then the hardware's
+    // Hinges and Other, each a bubble that shuts from its heading (as Items' categories). An item: dragged onto the
+    // hardware container, or clicked, goes on the order (onAddOrderLibraryItem); how many are on it already beside it.
+    const orderLibraryShown = !isCompactProjectViewport;
+    // Its search ignores symbols and spaces — "110 softclose" finds "110° Soft Close": each word typed, without them,
+    // somewhere in the name without them.
+    const hardwareSearchKeyOf = (text: string) => text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+    const orderLibrarySearchWords = orderLibrarySearch.split(/\s+/).map(hardwareSearchKeyOf).filter(Boolean);
+    const matchesOrderLibrarySearch = (option: string) => {
+      const key = hardwareSearchKeyOf(option);
+      return orderLibrarySearchWords.every((word) => key.includes(word));
+    };
+    const orderLibraryBubbleAnimation = (key: string): React.CSSProperties =>
+      isOrderLibraryClosing
+        ? { animation: "glass-bubble-slide-out-left 280ms ease 0ms both" }
+        : isOrderLibraryJustOpened
+          ? { animation: `glass-bubble-slide-in-left 480ms cubic-bezier(0.34, 1.56, 0.64, 1) ${stableBubbleAnimationDelayMs(key)}ms both` }
+          : {};
+    const renderOrderLibraryList = (kind: OrderLineKind, title: string, options: string[], rows: OrderHingeRow[], emptyText: string) => {
+      const shown = orderLibrarySearchWords.length ? options.filter(matchesOrderLibrarySearch) : options;
+      const collapsed = Boolean(orderLibraryCollapsed[kind]);
+      return (
+        <section
+          className="relative overflow-hidden rounded-[14px] border"
+          style={{ ...salesItemsLibraryBubbleStyle, ...orderLibraryBubbleAnimation(`order:${kind}`) }}
+        >
+          <button
+            type="button"
+            onClick={() => setOrderLibraryListCollapsed(kind, !collapsed)}
+            aria-expanded={!collapsed}
+            className="relative z-[2] flex h-[43.5px] w-full items-center justify-between gap-3 pl-4 pr-[10px] text-left"
+          >
+            <span className="inline-flex min-w-0 items-center gap-2">
+              <span className="h-4 w-[3px] shrink-0 rounded-full" style={{ backgroundColor: orderHardwareColor }} />
+              <span className="truncate text-[15px] font-bold leading-tight" style={{ color: "var(--text-main)" }}>{title}</span>
+              <span className="shrink-0 rounded-full border px-2 py-[1px] text-[11px] font-semibold" style={orderNeutralPillStyle}>
+                {options.length}
+              </span>
+            </span>
+            <TintedAngleDownIcon color="var(--text-main)" size={12} expanded={!collapsed} />
+          </button>
+          <div className="grid" style={{ gridTemplateRows: collapsed ? "0fr" : "1fr", transition: SALES_ITEMS_LIBRARY_SLIDE }} inert={collapsed}>
+            <div className="min-h-0 overflow-hidden">
+              <div style={{ borderTop: "1px solid var(--glass-border)" }} />
+              {shown.length === 0 ? (
+                <p className="px-4 py-3 text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>
+                  {options.length ? "Nothing matches the search." : emptyText}
+                </p>
+              ) : (
+                shown.map((option, index) => {
+                  const onOrder = rows.find((row) => row.name === option);
+                  const quantityKey = `${kind}:${option}`;
+                  const quantityText = orderLibraryQuantities[quantityKey] ?? "";
+                  const quantity = Math.max(1, Number.parseInt(quantityText, 10) || 1);
+                  return (
+                    <div key={`order_lib_${kind}_${option}`} className="group/orderlib" style={{ backgroundColor: "var(--panel-muted)" }}>
+                      {index > 0 ? <div style={{ borderTop: "1px solid var(--glass-border)" }} /> : null}
+                      <div className="flex min-h-10 items-stretch">
+                        <button
+                          type="button"
+                          draggable={!productionReadOnly}
+                          disabled={productionReadOnly}
+                          onDragStart={(e) => {
+                            e.dataTransfer.effectAllowed = "copy";
+                            e.dataTransfer.setData("text/plain", option);
+                            // (The same ghost as everywhere else — Items' library: a pill out of its name, how many it'll add.)
+                            if (orderLibraryDragGhost.transparentImageRef.current) {
+                              e.dataTransfer.setDragImage(orderLibraryDragGhost.transparentImageRef.current, 0, 0);
+                            }
+                            orderLibraryDragGhost.spawn(e, `order-lib-name-${kind}-${index}`, { label: option, color: orderHardwareColor, badge: String(quantity) });
+                            setOrderLibraryDrag({ kind, name: option, qty: quantity });
+                          }}
+                          onDragEnd={() => {
+                            orderLibraryDragGhost.end();
+                            setOrderLibraryDrag(null);
+                            setIsOrderLibraryDropOver(false);
+                          }}
+                          onClick={() => onAddOrderLibraryItem(kind, option, quantity)}
+                          title="Drag onto the hardware to add, or click to add"
+                          className="flex min-w-0 flex-1 cursor-grab items-center gap-2 py-2 pl-4 pr-2 text-left hover:brightness-95 active:cursor-grabbing disabled:cursor-default"
+                        >
+                          <GripVertical size={14} className="shrink-0" style={{ color: "var(--text-muted)" }} />
+                          <span id={`order-lib-name-${kind}-${index}`} className="truncate text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
+                            {option}
+                          </span>
+                        </button>
+                        {/* How many to add (clicking or dragging it): fades in on hover, and stays once there's a number
+                            in it (or it's being typed in) — as Items' library. Numbers only. */}
+                        <div
+                          className={`flex shrink-0 items-center transition-opacity duration-200 ${
+                            quantityText
+                              ? "opacity-100"
+                              : "pointer-events-none opacity-0 focus-within:pointer-events-auto focus-within:opacity-100 group-hover/orderlib:pointer-events-auto group-hover/orderlib:opacity-100"
+                          }`}
+                        >
+                          <input
+                            value={quantityText}
+                            onChange={(event) => {
+                              const digits = event.currentTarget.value.replace(/\D/g, "").slice(0, 4);
+                              setOrderLibraryQuantities((prev) => {
+                                const next = { ...prev };
+                                if (digits) next[quantityKey] = digits;
+                                else delete next[quantityKey];
+                                return next;
+                              });
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") onAddOrderLibraryItem(kind, option, quantity);
+                            }}
+                            inputMode="numeric"
+                            placeholder="Qty"
+                            disabled={productionReadOnly}
+                            aria-label={`How many ${option} to add`}
+                            className="h-7 w-11 rounded-[8px] border px-1 text-center text-[12px] font-medium outline-none focus:placeholder:text-transparent"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                          />
+                        </div>
+                        <span className="flex shrink-0 items-center pl-2 pr-3">
+                          {onOrder && Number(onOrder.qty) > 0 ? (
+                            <span className="rounded-full border px-2 py-[1px] text-[11px] font-bold" style={orderHwPillStyle}>
+                              {onOrder.qty} on order
+                            </span>
+                          ) : (
+                            <Plus size={14} style={{ color: "var(--text-muted)" }} />
+                          )}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </section>
+      );
+    };
+    const orderLibraryPanel = (
+      <section
+        className="hide-native-scrollbar pointer-events-none min-h-0 overflow-y-auto"
+        style={{ position: "fixed", left: 0, top: 0, width: 400, height: "100svh", zIndex: 40 }}
+      >
+        <div style={{ height: 105 }} />
+        <div className="pointer-events-auto space-y-2 p-3" style={{ width: 360 }}>
+          <div
+            className="flex h-10 items-center gap-3 rounded-full border px-3"
+            style={{ ...salesItemsLibraryBubbleStyle, ...orderLibraryBubbleAnimation("order:search") }}
+          >
+            <Search size={15} className="shrink-0" style={{ color: "var(--text-muted)" }} />
+            <input
+              value={orderLibrarySearch}
+              onChange={(e) => setOrderLibrarySearch(e.currentTarget.value)}
+              placeholder="Search hardware"
+              className="h-full w-full bg-transparent text-[13px] outline-none"
+              style={{ color: "var(--text-main)" }}
+            />
+          </div>
+          {renderOrderLibraryList(
+            "hinges",
+            "Hinges",
+            orderHingeOptions,
+            orderHingeRows,
+            `No hinges set up for ${orderHardwareLabel} yet — add them in Company Settings → Hardware.`,
+          )}
+          {renderOrderLibraryList(
+            "other",
+            "Other",
+            orderOtherOptions,
+            orderOtherRows,
+            `No other items set up for ${orderHardwareLabel} yet — add them in Company Settings → Hardware.`,
+          )}
+        </div>
+      </section>
+    );
     const orderDrawerType = String(productionForm.hardware.newDrawerType || "").trim();
-    const orderMiscGrid = isCompactProjectViewport ? "28px minmax(0,1fr) 64px" : "28px minmax(0,1fr) minmax(0,1.3fr) 72px";
+    const orderMiscGrid = "28px minmax(0,1fr) 64px";
     const orderBoardGrid = isCompactProjectViewport ? "minmax(0,1fr) 56px" : "minmax(0,1.6fr) minmax(0,1fr) minmax(0,0.8fr) minmax(0,0.8fr) 64px";
     return (
       <ProtectedRoute>
@@ -41415,7 +41901,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             data-app-top-bar="true"
             className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
             style={{
-              height: 56,
+              height: orderLibraryShown ? 56 + 49 : 56,
               backgroundColor: "var(--glass-bg-strong)",
               backdropFilter: "blur(14px) saturate(220%)",
               WebkitBackdropFilter: "blur(14px) saturate(220%)",
@@ -41426,41 +41912,83 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           />
           <div
             data-app-top-bar-content="true"
-            className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center justify-between border-b px-4 md:px-5"
+            className={`fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center justify-between px-4 md:px-5 ${orderLibraryShown ? "" : "border-b"}`}
             style={{ borderColor: projectPalette.border }}
           >
-            <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-              <ShoppingCart size={14} />
+            <div className="inline-flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+              <ShoppingCart size={14} className="shrink-0" />
               <span>Order</span>
               <span style={{ color: "var(--text-muted)" }}>|</span>
               <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
             </div>
-            {isCompactProjectViewport ? (
-              <button
-                type="button"
-                onClick={() => void onSaveAndBackFromOrder()}
-                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95"
-                style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
-                aria-label="Save & Back"
-              >
-                <ChevronLeft size={18} color="#ffffff" strokeWidth={2.5} />
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => void onSaveAndBackFromOrder()}
-                className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95"
-                style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
-              >
-                <ArrowLeft size={14} />
-                Save & Back
-              </button>
-            )}
+            <div className="flex shrink-0 items-center gap-2">
+              {renderSaveAndBackButton(() => void onSaveAndBackFromOrder(), isCompactProjectViewport)}
+            </div>
           </div>
-          <div className="min-h-0 flex-1 overflow-auto px-3 pb-8 md:px-4" style={{ paddingTop: 72 }}>
-            <div className="mx-auto grid w-full max-w-[1500px] items-start gap-4 xl:grid-cols-2">
-              <div className="grid min-w-0 gap-4">
-                <section className="min-w-0 overflow-visible rounded-[18px] border" style={orderHardwareSectionStyle}>
+          {/* Desktop: a band under the bar — one bar with it, no line between — with the Hardware Library toggle on the
+              left, and a line across under it (as Items' Item Library). */}
+          {orderLibraryShown ? (
+            <>
+              <div className="pointer-events-none fixed inset-x-0 z-[95] h-px" style={{ top: 56 + 49, backgroundColor: projectPalette.border }} />
+              <button
+                type="button"
+                onClick={toggleOrderLibrary}
+                className="fixed z-[95] flex items-center justify-center gap-1.5 text-[15px] font-bold transition hover:brightness-95"
+                style={{
+                  left: 0,
+                  top: 56,
+                  width: 360,
+                  height: 49,
+                  color: isOrderLibraryOpen && !isOrderLibraryClosing ? "var(--brand-strong)" : "var(--text-main)",
+                }}
+              >
+                Hardware Library
+                <ChevronDown
+                  size={13}
+                  style={{
+                    transform: isOrderLibraryOpen && !isOrderLibraryClosing ? "rotate(-90deg)" : "rotate(90deg)",
+                    transition: "transform 140ms ease",
+                  }}
+                />
+              </button>
+              {isOrderLibraryOpen ? orderLibraryPanel : null}
+            </>
+          ) : null}
+          <div
+            className="min-h-0 flex-1 overflow-auto px-3 pb-8 md:px-4"
+            style={{
+              paddingTop: orderLibraryShown ? 56 + 49 + 16 : 72,
+              // (Moved in from the left while the library's out — as Items' room columns are.)
+              paddingLeft: orderLibraryShown && isOrderLibraryOpen && !isOrderLibraryClosing ? 360 : undefined,
+              transition: orderLibraryShown
+                ? isOrderLibraryOpen && !isOrderLibraryClosing
+                  ? "padding-left 180ms ease"
+                  : "padding-left 200ms ease 280ms"
+                : undefined,
+            }}
+          >
+            <div className={orderColumns ? "grid w-full min-w-0 items-start gap-4" : "mx-auto grid w-full max-w-[1500px] items-start gap-4"}>
+              <div className="grid min-w-0 gap-4" style={orderColumns ? { gridTemplateColumns: "minmax(0,3fr) minmax(0,1fr)" } : undefined}>
+                <section
+                  className="min-w-0 overflow-visible rounded-[18px] border"
+                  style={orderHardwareSectionStyle}
+                  onDragOver={(e) => {
+                    if (!orderLibraryDrag) return;
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "copy";
+                    if (!isOrderLibraryDropOver) setIsOrderLibraryDropOver(true);
+                  }}
+                  onDragLeave={(e) => {
+                    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setIsOrderLibraryDropOver(false);
+                  }}
+                  onDrop={(e) => {
+                    if (!orderLibraryDrag) return;
+                    e.preventDefault();
+                    onAddOrderLibraryItem(orderLibraryDrag.kind, orderLibraryDrag.name, orderLibraryDrag.qty);
+                    setOrderLibraryDrag(null);
+                    setIsOrderLibraryDropOver(false);
+                  }}
+                >
                   <div
                     className="flex h-[50px] items-center justify-between gap-3 rounded-t-[18px] border-b px-4"
                     style={{ borderColor: orderHwTint(35), backgroundColor: orderHwTint(20) }}
@@ -41474,11 +42002,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         {orderHardwareName || "Hardware"}
                       </p>
                     </div>
-                    <span className="shrink-0 text-[11px] font-bold uppercase tracking-[0.8px]" style={{ color: projectPalette.textMuted }}>
-                      Hardware
-                    </span>
                   </div>
 
+                  <div className={orderColumns ? "grid h-[calc(100%-50px)] grid-cols-3" : undefined}>
                   {orderHardwarePart({
                     title: "Drawers",
                     // Rooms can have their own hardware: with drawers on more than one kind, each kind is its own group.
@@ -41530,6 +42056,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
                   {orderHardwarePart({
                     title: "Hinges",
+                    dropKind: "hinges",
                     qtyTotal: orderHingeQtyTotal,
                     addLabel: "Add hinge",
                     onAdd: () => onAddOrderLineRow("hinges"),
@@ -41546,6 +42073,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
                   {orderHardwarePart({
                     title: "Other",
+                    dropKind: "other",
                     qtyTotal: orderOtherQtyTotal,
                     addLabel: "Add other item",
                     onAdd: () => onAddOrderLineRow("other"),
@@ -41559,6 +42087,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         : `No other items set up for ${orderHardwareLabel} yet — add them in Company Settings → Hardware.`,
                     ),
                   })}
+                  </div>
                 </section>
 
                 <section className="min-w-0 overflow-visible rounded-[18px] border" style={orderGlassSectionStyle}>
@@ -41579,7 +42108,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         <div className="grid items-center gap-2 text-[11px] font-bold" style={{ color: projectPalette.textMuted, gridTemplateColumns: orderMiscGrid }}>
                           <p />
                           <p>Item</p>
-                          {isCompactProjectViewport ? null : <p>Notes</p>}
                           <p className="text-center">Qty</p>
                         </div>
                         {orderMiscLines.map((line) => (
@@ -41604,8 +42132,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               onChange={(e) => onOrderMiscDraftChange(line.key, { notes: e.target.value })}
                               onBlur={(e) => void onOrderMiscDraftBlur(line.key, { notes: e.target.value })}
                               className="h-8 w-full min-w-0 rounded-[8px] border px-2 text-[12px] outline-none"
-                              // On a phone, the notes sit on their own line under the item and its qty.
-                              style={isCompactProjectViewport ? { ...orderInputStyle, order: 1, gridColumn: "2 / 4" } : orderInputStyle}
+                              // The notes on their own line under the item and its qty (Misc is a column).
+                              style={{ ...orderInputStyle, order: 1, gridColumn: "2 / 4" }}
                             />
                             <input
                               type="text"
@@ -41698,6 +42226,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           {addRoomModalPortal}
           {unlockEditModalPortal}
           {remedialsModalPortal}
+          <DragGhostLayer controller={orderLibraryDragGhost} />
         </div>
       </ProtectedRoute>
     );
@@ -41737,25 +42266,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             />
             <div data-app-top-bar-content="true" className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center justify-between border-b px-3" style={{ borderColor: "var(--glass-border)" }}>
               <div className="inline-flex min-w-0 items-center gap-2 text-[13px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                <Ruler size={14} />
+                <Ruler size={14} className="shrink-0" />
                 <span>Initial Measure</span>
                 <span style={{ color: "var(--text-muted)" }}>|</span>
                 <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
-                {renderCutlistAlsoEditing(initialAlsoEditing, true)}
               </div>
               <div className="flex shrink-0 items-center gap-2">
+                {renderCutlistAlsoEditing(initialAlsoEditing, true)}
                 {renderCutlistSaveStatus("initialMeasure", false)}
+                {renderCutlistPrintButton(false, "initialMeasure")}
                 {renderCutlistExcelButton("initialMeasure", false)}
-                <button
-                  type="button"
-                  onClick={() => void saveAndBackFromInitialMeasure()}
-                  className="relative z-[1] inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95"
-                  style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
-                  aria-label="Save & Back"
-                  title="Save & Back"
-                >
-                  <ChevronLeft size={18} color="#ffffff" strokeWidth={2.5} />
-                </button>
+                {renderSaveAndBackButton(() => void saveAndBackFromInitialMeasure(), true)}
               </div>
             </div>
             <div className="h-[56px] shrink-0" />
@@ -42770,36 +43291,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </div>
             </div>
             <div className="inline-flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-              <Ruler size={14} />
+              <Ruler size={14} className="shrink-0" />
               <span>Initial Measure</span>
               <span style={{ color: "var(--text-muted)" }}>|</span>
               <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
-              {renderCutlistAlsoEditing(initialAlsoEditing, isCompactProjectViewport)}
             </div>
             <div className="flex shrink-0 items-center gap-2">
+            {renderCutlistAlsoEditing(initialAlsoEditing, isCompactProjectViewport)}
             {renderCutlistSaveStatus("initialMeasure", !isCompactProjectViewport)}
+            {renderCutlistPrintButton(!isCompactProjectViewport, "initialMeasure")}
             {renderCutlistExcelButton("initialMeasure", !isCompactProjectViewport)}
-            {isCompactProjectViewport ? (
-              <button
-                type="button"
-                onClick={() => void saveAndBackFromInitialMeasure()}
-                className="glass-shine relative z-[1] inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border hover:brightness-95"
-                style={glassShineStyle("var(--brand)")}
-                aria-label="Save & Back"
-              >
-                <ChevronLeft size={18} color="#ffffff" strokeWidth={2.5} />
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => void saveAndBackFromInitialMeasure()}
-                className="glass-shine relative z-[1] inline-flex h-9 items-center gap-2 rounded-full border px-3.5 text-[12px] font-bold text-white hover:brightness-95"
-                style={glassShineStyle("var(--brand)")}
-              >
-                <ArrowLeft size={14} />
-                Save & Back
-              </button>
-            )}
+            {renderSaveAndBackButton(() => void saveAndBackFromInitialMeasure(), isCompactProjectViewport)}
             </div>
           </div>
           <div className="h-[56px] shrink-0" />
@@ -43982,26 +44484,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             />
             <div data-app-top-bar-content="true" className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center justify-between border-b px-3" style={{ borderColor: "var(--glass-border)" }}>
               <div className="inline-flex min-w-0 items-center gap-2 text-[13px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                <Scissors size={14} />
+                <Scissors size={14} className="shrink-0" />
                 <span>Cutlist</span>
                 <span style={{ color: "var(--text-muted)" }}>|</span>
                 <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
-                {renderCutlistAlsoEditing(productionAlsoEditing, true)}
               </div>
               <div className="flex shrink-0 items-center gap-2">
+                {renderCutlistAlsoEditing(productionAlsoEditing, true)}
                 {renderCutlistSaveStatus("production", false)}
                 {renderCutlistPrintButton(false)}
                 {renderCutlistExcelButton("production", false)}
-                <button
-                  type="button"
-                  onClick={() => void onSaveAndBackFromCutlist()}
-                  className="glass-shine relative z-[1] inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border hover:brightness-95"
-                  style={glassShineStyle("var(--brand)")}
-                  aria-label="Save and back"
-                  title="Save and back"
-                >
-                  <ChevronLeft size={18} color="#ffffff" strokeWidth={2.5} />
-                </button>
+                {renderSaveAndBackButton(() => void onSaveAndBackFromCutlist(), true)}
               </div>
             </div>
             <div className="h-[56px] shrink-0" />
@@ -46540,25 +47033,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </div>
             </div>
             <div className="inline-flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-              <Scissors size={14} />
+              <Scissors size={14} className="shrink-0" />
               <span>Cutlist</span>
               <span style={{ color: "var(--text-muted)" }}>|</span>
               <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
-              {renderCutlistAlsoEditing(productionAlsoEditing, isCompactProjectViewport)}
             </div>
             <div className="flex shrink-0 items-center gap-2">
+              {renderCutlistAlsoEditing(productionAlsoEditing, isCompactProjectViewport)}
               {renderCutlistSaveStatus("production", true)}
               {renderCutlistPrintButton(true)}
               {renderCutlistExcelButton("production", true)}
-              <button
-                type="button"
-                onClick={() => void onSaveAndBackFromCutlist()}
-                className="glass-shine relative z-[1] inline-flex h-9 items-center gap-2 rounded-full border px-3.5 text-[12px] font-bold text-white hover:brightness-95"
-                style={glassShineStyle("var(--brand)")}
-              >
-                <ArrowLeft size={14} />
-                Save & Back
-              </button>
+              {renderSaveAndBackButton(() => void onSaveAndBackFromCutlist(), false)}
             </div>
           </div>
           <div className="h-[56px] shrink-0" />
@@ -47089,7 +47574,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           <div
                             data-cutlist-entry-grid="production-draft"
                             data-cutlist-entry-row={draft.id}
-                            className={`relative grid gap-2 overflow-visible ${(draftIsDoor || draftIsCabinetry) && !isSubPartDraft ? "items-start" : "items-center"} ${isSubPartDraft ? "pl-[2px] pr-[2px] rounded-[8px] border" : "py-1 px-1 border-y"}`}
+                            className={`relative grid gap-2 overflow-visible ${(draftIsDoor || draftIsCabinetry || isDrawerPartType(draft.partType)) && !isSubPartDraft ? "items-start" : "items-center"} ${isSubPartDraft ? "pl-[2px] pr-[2px] rounded-[8px] border" : "py-1 px-1 border-y"}`}
                             style={{
                               gridTemplateColumns: cutlistEntryGridTemplate,
                               backgroundColor: color,
@@ -47137,7 +47622,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 title="Add sub part"
                                 aria-label="Add sub part"
                               >
-                                <Plus size={15} className="mx-auto" strokeWidth={2.8} />
+                                {/* (Bigger than the X's 15: a + of the same size looks the smaller of the two.) */}
+                                <Plus size={19} className="mx-auto" strokeWidth={2.8} />
                               </button>
                             )}
                           </div>
@@ -49306,103 +49792,26 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             // phones (matching a since-fixed identical override on Nesting's own top bar).
             style={{ color: "var(--text-main)" }}
           >
-            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px" style={{ backgroundColor: "var(--glass-border)" }} />
-            <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-              <Cpu size={14} />
+            {/* (No line under it: it and the band under it — Visibility, or a phone's board types — are one bar.) */}
+            <div className="inline-flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+              <Cpu size={14} className="shrink-0" />
               <span>CNC Cutlist</span>
               <span style={{ color: "var(--text-muted)" }}>|</span>
               <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
             </div>
-            <div className="inline-flex items-center gap-2">
-              <button
-                type="button"
-                onClick={onPrintCnc}
-                className={`inline-flex items-center justify-center rounded-[8px] border hover:brightness-95 ${isCompactProjectViewport ? "h-9 w-9 px-0" : "h-9 gap-2 px-3 text-[12px] font-bold"}`}
-                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                aria-label="Print CNC"
-                title="Print CNC"
-              >
-                <Printer size={14} />
-                {!isCompactProjectViewport ? "Print" : null}
-              </button>
-              <div className="relative" ref={cncExportMenuRef}>
-                <button
-                  type="button"
-                  onClick={() => setCncExportMenuOpen((prev) => !prev)}
-                  className={`inline-flex items-center justify-between rounded-[8px] border hover:brightness-95 ${isCompactProjectViewport ? "h-9 w-9 px-0 justify-center" : "h-9 w-[130px] px-3 text-[12px] font-bold"}`}
-                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                  aria-label="Export CNC"
-                  title="Export CNC"
-                >
-                  <span className={`inline-flex items-center ${isCompactProjectViewport ? "" : "gap-2"}`}>
-                    <FileSpreadsheet size={14} />
-                    {!isCompactProjectViewport ? "Export" : null}
-                  </span>
-                  {!isCompactProjectViewport ? <ChevronDown size={14} /> : null}
-                </button>
-                {cncExportMenuOpen && (
-                  <div
-                    className="absolute right-0 top-[42px] z-[120] w-[130px] overflow-hidden rounded-[10px] border max-md:w-[180px] max-md:rounded-[14px] shadow-[0_12px_30px_rgba(15,23,42,0.14)]"
-                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-modal-bg)", backdropFilter: "blur(16px) saturate(200%)", WebkitBackdropFilter: "blur(16px) saturate(200%)" }}
-                  >
-                    {/* TEMPORARY (testing): the old Google Sheets layout — see onExportCncXlsxOld. */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void onExportCncXlsxOld();
-                        setCncExportMenuOpen(false);
-                      }}
-                      className="flex h-9 w-full items-center px-3 text-left text-[12px] font-semibold transition-colors hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] max-md:h-11 max-md:px-4 max-md:text-[15px]"
-                      style={{ color: "var(--text-main)" }}
-                    >
-                      Old
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onExportCncXlsx();
-                        setCncExportMenuOpen(false);
-                      }}
-                      className="flex h-9 w-full items-center border-t px-3 text-left text-[12px] font-semibold transition-colors hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] max-md:h-11 max-md:px-4 max-md:text-[15px]"
-                      style={{ borderColor: "var(--glass-border)", color: "var(--text-main)" }}
-                    >
-                      .xlsx
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onExportCncPdf();
-                        setCncExportMenuOpen(false);
-                      }}
-                      className="flex h-9 w-full items-center border-t px-3 text-left text-[12px] font-semibold transition-colors hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] max-md:h-11 max-md:px-4 max-md:text-[15px]"
-                      style={{ borderColor: "var(--glass-border)", color: "var(--text-main)" }}
-                    >
-                      .pdf
-                    </button>
-                  </div>
-                )}
-              </div>
-              <button
-                type="button"
-                onClick={() => void onSaveAndBackFromCnc()}
-                className={isCompactProjectViewport
-                  ? "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95"
-                  : "inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95"}
-                style={isCompactProjectViewport
-                  ? { backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }
-                  : { borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
-                aria-label="Save and back"
-                title="Save and back"
-              >
-                {isCompactProjectViewport ? (
-                  <ChevronLeft size={18} color="#ffffff" strokeWidth={2.5} />
-                ) : (
-                  <>
-                    <ArrowLeft size={14} />
-                    Save & Back
-                  </>
-                )}
-              </button>
+            <div className="flex shrink-0 items-center gap-2">
+              {renderTopBarButton({ icon: Printer, label: "Print CNC", onClick: () => onPrintCnc(), large: !isCompactProjectViewport })}
+              {renderTopBarDownloadMenu(
+                [
+                  { key: "xlsx", label: "Excel (.xlsx)", icon: <FileSpreadsheet size={14} />, onSelect: () => onExportCncXlsx() },
+                  { key: "pdf", label: "PDF (.pdf)", icon: <FileText size={14} />, onSelect: () => onExportCncPdf() },
+                  // TEMPORARY (testing): the old Google Sheets layout — see onExportCncXlsxOld.
+                  { key: "old", label: "Old layout", icon: <FileSpreadsheet size={14} />, onSelect: () => void onExportCncXlsxOld() },
+                ],
+                !isCompactProjectViewport,
+                "Download CNC",
+              )}
+              {renderSaveAndBackButton(() => void onSaveAndBackFromCnc(), isCompactProjectViewport)}
             </div>
           </div>
           {/* Second bar below the main header — same "title lives in its own toolbar-row bar, no
@@ -50992,39 +51401,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             }}
           />
           <div data-app-top-bar-content="true" className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center justify-between border-b px-4 md:px-5" style={{ borderColor: "var(--glass-border)" }}>
-            <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-              <ClipboardList size={14} />
+            <div className="inline-flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+              <ClipboardList size={14} className="shrink-0" />
               <span>Items</span>
               <span style={{ color: "var(--text-muted)" }}>|</span>
               <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
             </div>
-            <div className="flex items-center gap-2">
-              {/* Mobile: plain gradient icon button, same style as the General tab's client-details
-                  edit button — see quoteBackButton's own comment for the full reasoning. Desktop
-                  keeps its existing bordered "Save & Back" button, unchanged. */}
-              {isCompactProjectViewport ? (
-                <button
-                  type="button"
-                  disabled={salesReadOnly || isSavingSalesRooms}
-                  onClick={() => void saveAndBackFromSalesItems()}
-                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95 disabled:opacity-60"
-                  style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
-                  aria-label="Save & Back"
-                >
-                  <ChevronLeft size={18} color="#ffffff" strokeWidth={2.5} />
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  disabled={salesReadOnly || isSavingSalesRooms}
-                  onClick={() => void saveAndBackFromSalesItems()}
-                  className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95 disabled:opacity-60"
-                  style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
-                >
-                  <ArrowLeft size={14} />
-                  Save & Back
-                </button>
-              )}
+            <div className="flex shrink-0 items-center gap-2">
+              {renderSaveAndBackButton(() => void saveAndBackFromSalesItems(), isCompactProjectViewport, {
+                disabled: salesReadOnly || isSavingSalesRooms,
+              })}
             </div>
           </div>
           {/* Top padding = the 56px bar + the same gap as the sides, so the containers sit as far
@@ -51203,44 +51589,19 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     // (see its render site further down) or in the pre-existing bottom action strip on mobile.
     const quoteTopActionButtons = (
       <>
-        <button
-          type="button"
-          disabled={!hasQuoteGridTemplate || !displayedQuoteGrid}
-          onClick={() => void onPrintQuoteGrid()}
-          className={
-            isCompactProjectViewport
-              ? "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95 disabled:opacity-40"
-              : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
-          }
-          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-          aria-label="Print"
-        >
-          <Printer size={isCompactProjectViewport ? 16 : 14} />
-          {!isCompactProjectViewport && "Print"}
-        </button>
-        <button
-          type="button"
-          disabled={!hasQuoteGridTemplate || !displayedQuoteGrid}
-          onClick={(e) => {
-            const rect = e.currentTarget.getBoundingClientRect();
-            setQuoteDownloadMenuAnchor({ left: rect.left, top: rect.bottom, width: rect.width, height: 0 });
-          }}
-          className={
-            isCompactProjectViewport
-              ? "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95 disabled:opacity-40"
-              : "inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
-          }
-          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-          aria-label="Download"
-        >
-          <Download size={isCompactProjectViewport ? 16 : 14} />
-          {!isCompactProjectViewport && (
-            <>
-              Download
-              <ChevronDown size={12} />
-            </>
-          )}
-        </button>
+        {renderTopBarButton({
+          icon: Printer,
+          label: "Print",
+          onClick: () => void onPrintQuoteGrid(),
+          disabled: !hasQuoteGridTemplate || !displayedQuoteGrid,
+          large: !isCompactProjectViewport,
+        })}
+        {renderTopBarDownloadMenu(
+          !hasQuoteGridTemplate || !displayedQuoteGrid
+            ? []
+            : [{ key: "pdf", label: "PDF", icon: <FileText size={14} />, onSelect: () => void onDownloadQuoteGridPdf() }],
+          !isCompactProjectViewport,
+        )}
       </>
     );
     const quoteFloatingActionButtons = (
@@ -51480,42 +51841,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     // buttons elsewhere in this page (e.g. the General tab's client-details edit button), just a
     // simple "<" rather than a full button, to keep the cramped mobile title row light. Desktop
     // keeps its own existing bordered "← Back" button, unchanged.
-    const quoteBackButton = isCompactProjectViewport ? (
-      <button
-        type="button"
-        onClick={(e) => {
-          e.stopPropagation();
-          void leaveQuoteGridWindow();
-          setSalesNav("overview");
-        }}
-        // Same stopPropagation reasoning as the Version History/Quote Extras drawers' own "Back"
-        // buttons elsewhere in this file: this small tap target sits inside <main>'s own touch-
-        // gesture subtree, and without this, a tap here that carries even a few incidental pixels
-        // of horizontal movement bubbles all the way up to app-shell's global nav-drawer swipe
-        // gesture (and to this view's own swipe-to-open-Version-History handler on the way there),
-        // arming either one instead of just being read as a plain "leave this view" tap.
-        onTouchStart={(e) => e.stopPropagation()}
-        onTouchMove={(e) => e.stopPropagation()}
-        onTouchEnd={(e) => e.stopPropagation()}
-        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95"
-        style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
-        aria-label="Back"
-      >
-        <ChevronLeft size={18} color="#ffffff" strokeWidth={2.5} />
-      </button>
-    ) : (
-      <button
-        type="button"
-        onClick={() => {
-          void leaveQuoteGridWindow();
-          setSalesNav("overview");
-        }}
-        className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
-        style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
-      >
-        <ArrowLeft size={14} />
-        Back
-      </button>
+    const quoteBackButton = renderSaveAndBackButton(
+      () => {
+        void leaveQuoteGridWindow();
+        setSalesNav("overview");
+      },
+      isCompactProjectViewport,
+      { stopGestures: true },
     );
     return (
       <ProtectedRoute>
@@ -51594,7 +51926,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px" style={{ backgroundColor: "var(--glass-border)" }} />
             <div className="inline-flex items-center gap-3">
               <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                <DollarSign size={14} />
+                <DollarSign size={14} className="shrink-0" />
                 <span>Quote</span>
                 <span style={{ color: "var(--text-muted)" }}>|</span>
                 <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
@@ -51647,37 +51979,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </div>
             </div>
           ) : null}
-          {quoteDownloadMenuAnchor && typeof document !== "undefined"
-            ? createPortal(
-                <div
-                  ref={quoteDownloadMenuRef}
-                  className="fixed z-[2000] overflow-hidden rounded-[10px] border p-1"
-                  style={{
-                    left: quoteDownloadMenuAnchor.left,
-                    top: quoteDownloadMenuAnchor.top + 4,
-                    borderColor: "var(--glass-border)",
-                    backgroundColor: "var(--glass-bg-strong)",
-                    backdropFilter: "blur(24px) saturate(180%)",
-                    WebkitBackdropFilter: "blur(24px) saturate(180%)",
-                    boxShadow: "var(--shadow-glass)",
-                  }}
-                >
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setQuoteDownloadMenuAnchor(null);
-                      void onDownloadQuoteGridPdf();
-                    }}
-                    className="flex w-full items-center gap-2 whitespace-nowrap rounded-[6px] px-2 py-1.5 text-left text-[12px] font-semibold hover:brightness-95 max-md:rounded-[10px] max-md:px-3 max-md:py-2.5 max-md:text-[15px]"
-                    style={{ color: "var(--text-main)" }}
-                  >
-                    <FileText size={14} />
-                    PDF
-                  </button>
-                </div>,
-                document.body,
-              )
-            : null}
           {/* Mobile only: a labeled trigger bar (tap to open) instead of squeezing every other
               action onto the title row or showing them as icon-only buttons that were hard to
               tell apart — opens a small floating card of the same actions as icon+text rows now
@@ -52956,44 +53257,19 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     // action strip on mobile — same split as the Quote tab's own identical treatment above.
     const specsTopActionButtons = (
       <>
-        <button
-          type="button"
-          disabled={!hasTemplate || !displayedSpecsSheetGrid}
-          onClick={() => void onPrintSpecificationsSheet()}
-          className={
-            isCompactProjectViewport
-              ? "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95 disabled:opacity-40"
-              : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
-          }
-          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-          aria-label="Print"
-        >
-          <Printer size={isCompactProjectViewport ? 16 : 14} />
-          {!isCompactProjectViewport && "Print"}
-        </button>
-        <button
-          type="button"
-          disabled={!hasTemplate || !displayedSpecsSheetGrid}
-          onClick={(e) => {
-            const rect = e.currentTarget.getBoundingClientRect();
-            setSpecsDownloadMenuAnchor({ left: rect.left, top: rect.bottom, width: rect.width, height: 0 });
-          }}
-          className={
-            isCompactProjectViewport
-              ? "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95 disabled:opacity-40"
-              : "inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
-          }
-          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-          aria-label="Download"
-        >
-          <Download size={isCompactProjectViewport ? 16 : 14} />
-          {!isCompactProjectViewport && (
-            <>
-              Download
-              <ChevronDown size={12} />
-            </>
-          )}
-        </button>
+        {renderTopBarButton({
+          icon: Printer,
+          label: "Print",
+          onClick: () => void onPrintSpecificationsSheet(),
+          disabled: !hasTemplate || !displayedSpecsSheetGrid,
+          large: !isCompactProjectViewport,
+        })}
+        {renderTopBarDownloadMenu(
+          !hasTemplate || !displayedSpecsSheetGrid
+            ? []
+            : [{ key: "pdf", label: "PDF", icon: <FileText size={14} />, onSelect: () => void onDownloadSpecificationsSheetPdf() }],
+          !isCompactProjectViewport,
+        )}
       </>
     );
     const specsFloatingActionButtons = (
@@ -53207,34 +53483,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       </>
     );
     // Mobile: a plain icon, no box/border/label — see quoteBackButton's identical comment above.
-    const specsBackButton = isCompactProjectViewport ? (
-      <button
-        type="button"
-        onClick={(e) => {
-          e.stopPropagation();
-          setSalesNav("overview");
-        }}
-        // Same stopPropagation reasoning as quoteBackButton's identical comment above.
-        onTouchStart={(e) => e.stopPropagation()}
-        onTouchMove={(e) => e.stopPropagation()}
-        onTouchEnd={(e) => e.stopPropagation()}
-        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95"
-        style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
-        aria-label="Back"
-      >
-        <ChevronLeft size={18} color="#ffffff" strokeWidth={2.5} />
-      </button>
-    ) : (
-      <button
-        type="button"
-        onClick={() => setSalesNav("overview")}
-        className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
-        style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
-      >
-        <ArrowLeft size={14} />
-        Back
-      </button>
-    );
+    const specsBackButton = renderSaveAndBackButton(() => setSalesNav("overview"), isCompactProjectViewport, { stopGestures: true });
     return (
       <ProtectedRoute>
         <div
@@ -53348,37 +53597,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </div>
             </div>
           ) : null}
-          {specsDownloadMenuAnchor && typeof document !== "undefined"
-            ? createPortal(
-                <div
-                  ref={specsDownloadMenuRef}
-                  className="fixed z-[2000] overflow-hidden rounded-[10px] border p-1"
-                  style={{
-                    left: specsDownloadMenuAnchor.left,
-                    top: specsDownloadMenuAnchor.top + 4,
-                    borderColor: "var(--glass-border)",
-                    backgroundColor: "var(--glass-bg-strong)",
-                    backdropFilter: "blur(24px) saturate(180%)",
-                    WebkitBackdropFilter: "blur(24px) saturate(180%)",
-                    boxShadow: "var(--shadow-glass)",
-                  }}
-                >
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSpecsDownloadMenuAnchor(null);
-                      void onDownloadSpecificationsSheetPdf();
-                    }}
-                    className="flex w-full items-center gap-2 whitespace-nowrap rounded-[6px] px-2 py-1.5 text-left text-[12px] font-semibold hover:brightness-95 max-md:rounded-[10px] max-md:px-3 max-md:py-2.5 max-md:text-[15px]"
-                    style={{ color: "var(--text-main)" }}
-                  >
-                    <FileText size={14} />
-                    PDF
-                  </button>
-                </div>,
-                document.body,
-              )
-            : null}
           {/* Mobile only: a labeled trigger bar (tap to open) instead of squeezing every other
               action onto the title row or showing them as icon-only buttons that were hard to
               tell apart — opens a small floating card of the same actions as icon+text rows now
@@ -54318,41 +54536,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           />
           <div data-app-top-bar-content="true" className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center justify-between px-4 md:px-5" style={{ color: "var(--text-main)" }}>
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px" style={{ backgroundColor: "var(--glass-border)" }} />
-            <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-              <ArrowLeftRight size={14} />
+            <div className="inline-flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+              <ArrowLeftRight size={14} className="shrink-0" />
               <span>Upgrades</span>
               <span style={{ color: "var(--text-muted)" }}>|</span>
               <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
             </div>
-            {isCompactProjectViewport ? (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setSalesNav("overview");
-                }}
-                // Same stopPropagation reasoning as quoteBackButton's identical comment elsewhere in
-                // this file.
-                onTouchStart={(e) => e.stopPropagation()}
-                onTouchMove={(e) => e.stopPropagation()}
-                onTouchEnd={(e) => e.stopPropagation()}
-                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95"
-                style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
-                aria-label="Back"
-              >
-                <ChevronLeft size={18} color="#ffffff" strokeWidth={2.5} />
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setSalesNav("overview")}
-                className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
-                style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
-              >
-                <ArrowLeft size={14} />
-                Back
-              </button>
-            )}
+            {renderSaveAndBackButton(() => setSalesNav("overview"), isCompactProjectViewport, { stopGestures: true })}
           </div>
           <div className="flex flex-1" style={{ paddingTop: 56 }}>
             {/* Saved comparisons — a named "what if these pieces used a different product" scenario
@@ -54533,7 +54723,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             {/* Builder — the room-grouped row checklist, live results, and the copy-paste wording
                 panel. No comparison-wide product picker here — each row is only ever compared to
                 something once it has its own "Compare To" set, right in the checklist below. */}
-            <div className="flex-1 overflow-y-auto px-4 pb-24 pt-4 md:px-5">
+            <div className="flex-1 overflow-y-auto px-4 pb-40 pt-4 md:px-5 md:pb-28">
               {!salesAccess.view ? (
                 <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>You don&apos;t have access to Sales.</p>
               ) : initialCutlistRows.length === 0 ? (
@@ -54883,17 +55073,18 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               )}
             </div>
           </div>
-          {/* Results — pinned to the bottom of the window (same fixed treatment as the header
-              above) so Current/New/Difference stay visible regardless of how far the checklist is
-              scrolled; recomputed from the CURRENT cutlist on every tick/target change. */}
+          {/* Results — in a floating glass pill at the bottom of the window (as the Quote's and the cutlists' bars) so
+              Current/New/Difference stay in sight however far the checklist is scrolled; recomputed from the CURRENT
+              cutlist on every tick/target change. (Too wide for a phone's screen, it wraps — rounded, not a pill.) */}
           {salesAccess.view && initialCutlistRows.length > 0 ? (
             <div
-              className="fixed inset-x-0 bottom-0 z-[95] flex flex-wrap items-center justify-center gap-6 border-t px-4 py-3"
+              className="fixed bottom-6 left-1/2 z-[95] flex w-max max-w-[calc(100vw-24px)] -translate-x-1/2 flex-wrap items-center justify-center gap-x-6 gap-y-2 rounded-[24px] border px-5 py-2 md:rounded-full"
               style={{
                 borderColor: "var(--glass-border)",
                 backgroundColor: "var(--glass-modal-bg)",
-                backdropFilter: "blur(12px) saturate(220%)",
-                WebkitBackdropFilter: "blur(12px) saturate(220%)",
+                backdropFilter: "blur(16px) saturate(200%)",
+                WebkitBackdropFilter: "blur(16px) saturate(200%)",
+                boxShadow: "inset 0 1px 0 var(--glass-highlight), var(--shadow-glass), 0 16px 40px rgba(15,23,42,0.25)",
               }}
             >
               <div className="flex items-baseline gap-2">
@@ -54917,7 +55108,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </div>
               <div className="flex items-center gap-2">
                 <span
-                  className="max-w-[360px] truncate rounded-[7px] border px-2 py-1.5 text-[12px]"
+                  className="max-w-[360px] truncate rounded-full border px-3 py-1.5 text-[12px]"
                   style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
                 >
                   {comparisonWordingText || "—"}
@@ -54926,7 +55117,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   type="button"
                   disabled={!comparisonWordingText}
                   onClick={() => void copyComparisonWording()}
-                  className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-[7px] border px-2.5 text-[11px] font-bold hover:brightness-95 disabled:opacity-55"
+                  className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-[11px] font-bold hover:brightness-95 disabled:opacity-55"
                   style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                 >
                   <Copy size={12} />
@@ -55140,9 +55331,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             // Used to paint plain opaque white on mobile only, defeating the blur specifically on
             // phones (matching a since-fixed identical override on CNC's own top bar).
           >
-            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px" style={{ backgroundColor: projectPalette.border }} />
+            {/* (No line under it: it and the band under it — Visibility, or a phone's board types — are one bar.) */}
             <div className="inline-flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-              <GitBranch size={14} />
+              <GitBranch size={14} className="shrink-0" />
               <span>Nesting</span>
               <span style={{ color: "var(--text-muted)" }}>|</span>
               <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
@@ -55150,12 +55341,20 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             <div className="flex shrink-0 items-center gap-2">
               {nestingEligibleMachines.length > 0 ? (
                 <div className="relative" ref={nestingMachineMenuRef}>
+                  {/* The machine: a glass pill (as the also-editing one), its menu below it. */}
                   <button
                     type="button"
                     onClick={(e) => toggleNestingMachineMenu(e.currentTarget)}
                     title="Which machine this job is being cut on — changes the sheet size/kerf/margin and how pieces get packed below"
-                    className="inline-flex h-9 min-w-0 max-w-[130px] items-center justify-between gap-1 rounded-[8px] border px-2 text-[12px] font-bold hover:brightness-95 lg:w-auto lg:min-w-[130px] lg:max-w-[200px] lg:gap-2 lg:px-3"
-                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                    className={`inline-flex ${isCompactProjectViewport ? "h-8 max-w-[130px]" : "h-9 min-w-[130px] max-w-[220px]"} min-w-0 items-center justify-between gap-1.5 rounded-full border pl-3.5 pr-2.5 text-[12px] font-medium hover:brightness-95`}
+                    style={{
+                      borderColor: "var(--glass-border)",
+                      backgroundColor: "var(--glass-modal-bg)",
+                      backdropFilter: "blur(16px) saturate(200%)",
+                      WebkitBackdropFilter: "blur(16px) saturate(200%)",
+                      boxShadow: "inset 0 1px 0 var(--glass-highlight), var(--shadow-glass)",
+                      color: "var(--text-main)",
+                    }}
                   >
                     <span className="truncate">{selectedNestingMachine?.name ?? "Machine"}</span>
                     <ChevronDown size={14} className="shrink-0" />
@@ -55163,37 +55362,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   {nestingMachineMenuPortal}
                 </div>
               ) : null}
-              <button
-                type="button"
-                onClick={onPrintNesting}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-[8px] border bg-white text-[#334155] px-0 lg:h-9 lg:w-auto lg:gap-2 lg:px-3"
-                style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, color: projectPalette.text }}
-                aria-label="Print nesting"
-                title="Print nesting"
-              >
-                <Printer size={14} />
-                <span className="hidden lg:inline text-[12px] font-bold">Print</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => void onSaveAndBackFromNesting()}
-                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95 lg:hidden"
-                style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
-                aria-label="Save and back"
-                title="Save and back"
-              >
-                <ChevronLeft size={18} color="#ffffff" strokeWidth={2.5} />
-              </button>
-              <button
-                type="button"
-                onClick={() => void onSaveAndBackFromNesting()}
-                className="hidden h-9 items-center gap-2 rounded-[10px] border border-[#C8DAFF] bg-[#EAF1FF] px-3 text-[12px] font-bold text-[#24589A] hover:bg-[#DFE9FF] lg:inline-flex"
-                aria-label="Save and back"
-                title="Save and back"
-              >
-                <ArrowLeft size={14} />
-                Save &amp; Back
-              </button>
+              {renderTopBarButton({ icon: Printer, label: "Print nesting", onClick: () => onPrintNesting(), large: !isCompactProjectViewport })}
+              {renderSaveAndBackButton(() => void onSaveAndBackFromNesting(), isCompactProjectViewport)}
             </div>
           </div>
           {!isCompactProjectViewport && (
