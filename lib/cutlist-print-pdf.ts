@@ -77,13 +77,23 @@ const hexToRgb = (hex: string): Rgb | null => {
   const value = match[1].length === 3 ? match[1].split("").map((c) => c + c).join("") : match[1];
   return [Number.parseInt(value.slice(0, 2), 16), Number.parseInt(value.slice(2, 4), 16), Number.parseInt(value.slice(4, 6), 16)];
 };
-const isLight = (rgb: Rgb) => (0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]) / 255 > 0.6;
+// Whether black text reads better on a fill than white does — whichever stands out more from it (WCAG's contrast, from
+// its relative luminance): a dark part type's colour gets white text, a light (or lightened) one black.
+const linearChannel = (value: number) => {
+  const c = value / 255;
+  return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+};
+const isLight = (rgb: Rgb) => {
+  const luminance = 0.2126 * linearChannel(rgb[0]) + 0.7152 * linearChannel(rgb[1]) + 0.0722 * linearChannel(rgb[2]);
+  return (luminance + 0.05) / 0.05 >= 1.05 / (luminance + 0.05);
+};
 // Towards white (keep: how much of the colour stays).
 const tint = (rgb: Rgb, keep: number): Rgb => rgb.map((channel) => Math.round(255 - (255 - channel) * keep)) as Rgb;
 const BLACK: Rgb = [0, 0, 0];
 const WHITE: Rgb = [255, 255, 255];
 const BLUE: Rgb = [47, 84, 150];
-const BAND: Rgb = [226, 226, 226];
+// The zebra rows' grey — dark enough to still show once printed.
+const BAND: Rgb = [205, 205, 205];
 const DETAIL_TEXT: Rgb = [64, 64, 64];
 const LIGHT_LINE: Rgb = [185, 185, 185];
 const FALLBACK_COLOUR: Rgb = [203, 213, 225];

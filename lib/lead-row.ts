@@ -150,6 +150,8 @@ export function buildLeadRow(
     updatedAtIso: leadIsoString(data.updatedAtIso ?? data.updatedAt, ""),
     deletedAtIso: leadIsoString(data.deletedAtIso ?? data.deletedAt, ""),
     isDeleted: Boolean(data.isDeleted),
+    convertedProjectId: String(data.convertedProjectId ?? "").trim() || undefined,
+    convertedAtIso: leadIsoString(data.convertedAtIso, "") || undefined,
     source: toStr(data.source) || "zapier-form",
     status: toStr(data.status) || "New",
     assignedToUid: toStr(data.assignedToUid),

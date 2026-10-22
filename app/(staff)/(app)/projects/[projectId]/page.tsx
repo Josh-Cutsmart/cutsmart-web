@@ -12,6 +12,8 @@ import type { CellInput as AutoTableCellInput, RowInput as AutoTableRowInput } f
 import { deleteObject, getBlob, getDownloadURL, ref as storageRef, uploadBytesResumable } from "firebase/storage";
 import { FullscreenImageViewerShell } from "@/components/fullscreen-image-viewer-shell";
 import { GlassActionMenu, GlassDropdown, type GlassActionMenuItem, GLASS_MENU_CLASS, GLASS_MENU_MIN_WIDTH_PHONE_PX, GLASS_MENU_MIN_WIDTH_PX, GLASS_MENU_STYLE, GlassMenuOption, glassMenuHeight } from "@/components/glass-dropdown";
+import { PartLabelPreview } from "@/components/part-label";
+import { buildPartLabelsPdf, clashedEdgesFor, DEFAULT_LABEL_SIZE_ID, LABEL_SIZE_STORAGE_KEY, LABEL_SIZES, labelSizeById, type PartLabel } from "@/lib/part-labels";
 import { BoardColumnFrame, ColumnCollapseChevrons } from "@/components/board-column-frame";
 import { collapseBoardColumnAnimated, expandBoardColumnAnimated } from "@/lib/board-column-collapse";
 import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
@@ -728,7 +730,9 @@ const PRODUCTION_BOARD_ROW_FIELD_LABELS: Partial<Record<keyof ProductionBoardRow
 type OrderMiscDraftRow = { name: string; notes: string; qty: string; deleted?: boolean };
 type OrderHingeRow = { id: string; name: string; qty: string };
 
-type ProductionNav = "overview" | "cutlist" | "nesting" | "cnc" | "order" | "unlock" | "print" | "remedials";
+type ProductionNav = "overview" | "cutlist" | "nesting" | "cnc" | "order" | "labels" | "unlock" | "print" | "remedials";
+// Production › Labels' room filter: every room's.
+const ALL_LABEL_ROOMS = "__all_rooms__";
 type SalesNav = "initial" | "items" | "quote" | "specifications" | "compare" | "overview";
 type ProjectMainTab = "general" | "sales" | "production" | "settings";
 type ProjectLiveTabStateSnapshot = {
@@ -12024,6 +12028,7 @@ export default function ProjectDetailsPage() {
     nesting: "Production Nesting",
     cnc: "Production CNC Cutlist",
     order: "Production Order",
+    labels: "Production Labels",
   };
   const buildProjectLiveViewKey = useCallback(
     (mainTab: ProjectMainTab, nextSalesNav: SalesNav, nextProductionNav: ProductionNav) => {
@@ -29931,6 +29936,285 @@ export default function ProjectDetailsPage() {
     isConfiguredDoorRowLike,
     isDrawerPartType,
   ]);
+  // ---- Production › Labels (lib/part-labels.ts, components/part-label.tsx): a label for every piece the workshop cuts —
+  // each part as many times as its quantity; a cabinet's, drawer's or configured door's own pieces each theirs, under
+  // its ID. The IDs are the Nesting sheets' and CNC Cutlist's (nestingPrintDisplayIdByRowId, just above); a part they
+  // leave out (hidden from the CNC Cutlist) is numbered on after them. Only worked out while Labels is open.
+  const isLabelsViewOpen = resolvedTab === "production" && productionNav === "labels";
+  const partLabelsBuilt = ((): PartLabel[] => {
+    if (!isLabelsViewOpen) return [];
+    const projectName = toStr(project?.name, "Project");
+    const assignedTo = toStr(assignedDisplayName, "");
+    const lengthText = (value: string) => (/^-?\d+(\.\d+)?$/.test(value) ? activeLength(value, { withUnit: false }) : value);
+    let lastId = Object.values(nestingPrintDisplayIdByRowId).reduce((max, value) => Math.max(max, value), 0);
+    const extraIds = new Map<string, number>();
+    // Its ID: the first of these the CNC Cutlist numbers, else — numbered on after them all — the part's own (the last).
+    const idFor = (...keys: string[]) => {
+      for (const key of keys) {
+        if (nestingPrintDisplayIdByRowId[key]) return nestingPrintDisplayIdByRowId[key];
+      }
+      const own = keys[keys.length - 1];
+      if (!extraIds.has(own)) {
+        lastId += 1;
+        extraIds.set(own, lastId);
+      }
+      return extraIds.get(own) ?? lastId;
+    };
+    // A door's hinges (not a drawer bank's fronts): on its hinged edge — a Mirror pair's first LH, the next RH, and so
+    // on — each where it goes. "Up" is from its bottom and "Down" from its top; hinged at the top, from its left / right.
+    const hingesFor = (row: CutlistRow, copy: number): PartLabel["hinges"] => {
+      const up = normalizeDoorHingeValues(row.hingesUp);
+      const down = normalizeDoorHingeValues(row.hingesDown);
+      if (row.bankGroupId || !isDoorPartType(row.partType) || (up.length === 0 && down.length === 0)) return null;
+      const mark = (value: string, from: "start" | "end") => ({ at: toNum(value), from, text: lengthText(value) });
+      const side = normalizeHingeSideValue(row.hingeSide);
+      if (side === "Top") {
+        return { side: "top", tag: "Top hinged", marks: [...up.map((value) => mark(value, "start")), ...down.map((value) => mark(value, "end"))] };
+      }
+      const hand = side === "RH" || (side === "Mirror" && copy % 2 === 0) ? "RH" : side === "LH" || side === "Mirror" ? "LH" : "";
+      return {
+        side: hand === "RH" ? "right" : "left",
+        tag: hand ? `${hand} hinges` : "Hinges",
+        marks: [...down.map((value) => mark(value, "start")), ...up.map((value) => mark(value, "end"))],
+      };
+    };
+    const made: Array<{ id: number; order: number; label: PartLabel }> = [];
+    const add = (
+      row: CutlistRow,
+      piece: { key: string; name: string; parentName: string; height: string; width: string; depth: string; clashLeft: string; clashRight: string; grainValue: string },
+      copies: number,
+      idOfCopy: (copy: number) => number,
+      withHinges = false,
+    ) => {
+      const h = String(piece.height ?? "").trim();
+      const w = String(piece.width ?? "").trim();
+      const d = String(piece.depth ?? "").trim();
+      const mm = { height: toNum(h), width: toNum(w), depth: toNum(d) };
+      // Its outline: its height up the label (else its depth), its width across (else its depth).
+      const tallKey: "height" | "depth" = mm.height > 0 ? "height" : "depth";
+      const wideKey: "width" | "depth" = mm.width > 0 ? "width" : "depth";
+      const tallMm = mm[tallKey] || mm.width || 1;
+      const wideMm = mm[wideKey] || tallMm;
+      // Its grain's way: as its grain value says, else (just ticked) its first size's — as the cutlist's print takes it.
+      const grainAxis =
+        piece.grainValue || row.grain
+          ? (resolveGrainAxis(piece.grainValue, h, w, d) ?? (mm.height > 0 ? "height" : mm.width > 0 ? "width" : "depth"))
+          : null;
+      const grain = grainAxis === tallKey ? "tall" : grainAxis === wideKey ? "wide" : null;
+      const clash = clashedEdgesFor(joinClashing(piece.clashLeft, piece.clashRight), tallMm, wideMm);
+      const sizes = ([["H", h], ["W", w], ["D", d]] as const)
+        .filter(([, value]) => value)
+        .map(([axis, value]) => ({ axis, value: lengthText(value) }));
+      const board = boardDisplayLabel(String(row.board || "")).split(" @@ ")[0].trim();
+      const info = informationLinesFromValue(row.information).map((line) => line.trim()).filter(Boolean);
+      for (let copy = 1; copy <= copies; copy += 1) {
+        const id = idOfCopy(copy);
+        made.push({
+          id,
+          order: made.length,
+          label: {
+            key: `${row.id}__${piece.key}__${copy}`,
+            partKey: String(row.id),
+            partName: toStr(row.name, ""),
+            id: String(id),
+            name: piece.name || toStr(row.name, ""),
+            parentName: piece.parentName,
+            room: toStr(row.room, ""),
+            partType: toStr(row.partType, ""),
+            tallMm,
+            wideMm,
+            sizes,
+            board,
+            grain,
+            clashed: clash.edges,
+            clashCode: clash.code,
+            hinges: withHinges ? hingesFor(row, copy) : null,
+            info,
+            copy,
+            copies,
+            projectName,
+            assignedTo,
+          },
+        });
+      }
+    };
+    const countOf = (value: unknown) => Math.max(0, Number.parseInt(String(value || "0"), 10) || 0);
+    for (const row of cncPrintSourceRows) {
+      if (countOf(row.quantity) <= 0) continue;
+      const parentName = toStr(row.name, "");
+      if (isCabinetryPartType(row.partType)) {
+        for (const piece of buildCabinetryDerivedPieces(row)) {
+          add(
+            row,
+            { key: piece.key, name: piece.partName, parentName, height: piece.height, width: piece.width, depth: piece.depth, clashLeft: piece.clashLeft, clashRight: piece.clashRight, grainValue: cabinetryPieceGrainValue(row, piece) },
+            countOf(piece.quantity),
+            () => idFor(row.id),
+          );
+        }
+        continue;
+      }
+      // A configured door's fronts (already named after it). On a grained board each door has its own ID, as the CNC
+      // Cutlist draws each.
+      const fronts = isDoorPartType(row.partType) && normalizeDoorModeValue(row.doorMode) !== "manual" ? buildConfiguredDoorDerivedPieces(row) : [];
+      if (fronts.length) {
+        for (const piece of fronts) {
+          add(
+            row,
+            { key: piece.key, name: piece.partName, parentName: "", height: piece.height, width: piece.width, depth: piece.depth, clashLeft: piece.clashLeft, clashRight: piece.clashRight, grainValue: String(piece.grainValue || row.grainValue || "") },
+            countOf(piece.quantity),
+            (copy) => idFor(`${row.id}__cfg_instance_${copy}`, row.id),
+          );
+        }
+        continue;
+      }
+      if (isClassicDrawerRowLike(row)) {
+        for (const piece of buildDrawerDerivedPieces(row)) {
+          add(
+            row,
+            { key: piece.key, name: piece.partName, parentName, height: piece.height, width: piece.width, depth: piece.depth, clashLeft: piece.clashLeft, clashRight: piece.clashRight, grainValue: String(piece.grainValue || "") },
+            countOf(piece.quantity),
+            () => idFor(`${row.id}__drw__${piece.key}`, row.id),
+          );
+        }
+        continue;
+      }
+      const split = splitClashing(row.clashing);
+      add(
+        row,
+        { key: "part", name: toStr(row.name, ""), parentName: "", height: row.height, width: row.width, depth: row.depth, clashLeft: String(row.clashLeft || split.left), clashRight: String(row.clashRight || split.right), grainValue: String(row.grainValue || "") },
+        countOf(row.quantity),
+        () => idFor(row.id),
+        true,
+      );
+    }
+    return made.sort((a, b) => a.id - b.id || a.order - b.order).map((entry) => entry.label);
+  })();
+  // The same labels stay the same objects while nothing on them changes (the list above is made afresh each render —
+  // as the pieces' builders it uses are) — so each label's preview is only laid out again when it does.
+  const partLabelsJson = JSON.stringify(partLabelsBuilt);
+  const partLabels = useMemo(() => JSON.parse(partLabelsJson) as PartLabel[], [partLabelsJson]);
+  // The label size (the top bar's dropdown): the last picked, on this device.
+  const [partLabelSizeId, setPartLabelSizeId] = useState(DEFAULT_LABEL_SIZE_ID);
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(LABEL_SIZE_STORAGE_KEY);
+      if (saved && LABEL_SIZES.some((size) => size.id === saved)) setPartLabelSizeId(saved);
+    } catch {
+      // No storage: the default size.
+    }
+  }, []);
+  const partLabelSize = labelSizeById(partLabelSizeId);
+  const pickPartLabelSize = (id: string) => {
+    setPartLabelSizeId(id);
+    try {
+      window.localStorage.setItem(LABEL_SIZE_STORAGE_KEY, id);
+    } catch {
+      // Not kept; still used now.
+    }
+  };
+  // Which room's labels (the bar under the top bar): all, or one.
+  const [partLabelRoom, setPartLabelRoom] = useState(ALL_LABEL_ROOMS);
+  // The company's logo, for the labels' top right — the title sheets' one (loaded as the Production tab opens).
+  const [partLabelLogo, setPartLabelLogo] = useState<PrintTitleLogo | null>(null);
+  useEffect(() => {
+    if (!isLabelsViewOpen) return;
+    let cancelled = false;
+    void ensurePrintTitleLogo().then((logo) => {
+      if (!cancelled) setPartLabelLogo(logo);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLabelsViewOpen, printTitleLogoRaw]);
+  // The Labels sidebar (as CNC Cutlist's Visibility): the labels switched off (by label — a part's all of its, or just
+  // some; kept while the project's open) and its search. On a computer it slides away (its bubbles out, then the labels
+  // over into its room); on a phone it's a page of its own, over the labels.
+  const [hiddenPartLabels, setHiddenPartLabels] = useState<Record<string, boolean>>({});
+  const [partLabelSearch, setPartLabelSearch] = useState("");
+  // ...and how each person left it, remembered on this device (as the Order tab's hardware library): the part types
+  // folded away ("type:<part type>"), the parts opened out to their own labels ("part:<project>:<part>"), and — on a
+  // computer — the sidebar shut ("shut").
+  const partLabelSidebarKey = user?.uid ? `cutsmart.web.labels.sidebar.${user.uid}` : "";
+  const [partLabelSidebarState, setPartLabelSidebarState] = useState<{ key: string; collapsed: Record<string, boolean> }>({
+    key: "",
+    collapsed: {},
+  });
+  const partLabelSidebarSaved =
+    partLabelSidebarState.key === partLabelSidebarKey ? partLabelSidebarState.collapsed : readSalesItemsLibraryCollapsed(partLabelSidebarKey);
+  const setPartLabelSidebarSaved = (id: string, on: boolean) => {
+    const next = { ...partLabelSidebarSaved };
+    if (on) next[id] = true;
+    else delete next[id];
+    setPartLabelSidebarState({ key: partLabelSidebarKey, collapsed: next });
+    if (!partLabelSidebarKey) return;
+    try {
+      window.localStorage.setItem(partLabelSidebarKey, JSON.stringify(next));
+    } catch {
+      // Storage unavailable — it just won't be remembered.
+    }
+  };
+  const [isLabelsPanelOpen, setIsLabelsPanelOpen] = useState(true);
+  const [isLabelsPanelClosing, setIsLabelsPanelClosing] = useState(false);
+  const [isLabelsPanelJustOpened, setIsLabelsPanelJustOpened] = useState(false);
+  const [isLabelsMobilePanelOpen, setIsLabelsMobilePanelOpen] = useState(false);
+  const labelsPanelTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const labelsPanelScrollRef = useRef<HTMLElement | null>(null);
+  const labelsGridScrollRef = useRef<HTMLElement | null>(null);
+  // Coming into Labels (or the person signed in coming through after it): a computer's sidebar open or shut as they
+  // left it — its bubbles sliding in when it's open (as CNC Cutlist's do) — and a phone starts on the labels.
+  const labelsEntryKeyRef = useRef("");
+  useEffect(() => {
+    const entry = isLabelsViewOpen ? partLabelSidebarKey || "anon" : "";
+    if (entry && entry !== labelsEntryKeyRef.current) {
+      const shut = Boolean(readSalesItemsLibraryCollapsed(partLabelSidebarKey).shut);
+      setIsLabelsMobilePanelOpen(false);
+      setIsLabelsPanelOpen(!shut);
+      setIsLabelsPanelClosing(false);
+      setIsLabelsPanelJustOpened(!shut);
+      if (labelsPanelTimeoutRef.current) clearTimeout(labelsPanelTimeoutRef.current);
+      labelsPanelTimeoutRef.current = shut
+        ? null
+        : setTimeout(() => {
+            setIsLabelsPanelJustOpened(false);
+            labelsPanelTimeoutRef.current = null;
+          }, 800);
+    }
+    labelsEntryKeyRef.current = entry;
+  }, [isLabelsViewOpen, partLabelSidebarKey]);
+  // The sidebar's parts, by part type (in the company's order), each with its labels — as the search finds them (by
+  // ID, name, room, part type, board, its pieces' names or its information).
+  const partLabelSidebarGroups = useMemo(() => {
+    const query = partLabelSearch.trim().toLowerCase();
+    const rank = new Map(partTypeOptions.map((name, index) => [String(name || "").trim().toLowerCase(), index]));
+    type LabelPart = { key: string; id: string; name: string; partType: string; room: string; board: string; labels: PartLabel[] };
+    const parts = new Map<string, LabelPart>();
+    for (const label of partLabels) {
+      const part = parts.get(label.partKey) ?? {
+        key: label.partKey,
+        id: label.id,
+        name: label.partName || label.name,
+        partType: label.partType || "Unassigned",
+        room: label.room,
+        board: label.board,
+        labels: [],
+      };
+      part.labels.push(label);
+      parts.set(label.partKey, part);
+    }
+    const groups = new Map<string, LabelPart[]>();
+    for (const part of parts.values()) {
+      const found =
+        !query ||
+        [part.id, `#${part.id}`, part.name, part.room, part.partType, part.board, ...part.labels.map((label) => label.name), ...part.labels.flatMap((label) => label.info)].some(
+          (value) => String(value || "").toLowerCase().includes(query),
+        );
+      if (found) groups.set(part.partType, [...(groups.get(part.partType) ?? []), part]);
+    }
+    return [...groups.entries()]
+      .sort(([a], [b]) => (rank.get(a.toLowerCase()) ?? 9999) - (rank.get(b.toLowerCase()) ?? 9999) || a.localeCompare(b))
+      .map(([partType, partsOfType]) => ({ partType, parts: partsOfType }));
+  }, [partLabels, partLabelSearch, partTypeOptions]);
   const cncNonCabDisplayIdCount = useMemo(() => {
     let count = 0;
     let lastIdKey = "";
@@ -31987,6 +32271,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     wasCncFullscreenRef.current = isCncFullscreen;
   }, [isCncFullscreen]);
   const isOrderFullscreen = resolvedTab === "production" && productionAccess.view && productionNav === "order";
+  const isLabelsFullscreen = resolvedTab === "production" && productionAccess.view && productionNav === "labels";
   const isSalesInitialFullscreen = resolvedTab === "sales" && salesAccess.view && salesNav === "initial";
   const isSalesItemsFullscreen = resolvedTab === "sales" && salesAccess.view && salesNav === "items";
   const isSalesQuoteFullscreen = resolvedTab === "sales" && salesAccess.view && salesNav === "quote";
@@ -32070,7 +32355,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     wasNestingFullscreenRef.current = isNestingFullscreen;
   }, [isNestingFullscreen]);
   const isProductionSectionFullscreen =
-    isCutlistFullscreen || isCncFullscreen || isOrderFullscreen || isNestingFullscreen;
+    isCutlistFullscreen || isCncFullscreen || isOrderFullscreen || isNestingFullscreen || isLabelsFullscreen;
   useEffect(() => {
     setChromeHidden(
       isProductionSectionFullscreen ||
@@ -32121,6 +32406,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   const onSaveAndBackFromNestingRef = useRef<() => void | Promise<void>>(() => {});
   const onSaveAndBackFromCncRef = useRef<() => void | Promise<void>>(() => {});
   const onSaveAndBackFromOrderRef = useRef<() => void | Promise<void>>(() => {});
+  const onSaveAndBackFromLabelsRef = useRef<() => void | Promise<void>>(() => {});
   const saveAndBackFromInitialMeasureRef = useRef<() => void | Promise<void>>(() => {});
   const saveAndBackFromSalesItemsRef = useRef<() => void | Promise<void>>(() => {});
   const leaveQuoteWindowRef = useRef<(nextSalesNav: string) => void | Promise<void>>(() => {});
@@ -32133,6 +32419,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       setSaveAndBackHandler(() => onSaveAndBackFromCncRef.current());
     } else if (isOrderFullscreen) {
       setSaveAndBackHandler(() => onSaveAndBackFromOrderRef.current());
+    } else if (isLabelsFullscreen) {
+      setSaveAndBackHandler(() => onSaveAndBackFromLabelsRef.current());
     } else if (isSalesInitialFullscreen) {
       setSaveAndBackHandler(() => saveAndBackFromInitialMeasureRef.current());
     } else if (isSalesItemsFullscreen) {
@@ -32148,6 +32436,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     isNestingFullscreen,
     isCncFullscreen,
     isOrderFullscreen,
+    isLabelsFullscreen,
     isSalesInitialFullscreen,
     isSalesItemsFullscreen,
     isSalesQuoteFullscreen,
@@ -38564,6 +38853,73 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       setLockMessage("");
     });
   };
+  // Labels changes nothing: just back to Production.
+  const onSaveAndBackFromLabels = () => {
+    setProductionNav("overview");
+    setNestingFullscreen(false);
+  };
+  const partLabelRooms = Array.from(new Set(partLabels.map((label) => label.room).filter(Boolean)));
+  // The labels shown, to print: all the room's (or every room's) not switched off in the sidebar.
+  const shownPartLabels = partLabels.filter(
+    (label) =>
+      !hiddenPartLabels[label.key] &&
+      (partLabelRoom === ALL_LABEL_ROOMS || !partLabelRooms.includes(partLabelRoom) || label.room === partLabelRoom),
+  );
+  const setPartLabelsShown = (labels: PartLabel[], shown: boolean) =>
+    setHiddenPartLabels((prev) => {
+      const next = { ...prev };
+      for (const label of labels) {
+        if (shown) delete next[label.key];
+        else next[label.key] = true;
+      }
+      return next;
+    });
+  // The sidebar on a computer, open / shut — as CNC Cutlist's Visibility (its bubbles slide out before it's gone).
+  const toggleLabelsPanel = () => {
+    if (labelsPanelTimeoutRef.current) clearTimeout(labelsPanelTimeoutRef.current);
+    if (!isLabelsPanelOpen || isLabelsPanelClosing) {
+      setPartLabelSidebarSaved("shut", false);
+      setIsLabelsPanelOpen(true);
+      setIsLabelsPanelClosing(false);
+      setIsLabelsPanelJustOpened(true);
+      labelsPanelTimeoutRef.current = setTimeout(() => {
+        setIsLabelsPanelJustOpened(false);
+        labelsPanelTimeoutRef.current = null;
+      }, 800);
+      return;
+    }
+    setPartLabelSidebarSaved("shut", true);
+    setIsLabelsPanelJustOpened(false);
+    setIsLabelsPanelClosing(true);
+    labelsPanelTimeoutRef.current = setTimeout(() => {
+      setIsLabelsPanelOpen(false);
+      setIsLabelsPanelClosing(false);
+      labelsPanelTimeoutRef.current = null;
+    }, 360);
+  };
+  // The labels shown (all, or a room's) as a PDF, each its own page the label's size — to print (straight from the
+  // click, as the other production prints), or to download.
+  const onOutputPartLabels = (mode: "print" | "download") => {
+    const labels = shownPartLabels;
+    if (!labels.length) return;
+    withPdfExportModules((modules) => {
+      const blob = buildPartLabelsPdf(modules.jsPDF, labels, partLabelSize, partLabelLogo);
+      if (!blob) return;
+      if (mode === "print") {
+        modules.openPdfBlobInPrintWindow(blob);
+        return;
+      }
+      const safeProject = (project?.name || "project").replace(/[\\/:*?"<>|]/g, "_").replace(/\s+/g, "_").slice(0, 64);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${safeProject}_labels_${partLabelSize.id}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 2500);
+    });
+  };
 
   // Mobile pull-down gesture's "Save & Back" zone (app-shell.tsx) — mirrors whichever of this
   // page's own "Save & Back" buttons is currently on screen. See the refs' own declaration (up
@@ -38573,6 +38929,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   onSaveAndBackFromNestingRef.current = onSaveAndBackFromNesting;
   onSaveAndBackFromCncRef.current = onSaveAndBackFromCnc;
   onSaveAndBackFromOrderRef.current = onSaveAndBackFromOrder;
+  onSaveAndBackFromLabelsRef.current = onSaveAndBackFromLabels;
   saveAndBackFromInitialMeasureRef.current = saveAndBackFromInitialMeasure;
   saveAndBackFromSalesItemsRef.current = saveAndBackFromSalesItems;
   leaveQuoteWindowRef.current = leaveQuoteWindow;
@@ -49750,6 +50107,393 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     );
   }
 
+  if (isLabelsFullscreen) {
+    const large = !isCompactProjectViewport;
+    const labelPartCount = new Set(shownPartLabels.map((label) => label.partKey)).size;
+    const hiddenLabelCount = partLabels.filter((label) => hiddenPartLabels[label.key]).length;
+    const panelShown = isLabelsPanelOpen && !isLabelsPanelClosing;
+    // The glass pill dropdowns' look (the Nesting machine's).
+    const pillClass = `${large ? "h-9" : "h-8"} min-w-0 justify-between gap-1.5 rounded-full border pl-3.5 pr-2.5 text-[12px] font-medium hover:brightness-95`;
+    const pillStyle = {
+      borderColor: "var(--glass-border)",
+      backgroundColor: "var(--glass-modal-bg)",
+      backdropFilter: "blur(16px) saturate(200%)",
+      WebkitBackdropFilter: "blur(16px) saturate(200%)",
+      boxShadow: "inset 0 1px 0 var(--glass-highlight), var(--shadow-glass)",
+      color: "var(--text-main)",
+    };
+    // The sidebar's bubbles: sliding in as it opens and out as it shuts (as CNC Cutlist's) — not on a phone's page.
+    const bubbleMotion = (key: string, mobile: boolean, first = false): { animation?: string } =>
+      mobile
+        ? {}
+        : isLabelsPanelClosing
+          ? { animation: "glass-bubble-slide-out-left 280ms ease 0ms both" }
+          : isLabelsPanelJustOpened
+            ? { animation: `glass-bubble-slide-in-left 480ms cubic-bezier(0.34, 1.56, 0.64, 1) ${first ? 0 : stableBubbleAnimationDelayMs(key)}ms both` }
+            : {};
+    const fieldStyle = { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" };
+    // The sidebar (as CNC Cutlist's Visibility): a search and Show All, then each part type's pill — its labels all on
+    // or off, folded away or not — and its parts' bubbles: each switching all its labels, or opened out to switch its
+    // labels one by one (a part with more than one).
+    const renderLabelsSidebar = (mobile: boolean) => (
+      <>
+        <div className="flex items-center gap-2 p-3" style={bubbleMotion("search", mobile, true)}>
+          {mobile ? (
+            <button
+              type="button"
+              onClick={() => setIsLabelsMobilePanelOpen(false)}
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95"
+              style={fieldStyle}
+              aria-label="Close Visibility"
+            >
+              <ChevronLeft size={16} />
+            </button>
+          ) : null}
+          <input
+            value={partLabelSearch}
+            onChange={(e) => setPartLabelSearch(e.target.value)}
+            placeholder="Search labels..."
+            aria-label="Search labels"
+            className="h-8 min-w-0 flex-1 rounded-full border px-3 text-[12px]"
+            style={fieldStyle}
+          />
+          <button
+            type="button"
+            disabled={hiddenLabelCount === 0}
+            onClick={() => setHiddenPartLabels({})}
+            className="h-8 shrink-0 rounded-full border px-3 text-[11px] font-bold hover:brightness-95 disabled:opacity-55"
+            style={fieldStyle}
+          >
+            Show All
+          </button>
+        </div>
+        <div className="px-3 pb-3">
+          <div className="space-y-1">
+            {partLabelSidebarGroups.map((group) => {
+              const color = partTypeColors[group.partType] ?? "#CBD5E1";
+              const textColor = isLightHex(color) ? "#0F172A" : "#F8FAFC";
+              const groupLabels = group.parts.flatMap((part) => part.labels);
+              const groupOn = groupLabels.filter((label) => !hiddenPartLabels[label.key]).length;
+              const folded = Boolean(partLabelSidebarSaved[`type:${group.partType}`]);
+              return (
+                <div key={`labels_group_${group.partType}`} className="space-y-1">
+                  <div
+                    className="flex items-center justify-between rounded-full pl-[5px] text-[11px] font-extrabold"
+                    style={{ backgroundColor: color, color: textColor, ...bubbleMotion(`labels:pt:${group.partType}`, mobile) }}
+                  >
+                    <span style={{ paddingLeft: 5 }}>
+                      {group.partType} ({groupLabels.length})
+                    </span>
+                    <div className="ml-auto inline-flex items-center">
+                      <span className="inline-flex h-7 items-center self-center pr-2">
+                        <input
+                          type="checkbox"
+                          checked={groupLabels.length > 0 && groupOn === groupLabels.length}
+                          ref={(el) => {
+                            if (el) el.indeterminate = groupOn > 0 && groupOn < groupLabels.length;
+                          }}
+                          onChange={(e) => setPartLabelsShown(groupLabels, e.target.checked)}
+                          className="h-4 w-4 accent-[#12345B]"
+                          title={groupOn === groupLabels.length ? "Untick all in part type" : "Tick all in part type"}
+                          aria-label={`${group.partType}: all its labels`}
+                        />
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setPartLabelSidebarSaved(`type:${group.partType}`, !folded)}
+                        className="inline-flex h-7 w-8 items-center justify-center rounded-r-full border-l border-black/15 hover:bg-black/10"
+                        style={{ color: textColor }}
+                        title={folded ? "Expand part type" : "Collapse part type"}
+                      >
+                        {folded ? <Plus size={14} strokeWidth={2.6} /> : <Minus size={14} strokeWidth={2.6} />}
+                      </button>
+                    </div>
+                  </div>
+                  {!folded &&
+                    group.parts.map((part) => {
+                      const partOn = part.labels.filter((label) => !hiddenPartLabels[label.key]).length;
+                      const several = part.labels.length > 1;
+                      const openKey = `part:${project?.id ?? ""}:${part.key}`;
+                      const opened = several && Boolean(partLabelSidebarSaved[openKey]);
+                      const edge = darkenHex(color, 0.12);
+                      return (
+                        <div
+                          key={`labels_part_${part.key}`}
+                          className="rounded-[16px] border px-3 py-2"
+                          style={{ backgroundColor: lightenHex(color, 0.72), borderColor: edge, ...bubbleMotion(`labels:${part.key}`, mobile) }}
+                        >
+                          <div className="flex items-center gap-2">
+                            {/* First: its ID, in a circle its part type's own colour (as its pill above, its number in the
+                                pill's text colour) — in the middle of the bubble's height, as everything along it. */}
+                            <span
+                              className="inline-flex h-6 min-w-6 shrink-0 items-center justify-center rounded-full px-1 text-[10px] font-bold"
+                              style={{ backgroundColor: color, color: textColor }}
+                            >
+                              {part.id}
+                            </span>
+                            <input
+                              type="checkbox"
+                              checked={partOn === part.labels.length}
+                              ref={(el) => {
+                                if (el) el.indeterminate = partOn > 0 && partOn < part.labels.length;
+                              }}
+                              onChange={(e) => setPartLabelsShown(part.labels, e.target.checked)}
+                              className="h-4 w-4 shrink-0"
+                              aria-label={`${part.name || "Part"}: its labels`}
+                            />
+                            <button
+                              type="button"
+                              onClick={() =>
+                                several
+                                  ? setPartLabelSidebarSaved(openKey, !opened)
+                                  : setPartLabelsShown(part.labels, partOn === 0)
+                              }
+                              className="flex min-w-0 flex-1 items-center justify-between gap-2 text-left text-[11px] text-slate-700"
+                              aria-expanded={several ? opened : undefined}
+                            >
+                              <span className="min-w-0">
+                                <span className="block truncate font-bold text-slate-900">{part.name || "Part"}</span>
+                                <span className="mt-[1px] block truncate text-[10px]">{part.room || "-"}</span>
+                              </span>
+                              {/* How many of its labels are on, and its arrow (its room kept on every bubble, so the counts
+                                  line up). */}
+                              <span className="flex shrink-0 items-center gap-1 text-[10px] text-slate-600">
+                                {several ? `${partOn}/${part.labels.length} labels` : "1 label"}
+                                <span className="inline-flex w-[13px] shrink-0 justify-center">
+                                  {several ? (
+                                    <ChevronDown
+                                      size={13}
+                                      style={{ transform: opened ? "rotate(180deg)" : "none", transition: "transform 140ms ease" }}
+                                    />
+                                  ) : null}
+                                </span>
+                              </span>
+                            </button>
+                          </div>
+                          {opened ? (
+                            <div className="mt-1.5 space-y-1 border-t pt-1.5" style={{ borderColor: edge }}>
+                              {part.labels.map((label) => (
+                                <label key={`labels_one_${label.key}`} className="flex cursor-pointer items-center gap-2 text-[11px] text-slate-700">
+                                  <input
+                                    type="checkbox"
+                                    checked={!hiddenPartLabels[label.key]}
+                                    onChange={(e) => setPartLabelsShown([label], e.target.checked)}
+                                    className="h-3.5 w-3.5"
+                                  />
+                                  <span className="min-w-0 flex-1 truncate font-medium text-slate-900">{label.name}</span>
+                                  <span className="shrink-0 text-[10px] text-slate-600">
+                                    {label.sizes.map((size) => size.value).join(" × ")}
+                                    {label.copies > 1 ? `  ·  ${label.copy} of ${label.copies}` : ""}
+                                  </span>
+                                </label>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                </div>
+              );
+            })}
+            {partLabelSidebarGroups.length === 0 ? (
+              <p
+                className="rounded-[16px] border border-dashed px-3 py-4 text-center text-[12px] font-semibold"
+                style={{ borderColor: "var(--glass-border)", color: "var(--text-muted)" }}
+              >
+                {partLabels.length ? "No labels match the search." : "No labels yet."}
+              </p>
+            ) : null}
+          </div>
+        </div>
+      </>
+    );
+    return (
+      <ProtectedRoute>
+        <div className="h-[100svh] overflow-hidden bg-[var(--bg-app)]">
+          {/* The top bar as CNC Cutlist's and Nesting's (see CNC's own notes): its blurred backdrop over the header and
+              the band under it; the header — Labels and the project, then the label size, print, download and Save &
+              Back; the band — the sidebar's Visibility toggle (a computer's), how many labels, and which room's. */}
+          <div
+            data-app-top-bar="true"
+            className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
+            style={{
+              height: 56 + 49,
+              backgroundColor: "var(--glass-bg-strong)",
+              backdropFilter: "blur(14px) saturate(220%)",
+              WebkitBackdropFilter: "blur(14px) saturate(220%)",
+              transform: "translateZ(0)",
+              WebkitTransform: "translateZ(0)",
+              willChange: "transform",
+            }}
+          />
+          <div
+            data-app-top-bar-content="true"
+            className="fixed left-0 right-0 top-0 z-[100] flex h-[56px] items-center justify-between gap-3 pl-3 pr-3 md:pl-5 md:pr-3"
+            style={{ color: "var(--text-main)" }}
+          >
+            <div className="inline-flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+              <Tag size={14} className="shrink-0" />
+              <span>Labels</span>
+              <span style={{ color: "var(--text-muted)" }}>|</span>
+              <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <GlassDropdown
+                value={partLabelSize.id}
+                options={LABEL_SIZES.map((size) => ({ value: size.id, label: size.name }))}
+                onChange={pickPartLabelSize}
+                ariaLabel="Label size"
+                menuAlign="right"
+                menuMinWidth={210}
+                triggerTitle="The size of the labels in your label printer"
+                triggerClassName={`${pillClass} ${large ? "max-w-[220px]" : "max-w-[120px]"}`}
+                triggerStyle={pillStyle}
+              />
+              {renderTopBarButton({
+                icon: Printer,
+                label: "Print labels",
+                title: shownPartLabels.length ? "Print labels" : "No labels to print",
+                onClick: () => onOutputPartLabels("print"),
+                disabled: shownPartLabels.length === 0,
+                large,
+              })}
+              {renderTopBarDownloadMenu(
+                [{ key: "pdf", label: "PDF (.pdf)", icon: <FileText size={14} />, onSelect: () => onOutputPartLabels("download") }],
+                large,
+                "Download labels",
+              )}
+              {renderSaveAndBackButton(onSaveAndBackFromLabels, isCompactProjectViewport)}
+            </div>
+          </div>
+          {large ? (
+            <button
+              type="button"
+              onClick={toggleLabelsPanel}
+              className="fixed z-[95] flex items-center justify-center gap-1.5 text-[15px] font-bold transition hover:brightness-95"
+              style={{ left: 0, top: 56, width: 360, height: 49, color: panelShown ? "var(--brand-strong)" : "var(--text-main)" }}
+            >
+              Visibility
+              <ChevronDown size={13} style={{ transform: panelShown ? "rotate(-90deg)" : "rotate(90deg)", transition: "transform 140ms ease" }} />
+            </button>
+          ) : null}
+          <div
+            className="fixed right-0 z-[95] flex h-[49px] items-center justify-between gap-3 pr-3 md:pr-5"
+            style={{ top: 56, left: large ? 360 : 0, paddingLeft: large ? 40 : 12 }}
+          >
+            <p className="min-w-0 truncate text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
+              {shownPartLabels.length} {shownPartLabels.length === 1 ? "label" : "labels"}
+              <span style={{ color: "var(--text-muted)" }}>
+                {" "}
+                · {labelPartCount} {labelPartCount === 1 ? "part" : "parts"}
+                {hiddenLabelCount ? ` · ${hiddenLabelCount} off` : ""}
+                {large ? ` · ${partLabelSize.name}` : ""}
+              </span>
+            </p>
+            {partLabelRooms.length > 1 ? (
+              <GlassDropdown
+                value={partLabelRooms.includes(partLabelRoom) ? partLabelRoom : ALL_LABEL_ROOMS}
+                options={[{ value: ALL_LABEL_ROOMS, label: "All rooms" }, ...partLabelRooms.map((room) => ({ value: room, label: room }))]}
+                onChange={setPartLabelRoom}
+                ariaLabel="Room"
+                menuAlign="right"
+                menuMinWidth={170}
+                triggerClassName={`${pillClass} max-w-[200px]`}
+                triggerStyle={pillStyle}
+              />
+            ) : null}
+          </div>
+          <div className="pointer-events-none fixed inset-x-0 z-[95] h-px" style={{ top: 56 + 49, backgroundColor: "var(--glass-border)" }} />
+          {/* A computer: the sidebar's room and the labels, side by side — the room opening right away as it opens, and
+              only closing once its bubbles have slid away (as CNC Cutlist's). */}
+          <div
+            className={large ? "grid h-[100svh] items-start" : "h-[100svh]"}
+            style={
+              large
+                ? {
+                    gridTemplateColumns: `${panelShown ? 360 : 0}px minmax(0, 1fr)`,
+                    transition: panelShown ? "grid-template-columns 180ms ease" : "grid-template-columns 200ms ease 280ms",
+                  }
+                : undefined
+            }
+          >
+            {large && isLabelsPanelOpen ? (
+              <section
+                ref={labelsPanelScrollRef}
+                className="min-h-0 self-start overflow-y-auto hide-native-scrollbar"
+                style={{ position: "fixed", left: 0, top: 0, width: 360, height: "100svh" }}
+              >
+                <div style={{ height: 105 }} />
+                {renderLabelsSidebar(false)}
+              </section>
+            ) : null}
+            <section
+              ref={labelsGridScrollRef}
+              className="hide-native-scrollbar h-[100svh] min-h-0 overflow-y-auto px-3 md:px-5"
+              style={large ? { gridColumn: 2, paddingBottom: 48, paddingLeft: 40 } : { paddingBottom: 76 }}
+            >
+              <div style={{ height: 105 + 20 }} />
+              {shownPartLabels.length === 0 ? (
+                <div className="flex min-h-[50vh] flex-col items-center justify-center gap-2 text-center">
+                  <Tag size={22} style={{ color: "var(--text-muted)" }} />
+                  <p className="text-[14px] font-medium" style={{ color: "var(--text-main)" }}>
+                    {partLabels.length ? "Every label is switched off" : "No parts to label yet"}
+                  </p>
+                  <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
+                    {partLabels.length ? "Turn some back on in Visibility." : "Each part in the production cutlist gets its labels here."}
+                  </p>
+                </div>
+              ) : (
+                <div className="mx-auto flex max-w-[1680px] flex-wrap justify-center gap-4">
+                  {shownPartLabels.map((label) => (
+                    <div
+                      key={label.key}
+                      className="max-w-full overflow-hidden rounded-[8px] border"
+                      style={{ borderColor: "var(--glass-border)", boxShadow: "0 6px 18px rgba(15, 23, 42, 0.10)" }}
+                    >
+                      <PartLabelPreview label={label} size={partLabelSize} logo={partLabelLogo} pxPerMm={large ? 3.2 : 3} />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          </div>
+          {/* A phone: the sidebar as a page of its own over the labels (from the bar along the bottom, as CNC Cutlist's). */}
+          {!large && isLabelsMobilePanelOpen ? (
+            <section
+              data-app-gesture-exempt="true"
+              className="hide-native-scrollbar fixed inset-x-0 bottom-0 top-[56px] z-[130] overflow-y-auto overscroll-contain"
+              style={{ backgroundColor: "var(--bg-app)" }}
+            >
+              {renderLabelsSidebar(true)}
+            </section>
+          ) : null}
+          {!large && !isLabelsMobilePanelOpen ? (
+            <div
+              data-horizontal-swipe-scroll="true"
+              className="fixed inset-x-0 bottom-0 z-[95] h-[56px] border-t"
+              style={{ borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)" }}
+            >
+              <button
+                type="button"
+                onClick={() => setIsLabelsMobilePanelOpen(true)}
+                className="flex h-full w-full items-center justify-center text-[18px] font-medium hover:brightness-95"
+                style={{ color: "#ffffff" }}
+              >
+                Visibility
+              </button>
+            </div>
+          ) : null}
+        </div>
+        {large ? (
+          <>
+            <GlassScrollbarThumb scrollRef={labelsPanelScrollRef} side="left" />
+            <GlassScrollbarThumb scrollRef={labelsGridScrollRef} side="right" />
+          </>
+        ) : null}
+      </ProtectedRoute>
+    );
+  }
+
   if (isCncFullscreen) {
     return (
       <ProtectedRoute>
@@ -59442,6 +60186,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   { label: "Nesting", icon: GitBranch, key: "nesting" as const },
                   { label: "CNC Cutlist", icon: Cpu, key: "cnc" as const },
                   { label: "Order", icon: ShoppingCart, key: "order" as const },
+                  // A label for every piece, to print on a label printer.
+                  { label: "Labels", icon: Tag, key: "labels" as const },
                   // The Specifications the client confirmed, in a pop-up.
                   { label: "Specifications", icon: ClipboardList, key: "specifications" as const },
                   { label: "Remedials", icon: Wrench, key: "remedials" as const },

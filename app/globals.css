@@ -1856,6 +1856,17 @@ main[data-under-bar="true"][data-reduce-top="true"] {
   }
 }
 
+/* ...and a page that slid in like it sliding back out the way it came (Reports' Included projects on a phone —
+ * app/(staff)/(app)/reports/page.tsx). */
+@keyframes side-sheet-out {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(100%, 0, 0);
+  }
+}
+
 /* Calendar (phones), day and week views: up and down scrolls the hours as usual, while a sideways drag is
  * left to the page — it slides to the next or previous day (week) with the finger (onDaySwipeMove in
  * app/(staff)/(app)/calendar/page.tsx). An event's own touch-action (it's dragged) still wins. */

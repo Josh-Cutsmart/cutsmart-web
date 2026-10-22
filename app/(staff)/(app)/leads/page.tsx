@@ -34,6 +34,8 @@ import { isPreviewMode } from "@/lib/preview-mode";
 import { useBoardStickyRef } from "@/lib/board-sticky-scroll";
 import { collapseBoardColumnAnimated, expandBoardColumnAnimated } from "@/lib/board-column-collapse";
 import { BoardColumnFrame, ColumnCollapseChevrons } from "@/components/board-column-frame";
+import { BoardTitleBar } from "@/components/board-title-bar";
+import { attachBoardArrowKeyScroll } from "@/lib/board-arrow-key-scroll";
 import { scrollBoardToSearchMatch } from "@/lib/board-search-scroll";
 import { useAuth } from "@/lib/auth-context";
 import { authorizedFetch } from "@/lib/api-fetch";
@@ -1016,19 +1018,20 @@ export default function LeadsPage() {
   // See lib/board-sticky-scroll.ts for the mechanism (position:sticky natively pinning the row +
   // column-height-reveal, plus the shared Left/Right arrow-key handling), and why it no longer
   // forces the page's own overflow to "hidden".
-  const boardStickyRef = useBoardStickyRef(leadsViewModeRef, boardCheckRef, { bottomPadPx: 10, phoneBottomPadPx: 20, attachArrowKeyScroll: true });
+  // On the board's panel (its title bar and its row of columns, stuck together); the arrow keys go on the row itself
+  // (leadsBoardRowRef), the part that scrolls.
+  const boardStickyRef = useBoardStickyRef(leadsViewModeRef, boardCheckRef, { bottomPadPx: 10, phoneBottomPadPx: 20 });
   // The board's row of columns, for its glass scrollbar along the bottom (as the Dashboard board's) — kept in state
   // too, so the scrollbar finds the row once it's on the page (it's behind the loading gate and the view toggle).
   const leadsBoardScrollRef = useRef<HTMLDivElement | null>(null);
   const [leadsBoardScrollEl, setLeadsBoardScrollEl] = useState<HTMLDivElement | null>(null);
-  const leadsBoardRowRef = useCallback(
-    (el: HTMLDivElement | null) => {
-      leadsBoardScrollRef.current = el;
-      setLeadsBoardScrollEl(el);
-      boardStickyRef(el);
-    },
-    [boardStickyRef],
-  );
+  const leadsBoardArrowKeysCleanupRef = useRef<(() => void) | null>(null);
+  const leadsBoardRowRef = useCallback((el: HTMLDivElement | null) => {
+    leadsBoardScrollRef.current = el;
+    setLeadsBoardScrollEl(el);
+    leadsBoardArrowKeysCleanupRef.current?.();
+    leadsBoardArrowKeysCleanupRef.current = el ? attachBoardArrowKeyScroll(el) : null;
+  }, []);
   // Re-run the check immediately on a view-mode toggle (rather than waiting for the next scroll
   // or resize) so switching into/out of board view updates the lock/height state right away.
   // useLayoutEffect, not useEffect: leadsViewMode can flip away from and back to "board" as the
@@ -3034,7 +3037,7 @@ export default function LeadsPage() {
   };
 
   const archiveLeadAfterProjectCreate = useCallback(
-    async (leadId: string, companyId: string) => {
+    async (leadId: string, companyId: string, projectId = "") => {
       const id = String(leadId || "").trim();
       const cid = String(companyId || "").trim();
       if (!id || !cid || !isUserVerified) return;
@@ -3054,6 +3057,8 @@ export default function LeadsPage() {
             companyId: cid,
             leadId: id,
             isDeleted: true,
+            // Stamped with the project it became (Reports' conversions).
+            ...(projectId ? { convertedProjectId: projectId } : {}),
           }),
         }).catch(() => null);
         didArchive = Boolean(response?.ok);
@@ -3096,7 +3101,7 @@ export default function LeadsPage() {
       const leadId = String(detail?.leadId || "").trim();
       const companyId = String(detail?.companyId || "").trim();
       if (!leadId || !companyId) return;
-      void archiveLeadAfterProjectCreate(leadId, companyId);
+      void archiveLeadAfterProjectCreate(leadId, companyId, String(detail?.projectId || "").trim());
     };
     window.addEventListener(LEAD_PROJECT_CREATED_EVENT, onLeadProjectCreated as EventListener);
     return () => {
@@ -5529,25 +5534,36 @@ export default function LeadsPage() {
                 <p className="text-[13px] font-semibold" style={{ color: "var(--text-muted)" }}>No leads yet.</p>
               </div>
             ) : (
+              // The board's panel — stuck as the row used to be (see the row's own note below for where) — with which board
+              // this is over the columns (components/board-title-bar.tsx: Leads, in purple), clear of the toolbar the
+              // panel reaches up under (mt-6 / max-md:mt-3 — its -mt).
+              <div
+                ref={boardStickyRef}
+                className="sticky -top-3 -mx-3 -mt-6 flex h-[calc(100svh-36px)] min-h-[280px] flex-col md:-mx-4 lg:-mx-5 max-md:top-0 max-md:-mt-3 max-md:h-[calc(100svh-48px)] lg:top-[36px] lg:h-[calc(100svh-36px)] lg:min-h-[320px]"
+              >
+              <BoardTitleBar
+                icon={Inbox}
+                title="Leads"
+                color="#8B5CF6"
+                count={searchFilteredLeads.length}
+                className="mt-6 px-3 max-md:mt-3 md:px-4 lg:px-5"
+              />
               <div
                 ref={leadsBoardRowRef}
                 data-horizontal-swipe-scroll="true"
-                // pt-7: room above the columns for their shadows (this scroller clips them), reaching
-                // up under the toolbar (-mt-6 / max-md:-mt-3 against the space-y-4 gap above).
+                // pt-7: room above the columns for their shadows (this scroller cuts off whatever's past it) — reaching
+                // back up behind the title bar (-mt-4) for it, so the columns are still 12px below the bar.
                 //
-                // Where it sticks: so the columns (28px down inside it) stop the same distance below
-                // the top bar as their bottoms sit above the bottom of the screen — 10px (pb-[10px], the
-                // Dashboard board's — its glass scrollbar runs along there on a computer), 20px on a
-                // phone (max-md:pb-5). That's top 30px on desktop (the document scrolls, under the 48px
-                // bar), and -18px / -8px under 1024px, where <main> scrolls and already starts below the
-                // bar; the height reaches the bottom of the screen from there. At rest the
-                // columns sit 20px (32px on a phone) below the header, so by then it — and the
-                // collapse button hanging 12px off its bottom — has gone under the bar. No native
-                // scrollbar (same as the Dashboard board): it took 10px under the columns, on top of
-                // that gap, whenever the columns didn't all fit across. Out to the page's own edges either side (back in
-                // by as much — <main>'s px-3 / md:px-4 / lg:px-5), so the first and last columns' shadows have room
-                // before this scroller cuts them off.
-                className="glass-scroll hide-native-scrollbar sticky -top-[18px] flex h-[calc(100svh-30px)] min-h-[280px] snap-x snap-mandatory items-stretch gap-2 -mx-3 -mt-6 px-3 pb-[10px] pt-7 md:-mx-4 md:px-4 lg:-mx-5 lg:px-5 max-md:-top-2 max-md:-mt-3 max-md:h-[calc(100svh-40px)] max-md:pb-5 sm:snap-none lg:top-[30px] lg:h-[calc(100svh-30px)] lg:min-h-[320px]"
+                // Where it (its panel) sticks: so the title bar stops 12px below the top bar — as far as the columns are
+                // below it. That's top 36px on desktop (the document scrolls, under the 48px bar; the panel's mt-6 down
+                // to the title bar), and -12px / 0 under 1024px (max-md:mt-3), where <main> scrolls and already starts
+                // below the bar; the height reaches the bottom of the screen from there. The columns' bottoms stay 10px
+                // above the bottom of the screen (pb-[10px], the Dashboard board's — its glass scrollbar runs along there
+                // on a computer), 20px on a phone (max-md:pb-5). No native scrollbar (same as the
+                // Dashboard board): it took 10px under the columns, on top of that gap, whenever the columns didn't all
+                // fit across. Out to the page's own edges either side (back in by as much — <main>'s px-3 / md:px-4 /
+                // lg:px-5, on the panel), so the first and last columns' shadows have room before this scroller cuts them off.
+                className="glass-scroll hide-native-scrollbar -mt-4 flex min-h-0 flex-1 snap-x snap-mandatory items-stretch gap-2 px-3 pb-[10px] pt-7 md:px-4 lg:px-5 max-md:pb-5 sm:snap-none"
                 style={{ overflowX: "auto", overflowY: "hidden" }}
               >
                 {leadStatusBoardColumns.columns.map((column) => {
@@ -5771,6 +5787,7 @@ export default function LeadsPage() {
                     </div>
                   </BoardColumnFrame>
                 )}
+              </div>
               </div>
             )}
           </div>

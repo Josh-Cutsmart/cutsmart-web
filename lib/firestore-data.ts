@@ -7,6 +7,7 @@ import {
   deleteField,
   doc,
   type DocumentReference,
+  arrayUnion,
   getDoc,
   getDocs,
   limit,
@@ -449,6 +450,21 @@ function normalizeProject(id: string, data: Record<string, unknown>, options?: {
     projectImageItems,
     dashboardCompleteStatusId: String(data.dashboardCompleteStatusId ?? "").trim() || undefined,
     dashboardSubStageId: String(data.dashboardSubStageId ?? "").trim() || undefined,
+    statusHistory: (() => {
+      if (!Array.isArray(data.statusHistory)) return undefined;
+      const entries = data.statusHistory
+        .map((entry) => (entry && typeof entry === "object" ? (entry as Record<string, unknown>) : {}))
+        .map((entry) => ({
+          status: String(entry.status ?? "").trim(),
+          atIso: String(entry.atIso ?? "").trim(),
+          ...(typeof entry.subStage === "string" ? { subStage: entry.subStage.trim() } : {}),
+        }))
+        .filter((entry) => entry.status && entry.atIso);
+      return entries.length ? entries : undefined;
+    })(),
+    sourceLeadId: String(data.sourceLeadId ?? "").trim() || undefined,
+    isPurged: data.isPurged === true || undefined,
+    purgedAtIso: data.isPurged === true ? toIsoString(data.purgedAtIso, "") || undefined : undefined,
     dashboardBoardOrder:
       typeof data.dashboardBoardOrder === "number" && Number.isFinite(data.dashboardBoardOrder) ? data.dashboardBoardOrder : undefined,
     productionUnlockRequests: (() => {
@@ -779,6 +795,8 @@ async function fetchProjectsFromCompanyJobs(
   companyIdsAlreadyResolved?: boolean,
   // Archived projects (lib/project-archive.ts) are left out unless asked for.
   archived: ArchivedFilter = "exclude",
+  // Purged ones (permanentlyDeleteProject) too — only Reports asks for them.
+  includePurged = false,
 ): Promise<Project[]> {
   if (!db || !uid) {
     return [];
@@ -813,7 +831,8 @@ async function fetchProjectsFromCompanyJobs(
         const cleanups: Array<{ ref: DocumentReference; patch: Record<string, unknown> }> = [];
         for (const item of jobsSnap.docs) {
           const data = (item.data() ?? {}) as Record<string, unknown>;
-          if (Boolean(data.isDeleted) !== Boolean(includeDeleted) || !matchesArchivedFilter(data, archived)) {
+          const listed = data.isPurged === true ? includePurged : Boolean(data.isDeleted) === Boolean(includeDeleted);
+          if (!listed || !matchesArchivedFilter(data, archived)) {
             continue;
           }
           const normalized = applyCompanyStaffDisplayNameOverridesToProject(normalizeJobProject(companyId, item, lightweight), displayNameOverridesByUid);
@@ -911,7 +930,8 @@ async function fetchProjectsFromLegacyUserPaths(uid: string, includeDeleted = fa
 export async function fetchProjects(
   uid?: string,
   preferredCompanyIds?: string[],
-  options?: { lightweight?: boolean; archived?: ArchivedFilter },
+  // includePurged: the projects deleted from the Archived page too (text-only records — permanentlyDeleteProject).
+  options?: { lightweight?: boolean; archived?: ArchivedFilter; includePurged?: boolean },
 ): Promise<Project[]> {
   const archived = options?.archived ?? "exclude";
   const mocks = () => mockProjects.filter((project) => matchesArchivedFilter(project as unknown as Record<string, unknown>, archived));
@@ -992,7 +1012,7 @@ export async function fetchProjects(
     };
     const loadFor = async (companyIds: string[]) => {
       const [jobs, legacyTop] = await Promise.all([
-        fetchProjectsFromCompanyJobs(userId, false, companyIds, lightweight, true, archived),
+        fetchProjectsFromCompanyJobs(userId, false, companyIds, lightweight, true, archived, options?.includePurged === true),
         runScopedProjectsQuery(companyIds).catch(() => [] as Project[]),
       ]);
       return mergeJobsFirst(jobs, legacyTop);
@@ -1059,6 +1079,7 @@ export async function projectViewableByUser(projectId: string, uid: string, comp
     if (!companyAccess) return "unknown";
     const project = normalizeProject(id, snap.data() as Record<string, unknown>);
     project.companyId = cid;
+    if (project.isPurged) return "no";
     return canUserViewProject(project, userId, companyAccess) ? "yes" : "no";
   } catch {
     return "unknown";
@@ -1116,6 +1137,8 @@ async function loadProjectById(
   const extraIds = directHit ? [] : (await resolvedIdsPromise).filter((id) => !preferredIds.includes(id));
   if (!directHit && extraIds.length) directHit = await findDirectHit(extraIds);
   const companyIds = [...preferredIds, ...extraIds];
+  // Deleted from the Archived page (purged): it doesn't open.
+  if (directHit?.data.isPurged === true) return null;
   if (directHit) {
     const [companyDoc, companyAccess] = await Promise.all([
       fetchCompanyDoc(directHit.companyId),
@@ -1145,6 +1168,7 @@ async function loadProjectById(
     const snap = await getDoc(ref);
     if (snap.exists()) {
       const normalized = normalizeProject(snap.id, snap.data() as Record<string, unknown>);
+      if (normalized.isPurged) return null;
       const companyId = String(normalized.companyId || "").trim();
       if (!companyId) {
         return canUserViewProject(normalized, userId, null) ? normalized : null;
@@ -1247,7 +1271,10 @@ export async function fetchDeletedProjects(uid?: string, preferredCompanyIds?: s
   upsert(nested);
   upsert(legacy);
 
-  return Array.from(merged.values()).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+  // Not one deleted from the Archived page (purged — gone from it).
+  return Array.from(merged.values())
+    .filter((project) => !project.isPurged)
+    .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 }
 
 // Scoped to one project — this used to be an unfiltered scan of the entire app-wide `quotes`
@@ -1678,6 +1705,12 @@ export async function updateProjectStatus(
       completedAtIso: completedStatus ? (keepsCompletedAt ? storedCompletedAtIso : nowIso) : "",
       dashboardSubStageId: nextSubStageId,
     };
+    // A new status, or sub-stage: noted in its status history (Reports' days in each stage, and in each sub-stage).
+    const statusMoves = newStatus.trim().toLowerCase() !== String(stored.status ?? "").trim().toLowerCase();
+    const subStageMoves = nextSubStageId.trim().toLowerCase() !== String(stored.dashboardSubStageId ?? "").trim().toLowerCase();
+    if (statusMoves || subStageMoves) {
+      patch.statusHistory = arrayUnion({ status: newStatus, subStage: nextSubStageId.trim(), atIso: nowIso });
+    }
     if (!keepsCompletedAt) patch.completedAt = completedStatus ? serverTimestamp() : null;
     // Moving an archived project back out of a completed status reopens it: it leaves the Archived
     // list, and its client portal link works again (an old soft-deleted one too). One archived by hand
@@ -1930,25 +1963,50 @@ export async function archiveDueCompletedProjects(companyId: string, uid: string
   }
 }
 
-// Removes a project for good — only ever from the Archived page, by someone choosing to (archived
-// projects are never deleted automatically). Only its history is kept: its line in its contact's project history and,
-// if it was completed, its completion record (lib/completed-projects.ts, stamped deleted). Everything else of it goes
-// with it — not just its own doc (deleteProjectContent below).
+// "Delete permanently" (the Archived page — archived projects are never deleted automatically): not removed, but made a
+// hidden, text-only record. Everything of it stays — its details, status and status history, quotes, specifications,
+// cutlists, checklists, notes, changelog — for whatever reads a project (Reports, its contact's history, a status
+// lookup); only its images and attached files go: its media, every image / file anything of it points at (cleared to
+// nothing, wherever it is in it), and its folder in Storage — so it's as small as it can be. It's then marked purged
+// (and deleted, as projects once were), so no list shows it and it doesn't open. Its contact keeps it in their history
+// (marked deleted), and if it was completed, its completion record stays (stamped deleted). (The Archived page can
+// email a copy, files and all, first — lib/project-email-copy.ts.)
 export async function permanentlyDeleteProject(project: Project): Promise<boolean> {
-  // Where it is, and what its own doc holds (older projects keep their image and file paths on it) — read before it goes.
+  if (!db || !project) return false;
   const projectRef = await resolveProjectDocRef(project).catch(() => null);
-  const projectData = projectRef
-    ? await getDoc(projectRef).then(
-        (snap) => (snap.exists() ? ((snap.data() ?? {}) as Record<string, unknown>) : null),
-        () => null,
-      )
-    : null;
-  const deleted = await deleteProjectEverywhere(project);
-  if (deleted) {
-    await noteProjectDeleted(project);
-    await deleteProjectContent(project, projectRef, projectData);
+  if (!projectRef) return false;
+  const projectData = await getDoc(projectRef).then(
+    (snap) => (snap.exists() ? ((snap.data() ?? {}) as Record<string, unknown>) : null),
+    () => null,
+  );
+  if (!projectData) return false;
+  const nowIso = new Date().toISOString();
+  const fileMentions = new Set<string>();
+  const patch: Record<string, unknown> = {
+    ...changedFieldsWithoutFiles(projectData, fileMentions),
+    projectImages: [],
+    projectImageItems: [],
+    projectFiles: [],
+    isPurged: true,
+    purgedAtIso: nowIso,
+    purgedByName: String(auth?.currentUser?.displayName || "").trim(),
+    isDeleted: true,
+    deletedAtIso: nowIso,
+    isArchived: true,
+  };
+  try {
+    await updateDoc(projectRef, patch);
+  } catch {
+    return false;
   }
-  return deleted;
+  // Its contact keeps it in their history (marked deleted), so the contact still shows it.
+  await syncCompanyClientProfileFromProjectInternal(project, {
+    syncOnly: true,
+    historyPatch: { deleted: true, deletedAtIso: nowIso },
+  }).catch(() => undefined);
+  await noteProjectDeleted(project);
+  await stripProjectContentFiles(project, projectRef, fileMentions);
+  return true;
 }
 
 // Where a project keeps its content beside its own doc — the jobs/{jobId} subcollections in firestore.rules.
@@ -1962,51 +2020,68 @@ const PROJECT_CONTENT_SUBCOLLECTIONS = [
   "projectMedia",
 ] as const;
 
-// Everything a deleted project would otherwise leave behind (Firestore doesn't remove a doc's subcollections with it):
-// its subcollections' docs, its changelog entries, and its uploaded files in Storage — images, files and quote
-// snapshots, under companies/{companyId}/jobs/{projectId}/ (only ever files in its own folder). Best effort: the project
-// is already gone, so a failure here only leaves that part behind.
-async function deleteProjectContent(project: Project, projectRef: DocumentReference | null, projectData: Record<string, unknown> | null) {
-  const database = db;
-  if (!database) return;
+// An image or file — embedded (a data: URL), or in Storage (its download URL, gs:// address or path).
+const STORAGE_FILE_REFERENCE = /^(https?:\/\/firebasestorage\.googleapis\.com\/|https?:\/\/storage\.googleapis\.com\/|gs:\/\/)/i;
+const EMBEDDED_FILE_REFERENCE = /^data:[a-z]+\/[a-z0-9.+-]+;base64,/i;
+function isProjectFileReference(text: string): boolean {
+  return EMBEDDED_FILE_REFERENCE.test(text) || STORAGE_FILE_REFERENCE.test(text) || text.replace(/^\/+/, "").startsWith("companies/");
+}
+
+// A value with every image / file in it cleared (""), however deep — noting the Storage ones (to delete). Only plain
+// objects and lists are gone through; anything else (a timestamp…) is kept as it is.
+function withoutFiles(value: unknown, mentions: Set<string>, depth = 0): unknown {
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (!text || !isProjectFileReference(text)) return value;
+    if (!EMBEDDED_FILE_REFERENCE.test(text)) mentions.add(text.replace(/^\/+/, ""));
+    return "";
+  }
+  if (depth > 12 || value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map((item) => withoutFiles(item, mentions, depth + 1));
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, withoutFiles(item, mentions, depth + 1)]));
+}
+
+// A doc's fields that had an image / file in them, without it — just those (the rest needn't be written again).
+function changedFieldsWithoutFiles(data: Record<string, unknown>, mentions: Set<string>): Record<string, unknown> {
+  const changed: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(data)) {
+    const stripped = withoutFiles(value, mentions);
+    if (JSON.stringify(stripped) !== JSON.stringify(value)) changed[key] = stripped;
+  }
+  return changed;
+}
+
+// A purged project's content: its media gone; every other subcollection's docs kept, with their images / files cleared;
+// its changelog kept; and its files in Storage — the ones it pointed at in its own folder, and whatever else is in that
+// folder (its quote snapshots…) — deleted. Best effort: what fails here stays.
+async function stripProjectContentFiles(project: Project, projectRef: DocumentReference, fileMentions: Set<string>) {
   const companyId = String(project.companyId || "").trim();
-  // Its files that its data points at (paths or download URLs) — from its own doc and its image/file lists.
-  const fileMentions = new Set<string>();
-  const noteFiles = (value: unknown, depth = 0) => {
-    if (depth > 8 || value === null || value === undefined) return;
-    if (typeof value === "string") {
-      const text = value.trim();
-      if (/^(https?:\/\/firebasestorage\.googleapis\.com\/|gs:\/\/)/i.test(text)) fileMentions.add(text);
-      else if (text.replace(/^\/+/, "").startsWith("companies/")) fileMentions.add(text.replace(/^\/+/, ""));
-      return;
-    }
-    if (Array.isArray(value)) value.forEach((item) => noteFiles(item, depth + 1));
-    else if (typeof value === "object") Object.values(value as Record<string, unknown>).forEach((item) => noteFiles(item, depth + 1));
-  };
-  if (projectData) noteFiles(projectData);
-
-  if (projectRef) {
-    for (const name of PROJECT_CONTENT_SUBCOLLECTIONS) {
-      try {
-        const snap = await getDocs(collection(projectRef, name));
-        if (name === "projectMedia") snap.docs.forEach((item) => noteFiles(item.data()));
-        await Promise.all(snap.docs.map((item) => deleteDoc(item.ref).catch(() => undefined)));
-      } catch {
-        // that part stays
-      }
+  for (const name of PROJECT_CONTENT_SUBCOLLECTIONS) {
+    try {
+      const snap = await getDocs(collection(projectRef, name));
+      await Promise.all(
+        snap.docs.map(async (item) => {
+          const data = (item.data() ?? {}) as Record<string, unknown>;
+          if (name === "projectMedia") {
+            withoutFiles(data, fileMentions);
+            await deleteDoc(item.ref);
+            return;
+          }
+          const changed = changedFieldsWithoutFiles(data, fileMentions);
+          if (Object.keys(changed).length) await updateDoc(item.ref, changed);
+        }).map((write) => write.catch(() => undefined)),
+      );
+    } catch {
+      // that part stays as it was
     }
   }
-  try {
-    const changes = await getDocs(query(collection(database, "changelog"), where("projectId", "==", project.id)));
-    await Promise.all(changes.docs.map((item) => deleteDoc(item.ref).catch(() => undefined)));
-  } catch {
-    // its changelog stays
-  }
 
-  // Its files — never from Preview (nothing in it is real, and nothing's sent from it).
+  // Its files — never from Preview (nothing in it is real).
   const storageClient = storage;
   if (!storageClient || !companyId || isPreviewMode()) return;
-  const folders = Array.from(new Set([project.id, projectRef?.id ?? ""].filter(Boolean))).map((id) => `companies/${companyId}/jobs/${id}`);
+  const folders = Array.from(new Set([project.id, projectRef.id].filter(Boolean))).map((id) => `companies/${companyId}/jobs/${id}`);
   const inItsFolder = (fileRef: StorageReference) => folders.some((folder) => fileRef.fullPath.startsWith(`${folder}/`));
   const files = new Map<string, StorageReference>();
   for (const mention of fileMentions) {
@@ -2031,58 +2106,6 @@ async function deleteProjectContent(project: Project, projectRef: DocumentRefere
     }
   }
   await Promise.all([...files.values()].map((fileRef) => deleteObject(fileRef).catch(() => undefined)));
-}
-
-async function deleteProjectEverywhere(project: Project): Promise<boolean> {
-  if (!db || !project) {
-    return false;
-  }
-
-  // Its contact keeps it in their history (marked deleted), so the contact still shows it.
-  await syncCompanyClientProfileFromProjectInternal(project, {
-    syncOnly: true,
-    historyPatch: { deleted: true, deletedAtIso: new Date().toISOString() },
-  }).catch(() => undefined);
-
-  try {
-    const topLevelRef = doc(db, "projects", project.id);
-    const topLevelSnap = await getDoc(topLevelRef);
-    if (topLevelSnap.exists()) {
-      await deleteDoc(topLevelRef);
-      return true;
-    }
-  } catch {
-    // continue into nested company/jobs fallback
-  }
-
-  if (project.companyId) {
-    try {
-      const jobsQ = query(
-        collection(db, "companies", project.companyId, "jobs"),
-        where("id", "==", project.id),
-        limit(1),
-      );
-      const jobsSnap = await getDocs(jobsQ);
-      if (!jobsSnap.empty) {
-        await deleteDoc(jobsSnap.docs[0].ref);
-        return true;
-      }
-    } catch {
-      // continue into legacy fallback
-    }
-  }
-
-  try {
-    const userProjectsSnap = await getDocs(query(collectionGroup(db, "projects"), where("id", "==", project.id)));
-    for (const projectSnap of userProjectsSnap.docs) {
-      await deleteDoc(projectSnap.ref);
-      return true;
-    }
-  } catch {
-    // ignore
-  }
-
-  return false;
 }
 
 // The one place that resolves a project's REAL Firestore document reference — `project.id` is a
@@ -2257,6 +2280,14 @@ export async function updateProjectPatch(
     ...withoutLegacyCopies(patch),
     updatedAtIso: new Date().toISOString(),
   };
+  // A move to another sub-stage (the Dashboard's sub-board): noted in its status history too (Reports' days in each
+  // sub-stage).
+  if (Object.prototype.hasOwnProperty.call(patch, "dashboardSubStageId") && !Object.prototype.hasOwnProperty.call(patch, "statusHistory")) {
+    const nextSubStage = String(patch.dashboardSubStageId ?? "").trim();
+    if (nextSubStage.toLowerCase() !== String(project.dashboardSubStageId ?? "").trim().toLowerCase()) {
+      nextPatch.statusHistory = arrayUnion({ status: project.statusLabel, subStage: nextSubStage, atIso: nextPatch.updatedAtIso });
+    }
+  }
 
   const ref = await resolveProjectDocRef(project);
   if (!ref) {
@@ -2357,6 +2388,38 @@ export async function fetchAcceptedQuoteTotalText(project: Project): Promise<str
     return accepted[0] ? quoteGridTotalText(accepted[0].grid) : null;
   } catch {
     return null;
+  }
+}
+
+// A project's quotes as Reports counts them: each version sent to the client (or accepted / declined by them), with
+// when it was saved (sent), accepted or declined, and its total as the quote shows it. Just those versions — not the
+// drafts never sent.
+export type ProjectQuoteOutcome = { id: string; savedAtIso: string; acceptedAtIso: string; declinedAtIso: string; totalText: string };
+export async function fetchProjectQuoteOutcomes(project: Project): Promise<ProjectQuoteOutcome[]> {
+  const ref = await resolveProjectDocRef(project);
+  if (!ref) return [];
+  try {
+    const versions = collection(ref, "quoteGridVersions");
+    const [sent, accepted] = await Promise.all([
+      getDocs(query(versions, where("sentToClient", "==", true))),
+      getDocs(query(versions, where("acceptedAtIso", ">", ""))),
+    ]);
+    const byId = new Map<string, ProjectQuoteOutcome>();
+    for (const snap of [...sent.docs, ...accepted.docs]) {
+      if (byId.has(snap.id)) continue;
+      const version = normalizeSpecsGridVersion({ ...snap.data(), id: snap.id });
+      if (!version) continue;
+      byId.set(snap.id, {
+        id: snap.id,
+        savedAtIso: String(version.savedAtIso || ""),
+        acceptedAtIso: String(version.acceptedAtIso || ""),
+        declinedAtIso: String(version.declinedAtIso || ""),
+        totalText: quoteGridTotalText(version.grid),
+      });
+    }
+    return [...byId.values()];
+  } catch {
+    return [];
   }
 }
 
@@ -5104,6 +5167,9 @@ export type CompanyLeadRow = {
   updatedAtIso?: string;
   deletedAtIso?: string;
   isDeleted?: boolean;
+  // Made into a project (Leads › Create Project — it's archived then): which project, and when. Reports' conversions.
+  convertedProjectId?: string;
+  convertedAtIso?: string;
   source: string;
   // How a lead added by hand came in (Phone call, Walk-in, …).
   sourceDetail?: string;
@@ -5299,6 +5365,8 @@ export async function fetchCompanyLeads(companyId: string): Promise<CompanyLeadR
         updatedAtIso: toIsoString(data.updatedAtIso ?? data.updatedAt, ""),
         deletedAtIso: toIsoString(data.deletedAtIso ?? data.deletedAt, ""),
         isDeleted: Boolean(data.isDeleted),
+        convertedProjectId: String(data.convertedProjectId ?? "").trim() || undefined,
+        convertedAtIso: toIsoString(data.convertedAtIso, "") || undefined,
         source: String(data.source ?? "").trim() || "zapier-form",
         status: normalizeLeadStatus(data.status),
         assignedToUid: String(data.assignedToUid ?? "").trim() || undefined,

@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, Building2, CheckCircle2, ChevronDown, CircleDollarSign, CircleHelp, ClipboardList, Clock3, DatabaseBackup, Download, GripVertical, HardHat, Layers3, LayoutDashboard, Link2, Loader2, Package2, Plus, RotateCcw, Search, Settings, Upload, Users, Wrench, X } from "lucide-react";
+import { ArrowLeft, Building2, CheckCircle2, ChevronDown, CircleDollarSign, CircleHelp, ClipboardList, Clock3, DatabaseBackup, Download, GripVertical, HardHat, Layers3, LayoutDashboard, Link2, Loader2, Package2, Plus, RotateCcw, Search, Settings, Trophy, Upload, Users, Wrench, X } from "lucide-react";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { useAuth } from "@/lib/auth-context";
 import { authorizedFetch } from "@/lib/api-fetch";
@@ -118,8 +118,10 @@ type SettingsSection =
 
 type SubStageRow = { name: string; color: string; isDefault?: boolean };
 // isComplete: the "Completed" toggle — projects in this status count as finished (stats, client portal
-// closing and archiving; see lib/project-archive.ts). Project statuses only.
-type StatusRow = { name: string; color: string; subStages?: SubStageRow[]; isComplete?: boolean };
+// closing and archiving; see lib/project-archive.ts). isWon: the "Won" toggle — a project reaching this status (or
+// any after it on the board) counts as a won job in Reports, as one whose quote the client accepted does. One status
+// each at most. Project statuses only.
+type StatusRow = { name: string; color: string; subStages?: SubStageRow[]; isComplete?: boolean; isWon?: boolean };
 type SheetSizeRow = { h: string; w: string; isDefault: boolean };
 type BoardEdgingMemoryRow = { value: string; count: string };
 type BoardColourMemoryRow = { value: string; count: string; edgings: BoardEdgingMemoryRow[] };
@@ -397,13 +399,14 @@ const desktopPermissionKeys = [
   "staff.change.role",
   "staff.change.display_name",
   "company.settings",
+  "company.report",
   "dashboard.complete.bonus",
   "calendar.view",
 ];
 
 // The role pop-up lists permissions in these groups (any key not matched lands in "Other").
 const PERMISSION_GROUPS: Array<{ label: string; match: (key: string) => boolean }> = [
-  { label: "Company", match: (k) => k === "company.*" || k === "company.settings" },
+  { label: "Company", match: (k) => k === "company.*" || k === "company.settings" || k === "company.report" },
   { label: "Dashboard & Contacts", match: (k) => k.startsWith("company.dashboard") || k.startsWith("dashboard.") || k.startsWith("clients.") },
   { label: "Leads", match: (k) => k.startsWith("leads.") },
   { label: "Projects", match: (k) => k.startsWith("projects.") },
@@ -449,6 +452,7 @@ const permissionLabels: Record<string, string> = {
   "staff.change.role": "staff.change.role - Change Staff Member Role",
   "staff.change.display_name": "staff.change.display_name - Change Staff Display Name",
   "company.settings": "company.settings - View/Change Company Settings",
+  "company.report": "company.report - Access Reports Tab (Company-Wide Sales, Leads And Project Figures)",
   "dashboard.complete.bonus": "dashboard.complete.bonus - Bonus Completed Projects Dashboard View",
 };
 
@@ -848,6 +852,7 @@ function normalizeStatuses(raw: unknown): StatusRow[] {
   // old rule matching several names), the first in the list keeps it.
   const isCompletedStatus = completedStatusMatcher(raw);
   let completedTaken = false;
+  let wonTaken = false;
   const out = raw
     .filter((item) => item && typeof item === "object")
     .map((item) => {
@@ -855,7 +860,9 @@ function normalizeStatuses(raw: unknown): StatusRow[] {
       const name = toStr(row.name);
       const isComplete = !completedTaken && Boolean(name) && isCompletedStatus(name);
       if (isComplete) completedTaken = true;
-      return { name, color: toStr(row.color, "#64748B"), subStages: normalizeSubStages(row.subStages), isComplete };
+      const isWon = !wonTaken && Boolean(name) && row.isWon === true;
+      if (isWon) wonTaken = true;
+      return { name, color: toStr(row.color, "#64748B"), subStages: normalizeSubStages(row.subStages), isComplete, isWon };
     })
     .filter((row) => row.name);
   return out.length ? out : [{ name: "New", color: "#3060D0", isComplete: false }];
@@ -1769,6 +1776,8 @@ export default function CompanySettingsPage() {
   const [statuses, setStatuses] = useState<StatusRow[]>([]);
   // Whether a status is already ticked as the completed one (Project statuses hides the others' button).
   const hasCompletedStatus = statuses.some((row) => Boolean(row.isComplete));
+  // ...and as the won one (Reports).
+  const hasWonStatus = statuses.some((row) => Boolean(row.isWon));
   const [leadStatuses, setLeadStatuses] = useState<StatusRow[]>([]);
   // The company's lead forms (Company Settings → Leads — components/lead-forms-settings.tsx; lib/lead-forms.ts).
   const [leadForms, setLeadForms] = useState<LeadForm[]>([]);
@@ -3596,6 +3605,7 @@ export default function CompanySettingsPage() {
         // Saved on every row, on or off — once any row has it, only the ones switched on count as
         // completed (see completedStatusMatcher in lib/project-archive.ts).
         isComplete: Boolean(row.isComplete),
+        isWon: Boolean(row.isWon),
         subStages: (row.subStages ?? [])
           .map((sub) => ({ name: toStr(sub.name), color: toStr(sub.color, "#64748B"), isDefault: Boolean(sub.isDefault) }))
           .filter((sub) => sub.name),
@@ -6607,6 +6617,33 @@ export default function CompanySettingsPage() {
                             >
                               <CheckCircle2 size={13} />
                               <span className="max-sm:hidden @max-md:hidden">Completed</span>
+                            </button>
+                            {/* Won (Reports): the same — one status at most, the others' an invisible copy. */}
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked={Boolean(row.isWon)}
+                              aria-label="Won status"
+                              aria-hidden={(hasWonStatus && !row.isWon) || undefined}
+                              tabIndex={hasWonStatus && !row.isWon ? -1 : undefined}
+                              disabled={hasWonStatus && !row.isWon}
+                              onClick={() => setStatuses((prev) => prev.map((v, i) => ({ ...v, isWon: i === idx ? !v.isWon : false })))}
+                              title={
+                                row.isWon
+                                  ? "The won status — in Reports, a project reaching it (or any status after it) counts as a won job, as one whose quote was accepted does"
+                                  : "Make this the won status for Reports (only one status can be)"
+                              }
+                              className={`inline-flex h-7 shrink-0 items-center gap-1 rounded-full border px-2 text-[11.5px] font-medium transition max-sm:w-7 max-sm:justify-center max-sm:px-0 @max-md:w-7 @max-md:justify-center @max-md:px-0 ${
+                                hasWonStatus && !row.isWon ? "invisible" : ""
+                              }`}
+                              style={
+                                row.isWon
+                                  ? { borderColor: "color-mix(in srgb, #D97706 45%, var(--glass-border))", backgroundColor: "color-mix(in srgb, #F59E0B 14%, transparent)", color: "#B45309" }
+                                  : { borderColor: "var(--glass-border)", backgroundColor: "transparent", color: "var(--text-muted)" }
+                              }
+                            >
+                              <Trophy size={13} />
+                              <span className="max-sm:hidden @max-md:hidden">Won</span>
                             </button>
                             {(row.subStages ?? []).length > 0 ? (
                               <span className={countPillClass} title="Sub-stages">

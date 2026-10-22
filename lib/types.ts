@@ -113,6 +113,17 @@ export interface Project {
   // buildLeadProjectPrefill in app/(staff)/(app)/leads/page.tsx. Absent for a project not created
   // from a lead, or one whose lead had no unmapped custom fields.
   leadCustomFields?: LeadCustomFieldSnapshot[];
+  // Each status it's been in and when it went in — from its creation and every change of status since this was first
+  // recorded (Reports' days in each stage) — and, once that was recorded too, the sub-stage it was in (the Dashboard's
+  // sub-board: "" for none), each move to another sub-stage its own entry. Missing for a project from before then.
+  statusHistory?: Array<{ status: string; atIso: string; subStage?: string }>;
+  // The lead it was made from (Leads › Create Project), when it was — Reports' lead conversions.
+  sourceLeadId?: string;
+  // "Deleted permanently" from the Archived page: kept, text only (its images and files gone), and hidden — no list
+  // shows it and it doesn't open, but what reads a project (Reports, its contact's history) still finds it. See
+  // permanentlyDeleteProject in lib/firestore-data.ts.
+  isPurged?: boolean;
+  purgedAtIso?: string;
 }
 
 export interface ProjectChecklistItem {

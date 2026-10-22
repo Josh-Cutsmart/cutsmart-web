@@ -5,7 +5,7 @@ import { glassShineStyle } from "@/lib/glass-shine";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { useRouter } from "next/navigation";
 import { createPortal } from "react-dom";
-import { Activity, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, FolderKanban, Kanban, ListFilter, Lock, RefreshCw, Rows3, Search, Users2, X } from "lucide-react";
+import { Activity, CalendarDays, CheckCircle2, ChevronRight, FolderKanban, Kanban, ListFilter, Lock, RefreshCw, Rows3, Search, Users2, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
 import { GlassDropdown, GLASS_MENU_CLASS, GLASS_MENU_MIN_WIDTH_PHONE_PX, GLASS_MENU_MIN_WIDTH_PX, GLASS_MENU_STYLE, GlassMenuOption, glassMenuHeight } from "@/components/glass-dropdown";
@@ -14,6 +14,7 @@ import { attachBoardDragScroll } from "@/lib/board-drag-scroll";
 import { useBoardStickyRef } from "@/lib/board-sticky-scroll";
 import { collapseBoardColumnAnimated, expandBoardColumnAnimated } from "@/lib/board-column-collapse";
 import { BoardColumnFrame, ColumnCollapseChevrons, getBoardColumnVisibleRect } from "@/components/board-column-frame";
+import { BoardTitleBar } from "@/components/board-title-bar";
 import { flatPageBg } from "@/lib/flat-page";
 import { scrollBoardToSearchMatch } from "@/lib/board-search-scroll";
 import { swallowNextClick } from "@/lib/swallow-dismiss-click";
@@ -423,7 +424,6 @@ export default function DashboardPage() {
   }, [search, dashboardViewMode, openSubBoardColumnName]);
 
   // The sub-status stays open while the list view is shown, but its back button only belongs on the board.
-  const showSubBoardBackButton = Boolean(openSubBoardColumnName) && dashboardViewMode === "board";
   const [draggingSubStageProjectId, setDraggingSubStageProjectId] = useState("");
   const [dragOverSubStageColumn, setDragOverSubStageColumn] = useState("");
   // Per-sub-column collapse state, mirroring collapsedProjectStatusColumns for the main board —
@@ -2785,40 +2785,6 @@ export default function DashboardPage() {
                   wide), plus the row's own 8px gap — so the search bar, open, ends as far from the
                   toggle as it starts from the button before it. */}
               <div className="relative flex flex-wrap items-center gap-2 pl-0 pr-[90px] sm:pr-0">
-                {/* Sub-board back button — always mounted (not conditionally rendered), but
-                    collapsed to zero width (and a matching negative margin that cancels out the
-                    row's own gap-2) when hidden, so the search bar/toggle actually sit at their
-                    normal position instead of staying permanently shifted over. Animating width
-                    open reveals the button left-to-right (slides in) and pushes every sibling
-                    after it — including the search bar, and the icon inside it, which moves as
-                    one piece with the bar since it's positioned relative to the bar's own box. */}
-                {/* Only in board view: switching to the list slides it away, and coming back to the board
-                    (the sub-status is still open there) slides it back in. */}
-                <div
-                  className="shrink-0 overflow-hidden transition-[width,margin-right] duration-250 ease-out"
-                  style={{
-                    width: showSubBoardBackButton ? 36 : 0,
-                    marginRight: showSubBoardBackButton ? 8 : -8,
-                  }}
-                >
-                  <button
-                    type="button"
-                    onClick={onCloseSubBoard}
-                    aria-label={`Back to board${openSubBoardColumnName ? ` (leave ${openSubBoardColumnName})` : ""}`}
-                    aria-hidden={!showSubBoardBackButton}
-                    tabIndex={showSubBoardBackButton ? 0 : -1}
-                    title="Back"
-                    // A circle, like the app's other round buttons (and, on a phone, the search button beside it).
-                    className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border"
-                    style={{
-                      borderColor: dashboardPalette.border,
-                      backgroundColor: dashboardPalette.panelBg,
-                      color: dashboardPalette.text,
-                    }}
-                  >
-                    <ChevronLeft size={16} />
-                  </button>
-                </div>
                 {/* Deliberately `relative` at every breakpoint (no `sm:static` reset) — the
                     Search icon below is absolutely positioned against THIS box specifically, so
                     it has to stay this element's own containing block or it detaches and pins
@@ -3065,16 +3031,15 @@ export default function DashboardPage() {
                   // shadows have room to show over the toolbar area instead of being cut off along
                   // their tops by the scroller's own clipping.
                   //
-                  // Where it sticks: so the columns (34px down inside it — pt-[2px] + the scroller's
-                  // pt-8) stop the same distance below the 48px top bar as their bottoms sit above the
-                  // bottom of the screen: 10px (the scroller's pb), 20px on a phone (max-md:pb-5).
-                  // That's top 24px (34px on a phone) — whichever is scrolling, the document on
-                  // desktop or <main> below 1024px, starts at the top of the screen, under the bar
-                  // (on this page, <main> reaches up under it: app-shell.tsx's data-under-bar).
-                  // The height reaches the bottom of the screen from there. The toolbar ends 10px
-                  // (20px on a phone — max-md:-mt-[14px]) above the columns, so by then it's gone
-                  // under the bar.
-                  "sticky top-6 -mt-6 flex h-[calc(100svh-24px)] min-h-[280px] flex-col overflow-hidden pt-[2px] -mx-3 max-md:top-[34px] max-md:-mt-[14px] max-md:h-[calc(100svh-34px)] md:-mx-4 lg:-mx-5 lg:min-h-[320px]"
+                  // Where it sticks: so the board's title bar (26px down inside it — pt-[2px] + its
+                  // mt-6; 16px on a phone, max-md:mt-[14px]) stops 12px below the 48px top bar, the
+                  // same as the columns sit below it. That's top 34px (44px on a phone) — whichever is
+                  // scrolling, the document on desktop or <main> below 1024px, starts at the top of the
+                  // screen, under the bar (on this page, <main> reaches up under it: app-shell.tsx's
+                  // data-under-bar). The height reaches the bottom of the screen from there. The
+                  // toolbar's buttons end 13px above its own bottom (its pb-3 and border, both
+                  // see-through), so by then they're gone under the bar.
+                  "sticky top-[34px] -mt-6 flex h-[calc(100svh-34px)] min-h-[280px] flex-col overflow-hidden pt-[2px] -mx-3 max-md:top-[44px] max-md:-mt-[14px] max-md:h-[calc(100svh-44px)] md:-mx-4 lg:-mx-5 lg:min-h-[320px]"
                 : ""
             }`}
           >
@@ -3280,11 +3245,32 @@ export default function DashboardPage() {
               </div>
           )}
 
+          {/* Which board this is, over its columns (components/board-title-bar.tsx): Projects, in blue — or, inside a
+              column (its sub-statuses), the way back to Projects and that column's name, in its colour. Clear of the
+              toolbar the panel reaches up under (mt-6 / max-md:mt-[14px] — the panel's -mt), and stuck with it. The
+              scroller under it reaches back up behind it (-mt-5, with pt-8 — the columns' shadows' room, as before the
+              bar), so they're still 12px below it. */}
+          {dashboardViewMode === "board" && (() => {
+            const parent = openSubBoardColumnName
+              ? dashboardStatusBoardColumns.columns.find((column) => column.name === openSubBoardColumnName) ?? null
+              : null;
+            return (
+              <BoardTitleBar
+                icon={FolderKanban}
+                title="Projects"
+                color="#3B82F6"
+                count={dashboardStatusBoardColumns.columns.reduce((sum, column) => sum + column.projects.length, 0)}
+                crumb={parent ? { label: parent.name, color: parent.color, count: parent.projects.length } : null}
+                onBack={onCloseSubBoard}
+                className="mt-6 px-[10px] max-md:mt-[14px] lg:px-4"
+              />
+            );
+          })()}
           {dashboardViewMode === "board" && (
           <div
             ref={boardScrollContainerCallbackRef}
             data-horizontal-swipe-scroll="true"
-            className="glass-scroll hide-native-scrollbar grid snap-x snap-mandatory overflow-x-auto overflow-y-hidden px-[10px] pb-[10px] pt-8 max-md:pb-5 sm:snap-none lg:px-4"
+            className="glass-scroll hide-native-scrollbar -mt-5 grid snap-x snap-mandatory overflow-x-auto overflow-y-hidden px-[10px] pb-[10px] pt-8 max-md:pb-5 sm:snap-none lg:px-4"
             style={{ flex: "1 1 auto", minHeight: 0, gridTemplateRows: "1fr" }}
           >
             {/* Main board vs. sub-board: both grid-stacked onto the SAME cell (gridArea: "1 / 1")

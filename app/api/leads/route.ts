@@ -324,6 +324,9 @@ export async function PATCH(request: NextRequest) {
     Object.prototype.hasOwnProperty.call(body, "assigned_to_name") ||
     Object.prototype.hasOwnProperty.call(body, "assignedTo");
 
+  // Archived because it was made into a project (Leads › Create Project): that project — stamped on it with when.
+  const convertedProjectId = typeof body.convertedProjectId === "string" ? body.convertedProjectId.trim().slice(0, 160) : "";
+
   // The lead's place in its Leads board column, after it's dragged (see lib/board-drop-order.ts).
   const boardOrder = typeof body.boardOrder === "number" && Number.isFinite(body.boardOrder) ? body.boardOrder : null;
   const hasBoardOrder = boardOrder !== null;
@@ -441,6 +444,10 @@ export async function PATCH(request: NextRequest) {
       patch.isDeleted = isDeleted;
       patch.deletedAt = isDeleted ? FieldValue.serverTimestamp() : "";
       patch.deletedAtIso = isDeleted ? updatedAtIso : "";
+      if (isDeleted && convertedProjectId) {
+        patch.convertedProjectId = convertedProjectId;
+        patch.convertedAtIso = updatedAtIso;
+      }
     }
     if (hasImageItems) {
       patch.imageItems = normalizedImageItems;

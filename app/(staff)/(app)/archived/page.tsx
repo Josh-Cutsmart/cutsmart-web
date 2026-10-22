@@ -2176,7 +2176,9 @@ function ArchivedPageInner() {
               <p className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
                 {pendingDelete.rows.some((row) => row.kind === "contacts")
                   ? "This can't be undone. A contact's projects aren't affected — a new project for the same person starts a fresh contact."
-                  : "This can't be undone."}
+                  : pendingProjects.length
+                    ? "Its images and attached files are deleted for good — email a copy first to keep them. Everything else is kept as a hidden, text-only record (for Reports and its contact's history), and it leaves the Archive."
+                    : "This can't be undone."}
               </p>
               {pendingDelete.skipped > 0 ? (
                 <p className="text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>

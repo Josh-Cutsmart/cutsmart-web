@@ -33,7 +33,9 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { requestNotificationReminderPush } from "@/lib/push-client";
-import { pushNotificationCategoryOf } from "@/lib/push-notification-types";
+import { PUSH_NOTIFICATION_CATEGORIES, pushNotificationCategoryOf } from "@/lib/push-notification-types";
+import { glassShineStyle } from "@/lib/glass-shine";
+import { modalCloseButtonClass } from "@/components/settings-ui";
 import { devButtonClass, useDevModeOn } from "@/lib/dev-mode";
 import { DEV_TEST_LIST_KINDS, devTestListSample, isDevTestNotificationText } from "@/lib/push-dev-test";
 import { useSwipeToClose } from "@/lib/use-swipe-to-close";
@@ -134,6 +136,52 @@ function stepRemindAmount(value: number, unit: RemindUnit, direction: 1 | -1): n
 
 // The soft circle behind a notification's icon (and the empty list's bell).
 const NOTIF_ICON_BG = "color-mix(in srgb, var(--text-main) 7%, transparent)";
+// A read notification's card: see-through panel, over the drawer's glass.
+const NOTIF_CARD_BG = "color-mix(in srgb, var(--panel-bg) 62%, transparent)";
+// Each notification's colour — its category's (its icon's tile, its unread wash and bar, its chip and its filter), or,
+// for a few kinds, what it says: a quote accepted green, declined red, an unlock asked for orange, a new version indigo.
+const NOTIF_CATEGORY_COLORS: Record<string, string> = {
+  projects: "#3B82F6",
+  leads: "#8B5CF6",
+  client_portal: "#14B8A6",
+  calendar: "#F59E0B",
+  cutsmart: "#EC4899",
+};
+const NOTIF_TYPE_COLORS: Record<string, string> = {
+  quote_accepted: "#16A34A",
+  quote_declined: "#EF4444",
+  production_unlock_request: "#F97316",
+  app_version: "#6366F1",
+};
+const NOTIF_OTHER_COLOR = "#64748B";
+// Its category ("other" for a kind in none), its label, and its colour.
+function notifCategoryIdOf(type: unknown): string {
+  return pushNotificationCategoryOf(type) || "other";
+}
+function notifCategoryLabelOf(type: unknown): string {
+  const id = notifCategoryIdOf(type);
+  return PUSH_NOTIFICATION_CATEGORIES.find((category) => category.id === id)?.label ?? "Other";
+}
+function notifColorOf(type: unknown): string {
+  return NOTIF_TYPE_COLORS[String(type ?? "")] ?? NOTIF_CATEGORY_COLORS[notifCategoryIdOf(type)] ?? NOTIF_OTHER_COLOR;
+}
+// The list's filters by category (User Settings > Notifications' order), each in its colour.
+const NOTIF_FILTER_CATEGORIES = [
+  ...PUSH_NOTIFICATION_CATEGORIES.map((category) => ({ id: category.id, label: category.label, color: NOTIF_CATEGORY_COLORS[category.id] ?? NOTIF_OTHER_COLOR })),
+  { id: "other", label: "Other", color: NOTIF_OTHER_COLOR },
+];
+// Which day's run a notification's in: Today, Yesterday, This week (the last 7 days), Earlier.
+function notifDayGroupOf(iso: string): string {
+  const at = Date.parse(iso);
+  if (!Number.isFinite(at)) return "Earlier";
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const day = 24 * 60 * 60 * 1000;
+  if (at >= startOfToday) return "Today";
+  if (at >= startOfToday - day) return "Yesterday";
+  if (at >= startOfToday - 6 * day) return "This week";
+  return "Earlier";
+}
 
 // A new notification pops up in the top-right corner on a computer (1024px and up, like the Notifications
 // drawer) while CutSmart is on screen. Phones and tablets get the system's own notifications instead.
@@ -174,6 +222,7 @@ function notifToastPathToBell(el: HTMLElement, bell: HTMLElement | null): { dx: 
 // the bell giving a little nudge as it lands — like the app's other pop-ups and the buttons they open from.
 function NotifToast({
   icon: Icon,
+  color,
   title,
   message,
   bellRef,
@@ -181,6 +230,8 @@ function NotifToast({
   onDone,
 }: {
   icon: LucideIcon;
+  // Its colour (notifColorOf): its icon's tile, as in the list.
+  color: string;
   title: string;
   message: string;
   bellRef: RefObject<HTMLElement | null>;
@@ -283,8 +334,8 @@ function NotifToast({
         }}
         className="flex w-full items-start gap-3 px-3 py-3 pr-9 text-left transition-colors hover:bg-[color-mix(in_srgb,var(--text-main)_4%,transparent)]"
       >
-        <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full" style={{ backgroundColor: NOTIF_ICON_BG, color: "var(--text-main)" }}>
-          <Icon size={16} />
+        <span className="glass-shine inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] border" style={glassShineStyle(color)}>
+          <Icon size={18} color="#ffffff" strokeWidth={2.2} />
         </span>
         <span className="min-w-0 flex-1 pt-0.5">
           <span className="block truncate text-[13.5px] font-semibold" style={{ color: "var(--text-main)" }}>
@@ -453,6 +504,8 @@ export function GlobalAppTabsBar() {
   // A notification's own menu — right-click it, or press and hold on a phone: Mark as read / unread, Clear,
   // Remind me in… (how many hours or days, kept for next time).
   const [notifMenu, setNotifMenu] = useState<{ row: UserNotificationRow; left: number; top: number; width: number } | null>(null);
+  // The list's filter: "all", "unread", or a category's id (renderNotifFilters).
+  const [notifFilter, setNotifFilter] = useState("all");
   const notifMenuRef = useRef<HTMLDivElement | null>(null);
   const [remindAmount, setRemindAmount] = useState(1);
   const [remindUnit, setRemindUnit] = useState<RemindUnit>("days");
@@ -1695,9 +1748,6 @@ export function GlobalAppTabsBar() {
   const remindMax = REMIND_UNITS[remindUnit].max;
   const remindLabel = `${remindAmount} ${remindAmount === 1 ? REMIND_UNITS[remindUnit].one : REMIND_UNITS[remindUnit].many}`;
 
-  // Each one: its category's icon, its title, its message (two lines at most) and how long ago under them,
-  // and a blue dot on the right while it's unread — no lines between them; a soft rounded highlight on hover.
-  // Phones and tablets (the full-screen panel, below lg) get them a little bigger.
   // Dev mode only — "test in [5] s": after that many seconds, a real notification (a random kind, with made-up
   // details — lib/push-dev-test.ts) is added to their own list, the same way any other one is: on the bell, in
   // the list, popped up on a computer, and to their phone/desktop if that's on. Counts down meanwhile (closing
@@ -1758,15 +1808,19 @@ export function GlobalAppTabsBar() {
     );
   }
 
+  // The list: under the filters, in days — Today, Yesterday, This week, Earlier — each a run of cards. A card: its
+  // icon on a glass tile in its colour (notifColorOf), its title with how long ago on the right, its message (two lines
+  // at most), and a chip with its category; unread, it's washed in its colour with a bar of it down its left edge.
+  // Right-click (or press and hold on a phone) opens its menu. Phones and tablets get them a little bigger.
   function renderNotifRows() {
-    // Still loading: a few faint rows the shape of the real ones.
+    // Still loading: a few faint cards the shape of the real ones.
     if (!isNotifListLoaded && notifRows.length === 0) {
       return (
-        <div className="space-y-0.5 p-2" aria-busy="true" aria-label="Loading notifications">
+        <div className="space-y-2 px-4 pb-4 pt-2" aria-busy="true" aria-label="Loading notifications">
           {[0, 1, 2].map((index) => (
-            <div key={index} className="flex items-start gap-3 rounded-[14px] px-2.5 py-2.5 max-lg:px-3 max-lg:py-3">
-              <span className="h-9 w-9 shrink-0 animate-pulse rounded-full max-lg:h-10 max-lg:w-10" style={{ backgroundColor: NOTIF_ICON_BG }} />
-              <span className="min-w-0 flex-1 space-y-2 pt-1.5">
+            <div key={index} className="flex items-start gap-3 rounded-[16px] border px-3 py-3" style={{ borderColor: "var(--glass-border)", backgroundColor: NOTIF_CARD_BG }}>
+              <span className="h-10 w-10 shrink-0 animate-pulse rounded-[12px]" style={{ backgroundColor: NOTIF_ICON_BG }} />
+              <span className="min-w-0 flex-1 space-y-2 pt-1">
                 <span className="block h-3 w-3/5 animate-pulse rounded-full" style={{ backgroundColor: NOTIF_ICON_BG }} />
                 <span className="block h-2.5 w-4/5 animate-pulse rounded-full" style={{ backgroundColor: NOTIF_ICON_BG }} />
               </span>
@@ -1777,89 +1831,196 @@ export function GlobalAppTabsBar() {
     }
     if (notifRows.length === 0) {
       return (
-        <div className="flex flex-col items-center px-6 py-10 text-center">
-          <span className="mb-3 inline-flex h-11 w-11 items-center justify-center rounded-full" style={{ backgroundColor: NOTIF_ICON_BG, color: "var(--text-muted)" }}>
-            <Bell size={18} />
+        <div className="flex flex-col items-center px-6 py-12 text-center">
+          <span className="glass-shine mb-4 inline-flex h-14 w-14 items-center justify-center rounded-[18px] border" style={glassShineStyle("var(--brand)")}>
+            <Bell size={24} color="#ffffff" strokeWidth={2.2} />
           </span>
-          <p className="text-[14px] font-medium" style={{ color: "var(--text-main)" }}>You&apos;re all caught up</p>
+          <p className="text-[15px] font-medium" style={{ color: "var(--text-main)" }}>You&apos;re all caught up</p>
           <p className="mt-1 text-[12.5px]" style={{ color: "var(--text-muted)" }}>New notifications will show up here.</p>
           {renderLoadOlderNotifs()}
         </div>
       );
     }
-    return (
-      <div className="space-y-0.5 p-2">
-        {notifRows.map((row) => {
-      const isAppVersion = row.type === "app_version";
-      const appVersion = isAppVersion ? appVersionFromNotifTitle(row.title) : "";
-      const Icon = notifIconOf(row);
+    const shown = notifRows.filter((row) =>
+      notifFilter === "all" ? true : notifFilter === "unread" ? !row.read : notifCategoryIdOf(row.type) === notifFilter,
+    );
+    if (shown.length === 0) {
       return (
-        <button
-          key={row.id}
-          type="button"
-          onMouseDown={handleAuxButtonMouseDown}
-          onContextMenu={(event) => {
-            event.preventDefault();
-            endNotifLongPress();
-            openNotifMenu(row, event.clientX, event.clientY);
-          }}
-          onTouchStart={(event) => startNotifLongPress(row, event)}
-          onTouchMove={moveNotifLongPress}
-          onTouchEnd={endNotifLongPress}
-          onTouchCancel={endNotifLongPress}
-          onClick={() => {
-            // Letting go of a press-and-hold (its menu's open) isn't a tap on it.
-            if (suppressNotifClickRef.current === row.id) {
-              suppressNotifClickRef.current = "";
-              return;
-            }
-            openNotification(row);
-          }}
-          className="flex w-full items-start gap-3 rounded-[14px] px-2.5 py-2.5 text-left transition-colors hover:bg-[color-mix(in_srgb,var(--text-main)_5%,transparent)] max-lg:px-3 max-lg:py-3"
-          // Press and hold opens its menu, not the phone's own text selection / callout.
-          style={{
-            WebkitTouchCallout: "none",
-            WebkitUserSelect: "none",
-            userSelect: "none",
-            backgroundColor: notifMenu?.row.id === row.id ? "color-mix(in srgb, var(--text-main) 6%, transparent)" : undefined,
-          }}
-        >
-          <span
-            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full max-lg:h-10 max-lg:w-10"
-            style={{ backgroundColor: NOTIF_ICON_BG, color: "var(--text-main)" }}
+        <div className="flex flex-col items-center px-6 py-10 text-center">
+          <span className="mb-3 inline-flex h-11 w-11 items-center justify-center rounded-[14px]" style={{ backgroundColor: NOTIF_ICON_BG, color: "var(--text-muted)" }}>
+            <CheckCheck size={20} />
+          </span>
+          <p className="text-[14px] font-medium" style={{ color: "var(--text-main)" }}>
+            {notifFilter === "unread" ? "Nothing unread" : "Nothing here"}
+          </p>
+          <button
+            type="button"
+            onMouseDown={handleAuxButtonMouseDown}
+            onClick={() => setNotifFilter("all")}
+            className="mt-2 text-[12.5px] font-medium transition-opacity hover:opacity-75"
+            style={{ color: "var(--brand-strong)" }}
           >
-            <Icon size={16} />
-          </span>
-          <span className="min-w-0 flex-1 pt-0.5">
-            <span
-              className={`block truncate text-[13.5px] max-lg:text-[15px] ${row.read ? "font-medium" : "font-semibold"}`}
-              style={{ color: "var(--text-main)" }}
-            >
-              {!row.read ? <span className="sr-only">Unread: </span> : null}
-              {isAppVersion ? `New version ${appVersion}` : row.title || "Notification"}
-            </span>
-            {!isAppVersion && row.message ? (
-              <span className="mt-0.5 line-clamp-2 block text-[12.5px] leading-snug max-lg:text-[13.5px]" style={{ color: "var(--text-muted)" }}>
-                {row.message}
-              </span>
-            ) : null}
-            {/* How long ago, under the text. */}
-            <span className="mt-1 block text-[11.5px] max-lg:text-[12.5px]" style={{ color: "var(--text-muted)", opacity: 0.8 }} title={formatNotificationTime(row.createdAtIso)}>
-              {relativeNotifTime(row.createdAtIso)}
-            </span>
-          </span>
-          {/* Unread: a blue dot on the right, centred on the row. */}
-          <span
-            aria-hidden="true"
-            className="h-2.5 w-2.5 shrink-0 self-center rounded-full"
-            style={{ backgroundColor: row.read ? "transparent" : "var(--brand)" }}
-          />
-        </button>
+            Show all
+          </button>
+        </div>
       );
-        })}
+    }
+    const groups: Array<{ label: string; rows: UserNotificationRow[] }> = [];
+    for (const row of shown) {
+      const label = notifDayGroupOf(row.createdAtIso);
+      const group = groups.find((item) => item.label === label);
+      if (group) group.rows.push(row);
+      else groups.push({ label, rows: [row] });
+    }
+    return (
+      <div className="px-4 pb-4 pt-1 max-lg:px-3.5">
+        {groups.map((group) => (
+          <section key={group.label} className="pt-3 first:pt-1">
+            <p className="mb-2 px-1 text-[11px] font-medium uppercase tracking-[0.8px]" style={{ color: "var(--text-muted)" }}>
+              {group.label}
+            </p>
+            <div className="space-y-2">
+              {group.rows.map((row) => {
+                const isAppVersion = row.type === "app_version";
+                const Icon = notifIconOf(row);
+                const color = notifColorOf(row.type);
+                const unread = !row.read;
+                const menuOpen = notifMenu?.row.id === row.id;
+                return (
+                  <button
+                    key={row.id}
+                    type="button"
+                    onMouseDown={handleAuxButtonMouseDown}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      endNotifLongPress();
+                      openNotifMenu(row, event.clientX, event.clientY);
+                    }}
+                    onTouchStart={(event) => startNotifLongPress(row, event)}
+                    onTouchMove={moveNotifLongPress}
+                    onTouchEnd={endNotifLongPress}
+                    onTouchCancel={endNotifLongPress}
+                    onClick={() => {
+                      // Letting go of a press-and-hold (its menu's open) isn't a tap on it.
+                      if (suppressNotifClickRef.current === row.id) {
+                        suppressNotifClickRef.current = "";
+                        return;
+                      }
+                      openNotification(row);
+                    }}
+                    className="relative flex w-full items-start gap-3 overflow-hidden rounded-[16px] border px-3 py-3 text-left transition hover:-translate-y-px hover:shadow-[var(--shadow-glass)] max-lg:px-3.5 max-lg:py-3.5"
+                    // Press and hold opens its menu, not the phone's own text selection / callout.
+                    style={{
+                      WebkitTouchCallout: "none",
+                      WebkitUserSelect: "none",
+                      userSelect: "none",
+                      borderColor: unread ? `color-mix(in srgb, ${color} 32%, var(--glass-border))` : "var(--glass-border)",
+                      backgroundColor: unread ? `color-mix(in srgb, ${color} 9%, var(--panel-bg))` : NOTIF_CARD_BG,
+                      boxShadow: menuOpen ? `0 0 0 2px color-mix(in srgb, ${color} 45%, transparent)` : undefined,
+                    }}
+                  >
+                    {unread ? <span aria-hidden="true" className="absolute inset-y-2.5 left-0 w-[3px] rounded-r-full" style={{ backgroundColor: color }} /> : null}
+                    <span className="glass-shine inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] border max-lg:h-11 max-lg:w-11" style={glassShineStyle(color)}>
+                      <Icon size={18} color="#ffffff" strokeWidth={2.2} />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-baseline gap-2">
+                        <span
+                          className={`min-w-0 flex-1 truncate text-[13.5px] max-lg:text-[15px] ${unread ? "font-semibold" : "font-medium"}`}
+                          style={{ color: "var(--text-main)" }}
+                        >
+                          {unread ? <span className="sr-only">Unread: </span> : null}
+                          {notifTitleOf(row)}
+                        </span>
+                        <span className="shrink-0 text-[11px] font-medium max-lg:text-[12px]" style={{ color: unread ? color : "var(--text-muted)" }} title={formatNotificationTime(row.createdAtIso)}>
+                          {relativeNotifTime(row.createdAtIso)}
+                        </span>
+                      </span>
+                      {!isAppVersion && row.message ? (
+                        <span className="mt-0.5 line-clamp-2 block text-[12.5px] leading-snug max-lg:text-[13.5px]" style={{ color: "var(--text-muted)" }}>
+                          {row.message}
+                        </span>
+                      ) : null}
+                      <span
+                        className="mt-2 inline-flex items-center gap-1.5 rounded-full px-2 py-[2px] text-[10.5px] font-medium max-lg:text-[11.5px]"
+                        style={{ backgroundColor: `color-mix(in srgb, ${color} 14%, transparent)`, color: `color-mix(in srgb, ${color} 70%, var(--text-main))` }}
+                      >
+                        <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: color }} />
+                        {notifCategoryLabelOf(row.type)}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        ))}
         {renderLoadOlderNotifs()}
       </div>
     );
+  }
+
+  // The filter under the header: All and Unread each in a bubble of their own (in the brand's colour while it's
+  // picked), then the categories in one glass dropdown — each there's something in, with its colour's dot and how many
+  // ("Filter" while it's All or Unread; edged in the picked one's colour otherwise).
+  function renderNotifFilters() {
+    if (notifRows.length === 0) return null;
+    const counts = new Map<string, number>();
+    for (const row of notifRows) counts.set(notifCategoryIdOf(row.type), (counts.get(notifCategoryIdOf(row.type)) ?? 0) + 1);
+    const options = NOTIF_FILTER_CATEGORIES.filter((category) => counts.has(category.id)).map((category) => ({
+      value: category.id,
+      label: `${category.label} · ${counts.get(category.id) ?? 0}`,
+      color: category.color,
+    }));
+    const picked = options.find((option) => option.value === notifFilter);
+    const bubble = (id: "all" | "unread", label: string, count: number) => {
+      const active = id === "all" ? !picked && notifFilter !== "unread" : notifFilter === "unread";
+      return (
+        <button
+          type="button"
+          onMouseDown={handleAuxButtonMouseDown}
+          onClick={() => setNotifFilter(id)}
+          className={`inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full border px-3.5 text-[12.5px] font-medium transition hover:brightness-95 max-lg:h-10 max-lg:text-[14px] ${active ? "glass-shine text-white" : ""}`}
+          style={active ? glassShineStyle("var(--brand)") : { borderColor: "var(--glass-border)", backgroundColor: NOTIF_CARD_BG, color: "var(--text-main)" }}
+          aria-pressed={active}
+        >
+          {label}
+          <span
+            className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-1 text-[10.5px] font-semibold"
+            style={{ backgroundColor: active ? "rgba(255,255,255,0.25)" : NOTIF_ICON_BG }}
+          >
+            {count}
+          </span>
+        </button>
+      );
+    };
+    return (
+      <div className="flex shrink-0 items-center gap-2 px-4 pb-2 pt-1 max-lg:px-3.5">
+        {bubble("all", "All", notifRows.length)}
+        {bubble("unread", "Unread", notifUnreadCount)}
+        <GlassDropdown
+          value={picked ? picked.value : ""}
+          options={options}
+          onChange={setNotifFilter}
+          placeholder="Filter"
+          ariaLabel="Show notifications"
+          menuMinWidth={190}
+          triggerClassName="h-9 min-w-0 flex-1 justify-between rounded-full border px-3.5 text-[12.5px] font-medium max-lg:h-10 max-lg:text-[14px]"
+          triggerStyle={{
+            borderColor: picked ? `color-mix(in srgb, ${picked.color} 55%, var(--glass-border))` : "var(--glass-border)",
+            backgroundColor: picked ? `color-mix(in srgb, ${picked.color} 10%, var(--panel-bg))` : NOTIF_CARD_BG,
+            color: "var(--text-main)",
+          }}
+        />
+      </div>
+    );
+  }
+
+  // Mark all read: a small glass pill (only while there's something unread).
+  async function markAllNotifsRead() {
+    if (!user?.uid) return;
+    setNotifRows((prev) => prev.map((row) => ({ ...row, read: true })));
+    await setAllUserNotificationsRead(user.uid, true, activeCompanyId);
   }
 
   // At the bottom of the list, while there are older notifications than it reaches back to: the two weeks before.
@@ -1873,7 +2034,7 @@ export function GlobalAppTabsBar() {
           onClick={() => void loadOlderNotifs()}
           disabled={isLoadingOlderNotifs}
           className="inline-flex h-9 items-center justify-center rounded-full border px-4 text-[12.5px] font-medium transition hover:brightness-95 disabled:opacity-60 max-lg:h-10 max-lg:text-[13.5px]"
-          style={{ borderColor: "var(--glass-border)", backgroundColor: NOTIF_ICON_BG, color: "var(--text-main)" }}
+          style={{ borderColor: "var(--glass-border)", backgroundColor: NOTIF_CARD_BG, color: "var(--text-main)" }}
         >
           {isLoadingOlderNotifs ? "Loading…" : "Load more"}
         </button>
@@ -1890,6 +2051,7 @@ export function GlobalAppTabsBar() {
                 <NotifToast
                   key={row.id}
                   icon={notifIconOf(row)}
+                  color={notifColorOf(row.type)}
                   title={notifTitleOf(row)}
                   message={row.type === "app_version" ? "" : row.message || ""}
                   bellRef={notifBtnRef}
@@ -2190,10 +2352,12 @@ export function GlobalAppTabsBar() {
               ref={notifDropdownRef}
               // Slides in from the right (notif-drawer-in, globals.css) and back out (the transform below),
               // unmounting once it's gone.
-              className="fixed inset-y-0 right-0 z-[210] flex w-[400px] max-w-[calc(100vw-16px)] flex-col overflow-hidden border-l motion-reduce:!animate-none"
+              className="fixed inset-y-0 right-0 z-[210] flex w-[420px] max-w-[calc(100vw-16px)] flex-col overflow-hidden border-l motion-reduce:!animate-none"
               style={{
                 borderColor: "var(--glass-border)",
-                backgroundColor: "var(--bg-app)",
+                backgroundColor: "var(--glass-bg-strong)",
+                backdropFilter: "blur(24px) saturate(180%)",
+                WebkitBackdropFilter: "blur(24px) saturate(180%)",
                 boxShadow: "-16px 0 48px rgba(15, 23, 42, 0.18)",
                 ...(isNotifOpen
                   ? { animation: "notif-drawer-in 260ms cubic-bezier(0.32, 0.72, 0, 1)" }
@@ -2205,41 +2369,42 @@ export function GlobalAppTabsBar() {
               aria-hidden={!isNotifOpen}
               inert={!isNotifOpen}
             >
-              <div className="flex shrink-0 items-center gap-3 px-5 pb-2 pt-4">
-                {/* The bell, then the title. */}
-                <p className="flex min-w-0 flex-1 items-center gap-2 text-[18px] font-medium" style={{ color: "var(--text-main)" }}>
-                  <Bell size={18} className="shrink-0" aria-hidden="true" />
-                  Notifications
-                </p>
-                {/* Only while there's something unread. */}
+              {/* A wash of the brand's colour across the top, fading into the glass. */}
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-x-0 top-0 h-[180px]"
+                style={{ background: "linear-gradient(180deg, color-mix(in srgb, var(--brand) 16%, transparent), transparent)" }}
+              />
+              {/* Its bell on a glass tile, the title and how many are unread; Mark all read (while any are) and the X. */}
+              <div className="relative flex shrink-0 items-center gap-3 px-5 pb-3 pt-5">
+                <span className="glass-shine inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] border" style={glassShineStyle("var(--brand)")}>
+                  <Bell size={18} color="#ffffff" strokeWidth={2.2} aria-hidden="true" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[18px] font-medium leading-tight" style={{ color: "var(--text-main)" }}>Notifications</p>
+                  <p className="text-[12px] font-medium" style={{ color: notifUnreadCount > 0 ? "var(--brand-strong)" : "var(--text-muted)" }}>
+                    {notifUnreadCount > 0 ? `${notifUnreadCount} unread` : "You're all caught up"}
+                  </p>
+                </div>
                 {notifUnreadCount > 0 ? (
                   <button
                     type="button"
                     onMouseDown={handleAuxButtonMouseDown}
-                    onClick={async () => {
-                      if (!user?.uid) return;
-                      setNotifRows((prev) => prev.map((row) => ({ ...row, read: true })));
-                      await setAllUserNotificationsRead(user.uid, true, activeCompanyId);
-                    }}
-                    className="text-[12px] font-medium transition-opacity hover:opacity-75"
-                    style={{ color: "var(--brand-strong)" }}
+                    onClick={() => void markAllNotifsRead()}
+                    className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-[12px] font-medium transition hover:brightness-95"
+                    style={{ borderColor: "var(--glass-border)", backgroundColor: NOTIF_CARD_BG, color: "var(--brand-strong)" }}
                   >
+                    <CheckCheck size={14} />
                     Mark all read
                   </button>
                 ) : null}
-                <button
-                  type="button"
-                  onClick={() => setIsNotifOpen(false)}
-                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border transition hover:brightness-95"
-                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
-                  aria-label="Close notifications"
-                  title="Close"
-                >
-                  <X size={15} />
+                <button type="button" onClick={() => setIsNotifOpen(false)} className={modalCloseButtonClass} aria-label="Close notifications" title="Close">
+                  <X size={16} />
                 </button>
               </div>
+              <div className="relative">{renderNotifFilters()}</div>
               {renderDevNotifTest()}
-              <div className="min-h-0 flex-1 overflow-auto">{renderNotifRows()}</div>
+              <div className="glass-scroll relative min-h-0 flex-1 overflow-auto">{renderNotifRows()}</div>
             </div>,
             document.body,
           )
@@ -2270,11 +2435,15 @@ export function GlobalAppTabsBar() {
                   touchAction: "pan-y",
                 }}
               >
-                <div className="relative flex shrink-0 items-center px-4 py-3">
-                  {/* Alongside the swipe-to-close gesture — an explicit tap target in the top-left corner, its
-                      arrow pointing the way the panel goes (right, since it slides back out to the right;
-                      mirrors the mobile nav drawer's own left-pointing close arrow). A circle, the same as
-                      the drawer's. */}
+                {/* A wash of the brand's colour across the top, as the computer's drawer. */}
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-x-0 top-0 h-[200px]"
+                  style={{ background: "linear-gradient(180deg, color-mix(in srgb, var(--brand) 18%, transparent), transparent)" }}
+                />
+                <div className="relative flex shrink-0 items-center px-4 pb-2 pt-3">
+                  {/* Alongside the swipe-to-close gesture — a tap target in the top-left corner, its arrow pointing the
+                      way the panel goes (right: it slides back out to the right). */}
                   <button
                     type="button"
                     onClick={() => setIsNotifOpen(false)}
@@ -2284,20 +2453,23 @@ export function GlobalAppTabsBar() {
                   >
                     <ChevronRight size={20} />
                   </button>
-                  {/* The bell, then the title — the two centred on the screen, whatever is beside them. */}
-                  <p className="pointer-events-none absolute inset-x-0 flex items-center justify-center gap-2 text-[19px] font-medium" style={{ color: "var(--text-main)" }}>
-                    <Bell size={19} className="shrink-0" aria-hidden="true" />
-                    Notifications
-                  </p>
-                  {/* Mark all read, opposite the back button — only while there's something unread. */}
+                  {/* Its bell tile and the title, centred on the screen; how many are unread under it. */}
+                  <div className="pointer-events-none absolute inset-x-0 flex flex-col items-center">
+                    <p className="flex items-center gap-2 text-[19px] font-medium" style={{ color: "var(--text-main)" }}>
+                      <span className="glass-shine inline-flex h-8 w-8 items-center justify-center rounded-[10px] border" style={glassShineStyle("var(--brand)")}>
+                        <Bell size={16} color="#ffffff" strokeWidth={2.2} aria-hidden="true" />
+                      </span>
+                      Notifications
+                    </p>
+                    <p className="text-[12px] font-medium" style={{ color: notifUnreadCount > 0 ? "var(--brand-strong)" : "var(--text-muted)" }}>
+                      {notifUnreadCount > 0 ? `${notifUnreadCount} unread` : "You're all caught up"}
+                    </p>
+                  </div>
+                  {/* Mark all read, opposite the back arrow — only while there's something unread. */}
                   {notifUnreadCount > 0 ? (
                     <button
                       type="button"
-                      onClick={async () => {
-                        if (!user?.uid) return;
-                        setNotifRows((prev) => prev.map((row) => ({ ...row, read: true })));
-                        await setAllUserNotificationsRead(user.uid, true, activeCompanyId);
-                      }}
+                      onClick={() => void markAllNotifsRead()}
                       className="relative z-[1] ml-auto inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border"
                       style={{ borderColor: shellPalette.border, backgroundColor: shellPalette.panelBg, color: "var(--brand-strong)" }}
                       aria-label="Mark all read"
@@ -2307,8 +2479,9 @@ export function GlobalAppTabsBar() {
                     </button>
                   ) : null}
                 </div>
+                <div className="relative pt-2">{renderNotifFilters()}</div>
                 {renderDevNotifTest()}
-                <div className="min-h-0 flex-1 overflow-auto">{renderNotifRows()}</div>
+                <div className="relative min-h-0 flex-1 overflow-auto">{renderNotifRows()}</div>
               </div>
             </div>,
             document.body,

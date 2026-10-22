@@ -11,6 +11,7 @@ import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage
 import {
   Archive,
   CalendarDays,
+  ChartColumn,
   ChevronLeft,
   Download,
   GripVertical,
@@ -150,6 +151,8 @@ const topNav = [
   { href: "/leads", label: "Leads", icon: Inbox },
   { href: "/contacts", label: "Contacts", icon: Users },
   { href: "/calendar", label: "Calendar", icon: CalendarDays },
+  // The company's figures — only for a role holding company.report (see canAccessReports).
+  { href: "/reports", label: "Reports", icon: ChartColumn },
   // Company Wrapped (/wrapped) is hidden from the sidebar for now — the page is still there, and its year's stats keep
   // being tallied. To bring it back: { href: "/wrapped", label: "Company Wrapped", icon: PartyPopper } here (and
   // PartyPopper back in the lucide-react import above).
@@ -845,7 +848,16 @@ export function AppShell({
   // useSwipeToClose's job, inside each panel) open the left nav or notifications, mirroring how
   // swiping an open panel closes it. Same axis-lock approach as useSwipeToClose (6px of movement
   // before committing to horizontal vs vertical) so a vertical scroll never gets hijacked.
-  const mainSwipeStartRef = useRef<{ x: number; y: number; axis: "" | "horizontal" | "vertical"; horizontalExempt: boolean } | null>(null);
+  // scroller / scrollerLeft: the page's own horizontal swiper the touch started on (data-horizontal-swipe-scroll — the
+  // dashboard's board), and where it was scrolled to then.
+  const mainSwipeStartRef = useRef<{
+    x: number;
+    y: number;
+    axis: "" | "horizontal" | "vertical";
+    horizontalExempt: boolean;
+    scroller: HTMLElement | null;
+    scrollerLeft: number;
+  } | null>(null);
   const MAIN_SWIPE_OPEN_THRESHOLD_PX = 70;
   // Live-drag state for the OPEN side of this gesture — separate from useSwipeToClose's own
   // internal drag state (which only ever runs once a panel is ALREADY open, for the CLOSE side).
@@ -1161,12 +1173,17 @@ export function AppShell({
       mainOpenDragRef.current.kind = null;
       return;
     }
-    const startedOnHorizontalScroller = Boolean(
-      (event.target as HTMLElement | null)?.closest('[data-horizontal-swipe-scroll="true"]'),
-    );
+    const horizontalScroller = (event.target as HTMLElement | null)?.closest<HTMLElement>('[data-horizontal-swipe-scroll="true"]') ?? null;
     const touch = event.touches[0];
     if (!touch) return;
-    mainSwipeStartRef.current = { x: touch.clientX, y: touch.clientY, axis: "", horizontalExempt: startedOnHorizontalScroller };
+    mainSwipeStartRef.current = {
+      x: touch.clientX,
+      y: touch.clientY,
+      axis: "",
+      horizontalExempt: Boolean(horizontalScroller),
+      scroller: horizontalScroller,
+      scrollerLeft: horizontalScroller?.scrollLeft ?? 0,
+    };
     mainOpenDragRef.current.kind = null;
     // Checking ONLY <main>'s own scrollTop isn't enough — the dashboard's board-view columns
     // become their own independently-scrollable regions once their sticky panel locks in place
@@ -1249,7 +1266,16 @@ export function AppShell({
       const dx = touch.clientX - start.x;
       const dy = touch.clientY - start.y;
       if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
-      start.axis = Math.abs(dx) > Math.abs(dy) ? "horizontal" : "vertical";
+      // On the page's own horizontal swiper (the dashboard's board), sideways wins unless it's clearly a vertical
+      // drag: a swipe across the columns that happens to start a little downwards was read as vertical, and at the
+      // top of the page that pulled the menu down instead — taking the touch (preventDefault) so the board stopped dead.
+      start.axis = start.horizontalExempt
+        ? Math.abs(dy) > Math.abs(dx) * 1.5
+          ? "vertical"
+          : "horizontal"
+        : Math.abs(dx) > Math.abs(dy)
+          ? "horizontal"
+          : "vertical";
     }
     if (start.axis === "horizontal") {
       // The touch started on the page's own horizontal swiper (e.g. dashboard board columns) —
@@ -1311,6 +1337,9 @@ export function AppShell({
     }
     const pull = pullDashboardRef.current;
     if (!pull || start.axis !== "vertical") return;
+    // The board's already moving sideways under the finger (the browser took it as a horizontal scroll): never pull
+    // the menu down over it — that would stop it.
+    if (start.scroller && Math.abs(start.scroller.scrollLeft - start.scrollerLeft) > 1 && !pull.active) return;
     const dy = touch.clientY - pull.startY;
     if (dy <= 0) {
       if (pull.active) {
@@ -1509,6 +1538,13 @@ export function AppShell({
     );
   }, [normalizedEffectivePermissions, roleForUi]);
 
+  // Reports: only a role that holds company.report (or company.*, everything) — not every owner / admin as the tabs
+  // above, since a role counts as admin for holding company.settings alone.
+  const canAccessReports = useMemo(
+    () => hasPermissionKey(normalizedEffectivePermissions, "company.report"),
+    [normalizedEffectivePermissions],
+  );
+
   const visibleTopNav = useMemo(
     () =>
       topNav.filter((item) => {
@@ -1517,9 +1553,10 @@ export function AppShell({
         if (item.href === "/leads") return canAccessLeads;
         if (item.href === "/calendar") return canAccessCalendar;
         if (item.href === "/company-settings") return canAccessCompanySettings;
+        if (item.href === "/reports") return canAccessReports;
         return true;
       }),
-    [canAccessCalendar, canAccessClients, canAccessCompanySettings, canAccessDashboard, canAccessLeads],
+    [canAccessCalendar, canAccessClients, canAccessCompanySettings, canAccessDashboard, canAccessLeads, canAccessReports],
   );
   useLayoutEffect(() => {
     const nextMode = readThemeMode();
@@ -2971,6 +3008,10 @@ export function AppShell({
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
         status: defaultProjectStatus || "New",
+        // Its first status, as it went in (Reports' days in each stage — updateProjectStatus notes each after it).
+        statusHistory: [{ status: defaultProjectStatus || "New", subStage: "", atIso: nowIso }],
+        // Made from a lead (Leads › Create Project): which one — Reports' lead conversions.
+        ...(sourceLeadId && sourceLeadCompanyId === companyId ? { sourceLeadId } : {}),
         tags,
         isDeleted: false,
         projectImages: projectImageUrls,
