@@ -29,6 +29,7 @@ const SAMPLE_TEXT: Record<string, [string, string]> = {
   project_assigned: ["Assigned to a project", `You were assigned to "${PROJECT}".`],
   project_unassigned: ["Removed from a project", `You were removed from "${PROJECT}".`],
   production_unlock_request: ["Production unlock request", `${TEAMMATE} asked to unlock production on "${PROJECT}".`],
+  column_automation: ["Moved into Production", `"${PROJECT}" moved into Production.`],
   production_unlock_response: [
     "Production unlocked",
     `${TEAMMATE} approved your request — you can edit production on "${PROJECT}" for ${DEV_TEST_UNLOCK_HOURS} hours.`,

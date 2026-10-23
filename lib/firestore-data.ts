@@ -26,6 +26,24 @@ import {
 import { auth, db, hasFirebaseConfig, storage } from "@/lib/firebase";
 import { deleteObject, listAll, ref as storageRef, type StorageReference } from "firebase/storage";
 import { isPreviewMode } from "@/lib/preview-mode";
+import {
+  automationsSetOffByMove,
+  columnAutomationColumnLabel,
+  columnAutomationDurationLabel,
+  columnAutomationMoveNoticeText,
+  columnAutomationNotificationText,
+  columnAutomationRecipients,
+  columnMoveSetOffByMove,
+  columnMoveTarget,
+  COLUMN_AUTOMATION_NOTIFICATION_TYPE,
+  COLUMN_MOVE_CHAIN_LIMIT,
+  normalizeColumnAutomations,
+  SCHEDULED_COLUMN_MOVE_DUE_FIELD,
+  SCHEDULED_COLUMN_MOVE_FIELD,
+  scheduledColumnMoveFor,
+  type BoardSpot,
+  type ColumnAutomation,
+} from "@/lib/column-automations";
 import { fetchCompanyAccess, type CompanyAccessInfo } from "@/lib/membership";
 import { mockChanges, mockCutlists, mockProjects, mockQuotes } from "@/lib/mock-data";
 import { normalizeSpecsGrid, normalizeSpecsGridVersion, quoteGridTotalText, type SpecsGrid, type SpecsGridVersion } from "@/lib/specs-grid-types";
@@ -464,6 +482,7 @@ function normalizeProject(id: string, data: Record<string, unknown>, options?: {
     })(),
     sourceLeadId: String(data.sourceLeadId ?? "").trim() || undefined,
     isPurged: data.isPurged === true || undefined,
+    isSmallJob: data.isSmallJob === true || undefined,
     purgedAtIso: data.isPurged === true ? toIsoString(data.purgedAtIso, "") || undefined : undefined,
     dashboardBoardOrder:
       typeof data.dashboardBoardOrder === "number" && Number.isFinite(data.dashboardBoardOrder) ? data.dashboardBoardOrder : undefined,
@@ -1666,9 +1685,30 @@ export async function updateProjectStatus(
   nextSubStageId: string = "",
   // Saved in the same write — e.g. the Dashboard board's drop position (dashboardBoardOrder).
   extraPatch?: Record<string, unknown>,
+  // A move a column automation made (notifyColumnAutomationMove): how many it is in a run of them.
+  options?: { automationDepth?: number },
 ): Promise<boolean> {
   if (!db || !project || !newStatus) {
     return false;
+  }
+  // A small job (lib/small-jobs.ts): its own statuses — none of a project's completion, archiving or bonus locks; just
+  // its status (and history), and its contact's history row to match.
+  if (project.isSmallJob) {
+    const ref = await resolveProjectDocRef(project);
+    if (!ref) return false;
+    const nowIso = new Date().toISOString();
+    try {
+      await updateDoc(ref, {
+        ...(extraPatch ?? {}),
+        status: newStatus,
+        updatedAtIso: nowIso,
+        statusHistory: arrayUnion({ status: newStatus, subStage: "", atIso: nowIso }),
+      });
+    } catch {
+      return false;
+    }
+    await syncCompanyClientProfileFromProjectInternal({ ...project, statusLabel: newStatus, updatedAt: nowIso }, { syncOnly: true }).catch(() => undefined);
+    return true;
   }
   // A job locked into a bonus period (the Dashboard's Completed pop-up) keeps its status — until someone with
   // dashboard.complete.bonus takes it back out of the period (lib/completed-projects.ts). Its sub-stage can still move.
@@ -1684,6 +1724,8 @@ export async function updateProjectStatus(
   const companyDoc = project.companyId ? await fetchCompanyDoc(project.companyId) : null;
   const isCompletedStatus = completedStatusMatcher(companyDoc?.projectStatuses);
   const completedStatus = isCompletedStatus(newStatus);
+  // Where it was on the Dashboard before (from the stored project) — for its column automations once it's moved.
+  let movedFrom: BoardSpot | null = null;
   // "Archive completed projects after: Instantly" archives it in this same write when it moves INTO the
   // completed status (not when it's already there — e.g. a restored project being re-saved — so a
   // restore sticks). The daily background sweep (archiveDueCompletedProjects) catches anything missed.
@@ -1696,6 +1738,7 @@ export async function updateProjectStatus(
   // only while the project moves between completed statuses, and is stamped fresh when it enters one.
   // It's what the archive delay counts from.
   const statusPatchFor = (stored: Record<string, unknown>) => {
+    movedFrom = { status: String(stored.status ?? "").trim(), subStage: String(stored.dashboardSubStageId ?? "").trim() };
     const storedCompletedAtIso = String(stored.completedAtIso ?? "").trim();
     const keepsCompletedAt = completedStatus && isCompletedStatus(stored.status) && Boolean(storedCompletedAtIso);
     const patch: Record<string, unknown> = {
@@ -1746,6 +1789,18 @@ export async function updateProjectStatus(
     if (completionChange === "completed") await noteProjectCompleted(project, completedAtIso || nowIso);
     else if (completionChange === "reopened") await noteProjectReopened(project, nowIso);
   };
+  // The columns it left and went into: their automations' people told (lib/column-automations.ts).
+  const notifyMove = () => {
+    void notifyColumnAutomationMove({
+      companyId: String(project.companyId || "").trim(),
+      companyDoc,
+      board: "projects",
+      item: { id: project.id, name: project.name },
+      from: movedFrom,
+      to: { status: newStatus, subStage: nextSubStageId.trim() },
+      depth: options?.automationDepth ?? 0,
+    });
+  };
   const syncClientProfile = async (completedAtIso: string) => {
     const nextProjectSnapshot: Project = {
       ...project,
@@ -1772,6 +1827,7 @@ export async function updateProjectStatus(
       const patch = statusPatchFor((topLevelSnap.data() ?? {}) as Record<string, unknown>);
       await updateDoc(topLevelRef, patch);
       announceArchived();
+      notifyMove();
       await noteCompletion(String(patch.completedAtIso ?? ""));
       await syncClientProfile(String(patch.completedAtIso ?? ""));
       return true;
@@ -1798,6 +1854,7 @@ export async function updateProjectStatus(
     const patch = statusPatchFor((jobsSnap.docs[0].data() ?? {}) as Record<string, unknown>);
     await updateDoc(jobsSnap.docs[0].ref, patch);
     announceArchived();
+    notifyMove();
     await noteCompletion(String(patch.completedAtIso ?? ""));
     await syncClientProfile(String(patch.completedAtIso ?? ""));
     return true;
@@ -2296,6 +2353,16 @@ export async function updateProjectPatch(
   }
   try {
     await updateDoc(ref, nextPatch);
+    // A move to another sub-stage: its sub-columns' automations (not a small job's — it isn't on the Dashboard).
+    if (nextPatch.statusHistory && !project.isSmallJob) {
+      void notifyColumnAutomationMove({
+        companyId: String(project.companyId || "").trim(),
+        board: "projects",
+        item: { id: project.id, name: project.name },
+        from: { status: String(project.statusLabel || "").trim(), subStage: String(project.dashboardSubStageId ?? "").trim() },
+        to: { status: String(project.statusLabel || "").trim(), subStage: String(patch.dashboardSubStageId ?? "").trim() },
+      });
+    }
     return true;
   } catch (error) {
     console.warn("[updateProjectPatch] write failed:", error);
@@ -2389,6 +2456,157 @@ export async function fetchAcceptedQuoteTotalText(project: Project): Promise<str
   } catch {
     return null;
   }
+}
+
+// A small job turned into a full project (its page's Convert to project): the flag off and into the company's first
+// project status — onto the Dashboard, its details, notes and images as they are.
+export async function convertSmallJobToProject(project: Project, status: string): Promise<boolean> {
+  if (!db || !project) return false;
+  const ref = await resolveProjectDocRef(project);
+  if (!ref) return false;
+  const nowIso = new Date().toISOString();
+  try {
+    await updateDoc(ref, {
+      isSmallJob: false,
+      status,
+      dashboardSubStageId: "",
+      updatedAtIso: nowIso,
+      statusHistory: arrayUnion({ status, subStage: "", atIso: nowIso }),
+    });
+    void notifyColumnAutomationMove({
+      companyId: String(project.companyId || "").trim(),
+      board: "projects",
+      item: { id: project.id, name: project.name },
+      from: null,
+      to: { status, subStage: "" },
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Column automations (lib/column-automations.ts): a column's set from its right-click menu — the company's whole list
+// saved (anyone in the company can update its doc; the menu's only for roles with projects.automate).
+export async function saveColumnAutomations(companyId: string, automations: ColumnAutomation[]): Promise<boolean> {
+  const cid = String(companyId || "").trim();
+  if (!db || !cid) return false;
+  try {
+    await setDoc(doc(db, "companies", cid), { columnAutomations: automations }, { merge: true });
+    invalidateCompanyCache(cid);
+    return true;
+  } catch (error) {
+    console.warn("[saveColumnAutomations] write failed:", error);
+    return false;
+  }
+}
+
+// A project a column automation moved on (notifyColumnAutomationMove): where it went — for the Dashboard to show it there.
+export const PROJECT_COLUMN_MOVED_EVENT = "cutsmart:project-column-moved";
+export type ProjectColumnMovedDetail = { projectId: string; status: string; subStage: string };
+
+// A project moved on the Dashboard (or created, or a small job turned into one — `from` null): its columns' automations
+// (lib/column-automations.ts). The people those of the columns it left and went into are set to tell, told (their
+// Notifications, and phone/desktop) — and whoever moved it too (once), so they know what their move set off. And the
+// column it went into, if it moves things on: straight away (moved again, as far as COLUMN_MOVE_CHAIN_LIMIT — `depth`: how
+// many moves on this is), or its timer started (kept on the project — the scheduled job moves it when it's due, if it's
+// still there: lib/column-automations-server.ts) — whoever moved it told that it has, or will. A lead's are run by the
+// server (app/api/leads).
+export async function notifyColumnAutomationMove(input: {
+  companyId: string;
+  // The company doc, when the caller has it already.
+  companyDoc?: Record<string, unknown> | null;
+  board: "projects";
+  item: { id: string; name: string };
+  from: BoardSpot | null;
+  to: BoardSpot;
+  depth?: number;
+}): Promise<number> {
+  const cid = String(input.companyId || "").trim();
+  if (!db || !cid || !input.to.status) return 0;
+  if (input.from && input.from.status.toLowerCase() === input.to.status.toLowerCase() && input.from.subStage.toLowerCase() === input.to.subStage.toLowerCase()) {
+    return 0;
+  }
+  try {
+    const companyDoc = input.companyDoc ?? (await fetchCompanyDoc(cid));
+    const automations = normalizeColumnAutomations(companyDoc?.columnAutomations);
+    const actorUid = String(auth?.currentUser?.uid || "").trim();
+    let sent = 0;
+    const setOff = automationsSetOffByMove(automations, input.board, input.from, input.to);
+    // Who's in each role now (only read when one of them tells a role).
+    const members = setOff.some(({ automation }) => automation.notifyRoleIds.length)
+      ? (await fetchCompanyMembers(cid).catch(() => [] as CompanyMemberOption[])).map((member) => ({ uid: member.uid, roleId: member.roleId || member.role }))
+      : [];
+    for (const { automation, event } of setOff) {
+      const text = columnAutomationNotificationText({
+        board: input.board,
+        event,
+        itemName: input.item.name || "A project",
+        column: columnAutomationColumnLabel(automation),
+        movedTo: columnAutomationColumnLabel(input.to),
+      });
+      // (Whoever moved it as well — once, if they're one of its people.)
+      const recipients = new Set(columnAutomationRecipients(automation, members));
+      if (actorUid) recipients.add(actorUid);
+      for (const uid of recipients) {
+        if (await addUserNotification(uid, { ...text, type: COLUMN_AUTOMATION_NOTIFICATION_TYPE, projectId: input.item.id, companyId: cid })) sent += 1;
+      }
+    }
+    const moveRule = columnMoveSetOffByMove(automations, input.board, input.from, input.to);
+    if (moveRule) {
+      const outcome = await runColumnMoveAutomation(cid, input.item.id, moveRule, input.to, input.depth ?? 0);
+      // Whoever moved it: told it's moved on, or will.
+      if (outcome && actorUid) {
+        const notice = columnAutomationMoveNoticeText({
+          board: input.board,
+          itemName: input.item.name || "A project",
+          column: columnAutomationColumnLabel(input.to),
+          movedTo: columnAutomationColumnLabel(columnMoveTarget(moveRule)),
+          after: outcome === "scheduled" ? columnAutomationDurationLabel(moveRule) : "",
+        });
+        if (await addUserNotification(actorUid, { ...notice, type: COLUMN_AUTOMATION_NOTIFICATION_TYPE, projectId: input.item.id, companyId: cid })) sent += 1;
+      }
+    }
+    return sent;
+  } catch (error) {
+    console.warn("[notifyColumnAutomationMove] failed:", error);
+    return 0;
+  }
+}
+
+// A column's move automation, for a project that's just gone into it (`at`): its timer started, or moved straight on —
+// if it's still there (nothing else has moved it since), through updateProjectStatus, as any move. Which it did (null:
+// neither).
+async function runColumnMoveAutomation(
+  companyId: string,
+  projectId: string,
+  rule: ColumnAutomation,
+  at: BoardSpot,
+  depth: number,
+): Promise<"scheduled" | "moved" | null> {
+  const ref = await resolveProjectDocRef({ id: projectId, companyId } as Project);
+  if (!ref) return null;
+  if (rule.moveAfter) {
+    const scheduled = scheduledColumnMoveFor(rule, at, Date.now());
+    await updateDoc(ref, { [SCHEDULED_COLUMN_MOVE_FIELD]: scheduled, [SCHEDULED_COLUMN_MOVE_DUE_FIELD]: scheduled.dueAtIso });
+    return "scheduled";
+  }
+  if (depth >= COLUMN_MOVE_CHAIN_LIMIT) return null;
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return null;
+  const project = normalizeProject(snap.id, (snap.data() ?? {}) as Record<string, unknown>);
+  const here = { status: String(project.statusLabel || "").trim().toLowerCase(), subStage: String(project.dashboardSubStageId ?? "").trim().toLowerCase() };
+  if (here.status !== at.status.trim().toLowerCase() || here.subStage !== at.subStage.trim().toLowerCase()) return null;
+  const target = columnMoveTarget(rule);
+  if (!(await updateProjectStatus(project, target.status, target.subStage, undefined, { automationDepth: depth + 1 }))) return null;
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(
+      new CustomEvent<ProjectColumnMovedDetail>(PROJECT_COLUMN_MOVED_EVENT, {
+        detail: { projectId: project.id, status: target.status, subStage: target.subStage },
+      }),
+    );
+  }
+  return "moved";
 }
 
 // A project's quotes as Reports counts them: each version sent to the client (or accepted / declined by them), with
@@ -2626,7 +2844,7 @@ export type OrderListKind = "orderHinges" | "orderOther" | "orderMisc";
 type KeptListKind = CutlistDataKind | "salesItems" | OrderListKind;
 const isOrderListKind = (kind: KeptListKind): kind is OrderListKind => kind === "orderHinges" || kind === "orderOther" || kind === "orderMisc";
 // Where each of Order's lists is on the project (in `projectSettings`, by hardware category).
-const ORDER_LIST_FIELD: Record<OrderListKind, string> = {
+export const ORDER_LIST_FIELD: Record<OrderListKind, string> = {
   orderHinges: "orderHingeRowsByCategory",
   orderOther: "orderOtherRowsByCategory",
   orderMisc: "orderMiscDraftByCategory",
@@ -2651,7 +2869,7 @@ export function flattenOrderLines(kind: OrderListKind, byCategory: unknown): Arr
   }
   return out;
 }
-function unflattenOrderLines(kind: OrderListKind, rows: unknown[]): Record<string, unknown> {
+export function unflattenOrderLines(kind: OrderListKind, rows: unknown[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const item of rows) {
     const { __key: _key, __category, __line, ...row } = (asRecord(item) ?? {}) as Record<string, unknown>;
@@ -5071,6 +5289,8 @@ export async function syncCompanyClientProfileFromProject(
 export async function upsertCompanyClientProfileOnProjectCreate(input: {
   companyId: string;
   projectId: string;
+  // The contact card it was made for (New Project's Existing client) — linked to that card straight away.
+  clientId?: string;
   projectName: string;
   customer: string;
   clientEmail?: string;
@@ -5094,6 +5314,7 @@ export async function upsertCompanyClientProfileOnProjectCreate(input: {
   const projectLike: Project = {
     id: String(input.projectId || "").trim(),
     companyId: String(input.companyId || "").trim(),
+    clientId: String(input.clientId || "").trim() || undefined,
     name: String(input.projectName || "").trim() || "Untitled Project",
     customer: String(input.customer || "").trim(),
     createdAt: String(input.createdAtIso || "").trim(),

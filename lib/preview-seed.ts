@@ -53,6 +53,7 @@ const ALL_PERMISSIONS = {
   "staff.change.display_name": true,
   "company.settings": true,
   "company.report": true,
+  "projects.automate": true,
   "dashboard.complete.bonus": true,
 };
 

@@ -9,7 +9,7 @@ export function flatPageBg(isDark: boolean): string {
   return isDark ? FLAT_PAGE_BG_DARK : FLAT_PAGE_BG;
 }
 
-const FLAT_PAGES = new Set(["/dashboard", "/calendar"]);
+const FLAT_PAGES = new Set(["/dashboard", "/calendar", "/small-jobs"]);
 
 export function isFlatPage(pathname: string | null | undefined): boolean {
   return FLAT_PAGES.has(String(pathname || "").replace(/\/+$/, ""));

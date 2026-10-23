@@ -34,6 +34,7 @@ import { isPreviewMode } from "@/lib/preview-mode";
 import { useBoardStickyRef } from "@/lib/board-sticky-scroll";
 import { collapseBoardColumnAnimated, expandBoardColumnAnimated } from "@/lib/board-column-collapse";
 import { BoardColumnFrame, ColumnCollapseChevrons } from "@/components/board-column-frame";
+import { ColumnAutomationBadge, columnAutomationAttrs, useColumnAutomations } from "@/components/column-automations";
 import { BoardTitleBar } from "@/components/board-title-bar";
 import { attachBoardArrowKeyScroll } from "@/lib/board-arrow-key-scroll";
 import { scrollBoardToSearchMatch } from "@/lib/board-search-scroll";
@@ -1078,6 +1079,10 @@ export default function LeadsPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [companyThemeColor, setCompanyThemeColor] = useState("#2F6BFF");
   const [leadStatusRows, setLeadStatusRows] = useState<StatusRow[]>(normalizeLeadStatuses(undefined));
+  // Its columns' automations (projects.automate): right-click a column → Automate, and each column's ⚡ count on its
+  // header (components/column-automations.tsx). Its columns, for where a move can go.
+  const automationColumns = useMemo(() => leadStatusRows.map((row) => ({ status: row.name, subStage: "", color: row.color })), [leadStatusRows]);
+  const columnAutomation = useColumnAutomations("leads", automationColumns);
   const [fieldLayout, setFieldLayout] = useState<LeadFieldLayoutRow[]>([]);
   const [selectedLeadId, setSelectedLeadId] = useState("");
   const [detailLoadingLeadId, setDetailLoadingLeadId] = useState("");
@@ -2883,7 +2888,11 @@ export default function LeadsPage() {
     if (!response?.ok) {
       applyToLead(previous);
       void loadLeads(lead.companyId);
+      return;
     }
+    // Moved on by the column it went into (a column automation — lib/column-automations-server.ts): shown where it went.
+    const saved = (await response.json().catch(() => null)) as { automatedStatus?: string } | null;
+    if (saved?.automatedStatus) applyToLead({ status: saved.automatedStatus, updatedAtIso: new Date().toISOString() });
   };
 
   const leadDropIndexFor = (columnName: string, columnLeads: CompanyLeadRow[], columnEl: Element, clientY: number, leadId: string): number => {
@@ -5620,6 +5629,7 @@ export default function LeadsPage() {
                         {...dragHandlers}
                         data-column-name={column.name}
                         data-board-collapsed="true"
+                        {...columnAutomationAttrs("leads", column.name, "", column.color)}
                         className="h-full w-[52px] shrink-0 snap-center sm:snap-align-none"
                         shadow={glassColumnShadow}
                       >
@@ -5669,6 +5679,7 @@ export default function LeadsPage() {
                       key={column.name}
                       {...dragHandlers}
                       data-column-name={column.name}
+                      {...columnAutomationAttrs("leads", column.name, "", column.color)}
                       className="h-full w-[85vw] max-w-[320px] shrink-0 snap-center sm:w-[300px] sm:max-w-none sm:snap-align-none"
                       shadow={glassColumnShadow}
                     >
@@ -5704,6 +5715,11 @@ export default function LeadsPage() {
                             <p className="truncate text-[15px] font-semibold" style={{ color: columnTitleTextColor }}>{column.name}</p>
                           </div>
                           <div className="flex shrink-0 items-center gap-1.5">
+                            <ColumnAutomationBadge
+                              count={columnAutomation.canAutomate ? columnAutomation.countFor(column.name) : 0}
+                              onOpen={() => columnAutomation.open({ status: column.name, subStage: "", color: column.color })}
+                              style={{ color: columnBadgeText, backgroundColor: columnBadgeBg }}
+                            />
                             <span
                               className="inline-flex h-7 min-w-[28px] items-center justify-center rounded-full px-2 text-[11px] font-bold"
                               style={{ color: columnBadgeText, backgroundColor: columnBadgeBg }}
@@ -5806,6 +5822,7 @@ export default function LeadsPage() {
           />
         ) : null}
         <DragGhostLayer controller={leadBoardDragGhost} />
+        {columnAutomation.layer}
         {shouldRenderLeadFormModal && typeof document !== "undefined"
           ? createPortal(
               // Create Lead: how it came in and its status, then a lead form's questions to fill in (none of them
@@ -6013,7 +6030,7 @@ export default function LeadsPage() {
                             <span className="block truncate text-[13px] font-bold" style={{ color: "var(--text-main)" }}>
                               {member.displayName}
                             </span>
-                            <span className="mt-1 block truncate text-[12px] font-semibold" style={{ color: "var(--text-muted)" }}>
+                            <span className="mt-1 block truncate text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
                               {member.email || "-"}
                             </span>
                           </span>

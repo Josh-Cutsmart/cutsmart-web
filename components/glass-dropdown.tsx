@@ -30,7 +30,19 @@ type MenuPosition = {
   maxHeight: number;
   // Each row's height — bigger on phones.
   rowHeight: number;
+  // Where across it its trigger is (the middle of it, as far into the menu as that is) — what it squeezes out of.
+  originX: number;
 };
+
+// Where a menu squeezes out from (.glass-menu-squeeze, app/globals.css): its top edge when it opens downward, its bottom
+// edge when it opens upward (anchored by `bottom`), across at the middle of what opened it (`anchor`; none: its middle).
+export function glassMenuOrigin(
+  anchor: { left: number; width: number } | null | undefined,
+  menu: { left: number; width: number; bottom?: number },
+): string {
+  const x = anchor ? Math.min(menu.width, Math.max(0, anchor.left + anchor.width / 2 - menu.left)) : menu.width / 2;
+  return `${Math.round(x)}px ${menu.bottom !== undefined ? "100%" : "0%"}`;
+}
 
 // Shared open/position/dismiss behaviour for the glass menus below: a fixed-position menu measured from
 // its trigger (flips above when there's no room below, clamped to the visible screen), closed by an
@@ -135,10 +147,11 @@ function useAnchoredGlassMenu(options: {
     const preferredLeft =
       align === "right" ? rect.right - menuWidth : align === "center" ? rect.left + rect.width / 2 - menuWidth / 2 : rect.left;
     const left = Math.min(Math.max(MENU_CLEARANCE_PX, preferredLeft), window.innerWidth - menuWidth - MENU_CLEARANCE_PX);
+    const originX = Math.min(menuWidth, Math.max(0, rect.left + rect.width / 2 - left));
     setPosition(
       openUp
-        ? { left, bottom: document.documentElement.clientHeight - rect.top + 4, width: menuWidth, maxHeight, rowHeight }
-        : { left, top: rect.bottom + 4, width: menuWidth, maxHeight, rowHeight },
+        ? { left, bottom: document.documentElement.clientHeight - rect.top + 4, width: menuWidth, maxHeight, rowHeight, originX }
+        : { left, top: rect.bottom + 4, width: menuWidth, maxHeight, rowHeight, originX },
     );
   };
 
@@ -185,8 +198,10 @@ function GlassMenuPortal({
       role={role}
       aria-label={ariaLabel}
       data-glass-dropdown-menu="true"
-      className="glass-scroll fixed overflow-y-auto rounded-[10px] border p-1 shadow-[var(--shadow-md)] max-md:rounded-[14px] max-md:p-1.5"
+      // Squeezing out of its trigger as it opens (.glass-menu-squeeze).
+      className="glass-scroll glass-menu-squeeze fixed overflow-y-auto rounded-[10px] border p-1 shadow-[var(--shadow-md)] max-md:rounded-[14px] max-md:p-1.5"
       style={{
+        transformOrigin: `${Math.round(position.originX)}px ${position.bottom !== undefined ? "100%" : "0%"}`,
         left: position.left,
         top: position.top,
         bottom: position.bottom,
@@ -216,8 +231,9 @@ const menuRowClass =
 // exactly like GlassDropdown's: the same frosted box, each option a colour dot then its name, the chosen one in the
 // brand blue. glassMenuHeight is its height for a number of rows (to open it above its trigger when there's no room
 // below): GlassDropdown's row heights, bigger on a phone.
+// (Squeezing out of what opened it as it opens — .glass-menu-squeeze; its transformOrigin, glassMenuOrigin.)
 export const GLASS_MENU_CLASS =
-  "glass-scroll fixed overflow-y-auto rounded-[10px] border p-1 shadow-[var(--shadow-md)] max-md:rounded-[14px] max-md:p-1.5";
+  "glass-scroll glass-menu-squeeze fixed overflow-y-auto rounded-[10px] border p-1 shadow-[var(--shadow-md)] max-md:rounded-[14px] max-md:p-1.5";
 export const GLASS_MENU_STYLE: CSSProperties = {
   zIndex: 2147483647,
   borderColor: "var(--glass-border)",
@@ -228,6 +244,8 @@ export const GLASS_MENU_STYLE: CSSProperties = {
 export function glassMenuHeight(rowCount: number, phone: boolean): number {
   return rowCount * (phone ? MENU_ROW_HEIGHT_PHONE_PX : MENU_ROW_HEIGHT_PX) + (phone ? MENU_CHROME_PHONE_PX : MENU_CHROME_PX);
 }
+// A row of one (GlassMenuOption's, before its height) — for a menu with rows of its own (components/status-menu-panels.tsx).
+export const GLASS_MENU_ROW_CLASS = menuRowClass;
 // Its narrowest, on a computer and on a phone.
 export const GLASS_MENU_MIN_WIDTH_PX = 170;
 export const GLASS_MENU_MIN_WIDTH_PHONE_PX = MENU_MIN_WIDTH_PHONE_PX;
@@ -481,7 +499,9 @@ export function GlassActionMenu({
                 <span className="min-w-0 truncate">{item.label}</span>
               </span>
               {item.detail ? (
-                <span className="ml-3 shrink-0 text-[12px]" style={{ color: "var(--text-muted)" }}>
+                // An email (a detail with an @ — a contact's Email menu) in the main text colour, as emails are in every
+                // pop-up and menu; any other detail faint.
+                <span className="ml-3 shrink-0 text-[12px]" style={{ color: item.detail.includes("@") ? "var(--text-main)" : "var(--text-muted)" }}>
                   {item.detail}
                 </span>
               ) : null}

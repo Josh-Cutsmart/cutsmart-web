@@ -779,6 +779,34 @@ body .drawer-toolbar-slim .cutsmart-quote-document-toolbar > .ck.ck-toolbar > .c
   border-bottom: calc(var(--keyboard-inset-px, 0px) + var(--keyboard-offset-top-px, 0px)) solid transparent;
 }
 
+/* A dropdown menu squeezing out of what opened it (.glass-menu-squeeze — the shared glass menus, GlassDropdown's and
+ * every other dropdown's): it starts flat and narrow at the edge nearest its button (transform-origin, set on it: its
+ * top opening downward, its bottom opening upward, across where its button is), then springs open, just past its
+ * size and back. Not for someone who's asked for less motion. */
+@keyframes glass-menu-squeeze {
+  0% {
+    opacity: 0;
+    transform: scale(0.86, 0.35);
+  }
+  55% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* (backwards: once it's open, nothing of it's left on the menu — its own transform, if it has one, is its own again.) */
+.glass-menu-squeeze {
+  transform-origin: 50% 0%;
+  animation: glass-menu-squeeze 260ms cubic-bezier(0.22, 1.25, 0.36, 1) backwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .glass-menu-squeeze {
+    animation: none;
+  }
+}
+
 /* Sidebar labels/text that only mount once the sidebar has finished expanding (app-shell.tsx's
    isSidebarIconOnlyContent) — a plain conditional mount otherwise just pops into existence
    instantly, since there's no "before" state for a CSS transition to animate from. An animation

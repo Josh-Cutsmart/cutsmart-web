@@ -1,0 +1,865 @@
+"use client";
+
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
+import { Check, Plus, Search, Trash2, Users, X, Zap } from "lucide-react";
+import { GLASS_MENU_CLASS, GLASS_MENU_STYLE, GlassDropdown } from "@/components/glass-dropdown";
+import { modalCloseButtonClass } from "@/components/settings-ui";
+import { useAuth } from "@/lib/auth-context";
+import { normalizeRoles, type RoleRow } from "@/lib/company-roles";
+import {
+  automationRoleKey,
+  COLUMN_AUTOMATION_MAX_AMOUNT,
+  COLUMN_AUTOMATION_NOTIFICATION_TYPE,
+  COLUMN_AUTOMATION_UNITS,
+  columnAutomationColumnLabel,
+  columnAutomationDurationLabel,
+  columnAutomationNotificationText,
+  columnAutomationsFor,
+  newColumnAutomationId,
+  normalizeColumnAutomations,
+  type ColumnAutomation,
+  type ColumnAutomationAction,
+  type ColumnAutomationBoard,
+  type ColumnAutomationTrigger,
+  type ColumnAutomationUnit,
+} from "@/lib/column-automations";
+import { devButtonClass, useDevModeOn } from "@/lib/dev-mode";
+import { addUserNotification, fetchCompanyDoc, fetchCompanyMembers, saveColumnAutomations, type CompanyMemberOption } from "@/lib/firestore-data";
+import { glassShineStyle } from "@/lib/glass-shine";
+import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
+import { cn } from "@/lib/utils";
+
+// A board's column automations (lib/column-automations.ts), for whoever's role has projects.automate: right-click a
+// column (an element marked data-automation-board / -status / -substage / -color — the Dashboard's and Leads' column
+// frames) for its menu → Automate, a pop-up of its automations:
+//   Notify <people and roles> when a project <enters | leaves | has been in> <column> [for <n> <unit>]
+//   Move a project to <any of the board's other columns> when it enters <column> <straight away | after <n> <unit>>
+// People and roles are kept by their ids and shown by their names as they are now, so a rename doesn't lose them; a role
+// tells everyone in it when it's sent.
+// each part a dropdown, any number of them (one move a column); saved to the company doc. The board shows how many a
+// column has (countFor) on its header, which opens them too (open). Dev mode: a notify one's Test sends it to yourself,
+// as it would read.
+
+export type ColumnAutomationTarget = { status: string; subStage: string; color: string };
+// One of the board's columns (a status, or a Dashboard status's sub-stage) — somewhere a move can go.
+export type ColumnAutomationColumn = ColumnAutomationTarget;
+
+const UPDATED_EVENT = "cutsmart:column-automations-updated";
+const same = (a: unknown, b: unknown) => String(a ?? "").trim().toLowerCase() === String(b ?? "").trim().toLowerCase();
+
+const TRIGGER_OPTIONS: Array<{ value: ColumnAutomationTrigger; label: string }> = [
+  { value: "enters", label: "enters" },
+  { value: "leaves", label: "leaves" },
+  { value: "stays", label: "has been in" },
+];
+const UNIT_OPTIONS = COLUMN_AUTOMATION_UNITS.map((unit) => ({ value: unit.value, label: unit.many }));
+const ACTION_OPTIONS: Array<{ value: ColumnAutomationAction; label: string }> = [
+  { value: "notify", label: "Notify" },
+  { value: "move", label: "Move" },
+];
+const TIMING_OPTIONS = [
+  { value: "now", label: "straight away" },
+  { value: "after", label: "after" },
+];
+// A column as a dropdown value: its status and sub-stage, apart.
+const COLUMN_KEY_SEP = "\u001f";
+// The rules' dropdowns and boxes: the same rounded pill.
+const PILL_CLASS = "h-9 justify-between gap-2 rounded-full border px-3.5 text-[13px] font-medium";
+const PILL_STYLE = { borderColor: "var(--panel-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" };
+// The app's green "+" buttons' colour (their glass shine) — Add automation's under the pointer; a brighter green before.
+const ADD_GREEN = "#16A34A";
+const ADD_GREEN_LIGHT = "#22C55E";
+const FLOATING_STYLE = {
+  borderColor: "var(--glass-border)",
+  backgroundColor: "var(--glass-modal-bg)",
+  backdropFilter: "blur(12px) saturate(220%)",
+  WebkitBackdropFilter: "blur(12px) saturate(220%)",
+  zIndex: 9700,
+};
+
+const memberName = (member: CompanyMemberOption) =>
+  String(member.membershipDisplayName || member.displayName || member.email || "Someone").trim();
+const memberColor = (member: CompanyMemberOption | undefined) => String(member?.userColor || member?.badgeColor || "").trim() || "#7C8EA5";
+const initialsOf = (name: string) =>
+  name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("") || "?";
+
+export function useColumnAutomations(
+  board: ColumnAutomationBoard,
+  // The board's columns, for where a move can go.
+  columns: ColumnAutomationColumn[],
+): {
+  canAutomate: boolean;
+  countFor: (status: string, subStage?: string) => number;
+  open: (target: ColumnAutomationTarget) => void;
+  layer: ReactNode;
+} {
+  const access = useCompanyAccess();
+  const companyId = access.status === "ready" ? String(access.companyId || "").trim() : "";
+  const canAutomate =
+    access.status === "ready" && (isOwnerOrAdmin(access.role) || hasPermissionKey(access.permissionKeys, "projects.automate"));
+  const [automations, setAutomations] = useState<ColumnAutomation[]>([]);
+  const [menu, setMenu] = useState<{ x: number; y: number; target: ColumnAutomationTarget } | null>(null);
+  const [editing, setEditing] = useState<ColumnAutomationTarget | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  // The company's automations — and again whenever they're saved (here, or the other board).
+  useEffect(() => {
+    if (!companyId) return;
+    let cancelled = false;
+    void fetchCompanyDoc(companyId).then((companyDoc) => {
+      if (!cancelled) setAutomations(normalizeColumnAutomations(companyDoc?.columnAutomations));
+    });
+    const onUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ companyId: string; automations: ColumnAutomation[] }>).detail;
+      if (detail?.companyId === companyId) setAutomations(detail.automations);
+    };
+    window.addEventListener(UPDATED_EVENT, onUpdated);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(UPDATED_EVENT, onUpdated);
+    };
+  }, [companyId]);
+
+  // Right-click a column (not in a text box — that keeps its own menu): its menu, at the pointer.
+  useEffect(() => {
+    if (!canAutomate) return;
+    const onContextMenu = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      const column = target?.closest<HTMLElement>(`[data-automation-board="${board}"]`);
+      if (!column || target?.closest("input, textarea, [contenteditable='true']")) return;
+      event.preventDefault();
+      setMenu({
+        x: event.clientX,
+        y: event.clientY,
+        target: {
+          status: column.dataset.automationStatus ?? "",
+          subStage: column.dataset.automationSubstage ?? "",
+          color: column.dataset.automationColor ?? "#64748B",
+        },
+      });
+    };
+    document.addEventListener("contextmenu", onContextMenu);
+    return () => document.removeEventListener("contextmenu", onContextMenu);
+  }, [board, canAutomate]);
+
+  // The menu closes with a press elsewhere, Escape, a scroll or a resize.
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    const onPointerDown = (event: PointerEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) close();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    window.addEventListener("resize", close);
+    window.addEventListener("scroll", close, true);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("resize", close);
+      window.removeEventListener("scroll", close, true);
+    };
+  }, [menu]);
+
+  const countFor = (status: string, subStage = "") => columnAutomationsFor(automations, board, status, subStage).length;
+  const menuCount = menu ? countFor(menu.target.status, menu.target.subStage) : 0;
+
+  const layer = (
+    <>
+      {menu && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              ref={menuRef}
+              role="menu"
+              className={GLASS_MENU_CLASS}
+              style={{
+                ...GLASS_MENU_STYLE,
+                left: Math.min(menu.x, window.innerWidth - 228),
+                top: Math.min(menu.y, window.innerHeight - 60),
+                width: 220,
+              }}
+            >
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setEditing(menu.target);
+                  setMenu(null);
+                }}
+                className="flex h-8 w-full items-center gap-2 rounded-[8px] px-3 text-left text-[12px] font-medium text-[var(--text-main)] transition-colors hover:bg-[var(--brand-soft)] hover:text-[var(--brand)] max-md:h-11 max-md:text-[15px]"
+              >
+                <Zap size={14} className="shrink-0" />
+                <span className="min-w-0 flex-1 truncate">Automate {columnAutomationColumnLabel(menu.target)}</span>
+                {menuCount ? (
+                  <span className="shrink-0 rounded-full bg-[var(--brand-soft)] px-1.5 text-[11px] font-bold text-[var(--brand)]">{menuCount}</span>
+                ) : null}
+              </button>
+            </div>,
+            document.body,
+          )
+        : null}
+      {editing && companyId ? (
+        <ColumnAutomationModal
+          board={board}
+          companyId={companyId}
+          columns={columns}
+          target={editing}
+          automations={automations}
+          onClose={() => setEditing(null)}
+          onSaved={(next) => {
+            setAutomations(next);
+            window.dispatchEvent(new CustomEvent(UPDATED_EVENT, { detail: { companyId, automations: next } }));
+            setEditing(null);
+          }}
+        />
+      ) : null}
+    </>
+  );
+
+  return { canAutomate, countFor, open: setEditing, layer };
+}
+
+// A column frame's marks for its right-click menu (useColumnAutomations): which board and column it is, and its colour.
+export function columnAutomationAttrs(board: ColumnAutomationBoard, status: string, subStage: string, color: string) {
+  return {
+    "data-automation-board": board,
+    "data-automation-status": status,
+    "data-automation-substage": subStage,
+    "data-automation-color": color,
+  };
+}
+
+// A column header's "⚡ 2": how many automations it has — opens them.
+export function ColumnAutomationBadge({
+  count,
+  onOpen,
+  style,
+}: {
+  count: number;
+  onOpen: () => void;
+  style: { color: string; backgroundColor: string };
+}) {
+  if (!count) return null;
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="inline-flex h-7 shrink-0 items-center gap-0.5 rounded-full px-2 text-[11px] font-bold transition hover:brightness-95"
+      style={style}
+      title={`${count} automation${count === 1 ? "" : "s"}`}
+      aria-label={`${count} automation${count === 1 ? "" : "s"}`}
+    >
+      <Zap size={12} className="shrink-0" fill="currentColor" />
+      {count}
+    </button>
+  );
+}
+
+type DraftRow = ColumnAutomation;
+
+function ColumnAutomationModal({
+  board,
+  companyId,
+  columns,
+  target,
+  automations,
+  onClose,
+  onSaved,
+}: {
+  board: ColumnAutomationBoard;
+  companyId: string;
+  columns: ColumnAutomationColumn[];
+  target: ColumnAutomationTarget;
+  automations: ColumnAutomation[];
+  onClose: () => void;
+  onSaved: (next: ColumnAutomation[]) => void;
+}) {
+  const { user } = useAuth();
+  const devModeOn = useDevModeOn();
+  const column = columnAutomationColumnLabel(target);
+  const thing = board === "leads" ? "lead" : "project";
+  const newRow = (): DraftRow => ({
+    id: newColumnAutomationId(),
+    board,
+    status: target.status,
+    subStage: target.subStage,
+    action: "notify",
+    trigger: "enters",
+    amount: 3,
+    unit: "days",
+    notifyUids: [],
+    notifyRoleIds: [],
+    moveToStatus: "",
+    moveToSubStage: "",
+    moveAfter: false,
+    createdByUid: String(user?.uid || ""),
+    updatedAtIso: "",
+  });
+  const original = columnAutomationsFor(automations, board, target.status, target.subStage);
+  const [rows, setRows] = useState<DraftRow[]>(() => (original.length ? original : [newRow()]));
+  const [members, setMembers] = useState<CompanyMemberOption[] | null>(null);
+  const [roles, setRoles] = useState<RoleRow[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [triedSave, setTriedSave] = useState(false);
+  const [testedId, setTestedId] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    // The staff and roles as they are now (their names too — a rule keeps their ids).
+    void Promise.all([fetchCompanyMembers(companyId).catch(() => [] as CompanyMemberOption[]), fetchCompanyDoc(companyId).catch(() => null)]).then(
+      ([list, companyDoc]) => {
+        if (cancelled) return;
+        setMembers(list.slice().sort((a, b) => memberName(a).localeCompare(memberName(b))));
+        setRoles(normalizeRoles(companyDoc?.roles));
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [companyId]);
+
+  const update = (id: string, patch: Partial<DraftRow>) => setRows((prev) => prev.map((row) => (row.id === id ? { ...row, ...patch } : row)));
+  const missingPeople = rows.some((row) => row.action === "notify" && !row.notifyUids.length && !row.notifyRoleIds.length);
+  // Where a move can go: every other column of the board.
+  const moveOptions = columns
+    .filter((option) => !(same(option.status, target.status) && same(option.subStage, target.subStage)))
+    .map((option) => ({ value: `${option.status}${COLUMN_KEY_SEP}${option.subStage}`, label: columnAutomationColumnLabel(option), color: option.color }));
+  // Notify or Move — a move starts off going to the first other column.
+  const setAction = (row: DraftRow, action: ColumnAutomationAction) => {
+    if (action === row.action) return;
+    if (action === "notify") {
+      update(row.id, { action });
+      return;
+    }
+    const [firstStatus = "", firstSubStage = ""] = (moveOptions[0]?.value ?? "").split(COLUMN_KEY_SEP);
+    update(row.id, {
+      action,
+      trigger: "enters",
+      moveToStatus: row.moveToStatus || firstStatus,
+      moveToSubStage: row.moveToStatus ? row.moveToSubStage : firstSubStage,
+    });
+  };
+
+  const save = async () => {
+    setTriedSave(true);
+    if (missingPeople || saving) return;
+    setSaving(true);
+    setError("");
+    const nowIso = new Date().toISOString();
+    // A new or changed one is stamped now (a "has been in" one with no stay to count from counts from it).
+    const fields = (row: DraftRow) =>
+      JSON.stringify([
+        row.action,
+        row.trigger,
+        row.amount,
+        row.unit,
+        [...row.notifyUids].sort(),
+        [...row.notifyRoleIds].sort(),
+        row.moveToStatus,
+        row.moveToSubStage,
+        row.moveAfter,
+      ]);
+    // Anyone who's left the company, or a role since deleted, left off.
+    const roleIds = new Set(roles.map((role) => automationRoleKey(role.id)));
+    const memberIds = new Set((members ?? []).map((member) => member.uid));
+    const tidy = (row: DraftRow): DraftRow => ({
+      ...row,
+      notifyUids: members ? row.notifyUids.filter((uid) => memberIds.has(uid)) : row.notifyUids,
+      notifyRoleIds: roles.length ? row.notifyRoleIds.filter((id) => roleIds.has(id)) : row.notifyRoleIds,
+    });
+    const saved = rows.map(tidy).map((row) => {
+      const before = original.find((item) => item.id === row.id);
+      return before && fields(before) === fields(row) ? row : { ...row, updatedAtIso: nowIso };
+    });
+    const next = [
+      ...automations.filter((row) => !(row.board === board && same(row.status, target.status) && same(row.subStage, target.subStage))),
+      ...saved,
+    ];
+    const ok = await saveColumnAutomations(companyId, next);
+    setSaving(false);
+    if (!ok) {
+      setError("Couldn't save — check your connection and try again.");
+      return;
+    }
+    onSaved(next);
+  };
+
+  // Dev mode: the automation's notification, as it would read, to yourself (your Notifications, and your devices).
+  const sendTest = async (row: DraftRow) => {
+    if (!user?.uid) return;
+    const text = columnAutomationNotificationText({
+      board,
+      event: row.trigger,
+      itemName: board === "leads" ? "Jane Smith" : "Smith Kitchen",
+      column,
+      movedTo: "the next column",
+      duration: columnAutomationDurationLabel(row),
+    });
+    const ok = await addUserNotification(user.uid, { ...text, type: COLUMN_AUTOMATION_NOTIFICATION_TYPE, companyId, devTest: true });
+    setTestedId(ok ? row.id : "");
+    if (ok) window.setTimeout(() => setTestedId((prev) => (prev === row.id ? "" : prev)), 2500);
+  };
+
+  if (typeof document === "undefined") return null;
+  return createPortal(
+    <div
+      className="glass-modal-backdrop fixed inset-0 z-[9000] flex items-center justify-center p-0 sm:p-4"
+      onClick={(e) => {
+        if (e.target === e.currentTarget && !saving) onClose();
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Automate ${column}`}
+        // A phone: the whole screen (as the other pop-ups — data-phone-fullscreen, app/globals.css). A big screen: wide
+        // enough for each automation's sentence on one line.
+        data-phone-fullscreen="true"
+        className="glass-modal-panel relative flex h-full w-full flex-col overflow-hidden max-sm:rounded-none! max-sm:border-0! sm:h-auto sm:max-h-[min(760px,92vh)] sm:w-[min(680px,96vw)] lg:w-[min(1000px,94vw)]"
+      >
+        <div className="glass-modal-header flex items-center gap-3 px-5 py-4 max-sm:pt-[calc(16px+env(safe-area-inset-top))]">
+          <span className="glass-shine inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-white" style={glassShineStyle("var(--brand)")}>
+            <Zap size={18} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[18px] font-medium text-[var(--text-main)]">Automate</p>
+            <p className="flex min-w-0 items-center gap-1.5 text-[12px] text-[var(--text-muted)]">
+              <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: target.color }} />
+              <span className="truncate">{column}</span>
+            </p>
+          </div>
+          <button type="button" onClick={onClose} className={modalCloseButtonClass} aria-label="Close" title="Close">
+            <X size={16} />
+          </button>
+        </div>
+        <div data-keyboard-scroll-pad="true" className="glass-scroll min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
+          {rows.length === 0 ? (
+            <p className="rounded-[14px] border border-dashed border-[var(--panel-border)] px-4 py-6 text-center text-[13px] text-[var(--text-muted)]">
+              No automations on {column}. Save to leave it with none.
+            </p>
+          ) : null}
+          {rows.map((row) => {
+            const needsPeople = triedSave && row.action === "notify" && !row.notifyUids.length && !row.notifyRoleIds.length;
+            // One move a column: Move's only offered on another while no other one moves.
+            const canMove = row.action === "move" || !rows.some((other) => other.id !== row.id && other.action === "move");
+            // How long — a "has been in" one's, or a move's timer.
+            const duration = (
+              <>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  max={COLUMN_AUTOMATION_MAX_AMOUNT}
+                  value={row.amount}
+                  onChange={(e) =>
+                    update(row.id, {
+                      amount: Math.min(COLUMN_AUTOMATION_MAX_AMOUNT, Math.max(1, Math.round(Number(e.target.value) || 1))),
+                    })
+                  }
+                  aria-label="How many"
+                  autoComplete="cs-automation-amount"
+                  className="h-9 w-[68px] rounded-full border border-[var(--panel-border)] bg-[var(--panel-bg)] px-3 text-center text-[13px] font-medium text-[var(--text-main)] outline-none transition focus:border-[var(--brand)]"
+                />
+                <GlassDropdown
+                  value={row.unit}
+                  options={UNIT_OPTIONS}
+                  onChange={(value) => update(row.id, { unit: value as ColumnAutomationUnit })}
+                  ariaLabel="Minutes, hours, days, weeks or months"
+                  hideTriggerDot
+                  menuMinWidth={130}
+                  triggerClassName={PILL_CLASS}
+                  triggerStyle={PILL_STYLE}
+                />
+              </>
+            );
+            const columnChip = (
+              <span className="inline-flex h-9 min-w-0 max-w-full items-center gap-1.5 rounded-full border border-[var(--panel-border)] bg-[var(--panel-muted)] px-3.5">
+                <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: target.color }} />
+                <span className="truncate">{column}</span>
+              </span>
+            );
+            return (
+              <div key={row.id} className="glass-shine glass-shine-neutral rounded-[16px] p-3.5">
+                {/* The sentence, then its Test (dev mode, a notify one) and remove buttons at its end. */}
+                <div className="flex items-start gap-2">
+                  <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-2 text-[13px] font-medium text-[var(--text-main)]">
+                    <GlassDropdown
+                      value={row.action}
+                      options={canMove ? ACTION_OPTIONS : ACTION_OPTIONS.filter((option) => option.value !== "move")}
+                      onChange={(value) => setAction(row, value as ColumnAutomationAction)}
+                      ariaLabel="Notify or move"
+                      hideTriggerDot
+                      menuMinWidth={130}
+                      triggerClassName={PILL_CLASS}
+                      triggerStyle={PILL_STYLE}
+                    />
+                    {row.action === "move" ? (
+                      <>
+                        <span>a {thing} to</span>
+                        <GlassDropdown
+                          value={`${row.moveToStatus}${COLUMN_KEY_SEP}${row.moveToSubStage}`}
+                          options={moveOptions}
+                          onChange={(value) => {
+                            const [moveToStatus = "", moveToSubStage = ""] = value.split(COLUMN_KEY_SEP);
+                            update(row.id, { moveToStatus, moveToSubStage });
+                          }}
+                          ariaLabel="Move to"
+                          menuMinWidth={240}
+                          triggerClassName={PILL_CLASS}
+                          triggerStyle={PILL_STYLE}
+                        />
+                        <span>when it enters</span>
+                        {columnChip}
+                        <GlassDropdown
+                          value={row.moveAfter ? "after" : "now"}
+                          options={TIMING_OPTIONS}
+                          onChange={(value) => update(row.id, { moveAfter: value === "after" })}
+                          ariaLabel="When to move it"
+                          hideTriggerDot
+                          menuMinWidth={150}
+                          triggerClassName={PILL_CLASS}
+                          triggerStyle={PILL_STYLE}
+                        />
+                        {row.moveAfter ? duration : null}
+                      </>
+                    ) : (
+                      <>
+                        <PeoplePicker
+                          members={members}
+                          roles={roles}
+                          value={row.notifyUids}
+                          roleValue={row.notifyRoleIds}
+                          invalid={needsPeople}
+                          onChange={(notifyUids) => update(row.id, { notifyUids })}
+                          onChangeRoles={(notifyRoleIds) => update(row.id, { notifyRoleIds })}
+                        />
+                        <span>when a {thing}</span>
+                        <GlassDropdown
+                          value={row.trigger}
+                          options={TRIGGER_OPTIONS}
+                          onChange={(value) => update(row.id, { trigger: value as ColumnAutomationTrigger })}
+                          ariaLabel="When"
+                          hideTriggerDot
+                          menuMinWidth={150}
+                          triggerClassName={PILL_CLASS}
+                          triggerStyle={PILL_STYLE}
+                        />
+                        {columnChip}
+                        {row.trigger === "stays" ? (
+                          <>
+                            <span>for</span>
+                            {duration}
+                          </>
+                        ) : null}
+                      </>
+                    )}
+                  </div>
+                  <span className="flex h-9 shrink-0 items-center gap-1.5">
+                    {devModeOn && row.action === "notify" ? (
+                      <button type="button" onClick={() => void sendTest(row)} className={devButtonClass(testedId === row.id)} title="Send this notification to yourself">
+                        {testedId === row.id ? "Sent" : "Test"}
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => setRows((prev) => prev.filter((item) => item.id !== row.id))}
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[var(--text-muted)] transition hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
+                      aria-label="Remove automation"
+                      title="Remove automation"
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  </span>
+                </div>
+                {needsPeople ? <p className="mt-2 text-[11.5px] font-medium text-[var(--danger)]">Pick who to notify — people, or a role.</p> : null}
+              </div>
+            );
+          })}
+          {/* Green glass (the glass shine), and under the pointer the app's green + buttons' own glass (glassShineStyle
+              "#16A34A") fading in over it — neither with the glass's white edge. */}
+          <button
+            type="button"
+            onClick={() => setRows((prev) => [...prev, newRow()])}
+            className="group glass-shine relative flex h-11 w-full items-center justify-center overflow-hidden rounded-[14px] text-[13px] font-medium text-white"
+            style={glassShineStyle(ADD_GREEN_LIGHT, { border: "none" })}
+          >
+            <span
+              aria-hidden="true"
+              className="glass-shine pointer-events-none absolute inset-0 rounded-[14px] opacity-0 transition-opacity duration-150 group-hover:opacity-100"
+              style={glassShineStyle(ADD_GREEN, { border: "none" })}
+            />
+            <span className="relative inline-flex items-center gap-1.5">
+              <Plus size={15} strokeWidth={2.5} />
+              Add automation
+            </span>
+          </button>
+        </div>
+        <div className="flex items-center gap-2 border-t border-[var(--glass-border)] px-5 py-3 max-sm:pb-[calc(12px+env(safe-area-inset-bottom))]">
+          <p className="min-w-0 flex-1 truncate text-[12px] font-medium text-[var(--danger)]">{error}</p>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            className="inline-flex h-10 shrink-0 items-center rounded-full border border-[var(--panel-border)] bg-[var(--panel-bg)] px-4 text-[13px] font-medium text-[var(--text-main)] transition hover:bg-[var(--panel-muted)] disabled:opacity-60"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => void save()}
+            disabled={saving}
+            className="glass-shine inline-flex h-10 shrink-0 items-center gap-1.5 rounded-full px-5 text-[13px] font-medium text-white transition hover:brightness-105 disabled:opacity-60"
+            style={glassShineStyle("var(--brand)")}
+          >
+            <Check size={15} strokeWidth={2.5} />
+            {saving ? "Saving..." : "Save"}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+// Who to notify: whole roles (everyone in one, when it's sent) and anyone in the company — their badges on the button,
+// a searchable list to tick them in (roles first). Each by its name as it is now.
+function PeoplePicker({
+  members,
+  roles,
+  value,
+  roleValue,
+  invalid,
+  onChange,
+  onChangeRoles,
+}: {
+  members: CompanyMemberOption[] | null;
+  roles: RoleRow[];
+  value: string[];
+  roleValue: string[];
+  invalid: boolean;
+  onChange: (uids: string[]) => void;
+  onChangeRoles: (roleIds: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const [pos, setPos] = useState<{ left: number; width: number; top?: number; bottom?: number; maxHeight: number } | null>(null);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const roleOf = (id: string) => roles.find((role) => automationRoleKey(role.id) === id);
+  const pickedRoles = roleValue.map(roleOf).filter((role): role is RoleRow => Boolean(role));
+  const picked = value.map((uid) => (members ?? []).find((member) => member.uid === uid)).filter((member): member is CompanyMemberOption => Boolean(member));
+  const peopleIn = (role: RoleRow) => (members ?? []).filter((member) => automationRoleKey(member.roleId || member.role) === automationRoleKey(role.id)).length;
+  const query = search.trim().toLowerCase();
+  const shownRoles = roles.filter((role) => !query || role.name.toLowerCase().includes(query));
+  const shown = (members ?? []).filter((member) => !query || `${memberName(member)} ${member.email ?? ""}`.toLowerCase().includes(query));
+  const pickedNames = [...pickedRoles.map((role) => role.name), ...picked.map(memberName)];
+
+  // Closes with a press elsewhere, Escape, a scroll (not its own list's) or a resize.
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (panelRef.current?.contains(target) || buttonRef.current?.contains(target)) return;
+      close();
+    };
+    const onScroll = (event: Event) => {
+      if (panelRef.current?.contains(event.target as Node)) return;
+      close();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    window.addEventListener("resize", close);
+    window.addEventListener("scroll", onScroll, true);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("resize", close);
+      window.removeEventListener("scroll", onScroll, true);
+    };
+  }, [open]);
+
+  const toggle = () => {
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    const rect = buttonRef.current?.getBoundingClientRect();
+    if (rect) {
+      const width = Math.min(300, window.innerWidth - 16);
+      const left = Math.min(Math.max(8, rect.left), window.innerWidth - width - 8);
+      const below = window.innerHeight - rect.bottom - 12;
+      const above = rect.top - 12;
+      setPos(
+        below >= 340 || below >= above
+          ? { left, width, top: rect.bottom + 4, maxHeight: below }
+          : { left, width, bottom: window.innerHeight - rect.top + 4, maxHeight: above },
+      );
+    }
+    setSearch("");
+    setOpen(true);
+  };
+
+  // A row of the list: a role (its colour, everyone's icon) or a person (their initials), ticked or not.
+  const optionRow = (input: { key: string; isOn: boolean; onToggle: () => void; badge: ReactNode; title: string; detail?: string }) => (
+    <button
+      key={input.key}
+      type="button"
+      role="option"
+      aria-selected={input.isOn}
+      onClick={input.onToggle}
+      className={cn("flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left text-[12px] transition-colors", !input.isOn && "hover:bg-[var(--brand-soft)]")}
+      style={input.isOn ? { backgroundImage: "var(--brand-gradient)" } : undefined}
+    >
+      {input.badge}
+      <span className="min-w-0 flex-1">
+        <span className={cn("block truncate font-medium", input.isOn ? "text-white" : "text-[var(--text-main)]")}>{input.title}</span>
+        {input.detail ? (
+          <span className={cn("block truncate text-[11px]", input.isOn ? "text-white/80" : "text-[var(--text-main)]")}>{input.detail}</span>
+        ) : null}
+      </span>
+      <span
+        className={cn(
+          "inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-[5px] border",
+          input.isOn ? "border-white bg-white text-[var(--brand)]" : "border-[var(--panel-border)]",
+        )}
+      >
+        {input.isOn ? <Check size={11} strokeWidth={3} /> : null}
+      </span>
+    </button>
+  );
+  const roleBadge = (role: RoleRow, size = 24) => (
+    <span
+      className="inline-flex shrink-0 items-center justify-center rounded-[7px] text-white"
+      style={{ width: size, height: size, backgroundColor: role.color || "#7D99B3" }}
+    >
+      <Users size={size <= 22 ? 11 : 13} strokeWidth={2.5} />
+    </span>
+  );
+  const sectionLabel = (text: string) => (
+    <p className="px-2 pb-1 pt-2 text-[10.5px] font-bold uppercase tracking-[0.8px] text-[var(--text-muted)] first:pt-1">{text}</p>
+  );
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={toggle}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className={cn(
+          "inline-flex h-9 min-w-0 max-w-full items-center gap-2 rounded-full border px-2 pr-3 text-[13px] font-medium transition",
+          invalid ? "border-[var(--danger)]" : "border-[var(--panel-border)] hover:border-[var(--brand)]",
+        )}
+        style={{ backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+      >
+        {pickedNames.length ? (
+          <>
+            <span className="flex shrink-0 -space-x-1.5">
+              {pickedRoles.slice(0, 2).map((role) => (
+                <span key={role.id} className="rounded-[8px] ring-2 ring-[var(--panel-bg)]">
+                  {roleBadge(role)}
+                </span>
+              ))}
+              {picked.slice(0, Math.max(0, 3 - Math.min(2, pickedRoles.length))).map((member) => (
+                <span
+                  key={member.uid}
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-bold text-white ring-2 ring-[var(--panel-bg)]"
+                  style={{ backgroundColor: memberColor(member) }}
+                >
+                  {initialsOf(memberName(member))}
+                </span>
+              ))}
+            </span>
+            <span className="min-w-0 truncate">
+              {pickedNames.length === 1 ? pickedNames[0] : `${pickedNames[0]} + ${pickedNames.length - 1} more`}
+            </span>
+          </>
+        ) : (
+          <span className="px-1.5 text-[var(--text-muted)]">
+            {members === null && (value.length || roleValue.length) ? "Loading..." : "Choose people or roles"}
+          </span>
+        )}
+      </button>
+      {open && pos && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              ref={panelRef}
+              className="fixed flex flex-col overflow-hidden rounded-[12px] border shadow-[var(--shadow-md)]"
+              style={{ ...FLOATING_STYLE, left: pos.left, width: pos.width, top: pos.top, bottom: pos.bottom, maxHeight: Math.min(380, pos.maxHeight) }}
+            >
+              <div className="relative shrink-0 border-b border-[var(--glass-border)] p-2">
+                <Search size={13} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" />
+                <input
+                  autoFocus
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  autoComplete="cs-automation-people"
+                  className="h-8 w-full rounded-[8px] border border-[var(--panel-border)] bg-[var(--panel-bg)] pl-7 pr-2 text-[12px] text-[var(--text-main)] outline-none transition focus:border-[var(--brand)]"
+                  placeholder="Search staff and roles..."
+                />
+              </div>
+              <div role="listbox" aria-multiselectable="true" className="glass-scroll min-h-0 flex-1 overflow-y-auto p-1">
+                {members === null ? (
+                  <p className="px-2 py-3 text-center text-[12px] text-[var(--text-muted)]">Loading staff...</p>
+                ) : shownRoles.length || shown.length ? (
+                  <>
+                    {shownRoles.length ? sectionLabel("Roles") : null}
+                    {shownRoles.map((role) => {
+                      const id = automationRoleKey(role.id);
+                      const isOn = roleValue.includes(id);
+                      const count = peopleIn(role);
+                      return optionRow({
+                        key: `role_${id}`,
+                        isOn,
+                        onToggle: () => onChangeRoles(isOn ? roleValue.filter((roleId) => roleId !== id) : [...roleValue, id]),
+                        badge: roleBadge(role),
+                        title: role.name,
+                        detail: count ? `Everyone in it — ${count} ${count === 1 ? "person" : "people"}` : "No one in it yet",
+                      });
+                    })}
+                    {shown.length ? sectionLabel("People") : null}
+                    {shown.map((member) => {
+                      const isOn = value.includes(member.uid);
+                      return optionRow({
+                        key: member.uid,
+                        isOn,
+                        onToggle: () => onChange(isOn ? value.filter((uid) => uid !== member.uid) : [...value, member.uid]),
+                        badge: (
+                          <span
+                            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white"
+                            style={{ backgroundColor: memberColor(member) }}
+                          >
+                            {initialsOf(memberName(member))}
+                          </span>
+                        ),
+                        title: memberName(member),
+                        detail: member.email,
+                      });
+                    })}
+                  </>
+                ) : (
+                  <p className="px-2 py-3 text-center text-[12px] text-[var(--text-muted)]">No staff or roles found.</p>
+                )}
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
+  );
+}

@@ -77,6 +77,18 @@ export async function notifyNewLead(
           );
         }),
     );
+    // In at its first column: that column's automations — "enters" ones told, and moved on if it moves things
+    // (lib/column-automations-server.ts — imported here as it's used, as it uses this file's leadNameForNotification).
+    const { runLeadColumnAutomations } = await import("@/lib/column-automations-server");
+    await runLeadColumnAutomations({
+      companyId,
+      leadId,
+      leadName: name,
+      from: null,
+      to: { status: toStr(lead.status), subStage: "" },
+      actorUid: addedBy?.uid,
+      siteOrigin,
+    });
   } catch (error) {
     console.error("[leads] new-lead notifications failed:", error);
   }

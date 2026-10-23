@@ -25,6 +25,11 @@ export const PUSH_NOTIFICATION_CATEGORIES: readonly PushNotificationCategory[] =
         description: "Someone asks to unlock a project's production — on Android and computers you can approve or deny it right from the notification.",
       },
       { type: "production_unlock_response", label: "Unlock request answered", description: "Your request to unlock a project's production is approved or denied." },
+      {
+        type: "column_automation",
+        label: "Column automations",
+        description: "A project or lead enters, leaves or has been in a board column someone's set you to hear about.",
+      },
     ],
   },
   {

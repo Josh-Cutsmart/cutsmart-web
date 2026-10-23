@@ -16,6 +16,8 @@ import { SubscribeBellIcon } from "@/components/subscribe-bell-icon";
 import { useAuth } from "@/lib/auth-context";
 import { fetchCompanyDoc, fetchCompanyMembers, fetchProjects } from "@/lib/firestore-data";
 import { isProjectArchived } from "@/lib/project-archive";
+import { glassShineStyle } from "@/lib/glass-shine";
+import { matchProjectsToText } from "@/lib/project-match";
 import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
 import { normalizeRoleKey } from "@/lib/company-roles";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
@@ -345,6 +347,9 @@ function eventWhenText(e: CalendarEvent, fmtDate: (d: Date) => string): { primar
     secondary: `until ${weekday(e.endMs, "short")} ${fmtDate(new Date(e.endMs))}, ${timeText(e.endMs)}`,
   };
 }
+
+// Today, lightly in the brand blue — lighter than a day's "+2 more" pill (--brand-soft).
+const TODAY_TINT = "color-mix(in srgb, var(--brand) 6%, transparent)";
 
 type Draft = {
   id: string;
@@ -825,6 +830,10 @@ function CalendarPageContent() {
   const [projectQuery, setProjectQuery] = useState("");
   // The new event whose title has already been focused (so re-renders don't steal focus back).
   const focusedDraftIdRef = useRef("");
+  // The projects its title sounds like (under the title, while no project's linked): the one picked with the arrow keys,
+  // and the event they've been put away for ("Not now").
+  const [titleSuggestIndex, setTitleSuggestIndex] = useState(-1);
+  const [titleSuggestDismissedFor, setTitleSuggestDismissedFor] = useState("");
   // Clicking an event opens it read-only ("view"); Edit switches the same pop-up to the form.
   const [eventMode, setEventMode] = useState<"view" | "edit">("edit");
   // Lets the pop-up's category wash fade between colours (popupTintStyle).
@@ -1428,7 +1437,7 @@ function CalendarPageContent() {
               className={`cal-day group relative flex min-h-0 min-w-0 cursor-pointer flex-col gap-0.5 overflow-hidden p-1 transition-colors duration-300 hover:bg-[color-mix(in_srgb,var(--text-main)_3%,transparent)] ${col === cols - 1 ? "" : "border-r"}`}
               style={{
                 borderColor: "var(--glass-border)",
-                backgroundColor: monthDropDay === dayMs ? "var(--brand-soft)" : "var(--cal-day-bg, transparent)",
+                backgroundColor: monthDropDay === dayMs ? "var(--brand-soft)" : isToday ? TODAY_TINT : "var(--cal-day-bg, transparent)",
                 backgroundImage: isOffDay(dd) && monthDropDay !== dayMs ? offDayHatch : undefined,
               }}
             >
@@ -1893,7 +1902,7 @@ function CalendarPageContent() {
                           changeView("day");
                         }}
                         className="flex w-full items-center justify-center gap-1.5 border-l py-1.5 text-[12px] font-semibold first:border-l-0"
-                        style={{ color: isToday ? "var(--brand-strong)" : "var(--text-main)", borderColor: "var(--glass-border)" }}
+                        style={{ color: isToday ? "var(--brand-strong)" : "var(--text-main)", borderColor: "var(--glass-border)", backgroundColor: isToday ? TODAY_TINT : undefined }}
                       >
                         <span style={{ color: "var(--text-muted)" }}>{weekdayShort(d)}</span>
                         <span
@@ -1918,7 +1927,7 @@ function CalendarPageContent() {
                       className={`border-l first:border-l-0 ${canCreate ? "cursor-pointer hover:bg-[color-mix(in_srgb,var(--text-main)_3%,transparent)]" : ""}`}
                       style={{
                         borderColor: "var(--glass-border)",
-                        backgroundColor: monthDropDay === d.getTime() ? "var(--brand-soft)" : undefined,
+                        backgroundColor: monthDropDay === d.getTime() ? "var(--brand-soft)" : sameDay(d, today) ? TODAY_TINT : undefined,
                         backgroundImage: isOffDay(d) && monthDropDay !== d.getTime() ? offDayHatch : undefined,
                       }}
                       title={canCreate ? "Add an all-day event" : undefined}
@@ -1969,6 +1978,7 @@ function CalendarPageContent() {
                     className={`relative border-l first:border-l-0 ${canCreate ? "cursor-pointer" : ""}`}
                     style={{
                       borderColor: "var(--glass-border)",
+                      backgroundColor: isToday ? TODAY_TINT : undefined,
                       backgroundImage: [
                         `repeating-linear-gradient(to bottom, var(--glass-border) 0, var(--glass-border) 1px, transparent 1px, transparent ${HOUR_PX}px)`,
                         ...(isOffDay(d) ? [offDayHatch] : []),
@@ -2269,7 +2279,10 @@ function CalendarPageContent() {
             <div key={g.day.getTime()} className="border-b last:border-b-0" style={{ borderColor: "var(--glass-border)" }}>
               <p
                 className="sticky top-0 px-4 py-2 text-[12px] font-semibold"
-                style={{ color: sameDay(g.day, today) ? "var(--brand-strong)" : "var(--text-main)", backgroundColor: "color-mix(in srgb, var(--text-main) 3%, transparent)" }}
+                style={{
+                  color: sameDay(g.day, today) ? "var(--brand-strong)" : "var(--text-main)",
+                  backgroundColor: sameDay(g.day, today) ? TODAY_TINT : "color-mix(in srgb, var(--text-main) 3%, transparent)",
+                }}
               >
                 {new Intl.DateTimeFormat(undefined, { weekday: "long" }).format(g.day)} {activeDate(g.day)}
                 {sameDay(g.day, today) ? " · Today" : ""}
@@ -2371,6 +2384,36 @@ function CalendarPageContent() {
     .slice(0, 8);
   const d = draft ?? renderedDraft;
   const readOnly = !d || (d.isNew ? !canCreate : !canEditEvent(d));
+  // Linking a project to the event (from its search, or from what its title sounds like): its people go on as staff (its
+  // assignee — its creator, with no one assigned), its address as where it is if there's none yet, and its name as the
+  // title only if there's no title — the title typed stays as it is.
+  const linkDraftProject = (p: Project) => {
+    setDraft((prev) =>
+      prev
+        ? {
+            ...prev,
+            projectId: p.id,
+            projectName: p.name,
+            showToClient: showToClientDefault,
+            staffUids: Array.from(new Set([...draftStaffUids(prev), ...projectEventStaffUids(p)])),
+            title: prev.title || p.name,
+            location: prev.location || String(p.clientAddress || ""),
+          }
+        : prev,
+    );
+    setProjectQuery("");
+    setTitleSuggestIndex(-1);
+  };
+  // What its title sounds like: the projects (not archived) it's most likely about, best first — while there's no project
+  // linked and they haven't been put away for it.
+  const titleSuggestions =
+    d && !readOnly && !d.projectId && titleSuggestDismissedFor !== d.id
+      ? matchProjectsToText(
+          d.title,
+          projects.filter((p) => !isProjectArchived(p)),
+          3,
+        )
+      : [];
   // The event view's "…" menu: Duplicate (not for an event whose project they can't open — its details are
   // hidden) and Delete Event (asks first, in the bottom bar).
   const eventMenuItems: GlassActionMenuItem[] =
@@ -2958,10 +3001,91 @@ function CalendarPageContent() {
                       onChange={(e) => {
                         setDraft((prev) => (prev ? { ...prev, title: e.target.value } : prev));
                         setModalError("");
+                        setTitleSuggestIndex(-1);
+                      }}
+                      // Its suggestions (under it): ↑ / ↓ through them, Enter links the one picked, Esc puts them away.
+                      onKeyDown={(e) => {
+                        if (!titleSuggestions.length) return;
+                        if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                          e.preventDefault();
+                          setTitleSuggestIndex((index) =>
+                            e.key === "ArrowDown" ? Math.min(titleSuggestions.length - 1, index + 1) : Math.max(-1, index - 1),
+                          );
+                        } else if (e.key === "Enter" && titleSuggestions[titleSuggestIndex]) {
+                          e.preventDefault();
+                          linkDraftProject(titleSuggestions[titleSuggestIndex].project);
+                        } else if (e.key === "Escape") {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setTitleSuggestDismissedFor(d.id);
+                        }
                       }}
                       placeholder="Event title"
+                      aria-autocomplete="list"
                       className={`${glassFieldClass} h-11 text-[15px]`}
                     />
+                    {/* The projects its title sounds like — picking one links it (the title stays as typed) and brings
+                        its details: its address, its people. "Not now" puts them away for this event. */}
+                    {titleSuggestions.length ? (
+                      <div
+                        className="glass-bubble-pop rounded-[14px] border p-1.5"
+                        style={{ borderColor: "var(--glass-border)", backgroundColor: "color-mix(in srgb, var(--panel-bg) 70%, transparent)", transformOrigin: "50% 0%" }}
+                        role="listbox"
+                        aria-label="Projects this event could be for"
+                      >
+                        <div className="flex items-center justify-between gap-2 px-2 pb-1 pt-0.5">
+                          <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-main)" }}>
+                            <FolderKanban size={12} />
+                            Link a project?
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setTitleSuggestDismissedFor(d.id)}
+                            className="rounded-full px-2 py-0.5 text-[11.5px] font-medium transition hover:bg-[color-mix(in_srgb,var(--text-main)_6%,transparent)]"
+                            style={{ color: "var(--text-muted)" }}
+                          >
+                            Not now
+                          </button>
+                        </div>
+                        {titleSuggestions.map(({ project: p }, index) => (
+                          <button
+                            key={p.id}
+                            type="button"
+                            role="option"
+                            aria-selected={index === titleSuggestIndex}
+                            // (Not taking the focus from the title — typing carries on.)
+                            onMouseDown={(e) => e.preventDefault()}
+                            onMouseEnter={() => setTitleSuggestIndex(index)}
+                            onClick={() => linkDraftProject(p)}
+                            className="flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-2 text-left transition-colors"
+                            style={{ backgroundColor: index === titleSuggestIndex ? "color-mix(in srgb, var(--brand) 9%, transparent)" : undefined }}
+                          >
+                            <FolderKanban size={15} className="shrink-0" style={{ color: themeColor || "var(--brand-strong)" }} />
+                            <span className="min-w-0 flex-1">
+                              <span className="flex min-w-0 items-center gap-1.5">
+                                <span className="truncate text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
+                                  {p.name}
+                                </span>
+                                {index === 0 ? (
+                                  <span className="shrink-0 text-[10.5px] font-semibold uppercase tracking-[0.5px]" style={{ color: "var(--brand-strong)" }}>
+                                    Best match
+                                  </span>
+                                ) : null}
+                              </span>
+                              <span className="block truncate text-[11.5px] font-normal" style={{ color: "var(--text-muted)" }}>
+                                {[p.customer, p.clientAddress].filter(Boolean).join(" · ")}
+                              </span>
+                            </span>
+                            <span
+                              className="glass-shine shrink-0 rounded-full border px-3 py-0.5 text-[11.5px] font-semibold text-white"
+                              style={glassShineStyle(themeColor || "var(--brand)")}
+                            >
+                              Link
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
                     <div className="grid gap-3">
                       <label className="grid gap-1.5 text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
                         Category
@@ -3052,23 +3176,7 @@ function CalendarPageContent() {
                                   <button
                                     key={p.id}
                                     type="button"
-                                    onClick={() => {
-                                      setDraft((prev) =>
-                                        prev
-                                          ? {
-                                              ...prev,
-                                              projectId: p.id,
-                                              projectName: p.name,
-                                              showToClient: showToClientDefault,
-                                              // The project's assignee goes on as staff (its creator, with no one assigned).
-                                              staffUids: Array.from(new Set([...draftStaffUids(prev), ...projectEventStaffUids(p)])),
-                                              title: prev.title || p.name,
-                                              location: prev.location || String(p.clientAddress || ""),
-                                            }
-                                          : prev,
-                                      );
-                                      setProjectQuery("");
-                                    }}
+                                    onClick={() => linkDraftProject(p)}
                                     className="flex flex-col items-start rounded-[9px] px-2.5 py-1.5 text-left transition hover:bg-[color-mix(in_srgb,var(--text-main)_5%,transparent)]"
                                   >
                                     <span className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>{p.name}</span>

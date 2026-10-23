@@ -17,9 +17,12 @@ const MENU_STYLE: CSSProperties = {
   backdropFilter: "blur(16px) saturate(200%)",
   WebkitBackdropFilter: "blur(16px) saturate(200%)",
 };
-const MENU_CLASS = "fixed z-[2147483647] overflow-hidden rounded-[10px] border shadow-[0_12px_30px_rgba(15,23,42,0.14)] max-md:rounded-[14px]";
+// (Squeezing out of its button as it opens — .glass-menu-squeeze, app/globals.css.)
+const MENU_CLASS =
+  "glass-menu-squeeze fixed z-[2147483647] overflow-hidden rounded-[10px] border shadow-[0_12px_30px_rgba(15,23,42,0.14)] max-md:rounded-[14px]";
 
-type MenuPos = { left: number; top: number };
+// (originX: where across it its button is — what it squeezes out of.)
+type MenuPos = { left: number; top: number; originX: number };
 
 // Under its button: on a computer, from its left edge (a column's, from its right); on mobile, centred on it. Kept on
 // screen either way.
@@ -27,7 +30,8 @@ function menuPosUnder(el: HTMLElement, alignRight = false): MenuPos {
   const rect = el.getBoundingClientRect();
   const centred = window.matchMedia("(max-width: 1023px)").matches;
   const left = centred ? rect.left + rect.width / 2 - MENU_WIDTH / 2 : alignRight ? rect.right - MENU_WIDTH : rect.left;
-  return { left: Math.max(8, Math.min(left, window.innerWidth - MENU_WIDTH - 8)), top: rect.bottom + 6 };
+  const clamped = Math.max(8, Math.min(left, window.innerWidth - MENU_WIDTH - 8));
+  return { left: clamped, top: rect.bottom + 6, originX: Math.min(MENU_WIDTH, Math.max(0, rect.left + rect.width / 2 - clamped)) };
 }
 
 // Closes on a press anywhere outside the button and its menus — and that press only closes them (see
@@ -138,7 +142,7 @@ export function BoardColumnSortMenu({
       </button>
       {menuPos && typeof document !== "undefined"
         ? createPortal(
-            <div ref={menuRef} className={MENU_CLASS} style={{ ...MENU_STYLE, left: menuPos.left, top: menuPos.top, width: MENU_WIDTH }}>
+            <div ref={menuRef} className={MENU_CLASS} style={{ ...MENU_STYLE, transformOrigin: `${Math.round(menuPos.originX)}px 0%`, left: menuPos.left, top: menuPos.top, width: MENU_WIDTH }}>
               {overriddenBy && overriddenBy !== "custom" ? (
                 <p className="border-b px-3 py-2 text-[11px] leading-snug" style={{ borderColor: "var(--glass-border)", color: "var(--text-muted)" }}>
                   The whole board is sorted {BOARD_SORT_LABELS[overriddenBy]} — this column&apos;s choice applies once that&apos;s back to Per column.
@@ -208,7 +212,7 @@ export function BoardSortButton({
       </button>
       {menuPos && typeof document !== "undefined"
         ? createPortal(
-            <div ref={menuRef} className={MENU_CLASS} style={{ ...MENU_STYLE, left: menuPos.left, top: menuPos.top, width: MENU_WIDTH }}>
+            <div ref={menuRef} className={MENU_CLASS} style={{ ...MENU_STYLE, transformOrigin: `${Math.round(menuPos.originX)}px 0%`, left: menuPos.left, top: menuPos.top, width: MENU_WIDTH }}>
               <SortOptionRows
                 options={BOARD_SORT_MODES}
                 value={value}

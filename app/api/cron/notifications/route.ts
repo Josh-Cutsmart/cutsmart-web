@@ -3,6 +3,7 @@ import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
 import { runAppVersionJobs } from "@/lib/app-version-server";
 import { runCalendarReminders } from "@/lib/calendar-reminders-server";
 import { runClientPortalPendingReminders } from "@/lib/client-portal-reminders-server";
+import { runColumnAutomationStays, runScheduledColumnMoves } from "@/lib/column-automations-server";
 import { flushDueNotificationReminders, flushDuePushDigests } from "@/lib/push-server";
 
 // The notifications scheduled job — meant to be called every minute or few by a scheduler, with the
@@ -10,6 +11,8 @@ import { flushDueNotificationReminders, flushDuePushDigests } from "@/lib/push-s
 // `?key=<CRON_SECRET>` (for a service like cron-job.org). It sends:
 // - calendar reminders that are due (lib/calendar-reminders-server.ts), for every company;
 // - "quote not accepted / specifications not submitted yet" reminders (lib/client-portal-reminders-server.ts);
+// - board columns' "has been in <column> for…" automations that are due, and their moves on a timer that are due
+//   (lib/column-automations-server.ts);
 // - notifications held by people's "time between notifications" whose time is up, grouped into one
 //   (flushDuePushDigests in lib/push-server.ts);
 // - "Remind me in…" reminders people set on a notification, once their time comes
@@ -31,9 +34,17 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ ok: false, error: "missing-firebase-admin-config" }, { status: 500 });
   }
   const siteOrigin = new URL(request.url).origin;
-  const [reminders, clientPortal, groupsSent, notificationReminders, versions] = await Promise.all([
+  const [reminders, clientPortal, columnStays, columnMoves, groupsSent, notificationReminders, versions] = await Promise.all([
     runCalendarReminders({ siteOrigin }),
     runClientPortalPendingReminders({ siteOrigin }),
+    runColumnAutomationStays({ siteOrigin }).catch((error) => {
+      console.error("[cron/notifications] column automations failed:", error);
+      return null;
+    }),
+    runScheduledColumnMoves({ siteOrigin }).catch((error) => {
+      console.error("[cron/notifications] timed column moves failed:", error);
+      return null;
+    }),
     flushDuePushDigests(siteOrigin),
     flushDueNotificationReminders(siteOrigin).catch((error) => {
       console.error("[cron/notifications] notification reminders failed:", error);
@@ -44,5 +55,5 @@ export async function GET(request: NextRequest) {
       return null;
     }),
   ]);
-  return NextResponse.json({ ok: true, reminders, clientPortal, groupsSent, notificationReminders, versions });
+  return NextResponse.json({ ok: true, reminders, clientPortal, columnStays, columnMoves, groupsSent, notificationReminders, versions });
 }

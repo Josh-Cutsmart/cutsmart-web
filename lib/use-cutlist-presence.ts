@@ -6,10 +6,10 @@ import { resolveProjectDocRef } from "@/lib/firestore-data";
 import type { Project } from "@/lib/types";
 import type { CutlistDataKind } from "@/lib/use-project-cutlist";
 
-// Who else is in a project's cutlist right now ("Anna is also editing"). Everyone with it open (and able to edit it,
-// `announce`) keeps an entry in cutlistData/{kind}Presence — one per open tab, refreshed once a minute while the tab is
-// on screen (a write each time, and a read for everyone in that cutlist — kept slow for that), and taken out when they
-// leave it, hide the tab or close it. Shown: the others (not this person, in any of their tabs) whose entry was refreshed
+// Who else is in a project's cutlist right now ("Anna is also editing") — or its Production › Order ("order"). Everyone
+// with it open (and able to edit it, `announce`) keeps an entry in cutlistData/{kind}Presence — one per open tab,
+// refreshed once a minute while the tab is on screen (a write each time, and a read for everyone in that cutlist — kept
+// slow for that), and taken out when they leave it, hide the tab or close it. Shown: the others (not this person, in any of their tabs) whose entry was refreshed
 // within FRESH_MS, by when it was heard here — not the writer's clock, so a computer with its clock out doesn't make
 // anyone look here or gone. Who's shown is looked over every CHECK_MS (nothing read or written for that), so someone
 // whose tab closed without saying so is gone about 2½ minutes after their last refresh. An entry left behind like that
@@ -29,7 +29,7 @@ const NO_ONE: CutlistPresencePerson[] = [];
 
 export function useCutlistPresence(
   project: Project | null,
-  kind: CutlistDataKind,
+  kind: CutlistDataKind | "order",
   open: boolean,
   announce: boolean,
   me: { uid: string; name: string } | null,

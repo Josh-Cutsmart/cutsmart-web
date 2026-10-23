@@ -11,7 +11,9 @@ import type { RichText as ExcelRichText } from "exceljs";
 import type { CellInput as AutoTableCellInput, RowInput as AutoTableRowInput } from "jspdf-autotable";
 import { deleteObject, getBlob, getDownloadURL, ref as storageRef, uploadBytesResumable } from "firebase/storage";
 import { FullscreenImageViewerShell } from "@/components/fullscreen-image-viewer-shell";
-import { GlassActionMenu, GlassDropdown, type GlassActionMenuItem, GLASS_MENU_CLASS, GLASS_MENU_MIN_WIDTH_PHONE_PX, GLASS_MENU_MIN_WIDTH_PX, GLASS_MENU_STYLE, GlassMenuOption, glassMenuHeight } from "@/components/glass-dropdown";
+import { GlassActionMenu, GlassDropdown, type GlassActionMenuItem, GLASS_MENU_CLASS, GLASS_MENU_MIN_WIDTH_PHONE_PX, GLASS_MENU_MIN_WIDTH_PX, GLASS_MENU_STYLE, glassMenuHeight } from "@/components/glass-dropdown";
+import { StatusMenuPanels, statusMenuRowCount, type StatusMenuStatus } from "@/components/status-menu-panels";
+import { SPLIT_STATUS_PILL_CLASS, SplitStatusPillContent } from "@/components/status-pill-split";
 import { PartLabelPreview } from "@/components/part-label";
 import { buildPartLabelsPdf, clashedEdgesFor, DEFAULT_LABEL_SIZE_ID, LABEL_SIZE_STORAGE_KEY, LABEL_SIZES, labelSizeById, type PartLabel } from "@/lib/part-labels";
 import { BoardColumnFrame, ColumnCollapseChevrons } from "@/components/board-column-frame";
@@ -44,6 +46,7 @@ import { RoomNameCombobox } from "@/components/room-name-combobox";
 import { contrastTextForFill } from "@/lib/user-profile-format";
 import { normalizeBoardFinishes, normalizeHardwareRows, normalizeMmOptions, normalizeSheetSizes, type HardwareTypeRow } from "@/lib/production-hardware";
 import { GlassSwitch, modalCloseButtonClass } from "@/components/settings-ui";
+import { normalizeSmallJobStatuses } from "@/lib/small-jobs";
 import { ContactCardPopup } from "@/components/contact-card-popup";
 import { UploadDropZone } from "@/components/upload-drop-zone";
 import { FloatingBarSlot } from "@/components/floating-bar-slot";
@@ -101,6 +104,9 @@ import {
   saveSalesItemsRoomsMerged,
   saveProjectListMerged,
   flattenOrderLines,
+  unflattenOrderLines,
+  ORDER_LIST_FIELD,
+  type OrderListKind,
   keepCutlistChange,
   type CutlistChange,
   saveProjectChecklist,
@@ -113,6 +119,7 @@ import {
   updateProjectPatch,
   restoreArchivedProject,
   updateProjectStatus,
+  convertSmallJobToProject,
   updateProjectTags,
 } from "@/lib/firestore-data";
 import type { CompanyClientRow, CompanyMemberOption } from "@/lib/firestore-data";
@@ -125,7 +132,8 @@ import { AcceptQuoteOnBehalfModal, SubmitSpecsOnBehalfModal, type OnBehalfPrepar
 import { actedByLabel } from "@/lib/on-behalf";
 import { bonusLockMessage, fetchBonusLock } from "@/lib/completed-projects";
 import { completionBonusSettingsFrom } from "@/lib/completion-bonus";
-import { useProjectCutlistRaw } from "@/lib/use-project-cutlist";
+import { useProjectCutlistRaw, type CutlistSyncState } from "@/lib/use-project-cutlist";
+import { useProjectOrderLive, type OrderLists } from "@/lib/use-project-order-live";
 import { alsoEditingText, useCutlistPresence, type CutlistPresencePerson } from "@/lib/use-cutlist-presence";
 import { mergeCutlistRows } from "@/lib/cutlist-merge";
 import { downloadCutlistExcel } from "@/lib/cutlist-excel";
@@ -297,7 +305,7 @@ const tabItems = [
   { value: "settings", label: "Settings" },
 ];
 
-type ProjectStatusRow = { name: string; color: string };
+type ProjectStatusRow = { name: string; color: string; subStages?: Array<{ name: string; color: string; isDefault?: boolean }> };
 const statusDefaults = ["New", "Quoting", "Drafting", "Ready for CNC", "Running", "In Production", "Paused", "Completed"];
 function fallbackStatusPillColors(status: string) {
   const key = String(status || "").trim().toLowerCase();
@@ -348,9 +356,22 @@ function normalizeProjectStatuses(raw: unknown): ProjectStatusRow[] {
     .filter((item) => item && typeof item === "object")
     .map((item) => {
       const row = item as Record<string, unknown>;
+      // Its sub-statuses (Company Settings › Project statuses) — for the status pill and its menu.
+      const subStages = (Array.isArray(row.subStages) ? row.subStages : [])
+        .filter((sub) => sub && typeof sub === "object")
+        .map((sub) => {
+          const subRow = sub as Record<string, unknown>;
+          return {
+            name: String(subRow.name ?? "").trim(),
+            color: String(subRow.color ?? "").trim() || "#64748B",
+            isDefault: Boolean(subRow.isDefault),
+          };
+        })
+        .filter((sub) => sub.name);
       return {
         name: String(row.name ?? "").trim(),
         color: String(row.color ?? "").trim() || "#64748B",
+        subStages,
       };
     })
     .filter((row) => row.name);
@@ -729,6 +750,73 @@ const PRODUCTION_BOARD_ROW_FIELD_LABELS: Partial<Record<keyof ProductionBoardRow
 };
 type OrderMiscDraftRow = { name: string; notes: string; qty: string; deleted?: boolean };
 type OrderHingeRow = { id: string; name: string; qty: string };
+// Order's lists for a project with no hardware chosen (and none in Company Settings to fall back on): their category's
+// key — the database won't keep a field called "", so they'd never save under it.
+const ORDER_NO_HARDWARE_KEY = "no-hardware";
+// Production › Order's lists as stored (in the project's settings, by hardware category — its key lowercased): its misc
+// lines, by their key (lowercased)...
+function parseOrderMiscByCategory(raw: unknown): Record<string, Record<string, OrderMiscDraftRow>> {
+  const miscByCategory: Record<string, Record<string, OrderMiscDraftRow>> = {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return miscByCategory;
+  for (const [categoryKey, categoryValue] of Object.entries(raw as Record<string, unknown>)) {
+    if (!categoryValue || typeof categoryValue !== "object" || Array.isArray(categoryValue)) continue;
+    const categoryRows: Record<string, OrderMiscDraftRow> = {};
+    for (const [lineKey, lineValue] of Object.entries(categoryValue as Record<string, unknown>)) {
+      if (!lineValue || typeof lineValue !== "object" || Array.isArray(lineValue)) continue;
+      const lineObj = lineValue as Record<string, unknown>;
+      categoryRows[String(lineKey || "").trim().toLowerCase()] = {
+        name: String(lineObj.name ?? ""),
+        notes: String(lineObj.notes ?? ""),
+        qty: toStr(lineObj.qty),
+        deleted: Boolean(lineObj.deleted),
+      };
+    }
+    miscByCategory[String(categoryKey || "").trim().toLowerCase()] = categoryRows;
+  }
+  return miscByCategory;
+}
+// ...and its hinges' / other items' lines (`idPrefix`: an id for one saved without one).
+function parseOrderLineRowsByCategory(raw: unknown, idPrefix: string): Record<string, OrderHingeRow[]> {
+  const rowsByCategory: Record<string, OrderHingeRow[]> = {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return rowsByCategory;
+  for (const [categoryKey, categoryValue] of Object.entries(raw as Record<string, unknown>)) {
+    if (!Array.isArray(categoryValue)) continue;
+    rowsByCategory[String(categoryKey || "").trim().toLowerCase()] = categoryValue
+      .filter((row) => row && typeof row === "object")
+      .map((row) => {
+        const item = row as Record<string, unknown>;
+        return {
+          id: toStr(item.id) || `${idPrefix}_${Math.random().toString(36).slice(2, 8)}`,
+          name: toStr(item.name),
+          qty: toStr(item.qty),
+        };
+      });
+  }
+  return rowsByCategory;
+}
+// One of Order's lists as the database has it now (`stored`), put onto how it is on this screen (`here`): only what's
+// changed in the database since the screen last had it from there (`base`) — lib/cutlist-merge.ts, as a cutlist — so a
+// change here not saved yet (a quantity still being typed) stays. null: nothing new in the database; `lines` null:
+// nothing here to change.
+const orderLineKeyOf = (row: Record<string, unknown>) => String(row.__key ?? "");
+const orderLineSigOf = (row: Record<string, unknown>) =>
+  JSON.stringify([row.__key, toStr(row.name), toStr(row.qty), toStr(row.notes), Boolean(row.deleted)]);
+function orderLinesFromDatabase(
+  kind: OrderListKind,
+  base: unknown,
+  here: unknown,
+  stored: unknown,
+): { lines: Array<Record<string, unknown>> | null } | null {
+  const sigs = (rows: Array<Record<string, unknown>>) => rows.map(orderLineSigOf).join("\n");
+  const baseLines = flattenOrderLines(kind, base);
+  const storedLines = flattenOrderLines(kind, stored);
+  if (sigs(storedLines) === sigs(baseLines)) return null;
+  const hereLines = flattenOrderLines(kind, here);
+  const merged =
+    mergeCutlistRows(baseLines, hereLines, storedLines, orderLineKeyOf, orderLineSigOf) ??
+    (sigs(hereLines) === sigs(baseLines) ? storedLines : null);
+  return { lines: merged && sigs(merged) !== sigs(hereLines) ? merged : null };
+}
 
 type ProductionNav = "overview" | "cutlist" | "nesting" | "cnc" | "order" | "labels" | "unlock" | "print" | "remedials";
 // Production › Labels' room filter: every room's.
@@ -8386,7 +8474,9 @@ export default function ProjectDetailsPage() {
   });
   const [isLoading, setIsLoading] = useState(true);
   const [isSavingStatus, setIsSavingStatus] = useState(false);
-  const [projectStatusMenuPos, setProjectStatusMenuPos] = useState<{ left: number; top: number; width: number } | null>(null);
+  const [projectStatusMenuPos, setProjectStatusMenuPos] = useState<{ left: number; top?: number; bottom?: number; width: number } | null>(null);
+  // Opened from the split pill's sub-status half: straight at its status's sub-statuses.
+  const [projectStatusMenuAtSub, setProjectStatusMenuAtSub] = useState(false);
   const [projectTags, setProjectTags] = useState<string[]>([]);
   const [tagInput, setTagInput] = useState("");
   const [isTagInputOpen, setIsTagInputOpen] = useState(false);
@@ -10781,7 +10871,9 @@ export default function ProjectDetailsPage() {
           grain: type === "grain",
           options: parsedOptions,
           defaultOption,
-          edgeTapePerMeter: type === "grain" || type === "melteca" ? withMargin(item.edgeTapePrice, item.edgeTapeMarginPercent) : 0,
+          // (Every typed product's edge tape — a Lacquer one's too, on top of its lacquer.)
+          edgeTapePerMeter:
+            type === "grain" || type === "melteca" || lacquerSides > 0 ? withMargin(item.edgeTapePrice, item.edgeTapeMarginPercent) : 0,
           lacquerPerSqm: lacquerSides > 0 ? withMargin(item.lacquerSqmPrice, item.lacquerMarginPercent) : 0,
           lacquerSides,
           miscCharges,
@@ -11638,6 +11730,10 @@ export default function ProjectDetailsPage() {
   );
 
   const resolvedTab = (() => {
+    // A small job (lib/small-jobs.ts) is just its General tab — its client details, notes and images.
+    if (project?.isSmallJob) {
+      return "general";
+    }
     if (tab === "sales" && !salesAccess.view) {
       return "general";
     }
@@ -11810,8 +11906,9 @@ export default function ProjectDetailsPage() {
 
   const shouldComputeCnc =
     productionNav === "overview" || productionNav === "cnc" || isProductionPrintModalOpen;
+  // (Order too: its boards' sheets are the nesting's sheet count — Board Settings' own "Sheets".)
   const shouldComputeNesting =
-    productionNav === "overview" || productionNav === "nesting" || isProductionPrintModalOpen;
+    productionNav === "overview" || productionNav === "nesting" || productionNav === "order" || isProductionPrintModalOpen;
 
   // Every Production sub-tab (Cutlist List, Nesting, CNC, Order/Hardware) reads the same
   // cutlistRows state, so this only needs to be gated on the Production tab itself being open —
@@ -11844,6 +11941,47 @@ export default function ProjectDetailsPage() {
     salesAccess.edit,
     cutlistPresenceMe,
   );
+  // Production › Order, as a cutlist: who else is in it, and its lists live (lib/use-project-order-live.ts) — someone
+  // else's change to them put onto them here as it reaches the database (only what they changed: orderLinesFromDatabase),
+  // and from then on what the database has (the base this screen's next save of them is put on).
+  const isOrderOpen = resolvedTab === "production" && productionAccess.view && productionNav === "order";
+  const orderAlsoEditing = useCutlistPresence(project, "order", isOrderOpen, productionAccess.edit, cutlistPresenceMe);
+  const onOrderListsFromDatabase = (lists: OrderLists) => {
+    if (!project) return;
+    const settings = (project.projectSettings ?? {}) as Record<string, unknown>;
+    const fromDatabase: Record<string, unknown> = {};
+    const take = (kind: OrderListKind, here: unknown) => {
+      const field = ORDER_LIST_FIELD[kind];
+      const news = orderLinesFromDatabase(kind, settings[field], here, lists[field]);
+      if (!news) return null;
+      fromDatabase[field] = lists[field];
+      return news.lines ? unflattenOrderLines(kind, news.lines) : null;
+    };
+    const hinges = take("orderHinges", orderHingeRowsByCategoryRef.current);
+    if (hinges) {
+      const next = parseOrderLineRowsByCategory(hinges, "ord_hinge");
+      orderHingeRowsByCategoryRef.current = next;
+      setOrderHingeRowsByCategory(next);
+    }
+    const other = take("orderOther", orderOtherRowsByCategoryRef.current);
+    if (other) {
+      const next = parseOrderLineRowsByCategory(other, "ord_other");
+      orderOtherRowsByCategoryRef.current = next;
+      setOrderOtherRowsByCategory(next);
+    }
+    const misc = take("orderMisc", orderMiscDraftByCategoryRef.current);
+    if (misc) {
+      const next = parseOrderMiscByCategory(misc);
+      orderMiscDraftByCategoryRef.current = next;
+      setOrderMiscDraftByCategory(next);
+    }
+    if (Object.keys(fromDatabase).length) {
+      setProject((prev) =>
+        prev ? { ...prev, projectSettings: { ...((prev.projectSettings ?? {}) as Record<string, unknown>), ...fromDatabase } } : prev,
+      );
+    }
+  };
+  const orderLive = useProjectOrderLive(project, isOrderOpen, (lists) => onOrderListsFromDatabase(lists));
   // How wide each cutlist's list is — so its columns keep their usual widths whenever they fit (the list's tables).
   const [cutlistListWrapRef, cutlistListWrapWidth] = useMeasuredWidth();
   const [initialCutlistListWrapRef, initialCutlistListWrapWidth] = useMeasuredWidth();
@@ -12740,7 +12878,12 @@ export default function ProjectDetailsPage() {
   const renderCutlistSaveStatus = (kind: "production" | "initialMeasure", large: boolean) => {
     const state = kind === "production" ? productionCutlistState : initialCutlistState;
     if (isPreviewMode() || state.status !== "ready") return null;
-    const { offline, pending } = state.sync;
+    return renderSaveStatusChip(state.sync, large);
+  };
+  // Production › Order's, the same — its lists' (lib/use-project-order-live.ts).
+  const renderOrderSaveStatus = (large: boolean) => (isPreviewMode() || !orderLive.ready ? null : renderSaveStatusChip(orderLive.sync, large));
+  const renderSaveStatusChip = (sync: CutlistSyncState, large: boolean) => {
+    const { offline, pending } = sync;
     const amber = "var(--accent-amber)";
     const look = offline
       ? {
@@ -16063,7 +16206,15 @@ export default function ProjectDetailsPage() {
     (
       rows: CutlistRow[],
       effectiveProductFor: (row: CutlistRow) => string,
-    ): { totalCost: number; totalAreaM2: number; byRoom: Record<string, number> } => {
+      // byProduct: each product's sheets (every room's) and what they cost — Upgrades' sheet changes; finishCost: the edge
+      // tape and lacquer, all of it.
+    ): {
+      totalCost: number;
+      totalAreaM2: number;
+      byRoom: Record<string, number>;
+      byProduct: Record<string, { sheets: number; cost: number }>;
+      finishCost: number;
+    } => {
       const toPositiveNum = (v: unknown) => {
         const n = Number.parseFloat(String(v ?? "").replace(/[^\d.-]/g, ""));
         return Number.isFinite(n) && n > 0 ? n : 0;
@@ -16109,7 +16260,8 @@ export default function ProjectDetailsPage() {
         expandedRows.push(row);
       }
 
-      type SelectionBucket = { room: string; option: SheetPriceOption; miscPerSheet: number; pieces: SelectionPiece[] };
+      // (`product`: its name as it's shown — a board's without its " @@ <sheet size>".)
+      type SelectionBucket = { room: string; product: string; option: SheetPriceOption; miscPerSheet: number; pieces: SelectionPiece[] };
       const buckets = new Map<string, SelectionBucket>();
       let totalAreaM2 = 0;
       // Edge tape / lacquer on these pieces, per room (priced per row — they don't depend on the packing).
@@ -16157,6 +16309,7 @@ export default function ProjectDetailsPage() {
         const key = `${room.toLowerCase()}__${productName.toLowerCase()}__${chosenOption.sheetSize}`;
         const bucket = buckets.get(key) ?? {
           room,
+          product: productName.split(" @@ ")[0].trim() || productName,
           option: chosenOption,
           miscPerSheet: product.miscCharges.reduce((sum, charge) => sum + charge.perSheet, 0),
           pieces: [],
@@ -16168,6 +16321,7 @@ export default function ProjectDetailsPage() {
       }
 
       const byRoom: Record<string, number> = {};
+      const byProduct: Record<string, { sheets: number; cost: number }> = {};
       let totalCost = 0;
       for (const bucket of buckets.values()) {
         const sheetsRequired = packPiecesOntoSheets(
@@ -16180,13 +16334,17 @@ export default function ProjectDetailsPage() {
         const cost = sheetsRequired * (bucket.option.price + bucket.miscPerSheet);
         totalCost += cost;
         byRoom[bucket.room] = (byRoom[bucket.room] ?? 0) + cost;
+        const productTotal = byProduct[bucket.product] ?? { sheets: 0, cost: 0 };
+        byProduct[bucket.product] = { sheets: productTotal.sheets + sheetsRequired, cost: productTotal.cost + cost };
       }
+      let finishCost = 0;
       for (const [room, cost] of Object.entries(finishCostByRoom)) {
         totalCost += cost;
+        finishCost += cost;
         byRoom[room] = (byRoom[room] ?? 0) + cost;
       }
 
-      return { totalCost, totalAreaM2, byRoom };
+      return { totalCost, totalAreaM2, byRoom, byProduct, finishCost };
     },
     // isCabinetryPartType/buildCabinetryDerivedPieces/isDrawerPartType/buildDrawerDerivedPieces are
     // plain functions redefined every render (same reasoning as salesRoomSheetAnalysis's own
@@ -16376,11 +16534,12 @@ export default function ProjectDetailsPage() {
   }, [initialCutlistRows, comparisonGroupBy, comparisonSortBy, initialMeasurePartTypeOptions]);
   // Re-measures the sliding indicator whenever the active By Room/Part Type/Product button changes
   // (including on first mount, so it doesn't start off missing/at 0,0 before any click happens).
+  // (And as Upgrades opens — its buttons are only there then.)
   useLayoutEffect(() => {
     const el = comparisonGroupByButtonRefs.current[comparisonGroupBy];
     if (!el) return;
     setComparisonGroupByIndicatorRect({ left: el.offsetLeft, width: el.offsetWidth });
-  }, [comparisonGroupBy]);
+  }, [comparisonGroupBy, salesNav, resolvedTab]);
   // Shift-click range select — ticks every row between the last row clicked (without shift) and
   // the one just shift-clicked, inclusive, in the CURRENTLY DISPLAYED order (flattened across every
   // group/table, top to bottom) — matches the anchor-and-extend behavior of Explorer/Gmail-style
@@ -16403,15 +16562,6 @@ export default function ProjectDetailsPage() {
       return next;
     });
   };
-  // How wide the per-row Compare To <select> needs to be to fit its longest possible option
-  // without truncating — every row shares this same option list (companySalesProductNames), so
-  // this is computed once rather than per row. `ch` sizes off the font's own average character
-  // width, which is what actually determines a <select>'s rendered content width; the small
-  // padding covers the built-in caret plus the select's own left/right padding.
-  const comparisonRowSelectWidthCh = useMemo(() => {
-    const longest = companySalesProductNames.reduce((max, label) => Math.max(max, label.length), 0);
-    return longest + 4;
-  }, [companySalesProductNames]);
   // Live result for whatever is currently ticked — recomputed from the CURRENT cutlist every
   // render (see ProductComparison's own comment on why nothing here is a frozen snapshot).
   // Rooms staff have excluded from the quote entirely (see onToggleSalesRoomIncluded/"Exclude
@@ -16465,6 +16615,24 @@ export default function ProjectDetailsPage() {
     const singleTargetProduct = effectiveTargetProducts.size === 1 ? Array.from(effectiveTargetProducts)[0] : null;
     return { current, hypothetical, delta: hypothetical.totalCost - current.totalCost, pieceCount: selectedRows.length, excludedSelectedCount, singleTargetProduct, hasTarget };
   }, [initialCutlistRows, comparisonSelectedRowIds, comparisonRowProductOverrides, computeCutlistSelectionPricing, excludedRoomNamesLower]);
+  // Each saved upgrade's difference to the job's cost (its pieces' new products — worked out as comparisonPricing works
+  // out the open one's): the Upgrades list's bubbles. Only worked out while Upgrades is open.
+  const savedUpgradeDeltaById = useMemo(() => {
+    const out: Record<string, number> = {};
+    if (!(resolvedTab === "sales" && salesNav === "compare") || productComparisons.length === 0) return out;
+    const allRows = initialCutlistRows.filter((row) => {
+      const room = String(row.room || "").trim().toLowerCase();
+      return !room || !excludedRoomNamesLower.has(room);
+    });
+    const current = computeCutlistSelectionPricing(allRows, (row) => row.board).totalCost;
+    for (const comparison of productComparisons) {
+      const overrides = comparison.rowProductOverrides ?? {};
+      out[comparison.id] = Object.keys(overrides).length
+        ? computeCutlistSelectionPricing(allRows, (row) => overrides[row.id] || row.board).totalCost - current
+        : 0;
+    }
+    return out;
+  }, [resolvedTab, salesNav, productComparisons, initialCutlistRows, excludedRoomNamesLower, computeCutlistSelectionPricing]);
   // A single total for the whole job — not broken down by room, per the user's own call. Named
   // after the actual product being compared to when every counted row's own override agrees on
   // the same one — only falls back to the generic phrasing when rows are genuinely being compared
@@ -20023,62 +20191,9 @@ export default function ProjectDetailsPage() {
       boardTypes: boardRows,
     });
 
-    const miscRaw = raw.orderMiscDraftByCategory;
-    const miscByCategory: Record<string, Record<string, OrderMiscDraftRow>> = {};
-    if (miscRaw && typeof miscRaw === "object" && !Array.isArray(miscRaw)) {
-      for (const [categoryKey, categoryValue] of Object.entries(miscRaw as Record<string, unknown>)) {
-        if (!categoryValue || typeof categoryValue !== "object" || Array.isArray(categoryValue)) continue;
-        const categoryRows: Record<string, OrderMiscDraftRow> = {};
-        for (const [lineKey, lineValue] of Object.entries(categoryValue as Record<string, unknown>)) {
-          if (!lineValue || typeof lineValue !== "object" || Array.isArray(lineValue)) continue;
-          const lineObj = lineValue as Record<string, unknown>;
-          categoryRows[String(lineKey || "").trim().toLowerCase()] = {
-            name: String(lineObj.name ?? ""),
-            notes: String(lineObj.notes ?? ""),
-            qty: toStr(lineObj.qty),
-            deleted: Boolean(lineObj.deleted),
-          };
-        }
-        miscByCategory[String(categoryKey || "").trim().toLowerCase()] = categoryRows;
-      }
-    }
-    setOrderMiscDraftByCategory(miscByCategory);
-    const hingeRowsRaw = raw.orderHingeRowsByCategory;
-    const hingeRowsByCategory: Record<string, OrderHingeRow[]> = {};
-    if (hingeRowsRaw && typeof hingeRowsRaw === "object" && !Array.isArray(hingeRowsRaw)) {
-      for (const [categoryKey, categoryValue] of Object.entries(hingeRowsRaw as Record<string, unknown>)) {
-        if (!Array.isArray(categoryValue)) continue;
-        hingeRowsByCategory[String(categoryKey || "").trim().toLowerCase()] = categoryValue
-          .filter((row) => row && typeof row === "object")
-          .map((row) => {
-            const item = row as Record<string, unknown>;
-            return {
-              id: toStr(item.id) || `ord_hinge_${Math.random().toString(36).slice(2, 8)}`,
-              name: toStr(item.name),
-              qty: toStr(item.qty),
-            };
-          });
-      }
-    }
-    setOrderHingeRowsByCategory(hingeRowsByCategory);
-    const otherRowsRaw = raw.orderOtherRowsByCategory;
-    const otherRowsByCategory: Record<string, OrderHingeRow[]> = {};
-    if (otherRowsRaw && typeof otherRowsRaw === "object" && !Array.isArray(otherRowsRaw)) {
-      for (const [categoryKey, categoryValue] of Object.entries(otherRowsRaw as Record<string, unknown>)) {
-        if (!Array.isArray(categoryValue)) continue;
-        otherRowsByCategory[String(categoryKey || "").trim().toLowerCase()] = categoryValue
-          .filter((row) => row && typeof row === "object")
-          .map((row) => {
-            const item = row as Record<string, unknown>;
-            return {
-              id: toStr(item.id) || `ord_other_${Math.random().toString(36).slice(2, 8)}`,
-              name: toStr(item.name),
-              qty: toStr(item.qty),
-            };
-          });
-      }
-    }
-    setOrderOtherRowsByCategory(otherRowsByCategory);
+    setOrderMiscDraftByCategory(parseOrderMiscByCategory(raw.orderMiscDraftByCategory));
+    setOrderHingeRowsByCategory(parseOrderLineRowsByCategory(raw.orderHingeRowsByCategory, "ord_hinge"));
+    setOrderOtherRowsByCategory(parseOrderLineRowsByCategory(raw.orderOtherRowsByCategory, "ord_other"));
   }, [project?.id, boardThicknessOptions, boardFinishOptions, sheetSizeOptions, hardwareRows]);
   useEffect(() => {
     orderMiscDraftByCategoryRef.current = orderMiscDraftByCategory;
@@ -20818,9 +20933,15 @@ export default function ProjectDetailsPage() {
     initialMeasurePartTypeOptions,
   ]);
 
+  // A small job's statuses are its own (Company Settings › Small Jobs — lib/small-jobs.ts).
   const projectStatusRows = useMemo(
-    () => normalizeProjectStatuses((companyDoc as Record<string, unknown> | null)?.projectStatuses),
-    [companyDoc],
+    () =>
+      normalizeProjectStatuses(
+        project?.isSmallJob
+          ? normalizeSmallJobStatuses((companyDoc as Record<string, unknown> | null)?.smallJobStatuses)
+          : (companyDoc as Record<string, unknown> | null)?.projectStatuses,
+      ),
+    [companyDoc, project?.isSmallJob],
   );
 
   const projectStatusColorByName = useMemo(() => {
@@ -20847,6 +20968,28 @@ export default function ProjectDetailsPage() {
     }
     return fallbackStatusPillColors(statusLabel);
   };
+  // The status menu (the Dashboard's — components/status-menu-panels.tsx): each status, its colour and its
+  // sub-statuses, slid over to, to pick one. A small job's have none.
+  const projectStatusMenuStatuses = useMemo<StatusMenuStatus[]>(
+    () =>
+      statusOptions.map((name) => {
+        const row = projectStatusRows.find((item) => item.name.trim().toLowerCase() === name.trim().toLowerCase());
+        return {
+          name,
+          color: row?.color || "#64748B",
+          subStages: project?.isSmallJob ? [] : (row?.subStages ?? []).map((sub) => ({ name: sub.name, color: sub.color })),
+        };
+      }),
+    [statusOptions, projectStatusRows, project?.isSmallJob],
+  );
+  // The sub-status it's in (one of its status's, as the company has them now), or none — the pill then shows both,
+  // split, as the Dashboard's: [status | sub-status].
+  const projectSubStage = useMemo(() => {
+    const subStageId = String(project?.dashboardSubStageId ?? "").trim().toLowerCase();
+    if (!subStageId || project?.isSmallJob) return null;
+    const row = projectStatusRows.find((item) => item.name.trim().toLowerCase() === String(project?.statusLabel || "").trim().toLowerCase());
+    return row?.subStages?.find((sub) => sub.name.trim().toLowerCase() === subStageId) ?? null;
+  }, [project?.dashboardSubStageId, project?.isSmallJob, project?.statusLabel, projectStatusRows]);
 
   // --- Client Details <-> Contacts ---------------------------------------------------------------
   // The contact card matching this project's client (as this user would see it on the Contacts page),
@@ -21129,7 +21272,28 @@ export default function ProjectDetailsPage() {
     if (statusLockText) statusLockNotice.show(statusLockText, <Lock size={14} />);
   };
 
-  const onChangeStatus = async (value: string) => {
+  // Convert to project (a small job's title bar): a full project from it — onto the Dashboard, in the company's first
+  // project status, its client details, notes and images as they are.
+  const [isConvertSmallJobConfirmOpen, setIsConvertSmallJobConfirmOpen] = useState(false);
+  const [isConvertingSmallJob, setIsConvertingSmallJob] = useState(false);
+  const onConvertSmallJob = async () => {
+    if (!project?.isSmallJob || !generalAccess.edit || isConvertingSmallJob) return;
+    const firstStatus = normalizeProjectStatuses((companyDoc as Record<string, unknown> | null)?.projectStatuses)[0]?.name || "New";
+    setIsConvertingSmallJob(true);
+    const ok = await convertSmallJobToProject(project, firstStatus);
+    setIsConvertingSmallJob(false);
+    if (!ok) {
+      setLockMessage("Could not convert this small job. Please try again.");
+      return;
+    }
+    setIsConvertSmallJobConfirmOpen(false);
+    setProject((prev) => (prev ? { ...prev, isSmallJob: false, statusLabel: firstStatus, dashboardSubStageId: undefined } : prev));
+    logProjectChange(`Converted from a small job to a project (${firstStatus})`);
+  };
+
+  // A status, and the sub-status picked in it — none picked (a status without any): its "Default" one, if it has one,
+  // as on the Dashboard. Locked into a bonus period, only its sub-status can change.
+  const onChangeStatus = async (value: string, chosenSubStage?: string) => {
     if (!project || !value) {
       return;
     }
@@ -21138,12 +21302,14 @@ export default function ProjectDetailsPage() {
       showStatusLock();
       return;
     }
+    const destination = projectStatusRows.find((row) => row.name.trim().toLowerCase() === value.trim().toLowerCase());
+    const nextSubStage = project.isSmallJob ? "" : chosenSubStage ?? destination?.subStages?.find((sub) => sub.isDefault)?.name ?? "";
 
     setIsSavingStatus(true);
     const previousStatus = project.statusLabel;
-    const ok = await updateProjectStatus(project, value);
+    const ok = await updateProjectStatus(project, value, nextSubStage);
     if (ok) {
-      setProject({ ...project, statusLabel: value });
+      setProject({ ...project, statusLabel: value, dashboardSubStageId: nextSubStage || undefined });
       setProjectStatusMenuPos(null);
       if (previousStatus !== value) {
         logProjectChange(`Status changed: ${previousStatus || "(none)"} → ${value}`);
@@ -31453,10 +31619,10 @@ export default function ProjectDetailsPage() {
   useEffect(() => {
     if (!project?.companyId || !project?.id) return;
     // requiredSheetCountByBoardRowId (feeding totalSheetsRequired) is only computed while the
-    // Nesting/Overview production sub-tab is active (shouldComputeNesting) — a performance guard
+    // Nesting/Overview/Order production sub-tab is active (shouldComputeNesting) — a performance guard
     // that forces it to 0 the rest of the time. That 0 isn't a real reading, so freeze "sheets" at
     // its last known-good value instead of overwriting a true total with a gate-driven zero every
-    // time someone switches to Cutlist/Board Settings/Order.
+    // time someone switches to Cutlist/CNC/Labels.
     const current = {
       sheets: shouldComputeNesting ? totalSheetsRequired : (lastSyncedContributionRef.current?.sheets ?? 0),
       edgeTape: totalEdgeTapeMetersRequired,
@@ -38217,6 +38383,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       const boardSize = row.sheetSize || boardSizeFor(row.colour) || "-";
       const thickness = row.thickness ? activeLength(row.thickness) : "-";
       const finish = row.finish || "-";
+      // Metres of its edge tape — Board Settings' own "Edgetape" figure.
+      const edgeTape = String(requiredEdgetapeByBoardRowId[row.id] ?? row.edgetape ?? "").trim();
       const hasAnyValue =
         String(row.colour || "").trim().length > 0 ||
         String(row.thickness || "").trim().length > 0 ||
@@ -38230,6 +38398,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         thickness,
         finish,
         sheetsRequired,
+        edgeTape,
         hasAnyValue,
       };
     })
@@ -38329,11 +38498,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   const orderDrawerQtyTotal = orderDrawerGroupedRows.reduce((sum, group) => sum + group.total, 0);
   // The hardware kinds ("Brand · Drawer type") the cutlist's drawers are on — more than one when rooms have their own.
   const orderDrawerHardwareKinds = Array.from(new Set(orderDrawerGroupedRows.map((group) => `${group.hardware} · ${group.drawerType}`)));
-  const orderSelectedHardwareCategoryKey = String(
-    productionForm.hardware.hardwareCategory || defaultHardwareCategory(),
-  )
-    .trim()
-    .toLowerCase();
+  const orderSelectedHardwareCategoryKey =
+    String(productionForm.hardware.hardwareCategory || defaultHardwareCategory())
+      .trim()
+      .toLowerCase() || ORDER_NO_HARDWARE_KEY;
   const orderSelectedHardwareRow = hardwareRows.find(
     (row) => row.name.toLowerCase() === orderSelectedHardwareCategoryKey,
   );
@@ -41908,34 +42076,68 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       : null;
 
   if (isOrderFullscreen) {
-    // On a computer: Drawers, Hinges, Other (the hardware container's parts) and Misc side by side, in columns, and
-    // Boards To Order under all four, across the page. A phone / tablet: one under another.
+    // The order at a glance up top (a glass bubble for each kind of thing on it), then a glass card for each part of it —
+    // in the colour of its bubble: Hardware across the page (Drawers, Hinges and Other side by side on a computer), Boards
+    // and Misc beside each other under it (one under another on a phone / tablet). No boxes inside them — a heading over
+    // its lines, the lines just ruled off. Counts are glass bubbles; adding and removing, the round glass buttons (a
+    // line's X showing as it's hovered).
     const orderColumns = !isCompactProjectViewport;
-    // Glass containers like the rest of Production. The hardware container is themed in its brand's
-    // own colour (Company Settings > Hardware); Misc and Boards stay neutral.
-    const orderGlassSectionStyle: React.CSSProperties = {
-      borderColor: "var(--glass-border)",
-      backgroundColor: "var(--glass-bg-strong)",
-      backdropFilter: "blur(20px) saturate(180%)",
-      WebkitBackdropFilter: "blur(20px) saturate(180%)",
-      boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
-    };
     const orderHwTint = (percent: number) => `color-mix(in srgb, ${orderHardwareColor} ${percent}%, transparent)`;
     const orderHwOnColor = isLightHex(orderHardwareColor) ? "#0F172A" : "#FFFFFF";
-    const orderHardwareSectionStyle: React.CSSProperties = {
-      ...orderGlassSectionStyle,
-      borderColor: `color-mix(in srgb, ${orderHardwareColor} 45%, var(--glass-border))`,
-      backgroundImage: `linear-gradient(180deg, ${orderHwTint(9)} 0%, transparent 65%)`,
-    };
-    const orderInputStyle: React.CSSProperties = { borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" };
-    const orderReadRowStyle: React.CSSProperties = { borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted, color: "var(--text-main)" };
+    // (The Hardware Library's pills.)
     const orderNeutralPillStyle: React.CSSProperties = { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: projectPalette.textSoft };
     const orderHwPillStyle: React.CSSProperties = { borderColor: orderHwTint(45), backgroundColor: orderHwTint(16), color: "var(--text-main)" };
+    const orderRuleColor = projectPalette.border;
+    // A field sits on its card: a faint wash, no border — a little stronger as it's hovered, the brand's edge while it's in
+    // use.
+    const orderFieldClass =
+      "h-8 rounded-[8px] border border-transparent bg-[color-mix(in_srgb,var(--text-main)_4%,transparent)] px-2.5 text-[12.5px] outline-none transition-[background-color,border-color] hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] focus:border-[var(--brand)] focus:bg-[var(--panel-bg)] disabled:opacity-70";
+    const orderColumnLabelClass = "text-[11px] font-medium uppercase tracking-[0.8px]";
     const orderEmptyNote = (text: string) => (
-      <p className="rounded-[10px] border border-dashed px-3 py-3 text-center text-[12px]" style={{ borderColor: projectPalette.border, color: projectPalette.textMuted }}>
+      <p
+        className="my-1.5 rounded-[12px] bg-[color-mix(in_srgb,var(--text-main)_4%,transparent)] px-3.5 py-2.5 text-[12.5px]"
+        style={{ color: projectPalette.textMuted }}
+      >
         {text}
       </p>
     );
+    // A part of the order's heading, at the top of its card: its name (a dot in its colour, and what it's for, beside it),
+    // and on the right what can be done there.
+    const orderSectionHeading = (opts: { title: string; accent?: string; detail?: string; action?: React.ReactNode }) => (
+      <div className="flex min-h-9 items-center justify-between gap-3 pb-1">
+        <div className="inline-flex min-w-0 items-center gap-2.5">
+          {opts.accent ? (
+            <span
+              className="h-2.5 w-2.5 shrink-0 rounded-full"
+              style={{ backgroundColor: opts.accent, boxShadow: `0 0 0 3px color-mix(in srgb, ${opts.accent} 22%, transparent)` }}
+            />
+          ) : null}
+          <h2 className="shrink-0 text-[16px] font-medium" style={{ color: "var(--text-main)" }}>
+            {opts.title}
+          </h2>
+          {opts.detail ? (
+            <span className="min-w-0 truncate text-[13px]" style={{ color: projectPalette.textMuted }}>
+              {opts.detail}
+            </span>
+          ) : null}
+        </div>
+        {opts.action ? <div className="inline-flex shrink-0 items-center gap-2">{opts.action}</div> : null}
+      </div>
+    );
+    // A part of the order's card: the glass shine's light version, in the colour of its bubble up top.
+    const orderCardClass = "glass-shine glass-shine-soft min-w-0 rounded-[20px] border px-5 pb-4 pt-3.5";
+    // How many, in a glass bubble of its colour (none: a plain one).
+    const orderCountBubble = (count: number | string, color: string, onColor = "#FFFFFF") => {
+      const none = !Number(count);
+      return (
+        <span
+          className={`glass-shine inline-flex h-7 min-w-7 shrink-0 items-center justify-center rounded-full border px-2 text-[12px] font-semibold ${none ? "glass-shine-neutral" : ""}`}
+          style={none ? { color: projectPalette.textMuted } : glassShineStyle(color, { color: onColor })}
+        >
+          {count}
+        </span>
+      );
+    };
     const orderDeleteButton = (rowId: string, onDelete: () => void) => (
       <button
         type="button"
@@ -41943,14 +42145,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         onClick={onDelete}
         onMouseEnter={() => setHoveredOrderDeleteRowId(rowId)}
         onMouseLeave={() => setHoveredOrderDeleteRowId((prev) => (prev === rowId ? "" : prev))}
-        // (Round, with the glass shine — red, as the cutlist rows' X.)
-        className="glass-shine inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-white hover:brightness-95 disabled:opacity-55"
+        // (Round, with the glass shine — red, as the cutlist rows' X. Showing as its line's hovered, or it's focused;
+        // always on a touch screen. Read-only: none.)
+        className="glass-shine inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-white opacity-0 transition-opacity hover:brightness-95 focus-visible:opacity-100 group-hover/orderline:opacity-100 disabled:invisible [@media(hover:none)]:opacity-100"
         style={glassShineStyle("var(--danger)")}
         title="Remove"
         aria-label="Remove"
       >
-        {/* (An even size: in its 26px inside its 1px border, it sits on whole pixels — dead centre, not half a pixel off.) */}
-        <X size={14} strokeWidth={2.8} />
+        {/* (An even size: in its 22px inside its 1px border, it sits on whole pixels — dead centre.) */}
+        <X size={12} strokeWidth={2.8} />
       </button>
     );
     const orderAddButton = (label: string, onAdd: () => void, themed: boolean) => (
@@ -41968,73 +42171,66 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         <Plus size={16} strokeWidth={2.6} />
       </button>
     );
-    // One of the hardware container's three parts (Drawers / Hinges / Other).
+    // One of Hardware's three parts (Drawers / Hinges / Other): its name over its lines. Where the Hardware Library's
+    // items of its kind go — lit while one's dragged (more, over Hardware).
     const orderHardwarePart = (opts: {
       title: string;
-      badge?: string;
-      qtyTotal: number;
+      detail?: string;
       addLabel?: string;
       onAdd?: () => void;
-      first?: boolean;
-      // Where the hardware library's items of this kind go: lit while one's dragged (more, over the container).
       dropKind?: OrderLineKind;
+      // Not the first: a faint line between it and the one before (beside it on a computer, above it otherwise).
+      first?: boolean;
       children: React.ReactNode;
     }) => {
       const lit = Boolean(opts.dropKind && orderLibraryDrag?.kind === opts.dropKind);
       return (
-      <div
-        className={`min-w-0 space-y-2 px-3 py-3 transition-[background-color,box-shadow] duration-150 ${opts.first ? "" : orderColumns ? "border-l" : "border-t"}`}
-        style={{
-          ...(opts.first ? {} : { borderColor: orderHwTint(28) }),
-          ...(lit
-            ? {
-                backgroundColor: orderHwTint(isOrderLibraryDropOver ? 22 : 10),
-                boxShadow: `inset 0 0 0 2px ${isOrderLibraryDropOver ? orderHardwareColor : orderHwTint(60)}`,
-              }
-            : {}),
-        }}
-      >
-        <div className="flex min-h-7 items-center justify-between gap-2">
-          <div className="inline-flex min-w-0 items-center gap-2">
-            <span className="h-4 w-[3px] shrink-0 rounded-full" style={{ backgroundColor: orderHardwareColor }} />
-            <p className="shrink-0 text-[12px] font-bold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
+        <div
+          className="relative min-w-0 rounded-[14px] px-3 pb-2 transition-[background-color,box-shadow] duration-150"
+          style={
+            lit
+              ? {
+                  backgroundColor: orderHwTint(isOrderLibraryDropOver ? 18 : 8),
+                  boxShadow: `inset 0 0 0 2px ${isOrderLibraryDropOver ? orderHardwareColor : orderHwTint(55)}`,
+                }
+              : undefined
+          }
+        >
+          {/* (Its line: a straight one of its own — not its edge, which its rounded corners would curve.) */}
+          {opts.first ? null : (
+            <span
+              aria-hidden
+              className={`pointer-events-none absolute ${orderColumns ? "inset-y-0 left-0 w-px" : "inset-x-0 top-0 h-px"}`}
+              style={{ backgroundColor: orderRuleColor }}
+            />
+          )}
+          <div className="flex h-11 items-center justify-between gap-2">
+            <p className={`min-w-0 truncate ${orderColumnLabelClass}`} style={{ color: "var(--text-main)" }}>
               {opts.title}
+              {opts.detail ? <span className="normal-case tracking-normal"> · {opts.detail}</span> : null}
             </p>
-            {opts.badge ? (
-              <span className="min-w-0 truncate rounded-[999px] border px-2 py-[1px] text-[11px] font-semibold" style={orderNeutralPillStyle}>
-                {opts.badge}
-              </span>
-            ) : null}
-          </div>
-          <div className="inline-flex shrink-0 items-center gap-2">
-            <span className="rounded-[999px] border px-2 py-[1px] text-[11px] font-bold" style={orderHwPillStyle}>
-              {opts.qtyTotal} Qty
-            </span>
             {opts.onAdd && opts.addLabel ? orderAddButton(opts.addLabel, opts.onAdd, true) : null}
           </div>
+          {opts.children}
         </div>
-        {opts.children}
-      </div>
       );
     };
-    // Hinges / Other lines: a pick from this project's hardware brand, and a quantity.
-    const orderLineGrid = "28px minmax(0,1fr) 72px";
+    // Hinges / Other lines: a pick from this project's hardware brand, and a quantity — each ruled off from the last.
+    const orderLineGrid = "minmax(0,1fr) 60px 24px";
     const orderLineList = (kind: OrderLineKind, rows: OrderHingeRow[], options: string[], itemLabel: string, emptyText: string) =>
       rows.length === 0 ? (
         orderEmptyNote(emptyText)
       ) : (
-        <div className="space-y-1.5">
-          <div className="grid items-center gap-2 text-[11px] font-bold" style={{ color: projectPalette.textMuted, gridTemplateColumns: orderLineGrid }}>
-            <p />
-            <p>{itemLabel}</p>
-            <p className="text-center">Qty</p>
-          </div>
+        <div>
           {rows.map((line) => {
             const lineOptions = line.name && !options.includes(line.name) ? [line.name, ...options] : options;
             return (
-              <div key={line.id} className="row-glow-anchor grid items-center gap-2" style={{ gridTemplateColumns: orderLineGrid }}>
+              <div
+                key={line.id}
+                className="group/orderline row-glow-anchor grid min-h-11 items-center gap-2 border-t py-1.5 first:border-t-0"
+                style={{ borderColor: orderRuleColor, gridTemplateColumns: orderLineGrid }}
+              >
                 <div className="row-glow" data-active={hoveredOrderDeleteRowId === line.id} />
-                {orderDeleteButton(line.id, () => onDeleteOrderLineRow(kind, line.id))}
                 <GlassSelectDropdown
                   fullWidth
                   disabled={productionReadOnly || !lineOptions.length}
@@ -42042,8 +42238,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   options={lineOptions}
                   getLabel={(value) => value || `Select ${itemLabel.toLowerCase()}`}
                   onChange={(next) => onOrderLineNameChange(kind, line.id, next)}
-                  className="h-8 rounded-[8px] border px-2 text-[12px]"
-                  style={{ ...orderInputStyle, color: line.name ? "var(--text-main)" : projectPalette.textMuted }}
+                  className={`${orderFieldClass} font-medium`}
+                  style={{ color: line.name ? "var(--text-main)" : projectPalette.textMuted }}
                 />
                 <input
                   type="text"
@@ -42051,14 +42247,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   disabled={productionReadOnly}
                   value={line.qty}
                   placeholder="0"
+                  aria-label={`${line.name || itemLabel} quantity`}
                   onChange={(e) => onOrderLineQtyChange(kind, line.id, e.target.value.replace(/\D+/g, ""), false)}
                   onBlur={(e) => onOrderLineQtyChange(kind, line.id, e.target.value.replace(/\D+/g, ""), true)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") e.currentTarget.blur();
                   }}
-                  className="h-8 w-full rounded-[8px] border px-2 text-center text-[12px] font-semibold outline-none"
-                  style={orderInputStyle}
+                  className={`${orderFieldClass} w-full text-center font-semibold`}
+                  style={{ color: "var(--text-main)" }}
                 />
+                {orderDeleteButton(line.id, () => onDeleteOrderLineRow(kind, line.id))}
               </div>
             );
           })}
@@ -42201,12 +42399,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         </section>
       );
     };
+    // (From under the bar and its Hardware Library band — the line under them, 56 + 49 + 1 — down: scrolling there, not up
+    // under the bar.)
     const orderLibraryPanel = (
       <section
         className="hide-native-scrollbar pointer-events-none min-h-0 overflow-y-auto"
-        style={{ position: "fixed", left: 0, top: 0, width: 400, height: "100svh", zIndex: 40 }}
+        style={{ position: "fixed", left: 0, top: 56 + 49 + 1, width: 400, height: "calc(100svh - 106px)", zIndex: 40 }}
       >
-        <div style={{ height: 105 }} />
         <div className="pointer-events-auto space-y-2 p-3" style={{ width: 360 }}>
           <div
             className="flex h-10 items-center gap-3 rounded-full border px-3"
@@ -42239,8 +42438,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       </section>
     );
     const orderDrawerType = String(productionForm.hardware.newDrawerType || "").trim();
-    const orderMiscGrid = "28px minmax(0,1fr) 64px";
-    const orderBoardGrid = isCompactProjectViewport ? "minmax(0,1fr) 56px" : "minmax(0,1.6fr) minmax(0,1fr) minmax(0,0.8fr) minmax(0,0.8fr) 64px";
+    // What's on the order, at a glance — a bubble for each (popping up in turn as the page opens).
+    const orderSummary = [
+      { key: "sheets", label: orderTotalSheetsRequired === 1 ? "Sheet" : "Sheets", count: orderTotalSheetsRequired, color: "var(--brand)", onColor: "#FFFFFF" },
+      { key: "drawers", label: orderDrawerQtyTotal === 1 ? "Drawer" : "Drawers", count: orderDrawerQtyTotal, color: orderHardwareColor, onColor: orderHwOnColor },
+      { key: "hinges", label: orderHingeQtyTotal === 1 ? "Hinge" : "Hinges", count: orderHingeQtyTotal, color: orderHardwareColor, onColor: orderHwOnColor },
+      { key: "other", label: "Other", count: orderOtherQtyTotal, color: orderHardwareColor, onColor: orderHwOnColor },
+      { key: "misc", label: "Misc", count: orderMiscQtyTotal, color: "#16A34A", onColor: "#FFFFFF" },
+    ];
+    const orderBoardGrid = "minmax(0,1.5fr) minmax(0,1fr) minmax(0,0.75fr) minmax(0,0.9fr) 64px 92px";
+    const orderEdgeTapeText = (edgeTape: string) => (edgeTape ? `${edgeTape} m` : "-");
+    const orderMiscGrid = "minmax(0,1fr) 56px 24px";
     return (
       <ProtectedRoute>
         <div className="flex h-[100svh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
@@ -42279,6 +42487,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
             </div>
             <div className="flex shrink-0 items-center gap-2">
+              {renderCutlistAlsoEditing(orderAlsoEditing, isCompactProjectViewport)}
+              {renderOrderSaveStatus(!isCompactProjectViewport)}
               {renderSaveAndBackButton(() => void onSaveAndBackFromOrder(), isCompactProjectViewport)}
             </div>
           </div>
@@ -42312,9 +42522,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             </>
           ) : null}
           <div
-            className="min-h-0 flex-1 overflow-auto px-3 pb-8 md:px-4"
+            className="min-h-0 flex-1 overflow-auto px-4 pb-16 md:px-8"
             style={{
-              paddingTop: orderLibraryShown ? 56 + 49 + 16 : 72,
+              paddingTop: orderLibraryShown ? 56 + 49 + 28 : 80,
               // (Moved in from the left while the library's out — as Items' room columns are.)
               paddingLeft: orderLibraryShown && isOrderLibraryOpen && !isOrderLibraryClosing ? 360 : undefined,
               transition: orderLibraryShown
@@ -42324,87 +42534,113 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 : undefined,
             }}
           >
-            <div className={orderColumns ? "grid w-full min-w-0 items-start gap-4" : "mx-auto grid w-full max-w-[1500px] items-start gap-4"}>
-              <div className="grid min-w-0 gap-4" style={orderColumns ? { gridTemplateColumns: "minmax(0,3fr) minmax(0,1fr)" } : undefined}>
-                <section
-                  className="min-w-0 overflow-visible rounded-[18px] border"
-                  style={orderHardwareSectionStyle}
-                  onDragOver={(e) => {
-                    if (!orderLibraryDrag) return;
-                    e.preventDefault();
-                    e.dataTransfer.dropEffect = "copy";
-                    if (!isOrderLibraryDropOver) setIsOrderLibraryDropOver(true);
-                  }}
-                  onDragLeave={(e) => {
-                    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setIsOrderLibraryDropOver(false);
-                  }}
-                  onDrop={(e) => {
-                    if (!orderLibraryDrag) return;
-                    e.preventDefault();
-                    onAddOrderLibraryItem(orderLibraryDrag.kind, orderLibraryDrag.name, orderLibraryDrag.qty);
-                    setOrderLibraryDrag(null);
-                    setIsOrderLibraryDropOver(false);
-                  }}
-                >
+            <div className="mx-auto w-full max-w-[1320px] space-y-5">
+              {/* (Each as wide as it needs — wrapping onto another line on a narrow screen.) */}
+              <div className={`flex flex-wrap ${orderColumns ? "gap-3" : "gap-2"}`}>
+                {orderSummary.map((item, index) => (
                   <div
-                    className="flex h-[50px] items-center justify-between gap-3 rounded-t-[18px] border-b px-4"
-                    style={{ borderColor: orderHwTint(35), backgroundColor: orderHwTint(20) }}
+                    key={`order_summary_${item.key}`}
+                    // (The glass shine's light version, in its colour — the count in a bubble of it.)
+                    className={`glass-shine glass-shine-soft flex min-w-0 items-center rounded-[18px] border ${
+                      orderColumns ? "min-w-[150px] gap-3 py-2.5 pl-2.5 pr-5" : "gap-2 py-1.5 pl-1.5 pr-3.5"
+                    }`}
+                    style={{
+                      ...glassShineStyle(item.color),
+                      animation: `glass-bubble-slide-in-up 480ms cubic-bezier(0.34, 1.56, 0.64, 1) ${index * 55}ms both`,
+                    }}
                   >
-                    <div className="inline-flex min-w-0 items-center gap-2.5">
-                      <span
-                        className="h-3 w-3 shrink-0 rounded-full"
-                        style={{ backgroundColor: orderHardwareColor, boxShadow: `0 0 0 3px ${orderHwTint(25)}` }}
-                      />
-                      <p className="truncate text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                        {orderHardwareName || "Hardware"}
-                      </p>
-                    </div>
+                    <span
+                      className={`glass-shine inline-flex shrink-0 items-center justify-center rounded-full border font-semibold ${
+                        orderColumns ? "h-10 min-w-10 px-2.5 text-[16px]" : "h-8 min-w-8 px-2 text-[14px]"
+                      }`}
+                      style={glassShineStyle(item.color, { color: item.onColor })}
+                    >
+                      {item.count}
+                    </span>
+                    <span className="truncate text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
+                      {item.label}
+                    </span>
                   </div>
+                ))}
+              </div>
 
-                  <div className={orderColumns ? "grid h-[calc(100%-50px)] grid-cols-3" : undefined}>
+              {/* Hardware, with Misc beside it up at the top right, the two the same height (under it on a phone / tablet). */}
+              <div
+                className={orderColumns ? "grid gap-5" : "space-y-5"}
+                style={orderColumns ? { gridTemplateColumns: "minmax(0,3fr) minmax(0,1fr)" } : undefined}
+              >
+              <section
+                className={orderCardClass}
+                style={glassShineStyle(orderHardwareColor)}
+                onDragOver={(e) => {
+                  if (!orderLibraryDrag) return;
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = "copy";
+                  if (!isOrderLibraryDropOver) setIsOrderLibraryDropOver(true);
+                }}
+                onDragLeave={(e) => {
+                  if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setIsOrderLibraryDropOver(false);
+                }}
+                onDrop={(e) => {
+                  if (!orderLibraryDrag) return;
+                  e.preventDefault();
+                  onAddOrderLibraryItem(orderLibraryDrag.kind, orderLibraryDrag.name, orderLibraryDrag.qty);
+                  setOrderLibraryDrag(null);
+                  setIsOrderLibraryDropOver(false);
+                }}
+              >
+                {orderSectionHeading({ title: "Hardware", accent: orderHardwareColor, detail: orderHardwareName || undefined })}
+                {/* (Its parts' own edges just past the heading's, so their lines line up with it.) */}
+                <div className={orderColumns ? "-mx-3 grid grid-cols-3" : "-mx-3"}>
                   {orderHardwarePart({
                     title: "Drawers",
+                    first: true,
                     // Rooms can have their own hardware: with drawers on more than one kind, each kind is its own group.
-                    badge:
+                    detail:
                       orderDrawerHardwareKinds.length === 1
                         ? orderDrawerGroupedRows[0]?.drawerType || undefined
                         : orderDrawerHardwareKinds.length > 1
                           ? `${orderDrawerHardwareKinds.length} types`
                           : orderDrawerType || undefined,
-                    qtyTotal: orderDrawerQtyTotal,
-                    first: true,
                     children:
                       orderDrawerGroupedRows.length === 0 ? (
                         orderEmptyNote("No drawers in the cutlist yet.")
                       ) : (
-                        <div className="space-y-1.5">
-                          <div className="grid items-center gap-2 px-3 text-[11px] font-bold" style={{ color: projectPalette.textMuted, gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr) 56px" }}>
+                        <div>
+                          <div
+                            className={`grid items-center gap-3 pb-1 ${orderColumnLabelClass}`}
+                            style={{ color: "var(--text-main)", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr) 28px" }}
+                          >
                             <p>Length</p>
-                            <p>Back Height</p>
+                            <p>Back height</p>
                             <p className="text-center">Qty</p>
                           </div>
                           {orderDrawerHardwareKinds.map((kind) => (
                             <Fragment key={`order_drawer_kind_${kind}`}>
                               {orderDrawerHardwareKinds.length > 1 ? (
-                                <p className="px-1 pt-1 text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: projectPalette.textMuted }}>{kind}</p>
+                                <p className="pb-0.5 pt-3 text-[12px] font-medium" style={{ color: "var(--text-main)" }}>
+                                  {kind}
+                                </p>
                               ) : null}
-                              {orderDrawerGroupedRows
-                                .filter((group) => `${group.hardware} · ${group.drawerType}` === kind)
-                                .map((group) => (
-                                  <div
-                                    key={`order_drawer_row_${group.key}`}
-                                    className="grid min-h-9 items-center gap-2 rounded-[10px] border px-3 py-1.5 text-[12px]"
-                                    style={{ ...orderReadRowStyle, gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr) 56px" }}
-                                  >
-                                    <p className="truncate font-medium">{group.hardwareLength || "-"}</p>
-                                    <p className="truncate">{group.backHeight || "-"}</p>
-                                    <p className="text-center">
-                                      <span className="inline-flex min-w-[32px] justify-center rounded-[8px] border px-2 py-[1px] font-bold" style={orderHwPillStyle}>
-                                        {group.total}
-                                      </span>
-                                    </p>
-                                  </div>
-                                ))}
+                              <div>
+                                {orderDrawerGroupedRows
+                                  .filter((group) => `${group.hardware} · ${group.drawerType}` === kind)
+                                  .map((group) => (
+                                    <div
+                                      key={`order_drawer_row_${group.key}`}
+                                      className="grid min-h-11 items-center gap-3 border-t py-1.5 text-[12.5px] first:border-t-0"
+                                      style={{ borderColor: orderRuleColor, gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr) 28px" }}
+                                    >
+                                      <p className="truncate font-medium" style={{ color: "var(--text-main)" }}>
+                                        {group.hardwareLength || "-"}
+                                      </p>
+                                      <p className="truncate" style={{ color: "var(--text-main)" }}>
+                                        {group.backHeight || "-"}
+                                      </p>
+                                      <span className="flex justify-center">{orderCountBubble(group.total, orderHardwareColor, orderHwOnColor)}</span>
+                                    </div>
+                                  ))}
+                              </div>
                             </Fragment>
                           ))}
                         </div>
@@ -42414,7 +42650,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   {orderHardwarePart({
                     title: "Hinges",
                     dropKind: "hinges",
-                    qtyTotal: orderHingeQtyTotal,
                     addLabel: "Add hinge",
                     onAdd: () => onAddOrderLineRow("hinges"),
                     children: orderLineList(
@@ -42423,7 +42658,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       orderHingeOptions,
                       "Hinge",
                       orderHingeOptions.length
-                        ? "No hinges added yet."
+                        ? orderLibraryShown
+                          ? "No hinges yet — add one, or drag one in from the Hardware Library."
+                          : "No hinges added yet."
                         : `No hinges set up for ${orderHardwareLabel} yet — add them in Company Settings → Hardware.`,
                     ),
                   })}
@@ -42431,7 +42668,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   {orderHardwarePart({
                     title: "Other",
                     dropKind: "other",
-                    qtyTotal: orderOtherQtyTotal,
                     addLabel: "Add other item",
                     onAdd: () => onAddOrderLineRow("other"),
                     children: orderLineList(
@@ -42444,138 +42680,155 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         : `No other items set up for ${orderHardwareLabel} yet — add them in Company Settings → Hardware.`,
                     ),
                   })}
-                  </div>
-                </section>
-
-                <section className="min-w-0 overflow-visible rounded-[18px] border" style={orderGlassSectionStyle}>
-                  <div className="flex h-[50px] items-center justify-between gap-3 rounded-t-[18px] border-b px-4" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
-                    <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Misc</p>
-                    <div className="inline-flex items-center gap-2">
-                      <span className="rounded-[999px] border px-2 py-[1px] text-[11px] font-bold" style={orderNeutralPillStyle}>
-                        {orderMiscQtyTotal} Qty
-                      </span>
-                      {orderAddButton("Add misc item", () => void onAddOrderMiscRow(), false)}
-                    </div>
-                  </div>
-                  <div className="p-3">
-                    {orderMiscLines.length === 0 ? (
-                      orderEmptyNote("Anything else to order — add it here.")
-                    ) : (
-                      <div className="space-y-1.5">
-                        <div className="grid items-center gap-2 text-[11px] font-bold" style={{ color: projectPalette.textMuted, gridTemplateColumns: orderMiscGrid }}>
-                          <p />
-                          <p>Item</p>
-                          <p className="text-center">Qty</p>
-                        </div>
-                        {orderMiscLines.map((line) => (
-                          <div key={`order_misc_${line.key}`} className="row-glow-anchor grid items-center gap-2" style={{ gridTemplateColumns: orderMiscGrid }}>
-                            <div className="row-glow" data-active={hoveredOrderDeleteRowId === line.key} />
-                            {orderDeleteButton(line.key, () => void onDeleteOrderMiscRow(line.key))}
-                            <input
-                              type="text"
-                              disabled={productionReadOnly}
-                              value={line.name}
-                              placeholder="Item"
-                              onChange={(e) => onOrderMiscDraftChange(line.key, { name: e.target.value })}
-                              onBlur={(e) => void onOrderMiscDraftBlur(line.key, { name: e.target.value })}
-                              className="h-8 w-full min-w-0 rounded-[8px] border px-2 text-[12px] font-medium outline-none"
-                              style={orderInputStyle}
-                            />
-                            <input
-                              type="text"
-                              disabled={productionReadOnly}
-                              value={line.notes}
-                              placeholder="Notes"
-                              onChange={(e) => onOrderMiscDraftChange(line.key, { notes: e.target.value })}
-                              onBlur={(e) => void onOrderMiscDraftBlur(line.key, { notes: e.target.value })}
-                              className="h-8 w-full min-w-0 rounded-[8px] border px-2 text-[12px] outline-none"
-                              // The notes on their own line under the item and its qty (Misc is a column).
-                              style={{ ...orderInputStyle, order: 1, gridColumn: "2 / 4" }}
-                            />
-                            <input
-                              type="text"
-                              inputMode="numeric"
-                              disabled={productionReadOnly}
-                              value={line.qty}
-                              placeholder="0"
-                              onChange={(e) => onOrderMiscDraftChange(line.key, { qty: e.target.value.replace(/\D+/g, "") })}
-                              onBlur={(e) => void onOrderMiscDraftBlur(line.key, { qty: e.target.value.replace(/\D+/g, "") })}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") e.currentTarget.blur();
-                              }}
-                              className="h-8 w-full rounded-[8px] border px-2 text-center text-[12px] font-semibold outline-none"
-                              style={orderInputStyle}
-                            />
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </section>
-              </div>
-
-              <section className="min-w-0 overflow-hidden rounded-[18px] border" style={orderGlassSectionStyle}>
-                <div className="flex h-[50px] items-center justify-between gap-3 rounded-t-[18px] border-b px-4" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
-                  <p className="truncate text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Boards To Order</p>
-                  <div className="inline-flex shrink-0 items-center gap-2">
-                    {isCompactProjectViewport ? null : (
-                      <span className="rounded-[999px] border px-2 py-[1px] text-[11px] font-bold" style={orderNeutralPillStyle}>
-                        {formatPartCount(cutlistRows.length)}
-                      </span>
-                    )}
-                    <span className="rounded-[999px] border px-2 py-[1px] text-[11px] font-bold" style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}>
-                      {orderTotalSheetsRequired} Sheets
-                    </span>
-                  </div>
                 </div>
-                <div className="p-3">
-                  {orderBoardSummary.length === 0 ? (
-                    orderEmptyNote("No boards to order yet.")
-                  ) : (
-                    <div className="space-y-1.5">
-                      {isCompactProjectViewport ? null : (
-                        <div className="grid items-center gap-2 px-3 text-[11px] font-bold" style={{ color: projectPalette.textMuted, gridTemplateColumns: orderBoardGrid }}>
-                          <p>Board</p>
-                          <p className="text-center">Size</p>
-                          <p className="text-center">Thickness</p>
-                          <p className="text-center">Finish</p>
-                          <p className="text-center">Sheets</p>
-                        </div>
-                      )}
-                      {orderBoardSummary.map((row) => (
+              </section>
+
+              <section className={`${orderCardClass} flex flex-col`} style={glassShineStyle("#16A34A")}>
+                {orderSectionHeading({
+                  title: "Misc",
+                  accent: "#16A34A",
+                  detail: "Anything else to order",
+                  action: orderMiscLines.length ? orderAddButton("Add misc item", () => void onAddOrderMiscRow(), false) : undefined,
+                })}
+                {orderMiscLines.length === 0 ? (
+                  // Nothing on it yet: a dashed box filling the card, its + (round, the glass shine in green) in the middle.
+                  <button
+                    type="button"
+                    disabled={productionReadOnly}
+                    onClick={() => void onAddOrderMiscRow()}
+                    title="Add misc item"
+                    aria-label="Add misc item"
+                    className="group/miscadd mt-1.5 flex min-h-[120px] flex-1 items-center justify-center rounded-[14px] border-2 border-dashed transition-colors hover:bg-[color-mix(in_srgb,#16A34A_6%,transparent)] disabled:cursor-default disabled:hover:bg-transparent"
+                    style={{ borderColor: "color-mix(in srgb, #16A34A 35%, transparent)" }}
+                  >
+                    <span
+                      className="glass-shine inline-flex h-10 w-10 items-center justify-center rounded-full border text-white transition group-hover/miscadd:brightness-105 group-disabled/miscadd:opacity-55"
+                      style={glassShineStyle("#16A34A")}
+                    >
+                      <Plus size={20} strokeWidth={2.6} />
+                    </span>
+                  </button>
+                ) : (
+                  <div>
+                    <div
+                      className={`grid items-center gap-2 pb-1 pt-1 ${orderColumnLabelClass}`}
+                      style={{ color: "var(--text-main)", gridTemplateColumns: orderMiscGrid }}
+                    >
+                      <p>Item</p>
+                      <p className="text-center">Qty</p>
+                      <p />
+                    </div>
+                    <div>
+                      {orderMiscLines.map((line) => (
                         <div
-                          key={`order_board_full_${row.id}`}
-                          className="grid min-h-9 items-center gap-2 rounded-[10px] border px-3 py-1.5 text-[12px]"
-                          style={{ ...orderReadRowStyle, gridTemplateColumns: orderBoardGrid }}
+                          key={`order_misc_${line.key}`}
+                          className="group/orderline row-glow-anchor grid min-h-11 items-center gap-2 border-t py-1.5 first:border-t-0"
+                          style={{ borderColor: orderRuleColor, gridTemplateColumns: orderMiscGrid }}
                         >
-                          {isCompactProjectViewport ? (
-                            <div className="min-w-0">
-                              <p className="truncate font-medium">{row.boardLabel}</p>
-                              <p className="truncate text-[11px]" style={{ color: projectPalette.textMuted }}>
-                                {[row.boardSize, row.thickness, row.finish].filter((part) => part && part !== "-").join(" · ") || "-"}
-                              </p>
-                            </div>
-                          ) : (
-                            <>
-                              <p className="truncate font-medium">{row.boardLabel}</p>
-                              <p className="truncate text-center">{row.boardSize}</p>
-                              <p className="truncate text-center">{row.thickness}</p>
-                              <p className="truncate text-center">{row.finish}</p>
-                            </>
-                          )}
-                          <p className="text-center">
-                            <span
-                              className="inline-flex min-w-[32px] justify-center rounded-[8px] border px-2 py-[1px] font-bold"
-                              style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
-                            >
-                              {row.sheetsRequired}
-                            </span>
-                          </p>
+                          <div className="row-glow" data-active={hoveredOrderDeleteRowId === line.key} />
+                          <input
+                            type="text"
+                            disabled={productionReadOnly}
+                            value={line.name}
+                            placeholder="Item"
+                            aria-label="Item"
+                            onChange={(e) => onOrderMiscDraftChange(line.key, { name: e.target.value })}
+                            onBlur={(e) => void onOrderMiscDraftBlur(line.key, { name: e.target.value })}
+                            className={`${orderFieldClass} w-full min-w-0 font-medium`}
+                            style={{ color: "var(--text-main)" }}
+                          />
+                          <input
+                            type="text"
+                            disabled={productionReadOnly}
+                            value={line.notes}
+                            placeholder="Notes"
+                            aria-label="Notes"
+                            onChange={(e) => onOrderMiscDraftChange(line.key, { notes: e.target.value })}
+                            onBlur={(e) => void onOrderMiscDraftBlur(line.key, { notes: e.target.value })}
+                            className={`${orderFieldClass} w-full min-w-0`}
+                            // The notes on their own line, under the item and its qty.
+                            style={{ color: "var(--text-main)", order: 1, gridColumn: "1 / 3" }}
+                          />
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            disabled={productionReadOnly}
+                            value={line.qty}
+                            placeholder="0"
+                            aria-label="Quantity"
+                            onChange={(e) => onOrderMiscDraftChange(line.key, { qty: e.target.value.replace(/\D+/g, "") })}
+                            onBlur={(e) => void onOrderMiscDraftBlur(line.key, { qty: e.target.value.replace(/\D+/g, "") })}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") e.currentTarget.blur();
+                            }}
+                            className={`${orderFieldClass} w-full text-center font-semibold`}
+                            style={{ color: "var(--text-main)" }}
+                          />
+                          {orderDeleteButton(line.key, () => void onDeleteOrderMiscRow(line.key))}
                         </div>
                       ))}
                     </div>
-                  )}
-                </div>
+                  </div>
+                )}
+              </section>
+              </div>
+
+              <section className={orderCardClass} style={glassShineStyle("var(--brand)")}>
+                {orderSectionHeading({ title: "Boards", accent: "var(--brand)", detail: formatPartCount(cutlistRows.length) })}
+                {orderBoardSummary.length === 0 ? (
+                  orderEmptyNote("No boards to order yet.")
+                ) : (
+                  <div>
+                    {orderColumns ? (
+                      <div
+                        className={`grid items-center gap-3 pb-1 pt-1 ${orderColumnLabelClass}`}
+                        style={{ color: "var(--text-main)", gridTemplateColumns: orderBoardGrid }}
+                      >
+                        <p>Board</p>
+                        <p>Size</p>
+                        <p>Thickness</p>
+                        <p>Finish</p>
+                        <p className="text-center">Sheets</p>
+                        <p className="text-center">Edge tape</p>
+                      </div>
+                    ) : null}
+                    <div>
+                      {orderBoardSummary.map((row) => (
+                        <div
+                          key={`order_board_full_${row.id}`}
+                          className="grid min-h-12 items-center gap-3 border-t py-2 text-[13px] first:border-t-0"
+                          style={{ borderColor: orderRuleColor, gridTemplateColumns: orderColumns ? orderBoardGrid : "minmax(0,1fr) auto" }}
+                        >
+                          {orderColumns ? (
+                            <>
+                              <p className="truncate font-medium" style={{ color: "var(--text-main)" }}>
+                                {row.boardLabel}
+                              </p>
+                              <p className="truncate" style={{ color: "var(--text-main)" }}>{row.boardSize}</p>
+                              <p className="truncate" style={{ color: "var(--text-main)" }}>{row.thickness}</p>
+                              <p className="truncate" style={{ color: "var(--text-main)" }}>{row.finish}</p>
+                            </>
+                          ) : (
+                            <div className="min-w-0">
+                              <p className="truncate font-medium" style={{ color: "var(--text-main)" }}>
+                                {row.boardLabel}
+                              </p>
+                              <p className="truncate text-[12px]" style={{ color: "var(--text-main)" }}>
+                                {[row.boardSize, row.thickness, row.finish, row.edgeTape ? `${row.edgeTape} m edge tape` : ""]
+                                  .filter((part) => part && part !== "-")
+                                  .join(" · ") || "-"}
+                              </p>
+                            </div>
+                          )}
+                          <span className="flex justify-center">{orderCountBubble(row.sheetsRequired, "var(--brand)")}</span>
+                          {orderColumns ? (
+                            <p className="truncate text-center" style={{ color: "var(--text-main)" }}>{orderEdgeTapeText(row.edgeTape)}</p>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </section>
             </div>
           </div>
@@ -55255,6 +55508,237 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   }
 
   if (isSalesCompareFullscreen) {
+    // Upgrades: "what would the job cost if these pieces were in another product" — its saved upgrades down the left, the
+    // Initial Measure's pieces (each changed to a new product, or not), and beside them the open upgrade: its name, the
+    // job's cost now and with it, the difference in a glass bubble, what's changing, and the words for the client.
+    // What it does to the job's cost: a glass bubble — green for more, red for less (none: a plain one).
+    const upgradeDeltaBubble = (delta: number, large: boolean) => (
+      <span
+        className={`glass-shine inline-flex shrink-0 items-center rounded-full border font-semibold ${
+          large ? "h-10 px-4 text-[18px]" : "h-6 px-2.5 text-[11.5px]"
+        } ${delta === 0 ? "glass-shine-neutral" : ""}`}
+        style={delta === 0 ? { color: "var(--text-main)" } : glassShineStyle(delta > 0 ? "#16A34A" : "var(--danger)", { color: "#FFFFFF" })}
+      >
+        {delta === 0 ? "No change" : formatSignedCurrencyValue(delta)}
+      </span>
+    );
+    // A round tick box: ticked (and some of a group's: a dash), in the brand blue with the glass shine.
+    const upgradeTick = (checked: boolean, partial: boolean) => (
+      <span
+        className={`flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full border ${checked || partial ? "glass-shine" : ""}`}
+        style={
+          checked || partial
+            ? glassShineStyle("var(--brand)", { color: "#FFFFFF" })
+            : { borderColor: "color-mix(in srgb, var(--text-main) 30%, transparent)", backgroundColor: "var(--panel-bg)" }
+        }
+      >
+        {checked ? <Check size={11} strokeWidth={3.2} /> : partial ? <Minus size={11} strokeWidth={3.2} /> : null}
+      </span>
+    );
+    const upgradeRowColumns = "18px 116px minmax(0,0.9fr) 92px 34px minmax(0,1.7fr)";
+    const productNameOf = (board: string) => String(board || "").split(" @@ ")[0].trim();
+    // What's changing: each product to its new one, and how many pieces (by their quantities).
+    const upgradeChanges = (() => {
+      const byChange = new Map<string, { from: string; to: string; pieces: number }>();
+      for (const row of initialCutlistRows) {
+        const to = comparisonRowProductOverrides[row.id];
+        // (Its own product again: no change.)
+        if (!to || productNameOf(to) === productNameOf(row.board)) continue;
+        const from = productNameOf(row.board) || "—";
+        const entry = byChange.get(`${from}\u001f${to}`) ?? { from, to, pieces: 0 };
+        entry.pieces += Math.max(1, Number.parseInt(String(row.quantity || "1"), 10) || 1);
+        byChange.set(`${from}\u001f${to}`, entry);
+      }
+      return Array.from(byChange.values());
+    })();
+    // Why the difference is what it is: sheets come whole — each product whose sheets change, how many before and after
+    // and what that adds or saves; and the edge tape and lacquer's change.
+    const upgradeSheetChanges = (() => {
+      if (!comparisonPricing.hasTarget) return [];
+      const before = comparisonPricing.current.byProduct;
+      const after = comparisonPricing.hypothetical.byProduct;
+      return Array.from(new Set([...Object.keys(before), ...Object.keys(after)]))
+        .map((name) => ({
+          name,
+          from: before[name]?.sheets ?? 0,
+          to: after[name]?.sheets ?? 0,
+          cost: (after[name]?.cost ?? 0) - (before[name]?.cost ?? 0),
+        }))
+        .filter((change) => change.from !== change.to || Math.abs(change.cost) >= 0.005)
+        .sort((a, b) => a.cost - b.cost);
+    })();
+    const upgradeFinishDelta = comparisonPricing.hasTarget ? comparisonPricing.hypothetical.finishCost - comparisonPricing.current.finishCost : 0;
+    const sheetsText = (count: number) => `${count} ${count === 1 ? "sheet" : "sheets"}`;
+    const activeUpgrade = productComparisons.find((c) => c.id === activeComparisonId) ?? null;
+    // The open upgrade (a new one until it's named and saved): its name; the job's cost now and with it; the difference;
+    // what's changing; the words for the client, to copy; and — saved — Apply to Cutlist.
+    const upgradeSummary = (
+      <div className="glass-shine glass-shine-soft space-y-4 rounded-[20px] border p-5" style={glassShineStyle("var(--brand)")}>
+        <div>
+          <p className="mb-1.5 text-[11px] font-bold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
+            {activeComparisonId ? "Upgrade" : "New upgrade"}
+          </p>
+          <div className="flex items-center gap-2">
+            <input
+              value={comparisonNameDraft}
+              onChange={(e) => setComparisonNameDraft(e.target.value)}
+              disabled={!salesAccess.edit}
+              placeholder="Name it, e.g. Lacquer upgrade"
+              aria-label="Upgrade name"
+              className="h-10 min-w-0 flex-1 rounded-[12px] border px-3 text-[14px] font-medium outline-none transition-colors focus:border-[var(--brand)] disabled:opacity-60"
+              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+            />
+            {/* Only a new one's — a saved one keeps itself saved as it's changed (the debounced save above). */}
+            {!activeComparisonId ? (
+              <button
+                type="button"
+                disabled={!salesAccess.edit || isSavingComparison || !comparisonNameDraft.trim()}
+                onClick={() => void saveOrCreateProductComparison()}
+                className="glass-shine inline-flex h-10 shrink-0 items-center gap-1.5 rounded-full border px-4 text-[12.5px] font-semibold text-white hover:brightness-95 disabled:opacity-55"
+                style={glassShineStyle("var(--brand)")}
+              >
+                <Save size={14} />
+                {isSavingComparison ? "Saving…" : "Save"}
+              </button>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="space-y-2 text-[13px]" style={{ color: "var(--text-main)" }}>
+          <div className="flex items-baseline justify-between gap-3">
+            <span>Job cost now</span>
+            <span className="font-semibold">{formatCurrencyValue(comparisonPricing.current.totalCost)}</span>
+          </div>
+          <div className="flex items-baseline justify-between gap-3">
+            <span>With this upgrade</span>
+            <span className="font-semibold">{comparisonPricing.hasTarget ? formatCurrencyValue(comparisonPricing.hypothetical.totalCost) : "—"}</span>
+          </div>
+        </div>
+        <div className="flex items-center justify-between gap-3 border-t pt-4" style={{ borderColor: projectPalette.border }}>
+          <span className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
+            Difference
+          </span>
+          {upgradeDeltaBubble(comparisonPricing.hasTarget ? comparisonPricing.delta : 0, true)}
+        </div>
+
+        <div className="space-y-1.5">
+          <p className="text-[11px] font-bold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
+            What&apos;s changing
+          </p>
+          {upgradeChanges.length === 0 ? (
+            <p className="text-[12.5px]" style={{ color: "var(--text-muted)" }}>
+              Nothing yet — change a piece&apos;s product.
+            </p>
+          ) : (
+            upgradeChanges.map((change) => (
+              // The new product (and how many pieces), what they're in now under it.
+              <div
+                key={`${change.from}\u001f${change.to}`}
+                className="rounded-[12px] bg-[var(--panel-bg)] px-3 py-2 text-[12.5px]"
+                style={{ color: "var(--text-main)" }}
+              >
+                <div className="flex items-center gap-2">
+                  <ArrowRight size={13} className="shrink-0" style={{ color: "#16A34A" }} />
+                  <span className="min-w-0 flex-1 truncate font-medium" title={change.to}>
+                    {change.to}
+                  </span>
+                  <span className="shrink-0 text-[11.5px]" style={{ color: "var(--text-muted)" }}>
+                    {change.pieces} {change.pieces === 1 ? "piece" : "pieces"}
+                  </span>
+                </div>
+                <p className="mt-0.5 truncate pl-[21px] text-[11.5px]" style={{ color: "var(--text-muted)" }} title={change.from}>
+                  from {change.from}
+                </p>
+              </div>
+            ))
+          )}
+          {comparisonPricing.excludedSelectedCount > 0 ? (
+            <p className="text-[11.5px]" style={{ color: "var(--text-muted)" }}>
+              {comparisonPricing.excludedSelectedCount} picked {comparisonPricing.excludedSelectedCount === 1 ? "piece is" : "pieces are"} in a room
+              left off the quote, so {comparisonPricing.excludedSelectedCount === 1 ? "it isn't" : "they aren't"} counted.
+            </p>
+          ) : null}
+        </div>
+
+        {upgradeSheetChanges.length || Math.abs(upgradeFinishDelta) >= 0.005 ? (
+          <div className="space-y-1.5">
+            <p className="text-[11px] font-bold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
+              Sheets
+            </p>
+            <div className="rounded-[12px] bg-[var(--panel-bg)] px-3 py-1">
+              {upgradeSheetChanges.map((change) => (
+                <div key={change.name} className="border-b py-1.5 last:border-b-0" style={{ borderColor: projectPalette.border }}>
+                  <p className="truncate text-[12.5px] font-medium" style={{ color: "var(--text-main)" }} title={change.name}>
+                    {change.name}
+                  </p>
+                  <div className="flex items-center justify-between gap-2 text-[12px]">
+                    <span style={{ color: "var(--text-muted)" }}>
+                      {sheetsText(change.from)} → <b className="font-semibold" style={{ color: "var(--text-main)" }}>{sheetsText(change.to)}</b>
+                    </span>
+                    <span
+                      className="shrink-0 font-semibold"
+                      style={{ color: change.cost > 0 ? "var(--success-strong)" : change.cost < 0 ? "var(--danger-strong)" : "var(--text-main)" }}
+                    >
+                      {formatSignedCurrencyValue(change.cost)}
+                    </span>
+                  </div>
+                </div>
+              ))}
+              {Math.abs(upgradeFinishDelta) >= 0.005 ? (
+                <div className="flex items-center justify-between gap-2 py-1.5 text-[12px]">
+                  <span className="font-medium" style={{ color: "var(--text-main)" }}>
+                    Edge tape &amp; lacquer
+                  </span>
+                  <span
+                    className="shrink-0 font-semibold"
+                    style={{ color: upgradeFinishDelta > 0 ? "var(--success-strong)" : "var(--danger-strong)" }}
+                  >
+                    {formatSignedCurrencyValue(upgradeFinishDelta)}
+                  </span>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+
+        <div className="space-y-1.5">
+          <p className="text-[11px] font-bold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
+            For the client
+          </p>
+          <div className="flex items-center gap-2 rounded-[14px] bg-[var(--panel-bg)] py-1.5 pl-3.5 pr-1.5">
+            <span className="min-w-0 flex-1 text-[13px] font-medium" style={{ color: comparisonWordingText ? "var(--text-main)" : "var(--text-muted)" }}>
+              {comparisonWordingText || "—"}
+            </span>
+            <button
+              type="button"
+              disabled={!comparisonWordingText}
+              onClick={() => void copyComparisonWording()}
+              className="glass-shine inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-[12px] font-semibold text-white hover:brightness-95 disabled:opacity-55"
+              style={glassShineStyle("var(--brand)")}
+            >
+              {comparisonCopyFeedback ? <Check size={12} strokeWidth={3} /> : <Copy size={12} />}
+              {comparisonCopyFeedback ? "Copied" : "Copy"}
+            </button>
+          </div>
+        </div>
+
+        {activeUpgrade && salesAccess.edit ? (
+          <button
+            type="button"
+            onClick={(e) => {
+              comparisonApplyModalOriginElRef.current = e.currentTarget;
+              setComparisonApplyModalOrigin(captureGlassModalOrigin(e));
+              setComparisonApplyModal(buildComparisonApplyPreview(activeUpgrade));
+            }}
+            className="glass-shine inline-flex h-10 w-full items-center justify-center gap-2 rounded-full border text-[13px] font-semibold text-white hover:brightness-95"
+            style={glassShineStyle("#16A34A")}
+          >
+            <RefreshCw size={14} />
+            Apply to Cutlist
+          </button>
+        ) : null}
+      </div>
+    );
     return (
       <ProtectedRoute>
         <div
@@ -55289,123 +55773,112 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             {renderSaveAndBackButton(() => setSalesNav("overview"), isCompactProjectViewport, { stopGestures: true })}
           </div>
           <div className="flex flex-1" style={{ paddingTop: 56 }}>
-            {/* Saved comparisons — a named "what if these pieces used a different product" scenario
-                per row, same click-to-open-a-card model as the Specs/Quote version history lists.
-                The name field always reflects whichever draft is currently open (a fresh unsaved
-                one, or an already-saved one being edited/renamed). Mobile: hidden off-screen to the
-                left by default, revealed full-width by swiping (see compareMobileListSwipe/
-                makeCompareMobileSwipeHandlers) — same push-the-page mechanism as the Specs/Quote
-                drawers, just full-width instead of a partial panel since there's no second,
-                opposite-edge drawer to share the screen with here. Desktop keeps the original
-                always-visible 260px column, unchanged. */}
+            {/* Its saved upgrades, down the left (held there as the pieces scroll) — a phone / tablet: swiped in from
+                the left (compareMobileListSwipe / makeCompareMobileSwipeHandlers, the Specs / Quote drawers' push).
+                Each a glass card: its name and when it was saved, and what it does to the job's cost in a bubble — the
+                one open in the brand blue; Apply to Cutlist and Delete as it's hovered. New at the top. */}
             {(() => {
               const compareListContent = (
                 <>
-              <label className="mb-1 block text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
-                Comparison name
-              </label>
-              <div className="mb-3 flex items-center gap-2">
-                <input
-                  value={comparisonNameDraft}
-                  onChange={(e) => setComparisonNameDraft(e.target.value)}
-                  disabled={!salesAccess.edit}
-                  placeholder="e.g. Lacquer upgrade"
-                  className="h-9 min-w-0 flex-1 rounded-[9px] border px-3 text-[13px] outline-none disabled:opacity-60"
-                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                />
-                {/* Only for a brand-new, never-saved draft — once a comparison is saved, every
-                    further edit (including renaming it here) already autosaves on its own (see
-                    the debounced effect further up), so there's nothing left to explicitly save. */}
-                {!activeComparisonId ? (
-                  <button
-                    type="button"
-                    disabled={!salesAccess.edit || isSavingComparison || !comparisonNameDraft.trim()}
-                    onClick={() => void saveOrCreateProductComparison()}
-                    title="Save comparison"
-                    className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] border text-white hover:brightness-95 disabled:opacity-55"
-                    style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
-                  >
-                    <Save size={14} />
-                  </button>
-                ) : null}
-              </div>
-              <button
-                type="button"
-                onClick={onClickNewComparison}
-                className="mb-3 inline-flex h-9 w-full items-center justify-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95"
-                style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
-              >
-                <Plus size={14} />
-                New Comparison
-              </button>
-              {productComparisonsSorted.length === 0 ? (
-                <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>No comparisons saved yet.</p>
-              ) : (
-                <div className="flex flex-col gap-2">
-                  {productComparisonsSorted.map((c) => (
-                    // A <div role="button">, not a nested <button>, since the card's own delete
-                    // icon is a real interactive button inside it — a button can't contain another
-                    // button in valid HTML, and this sidesteps that entirely.
-                    <div
-                      key={c.id}
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => openProductComparison(c)}
-                      onKeyDown={(e) => {
-                        if (e.key !== "Enter" && e.key !== " ") return;
-                        e.preventDefault();
-                        openProductComparison(c);
-                      }}
-                      className="flex cursor-pointer items-start gap-2 rounded-[10px] border px-3 py-2 text-left transition hover:brightness-95"
-                      style={
-                        activeComparisonId === c.id
-                          ? { borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)" }
-                          : { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }
-                      }
+                  <div className="mb-3 flex items-center justify-between gap-2">
+                    <p className="text-[11px] font-bold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
+                      Saved upgrades
+                    </p>
+                    {salesAccess.edit ? (
+                      <button
+                        type="button"
+                        onClick={onClickNewComparison}
+                        className="glass-shine inline-flex h-8 items-center gap-1 rounded-full border pl-2.5 pr-3 text-[12px] font-semibold text-white hover:brightness-95"
+                        style={glassShineStyle("#16A34A")}
+                      >
+                        <Plus size={14} strokeWidth={2.6} />
+                        New
+                      </button>
+                    ) : null}
+                  </div>
+                  {productComparisonsSorted.length === 0 ? (
+                    <p
+                      className="rounded-[12px] bg-[color-mix(in_srgb,var(--text-main)_4%,transparent)] px-3.5 py-3 text-[12.5px]"
+                      style={{ color: "var(--text-muted)" }}
                     >
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>{c.name}</p>
-                        <p className="mt-0.5 truncate text-[11px]" style={{ color: "var(--text-muted)" }}>
-                          {dashboardStyleDate(c.savedAtIso)}
-                        </p>
-                      </div>
-                      {salesAccess.edit ? (
-                        <div className="flex shrink-0 items-center gap-1">
-                          <button
-                            type="button"
-                            aria-label={`Apply "${c.name}" to cutlist`}
-                            title="Apply to Cutlist"
-                            onClick={(e) => {
-                              comparisonApplyModalOriginElRef.current = e.currentTarget;
-                              e.stopPropagation();
-                              setComparisonApplyModalOrigin(captureGlassModalOrigin(e));
-                              setComparisonApplyModal(buildComparisonApplyPreview(c));
+                      None saved yet.
+                    </p>
+                  ) : (
+                    <div className="flex flex-col gap-2">
+                      {productComparisonsSorted.map((c, index) => {
+                        const active = activeComparisonId === c.id;
+                        // (The open one's, as it is now.)
+                        const delta = active ? (comparisonPricing.hasTarget ? comparisonPricing.delta : 0) : (savedUpgradeDeltaById[c.id] ?? 0);
+                        return (
+                          // A <div role="button">, not a <button> — its Apply / Delete buttons are inside it.
+                          <div
+                            key={c.id}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => openProductComparison(c)}
+                            onKeyDown={(e) => {
+                              if (e.key !== "Enter" && e.key !== " ") return;
+                              e.preventDefault();
+                              openProductComparison(c);
                             }}
-                            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] opacity-60 transition hover:bg-[var(--success-soft)] hover:opacity-100"
-                            style={{ color: "var(--success-strong)" }}
-                          >
-                            <RefreshCw size={13} />
-                          </button>
-                          <button
-                            type="button"
-                            aria-label={`Delete "${c.name}"`}
-                            onClick={(e) => {
-                              comparisonDeleteModalOriginElRef.current = e.currentTarget;
-                              e.stopPropagation();
-                              setComparisonDeleteModalOrigin(captureGlassModalOrigin(e));
-                              setComparisonPendingDeleteId(c.id);
+                            className={`group/upgrade glass-shine cursor-pointer rounded-[14px] border px-3 py-2.5 text-left transition hover:brightness-[0.98] ${
+                              active ? "glass-shine-soft" : "glass-shine-neutral"
+                            }`}
+                            style={{
+                              ...(active ? glassShineStyle("var(--brand)", { borderColor: "var(--brand)" }) : {}),
+                              animation: `glass-bubble-slide-in-left 420ms cubic-bezier(0.34, 1.56, 0.64, 1) ${index * 45}ms both`,
                             }}
-                            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] opacity-60 transition hover:bg-[var(--danger-soft)] hover:opacity-100"
-                            style={{ color: "var(--danger-strong)" }}
                           >
-                            <Trash2 size={13} />
-                          </button>
-                        </div>
-                      ) : null}
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="min-w-0 truncate text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
+                                {c.name}
+                              </p>
+                              {upgradeDeltaBubble(delta, false)}
+                            </div>
+                            <div className="mt-1 flex h-6 items-center justify-between gap-2">
+                              <p className="min-w-0 truncate text-[11.5px]" style={{ color: "var(--text-muted)" }}>
+                                {dashboardStyleDate(c.savedAtIso)}
+                              </p>
+                              {salesAccess.edit ? (
+                                <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity focus-within:opacity-100 group-hover/upgrade:opacity-100 [@media(hover:none)]:opacity-100">
+                                  <button
+                                    type="button"
+                                    aria-label={`Apply "${c.name}" to the cutlist`}
+                                    title="Apply to Cutlist"
+                                    onClick={(e) => {
+                                      comparisonApplyModalOriginElRef.current = e.currentTarget;
+                                      e.stopPropagation();
+                                      setComparisonApplyModalOrigin(captureGlassModalOrigin(e));
+                                      setComparisonApplyModal(buildComparisonApplyPreview(c));
+                                    }}
+                                    className="glass-shine inline-flex h-6 w-6 items-center justify-center rounded-full border text-white hover:brightness-95"
+                                    style={glassShineStyle("#16A34A")}
+                                  >
+                                    <RefreshCw size={11} strokeWidth={2.6} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    aria-label={`Delete "${c.name}"`}
+                                    title="Delete"
+                                    onClick={(e) => {
+                                      comparisonDeleteModalOriginElRef.current = e.currentTarget;
+                                      e.stopPropagation();
+                                      setComparisonDeleteModalOrigin(captureGlassModalOrigin(e));
+                                      setComparisonPendingDeleteId(c.id);
+                                    }}
+                                    className="glass-shine inline-flex h-6 w-6 items-center justify-center rounded-full border text-white hover:brightness-95"
+                                    style={glassShineStyle("var(--danger)")}
+                                  >
+                                    <Trash2 size={11} strokeWidth={2.6} />
+                                  </button>
+                                </div>
+                              ) : null}
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
-                  ))}
-                </div>
-              )}
+                  )}
                 </>
               );
               if (isCompactProjectViewport) {
@@ -55422,31 +55895,27 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       data-swipe-backdrop="true"
                       className="absolute inset-0 bg-[rgba(15,23,42,0.45)]"
                       onClick={() => setIsCompareListPanelOpen(false)}
-                      aria-label="Close Comparisons backdrop"
+                      aria-label="Close Upgrades backdrop"
                     />
                     <div
                       ref={compareMobileListPanelRef}
                       {...compareMobileListSwipe.touchHandlers}
-                      className="hide-scrollbar absolute left-0 z-[1] flex w-full flex-col gap-2 overflow-y-auto p-3"
+                      className="hide-scrollbar absolute left-0 z-[1] flex w-full flex-col overflow-y-auto p-4"
                       style={{
                         backgroundColor: "var(--bg-app)",
-                        paddingTop: 16,
-                        // Spans just what's visible above the on-screen keyboard while it's up (both
-                        // vars are 0 otherwise; see lib/use-keyboard-inset.ts) — the Comparison name
-                        // box at its top stays on screen when iOS scrolls the view to it, and the list
-                        // under it can still scroll all the way through above the keyboard.
+                        // Spans just what's visible above the on-screen keyboard while it's up (both vars are 0
+                        // otherwise; see lib/use-keyboard-inset.ts).
                         top: "var(--keyboard-offset-top-px, 0px)",
                         bottom: "var(--keyboard-inset-px, 0px)",
                       }}
                     >
-                      <div className="mb-1 flex items-center justify-between">
-                        <p className="text-[13px] font-bold uppercase tracking-[0.5px]" style={{ color: "var(--text-main)" }}>Comparisons</p>
+                      <div className="mb-3 flex justify-end">
                         <button
                           type="button"
                           onClick={() => setIsCompareListPanelOpen(false)}
-                          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95"
-                          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                          aria-label="Close Comparisons"
+                          className="glass-shine glass-shine-neutral inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border hover:brightness-95"
+                          style={{ color: "var(--text-main)" }}
+                          aria-label="Close Upgrades"
                         >
                           <ChevronLeft size={16} />
                         </button>
@@ -55458,371 +55927,294 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 );
               }
               return (
-                <div className="hide-scrollbar w-[260px] shrink-0 overflow-y-auto border-r p-3" style={{ borderColor: "var(--glass-border)", maxHeight: "calc(100svh - 56px)" }}>
+                <div
+                  className="hide-scrollbar sticky w-[260px] shrink-0 self-start overflow-y-auto px-4 pb-6 pt-5"
+                  style={{ top: 56, maxHeight: "calc(100svh - 56px)" }}
+                >
                   {compareListContent}
                 </div>
               );
             })()}
 
-            {/* Builder — the room-grouped row checklist, live results, and the copy-paste wording
-                panel. No comparison-wide product picker here — each row is only ever compared to
-                something once it has its own "Compare To" set, right in the checklist below. */}
-            <div className="flex-1 overflow-y-auto px-4 pb-40 pt-4 md:px-5 md:pb-28">
+            {/* The pieces (the Initial Measure's), and — beside them, held in sight (a phone / tablet: over them) —
+                the upgrade: its name, what it does to the job's cost, what's changing, the words for the client. */}
+            <div className="min-w-0 flex-1 px-4 pb-40 pt-5 md:px-6 md:pb-16">
               {!salesAccess.view ? (
                 <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>You don&apos;t have access to Sales.</p>
               ) : initialCutlistRows.length === 0 ? (
-                <div className="flex flex-col items-center justify-center gap-2 py-16 text-center text-[13px]" style={{ color: "var(--text-muted)" }}>
-                  <ArrowLeftRight size={28} strokeWidth={1.5} style={{ opacity: 0.5 }} />
-                  <p>No Initial Measure cutlist yet — add pieces there first.</p>
+                <div className="flex flex-col items-center justify-center gap-3 py-20 text-center">
+                  <span
+                    className="glass-shine inline-flex h-12 w-12 items-center justify-center rounded-full border text-white"
+                    style={glassShineStyle("var(--brand)")}
+                  >
+                    <ArrowLeftRight size={20} />
+                  </span>
+                  <p className="text-[14px] font-medium" style={{ color: "var(--text-main)" }}>No Initial Measure cutlist yet</p>
+                  <p className="text-[12.5px]" style={{ color: "var(--text-muted)" }}>Add its pieces there first.</p>
                 </div>
               ) : (
-                <div className="max-w-[900px] space-y-4">
-                  {/* Grouped checklist — tick individual pieces, or a whole group's header
-                      checkbox to select/deselect every row in it at once. The grouping itself
-                      (room/part type/product) only changes how pieces are found here — it has no
-                      effect on the pricing or wording, which always work off the plain selection.
-                      Sort is independent of grouping — it stays on whichever By Room/Part Type/
-                      Product table is currently selected, and only reorders the rows within each
-                      of those tables, never moves a row into a different one. */}
-                  <div>
-                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                      <div className="relative inline-flex rounded-[9px] border p-0.5" style={{ borderColor: "var(--glass-border)" }}>
-                        {comparisonGroupByIndicatorRect ? (
-                          <div
-                            aria-hidden="true"
-                            className="absolute top-0.5 bottom-0.5 rounded-[7px]"
-                            style={{
-                              backgroundColor: "var(--brand-soft)",
-                              left: comparisonGroupByIndicatorRect.left,
-                              width: comparisonGroupByIndicatorRect.width,
-                              transition: "left 260ms cubic-bezier(0.22, 1, 0.36, 1), width 260ms cubic-bezier(0.22, 1, 0.36, 1)",
-                              zIndex: 0,
-                            }}
-                          />
-                        ) : null}
-                        {([
-                          { key: "room", label: "By Room" },
-                          { key: "partType", label: "By Part Type" },
-                          { key: "product", label: "By Product" },
-                        ] as const).map((style) => (
-                          <button
-                            key={style.key}
-                            ref={(el) => {
-                              comparisonGroupByButtonRefs.current[style.key] = el;
-                            }}
-                            type="button"
-                            onClick={() => setComparisonGroupBy(style.key)}
-                            className="relative z-[1] rounded-[7px] px-3 py-1 text-[11px] font-bold transition-colors"
-                            style={{ color: comparisonGroupBy === style.key ? "var(--brand)" : "var(--text-main)" }}
-                          >
-                            {style.label}
-                          </button>
-                        ))}
+                <div
+                  className={isCompactProjectViewport ? "space-y-4" : "grid items-start gap-6"}
+                  style={isCompactProjectViewport ? undefined : { gridTemplateColumns: "minmax(0,1fr) 320px" }}
+                >
+                  {isCompactProjectViewport ? upgradeSummary : null}
+                  <div className="min-w-0 space-y-4">
+                    {/* Its heading: the pieces, how many picked; grouped by room / part type / product (a glass pill
+                        sliding to the one chosen), and their order. */}
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex min-w-0 items-baseline gap-2.5">
+                        <h2 className="text-[16px] font-medium" style={{ color: "var(--text-main)" }}>
+                          Pieces
+                        </h2>
+                        <span className="text-[12.5px]" style={{ color: "var(--text-muted)" }}>
+                          {comparisonSelectedRowIds.size ? `${comparisonSelectedRowIds.size} picked` : `${initialCutlistRows.length} in the Initial Measure`}
+                        </span>
                       </div>
-                      <GlassSelectDropdown
-                        value={comparisonSortBy}
-                        options={
-                          // Sorting by part type within tables that are ALREADY split one-part-
-                          // type-per-table (By Part Type grouping) wouldn't do anything, so it's
-                          // left out of the list there rather than offering a no-op option.
-                          comparisonGroupBy === "partType"
-                            ? ["name-asc", "name-desc", "quantity-desc", "quantity-asc"]
-                            : ["name-asc", "name-desc", "quantity-desc", "quantity-asc", "partType-asc", "partType-desc"]
-                        }
-                        onChange={(v) => setComparisonSortBy(v as typeof comparisonSortBy)}
-                        getLabel={(opt) =>
-                          opt === "name-asc"
-                            ? "Name A–Z"
-                            : opt === "name-desc"
-                              ? "Name Z–A"
-                              : opt === "quantity-desc"
-                                ? "Quantity High–Low"
-                                : opt === "quantity-asc"
-                                  ? "Quantity Low–High"
-                                  : opt === "partType-asc"
-                                    ? "Part Type A–Z"
-                                    : "Part Type Z–A"
-                        }
-                        noTruncate
-                        className="h-8 rounded-[9px] border px-2 text-[11px] font-bold"
-                        style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                      />
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="glass-shine glass-shine-neutral relative inline-flex rounded-full border p-1">
+                          {comparisonGroupByIndicatorRect ? (
+                            <div
+                              aria-hidden="true"
+                              className="glass-shine absolute bottom-1 top-1 rounded-full border"
+                              style={{
+                                ...glassShineStyle("var(--brand)"),
+                                left: comparisonGroupByIndicatorRect.left,
+                                width: comparisonGroupByIndicatorRect.width,
+                                transition: "left 260ms cubic-bezier(0.22, 1, 0.36, 1), width 260ms cubic-bezier(0.22, 1, 0.36, 1)",
+                                zIndex: 0,
+                              }}
+                            />
+                          ) : null}
+                          {([
+                            { key: "room", label: "By Room" },
+                            { key: "partType", label: "By Part Type" },
+                            { key: "product", label: "By Product" },
+                          ] as const).map((style) => (
+                            <button
+                              key={style.key}
+                              ref={(el) => {
+                                comparisonGroupByButtonRefs.current[style.key] = el;
+                              }}
+                              type="button"
+                              onClick={() => setComparisonGroupBy(style.key)}
+                              className="relative z-[1] rounded-full px-3.5 py-1 text-[12px] font-medium transition-colors"
+                              style={{ color: comparisonGroupBy === style.key ? "#FFFFFF" : "var(--text-main)" }}
+                            >
+                              {style.label}
+                            </button>
+                          ))}
+                        </div>
+                        <GlassSelectDropdown
+                          value={comparisonSortBy}
+                          options={
+                            // Sorting by part type within tables that are ALREADY one part type each (By Part
+                            // Type) wouldn't do anything, so it's left out there.
+                            comparisonGroupBy === "partType"
+                              ? ["name-asc", "name-desc", "quantity-desc", "quantity-asc"]
+                              : ["name-asc", "name-desc", "quantity-desc", "quantity-asc", "partType-asc", "partType-desc"]
+                          }
+                          onChange={(v) => setComparisonSortBy(v as typeof comparisonSortBy)}
+                          getLabel={(opt) =>
+                            opt === "name-asc"
+                              ? "Name A–Z"
+                              : opt === "name-desc"
+                                ? "Name Z–A"
+                                : opt === "quantity-desc"
+                                  ? "Quantity High–Low"
+                                  : opt === "quantity-asc"
+                                    ? "Quantity Low–High"
+                                    : opt === "partType-asc"
+                                      ? "Part Type A–Z"
+                                      : "Part Type Z–A"
+                          }
+                          noTruncate
+                          className="glass-shine glass-shine-neutral h-9 rounded-full border px-3.5 text-[12px] font-medium"
+                          style={{ color: "var(--text-main)" }}
+                        />
+                      </div>
                     </div>
-                    {/* Mobile: bleeds out of the builder's own px-4/md:px-5 padding (exact matching
-                        negative margins, not a flat value, so it cancels correctly whether that
-                        padding is currently 16px or 20px) so each group box below reaches the true
-                        screen edges — desktop keeps the original inset, unchanged. */}
-                    <div className={isCompactProjectViewport ? "flex flex-col gap-3 -mx-4 md:-mx-5" : "flex flex-col gap-3"}>
-                    {comparisonPieceGroups.map((group) => {
+
+                    {comparisonPieceGroups.map((group, groupIndex) => {
                       const rowIds = group.rows.map((r) => r.id);
                       const selectedCount = rowIds.filter((id) => comparisonSelectedRowIds.has(id)).length;
                       const allSelected = selectedCount === rowIds.length;
                       const someSelected = selectedCount > 0 && !allSelected;
-                      // Same three-tier part-type colour language as the cutlist list itself (see
-                      // groupColorPalette's own callers there): a solid-ish title bar, a darker
-                      // header row underneath it for the column labels, and each data row in that
-                      // same colour's much lighter tint — darkest at the top, lightest at the
-                      // bottom, exactly like Initial Measure's own grouped table. The title
-                      // bar/header only take the group's colour when the group actually IS a part
-                      // type; grouping by room/product instead colours each individual row by ITS
-                      // OWN part type (a room or product isn't itself a part type), with a neutral
-                      // header above the mix.
-                      const groupPalette = comparisonGroupBy === "partType" ? groupColorPalette(partTypeColors[group.label] ?? "#CBD5E1") : null;
-                      // Mobile: just Part Type/Part Name/Product — Size and Quantity dropped per
-                      // the user's own request. Desktop keeps the original 6-column layout with
-                      // both, unchanged.
-                      const columnsTemplate = isCompactProjectViewport
-                        ? "28px 130px minmax(0,1fr) 280px"
-                        : "28px 130px minmax(0,1fr) 280px 140px 70px";
-                      // Whether ANY row in this specific group actually uses a depth dimension —
-                      // most groups are all flat panels (H × W only), and reserving a 3rd slot no
-                      // row here ever fills would push that lone × left of the block's own center
-                      // instead of sitting right under "Size". Collapses to a 2-slot H × W layout
-                      // when nothing in the group needs the 3rd slot; still per-GROUP rather than
-                      // per-row, so every row within it keeps the same fixed slot alignment.
-                      // Desktop-only (Size column isn't shown on mobile), but cheap to compute
-                      // either way.
-                      const groupHasDepth = group.rows.some((r) => String(r.depth || "").trim().length > 0);
-                      // Text defaults to black everywhere in this checklist — it only flips to
-                      // white where the SPECIFIC background actually shown (title bar/header/row
-                      // tint, not the raw part-type colour) is dark enough to need it. Checked
-                      // per-surface rather than reusing groupColorPalette's own single `text`
-                      // value, since the title bar, header, and row tints are each a different
-                      // lightness of the same base colour and can each need a different call.
-                      const titleBarTextColor = groupPalette ? (!isLightHex(groupPalette.titleBarBg) ? "#FFFFFF" : "#000000") : "var(--text-main)";
-                      const headerTextColor = groupPalette ? (!isLightHex(groupPalette.headerBg) ? "#FFFFFF" : "#000000") : "var(--text-main)";
+                      // By Part Type: its colour, by its name.
+                      const groupColor = comparisonGroupBy === "partType" ? (partTypeColors[group.label] ?? "#CBD5E1") : "";
                       return (
-                        <div
+                        <section
                           key={group.label}
-                          className={isCompactProjectViewport ? "overflow-hidden border-y" : "overflow-hidden rounded-[12px] border"}
-                          style={{ borderColor: "var(--glass-border)" }}
+                          className="glass-shine glass-shine-neutral overflow-visible rounded-[18px] border"
+                          style={{ animation: `glass-bubble-slide-in-up 460ms cubic-bezier(0.34, 1.56, 0.64, 1) ${groupIndex * 60}ms both` }}
                         >
-                          <div
-                            className="flex items-center justify-between gap-2 px-3 py-2"
-                            style={{
-                              backgroundColor: groupPalette?.titleBarBg ?? "var(--panel-muted)",
-                              color: titleBarTextColor,
-                              // Locked to the bar's OWN tallest possible content (checkbox/name/
-                              // count PLUS the "Change selected to" dropdown) so it never grows or
-                              // shrinks depending on whether that control happens to be showing —
-                              // ticking a second row must never visibly resize the bar above it.
-                              minHeight: 44,
-                            }}
-                          >
-                            <div className="flex min-w-0 items-center gap-2">
-                              <input
-                                type="checkbox"
-                                checked={allSelected}
-                                ref={(el) => {
-                                  if (el) el.indeterminate = someSelected;
-                                }}
+                          {/* Its heading: tick them all; its name and how many picked; and — two or more picked — a
+                              new product for all of those at once. */}
+                          <div className="flex min-h-[54px] flex-wrap items-center justify-between gap-x-3 gap-y-2 px-4 py-2">
+                            <div className="flex min-w-0 items-center gap-2.5">
+                              <button
+                                type="button"
+                                role="checkbox"
+                                aria-checked={allSelected ? true : someSelected ? "mixed" : false}
+                                aria-label={`Pick every piece in ${group.label}`}
                                 disabled={!salesAccess.edit}
-                                onChange={() => toggleComparisonGroupSelected(rowIds)}
-                                className="h-4 w-4 shrink-0"
-                              />
-                              {/* <span>, not <p> — app/globals.css has a global `p { color:
-                                  var(--text-main) }` rule that overrides an INHERITED color (an
-                                  inherited value is the lowest-priority source in the cascade, so
-                                  any element-level rule beats it) — a <p> here would silently ignore
-                                  titleBarTextColor and stay var(--text-main) even on a dark, white-
-                                  text-needing background. */}
-                              <span className="min-w-0 truncate text-[12px] font-bold">{group.label}</span>
-                              <span className="shrink-0 text-[11px]" style={{ opacity: 0.75 }}>
-                                ({selectedCount}/{rowIds.length} selected)
+                                onClick={() => toggleComparisonGroupSelected(rowIds)}
+                                className="inline-flex disabled:opacity-60"
+                              >
+                                {upgradeTick(allSelected, someSelected)}
+                              </button>
+                              {groupColor ? <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: groupColor }} /> : null}
+                              <span className="min-w-0 truncate text-[14px] font-medium" style={{ color: "var(--text-main)" }}>
+                                {group.label}
+                              </span>
+                              <span className="shrink-0 text-[12px]" style={{ color: "var(--text-muted)" }}>
+                                {selectedCount ? `${selectedCount} of ${rowIds.length} picked` : `${rowIds.length} ${rowIds.length === 1 ? "piece" : "pieces"}`}
                               </span>
                             </div>
-                            {/* Explicit bulk-apply — only appears once there's an actual group of
-                                ticked rows in THIS table to apply to; only ever touches those
-                                already-ticked rows, never anything unticked or in another group.
-                                Replaces the old implicit "changing one ticked row changes every
-                                ticked row" behaviour with a deliberate, visible action. */}
                             {selectedCount > 1 ? (
-                              <div className="flex shrink-0 items-center gap-2 text-[11px] font-semibold">
-                                <span className="whitespace-nowrap">Change selected to</span>
+                              <div className="flex shrink-0 items-center gap-2 text-[12px] font-medium" style={{ color: "var(--text-main)" }}>
+                                <span className="whitespace-nowrap">Change picked to</span>
                                 <GlassSelectDropdown
                                   value=""
                                   options={["", ...companySalesProductNames]}
                                   onChange={(v) => applyProductToTickedRowsInGroup(rowIds, v)}
                                   disabled={!salesAccess.edit}
-                                  getLabel={(opt) => opt || "Select product…"}
+                                  getLabel={(opt) => opt || "Choose a product…"}
                                   noTruncate
-                                  className="h-7 rounded-[7px] border px-2 text-[11px] font-semibold"
-                                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                                  className="glass-shine h-8 rounded-full border px-3 text-[12px] font-semibold text-white"
+                                  style={glassShineStyle("var(--brand)")}
                                 />
                               </div>
                             ) : null}
                           </div>
-                          <div
-                            className="grid items-center gap-2 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.5px]"
-                            style={{ gridTemplateColumns: columnsTemplate, backgroundColor: groupPalette?.headerBg ?? "var(--panel-muted)", color: headerTextColor }}
-                          >
-                            <span />
-                            <span>Part Type</span>
-                            <span>Part Name</span>
-                            <span className="text-center">Product</span>
-                            {!isCompactProjectViewport ? (
-                              <>
-                                <span className="text-center">Size</span>
-                                <span className="text-center">Quantity</span>
-                              </>
-                            ) : null}
-                          </div>
-                          <div className="divide-y" style={{ borderColor: "var(--glass-border)" }}>
-                            {group.rows.map((row) => {
-                              const rowPartTypeColor = partTypeColors[row.partType || "Unassigned"] ?? "#CBD5E1";
-                              const rowBg = groupColorPalette(rowPartTypeColor).rowBg;
-                              const rowTextColor = isLightHex(rowBg) ? "#000000" : "#FFFFFF";
-                              // A lighter tint again than the row's own background, so the Compare
-                              // To control reads as its own little chip sitting on the row rather
-                              // than blending straight into it.
-                              const compareToBg = lightenHex(rowPartTypeColor, 0.55);
-                              const compareToTextColor = isLightHex(compareToBg) ? "#000000" : "#FFFFFF";
-                              // H/W/D always sit in the same fixed slot (height first, width
-                              // second, depth third) rather than a filtered/joined string — a
-                              // piece that never uses depth (e.g. a flat panel) just leaves that
-                              // slot blank instead of compacting, so every row's × separators and
-                              // values line up in the same spot regardless of digit count or which
-                              // dimensions this particular row actually has. Desktop-only.
-                              const sizeParts = [row.height, row.width, row.depth].map((v) => String(v || "").trim());
-                              const hasAnySize = sizeParts.some(Boolean);
-                              const isRowSelected = comparisonSelectedRowIds.has(row.id);
-                              return (
-                                <div
-                                  key={row.id}
-                                  role="checkbox"
-                                  aria-checked={isRowSelected}
-                                  aria-disabled={!salesAccess.edit}
-                                  className="grid cursor-pointer select-none items-center gap-2 px-3 py-1 text-[12px] hover:brightness-95"
-                                  style={{ gridTemplateColumns: columnsTemplate, backgroundColor: rowBg, color: rowTextColor, minHeight: 32 }}
-                                  onClick={(e) => {
-                                    if (!salesAccess.edit) return;
-                                    // A plain <div>, not a <label>+<input type="checkbox"> — a real
-                                    // checkbox nested in a label gets its click FORWARDED by the
-                                    // browser via the control's own plain .click() whenever the
-                                    // click lands anywhere in the label except the control's exact
-                                    // pixels, and that forwarded call always fires with every
-                                    // modifier key forced false, silently dropping shiftKey no
-                                    // matter what was actually held. Driving selection entirely off
-                                    // this div's own click sidesteps that native forwarding/toggle
-                                    // machinery altogether — this is always the one real,
-                                    // unmodified browser event, so shiftKey is never lost.
-                                    if (e.shiftKey && comparisonLastClickedRowIdRef.current) {
-                                      applyComparisonRowRangeSelect(comparisonLastClickedRowIdRef.current, row.id);
-                                    } else {
-                                      toggleComparisonRowSelected(row.id);
-                                    }
-                                    comparisonLastClickedRowIdRef.current = row.id;
-                                  }}
+                          {isCompactProjectViewport ? null : (
+                            <div
+                              className="grid items-center gap-3 border-t px-4 py-1.5 text-[11px] font-medium uppercase tracking-[0.8px]"
+                              style={{ gridTemplateColumns: upgradeRowColumns, borderColor: projectPalette.border, color: "var(--text-main)" }}
+                            >
+                              <span />
+                              <span>Part type</span>
+                              <span>Piece</span>
+                              <span className="text-center">Size</span>
+                              <span className="text-center">Qty</span>
+                              <span>Product</span>
+                            </div>
+                          )}
+                          {group.rows.map((row) => {
+                            const isRowSelected = comparisonSelectedRowIds.has(row.id);
+                            const newProduct = comparisonRowProductOverrides[row.id] ?? "";
+                            const changed = Boolean(newProduct) && productNameOf(newProduct) !== productNameOf(row.board);
+                            const partColor = partTypeColors[row.partType || "Unassigned"] ?? "#CBD5E1";
+                            const size = [row.height, row.width, row.depth].map((v) => String(v || "").trim()).filter(Boolean).join(" × ");
+                            // Its product: what it's in now (crossed through once it's changing), and the new one —
+                            // picking one picks the piece; clearing it puts it back.
+                            const productCell = (
+                              <div className="flex min-w-0 items-center gap-2">
+                                <span
+                                  className="min-w-0 flex-1 truncate text-[12.5px]"
+                                  style={{ color: changed ? "var(--text-muted)" : "var(--text-main)", textDecoration: changed ? "line-through" : undefined }}
+                                  title={productNameOf(row.board) || undefined}
                                 >
-                                  <span
-                                    className="flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border"
-                                    style={{
-                                      borderColor: isRowSelected ? "var(--brand-strong)" : "var(--glass-border)",
-                                      backgroundColor: isRowSelected ? "var(--brand-strong)" : "var(--panel-bg)",
-                                    }}
-                                  >
-                                    {isRowSelected ? <Check size={11} strokeWidth={3} color="#ffffff" /> : null}
-                                  </span>
-                                  <span className="min-w-0 truncate">{row.partType || "—"}</span>
-                                  <span className="min-w-0 truncate">{row.name || "Untitled piece"}</span>
-                                  {/* Both products under one "Product" column — the row's current
-                                      product, an arrow showing it becomes whatever's picked next,
-                                      then the Compare To control itself. This is the ONLY place a
-                                      row's target product is set — there's no comparison-wide
-                                      picker any more, so a blank selection genuinely means "not
-                                      being compared, contributes zero change," not "falls back to
-                                      something else." Picking a product here ticks the row
-                                      automatically (clearing it back to blank unticks it) — setting
-                                      a product IS how a piece gets included, no separate checkbox
-                                      click needed — and only ever affects THIS row; bulk-applying to
-                                      several ticked rows at once is the group's own "Change selected
-                                      to" bar above, not this control. The select's own
-                                      stopPropagation keeps picking a product from also triggering
-                                      the row's own onClick (which toggles/range-selects this row) —
-                                      the whole row is otherwise
-                                      a single big click target. */}
-                                  {/* Fixed height + overflow-hidden on this cell specifically —
-                                      belt-and-braces against ANY content inside (the option text
-                                      changing length, the dropdown's own internal box model)
-                                      ever growing this cell, and with it the whole row, taller
-                                      than its resting height. Nothing in here is meant to exceed
-                                      24px in the first place, so clipping at exactly that is safe. */}
-                                  <div className="flex min-w-0 items-center justify-center gap-1.5 overflow-hidden" style={{ height: 24 }}>
-                                    {/* Fixed width (same measurement as the Compare To dropdown
-                                        below) rather than sized to each row's own text — so the
-                                        arrow between them lands at the same X position on every
-                                        row instead of drifting with how long each product name is. */}
-                                    <span className="shrink-0 truncate text-right text-[11px]" style={{ width: `${comparisonRowSelectWidthCh}ch` }}>{row.board || "—"}</span>
-                                    <ArrowRight size={12} className="shrink-0" style={{ opacity: 0.6 }} />
-                                    {/* Wrapping div (not a prop on GlassSelectDropdown itself, which
-                                        has no onClick passthrough) carries the stopPropagation that
-                                        keeps opening/picking a product from also triggering the
-                                        row's own onClick. */}
-                                    <div className="inline-flex h-6 shrink-0" onClick={(e) => e.stopPropagation()}>
-                                      <GlassSelectDropdown
-                                        value={comparisonRowProductOverrides[row.id] ?? ""}
-                                        options={["", ...companySalesProductNames]}
-                                        // A truly empty value renders the button's inner <span> with
-                                        // no text node at all — an empty inline element can collapse
-                                        // to a different (often shorter) line-box height than one
-                                        // with real glyph content, which is what was nudging the
-                                        // whole button up/down as it went from blank to a picked
-                                        // product. Always giving it a real character (matching the
-                                        // "—" placeholder already used elsewhere on this row) keeps
-                                        // its line-box height identical in both states.
-                                        getLabel={(opt) => opt || "—"}
-                                        onChange={(v) => setComparisonRowProductOverride(row.id, v)}
-                                        disabled={!salesAccess.edit}
-                                        noTruncate
-                                        className="h-6 shrink-0 rounded-[6px] border px-1.5 text-[11px] font-semibold leading-[22px] disabled:opacity-60"
-                                        style={{ width: `${comparisonRowSelectWidthCh}ch`, borderColor: "var(--glass-border)", backgroundColor: compareToBg, color: compareToTextColor }}
-                                      />
-                                    </div>
-                                  </div>
-                                  {!isCompactProjectViewport ? (
-                                    <>
-                                      <div className="flex w-full min-w-0 items-center justify-center">
-                                        {hasAnySize ? (
-                                          <div
-                                            className="mx-auto inline-grid items-center"
-                                            style={{ gridTemplateColumns: groupHasDepth ? "4ch 12px 4ch 12px 4ch" : "4ch 12px 4ch" }}
-                                          >
-                                            <span className="truncate text-center text-[11px]">{sizeParts[0]}</span>
-                                            <span className="text-center text-[11px]" style={{ opacity: sizeParts[0] && (sizeParts[1] || sizeParts[2]) ? 0.6 : 0 }}>×</span>
-                                            <span className="truncate text-center text-[11px]">{sizeParts[1]}</span>
-                                            {groupHasDepth ? (
-                                              <>
-                                                <span className="text-center text-[11px]" style={{ opacity: sizeParts[2] && (sizeParts[0] || sizeParts[1]) ? 0.6 : 0 }}>×</span>
-                                                <span className="truncate text-center text-[11px]">{sizeParts[2]}</span>
-                                              </>
-                                            ) : null}
-                                          </div>
-                                        ) : (
-                                          <span className="text-[11px]">—</span>
-                                        )}
-                                      </div>
-                                      <span className="min-w-0 truncate text-center text-[11px]">{row.quantity || "1"}</span>
-                                    </>
-                                  ) : null}
+                                  {productNameOf(row.board) || "—"}
+                                </span>
+                                <ArrowRight size={13} className="shrink-0" style={{ color: changed ? "#16A34A" : "var(--text-muted)" }} />
+                                {/* (Its own box carries the stopPropagation — picking a product isn't also the row's
+                                    click, which ticks it.) */}
+                                <div className="min-w-0 flex-[1.2]" onClick={(e) => e.stopPropagation()}>
+                                  <GlassSelectDropdown
+                                    fullWidth
+                                    value={newProduct}
+                                    options={["", ...companySalesProductNames]}
+                                    getLabel={(opt) => opt || "Change to…"}
+                                    onChange={(v) => setComparisonRowProductOverride(row.id, v)}
+                                    disabled={!salesAccess.edit}
+                                    className={`h-8 rounded-full border px-3 text-[12px] font-semibold disabled:opacity-60 ${changed ? "glass-shine" : ""}`}
+                                    style={
+                                      changed
+                                        ? glassShineStyle("#16A34A", { color: "#FFFFFF" })
+                                        : { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }
+                                    }
+                                  />
                                 </div>
-                              );
-                            })}
-                          </div>
-                        </div>
+                              </div>
+                            );
+                            return (
+                              <div
+                                key={row.id}
+                                role="checkbox"
+                                aria-checked={isRowSelected}
+                                aria-disabled={!salesAccess.edit}
+                                className="grid cursor-pointer select-none items-center gap-x-3 gap-y-2 border-t px-4 py-2 transition-colors hover:bg-[color-mix(in_srgb,var(--text-main)_3%,transparent)]"
+                                style={{
+                                  gridTemplateColumns: isCompactProjectViewport ? "18px minmax(0,1fr)" : upgradeRowColumns,
+                                  borderColor: projectPalette.border,
+                                  backgroundColor: isRowSelected ? "color-mix(in srgb, var(--brand) 7%, transparent)" : undefined,
+                                  minHeight: 48,
+                                }}
+                                onClick={(e) => {
+                                  if (!salesAccess.edit) return;
+                                  // (Its own click, not a label's forwarded one — those drop the Shift key.) Shift: every
+                                  // piece from the one last clicked to this one.
+                                  if (e.shiftKey && comparisonLastClickedRowIdRef.current) {
+                                    applyComparisonRowRangeSelect(comparisonLastClickedRowIdRef.current, row.id);
+                                  } else {
+                                    toggleComparisonRowSelected(row.id);
+                                  }
+                                  comparisonLastClickedRowIdRef.current = row.id;
+                                }}
+                              >
+                                {upgradeTick(isRowSelected, false)}
+                                {isCompactProjectViewport ? (
+                                  <>
+                                    <div className="min-w-0">
+                                      <p className="truncate text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
+                                        {row.name || "Untitled piece"}
+                                      </p>
+                                      <p className="flex min-w-0 items-center gap-1.5 text-[11.5px]" style={{ color: "var(--text-muted)" }}>
+                                        <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: partColor }} />
+                                        <span className="truncate">{[row.partType || "—", size, `×${row.quantity || "1"}`].filter(Boolean).join(" · ")}</span>
+                                      </p>
+                                    </div>
+                                    <div className="col-start-2">{productCell}</div>
+                                  </>
+                                ) : (
+                                  <>
+                                    <span className="flex min-w-0 items-center gap-2 text-[12.5px]" style={{ color: "var(--text-main)" }}>
+                                      <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: partColor }} />
+                                      <span className="truncate">{row.partType || "—"}</span>
+                                    </span>
+                                    <span className="min-w-0 truncate text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
+                                      {row.name || "Untitled piece"}
+                                    </span>
+                                    <span className="truncate text-center text-[12.5px]" style={{ color: "var(--text-main)" }}>
+                                      {size || "—"}
+                                    </span>
+                                    <span className="text-center text-[12.5px]" style={{ color: "var(--text-main)" }}>
+                                      {row.quantity || "1"}
+                                    </span>
+                                    {productCell}
+                                  </>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </section>
                       );
                     })}
-                    </div>
                   </div>
+                  {isCompactProjectViewport ? null : (
+                    <aside className="sticky" style={{ top: 56 + 20 }}>
+                      {upgradeSummary}
+                    </aside>
+                  )}
                 </div>
               )}
             </div>
           </div>
-          {/* Results — in a floating glass pill at the bottom of the window (as the Quote's and the cutlists' bars) so
-              Current/New/Difference stay in sight however far the checklist is scrolled; recomputed from the CURRENT
-              cutlist on every tick/target change. (Too wide for a phone's screen, it wraps — rounded, not a pill.) */}
-          {salesAccess.view && initialCutlistRows.length > 0 ? (
+          {/* A phone / tablet: the difference and the words for the client in a floating glass bar at the bottom, in
+              sight however far the pieces are scrolled (a computer has the summary beside them). */}
+          {isCompactProjectViewport && salesAccess.view && initialCutlistRows.length > 0 ? (
             <div
-              className="fixed bottom-6 left-1/2 z-[95] flex w-max max-w-[calc(100vw-24px)] -translate-x-1/2 flex-wrap items-center justify-center gap-x-6 gap-y-2 rounded-[24px] border px-5 py-2 md:rounded-full"
+              className="fixed bottom-6 left-1/2 z-[95] flex w-max max-w-[calc(100vw-24px)] -translate-x-1/2 items-center gap-3 rounded-full border py-1.5 pl-4 pr-1.5"
               style={{
                 borderColor: "var(--glass-border)",
                 backgroundColor: "var(--glass-modal-bg)",
@@ -55831,43 +56223,20 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 boxShadow: "inset 0 1px 0 var(--glass-highlight), var(--shadow-glass), 0 16px 40px rgba(15,23,42,0.25)",
               }}
             >
-              <div className="flex items-baseline gap-2">
-                <span className="text-[10px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-main)" }}>Current cost</span>
-                <span className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>{formatCurrencyValue(comparisonPricing.current.totalCost)}</span>
-              </div>
-              <div className="flex items-baseline gap-2">
-                <span className="text-[10px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-main)" }}>New cost</span>
-                <span className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>
-                  {comparisonPricing.hasTarget ? formatCurrencyValue(comparisonPricing.hypothetical.totalCost) : "—"}
-                </span>
-              </div>
-              <div className="flex items-baseline gap-2">
-                <span className="text-[10px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-main)" }}>Difference</span>
-                <span
-                  className="text-[15px] font-bold"
-                  style={{ color: comparisonPricing.delta > 0 ? "var(--success-strong)" : comparisonPricing.delta < 0 ? "var(--danger-strong)" : "var(--text-main)" }}
-                >
-                  {comparisonPricing.hasTarget ? formatSignedCurrencyValue(comparisonPricing.delta) : "—"}
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span
-                  className="max-w-[360px] truncate rounded-full border px-3 py-1.5 text-[12px]"
-                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
-                >
-                  {comparisonWordingText || "—"}
-                </span>
-                <button
-                  type="button"
-                  disabled={!comparisonWordingText}
-                  onClick={() => void copyComparisonWording()}
-                  className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-[11px] font-bold hover:brightness-95 disabled:opacity-55"
-                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                >
-                  <Copy size={12} />
-                  {comparisonCopyFeedback ? "Copied!" : "Copy"}
-                </button>
-              </div>
+              <span className="text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-main)" }}>
+                Difference
+              </span>
+              {upgradeDeltaBubble(comparisonPricing.hasTarget ? comparisonPricing.delta : 0, false)}
+              <button
+                type="button"
+                disabled={!comparisonWordingText}
+                onClick={() => void copyComparisonWording()}
+                className="glass-shine inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-[12px] font-semibold text-white hover:brightness-95 disabled:opacity-55"
+                style={glassShineStyle("var(--brand)")}
+              >
+                <Copy size={12} />
+                {comparisonCopyFeedback ? "Copied!" : "Copy"}
+              </button>
             </div>
           ) : null}
           {shouldRenderNewComparisonConfirmModal && typeof document !== "undefined"
@@ -55875,19 +56244,19 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 <div className="fixed inset-0 flex items-center justify-center px-4 py-4" style={{ zIndex: 2147483647 }}>
                   <button
                     type="button"
-                    aria-label="Close new comparison confirmation backdrop"
+                    aria-label="Close new upgrade confirmation backdrop"
                     onClick={() => setIsNewComparisonConfirmOpen(false)}
                     className="glass-modal-backdrop absolute inset-0"
                   />
                   <div ref={newComparisonConfirmPanelRef} className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
                     <div className="glass-modal-header px-5 py-4">
-                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Save Before Starting New?</p>
+                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Save Before Starting a New One?</p>
                     </div>
                     <div className="space-y-4 px-5 py-4">
                       <p className="text-[12px]" style={{ color: "var(--text-main)" }}>
                         {comparisonNameDraft.trim()
-                          ? <>You have an unsaved comparison (&quot;{comparisonNameDraft.trim()}&quot;). Save it before starting a new one, or discard it?</>
-                          : "You have unsaved changes in this comparison. Give it a name in the sidebar to save it before starting a new one, or discard it?"}
+                          ? <>&quot;{comparisonNameDraft.trim()}&quot; isn&apos;t saved yet. Save it before starting a new one, or discard it?</>
+                          : "This upgrade isn't saved yet. Give it a name to save it before starting a new one, or discard it?"}
                       </p>
                       <div className="flex items-center justify-end gap-2">
                         <button
@@ -55927,13 +56296,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 <div className="fixed inset-0 z-[2147483646] flex items-center justify-center px-4 py-4">
                   <button
                     type="button"
-                    aria-label="Close delete comparison confirmation backdrop"
+                    aria-label="Close delete upgrade confirmation backdrop"
                     onClick={() => setComparisonPendingDeleteId("")}
                     className="glass-modal-backdrop absolute inset-0"
                   />
                   <div ref={comparisonDeleteModalPanelRef} className="glass-modal-panel relative z-[2147483647] w-[min(420px,96vw)] overflow-hidden">
                     <div className="glass-modal-header px-5 py-4">
-                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Delete Comparison?</p>
+                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Delete Upgrade?</p>
                     </div>
                     <div className="space-y-4 px-5 py-4">
                       <p className="text-[12px]" style={{ color: "var(--text-main)" }}>
@@ -55941,7 +56310,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           const target = productComparisons.find((c) => c.id === comparisonPendingDeleteId);
                           return target
                             ? <>Delete &quot;{target.name}&quot;? This can&apos;t be undone.</>
-                            : "Delete this comparison? This can't be undone.";
+                            : "Delete this upgrade? This can't be undone.";
                         })()}
                       </p>
                       <div className="flex items-center justify-end gap-2">
@@ -57921,7 +58290,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     </button>
                   ) : null}
                 </div>
-                  {projectTags.map((tag) => {
+                  {/* (No tags on a small job.) */}
+                  {!project.isSmallJob &&
+                    projectTags.map((tag) => {
                     const isArmed = pendingDeleteTag === tag;
                     const isHovered = hoveredDeleteTag === tag;
                     return (
@@ -57981,7 +58352,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       </button>
                     );
                   })}
-                  {projectTags.length < 5 && canEditTags && (
+                  {!project.isSmallJob && projectTags.length < 5 && canEditTags && (
                     <>
                       {isTagInputOpen && (
                         <div className="relative">
@@ -58090,6 +58461,59 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     </div>
                   ) : null}
                   </div>
+                  {/* A small job (lib/small-jobs.ts): Convert to project — asked first. */}
+                  {project.isSmallJob && !isProjectArchived(project) ? (
+                    <button
+                      type="button"
+                      onClick={() => setIsConvertSmallJobConfirmOpen(true)}
+                      disabled={!generalAccess.edit || isConvertingSmallJob}
+                      title="Turn this small job into a full project, on the Dashboard"
+                      className="glass-shine h-8 shrink-0 rounded-full px-4 text-[12px] font-bold text-white transition hover:brightness-105 disabled:opacity-60"
+                      style={glassShineStyle("var(--brand)")}
+                    >
+                      Convert to project
+                    </button>
+                  ) : null}
+                  {isConvertSmallJobConfirmOpen && typeof document !== "undefined"
+                    ? createPortal(
+                        <div className="glass-modal-backdrop fixed inset-0 z-[200] flex items-center justify-center p-4" onClick={() => setIsConvertSmallJobConfirmOpen(false)}>
+                          <div
+                            role="dialog"
+                            aria-modal="true"
+                            aria-label="Convert to project"
+                            className="glass-modal-panel w-full max-w-[420px] overflow-hidden"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <div className="glass-modal-header flex items-center gap-2 px-5 py-4">
+                              <p className="min-w-0 flex-1 text-[15px] font-medium" style={{ color: "var(--text-main)" }}>
+                                Convert to a project?
+                              </p>
+                              <button type="button" onClick={() => setIsConvertSmallJobConfirmOpen(false)} className={modalCloseButtonClass} aria-label="Close">
+                                <X size={15} />
+                              </button>
+                            </div>
+                            <div className="space-y-4 px-5 py-4">
+                              <p className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
+                                &ldquo;{project.name || "This small job"}&rdquo; becomes a full project on the Dashboard — its client details, notes and images come
+                                with it.
+                              </p>
+                              <div className="flex justify-end">
+                                <button
+                                  type="button"
+                                  disabled={isConvertingSmallJob}
+                                  onClick={() => void onConvertSmallJob()}
+                                  className="glass-shine inline-flex h-9 items-center rounded-full border px-4 text-[13px] font-medium text-white hover:brightness-95 disabled:opacity-60"
+                                  style={glassShineStyle("var(--brand)")}
+                                >
+                                  {isConvertingSmallJob ? "Converting…" : "Convert to project"}
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        </div>,
+                        document.body,
+                      )
+                    : null}
                   {/* Not on a project that's already archived — the note beside it offers Restore instead. */}
                   {!isProjectArchived(project) ? (
                     <button
@@ -58174,18 +58598,23 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       if (isSavingStatus || !canEditStatus) {
                         return;
                       }
-                      if (bonusLockKey) {
+                      // The split pill's sub-status half: straight at its status's sub-statuses (those can still
+                      // change while it's locked into a bonus period). The same half again closes it; the other
+                      // switches it.
+                      const atSub = Boolean(projectSubStage) && Boolean((e.target as HTMLElement).closest('[data-status-sub-half="true"]'));
+                      if (bonusLockKey && !atSub) {
                         showStatusLock();
                         return;
                       }
                       if (projectStatusMenuPos) {
-                        setProjectStatusMenuPos(null);
+                        if (projectStatusMenuAtSub === atSub) setProjectStatusMenuPos(null);
+                        else setProjectStatusMenuAtSub(atSub);
                         return;
                       }
                       const trigger = e.currentTarget as HTMLButtonElement;
                       const rect = trigger.getBoundingClientRect();
                       const isPhoneMenu = window.matchMedia("(max-width: 767px)").matches;
-                      const estimatedMenuHeight = glassMenuHeight(statusOptions.length, isPhoneMenu);
+                      const estimatedMenuHeight = glassMenuHeight(statusMenuRowCount(projectStatusMenuStatuses), isPhoneMenu);
                       const hasRoomBelow = rect.bottom + estimatedMenuHeight <= window.innerHeight - 8;
                       const hasRoomAbove = rect.top - estimatedMenuHeight >= 8;
                       const shouldOpenUp = !hasRoomBelow && hasRoomAbove;
@@ -58193,27 +58622,49 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         120,
                         document.documentElement?.clientWidth || window.innerWidth,
                       );
+                      // (Wide enough for a long sub-status's name.)
                       const menuWidth = Math.min(
-                        Math.max(isPhoneMenu ? GLASS_MENU_MIN_WIDTH_PHONE_PX : GLASS_MENU_MIN_WIDTH_PX, Math.round(rect.width)),
+                        Math.max(isPhoneMenu ? GLASS_MENU_MIN_WIDTH_PHONE_PX : GLASS_MENU_MIN_WIDTH_PX + 30, Math.round(Math.min(rect.width, 240))),
                         Math.max(120, viewportWidth - 16),
                       );
-                      // Its right edge under the pill's (it's at the right of the bar).
+                      // Its right edge under the pill's (it's at the right of the bar). Opening upward: from its
+                      // bottom, so the sub-statuses panel grows up away from the pill.
                       const clampedLeft = Math.min(Math.max(8, rect.right - menuWidth), viewportWidth - menuWidth - 8);
-                      setProjectStatusMenuPos({
-                        left: clampedLeft,
-                        top: shouldOpenUp ? Math.max(8, rect.top - estimatedMenuHeight - 4) : rect.bottom + 4,
-                        width: menuWidth,
-                      });
+                      setProjectStatusMenuPos(
+                        shouldOpenUp
+                          ? { left: clampedLeft, bottom: window.innerHeight - rect.top + 4, width: menuWidth }
+                          : { left: clampedLeft, top: rect.bottom + 4, width: menuWidth },
+                      );
+                      setProjectStatusMenuAtSub(atSub);
                     }}
-                    // The glass shine (lib/glass-shine.ts) in its status's colour.
-                    className="glass-shine hidden h-8 min-w-[90px] items-center justify-center rounded-full px-3 text-[12px] font-normal md:inline-flex"
+                    // The glass shine (lib/glass-shine.ts) in its status's colour — in a sub-status, that in a smaller
+                    // pill of its own sitting inside it (components/status-pill-split.tsx), as the Dashboard's.
+                    className={`glass-shine hidden h-8 min-w-[90px] items-center justify-center rounded-full text-[12px] font-normal md:inline-flex ${
+                      projectSubStage && !isSavingStatus ? `overflow-hidden ${SPLIT_STATUS_PILL_CLASS}` : "px-3"
+                    }`}
                     style={glassShineStyle(projectStatusPillStyle(project.statusLabel || "New"))}
-                    aria-disabled={isSavingStatus || !canEditStatus || Boolean(bonusLockKey)}
+                    aria-disabled={isSavingStatus || !canEditStatus || (Boolean(bonusLockKey) && !projectSubStage)}
                     aria-label="Project status"
                     title={statusLockText || (canEditStatus ? "Change project status" : "You can view this project but not change its status")}
                   >
-                    {bonusLockKey && !isSavingStatus ? <Lock size={12} strokeWidth={2.4} className="mr-1 shrink-0" /> : null}
-                    {isSavingStatus ? "Saving..." : project.statusLabel || "New"}
+                    {isSavingStatus ? (
+                      "Saving..."
+                    ) : projectSubStage ? (
+                      <SplitStatusPillContent
+                        status={project.statusLabel || "New"}
+                        subStatus={projectSubStage.name}
+                        subStatusColor={projectSubStage.color}
+                        subStatusTextColor={isLightHex(projectSubStage.color, 0.75) ? "#0F172A" : "#FFFFFF"}
+                        lock={bonusLockKey ? <Lock size={12} strokeWidth={2.4} className="mr-1 shrink-0" /> : null}
+                        statusTitle={statusLockText || (canEditStatus ? "Change status" : undefined)}
+                        subStatusTitle={canEditStatus ? `Change ${project.statusLabel || "New"}'s sub-status` : undefined}
+                      />
+                    ) : (
+                      <>
+                        {bonusLockKey ? <Lock size={12} strokeWidth={2.4} className="mr-1 shrink-0" /> : null}
+                        {project.statusLabel || "New"}
+                      </>
+                    )}
                   </button>
                 </div>
               </div>
@@ -58384,7 +58835,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           <div
             ref={projectStickyBarRef}
             data-title-bar-stuck="true"
-            className="glass-page-header sticky z-[30] -mx-4 md:-mx-5"
+            // (Not for a small job — it's just its General tab.)
+            className={`glass-page-header sticky z-[30] -mx-4 md:-mx-5 ${project?.isSmallJob ? "hidden" : ""}`}
             style={{
               top: projectHeaderRowHeight + (isLgUpViewport ? 48 : 0),
               marginTop: 0,
@@ -58730,8 +59182,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           {project &&
             projectStatusMenuPos &&
             createPortal(
-              // The glass dropdown's look (components/glass-dropdown.tsx — as the lead pop-up's status): each status a
-              // colour dot and its name, the current one in the brand blue.
+              // The glass dropdown's look (components/glass-dropdown.tsx — as the Dashboard's status menu): each status a
+              // colour dot and its name, the current one in the brand blue; one with sub-statuses slides over to them to
+              // pick one (components/status-menu-panels.tsx).
               <div
                 data-status-menu="true"
                 role="listbox"
@@ -58741,20 +59194,20 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   ...GLASS_MENU_STYLE,
                   left: projectStatusMenuPos.left,
                   top: projectStatusMenuPos.top,
+                  bottom: projectStatusMenuPos.bottom,
                   width: projectStatusMenuPos.width,
                 }}
                 onClick={(e) => e.stopPropagation()}
               >
-                {statusOptions.map((option) => (
-                  <GlassMenuOption
-                    key={`${project.id}_${option}`}
-                    label={option}
-                    color={projectStatusColorByName.get(String(option || "").trim().toLowerCase()) || "#64748B"}
-                    selected={String(project.statusLabel || "").trim().toLowerCase() === option.toLowerCase()}
-                    disabled={isSavingStatus}
-                    onSelect={() => void onChangeStatus(option)}
-                  />
-                ))}
+                <StatusMenuPanels
+                  key={`${project.id}_${projectStatusMenuAtSub ? "sub" : "all"}`}
+                  startAtSubStatus={projectStatusMenuAtSub ? String(project.statusLabel || "") : undefined}
+                  statuses={projectStatusMenuStatuses}
+                  currentStatus={String(project.statusLabel || "")}
+                  currentSubStage={String(project.dashboardSubStageId ?? "")}
+                  disabled={isSavingStatus}
+                  onSelect={(status, subStage) => void onChangeStatus(status, subStage)}
+                />
               </div>,
               document.body,
             )}
@@ -58805,8 +59258,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               {/* Its sides as Design's and Production's content: 12px on a phone, 16px, then 20px. */}
               <div className="space-y-4 px-3 pb-4 pt-[22px] sm:px-4 md:px-5 xl:pb-4" style={{ backgroundColor: projectTabAreaBg }}>
                 <div className="grid gap-4 xl:grid-cols-2">
-                  <div className="space-y-4">
-                    <div ref={clientDetailsContainerRef}>
+                  {/* A small job: its client details and images down the left, its notes down the right as tall as both
+                      (its two columns set aside — `contents` — and each part placed on the grid itself). */}
+                  <div className={project.isSmallJob ? "contents" : "space-y-4"}>
+                    <div ref={clientDetailsContainerRef} className={project.isSmallJob ? "xl:col-start-1 xl:row-start-1" : undefined}>
                       {/* Themed like the client's contact card on the Contacts page: initials badge and tinted
                           icon circles in their contact category's colour (no ambient wash, no category name) (neutral when they
                           have no category, or no contact card yet). */}
@@ -59188,7 +59643,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
                     {project.leadCustomFields && project.leadCustomFields.length > 0 && (
                       <section
-                        className="glass-shine glass-shine-neutral overflow-hidden rounded-[18px] border"
+                        className={`glass-shine glass-shine-neutral overflow-hidden rounded-[18px] border ${project.isSmallJob ? "xl:col-start-1 xl:row-start-2" : ""}`}
                         style={tabContainerStyle}
                       >
                         <CardHeader
@@ -59220,9 +59675,19 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       </section>
                     )}
 
-                    <div ref={notesContainerRef} data-keyboard-center="true">
+                    {/* A small job's: as tall as its client details and images together (sized as if empty — contain —
+                        so it's only stretched to them), and scrolling inside once there's more. */}
+                    <div
+                      ref={notesContainerRef}
+                      data-keyboard-center="true"
+                      className={
+                        project.isSmallJob
+                          ? `xl:col-start-2 xl:row-start-1 xl:min-h-[470px] xl:[contain:size] ${project.leadCustomFields?.length ? "xl:row-span-3" : "xl:row-span-2"}`
+                          : undefined
+                      }
+                    >
                       <section
-                        className="glass-shine glass-shine-neutral overflow-hidden rounded-[18px] border"
+                        className={`glass-shine glass-shine-neutral overflow-hidden rounded-[18px] border ${project.isSmallJob ? "xl:flex xl:h-full xl:flex-col" : ""}`}
                         style={tabContainerStyle}
                       >
                         <CardHeader
@@ -59230,7 +59695,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             if (isLgUpViewport || isEditingNotes || Boolean(String(project.notes || "").trim())) return;
                             setIsNotesExpandedMobile((prev) => !prev);
                           }}
-                          className="relative z-[2] flex h-[50px] flex-row items-center justify-between border-b px-4 py-2"
+                          className="relative z-[2] flex h-[50px] shrink-0 flex-row items-center justify-between border-b px-4 py-2"
                           style={{
                             cursor: !isLgUpViewport && !isEditingNotes && !String(project.notes || "").trim() ? "pointer" : undefined,
                             borderBottomColor: "var(--glass-border)",
@@ -59246,8 +59711,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             className={`${isEditingNotes && generalAccess.edit ? "shrink-0" : "hidden"}`}
                           />
                         </CardHeader>
-                        {(isEditingNotes || Boolean(String(project.notes || "").trim()) || isLgUpViewport || isNotesExpandedMobile) && (
-                        <CardContent className="min-h-[155px] pt-3 text-[13px]" style={{ color: "var(--text-main)" }}>
+                        {/* A small job's notes are most of it: always open, and big. */}
+                        {(isEditingNotes || Boolean(String(project.notes || "").trim()) || isLgUpViewport || isNotesExpandedMobile || project.isSmallJob) && (
+                        <CardContent
+                          className={`${project.isSmallJob ? "min-h-[420px] xl:flex xl:min-h-0 xl:flex-1 xl:flex-col xl:overflow-y-auto xl:*:flex-1" : "min-h-[155px]"} pt-3 text-[13px]`}
+                          style={{ color: "var(--text-main)" }}
+                        >
                           {renderEditableNotesBody({
                             editorKey: "editing-notes",
                             value: project.notes || "",
@@ -59266,9 +59735,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     </div>
                   </div>
 
-                  <div className="space-y-4">
+                  <div className={project.isSmallJob ? "contents" : "space-y-4"}>
                     <section
-                      className="glass-shine glass-shine-neutral group/images overflow-hidden rounded-[18px] border"
+                      className={`glass-shine glass-shine-neutral group/images overflow-hidden rounded-[18px] border ${
+                        project.isSmallJob ? (project.leadCustomFields?.length ? "xl:col-start-1 xl:row-start-3" : "xl:col-start-1 xl:row-start-2") : ""
+                      }`}
                       style={tabContainerStyle}
                     >
                   <div
@@ -59542,7 +60013,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   )}
                 </section>
                     <section
-                    className="glass-shine glass-shine-neutral group/files overflow-hidden rounded-[18px] border"
+                    // (Not on a small job: client details, notes and images only.)
+                    className={`glass-shine glass-shine-neutral group/files overflow-hidden rounded-[18px] border ${project.isSmallJob ? "hidden" : ""}`}
                     style={tabContainerStyle}
                   >
                   <div

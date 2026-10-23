@@ -8,13 +8,16 @@ import { createPortal } from "react-dom";
 import { Activity, CalendarDays, CheckCircle2, ChevronRight, FolderKanban, Kanban, ListFilter, Lock, RefreshCw, Rows3, Search, Users2, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
-import { GlassDropdown, GLASS_MENU_CLASS, GLASS_MENU_MIN_WIDTH_PHONE_PX, GLASS_MENU_MIN_WIDTH_PX, GLASS_MENU_STYLE, GlassMenuOption, glassMenuHeight } from "@/components/glass-dropdown";
+import { GlassDropdown, GLASS_MENU_CLASS, GLASS_MENU_MIN_WIDTH_PHONE_PX, GLASS_MENU_MIN_WIDTH_PX, GLASS_MENU_STYLE, glassMenuHeight } from "@/components/glass-dropdown";
 import { attachBoardArrowKeyScroll } from "@/lib/board-arrow-key-scroll";
 import { attachBoardDragScroll } from "@/lib/board-drag-scroll";
 import { useBoardStickyRef } from "@/lib/board-sticky-scroll";
 import { collapseBoardColumnAnimated, expandBoardColumnAnimated } from "@/lib/board-column-collapse";
 import { BoardColumnFrame, ColumnCollapseChevrons, getBoardColumnVisibleRect } from "@/components/board-column-frame";
 import { BoardTitleBar } from "@/components/board-title-bar";
+import { ColumnAutomationBadge, columnAutomationAttrs, useColumnAutomations } from "@/components/column-automations";
+import { SPLIT_STATUS_PILL_CLASS, SplitStatusPillContent } from "@/components/status-pill-split";
+import { StatusMenuPanels, statusMenuRowCount, type StatusMenuStatus } from "@/components/status-menu-panels";
 import { flatPageBg } from "@/lib/flat-page";
 import { scrollBoardToSearchMatch } from "@/lib/board-search-scroll";
 import { swallowNextClick } from "@/lib/swallow-dismiss-click";
@@ -45,6 +48,7 @@ import {
   updateProjectStatus,
 } from "@/lib/firestore-data";
 import type { CompanyMemberOption } from "@/lib/firestore-data";
+import { PROJECT_COLUMN_MOVED_EVENT, type ProjectColumnMovedDetail } from "@/lib/firestore-data";
 import { projectTabAccess } from "@/lib/permissions";
 import { readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
 import { DASHBOARD_STAT_CARDS_UPDATED_EVENT, readDashboardStatCardsEnabled } from "@/lib/ui-preferences";
@@ -343,7 +347,11 @@ export default function DashboardPage() {
   const [allProjects, setAllProjects] = useState<Project[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [statusMenuProjectId, setStatusMenuProjectId] = useState("");
-  const [statusMenuPos, setStatusMenuPos] = useState<{ left: number; top: number; width: number } | null>(null);
+  // Where a row's status menu sits: under its pill (top), or over it (bottom — so its sub-statuses panel, taller, grows
+  // up away from the pill).
+  const [statusMenuPos, setStatusMenuPos] = useState<{ left: number; top?: number; bottom?: number; width: number } | null>(null);
+  // Opened from a split pill's sub-status half: straight at its status's sub-statuses.
+  const [statusMenuAtSub, setStatusMenuAtSub] = useState(false);
   // Mobile-only — the All/Active/Completed pills collapse into a single filter icon that opens
   // this glass dropdown instead, since there isn't room for three separate buttons next to the
   // search bar and view toggle at that width (see the toolbar row below).
@@ -572,6 +580,34 @@ export default function DashboardPage() {
   const shouldRenderCompletedModal = useGlassModalPopOrigin(showCompletedProjectsModal, completedModalOrigin, completedModalPanelRef, undefined, completedCardRef);
   const shouldRenderStaffModal = useGlassModalPopOrigin(showStaffModal, staffModalOrigin, staffModalPanelRef, undefined, staffCardRef);
   const access = useCompanyAccess();
+  // Its columns' automations (projects.automate): right-click a column (or its sub-column) → Automate, and each
+  // column's ⚡ count on its header (components/column-automations.tsx). Every column and sub-column, for where a move
+  // can go.
+  const automationColumns = useMemo(
+    () =>
+      statusRows.flatMap((row) => [
+        { status: row.name, subStage: "", color: row.color },
+        ...(row.subStages ?? []).map((sub) => ({ status: row.name, subStage: sub.name, color: sub.color })),
+      ]),
+    [statusRows],
+  );
+  const columnAutomation = useColumnAutomations("projects", automationColumns);
+  // A column automation moved a project on (lib/firestore-data.ts): shown where it went.
+  useEffect(() => {
+    const onMoved = (event: Event) => {
+      const detail = (event as CustomEvent<ProjectColumnMovedDetail>).detail;
+      if (!detail?.projectId) return;
+      setAllProjects((prev) =>
+        prev.map((row) =>
+          row.id === detail.projectId
+            ? ({ ...row, statusLabel: detail.status, dashboardSubStageId: detail.subStage, updatedAt: new Date().toISOString() } as Project)
+            : row,
+        ),
+      );
+    };
+    window.addEventListener(PROJECT_COLUMN_MOVED_EVENT, onMoved);
+    return () => window.removeEventListener(PROJECT_COLUMN_MOVED_EVENT, onMoved);
+  }, []);
   // The completion bonus (the Completed pop-up's bonus periods): Company Settings › Roles' dashboard.complete.bonus —
   // owners and admins have every permission.
   const canSeeCompletionBonus = isOwnerOrAdmin(access.role) || hasPermissionKey(access.permissionKeys, "dashboard.complete.bonus");
@@ -857,7 +893,7 @@ export default function DashboardPage() {
         // A slow attempt keeps going: after 7s a second one starts alongside it and whichever answers
         // first wins (see hedgedAsync) — this used to throw the slow attempt away at 7s and start over.
         // Archived projects too — only the Completed Projects pop-up shows them (see liveProjects).
-        const items = await hedgedAsync(() => fetchProjects(user?.uid, preferredCompanyIds, { lightweight: true, archived: "include" }), {
+        const fetchedItems = await hedgedAsync(() => fetchProjects(user?.uid, preferredCompanyIds, { lightweight: true, archived: "include" }), {
           hedgeAfterMs: 7000,
           delayMs: 350,
           message: "Projects load timed out",
@@ -866,6 +902,8 @@ export default function DashboardPage() {
           shouldRetryResult: (value, attempt) => attempt === 1 && Array.isArray(value) && value.length === 0,
         });
         if (cancelled) return;
+        // Not the small jobs — they're Small Jobs' (lib/small-jobs.ts).
+        const items = fetchedItems.filter((project) => !project.isSmallJob);
         // Without a last-known list on screen, show the projects now rather than after the rest below.
         if (!shownSnapshot) setAllProjects(items);
         const fallbackCompanyId = String(items[0]?.companyId || "").trim();
@@ -1002,6 +1040,20 @@ export default function DashboardPage() {
     const options = statusRows.map((row) => row.name).filter(Boolean);
     return options.length ? options : ["New", "In Production", "On Hold", "Complete"];
   }, [statusRows]);
+  // A row's status menu: each status, its colour, and its sub-statuses (slid over to, to pick one —
+  // components/status-menu-panels.tsx).
+  const statusMenuStatuses = useMemo<StatusMenuStatus[]>(
+    () =>
+      statusOptions.map((name) => {
+        const row = statusRows.find((item) => item.name.trim().toLowerCase() === name.trim().toLowerCase());
+        return {
+          name,
+          color: row?.color || "#64748B",
+          subStages: (row?.subStages ?? []).map((sub) => ({ name: sub.name, color: sub.color })),
+        };
+      }),
+    [statusOptions, statusRows],
+  );
   // List view's Status column/pill width — sized to whichever configured status name is actually
   // the longest, plus 20px of padding on each side, instead of a flat 120/200px, so a company with
   // short status names (e.g. "New", "Done") doesn't carry the same wide column a company with long
@@ -1010,12 +1062,22 @@ export default function DashboardPage() {
   // only keeps a small 20px of its own slack beyond the pill (the pill's own marginRight:10 plus a
   // little left-side breathing room before text-right's own alignment kicks in) — not the original
   // 80px, which was carrying far more empty column space than the pill itself ever needed.
-  const listStatusPillWidthPx = useMemo(() => {
+  const listStatusParentWidthPx = useMemo(() => {
     const maxLen = statusOptions.reduce((max, name) => Math.max(max, String(name || "").trim().length), 0);
     if (maxLen === 0) return 120;
     return Math.ceil(maxLen * 7) + 40;
   }, [statusOptions]);
-  const listStatusColumnWidthPx = listStatusPillWidthPx + 20;
+  // ...and, where the company's statuses have sub-statuses, room in the column for the longest of those beside it — a
+  // row in one shows both, split (statusPillContent): the status half always this width, the sub-status half just as
+  // wide as its own name (the pills lined up on their right).
+  const listStatusSubWidthPx = useMemo(() => {
+    const maxLen = statusRows.reduce(
+      (max, row) => Math.max(max, ...(row.subStages ?? []).map((sub) => String(sub.name || "").trim().length)),
+      0,
+    );
+    return maxLen ? Math.ceil(maxLen * 6.4) + 26 : 0;
+  }, [statusRows]);
+  const listStatusColumnWidthPx = listStatusParentWidthPx + listStatusSubWidthPx + 20;
   const listTableFullMinWidthPx = LIST_TABLE_BASE_WITHOUT_TAGS_OR_STATUS_PX + LIST_TABLE_TAGS_COLUMN_WIDTH_PX + listStatusColumnWidthPx;
   useEffect(() => {
     listTableFullMinWidthRef.current = listTableFullMinWidthPx;
@@ -1033,6 +1095,69 @@ export default function DashboardPage() {
       return { backgroundColor: configured, color: rowTextColorForFill(configured) };
     }
     return statusPillColors(statusLabel);
+  };
+  // The sub-status a project's in (one of its status's, as the company has them now), or none.
+  const projectSubStageOf = (project: Project): { name: string; color: string } | null => {
+    const subStageId = String((project as unknown as Record<string, unknown>).dashboardSubStageId ?? "").trim().toLowerCase();
+    if (!subStageId) return null;
+    const row = statusRows.find((item) => item.name.trim().toLowerCase() === String(project.statusLabel || "").trim().toLowerCase());
+    const stage = row?.subStages?.find((sub) => sub.name.trim().toLowerCase() === subStageId);
+    return stage ? { name: stage.name, color: stage.color } : null;
+  };
+  // A status pill's inside: its status — and, in one of its sub-statuses, that beside it in its own colour and glass,
+  // split down the middle (the pill itself then edge to edge: statusPillSplit). `parentWidthPx`: the status half's
+  // width, to line the split up down a list (none: as wide as its name). `rowPadding`: each half's height, for a pill
+  // without a set one.
+  const statusPillSplit = (project: Project) => statusUpdatingProjectId !== project.id && Boolean(projectSubStageOf(project));
+  // A row's status pill pressed: its menu under it (or over it, without room below — from its bottom, so the
+  // sub-statuses panel grows up away from it). The status half: at the statuses; a split pill's sub-status half
+  // (`atSub`): straight at its status's sub-statuses. The same half again closes it; the other switches it.
+  const toggleStatusMenu = (project: Project, trigger: HTMLElement, atSub: boolean) => {
+    if (statusUpdatingProjectId === project.id || !canEditProjectFromDashboard(project)) return;
+    if (statusMenuProjectId === project.id) {
+      if (statusMenuAtSub === atSub) {
+        setStatusMenuProjectId("");
+        setStatusMenuPos(null);
+      } else {
+        setStatusMenuAtSub(atSub);
+      }
+      return;
+    }
+    const rect = trigger.getBoundingClientRect();
+    // Phones: its bigger rows (max-md: sizes below).
+    const isPhoneMenu = window.matchMedia("(max-width: 767px)").matches;
+    const estimatedMenuHeight = glassMenuHeight(statusMenuRowCount(statusMenuStatuses), isPhoneMenu);
+    const hasRoomBelow = rect.bottom + estimatedMenuHeight <= window.innerHeight - 8;
+    const hasRoomAbove = rect.top - estimatedMenuHeight >= 8;
+    const shouldOpenUp = !hasRoomBelow && hasRoomAbove;
+    // (Lined up with the pill's right end — wide enough for a long sub-status's name.)
+    const menuWidth = Math.max(isPhoneMenu ? GLASS_MENU_MIN_WIDTH_PHONE_PX : GLASS_MENU_MIN_WIDTH_PX + 30, Math.round(Math.min(rect.width, 240)));
+    const clampedLeft = Math.min(Math.max(8, rect.right - menuWidth), window.innerWidth - menuWidth - 8);
+    setStatusMenuPos(
+      shouldOpenUp
+        ? { left: clampedLeft, bottom: window.innerHeight - rect.top + 4, width: menuWidth }
+        : { left: clampedLeft, top: rect.bottom + 4, width: menuWidth },
+    );
+    setStatusMenuAtSub(atSub);
+    setStatusMenuProjectId(project.id);
+  };
+  const statusPillContent = (project: Project, parentWidthPx?: number, rowPadding = "") => {
+    if (statusUpdatingProjectId === project.id) return "Saving...";
+    const label = project.statusLabel || "New";
+    const sub = projectSubStageOf(project);
+    if (!sub) return label;
+    return (
+      <SplitStatusPillContent
+        status={label}
+        subStatus={sub.name}
+        subStatusColor={sub.color}
+        subStatusTextColor={rowTextColorForFill(sub.color)}
+        statusWidthPx={parentWidthPx}
+        padY={rowPadding}
+        statusTitle="Change status"
+        subStatusTitle={`Change ${label}'s sub-status`}
+      />
+    );
   };
   const canEditProjectFromDashboard = (project: Project) =>
     projectTabAccess(
@@ -1110,7 +1235,8 @@ export default function DashboardPage() {
   };
 
   // boardOrder: where it was dropped on the board (lib/board-drop-order.ts), saved in the same write.
-  const onSelectProjectStatus = async (project: Project, nextStatus: string, boardOrder?: number) => {
+  // `chosenSubStage`: a sub-stage picked for it (a list row's status menu) — else the status's default one.
+  const onSelectProjectStatus = async (project: Project, nextStatus: string, boardOrder?: number, chosenSubStage?: string) => {
     if (!nextStatus || statusUpdatingProjectId === project.id || !canEditProjectFromDashboard(project)) return;
     const changesStatus = nextStatus.trim().toLowerCase() !== String(project.statusLabel || "").trim().toLowerCase();
     const knownLock = changesStatus ? bonusLockById.get(project.id) : "";
@@ -1126,7 +1252,7 @@ export default function DashboardPage() {
     // Company Settings — not "Other" — so it's immediately triaged; a column with none marked
     // default (or none configured at all) just clears to "".
     const destinationStatusRow = statusRows.find((row) => row.name.trim().toLowerCase() === nextStatus.trim().toLowerCase());
-    const nextSubStageId = destinationStatusRow?.subStages?.find((sub) => sub.isDefault)?.name ?? "";
+    const nextSubStageId = chosenSubStage ?? destinationStatusRow?.subStages?.find((sub) => sub.isDefault)?.name ?? "";
     setStatusUpdatingProjectId(project.id);
     // Same completion date updateProjectStatus stores (kept between completed statuses, stamped on
     // entering one), so the Completed Projects pop-up has the right date straight away.
@@ -1829,6 +1955,8 @@ export default function DashboardPage() {
   const renderBoardColumn = (options: {
     columnKey: string;
     color: string;
+    // Which column it is, for its right-click menu's Automate.
+    automationTarget?: { status: string; subStage: string };
     count: number;
     projects: Project[];
     isDragOver: boolean;
@@ -1860,6 +1988,9 @@ export default function DashboardPage() {
       <BoardColumnFrame
         key={options.columnKey}
         {...options.dragHandlers}
+        {...(options.automationTarget
+          ? columnAutomationAttrs("projects", options.automationTarget.status, options.automationTarget.subStage, options.color)
+          : {})}
         className="h-full w-[85vw] max-w-[300px] shrink-0 snap-center sm:w-[280px] sm:max-w-none sm:snap-align-none"
         shadow={glassColumnShadow}
       >
@@ -1906,6 +2037,8 @@ export default function DashboardPage() {
     left: React.ReactNode;
     // The column's sort button, at the right of its header after the count.
     sortControl?: React.ReactNode;
+    // Its automations' ⚡ count, before the count.
+    automation?: React.ReactNode;
     count: number;
     badgeBg: string;
     badgeText: string;
@@ -1932,6 +2065,7 @@ export default function DashboardPage() {
         {options.left}
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
+        {options.automation}
         <span
           className="inline-flex h-7 min-w-[28px] items-center justify-center rounded-full px-2 text-[11px] font-bold"
           style={{ color: options.badgeText, backgroundColor: options.badgeBg }}
@@ -1949,6 +2083,7 @@ export default function DashboardPage() {
   const renderCollapsedBoardColumn = (options: {
     columnKey: string;
     color: string;
+    automationTarget?: { status: string; subStage: string };
     count: number;
     name: string;
     isDragOver: boolean;
@@ -1974,6 +2109,9 @@ export default function DashboardPage() {
       <BoardColumnFrame
         key={options.columnKey}
         {...options.dragHandlers}
+        {...(options.automationTarget
+          ? columnAutomationAttrs("projects", options.automationTarget.status, options.automationTarget.subStage, options.color)
+          : {})}
         className="h-full w-[52px] shrink-0 snap-center sm:snap-align-none"
         shadow={glassColumnShadow}
       >
@@ -2067,6 +2205,7 @@ export default function DashboardPage() {
             return renderCollapsedBoardColumn({
               columnKey: col.key,
               color: col.color,
+              automationTarget: { status: openSubBoardColumnName, subStage: col.name },
               count: col.projects.length,
               name: col.name,
               isDragOver,
@@ -2077,6 +2216,7 @@ export default function DashboardPage() {
           return renderBoardColumn({
             columnKey: col.key,
             color: col.color,
+            automationTarget: { status: openSubBoardColumnName, subStage: col.name },
             count: col.projects.length,
             projects: col.projects,
             isDragOver,
@@ -2096,6 +2236,13 @@ export default function DashboardPage() {
               }),
             renderHeader: (badgeBg, badgeText) =>
               renderColumnHeaderBar({
+                automation: (
+                  <ColumnAutomationBadge
+                    count={columnAutomation.canAutomate ? columnAutomation.countFor(openSubBoardColumnName, col.name) : 0}
+                    onOpen={() => columnAutomation.open({ status: openSubBoardColumnName, subStage: col.name, color: col.color })}
+                    style={{ color: badgeText, backgroundColor: badgeBg }}
+                  />
+                ),
                 sortControl: (
                   <BoardColumnSortMenu
                     columnName={col.name}
@@ -2181,6 +2328,7 @@ export default function DashboardPage() {
           return renderCollapsedBoardColumn({
             columnKey: column.name,
             color: column.color,
+            automationTarget: { status: column.name, subStage: "" },
             count: column.projects.length,
             name: column.name,
             isDragOver,
@@ -2192,6 +2340,7 @@ export default function DashboardPage() {
           renderBoardColumn({
             columnKey: column.name,
             color: column.color,
+            automationTarget: { status: column.name, subStage: "" },
             count: column.projects.length,
             projects: column.projects,
             isDragOver,
@@ -2205,6 +2354,13 @@ export default function DashboardPage() {
             renderCard: (project) => renderProjectBoardCard(project, column.color),
             renderHeader: (badgeBg, badgeText) =>
               renderColumnHeaderBar({
+                automation: (
+                  <ColumnAutomationBadge
+                    count={columnAutomation.canAutomate ? columnAutomation.countFor(column.name) : 0}
+                    onOpen={() => columnAutomation.open({ status: column.name, subStage: "", color: column.color })}
+                    style={{ color: badgeText, backgroundColor: badgeBg }}
+                  />
+                ),
                 sortControl: (
                   <BoardColumnSortMenu
                     columnName={column.name}
@@ -2570,7 +2726,7 @@ export default function DashboardPage() {
                                       {member.displayName || member.email || member.uid}
                                     </p>
                                     {member.email ? (
-                                      <p className="truncate text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>
+                                      <p className="truncate text-[12px] font-medium" style={{ color: "var(--text-main)" }}>
                                         {member.email}
                                       </p>
                                     ) : null}
@@ -3107,41 +3263,17 @@ export default function DashboardPage() {
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
-                              if (statusUpdatingProjectId === project.id || !canEditProjectFromDashboard(project)) {
-                                return;
-                              }
-                              if (statusMenuProjectId === project.id) {
-                                setStatusMenuProjectId("");
-                                setStatusMenuPos(null);
-                                return;
-                              }
-                              const trigger = e.currentTarget as HTMLButtonElement;
-                              const rect = trigger.getBoundingClientRect();
-                              // Phones: its bigger rows (max-md: sizes below).
-                              const isPhoneMenu = window.matchMedia("(max-width: 767px)").matches;
-                              const estimatedMenuHeight = glassMenuHeight(statusOptions.length, isPhoneMenu);
-                              const hasRoomBelow = rect.bottom + estimatedMenuHeight <= window.innerHeight - 8;
-                              const hasRoomAbove = rect.top - estimatedMenuHeight >= 8;
-                              const shouldOpenUp = !hasRoomBelow && hasRoomAbove;
-                              const menuWidth = Math.max(isPhoneMenu ? GLASS_MENU_MIN_WIDTH_PHONE_PX : GLASS_MENU_MIN_WIDTH_PX, Math.round(rect.width));
-                              const clampedLeft = Math.min(
-                                Math.max(8, rect.left),
-                                window.innerWidth - menuWidth - 8,
-                              );
-                              setStatusMenuPos({
-                                left: clampedLeft,
-                                top: shouldOpenUp ? Math.max(8, rect.top - estimatedMenuHeight - 4) : rect.bottom + 4,
-                                width: menuWidth,
-                              });
-                              setStatusMenuProjectId(project.id);
+                              toggleStatusMenu(project, e.currentTarget, Boolean((e.target as HTMLElement).closest('[data-status-sub-half="true"]')));
                             }}
-                            className="glass-shine inline-flex h-7 w-[118px] shrink-0 items-center justify-center rounded-full px-3 text-[11px] font-normal"
+                            className={`glass-shine inline-flex h-7 shrink-0 items-center justify-center rounded-full text-[11px] font-normal ${
+                              statusPillSplit(project) ? `max-w-[220px] overflow-hidden ${SPLIT_STATUS_PILL_CLASS}` : "w-[118px] px-3"
+                            }`}
                             style={glassShineStyle(projectStatusPillStyle(project.statusLabel || "New"))}
                             aria-disabled={statusUpdatingProjectId === project.id || !canEditProjectFromDashboard(project)}
                             aria-label="Project status"
                             title={canEditProjectFromDashboard(project) ? "Change project status" : "You can view this project but not change its status"}
                           >
-                            {statusUpdatingProjectId === project.id ? "Saving..." : project.statusLabel || "New"}
+                            {statusPillContent(project)}
                           </button>
                         </div>
 
@@ -3417,7 +3549,8 @@ export default function DashboardPage() {
                         className="py-2 text-right text-[11px] font-bold"
                         style={{ width: listStatusColumnWidthPx, color: dashboardPalette.textMuted }}
                       >
-                        <span className="inline-block text-center" style={{ width: listStatusPillWidthPx, marginRight: 10 }}>
+                        {/* Over the pills' right ends (they line up on the right). */}
+                        <span className="inline-block text-center" style={{ width: listStatusParentWidthPx, marginRight: 10 }}>
                           Status
                         </span>
                       </th>
@@ -3533,43 +3666,22 @@ export default function DashboardPage() {
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
-                              if (statusUpdatingProjectId === project.id || !canEditProjectFromDashboard(project)) {
-                                return;
-                              }
-                              if (statusMenuProjectId === project.id) {
-                                setStatusMenuProjectId("");
-                                setStatusMenuPos(null);
-                                return;
-                              }
-                              const trigger = e.currentTarget as HTMLButtonElement;
-                              const rect = trigger.getBoundingClientRect();
-                              // Phones: its bigger rows (max-md: sizes below).
-                              const isPhoneMenu = window.matchMedia("(max-width: 767px)").matches;
-                              const estimatedMenuHeight = glassMenuHeight(statusOptions.length, isPhoneMenu);
-                              const hasRoomBelow = rect.bottom + estimatedMenuHeight <= window.innerHeight - 8;
-                              const hasRoomAbove = rect.top - estimatedMenuHeight >= 8;
-                              const shouldOpenUp = !hasRoomBelow && hasRoomAbove;
-                              const menuWidth = Math.max(isPhoneMenu ? GLASS_MENU_MIN_WIDTH_PHONE_PX : GLASS_MENU_MIN_WIDTH_PX, Math.round(rect.width));
-                              const clampedLeft = Math.min(
-                                Math.max(8, rect.left),
-                                window.innerWidth - menuWidth - 8,
-                              );
-                              setStatusMenuPos({
-                                left: clampedLeft,
-                                top: shouldOpenUp
-                                  ? Math.max(8, rect.top - estimatedMenuHeight - 4)
-                                  : rect.bottom + 4,
-                                width: menuWidth,
-                              });
-                              setStatusMenuProjectId(project.id);
+                              toggleStatusMenu(project, e.currentTarget, Boolean((e.target as HTMLElement).closest('[data-status-sub-half="true"]')));
                             }}
-                            className="glass-shine inline-flex items-center justify-center rounded-full px-3 py-2 text-[12px] font-normal"
-                            style={glassShineStyle({ ...projectStatusPillStyle(project.statusLabel || "New"), width: listStatusPillWidthPx, marginRight: 10 })}
+                            className={`glass-shine inline-flex items-center justify-center rounded-full text-[12px] font-normal ${
+                              statusPillSplit(project) ? `overflow-hidden ${SPLIT_STATUS_PILL_CLASS}` : "px-3 py-2"
+                            }`}
+                            // Its status half the same width on every row; split, as wide as its sub-status too.
+                            style={glassShineStyle({
+                              ...projectStatusPillStyle(project.statusLabel || "New"),
+                              width: statusPillSplit(project) ? undefined : listStatusParentWidthPx,
+                              marginRight: 10,
+                            })}
                             aria-disabled={statusUpdatingProjectId === project.id || !canEditProjectFromDashboard(project)}
                             aria-label="Project status"
                             title={canEditProjectFromDashboard(project) ? "Change project status" : "You can view this project but not change its status"}
                           >
-                            {statusUpdatingProjectId === project.id ? "Saving..." : project.statusLabel || "New"}
+                            {statusPillContent(project, listStatusParentWidthPx - 3, "py-[5px]")}
                           </button>
                       </td>
                     </tr>
@@ -3596,7 +3708,8 @@ export default function DashboardPage() {
           </div>
 
               {/* A row's status menu: the glass dropdown's look (components/glass-dropdown.tsx — as the lead pop-up's
-                  status) — each status a colour dot and its name, the current one in the brand blue. */}
+                  status) — each status a colour dot and its name, the current one in the brand blue; one with sub-statuses
+                  slides over to them to pick one (components/status-menu-panels.tsx). */}
               {statusMenuProject &&
                 statusMenuPos &&
                 createPortal(
@@ -3605,19 +3718,24 @@ export default function DashboardPage() {
                     role="listbox"
                     aria-label="Project status"
                     className={GLASS_MENU_CLASS}
-                    style={{ ...GLASS_MENU_STYLE, left: statusMenuPos.left, top: statusMenuPos.top, width: statusMenuPos.width }}
+                    style={{
+                      ...GLASS_MENU_STYLE,
+                      left: statusMenuPos.left,
+                      top: statusMenuPos.top,
+                      bottom: statusMenuPos.bottom,
+                      width: statusMenuPos.width,
+                    }}
                     onClick={(e) => e.stopPropagation()}
                   >
-                    {statusOptions.map((option) => (
-                      <GlassMenuOption
-                        key={`${statusMenuProject.id}_${option}`}
-                        label={option}
-                        color={statusColorByName.get(String(option || "").trim().toLowerCase()) || "#64748B"}
-                        selected={String(statusMenuProject.statusLabel || "").trim().toLowerCase() === option.toLowerCase()}
-                        disabled={statusUpdatingProjectId === statusMenuProject.id}
-                        onSelect={() => void onSelectProjectStatus(statusMenuProject, option)}
-                      />
-                    ))}
+                    <StatusMenuPanels
+                      key={`${statusMenuProject.id}_${statusMenuAtSub ? "sub" : "all"}`}
+                      startAtSubStatus={statusMenuAtSub ? String(statusMenuProject.statusLabel || "") : undefined}
+                      statuses={statusMenuStatuses}
+                      currentStatus={String(statusMenuProject.statusLabel || "")}
+                      currentSubStage={String((statusMenuProject as unknown as Record<string, unknown>).dashboardSubStageId ?? "")}
+                      disabled={statusUpdatingProjectId === statusMenuProject.id}
+                      onSelect={(status, subStage) => void onSelectProjectStatus(statusMenuProject, status, undefined, subStage)}
+                    />
                   </div>,
                   document.body,
                 )}
@@ -3754,6 +3872,7 @@ export default function DashboardPage() {
                 document.body,
               )}
             {completedProjectsModal}
+            {columnAutomation.layer}
             {showCompletedProjectsModal && <GlassScrollbarThumb scrollRef={completedProjectsScrollRef} zIndexClassName="z-[8]" />}
             {staffModal}
             {showStaffModal && <GlassScrollbarThumb scrollRef={staffMembersScrollRef} zIndexClassName="z-[8]" />}

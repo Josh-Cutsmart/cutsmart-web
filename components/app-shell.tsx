@@ -2,7 +2,7 @@
 
 import { setActiveCompanyFormats } from "@/lib/company-formats";
 import { glassShineStyle } from "@/lib/glass-shine";
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type TouchEvent as ReactTouchEvent } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type TouchEvent as ReactTouchEvent } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -12,13 +12,23 @@ import {
   Archive,
   CalendarDays,
   ChartColumn,
+  Check,
+  ChevronDown,
   ChevronLeft,
   Download,
+  FileText,
+  FolderPlus,
   GripVertical,
+  Hammer,
   ImagePlus,
+  Images,
   Inbox,
   LayoutDashboard,
   LogOut,
+  Mail,
+  MapPin,
+  Pencil,
+  Phone,
   Plus,
   RefreshCw,
   Save,
@@ -26,9 +36,13 @@ import {
   Settings,
   Sparkles,
   Tag,
+  UserRound,
   Users,
+  X,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
+import { NEW_PROJECT_EVENT, normalizeSmallJobStatuses, SMALL_JOB_COLOR } from "@/lib/small-jobs";
+import { modalCloseButtonClass } from "@/components/settings-ui";
 import { DownloadsModal } from "@/components/downloads-modal";
 import { authorizedFetch } from "@/lib/api-fetch";
 import { useAppTabs } from "@/lib/app-tabs-context";
@@ -52,6 +66,9 @@ import {
   sendOfflineCutlistChanges,
     syncCompanyClientProfileFromProject,
     upsertCompanyClientProfileOnProjectCreate,
+    fetchCompanyClients,
+    notifyColumnAutomationMove,
+    type CompanyClientRow,
   } from "@/lib/firestore-data";
 import { db, hasFirebaseConfig, storage } from "@/lib/firebase";
 import { cn } from "@/lib/utils";
@@ -146,24 +163,75 @@ function normalizeGapAllowancesSettings(raw: unknown): GapAllowancesSettings {
   };
 }
 
+// The sidebar's pages, in its sections' order — each section's name heads its pages (visibleNavGroups below), so a
+// section none of whose pages someone can see doesn't show at all.
 const topNav = [
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/leads", label: "Leads", icon: Inbox },
-  { href: "/contacts", label: "Contacts", icon: Users },
-  { href: "/calendar", label: "Calendar", icon: CalendarDays },
+  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, group: "Production" },
+  // Quick jobs and small fixes, without a whole project each (lib/small-jobs.ts) — for whoever can see the Dashboard.
+  { href: "/small-jobs", label: "Small Jobs", icon: Hammer, group: "Production" },
+  { href: "/leads", label: "Leads", icon: Inbox, group: "Sales" },
   // The company's figures — only for a role holding company.report (see canAccessReports).
-  { href: "/reports", label: "Reports", icon: ChartColumn },
+  { href: "/reports", label: "Reports", icon: ChartColumn, group: "Sales" },
+  { href: "/contacts", label: "Contacts", icon: Users, group: "Company" },
+  { href: "/calendar", label: "Calendar", icon: CalendarDays, group: "Company" },
   // Company Wrapped (/wrapped) is hidden from the sidebar for now — the page is still there, and its year's stats keep
-  // being tallied. To bring it back: { href: "/wrapped", label: "Company Wrapped", icon: PartyPopper } here (and
-  // PartyPopper back in the lucide-react import above).
+  // being tallied. To bring it back: { href: "/wrapped", label: "Company Wrapped", icon: PartyPopper, group: "Company" }
+  // here (and PartyPopper back in the lucide-react import above).
   // Archived leads, projects and contacts — what used to be Recently Deleted (/recently-deleted now
   // redirects here). Every Delete/Archive button in the app files things here.
-  { href: "/archived", label: "Archive", icon: Archive },
-  { href: "/company-settings", label: "Company Settings", icon: Settings },
-  // Last on purpose — rendered with a divider above it (see visibleTopNav.map below) to set it
-  // apart from the rest of the main tabs above it.
-  { href: "/changelog", label: "Changelog", icon: Search },
+  { href: "/archived", label: "Archive", icon: Archive, group: "Company" },
+  { href: "/company-settings", label: "Company Settings", icon: Settings, group: "Company" },
+  { href: "/changelog", label: "Changelog", icon: Search, group: "Application" },
 ];
+
+// The sidebar's sections someone's folded away (by name) — remembered for each person on this device, so the sidebar
+// comes back the same after a reload.
+const foldedNavGroupsStorageKey = (uid: string) => `cutsmart.web.sidebar.sections.${uid}`;
+function readFoldedNavGroups(storageKey: string): Record<string, boolean> {
+  if (!storageKey || typeof window === "undefined") return {};
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(storageKey) || "{}") as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(Object.entries(parsed as Record<string, unknown>).filter(([, on]) => on === true).map(([name]) => [name, true]));
+  } catch {
+    return {};
+  }
+}
+// A menu in New Project that floats over it (fixed, at the page — not clipped by the pop-up's scrolling body, nor cut off
+// by its footer): at its trigger's left and at least its width, below it — or above it, with more room there — and no
+// taller than the room it's in.
+type FloatingMenuPos = { left: number; width: number; top?: number; bottom?: number; maxHeight: number };
+function floatingMenuPosFor(anchor: HTMLElement, wantedHeight: number, minWidth = 0): FloatingMenuPos {
+  const rect = anchor.getBoundingClientRect();
+  const width = Math.min(Math.max(rect.width, minWidth), window.innerWidth - 16);
+  const left = Math.min(Math.max(8, rect.left), window.innerWidth - width - 8);
+  const roomBelow = window.innerHeight - rect.bottom - 12;
+  const roomAbove = rect.top - 12;
+  if (roomBelow >= wantedHeight || roomBelow >= roomAbove) return { left, width, top: rect.bottom + 4, maxHeight: Math.max(0, roomBelow) };
+  return { left, width, bottom: window.innerHeight - rect.top + 4, maxHeight: Math.max(0, roomAbove) };
+}
+// New Project's text boxes: never the browser's own autofill (saved names, emails, phone numbers, addresses — its list
+// would cover the pop-up's own, the existing contacts). Chrome ignores autocomplete="off" for some of those; a value it
+// doesn't recognise turns them off (as settings-ui's measurement boxes) — and password managers leave them alone too.
+const NEW_PROJECT_NO_AUTOFILL = {
+  autoComplete: "cs-new-project",
+  "data-1p-ignore": "",
+  "data-lpignore": "true",
+  "data-bwignore": "true",
+  "data-form-type": "other",
+};
+const FLOATING_MENU_STYLE = {
+  borderColor: "var(--glass-border)",
+  backgroundColor: "var(--glass-modal-bg)",
+  backdropFilter: "blur(12px) saturate(220%)",
+  WebkitBackdropFilter: "blur(12px) saturate(220%)",
+  // Over the pop-up (z-9000).
+  zIndex: 9600,
+};
+// A section folding away or opening out, and the page highlight's own slide (and fade, for a folded section's page).
+const NAV_GROUP_FOLD_MS = 260;
+const NAV_GROUP_FOLD_TRANSITION = `grid-template-rows ${NAV_GROUP_FOLD_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`;
+const NAV_HIGHLIGHT_TRANSITION = "top 260ms cubic-bezier(0.22, 1, 0.36, 1), height 260ms cubic-bezier(0.22, 1, 0.36, 1), opacity 200ms ease";
 
 function hasPermissionKey(permissionKeys: string[] | undefined, key: string): boolean {
   const target = String(key || "").trim().toLowerCase();
@@ -384,6 +452,11 @@ export function AppShell({
   const effectiveHideSidebar = hideSidebar || chromeHidden;
   const [showNewProject, setShowNewProject] = useState(false);
   const [newProjectOrigin, setNewProjectOrigin] = useState<GlassModalOrigin>(null);
+  // New Small Job (Small Jobs' button — lib/small-jobs.ts): the same pop-up, for a small job — its name a job's, no
+  // tags, and it starts in the first small-job status. Back to New Project once it's closed.
+  const [newProjectIsSmallJob, setNewProjectIsSmallJob] = useState(false);
+  const [defaultSmallJobStatus, setDefaultSmallJobStatus] = useState("Open");
+  const [defaultSmallJobStatusColor, setDefaultSmallJobStatusColor] = useState("#16A34A");
   const newProjectPanelRef = useRef<HTMLDivElement | null>(null);
   const newProjectModalOriginElRef = useRef<HTMLElement | null>(null);
   const shouldRenderNewProjectModal = useGlassModalPopOrigin(
@@ -552,7 +625,6 @@ export function AppShell({
   // Lead custom fields not already mapped into one of the fixed fields above — carried through so
   // they're still visible on the project after conversion (see lib/new-project-bridge.ts).
   const [prefilledLeadCustomFields, setPrefilledLeadCustomFields] = useState<LeadCustomFieldSnapshot[]>([]);
-  const [hoveredPhotoId, setHoveredPhotoId] = useState("");
   const [previewPhotoId, setPreviewPhotoId] = useState("");
   const [previewAnim, setPreviewAnim] = useState<PreviewAnimState | null>(null);
   const [previewBackdropOpacity, setPreviewBackdropOpacity] = useState(0);
@@ -563,8 +635,41 @@ export function AppShell({
   const [assigneeMenuOpen, setAssigneeMenuOpen] = useState(false);
   const [projectFormError, setProjectFormError] = useState("");
   const [creatingProject, setCreatingProject] = useState(false);
-  const [navHighlightRect, setNavHighlightRect] = useState<{ top: number; height: number } | null>(null);
+  // New Project's field left empty that it can't do without (its name, its client's) — outlined in red, said under it,
+  // and cleared as it's filled in. And photos being dragged over its Photos.
+  const [newProjectInvalidField, setNewProjectInvalidField] = useState<"" | "name" | "client">("");
+  const [isNewProjectPhotoDragOver, setIsNewProjectPhotoDragOver] = useState(false);
+  const newProjectNameInputRef = useRef<HTMLInputElement | null>(null);
+  const newProjectClientInputRef = useRef<HTMLInputElement | null>(null);
+  // Its client: as their name, phone or email's typed, the contacts this person can see (as on Contacts — read the first
+  // time one of those is gone into) that it matches, floating under that field — one picked fills them in, and the new
+  // project's linked to that contact card. Which field they're under (none: closed), where, and the one ready for Enter.
+  const [newProjectContacts, setNewProjectContacts] = useState<CompanyClientRow[] | null>(null);
+  const newProjectContactsLoadingRef = useRef(false);
+  const [newProjectContact, setNewProjectContact] = useState<CompanyClientRow | null>(null);
+  const [contactSuggestField, setContactSuggestField] = useState<"" | "name" | "phone" | "email">("");
+  const [contactSuggestPos, setContactSuggestPos] = useState<FloatingMenuPos | null>(null);
+  const [contactSuggestIndex, setContactSuggestIndex] = useState(0);
+  const contactSuggestRef = useRef<HTMLDivElement | null>(null);
+  const newProjectClientNameRowRef = useRef<HTMLDivElement | null>(null);
+  // Assign to's list: floating at its field (FloatingMenuPos).
+  const [assigneeMenuPos, setAssigneeMenuPos] = useState<FloatingMenuPos | null>(null);
+  const assigneeMenuRef = useRef<HTMLDivElement | null>(null);
+  // The company's contact categories' colours (by name) — a contact's badge, as on Contacts.
+  const [contactCategoryColors, setContactCategoryColors] = useState<Record<string, string>>({});
+  const [navHighlightRect, setNavHighlightRect] = useState<{ top: number; height: number; folded: boolean } | null>(null);
+  const navHighlightRef = useRef<HTMLDivElement | null>(null);
   const navListRef = useRef<HTMLDivElement | null>(null);
+  // The sidebar's sections folded away (their headings' arrows), as each person left them (readFoldedNavGroups) —
+  // straight from what's saved until they fold or open one here.
+  const foldedNavGroupsKey = user?.uid ? foldedNavGroupsStorageKey(user.uid) : "";
+  const savedFoldedNavGroups = useMemo(() => readFoldedNavGroups(foldedNavGroupsKey), [foldedNavGroupsKey]);
+  const [foldedNavGroupsState, setFoldedNavGroupsState] = useState<{ key: string; folded: Record<string, boolean> }>({ key: "", folded: {} });
+  const foldedNavGroups = foldedNavGroupsState.key === foldedNavGroupsKey ? foldedNavGroupsState.folded : savedFoldedNavGroups;
+  // The section just folded or opened by hand — only it animates (not the ones already folded as the sidebar loads).
+  const [animatedNavGroup, setAnimatedNavGroup] = useState("");
+  // Bumped once a section's finished folding or opening: the page highlight measured again where its page's settled.
+  const [navLayoutTick, setNavLayoutTick] = useState(0);
   const navLinkRefs = useRef<Record<string, HTMLAnchorElement | null>>({});
   const mobileNavPanelRef = useRef<HTMLDivElement | null>(null);
   // The page's own content wrapper (everything below the fixed global top bar).
@@ -779,6 +884,7 @@ export function AppShell({
   }, [isZapierLeadsEnabled]);
   const [companyTagSuggestions, setCompanyTagSuggestions] = useState<string[]>([]);
   const [defaultProjectStatus, setDefaultProjectStatus] = useState("New");
+  const [defaultProjectStatusColor, setDefaultProjectStatusColor] = useState("#64748B");
   const [defaultQuoteExtras, setDefaultQuoteExtras] = useState<string[]>([]);
   const [defaultGapAllowancesSettings, setDefaultGapAllowancesSettings] = useState<GapAllowancesSettings>({
     baseBelowBenchToTopOfDoorDrawer: "",
@@ -1527,6 +1633,10 @@ export function AppShell({
       hasPermissionKey(normalizedEffectivePermissions, "clients.view.all")
     );
   }, [normalizedEffectivePermissions, roleForUi]);
+  const canViewAllClients = useMemo(
+    () => roleForUi === "owner" || roleForUi === "admin" || hasPermissionKey(normalizedEffectivePermissions, "clients.view.all"),
+    [normalizedEffectivePermissions, roleForUi],
+  );
 
   // Calendar: role permission calendar.view (calendar.edit is dropped, but old roles carrying it still get in).
   const canAccessCalendar = useMemo(() => {
@@ -1549,6 +1659,7 @@ export function AppShell({
     () =>
       topNav.filter((item) => {
         if (item.href === "/dashboard") return canAccessDashboard;
+        if (item.href === "/small-jobs") return canAccessDashboard;
         if (item.href === "/contacts") return canAccessClients;
         if (item.href === "/leads") return canAccessLeads;
         if (item.href === "/calendar") return canAccessCalendar;
@@ -1558,6 +1669,50 @@ export function AppShell({
       }),
     [canAccessCalendar, canAccessClients, canAccessCompanySettings, canAccessDashboard, canAccessLeads, canAccessReports],
   );
+  // The pages in their sections, in order.
+  const visibleNavGroups = useMemo(() => {
+    const groups: Array<{ name: string; items: typeof visibleTopNav }> = [];
+    for (const item of visibleTopNav) {
+      const last = groups[groups.length - 1];
+      if (last && last.name === item.group) last.items.push(item);
+      else groups.push({ name: item.group, items: [item] });
+    }
+    return groups;
+  }, [visibleTopNav]);
+  // A section's arrow: folds it away or opens it back out, remembered for next time. On a computer the page highlight
+  // keeps to its page as the pages above it move (straight with it, no slide of its own), then it's measured again
+  // once they've settled.
+  const toggleNavGroup = (name: string) => {
+    const next = { ...foldedNavGroups };
+    if (next[name]) delete next[name];
+    else next[name] = true;
+    setFoldedNavGroupsState({ key: foldedNavGroupsKey, folded: next });
+    setAnimatedNavGroup(name);
+    if (foldedNavGroupsKey) {
+      try {
+        window.localStorage.setItem(foldedNavGroupsKey, JSON.stringify(next));
+      } catch {
+        // Storage unavailable — it just won't be remembered.
+      }
+    }
+    let settled = false;
+    const follow = () => {
+      const container = navListRef.current;
+      const highlight = navHighlightRef.current;
+      const activeHref = visibleTopNav.find((item) => pathname?.startsWith(item.href))?.href;
+      const link = activeHref ? navLinkRefs.current[activeHref] : null;
+      if (settled || !container || !highlight || !link) return;
+      highlight.style.transition = "opacity 200ms ease";
+      highlight.style.top = `${link.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop}px`;
+      window.requestAnimationFrame(follow);
+    };
+    window.requestAnimationFrame(follow);
+    window.setTimeout(() => {
+      settled = true;
+      if (navHighlightRef.current) navHighlightRef.current.style.transition = NAV_HIGHLIGHT_TRANSITION;
+      setNavLayoutTick((tick) => tick + 1);
+    }, NAV_GROUP_FOLD_MS + 40);
+  };
   useLayoutEffect(() => {
     const nextMode = readThemeMode();
     setThemeMode(nextMode);
@@ -1589,6 +1744,7 @@ export function AppShell({
     const onOpenNewProject = (event: Event) => {
       if (!canCreateProject) return;
       const detail = (event as CustomEvent<NewProjectPrefillPayload | undefined>).detail ?? {};
+      setNewProjectIsSmallJob(false);
       const fallbackName = splitFullName(String(detail.clientName || "").trim());
       const prefilledAssigneeUid = String(detail.assignedToUid || "").trim();
       setProjectName(String(detail.projectName || "").trim());
@@ -1655,7 +1811,6 @@ export function AppShell({
       setPhotos([]);
       setEditingProjectPhotoNameKey("");
       setProjectPhotoNameDraft("");
-      setHoveredPhotoId("");
       setPreviewPhotoId("");
       setAssigneeSearch("");
       setAssigneeMenuOpen(false);
@@ -2096,14 +2251,15 @@ export function AppShell({
       if (!canCreateProject) {
         return;
       }
-      const origin = (e as CustomEvent<{ origin?: GlassModalOrigin }>).detail?.origin ?? null;
+      const detail = (e as CustomEvent<{ origin?: GlassModalOrigin; smallJob?: boolean }>).detail;
       setAssigneeUid("");
-      setNewProjectOrigin(origin);
+      setNewProjectIsSmallJob(detail?.smallJob === true);
+      setNewProjectOrigin(detail?.origin ?? null);
       setShowNewProject(true);
     };
-    window.addEventListener("cutsmart:new-project", openNewProject as EventListener);
+    window.addEventListener(NEW_PROJECT_EVENT, openNewProject as EventListener);
     return () => {
-      window.removeEventListener("cutsmart:new-project", openNewProject as EventListener);
+      window.removeEventListener(NEW_PROJECT_EVENT, openNewProject as EventListener);
     };
   }, [canCreateProject]);
 
@@ -2113,6 +2269,7 @@ export function AppShell({
         setAssigneeSearch("");
         setCompanyTagSuggestions([]);
         setDefaultProjectStatus("New");
+        setNewProjectIsSmallJob(false);
         setDefaultQuoteExtras([]);
         setDefaultGapAllowancesSettings(normalizeGapAllowancesSettings(null));
         return;
@@ -2141,6 +2298,19 @@ export function AppShell({
       const firstStatusName =
         String((statusRows[0] as Record<string, unknown> | undefined)?.name || "").trim() || "New";
       setDefaultProjectStatus(firstStatusName);
+      setDefaultProjectStatusColor(String((statusRows[0] as Record<string, unknown> | undefined)?.color || "").trim() || "#64748B");
+      const firstSmallJobStatus = normalizeSmallJobStatuses((companyDocData as Record<string, unknown> | null)?.smallJobStatuses)[0];
+      setDefaultSmallJobStatus(firstSmallJobStatus?.name || "Open");
+      setDefaultSmallJobStatusColor(firstSmallJobStatus?.color || "#16A34A");
+      const rawContactCategories = (companyDocData as Record<string, unknown> | null)?.contactCategories;
+      setContactCategoryColors(
+        Object.fromEntries(
+          (Array.isArray(rawContactCategories) ? rawContactCategories : [])
+            .filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === "object")
+            .map((row) => [String(row.name ?? "").trim(), String(row.color ?? "").trim() || "#7D99B3"])
+            .filter(([name]) => name),
+        ),
+      );
 
       const tagUsage = (companyDocData as Record<string, unknown> | null)?.projectTagUsage;
       const rawTags =
@@ -2204,38 +2374,34 @@ export function AppShell({
     };
   }, [showNewProject]);
 
+  // New Project's floating menus (Assign to's, the contacts a client's details match) close as the pop-up scrolls or the
+  // window's resized — they're placed at what opened them, so they'd be left behind. (Not for their own lists
+  // scrolling, or a text box's.)
   useEffect(() => {
-    if (!assigneeMenuOpen || typeof window === "undefined") return;
-    const scrollHost = newProjectScrollRef.current;
-    const field = assigneeFieldRef.current;
-    if (!scrollHost || !field) return;
-    const raf = window.requestAnimationFrame(() => {
-      const hostRect = scrollHost.getBoundingClientRect();
-      const fieldRect = field.getBoundingClientRect();
-      const overflowBottom = fieldRect.bottom - hostRect.bottom + 220;
-      if (overflowBottom > 0) {
-        scrollHost.scrollTo({
-          top: scrollHost.scrollTop + overflowBottom + 12,
-          behavior: "smooth",
-        });
-        return;
+    if (!assigneeMenuOpen && !contactSuggestField) return;
+    const close = (event: Event) => {
+      const target = event.target as Node | null;
+      if (event.type === "scroll" && target) {
+        if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return;
+        if (assigneeMenuRef.current?.contains(target) || contactSuggestRef.current?.contains(target)) return;
       }
-      if (fieldRect.top < hostRect.top) {
-        scrollHost.scrollTo({
-          top: Math.max(0, scrollHost.scrollTop - (hostRect.top - fieldRect.top) - 12),
-          behavior: "smooth",
-        });
-      }
-    });
-    return () => window.cancelAnimationFrame(raf);
-  }, [assigneeMenuOpen]);
+      setAssigneeMenuOpen(false);
+      setContactSuggestField("");
+    };
+    window.addEventListener("resize", close);
+    window.addEventListener("scroll", close, true);
+    return () => {
+      window.removeEventListener("resize", close);
+      window.removeEventListener("scroll", close, true);
+    };
+  }, [assigneeMenuOpen, contactSuggestField]);
 
   // A press anywhere outside the "Assign Project To" field (its button + list) closes the list — and
   // only closes it, without also acting on whatever the press landed on.
   useEffect(() => {
     if (!assigneeMenuOpen) return;
     const onPointerDown = (event: PointerEvent) => {
-      if (assigneeFieldRef.current?.contains(event.target as Node)) return;
+      if (assigneeFieldRef.current?.contains(event.target as Node) || assigneeMenuRef.current?.contains(event.target as Node)) return;
       setAssigneeMenuOpen(false);
       swallowNextClick();
     };
@@ -2300,16 +2466,22 @@ export function AppShell({
       }
       const containerRect = container.getBoundingClientRect();
       const elRect = el.getBoundingClientRect();
-      const next = { top: elRect.top - containerRect.top + container.scrollTop, height: elRect.height };
+      const next = {
+        top: elRect.top - containerRect.top + container.scrollTop,
+        height: elRect.height,
+        folded: Boolean(el.closest("[data-nav-folded='true']")),
+      };
       // Unchanged (nearly every window resize, and iOS toolbar show/hide) → keep the same object, so
       // the whole app shell doesn't re-render for nothing.
-      setNavHighlightRect((prev) => (prev && prev.top === next.top && prev.height === next.height ? prev : next));
+      setNavHighlightRect((prev) => (prev && prev.top === next.top && prev.height === next.height && prev.folded === next.folded ? prev : next));
     };
     measure();
     if (typeof window === "undefined") return;
     window.addEventListener("resize", measure);
     return () => window.removeEventListener("resize", measure);
-  }, [pathname, visibleTopNav]);
+    // (Again as the sidebar folds to icons or opens out: its sections' names swap for lines, moving the pages. And as
+    // a section's folded or opened — straight away for whether its page is folded away, again once it's settled.)
+  }, [pathname, visibleTopNav, isSidebarIconOnlyContent, foldedNavGroups, navLayoutTick]);
 
   useEffect(() => {
     if (typeof document === "undefined") return;
@@ -2525,6 +2697,11 @@ export function AppShell({
     setAssigneeSearch("");
     setAssigneeMenuOpen(false);
       setProjectFormError("");
+      setNewProjectInvalidField("");
+      setIsNewProjectPhotoDragOver(false);
+      setNewProjectContacts(null);
+      setNewProjectContact(null);
+      setContactSuggestField("");
       setCompanyTagSuggestions([]);
       setDefaultProjectStatus("New");
       setDefaultQuoteExtras([]);
@@ -2884,20 +3061,32 @@ export function AppShell({
     const lastName = String(clientLastName || "").trim();
     const customer = [firstName, lastName].filter(Boolean).join(" ").trim();
     if (!name) {
-      setProjectFormError("Project Name is required.");
+      setProjectFormError(newProjectIsSmallJob ? "Job Name is required." : "Project Name is required.");
+      setNewProjectInvalidField("name");
+      newProjectNameInputRef.current?.focus();
       return;
     }
     if (!customer) {
       setProjectFormError("Client Name is required.");
+      setNewProjectInvalidField("client");
+      newProjectClientInputRef.current?.focus();
       return;
     }
+    // The contact card picked (from those its client's details matched): the new project's linked to it, rather than
+    // matched to one by its details.
+    const linkedContactId = String(newProjectContact?.id || "").trim();
     setProjectFormError("");
+    setNewProjectInvalidField("");
+    // No tags on a small job (any typed in for a project are kept, should it be switched back to one).
+    const projectTags = newProjectIsSmallJob ? [] : tags;
 
     if (!hasFirebaseConfig || !db) {
       setShowNewProject(false);
       router.push("/projects/prj_1001");
       return;
     }
+    // Where it starts: the first project status — a small job's, the first small-job status.
+    const startStatus = newProjectIsSmallJob ? defaultSmallJobStatus || "Open" : defaultProjectStatus || "New";
 
     const storedCompanyId =
       typeof window !== "undefined"
@@ -2989,6 +3178,7 @@ export function AppShell({
           companyId,
           name,
           customer,
+          ...(linkedContactId ? { clientId: linkedContactId } : {}),
           clientFirstName: firstName,
           clientLastName: lastName,
           clientName: customer,
@@ -3007,12 +3197,14 @@ export function AppShell({
         updatedAtIso: nowIso,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
-        status: defaultProjectStatus || "New",
+        status: startStatus,
         // Its first status, as it went in (Reports' days in each stage — updateProjectStatus notes each after it).
-        statusHistory: [{ status: defaultProjectStatus || "New", subStage: "", atIso: nowIso }],
+        statusHistory: [{ status: startStatus, subStage: "", atIso: nowIso }],
+        // A small job (Small Jobs — lib/small-jobs.ts).
+        ...(newProjectIsSmallJob ? { isSmallJob: true } : {}),
         // Made from a lead (Leads › Create Project): which one — Reports' lead conversions.
         ...(sourceLeadId && sourceLeadCompanyId === companyId ? { sourceLeadId } : {}),
-        tags,
+        tags: projectTags,
         isDeleted: false,
         projectImages: projectImageUrls,
         projectImageItems,
@@ -3038,6 +3230,7 @@ export function AppShell({
               companyId,
               projectName: name,
               customer,
+              clientId: linkedContactId || undefined,
               createdAtIso: nowIso,
               updatedAtIso: nowIso,
               createdByUid: user?.uid ?? "",
@@ -3045,8 +3238,8 @@ export function AppShell({
               assignedToUid: assignedUid,
               assignedToName: assignedName,
               assignedTo: assignedName,
-              statusLabel: defaultProjectStatus || "New",
-              tags,
+              statusLabel: startStatus,
+              tags: projectTags,
               notes: projectNotes,
               clientPhone: clientPhone.trim(),
               clientEmail: clientEmail.trim(),
@@ -3064,6 +3257,7 @@ export function AppShell({
               companyId,
               projectName: name,
               customer,
+              clientId: linkedContactId || undefined,
               createdAtIso: nowIso,
               updatedAtIso: nowIso,
               createdByUid: user?.uid ?? "",
@@ -3071,8 +3265,8 @@ export function AppShell({
               assignedToUid: assignedUid,
               assignedToName: assignedName,
               assignedTo: assignedName,
-              statusLabel: defaultProjectStatus || "New",
-              tags,
+              statusLabel: startStatus,
+              tags: projectTags,
               notes: projectNotes,
               clientPhone: clientPhone.trim(),
               clientEmail: clientEmail.trim(),
@@ -3089,6 +3283,7 @@ export function AppShell({
             companyId,
             projectName: name,
             customer,
+            clientId: linkedContactId || undefined,
             createdAtIso: nowIso,
             updatedAtIso: nowIso,
             createdByUid: user?.uid ?? "",
@@ -3096,8 +3291,8 @@ export function AppShell({
             assignedToUid: assignedUid,
             assignedToName: assignedName,
             assignedTo: assignedName,
-            statusLabel: defaultProjectStatus || "New",
-            tags,
+            statusLabel: startStatus,
+            tags: projectTags,
             notes: projectNotes,
             clientPhone: clientPhone.trim(),
             clientEmail: clientEmail.trim(),
@@ -3108,8 +3303,12 @@ export function AppShell({
             projectSettings,
           });
         }
-      if (tags.length > 0) {
+      if (projectTags.length > 0) {
         await resyncCompanyProjectTagUsage(companyId);
+      }
+      // Onto the Dashboard, in its first column: that column's "enters" automations (lib/column-automations.ts).
+      if (!newProjectIsSmallJob) {
+        void notifyColumnAutomationMove({ companyId, board: "projects", item: { id: projectId, name }, from: null, to: { status: startStatus, subStage: "" } });
       }
       if (typeof window !== "undefined" && sourceLeadId && sourceLeadCompanyId) {
         window.dispatchEvent(
@@ -3150,10 +3349,223 @@ export function AppShell({
     }
   };
 
-  const modalRowClass = "flex flex-col gap-1.5";
-  const modalLabelClass = "text-[12px] font-semibold text-[var(--text-muted)]";
-  const modalSectionLabelClass =
-    "mt-1 border-t border-[var(--panel-border)] pt-4 text-[11px] font-bold uppercase tracking-wide text-[var(--text-muted)]";
+  // New Project (below): a project's, or — Small Job switched on, top right — a small job's, in Small Jobs' orange. Its
+  // cards (as the project page's), fields and labels; its photos' remove button, file picker and names; and closing it
+  // (what's in it let go).
+  const closeNewProject = () => {
+    setShowNewProject(false);
+    resetProjectForm();
+  };
+  const newProjectAccent = newProjectIsSmallJob ? SMALL_JOB_COLOR : "var(--brand)";
+  // Its cards: the app's neutral glass (as the project page's and other pop-ups' containers). Not clipped: the menus
+  // opened in them — Assign to, tag suggestions, the notes toolbar's — reach out past them.
+  const newProjectCardClass = "glass-shine glass-shine-neutral rounded-[16px]";
+  const newProjectCardHeaderClass = "flex min-h-[44px] items-center gap-2 border-b border-[var(--glass-border)] px-4 py-1.5";
+  const newProjectCardTitleClass = "text-[12px] font-medium uppercase tracking-[0.9px] text-[var(--text-main)]";
+  const newProjectLabelClass = "mb-1.5 block text-[12px] font-medium text-[var(--text-main)]";
+  const newProjectFieldClass = (invalid = false) =>
+    cn(
+      "h-10 w-full rounded-[10px] border bg-[var(--panel-bg)] px-3 text-[13px] text-[var(--text-main)] outline-none transition placeholder:text-[var(--text-muted)]",
+      invalid ? "border-[var(--danger)]" : "border-[var(--panel-border)] focus:border-[var(--brand)]",
+    );
+  const newProjectFieldIconClass = "pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]";
+  // Its menus' rows (Assign to's): the one picked in the brand blue (as the app's glass menus), a light blue under the
+  // pointer.
+  const newProjectMenuRowClass = (picked: boolean) =>
+    cn(
+      "flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left text-[12px] transition-colors",
+      !picked && "hover:bg-[var(--brand-soft)]",
+    );
+  const newProjectMenuRowStyle = (picked: boolean) => (picked ? { backgroundImage: "var(--brand-gradient)" } : undefined);
+  const clearNewProjectInvalid = (field: "name" | "client") => {
+    if (newProjectInvalidField !== field) return;
+    setNewProjectInvalidField("");
+    setProjectFormError("");
+  };
+  // Its client's contacts (as Contacts reads them — everyone's, or just theirs), read the first time a client field's gone
+  // into. Not for someone who can't see Contacts.
+  const ensureNewProjectContacts = () => {
+    if (!canAccessClients || newProjectContacts !== null || newProjectContactsLoadingRef.current) return;
+    const companyId =
+      String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim() || String(user?.companyId || "").trim();
+    const viewerUid = String(user?.uid || "").trim();
+    if (!companyId) {
+      setNewProjectContacts([]);
+      return;
+    }
+    newProjectContactsLoadingRef.current = true;
+    void (async () => {
+      let rows: CompanyClientRow[] | null = null;
+      try {
+        const response = await authorizedFetch(
+          `/api/clients?companyId=${encodeURIComponent(companyId)}&mode=summary&viewerUid=${encodeURIComponent(viewerUid)}&scope=${canViewAllClients ? "all" : "mine"}`,
+          { method: "GET", cache: "no-store" },
+        );
+        const json = (await response.json().catch(() => null)) as { ok?: boolean; clients?: CompanyClientRow[] } | null;
+        if (response.ok && json?.ok && Array.isArray(json.clients)) rows = json.clients;
+      } catch {
+        // read straight from the database below
+      }
+      if (!rows) rows = await fetchCompanyClients(companyId, { viewerUid, includeAll: canViewAllClients }).catch(() => []);
+      newProjectContactsLoadingRef.current = false;
+      setNewProjectContacts(rows.filter((row) => String(row.name || row.email || "").trim()));
+    })();
+  };
+  // The contacts what's typed in the field being typed in matches: the name's words (each the start of one of theirs),
+  // the email, or the phone's digits. None once one's picked.
+  const newProjectContactSuggestions = (): CompanyClientRow[] => {
+    if (!contactSuggestField || newProjectContact || !newProjectContacts?.length) return [];
+    if (contactSuggestField === "name") {
+      const words = `${clientFirstName} ${clientLastName}`.trim().toLowerCase().split(/\s+/).filter(Boolean);
+      if (words.join("").length < 2) return [];
+      return newProjectContacts
+        .filter((row) => {
+          const theirs = String(row.name || "").toLowerCase().split(/\s+/);
+          return words.every((word) => theirs.some((their) => their.startsWith(word)));
+        })
+        .slice(0, 6);
+    }
+    if (contactSuggestField === "email") {
+      const query = clientEmail.trim().toLowerCase();
+      if (query.length < 3) return [];
+      return newProjectContacts.filter((row) => String(row.email || "").toLowerCase().includes(query)).slice(0, 6);
+    }
+    const digits = clientPhone.replace(/\D/g, "");
+    if (digits.length < 3) return [];
+    return newProjectContacts.filter((row) => String(row.phone || "").replace(/\D/g, "").includes(digits)).slice(0, 6);
+  };
+  // Shown under the field being typed in (its whole row, for the name), the first ready for Enter.
+  const suggestContactsFrom = (field: "name" | "phone" | "email", anchor: HTMLElement) => {
+    if (!canAccessClients) return;
+    ensureNewProjectContacts();
+    setContactSuggestField(field);
+    setContactSuggestPos(floatingMenuPosFor(anchor, 300, 300));
+    setContactSuggestIndex(0);
+  };
+  // Gone once the field's left (a press on one of them doesn't leave it — see their onMouseDown).
+  const closeContactSuggestionsSoon = () => window.setTimeout(() => setContactSuggestField(""), 120);
+  // A client field's keys while they're showing: ↑/↓ through them, Enter picks one, Escape closes them.
+  const onContactFieldKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>) => {
+    const suggestions = newProjectContactSuggestions();
+    if (!suggestions.length || e.ctrlKey || e.metaKey) return;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      setContactSuggestIndex((index) => (index + (e.key === "ArrowDown" ? 1 : suggestions.length - 1)) % suggestions.length);
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      pickNewProjectContact(suggestions[Math.min(contactSuggestIndex, suggestions.length - 1)]);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      setContactSuggestField("");
+    }
+  };
+  // The name changed from the picked contact's: someone else, then — not linked to that contact any more.
+  const unlinkContactIfRenamed = (first: string, last: string) => {
+    if (!newProjectContact) return;
+    const typed = `${first} ${last}`.trim().replace(/\s+/g, " ").toLowerCase();
+    if (typed !== String(newProjectContact.name || "").trim().replace(/\s+/g, " ").toLowerCase()) setNewProjectContact(null);
+  };
+  // Assign to's list: opened at its field.
+  const toggleAssigneeMenu = () => {
+    if (assigneeMenuOpen) {
+      setAssigneeMenuOpen(false);
+      return;
+    }
+    if (assigneeFieldRef.current) setAssigneeMenuPos(floatingMenuPosFor(assigneeFieldRef.current, 290));
+    setAssigneeMenuOpen(true);
+  };
+  // A contact picked: its name, phone and email for the client (the address too, unless one's already typed in).
+  const pickNewProjectContact = (contact: CompanyClientRow) => {
+    const [first = "", ...rest] = String(contact.name || "").trim().split(/\s+/);
+    setClientFirstName(first);
+    setClientLastName(rest.join(" "));
+    setClientPhone(String(contact.phone || "").trim());
+    setClientEmail(String(contact.email || "").trim());
+    if (!projectAddress.trim() && String(contact.address || "").trim()) setProjectAddress(String(contact.address).trim());
+    setNewProjectContact(contact);
+    setContactSuggestField("");
+    clearNewProjectInvalid("client");
+  };
+  const unpickNewProjectContact = () => {
+    setClientFirstName("");
+    setClientLastName("");
+    setClientPhone("");
+    setClientEmail("");
+    if (newProjectContact && projectAddress.trim() === String(newProjectContact.address || "").trim()) setProjectAddress("");
+    setNewProjectContact(null);
+  };
+  // A contact's badge: their initials, in their category's colour (as on Contacts).
+  const renderNewProjectContactBadge = (contact: CompanyClientRow, size: number) => (
+    <span
+      className="inline-flex shrink-0 items-center justify-center rounded-full font-bold text-white"
+      style={{
+        width: size,
+        height: size,
+        fontSize: size >= 32 ? 13 : 11,
+        backgroundColor: (contact.category ? contactCategoryColors[contact.category] : "") || "#7D99B3",
+      }}
+    >
+      {initials(contact.name || contact.email || "?")}
+    </span>
+  );
+  const newProjectPhotoCount = prefilledProjectImages.length + photos.length;
+  const newProjectPhotoRemoveClass =
+    "absolute right-1 top-1 inline-flex h-6 w-6 items-center justify-center rounded-full bg-[rgba(15,23,42,0.62)] text-white shadow-[0_1px_4px_rgba(0,0,0,0.25)] transition hover:bg-[var(--danger)]";
+  const newProjectPhotoInput = (
+    <input
+      type="file"
+      accept="image/*"
+      multiple
+      className="hidden"
+      onChange={(e) => {
+        void addPhotoFiles(e.target.files);
+        e.currentTarget.value = "";
+      }}
+    />
+  );
+  // A photo's name, under it: tap to give it one (or change it).
+  const newProjectPhotoCaption = (key: string, name: string) =>
+    editingProjectPhotoNameKey === key ? (
+      <input
+        {...NEW_PROJECT_NO_AUTOFILL}
+        autoFocus
+        value={projectPhotoNameDraft}
+        onChange={(e) => setProjectPhotoNameDraft(e.currentTarget.value)}
+        onBlur={commitProjectPhotoNameEdit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            commitProjectPhotoNameEdit();
+          }
+          if (e.key === "Escape") {
+            e.preventDefault();
+            setEditingProjectPhotoNameKey("");
+            setProjectPhotoNameDraft("");
+          }
+        }}
+        className="mt-1 h-5 w-full rounded-[6px] border border-[var(--brand)] bg-[var(--panel-bg)] px-1.5 text-center text-[11px] font-medium text-[var(--text-main)] outline-none"
+      />
+    ) : (
+      <button
+        type="button"
+        onClick={() => beginEditProjectPhotoName(key, name)}
+        title="Name this photo"
+        className={cn(
+          "mt-1 flex h-5 w-full items-center justify-center gap-1 rounded-[6px] px-1 text-[11px] transition hover:bg-[var(--panel-muted)]",
+          name.trim() ? "font-medium text-[var(--text-main)]" : "text-[var(--text-muted)]",
+        )}
+      >
+        {name.trim() ? (
+          <span className="truncate">{name.trim()}</span>
+        ) : (
+          <>
+            <Pencil size={10} className="shrink-0" />
+            Name
+          </>
+        )}
+      </button>
+    );
   const isDarkMode = themeMode === "dark";
   const shellPalette = isDarkMode
     ? {
@@ -3303,26 +3715,63 @@ export function AppShell({
                 </button>
               )}
               <div className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
-                {visibleTopNav.map((item) => {
-                  const active = pathname?.startsWith(item.href);
-                  const Icon = item.icon;
-                  const isChangelog = item.href === "/changelog";
+                {visibleNavGroups.map((group, groupIdx) => {
+                  const isFolded = Boolean(foldedNavGroups[group.name]);
                   return (
-                    <Fragment key={item.href}>
-                      {isChangelog && <div className="my-2 h-px" style={{ backgroundColor: shellPalette.border }} />}
-                      <Link
-                        href={item.href}
+                    <Fragment key={group.name}>
+                      {/* Its name, over its pages (as Company Settings' own side nav), a line on across the rest of the row
+                          and the arrow that folds it away at the end (toggleNavGroup). */}
+                      <button
+                        type="button"
+                        onClick={() => toggleNavGroup(group.name)}
+                        aria-expanded={!isFolded}
                         className={cn(
-                          "flex items-center gap-3 rounded-[12px] px-4 py-3.5 text-[17px] font-medium transition",
-                          active ? "bg-[var(--brand-soft)]" : "hover:bg-[var(--panel-muted)]",
+                          "flex w-full items-center gap-2.5 px-4 pb-1 text-left text-[12px] font-bold uppercase tracking-[0.8px]",
+                          groupIdx === 0 ? "pt-1" : "pt-4",
                         )}
+                        style={{ color: shellPalette.textMuted }}
+                      >
+                        <span className="shrink-0">{group.name}</span>
+                        <span aria-hidden="true" className="h-px min-w-0 flex-1" style={{ backgroundColor: shellPalette.border }} />
+                        <ChevronDown
+                          size={16}
+                          strokeWidth={2.5}
+                          aria-hidden="true"
+                          className="shrink-0 transition-transform duration-200"
+                          style={{ transform: isFolded ? "none" : "rotate(180deg)" }}
+                        />
+                      </button>
+                      <div
+                        inert={isFolded}
+                        className="grid"
                         style={{
-                          color: active ? "var(--brand)" : shellPalette.textMuted,
+                          gridTemplateRows: isFolded ? "0fr" : "1fr",
+                          transition: animatedNavGroup === group.name ? NAV_GROUP_FOLD_TRANSITION : undefined,
                         }}
                       >
-                        <Icon size={22} />
-                        {item.label}
-                      </Link>
+                        <div className="min-h-0 space-y-1 overflow-hidden">
+                          {group.items.map((item) => {
+                            const active = pathname?.startsWith(item.href);
+                            const Icon = item.icon;
+                            return (
+                              <Link
+                                key={item.href}
+                                href={item.href}
+                                className={cn(
+                                  "flex items-center gap-3 rounded-[12px] px-4 py-3.5 text-[17px] font-medium transition",
+                                  active ? "bg-[var(--brand-soft)]" : "hover:bg-[var(--panel-muted)]",
+                                )}
+                                style={{
+                                  color: active ? "var(--brand)" : shellPalette.textMuted,
+                                }}
+                              >
+                                <Icon size={22} />
+                                {item.label}
+                              </Link>
+                            );
+                          })}
+                        </div>
+                      </div>
                     </Fragment>
                   );
                 })}
@@ -3544,42 +3993,91 @@ export function AppShell({
           >
             {navHighlightRect && (
               <div
+                ref={navHighlightRef}
                 aria-hidden="true"
                 className="absolute left-0 right-1 rounded-[10px]"
                 style={{
                   top: navHighlightRect.top,
                   height: navHighlightRect.height,
                   backgroundColor: "var(--brand-soft)",
-                  transition: "top 260ms cubic-bezier(0.22, 1, 0.36, 1), height 260ms cubic-bezier(0.22, 1, 0.36, 1)",
+                  transition: NAV_HIGHLIGHT_TRANSITION,
+                  // Gone while its page's section is folded away.
+                  opacity: navHighlightRect.folded ? 0 : 1,
                   zIndex: 0,
                 }}
               />
             )}
-            {visibleTopNav.map((item) => {
-              const active = pathname?.startsWith(item.href);
-              const Icon = item.icon;
-              const isChangelog = item.href === "/changelog";
+            {visibleNavGroups.map((group, groupIdx) => {
+              // Folded away (its heading's arrow — toggleNavGroup) — but not while the sidebar's only icons, with no
+              // heading to open it again from.
+              const isFolded = !isSidebarIconOnlyContent && Boolean(foldedNavGroups[group.name]);
               return (
-                <Fragment key={item.href}>
-                  {isChangelog && <div className="my-2 h-px" style={{ backgroundColor: shellPalette.border }} />}
-                  <Link
-                    href={item.href}
-                    ref={(el) => {
-                      navLinkRefs.current[item.href] = el;
-                    }}
-                    title={isSidebarIconOnlyContent ? item.label : undefined}
-                    className={cn(
-                      "relative z-[1] flex items-center gap-2.5 rounded-[10px] py-2.5 text-[13px] font-medium transition-colors",
-                      isSidebarIconOnlyContent ? "justify-center px-0" : "px-3",
-                      !active && "hover:bg-[var(--panel-muted)]",
-                    )}
+                <Fragment key={group.name}>
+                  {/* Its name, over its pages (as Company Settings' own side nav), a line on across the rest of the row
+                      and the arrow that folds it away at the end — just the line between sections when the sidebar's
+                      only icons. */}
+                  {isSidebarIconOnlyContent ? (
+                    groupIdx > 0 ? <div className="mx-2 my-2 h-px" style={{ backgroundColor: shellPalette.border }} /> : null
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => toggleNavGroup(group.name)}
+                      aria-expanded={!isFolded}
+                      title={isFolded ? `Show ${group.name}` : `Hide ${group.name}`}
+                      className={cn(
+                        "sidebar-label-fade-in flex w-full items-center gap-2 px-3 pb-1 text-left text-[10.5px] font-bold uppercase tracking-[0.8px] transition-opacity hover:opacity-75",
+                        groupIdx === 0 ? "pt-1" : "pt-3",
+                      )}
+                      style={{ color: shellPalette.textMuted }}
+                    >
+                      <span className="min-w-0 truncate">{group.name}</span>
+                      <span aria-hidden="true" className="h-px min-w-3 flex-1" style={{ backgroundColor: shellPalette.border }} />
+                      <ChevronDown
+                        size={13}
+                        strokeWidth={2.5}
+                        aria-hidden="true"
+                        className="shrink-0 transition-transform duration-200"
+                        style={{ transform: isFolded ? "none" : "rotate(180deg)" }}
+                      />
+                    </button>
+                  )}
+                  <div
+                    data-nav-folded={isFolded ? "true" : undefined}
+                    inert={isFolded}
+                    className="grid"
                     style={{
-                      color: active ? "var(--brand)" : shellPalette.textMuted,
+                      gridTemplateRows: isFolded ? "0fr" : "1fr",
+                      transition: animatedNavGroup === group.name ? NAV_GROUP_FOLD_TRANSITION : undefined,
                     }}
                   >
-                    <Icon size={17} className="shrink-0" />
-                    {!isSidebarIconOnlyContent && <span className="sidebar-label-fade-in min-w-0 truncate">{item.label}</span>}
-                  </Link>
+                    <div className="min-h-0 space-y-0.5 overflow-hidden">
+                      {group.items.map((item) => {
+                        const active = pathname?.startsWith(item.href);
+                        const Icon = item.icon;
+                        return (
+                          <Link
+                            key={item.href}
+                            href={item.href}
+                            ref={(el) => {
+                              navLinkRefs.current[item.href] = el;
+                            }}
+                            title={isSidebarIconOnlyContent ? item.label : undefined}
+                            className={cn(
+                              "relative z-[1] flex items-center gap-2.5 rounded-[10px] py-2.5 text-[13px] font-medium transition-colors",
+                              isSidebarIconOnlyContent ? "justify-center px-0" : "px-3",
+                              !active && "hover:bg-[var(--panel-muted)]",
+                            )}
+                            style={{
+                              color: active ? "var(--brand)" : shellPalette.textMuted,
+                            }}
+                          >
+                            <Icon size={17} className="shrink-0" />
+                            {!isSidebarIconOnlyContent && <span className="sidebar-label-fade-in min-w-0 truncate">{item.label}</span>}
+                          </Link>
+                        );
+                      })}
+                    </div>
+                  </div>
                 </Fragment>
               );
             })}
@@ -4015,197 +4513,498 @@ export function AppShell({
 
       {shouldRenderNewProjectModal && (
         <div
-          className="glass-modal-backdrop fixed inset-0 z-[9000] flex items-center justify-center px-4"
+          className="glass-modal-backdrop fixed inset-0 z-[9000] flex items-center justify-center p-0 sm:px-4"
           onClick={(e) => {
             if (e.target !== e.currentTarget) return;
             if (hasNewProjectFormContent()) return;
-            setShowNewProject(false);
-            resetProjectForm();
+            closeNewProject();
           }}
         >
+          {/* New Project — or, with Small Job switched on (top right), a small job, into Small Jobs instead
+              (lib/small-jobs.ts). Laid out as the page it opens into: what it is and who it's for down the left, its
+              notes and photos down the right. Ctrl/⌘+Enter creates it. */}
           <div
             ref={newProjectPanelRef}
-            className="glass-modal-panel relative flex flex-col overflow-hidden"
-            style={{
-              width: "min(920px, calc(100vw - 16px))",
-              height: "min(660px, calc(100vh - 16px))",
+            role="dialog"
+            aria-modal="true"
+            aria-label={newProjectIsSmallJob ? "New Small Job" : "New Project"}
+            // A phone: the whole screen, keyboard up or not (as Leads' lead pop-up — data-phone-fullscreen, app/globals.css).
+            // Bigger: room for its cards side by side without scrolling (still within the screen's edges).
+            data-phone-fullscreen="true"
+            className="glass-modal-panel relative flex h-full w-full flex-col overflow-hidden max-sm:rounded-none! max-sm:border-0! sm:h-[min(880px,calc(100dvh_-_16px))] sm:w-[min(1160px,calc(100vw_-_16px))]"
+            onKeyDown={(e) => {
+              if (e.key !== "Enter" || !(e.ctrlKey || e.metaKey)) return;
+              e.preventDefault();
+              void onCreateProject();
             }}
           >
-            <div className="glass-modal-header px-5 py-4 sm:px-6">
-              <p className="text-[19px] font-semibold text-[var(--text-main)]">New Project</p>
+            <div className="glass-modal-header flex items-center gap-3 px-4 py-3 max-sm:pt-[calc(12px+env(safe-area-inset-top))] sm:px-6 sm:py-4">
+              {/* (Not on a phone — the room's for the Small Job switch's name.) */}
+              <span
+                className="glass-shine inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-white max-sm:hidden"
+                style={glassShineStyle(newProjectAccent)}
+              >
+                {newProjectIsSmallJob ? <Hammer size={18} /> : <FolderPlus size={18} />}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-[18px] font-medium text-[var(--text-main)]">{newProjectIsSmallJob ? "New Small Job" : "New Project"}</p>
+              </div>
+              {/* Small Job: this one into Small Jobs instead of onto the Dashboard. */}
+              <button
+                type="button"
+                role="switch"
+                aria-checked={newProjectIsSmallJob}
+                onClick={() => setNewProjectIsSmallJob((on) => !on)}
+                title={newProjectIsSmallJob ? "Make it a full project, on the Dashboard" : "Make it a small job, in Small Jobs"}
+                className={cn(
+                  "inline-flex h-9 shrink-0 items-center gap-2 rounded-full border pl-3 pr-1.5 text-[13px] font-medium transition",
+                  newProjectIsSmallJob ? "glass-shine text-white hover:brightness-105" : "hover:bg-[var(--panel-muted)]",
+                )}
+                style={
+                  newProjectIsSmallJob
+                    ? glassShineStyle(SMALL_JOB_COLOR)
+                    : { borderColor: "var(--panel-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }
+                }
+              >
+                <Hammer size={14} className="shrink-0" />
+                <span>Small Job</span>
+                <span
+                  aria-hidden="true"
+                  className="relative h-[18px] w-[30px] shrink-0 rounded-full transition-colors duration-200"
+                  style={{
+                    backgroundColor: newProjectIsSmallJob ? "rgba(255,255,255,0.35)" : "color-mix(in srgb, var(--text-muted) 35%, transparent)",
+                  }}
+                >
+                  <span
+                    className="absolute top-[3px] h-3 w-3 rounded-full bg-white shadow-[0_1px_2px_rgba(0,0,0,0.25)] transition-[left] duration-200"
+                    style={{ left: newProjectIsSmallJob ? 15 : 3 }}
+                  />
+                </span>
+              </button>
+              <button type="button" onClick={closeNewProject} className={modalCloseButtonClass} aria-label="Close" title="Close">
+                <X size={16} />
+              </button>
             </div>
-            <div ref={newProjectScrollRef} className="glass-scroll relative flex-1 space-y-4 overflow-y-auto px-5 py-4 sm:px-6">
-              <div className={cn(modalRowClass, "max-w-[480px]")}>
-                <p className={modalLabelClass}>Project Name</p>
-                <input
-                  value={projectName}
-                  onChange={(e) => setProjectName(e.target.value)}
-                  className="h-10 w-full rounded-[10px] border border-[var(--panel-border)] bg-[var(--panel-bg)] px-3 text-[13px] text-[var(--text-main)] outline-none transition focus:border-[var(--brand)]"
-                  placeholder="Project name"
-                />
-              </div>
-              <div className={cn(modalRowClass, "max-w-[480px]")}>
-                <p className={modalLabelClass}>Client Name</p>
-                <div className="grid grid-cols-2 gap-2">
-                  <input
-                    value={clientFirstName}
-                    onChange={(e) => setClientFirstName(e.target.value)}
-                    className="h-10 w-full rounded-[10px] border border-[var(--panel-border)] bg-[var(--panel-bg)] px-3 text-[13px] text-[var(--text-main)] outline-none transition focus:border-[var(--brand)]"
-                    placeholder="First"
-                  />
-                  <input
-                    value={clientLastName}
-                    onChange={(e) => setClientLastName(e.target.value)}
-                    className="h-10 w-full rounded-[10px] border border-[var(--panel-border)] bg-[var(--panel-bg)] px-3 text-[13px] text-[var(--text-main)] outline-none transition focus:border-[var(--brand)]"
-                    placeholder="Last"
-                  />
-                </div>
-              </div>
-              <div className="grid max-w-[480px] grid-cols-1 gap-3 sm:grid-cols-2">
-                <div className={modalRowClass}>
-                  <p className={modalLabelClass}>Client Phone</p>
-                  <input inputMode="tel"
-                    value={clientPhone}
-                    onChange={(e) => setClientPhone(formatMobileLikeDesktop(e.target.value))}
-                    className="h-10 w-full rounded-[10px] border border-[var(--panel-border)] bg-[var(--panel-bg)] px-3 text-[13px] text-[var(--text-main)] outline-none transition focus:border-[var(--brand)]"
-                    placeholder="021 234 5678"
-                  />
-                </div>
-                <div className={modalRowClass}>
-                  <p className={modalLabelClass}>Client Email</p>
-                  <input
-                    value={clientEmail}
-                    onChange={(e) => setClientEmail(e.target.value)}
-                    className="h-10 w-full rounded-[10px] border border-[var(--panel-border)] bg-[var(--panel-bg)] px-3 text-[13px] text-[var(--text-main)] outline-none transition focus:border-[var(--brand)]"
-                    placeholder="client@email.com"
-                  />
-                </div>
-              </div>
-              <div className={cn(modalRowClass, "max-w-[480px]")}>
-                <p className={modalLabelClass}>Project Address</p>
-                <input
-                  value={projectAddress}
-                  onChange={(e) => setProjectAddress(e.target.value)}
-                  className="h-10 w-full rounded-[10px] border border-[var(--panel-border)] bg-[var(--panel-bg)] px-3 text-[13px] text-[var(--text-main)] outline-none transition focus:border-[var(--brand)]"
-                  placeholder="Street, suburb, city"
-                />
-              </div>
-              {projectAddress.trim().length > 5 && (
-                <div className={cn(modalRowClass, "max-w-[480px]")}>
-                  <div className="overflow-hidden rounded-[10px] border border-[var(--panel-border)]">
-                    <iframe
-                      title="Address preview"
-                      className="h-[170px] w-full border-0"
-                      src={`https://maps.google.com/maps?q=${encodeURIComponent(projectAddress.trim())}&t=&z=13&ie=UTF8&iwloc=&output=embed`}
-                    />
-                  </div>
-                </div>
-              )}
-              <div className={modalRowClass}>
-                <p className={modalSectionLabelClass}>Tags</p>
-                <div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    {tags.map((tag) => (
-                      <button
-                        key={tag}
-                        type="button"
-                        onClick={() => removeTag(tag)}
-                        className="inline-flex items-center gap-1 rounded-[8px] border border-[var(--panel-border)] bg-[var(--panel-muted)] px-2 py-[2px] text-[12px] font-semibold text-[var(--text-muted)] transition hover:border-[var(--danger-border)] hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
-                        title="Delete tag"
-                      >
-                        <Tag size={11} />
-                        {tag}
-                      </button>
-                    ))}
-                    {tags.length < 5 && isTagInputOpen && (
-                      <div className="relative">
+            {/* data-keyboard-scroll-pad: on a phone, room under its fields for the keyboard (the one being typed in scrolled up above it). */}
+            <div ref={newProjectScrollRef} data-keyboard-scroll-pad="true" className="glass-scroll relative min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
+              {/* On a computer its two columns fill the pop-up's height — the Client card and Notes taking what's left. */}
+              <div className="grid gap-4 lg:min-h-full lg:grid-cols-2">
+                <div className="flex flex-col gap-4">
+                  {/* What it is — and who's on it, and (a project's) its tags. */}
+                  <section className={newProjectCardClass}>
+                    <div className={newProjectCardHeaderClass}>
+                      {newProjectIsSmallJob ? (
+                        <Hammer size={14} className="shrink-0 text-[var(--text-muted)]" />
+                      ) : (
+                        <FolderPlus size={14} className="shrink-0 text-[var(--text-muted)]" />
+                      )}
+                      <span className={newProjectCardTitleClass}>{newProjectIsSmallJob ? "Job" : "Project"}</span>
+                    </div>
+                    <div className="space-y-3.5 p-4">
+                      <div>
+                        <label htmlFor="new-project-name" className={newProjectLabelClass}>
+                          {newProjectIsSmallJob ? "Job name" : "Project name"} <span className="text-[var(--danger)]">*</span>
+                        </label>
                         <input
-                          ref={newProjectTagInputRef}
-                          value={tagInput}
-                          onFocus={() => setShowTagSuggestions(true)}
-                          onBlur={() => window.setTimeout(() => setShowTagSuggestions(false), 120)}
+                          {...NEW_PROJECT_NO_AUTOFILL}
+                          id="new-project-name"
+                          ref={newProjectNameInputRef}
+                          autoFocus={isDesktopViewport}
+                          value={projectName}
                           onChange={(e) => {
-                            setTagInput(e.target.value);
-                            setShowTagSuggestions(true);
+                            setProjectName(e.target.value);
+                            clearNewProjectInvalid("name");
                           }}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" || e.key === ",") {
-                              e.preventDefault();
-                              const added = addTag(tagInput);
-                              if (added) {
-                                setShowTagSuggestions(true);
-                                window.setTimeout(() => newProjectTagInputRef.current?.focus(), 0);
-                              }
-                            }
-                            if (e.key === "Escape") {
-                              setTagInput("");
-                              setShowTagSuggestions(false);
-                              setIsTagInputOpen(false);
-                            }
-                          }}
-                          className="h-7 w-[120px] rounded-[8px] border border-[var(--panel-border)] bg-[var(--panel-bg)] px-2 text-[12px] text-[var(--text-main)] outline-none transition focus:border-[var(--brand)]"
-                          placeholder="Tag"
+                          aria-invalid={newProjectInvalidField === "name" || undefined}
+                          className={cn(newProjectFieldClass(newProjectInvalidField === "name"), "h-11 text-[15px] font-medium")}
+                          placeholder={newProjectIsSmallJob ? "e.g. Replace toekick" : "e.g. Smith kitchen renovation"}
                         />
-                        {showTagSuggestions && filteredTagSuggestions.length > 0 && (
-                          <div className="absolute left-0 top-[calc(100%+2px)] z-30 max-h-[220px] w-[220px] overflow-auto rounded-[10px] border border-[var(--panel-border)] bg-[var(--panel-bg)] p-1 shadow-[var(--shadow-md)]">
-                            {filteredTagSuggestions.map((tag) => (
+                        {newProjectInvalidField === "name" ? (
+                          <p className="mt-1 text-[11.5px] font-medium text-[var(--danger)]">Give it a name to find it by.</p>
+                        ) : null}
+                      </div>
+                      {canCreateForOthers && (
+                        <div>
+                          <p className={newProjectLabelClass}>{newProjectIsSmallJob ? "Assign job to" : "Assign project to"}</p>
+                          <div ref={assigneeFieldRef} className="relative">
+                            <button
+                              type="button"
+                              onClick={toggleAssigneeMenu}
+                              aria-haspopup="listbox"
+                              aria-expanded={assigneeMenuOpen}
+                              className={cn(newProjectFieldClass(), "flex items-center justify-between gap-2 text-left")}
+                            >
+                              <span className="flex min-w-0 items-center gap-2">
+                                {selectedAssignee ? (
+                                  renderStaffOptionBadge(selectedAssignee, 22)
+                                ) : (
+                                  <span className="inline-flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full border border-dashed border-[var(--panel-border)] text-[var(--text-muted)]">
+                                    <UserRound size={12} />
+                                  </span>
+                                )}
+                                <span className={cn("truncate", !selectedAssignee && "text-[var(--text-muted)]")}>{selectedAssignee?.name || "Unassigned"}</span>
+                              </span>
+                              <ChevronDown
+                                size={15}
+                                className="shrink-0 text-[var(--text-muted)] transition-transform duration-200"
+                                style={{ transform: assigneeMenuOpen ? "rotate(180deg)" : "none" }}
+                              />
+                            </button>
+                            {assigneeMenuOpen && assigneeMenuPos
+                              ? createPortal(
+                                  <div
+                                    ref={assigneeMenuRef}
+                                    className="fixed flex flex-col overflow-hidden rounded-[12px] border shadow-[var(--shadow-md)]"
+                                    style={{
+                                      ...FLOATING_MENU_STYLE,
+                                      left: assigneeMenuPos.left,
+                                      width: assigneeMenuPos.width,
+                                      top: assigneeMenuPos.top,
+                                      bottom: assigneeMenuPos.bottom,
+                                      maxHeight: assigneeMenuPos.maxHeight,
+                                    }}
+                                  >
+                                    <div className="relative shrink-0 border-b border-[var(--glass-border)] p-2">
+                                      <Search size={13} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" />
+                                      <input
+                                        {...NEW_PROJECT_NO_AUTOFILL}
+                                        autoFocus={isDesktopViewport}
+                                        value={assigneeSearch}
+                                        onChange={(e) => setAssigneeSearch(e.target.value)}
+                                        className="h-8 w-full rounded-[8px] border border-[var(--panel-border)] bg-[var(--panel-bg)] pl-7 pr-2 text-[12px] text-[var(--text-main)] outline-none transition focus:border-[var(--brand)]"
+                                        placeholder="Search staff..."
+                                      />
+                                    </div>
+                                    <div role="listbox" className="glass-scroll max-h-[220px] min-h-0 flex-1 overflow-y-auto p-1">
+                                      {/* Left unassigned (as it starts) — until someone's picked for it. */}
+                                      {!assigneeSearch.trim() ? (
+                                        <button
+                                          type="button"
+                                          role="option"
+                                          aria-selected={!assigneeUid}
+                                          onClick={() => {
+                                            setAssigneeUid("");
+                                            setAssigneeMenuOpen(false);
+                                          }}
+                                          className={newProjectMenuRowClass(!assigneeUid)}
+                                          style={newProjectMenuRowStyle(!assigneeUid)}
+                                        >
+                                          <span
+                                            className={cn(
+                                              "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-dashed",
+                                              !assigneeUid ? "border-white/70 text-white" : "border-[var(--panel-border)] text-[var(--text-muted)]",
+                                            )}
+                                          >
+                                            <UserRound size={12} />
+                                          </span>
+                                          <span className={cn("min-w-0 flex-1 font-medium", !assigneeUid ? "text-white" : "text-[var(--text-muted)]")}>Unassigned</span>
+                                          {!assigneeUid ? <Check size={14} className="shrink-0 text-white" /> : null}
+                                        </button>
+                                      ) : null}
+                                      {filteredStaffOptions.map((s) => {
+                                        const isPicked = s.uid === assigneeUid;
+                                        return (
+                                          <button
+                                            key={s.uid}
+                                            type="button"
+                                            role="option"
+                                            aria-selected={isPicked}
+                                            onClick={() => {
+                                              setAssigneeUid(s.uid);
+                                              setAssigneeMenuOpen(false);
+                                            }}
+                                            className={newProjectMenuRowClass(isPicked)}
+                                            style={newProjectMenuRowStyle(isPicked)}
+                                          >
+                                            {renderStaffOptionBadge(s, 24)}
+                                            <span className="min-w-0 flex-1">
+                                              <span className={cn("block truncate font-medium", isPicked ? "text-white" : "text-[var(--text-main)]")}>{s.name}</span>
+                                              <span className={cn("block truncate text-[11px]", isPicked ? "text-white/80" : "text-[var(--text-main)]")}>{s.email}</span>
+                                            </span>
+                                            {isPicked ? <Check size={14} className="shrink-0 text-white" /> : null}
+                                          </button>
+                                        );
+                                      })}
+                                      {!filteredStaffOptions.length && <p className="px-2 py-2 text-[12px] text-[var(--text-muted)]">No staff found.</p>}
+                                    </div>
+                                  </div>,
+                                  document.body,
+                                )
+                              : null}
+                          </div>
+                        </div>
+                      )}
+                      {/* Not a small job's — kept quick. */}
+                      {!newProjectIsSmallJob && (
+                        <div>
+                          <p className={cn(newProjectLabelClass, "flex items-center justify-between")}>
+                            Tags
+                            <span className="text-[11px] font-normal text-[var(--text-muted)]">{tags.length}/5</span>
+                          </p>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {tags.map((tag) => (
                               <button
                                 key={tag}
                                 type="button"
-                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() => removeTag(tag)}
+                                className="group inline-flex h-7 items-center gap-1 rounded-full border border-[var(--panel-border)] bg-[var(--panel-muted)] pl-2.5 pr-2 text-[12px] font-medium text-[var(--text-main)] transition hover:border-[var(--danger-border)] hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
+                                title="Remove tag"
+                              >
+                                <Tag size={11} className="text-[var(--text-muted)] group-hover:text-[var(--danger)]" />
+                                {tag}
+                                <X size={12} className="opacity-50 group-hover:opacity-100" />
+                              </button>
+                            ))}
+                            {tags.length < 5 && isTagInputOpen && (
+                              <input
+                                {...NEW_PROJECT_NO_AUTOFILL}
+                                ref={newProjectTagInputRef}
+                                value={tagInput}
+                                onFocus={() => setShowTagSuggestions(true)}
+                                onBlur={() => window.setTimeout(() => setShowTagSuggestions(false), 120)}
+                                onChange={(e) => {
+                                  setTagInput(e.target.value);
+                                  setShowTagSuggestions(true);
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" || e.key === ",") {
+                                    e.preventDefault();
+                                    const added = addTag(tagInput);
+                                    if (added) {
+                                      setShowTagSuggestions(true);
+                                      window.setTimeout(() => newProjectTagInputRef.current?.focus(), 0);
+                                    }
+                                  }
+                                  if (e.key === "Escape") {
+                                    setTagInput("");
+                                    setShowTagSuggestions(false);
+                                    setIsTagInputOpen(false);
+                                  }
+                                }}
+                                className="h-7 w-[130px] rounded-full border border-[var(--panel-border)] bg-[var(--panel-bg)] px-3 text-[12px] text-[var(--text-main)] outline-none transition focus:border-[var(--brand)]"
+                                placeholder="Tag name"
+                              />
+                            )}
+                            {tags.length < 5 && (
+                              <button
+                                type="button"
                                 onClick={() => {
-                                  const added = addTag(tag);
+                                  if (!isTagInputOpen) {
+                                    setIsTagInputOpen(true);
+                                    setShowTagSuggestions(true);
+                                    window.setTimeout(() => newProjectTagInputRef.current?.focus(), 0);
+                                    return;
+                                  }
+                                  const added = addTag(tagInput);
                                   if (added) {
                                     setShowTagSuggestions(true);
                                     window.setTimeout(() => newProjectTagInputRef.current?.focus(), 0);
                                   }
                                 }}
-                                className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold text-[var(--text-main)] hover:bg-[var(--panel-muted)]"
+                                className="inline-flex h-7 items-center gap-1 rounded-full border border-dashed border-[var(--panel-border)] px-2.5 text-[12px] font-medium text-[var(--text-muted)] transition hover:border-[var(--brand)] hover:text-[var(--brand)]"
+                                aria-label="Add tag"
                               >
-                                {tag}
+                                <Plus size={13} />
+                                {isTagInputOpen ? "Add" : "Add tag"}
                               </button>
-                            ))}
+                            )}
+                          </div>
+                          {/* The company's tags it could have (used before), as one's typed — tap one to add it. */}
+                          {tags.length < 5 && isTagInputOpen && showTagSuggestions && filteredTagSuggestions.length > 0 ? (
+                            <div className="mt-2 flex flex-wrap gap-1.5">
+                              {filteredTagSuggestions.slice(0, 12).map((tag) => (
+                                <button
+                                  key={tag}
+                                  type="button"
+                                  onMouseDown={(e) => e.preventDefault()}
+                                  onClick={() => {
+                                    const added = addTag(tag);
+                                    if (added) {
+                                      setShowTagSuggestions(true);
+                                      window.setTimeout(() => newProjectTagInputRef.current?.focus(), 0);
+                                    }
+                                  }}
+                                  className="inline-flex h-6 items-center gap-1 rounded-full border border-dashed border-[var(--panel-border)] px-2 text-[11.5px] font-medium text-[var(--text-muted)] transition-colors hover:border-[var(--brand)] hover:bg-[var(--brand-soft)] hover:text-[var(--brand)]"
+                                >
+                                  <Plus size={11} />
+                                  {tag}
+                                </button>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      )}
+                    </div>
+                  </section>
+                  {/* Who it's for. As their name, phone or email's typed, the existing contacts it matches float under it — one
+                      picked fills them in and links the new project to that contact (Existing contact, top right). */}
+                  <section className={cn(newProjectCardClass, "lg:flex-1")}>
+                    <div className={newProjectCardHeaderClass}>
+                      <UserRound size={14} className="shrink-0 text-[var(--text-muted)]" />
+                      <span className={newProjectCardTitleClass}>Client</span>
+                      {newProjectContact ? (
+                        <span
+                          className="ml-auto inline-flex h-7 min-w-0 items-center gap-1.5 rounded-full pl-1 pr-1 text-[12px] font-medium text-white"
+                          style={{ backgroundImage: "var(--brand-gradient)" }}
+                          title={`Linked to ${newProjectContact.name || newProjectContact.email}'s contact`}
+                        >
+                          {renderNewProjectContactBadge(newProjectContact, 20)}
+                          <span className="truncate">Existing contact</span>
+                          <button
+                            type="button"
+                            onClick={unpickNewProjectContact}
+                            className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full transition hover:bg-white/25"
+                            aria-label="Not this contact"
+                            title="Not this contact"
+                          >
+                            <X size={12} strokeWidth={2.5} />
+                          </button>
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="space-y-3.5 p-4">
+                      <div>
+                        <label htmlFor="new-project-client-first" className={newProjectLabelClass}>
+                          Name <span className="text-[var(--danger)]">*</span>
+                        </label>
+                        <div ref={newProjectClientNameRowRef} className="grid grid-cols-2 gap-2">
+                          <span className="relative block">
+                            <UserRound size={15} className={newProjectFieldIconClass} />
+                            <input
+                              {...NEW_PROJECT_NO_AUTOFILL}
+                              id="new-project-client-first"
+                              ref={newProjectClientInputRef}
+                              value={clientFirstName}
+                              aria-autocomplete="list"
+                              onFocus={ensureNewProjectContacts}
+                              onBlur={closeContactSuggestionsSoon}
+                              onKeyDown={onContactFieldKeyDown}
+                              onChange={(e) => {
+                                setClientFirstName(e.target.value);
+                                clearNewProjectInvalid("client");
+                                unlinkContactIfRenamed(e.target.value, clientLastName);
+                                suggestContactsFrom("name", newProjectClientNameRowRef.current ?? e.currentTarget);
+                              }}
+                              aria-invalid={newProjectInvalidField === "client" || undefined}
+                              className={cn(newProjectFieldClass(newProjectInvalidField === "client"), "pl-9")}
+                              placeholder="First"
+                            />
+                          </span>
+                          <input
+                            {...NEW_PROJECT_NO_AUTOFILL}
+                            value={clientLastName}
+                            aria-autocomplete="list"
+                            onFocus={ensureNewProjectContacts}
+                            onBlur={closeContactSuggestionsSoon}
+                            onKeyDown={onContactFieldKeyDown}
+                            onChange={(e) => {
+                              setClientLastName(e.target.value);
+                              clearNewProjectInvalid("client");
+                              unlinkContactIfRenamed(clientFirstName, e.target.value);
+                              suggestContactsFrom("name", newProjectClientNameRowRef.current ?? e.currentTarget);
+                            }}
+                            aria-label="Client last name"
+                            aria-invalid={newProjectInvalidField === "client" || undefined}
+                            className={newProjectFieldClass(newProjectInvalidField === "client")}
+                            placeholder="Last"
+                          />
+                        </div>
+                        {newProjectInvalidField === "client" ? (
+                          <p className="mt-1 text-[11.5px] font-medium text-[var(--danger)]">Who&apos;s it for? Add the client&apos;s name.</p>
+                        ) : null}
+                      </div>
+                      <div className="grid gap-3.5 sm:grid-cols-2">
+                        <div>
+                          <label htmlFor="new-project-client-phone" className={newProjectLabelClass}>
+                            Phone
+                          </label>
+                          <span className="relative block">
+                            <Phone size={15} className={newProjectFieldIconClass} />
+                            <input
+                              {...NEW_PROJECT_NO_AUTOFILL}
+                              id="new-project-client-phone"
+                              inputMode="tel"
+                              aria-autocomplete="list"
+                              value={clientPhone}
+                              onFocus={ensureNewProjectContacts}
+                              onBlur={closeContactSuggestionsSoon}
+                              onKeyDown={onContactFieldKeyDown}
+                              onChange={(e) => {
+                                setClientPhone(formatMobileLikeDesktop(e.target.value));
+                                suggestContactsFrom("phone", e.currentTarget);
+                              }}
+                              className={cn(newProjectFieldClass(), "pl-9")}
+                              placeholder="021 234 5678"
+                            />
+                          </span>
+                        </div>
+                        <div>
+                          <label htmlFor="new-project-client-email" className={newProjectLabelClass}>
+                            Email
+                          </label>
+                          <span className="relative block">
+                            <Mail size={15} className={newProjectFieldIconClass} />
+                            <input
+                              {...NEW_PROJECT_NO_AUTOFILL}
+                              id="new-project-client-email"
+                              type="email"
+                              inputMode="email"
+                              aria-autocomplete="list"
+                              value={clientEmail}
+                              onFocus={ensureNewProjectContacts}
+                              onBlur={closeContactSuggestionsSoon}
+                              onKeyDown={onContactFieldKeyDown}
+                              onChange={(e) => {
+                                setClientEmail(e.target.value);
+                                suggestContactsFrom("email", e.currentTarget);
+                              }}
+                              className={cn(newProjectFieldClass(), "pl-9")}
+                              placeholder="client@email.com"
+                            />
+                          </span>
+                        </div>
+                      </div>
+                      <div>
+                        <label htmlFor="new-project-address" className={newProjectLabelClass}>
+                          Address
+                        </label>
+                        <span className="relative block">
+                          <MapPin size={15} className={newProjectFieldIconClass} />
+                          <input
+                            {...NEW_PROJECT_NO_AUTOFILL}
+                            id="new-project-address"
+                            value={projectAddress}
+                            onChange={(e) => setProjectAddress(e.target.value)}
+                            className={cn(newProjectFieldClass(), "pl-9")}
+                            placeholder="Street, suburb, city"
+                          />
+                        </span>
+                        {projectAddress.trim().length > 5 && (
+                          <div className="mt-2 overflow-hidden rounded-[12px] border border-[var(--panel-border)]">
+                            <iframe
+                              title="Address preview"
+                              className="h-[150px] w-full border-0"
+                              src={`https://maps.google.com/maps?q=${encodeURIComponent(projectAddress.trim())}&t=&z=13&ie=UTF8&iwloc=&output=embed`}
+                            />
                           </div>
                         )}
                       </div>
-                    )}
-                    {tags.length < 5 && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (!isTagInputOpen) {
-                            setIsTagInputOpen(true);
-                            setShowTagSuggestions(true);
-                            window.setTimeout(() => newProjectTagInputRef.current?.focus(), 0);
-                            return;
-                          }
-                          const added = addTag(tagInput);
-                          if (added) {
-                            setShowTagSuggestions(true);
-                            window.setTimeout(() => newProjectTagInputRef.current?.focus(), 0);
-                          }
-                        }}
-                        className="inline-flex h-[22px] w-[22px] items-center justify-center rounded-[8px] border border-[var(--panel-border)] bg-[var(--panel-muted)] text-[var(--text-muted)] transition hover:border-[var(--brand)] hover:text-[var(--brand)]"
-                        aria-label="Add tag"
-                      >
-                        <Plus size={14} />
-                      </button>
-                    )}
-                  </div>
+                    </div>
+                  </section>
                 </div>
-              </div>
-              <div className={modalRowClass}>
-                <div className="flex min-w-0 flex-col gap-2">
-                  <p className={modalSectionLabelClass}>Notes</p>
-                  <div
-                    className="flex min-h-[30px] items-center justify-start"
-                    ref={setNewProjectNotesToolbarHost}
-                    onMouseDownCapture={(e) => e.preventDefault()}
-                  />
-                </div>
-                <div className="w-full">
-                  <div className="overflow-hidden rounded-[10px] border border-[var(--panel-border)] bg-[var(--panel-bg)] px-2 py-2">
-                    <div className="min-h-[88px]">
+                <div className="flex flex-col gap-4">
+                  {/* Its notes — the editor's toolbar in its header while they're written. */}
+                  <section className={cn(newProjectCardClass, "flex min-h-[220px] flex-col lg:flex-1")}>
+                    <div className={newProjectCardHeaderClass}>
+                      <FileText size={14} className="shrink-0 text-[var(--text-muted)]" />
+                      <span className={newProjectCardTitleClass}>Notes</span>
+                      <div
+                        className="ml-auto flex min-h-[30px] min-w-0 items-center justify-end"
+                        ref={setNewProjectNotesToolbarHost}
+                        onMouseDownCapture={(e) => e.preventDefault()}
+                      />
+                    </div>
+                    <div className="flex flex-1 flex-col px-3 py-2.5">
                       {isNewProjectNotesEditing ? (
                         <QuoteDocumentEditor
                           key="new-project-notes-editor"
@@ -4213,8 +5012,8 @@ export function AppShell({
                           toolbarPlacement="inline"
                           toolbarHost={newProjectNotesToolbarHost}
                           embeddedChrome="flat"
-                          embeddedMinHeight={88}
-                          embeddedEditableMinHeight={80}
+                          embeddedMinHeight={150}
+                          embeddedEditableMinHeight={140}
                           value={projectNotes}
                           readOnly={creatingProject}
                           autoFocus
@@ -4226,324 +5025,136 @@ export function AppShell({
                         <button
                           type="button"
                           onClick={() => setIsNewProjectNotesEditing(true)}
-                          className="block min-h-[88px] w-full bg-transparent text-left text-[12px] text-[var(--text-main)] outline-none"
+                          className="flex min-h-[150px] w-full flex-1 flex-col items-stretch justify-start bg-transparent px-1 text-left text-[13px] text-[var(--text-main)] outline-none"
                         >
                           {notesHtmlIsEmpty(projectNotes) ? (
-                            <span className="text-[var(--text-muted)]">Project notes...</span>
+                            <span className="text-[var(--text-muted)]">
+                              {newProjectIsSmallJob
+                                ? "What needs doing — the fix, sizes, access..."
+                                : "Anything the team should know — measurements, access, what they're after..."}
+                            </span>
                           ) : (
                             <div className="notes-rich" dangerouslySetInnerHTML={{ __html: notesToDisplayHtml(projectNotes) }} />
                           )}
                         </button>
                       )}
                     </div>
-                  </div>
-                </div>
-              </div>
-              <div className={modalRowClass}>
-                <p className={modalSectionLabelClass}>Photos (max 10)</p>
-                <div
-                  className="grid w-full grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5"
-                >
-                  {Array.from({
-                    length: Math.min(prefilledProjectImages.length + photos.length + 1, 10),
-                  }).map((_, idx) => {
-                    const prefilledImage = prefilledProjectImages[idx] ?? null;
-                    const photo =
-                      idx >= prefilledProjectImages.length
-                        ? (photos[idx - prefilledProjectImages.length] ?? null)
-                        : null;
-                    return (
-                      <div
-                        key={`photo_slot_${idx}`}
-                        className="relative flex items-start justify-center"
-                        style={{ minHeight: 110 }}
-                        onMouseLeave={() => setHoveredPhotoId("")}
-                      >
-                        {prefilledImage ? (
-                          <div className="flex h-full w-full flex-col gap-1">
-                            <div className="relative flex h-[88px] w-full items-center justify-center overflow-hidden rounded-[8px] border border-[var(--panel-border)] bg-transparent">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  if (typeof window !== "undefined") {
-                                    window.open(prefilledImage.url, "_blank", "noopener,noreferrer");
-                                  }
-                                }}
-                                className="flex h-full w-full cursor-zoom-in items-center justify-center leading-none"
-                                title="Click to enlarge"
-                              >
-                                <img
-                                  src={prefilledImage.url}
-                                  alt={`Lead photo ${idx + 1}`}
-                                  className="block h-full w-full object-cover"
-                                  style={{ objectFit: "cover", objectPosition: "center" }}
-                                />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => removePrefilledProjectImage(prefilledImage.id)}
-                                className="absolute left-1/2 inline-flex -translate-x-1/2 items-center justify-center rounded-full text-white transition-opacity duration-150"
-                                style={{
-                                  bottom: 6,
-                                  width: 24,
-                                  height: 24,
-                                  border: "1px solid #7F1D1D",
-                                  background: "#EF4444",
-                                  boxShadow: "0 2px 6px rgba(0,0,0,0.28)",
-                                  opacity: 1,
-                                }}
-                                aria-label="Remove photo"
-                              >
-                                <img
-                                  src="/trash.png"
-                                  alt="Delete"
-                                  className="object-contain"
-                                  style={{ width: 12, height: 12, filter: "brightness(0) invert(1)" }}
-                                  onError={(e) => {
-                                    e.currentTarget.style.display = "none";
-                                  }}
-                                />
-                              </button>
-                            </div>
-                            <div className="flex h-5 items-center justify-center overflow-hidden rounded-[6px] border border-[var(--panel-border)] bg-[var(--panel-bg)] px-2">
-                              {editingProjectPhotoNameKey === `prefilled:${prefilledImage.id}` ? (
-                                <input
-                                  autoFocus
-                                  value={projectPhotoNameDraft}
-                                  onChange={(e) => setProjectPhotoNameDraft(e.currentTarget.value)}
-                                  onBlur={commitProjectPhotoNameEdit}
-                                  onKeyDown={(e) => {
-                                    if (e.key === "Enter") {
-                                      e.preventDefault();
-                                      commitProjectPhotoNameEdit();
-                                    }
-                                    if (e.key === "Escape") {
-                                      e.preventDefault();
-                                      setEditingProjectPhotoNameKey("");
-                                      setProjectPhotoNameDraft("");
-                                    }
-                                  }}
-                                  className="h-full w-full bg-transparent text-center text-[11px] font-medium text-[var(--text-main)] outline-none"
-                                />
-                              ) : String(prefilledImage.name || "").trim() ? (
-                                <span className="truncate text-center text-[11px] font-medium text-[var(--text-main)]">
-                                  {String(prefilledImage.name || "").trim()}
-                                </span>
-                              ) : (
+                  </section>
+                  {/* Its photos: dropped onto it, or browsed for — up to 10 (a lead's own first). */}
+                  <section
+                    className={newProjectCardClass}
+                    style={
+                      isNewProjectPhotoDragOver
+                        ? { borderColor: "var(--brand)", boxShadow: "0 0 0 3px color-mix(in srgb, var(--brand) 18%, transparent)" }
+                        : undefined
+                    }
+                    onDragOver={(e) => {
+                      if (!Array.from(e.dataTransfer.types).includes("Files")) return;
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = newProjectPhotoCount < 10 ? "copy" : "none";
+                      if (!isNewProjectPhotoDragOver) setIsNewProjectPhotoDragOver(true);
+                    }}
+                    onDragLeave={(e) => {
+                      if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+                      setIsNewProjectPhotoDragOver(false);
+                    }}
+                    onDrop={(e) => {
+                      if (!Array.from(e.dataTransfer.types).includes("Files")) return;
+                      e.preventDefault();
+                      setIsNewProjectPhotoDragOver(false);
+                      void addPhotoFiles(e.dataTransfer.files);
+                    }}
+                  >
+                    <div className={newProjectCardHeaderClass}>
+                      <Images size={14} className="shrink-0 text-[var(--text-muted)]" />
+                      <span className={newProjectCardTitleClass}>Photos</span>
+                      <span className="ml-auto text-[11px] text-[var(--text-muted)]">{newProjectPhotoCount}/10</span>
+                    </div>
+                    <div className="p-3">
+                      {newProjectPhotoCount === 0 ? (
+                        <label className="flex h-[132px] cursor-pointer flex-col items-center justify-center gap-1.5 rounded-[12px] border border-dashed border-[var(--panel-border)] text-center transition hover:border-[var(--brand)] hover:bg-[var(--panel-muted)]">
+                          <span
+                            className="inline-flex h-9 w-9 items-center justify-center rounded-full"
+                            style={{ backgroundColor: "color-mix(in srgb, var(--brand) 12%, transparent)", color: "var(--brand)" }}
+                          >
+                            <ImagePlus size={17} />
+                          </span>
+                          <span className="text-[13px] font-medium text-[var(--text-main)]">Drop photos here</span>
+                          <span className="text-[12px] text-[var(--text-muted)]">
+                            or <span className="font-medium text-[var(--brand)]">browse</span> — up to 10
+                          </span>
+                          {newProjectPhotoInput}
+                        </label>
+                      ) : (
+                        <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+                          {prefilledProjectImages.map((image, idx) => (
+                            <div key={image.id} className="min-w-0">
+                              <div className="relative aspect-square overflow-hidden rounded-[10px] border border-[var(--panel-border)]">
                                 <button
                                   type="button"
-                                  onClick={() => beginEditProjectPhotoName(`prefilled:${prefilledImage.id}`, String(prefilledImage.name || ""))}
-                                  className="inline-flex h-full w-full items-center justify-center"
-                                  title="Name image"
+                                  onClick={() => window.open(image.url, "_blank", "noopener,noreferrer")}
+                                  className="block h-full w-full cursor-zoom-in"
+                                  title="Open the photo"
                                 >
-                                  <img
-                                    src="/edit.png"
-                                    alt="Name image"
-                                    className="object-contain"
-                                    style={{ width: 12, height: 12, opacity: 0.8, filter: isDarkMode ? "invert(1)" : undefined }}
-                                    onError={(e) => {
-                                      e.currentTarget.style.display = "none";
-                                    }}
-                                  />
+                                  <img src={image.url} alt={`Lead photo ${idx + 1}`} className="block h-full w-full object-cover" />
                                 </button>
-                              )}
-                            </div>
-                          </div>
-                        ) : photo ? (
-                          <div className="flex h-full w-full flex-col gap-1">
-                            <div
-                              className="relative flex h-[88px] items-center justify-center overflow-hidden rounded-[8px] border border-[var(--panel-border)] bg-transparent"
-                              onMouseEnter={() => setHoveredPhotoId(photo.id)}
-                              style={{
-                                width:
-                                  photo.aspectRatio < 1
-                                    ? Math.max(42, Math.round(88 * photo.aspectRatio))
-                                    : "100%",
-                                minWidth: photo.aspectRatio < 1 ? 42 : undefined,
-                              }}
-                            >
-                              <button
-                                type="button"
-                                onClick={() => openPreviewAnimated(photo)}
-                                ref={(el) => {
-                                  photoThumbRefs.current[photo.id] = el;
-                                }}
-                                className="flex h-full w-full cursor-zoom-in items-center justify-center leading-none"
-                                title="Click to enlarge"
-                              >
-                                <img
-                                  src={photo.previewUrl}
-                                  alt={`Photo ${idx + 1}`}
-                                  className="block h-full w-full object-cover"
-                                  style={{ objectFit: "cover", objectPosition: "center" }}
-                                />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => removePhoto(photo.id)}
-                                onMouseDown={(e) => e.stopPropagation()}
-                                className="absolute left-1/2 inline-flex -translate-x-1/2 items-center justify-center rounded-full text-white transition-opacity duration-150"
-                                style={{
-                                  bottom: 6,
-                                  width: 24,
-                                  height: 24,
-                                  border: "1px solid #7F1D1D",
-                                  background: "#EF4444",
-                                  boxShadow: "0 2px 6px rgba(0,0,0,0.28)",
-                                  opacity: hoveredPhotoId === photo.id ? 1 : 0,
-                                  pointerEvents: hoveredPhotoId === photo.id ? "auto" : "none",
-                                }}
-                                aria-label="Remove photo"
-                              >
-                                <img
-                                  src="/trash.png"
-                                  alt="Delete"
-                                  className="object-contain"
-                                  style={{ width: 12, height: 12, filter: "brightness(0) invert(1)" }}
-                                  onError={(e) => {
-                                    e.currentTarget.style.display = "none";
-                                  }}
-                                />
-                              </button>
-                            </div>
-                            <div className="flex h-5 items-center justify-center overflow-hidden rounded-[6px] border border-[var(--panel-border)] bg-[var(--panel-bg)] px-2">
-                              {editingProjectPhotoNameKey === `local:${photo.id}` ? (
-                                <input
-                                  autoFocus
-                                  value={projectPhotoNameDraft}
-                                  onChange={(e) => setProjectPhotoNameDraft(e.currentTarget.value)}
-                                  onBlur={commitProjectPhotoNameEdit}
-                                  onKeyDown={(e) => {
-                                    if (e.key === "Enter") {
-                                      e.preventDefault();
-                                      commitProjectPhotoNameEdit();
-                                    }
-                                    if (e.key === "Escape") {
-                                      e.preventDefault();
-                                      setEditingProjectPhotoNameKey("");
-                                      setProjectPhotoNameDraft("");
-                                    }
-                                  }}
-                                  className="h-full w-full bg-transparent text-center text-[11px] font-medium text-[var(--text-main)] outline-none"
-                                />
-                              ) : String(photo.name || "").trim() ? (
-                                <span className="truncate text-center text-[11px] font-medium text-[var(--text-main)]">
-                                  {String(photo.name || "").trim()}
-                                </span>
-                              ) : (
                                 <button
                                   type="button"
-                                  onClick={() => beginEditProjectPhotoName(`local:${photo.id}`, String(photo.name || ""))}
-                                  className="inline-flex h-full w-full items-center justify-center"
-                                  title="Name image"
+                                  onClick={() => removePrefilledProjectImage(image.id)}
+                                  className={newProjectPhotoRemoveClass}
+                                  aria-label="Remove photo"
+                                  title="Remove photo"
                                 >
-                                  <img
-                                    src="/edit.png"
-                                    alt="Name image"
-                                    className="object-contain"
-                                    style={{ width: 12, height: 12, opacity: 0.8, filter: isDarkMode ? "invert(1)" : undefined }}
-                                    onError={(e) => {
-                                      e.currentTarget.style.display = "none";
-                                    }}
-                                  />
+                                  <X size={13} strokeWidth={2.5} />
                                 </button>
-                              )}
-                            </div>
-                          </div>
-                        ) : (
-                          <label className="relative flex h-full w-full cursor-pointer items-center justify-center overflow-hidden rounded-[8px] border border-[var(--panel-border)] bg-[var(--panel-muted)] text-[11px] font-bold text-[var(--text-muted)]">
-                            <span
-                              aria-hidden="true"
-                              className="pointer-events-none absolute"
-                              style={{
-                                width: 24,
-                                height: 24,
-                                backgroundColor: companyThemeColor || "#7C8EA5",
-                                WebkitMaskImage: "url('/add-image.png')",
-                                WebkitMaskRepeat: "no-repeat",
-                                WebkitMaskPosition: "center",
-                                WebkitMaskSize: "contain",
-                                maskImage: "url('/add-image.png')",
-                                maskRepeat: "no-repeat",
-                                maskPosition: "center",
-                                maskSize: "contain",
-                              }}
-                            />
-                            <input
-                              type="file"
-                              accept="image/*"
-                              multiple
-                              style={{ display: "none" }}
-                              onChange={(e) => {
-                                void addPhotoFiles(e.target.files);
-                                e.currentTarget.value = "";
-                              }}
-                            />
-                          </label>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-              {canCreateForOthers && (
-                <div className={modalRowClass}>
-                  <p className={modalSectionLabelClass}>Assign Project To</p>
-                  <div ref={assigneeFieldRef} className="relative">
-                    <button
-                      type="button"
-                      onClick={() => setAssigneeMenuOpen((v) => !v)}
-                      className="flex h-9 w-full items-center justify-between rounded-[10px] border border-[var(--panel-border)] bg-[var(--panel-bg)] px-2.5 text-left text-[12px] text-[var(--text-main)]"
-                    >
-                      <span className="flex min-w-0 items-center gap-2">
-                        {selectedAssignee ? renderStaffOptionBadge(selectedAssignee, 20) : null}
-                        <span className="truncate">{selectedAssignee?.name || "Select staff member"}</span>
-                      </span>
-                      <span className="text-[var(--text-muted)]">&#9662;</span>
-                    </button>
-                    {assigneeMenuOpen && (
-                      <div className="absolute z-20 mt-1 w-full rounded-[10px] border border-[var(--panel-border)] bg-[var(--panel-bg)] shadow-[var(--shadow-md)]">
-                        <div className="relative border-b border-[var(--panel-border)] px-2 py-2">
-                          <Search size={13} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" />
-                          <input
-                            value={assigneeSearch}
-                            onChange={(e) => setAssigneeSearch(e.target.value)}
-                            className="h-8 w-full rounded-[8px] border border-[var(--panel-border)] bg-[var(--panel-bg)] pl-7 pr-2 text-[12px] text-[var(--text-main)] outline-none transition focus:border-[var(--brand)]"
-                            placeholder="Search staff..."
-                          />
-                        </div>
-                        <div className="max-h-[180px] overflow-y-auto py-1">
-                          {filteredStaffOptions.map((s) => (
-                            <button
-                              key={s.uid}
-                              type="button"
-                              onClick={() => {
-                                setAssigneeUid(s.uid);
-                                setAssigneeMenuOpen(false);
-                              }}
-                              className="block w-full px-2 py-2 text-left text-[12px] hover:bg-[var(--panel-muted)]"
-                            >
-                              <div className="flex items-start gap-2">
-                                {renderStaffOptionBadge(s, 20)}
-                                <div className="min-w-0">
-                                  <p className="truncate font-semibold text-[var(--text-main)]">{s.name}</p>
-                                  <p className="truncate text-[11px] text-[var(--text-muted)]">{s.email}</p>
-                                </div>
                               </div>
-                            </button>
+                              {newProjectPhotoCaption(`prefilled:${image.id}`, String(image.name || ""))}
+                            </div>
                           ))}
-                          {!filteredStaffOptions.length && (
-                            <div className="px-2 py-2 text-[12px] text-[var(--text-muted)]">No staff found.</div>
-                          )}
+                          {photos.map((photo, idx) => (
+                            <div key={photo.id} className="min-w-0">
+                              <div className="relative aspect-square overflow-hidden rounded-[10px] border border-[var(--panel-border)]">
+                                <button
+                                  type="button"
+                                  ref={(el) => {
+                                    photoThumbRefs.current[photo.id] = el;
+                                  }}
+                                  onClick={() => openPreviewAnimated(photo)}
+                                  className="block h-full w-full cursor-zoom-in"
+                                  title="Click to enlarge"
+                                >
+                                  <img src={photo.previewUrl} alt={`Photo ${idx + 1}`} className="block h-full w-full object-cover" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => removePhoto(photo.id)}
+                                  onMouseDown={(e) => e.stopPropagation()}
+                                  className={newProjectPhotoRemoveClass}
+                                  aria-label="Remove photo"
+                                  title="Remove photo"
+                                >
+                                  <X size={13} strokeWidth={2.5} />
+                                </button>
+                              </div>
+                              {newProjectPhotoCaption(`local:${photo.id}`, String(photo.name || ""))}
+                            </div>
+                          ))}
+                          {newProjectPhotoCount < 10 ? (
+                            <label
+                              className="flex aspect-square cursor-pointer flex-col items-center justify-center gap-1 rounded-[10px] border border-dashed border-[var(--panel-border)] text-[11px] font-medium text-[var(--text-muted)] transition hover:border-[var(--brand)] hover:text-[var(--brand)]"
+                              title="Add photos"
+                            >
+                              <ImagePlus size={18} />
+                              Add
+                              {newProjectPhotoInput}
+                            </label>
+                          ) : null}
                         </div>
-                      </div>
-                    )}
-                  </div>
+                      )}
+                    </div>
+                  </section>
                 </div>
-              )}
-              {!!projectFormError && (
-                <p className="text-[12px] font-semibold text-[var(--danger)]">{projectFormError}</p>
-              )}
+              </div>
             </div>
             {previewPhoto && (
               <div
@@ -4625,14 +5236,81 @@ export function AppShell({
                 />
               </button>
             )}
-            <div className="flex flex-col-reverse items-stretch justify-end gap-2 border-t border-[var(--panel-border)] px-5 pb-5 pt-4 sm:flex-row sm:items-center sm:px-6 sm:pb-6">
+            {contactSuggestPos && newProjectContactSuggestions().length
+              ? createPortal(
+                  <div
+                    ref={contactSuggestRef}
+                    role="listbox"
+                    aria-label="Existing contacts"
+                    className="glass-scroll fixed overflow-y-auto rounded-[12px] border p-1 shadow-[var(--shadow-md)]"
+                    style={{
+                      ...FLOATING_MENU_STYLE,
+                      left: contactSuggestPos.left,
+                      width: contactSuggestPos.width,
+                      top: contactSuggestPos.top,
+                      bottom: contactSuggestPos.bottom,
+                      maxHeight: contactSuggestPos.maxHeight,
+                    }}
+                  >
+                    <p className="px-2 pb-1 pt-1.5 text-[10.5px] font-bold uppercase tracking-[0.8px] text-[var(--text-muted)]">Existing contacts</p>
+                    {newProjectContactSuggestions().map((contact, idx) => {
+                      const isReady = idx === contactSuggestIndex;
+                      return (
+                        <button
+                          key={contact.id}
+                          type="button"
+                          role="option"
+                          aria-selected={isReady}
+                          onMouseDown={(e) => e.preventDefault()}
+                          onMouseEnter={() => setContactSuggestIndex(idx)}
+                          onClick={() => pickNewProjectContact(contact)}
+                          className="flex w-full items-center gap-2.5 rounded-[8px] px-2 py-1.5 text-left transition-colors"
+                          style={isReady ? { backgroundColor: "var(--brand-soft)" } : undefined}
+                        >
+                          {renderNewProjectContactBadge(contact, 28)}
+                          <span className="min-w-0 flex-1">
+                            <span className={cn("block truncate text-[13px] font-medium", isReady ? "text-[var(--brand)]" : "text-[var(--text-main)]")}>
+                              {contact.name || contact.email}
+                            </span>
+                            <span className="block truncate text-[11.5px] text-[var(--text-main)]">
+                              {[contact.phone, contact.email].filter(Boolean).join(" · ") || "No phone or email"}
+                            </span>
+                          </span>
+                          {contact.projectCount > 0 ? (
+                            <span className="shrink-0 text-[11px] text-[var(--text-muted)]">
+                              {contact.projectCount} {contact.projectCount === 1 ? "project" : "projects"}
+                            </span>
+                          ) : null}
+                        </button>
+                      );
+                    })}
+                  </div>,
+                  document.body,
+                )
+              : null}
+            <div className="flex items-center gap-2 border-t border-[var(--glass-border)] px-4 py-3 max-sm:pb-[calc(12px+env(safe-area-inset-bottom))] sm:px-6 sm:py-4">
+              {/* Where it'll start (its first status, and where) — or what's stopped it being created. */}
+              <div className="min-w-0 flex-1">
+                {projectFormError && !newProjectInvalidField ? (
+                  <p className="text-[12px] font-medium text-[var(--danger)]">{projectFormError}</p>
+                ) : (
+                  <p className="flex min-w-0 items-center gap-1.5 text-[12px] text-[var(--text-muted)] max-sm:hidden">
+                    <span className="shrink-0">Starts in</span>
+                    <span className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-[var(--panel-border)] bg-[var(--panel-bg)] px-2 py-0.5 font-medium text-[var(--text-main)]">
+                      <span
+                        className="h-2 w-2 shrink-0 rounded-full"
+                        style={{ backgroundColor: newProjectIsSmallJob ? defaultSmallJobStatusColor : defaultProjectStatusColor }}
+                      />
+                      <span className="truncate">{newProjectIsSmallJob ? defaultSmallJobStatus : defaultProjectStatus}</span>
+                    </span>
+                    <span className="truncate">{newProjectIsSmallJob ? "in Small Jobs" : "on the Dashboard"}</span>
+                  </p>
+                )}
+              </div>
               <button
                 type="button"
-                onClick={() => {
-                  setShowNewProject(false);
-                  resetProjectForm();
-                }}
-                className="h-10 rounded-[10px] border border-[var(--panel-border)] bg-[var(--panel-bg)] px-4 text-[13px] font-semibold text-[var(--text-main)] transition hover:bg-[var(--panel-muted)] sm:w-auto"
+                onClick={closeNewProject}
+                className="inline-flex h-10 shrink-0 items-center rounded-full border border-[var(--panel-border)] bg-[var(--panel-bg)] px-4 text-[13px] font-medium text-[var(--text-main)] transition hover:bg-[var(--panel-muted)]"
               >
                 Cancel
               </button>
@@ -4640,9 +5318,12 @@ export function AppShell({
                 type="button"
                 disabled={creatingProject}
                 onClick={() => void onCreateProject()}
-                className="h-10 rounded-[10px] bg-[image:var(--brand-gradient)] px-5 text-[13px] font-semibold text-white shadow-[var(--shadow-sm)] transition hover:brightness-105 disabled:opacity-55 sm:w-auto"
+                title="Create it (Ctrl/⌘ + Enter)"
+                className="glass-shine inline-flex h-10 shrink-0 items-center gap-1.5 rounded-full px-5 text-[13px] font-medium text-white transition hover:brightness-105 disabled:opacity-60"
+                style={glassShineStyle(newProjectAccent)}
               >
-                {creatingProject ? "Creating..." : "Create Project"}
+                {creatingProject ? <RefreshCw size={14} className="animate-spin" /> : <Plus size={15} strokeWidth={2.5} />}
+                {creatingProject ? "Creating..." : newProjectIsSmallJob ? "Create Small Job" : "Create Project"}
               </button>
             </div>
           </div>

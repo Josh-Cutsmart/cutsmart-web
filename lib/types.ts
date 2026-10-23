@@ -124,6 +124,9 @@ export interface Project {
   // permanentlyDeleteProject in lib/firestore-data.ts.
   isPurged?: boolean;
   purgedAtIso?: string;
+  // A small job (Small Jobs — lib/small-jobs.ts): just client details, notes and images; its own statuses; not on the
+  // Dashboard or in Reports. Until it's turned into a full project.
+  isSmallJob?: boolean;
 }
 
 export interface ProjectChecklistItem {

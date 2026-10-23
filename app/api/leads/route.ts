@@ -4,6 +4,7 @@ import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
 import { apiHasPermission, requireCompanyMember } from "@/lib/api-company-access";
 import { addNotificationAndPush } from "@/lib/push-server";
 import { leadNameForNotification, notifyNewLead } from "@/lib/lead-notify-server";
+import { runLeadColumnAutomations } from "@/lib/column-automations-server";
 // A lead as the app works with it — shared with the Leads page's own direct reads (lib/firestore-data.ts).
 import {
   buildLeadRow as buildLeadResponse,
@@ -434,8 +435,11 @@ export async function PATCH(request: NextRequest) {
       updatedAt: FieldValue.serverTimestamp(),
       updatedAtIso,
     };
+    const previousStatus = toStr((leadSnap.data() ?? {}).status);
     if (status) {
       patch.status = status;
+      // When it went into its status — what "has been in" column automations count from (lib/column-automations-server.ts).
+      if (status.toLowerCase() !== previousStatus.toLowerCase()) patch.statusChangedAtIso = updatedAtIso;
     }
     if (hasBoardOrder) {
       patch.boardOrder = boardOrder;
@@ -499,6 +503,21 @@ export async function PATCH(request: NextRequest) {
       }
     }
     await leadRef.update(patch);
+    // Moved to another column: its column automations — their people told (not whoever moved it), and on to another
+    // column if the one it went into moves things straight away (automatedStatus: where it ended up, for the board).
+    let automatedStatus: string | undefined;
+    if (status && patch.statusChangedAtIso) {
+      const { finalStatus } = await runLeadColumnAutomations({
+        companyId,
+        leadId,
+        leadName: await leadNameForNotification(companyId, (leadSnap.data() ?? {}) as Record<string, unknown>, "A lead"),
+        from: { status: previousStatus, subStage: "" },
+        to: { status, subStage: "" },
+        actorUid: callerAccess.uid,
+        siteOrigin: new URL(request.url).origin,
+      });
+      if (finalStatus.toLowerCase() !== status.toLowerCase()) automatedStatus = finalStatus;
+    }
     // Assigned to someone new (not themselves): let them know.
     const previousAssigneeUid = toStr((leadSnap.data() ?? {}).assignedToUid);
     const nextAssigneeUid = toStr(assignedToUid);
@@ -522,6 +541,7 @@ export async function PATCH(request: NextRequest) {
       ok: true,
       leadId,
       status,
+      automatedStatus,
       isDeleted,
       assignedToUid: hasAssignmentPatch ? assignedToUid : undefined,
       assignedToName: hasAssignmentPatch ? assignedToName : undefined,

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ChevronDown, Clock, DollarSign, Inbox, ListChecks, Minus, Plus, RefreshCw, RotateCcw, Search, Trophy, X, type LucideIcon } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
+import { useDevModeOn } from "@/lib/dev-mode";
 import { activeDate, activeMoney, useCompanyFormats } from "@/lib/company-formats";
 import {
   fetchCompanyDoc,
@@ -97,6 +98,8 @@ export default function ReportsPage() {
   const { user } = useAuth();
   const access = useCompanyAccess();
   useCompanyFormats();
+  // Reset stats: only while dev mode's on (a Dev user — public/dev-emails.txt — who's switched it on; lib/dev-mode.ts).
+  const devModeOn = useDevModeOn();
   const canAccessReports = access.status === "ready" && hasPermissionKey(access.permissionKeys, "company.report");
   const [rangeId, setRangeId] = useState<ReportRangeId>("quarter");
   const [loaded, setLoaded] = useState<Loaded | null>(null);
@@ -127,7 +130,8 @@ export default function ReportsPage() {
             previewLeads = [];
           }
         }
-        const companyProjects = projects.filter((project) => String(project.companyId || companyId) === companyId);
+        // Not the small jobs (Small Jobs — lib/small-jobs.ts).
+        const companyProjects = projects.filter((project) => String(project.companyId || companyId) === companyId && !project.isSmallJob);
         const outcomes = await mapInBatches(companyProjects, 6, (project) => fetchProjectQuoteOutcomes(project));
         const quotes: Record<string, ProjectQuoteOutcome[]> = {};
         companyProjects.forEach((project, index) => {
@@ -392,16 +396,6 @@ export default function ReportsPage() {
         </button>
         <button
           type="button"
-          onClick={() => setIsResetConfirmOpen(true)}
-          title={view.resetAtIso ? `Last reset ${activeDate(view.resetAtIso)}` : "Work your stats out again from the company as it is now"}
-          className="inline-flex h-9 items-center gap-1.5 rounded-full border px-3.5 text-[13px] font-medium hover:brightness-95"
-          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-        >
-          <RotateCcw size={14} />
-          Reset stats
-        </button>
-        <button
-          type="button"
           onClick={() => setLoadKey((key) => key + 1)}
           className="inline-flex h-9 w-9 items-center justify-center rounded-full border hover:brightness-95"
           style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
@@ -477,6 +471,21 @@ export default function ReportsPage() {
             </>
           )}
       </div>
+      {/* Reset stats (dev mode only): floating at the bottom right — beside Included while it's open on a computer. */}
+      {devModeOn && loaded ? (
+        <button
+          type="button"
+          onClick={() => setIsResetConfirmOpen(true)}
+          title={view.resetAtIso ? `Last reset ${activeDate(view.resetAtIso)}` : "Work your stats out again from the company as it is now"}
+          className={`glass-shine fixed bottom-6 right-6 z-[100] inline-flex h-11 items-center gap-2 rounded-full border px-4 text-[13px] font-medium text-white shadow-[0_10px_28px_rgba(15,23,42,0.22)] transition-[right,filter] duration-200 hover:brightness-95 max-lg:bottom-[calc(16px+env(safe-area-inset-bottom))] max-lg:right-4 ${
+            panelShown ? "lg:right-[404px]" : ""
+          }`}
+          style={glassShineStyle("var(--brand)")}
+        >
+          <RotateCcw size={15} />
+          Reset stats
+        </button>
+      ) : null}
       {isResetConfirmOpen ? (
         <div className="glass-modal-backdrop fixed inset-0 z-[200] flex items-center justify-center p-4" onClick={() => setIsResetConfirmOpen(false)}>
           <div

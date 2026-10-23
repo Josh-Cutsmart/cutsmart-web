@@ -7,6 +7,7 @@ import { CalendarDays, X } from "lucide-react";
 import { modalCloseButtonClass } from "@/components/settings-ui";
 import { useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { activeDate } from "@/lib/company-formats";
+import { ProjectEventsTimeline } from "@/components/project-timeline";
 import {
   calendarCategoryLevel,
   normalizeCalendarCategories,
@@ -16,9 +17,10 @@ import {
   type CalendarViewer,
 } from "@/lib/calendar-data";
 
-// A project's Schedule (Design tab): the Calendar's events linked to it, as a list — upcoming, then past (all its text
-// the main text colour; no addresses) — only those in categories the person can see (the Calendar's own rule, lib/calendar-categories.ts). Clicking one opens it in the
-// Calendar.
+// A project's Schedule (Design tab): the Calendar's events linked to it — along a line at the top (its timeline,
+// components/project-timeline.tsx), then as a list — upcoming, then past (all its text the main text colour; no
+// addresses) — only those in categories the person can see (the Calendar's own rule, lib/calendar-categories.ts).
+// Clicking one opens it in the Calendar.
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const UNCATEGORISED: CalendarCategory = { id: "__none", name: "Uncategorised", color: "#94A3B8" };
@@ -161,7 +163,7 @@ export function ProjectScheduleModal({
   return createPortal(
     <div className="fixed inset-0 z-[1700] flex items-center justify-center px-4 py-4">
       <button type="button" aria-label="Close schedule" onClick={onClose} className="glass-modal-backdrop absolute inset-0" />
-      <div ref={panelRef} className="glass-modal-panel relative flex max-h-[min(760px,92vh)] w-[min(640px,96vw)] flex-col overflow-hidden">
+      <div ref={panelRef} className="glass-modal-panel relative flex max-h-[min(760px,92vh)] w-[min(720px,96vw)] flex-col overflow-hidden">
         <div className="glass-modal-header flex h-[56px] shrink-0 items-center justify-between gap-3 px-5">
           <div className="flex min-w-0 items-center gap-2">
             <CalendarDays size={16} style={{ color: "var(--text-main)" }} />
@@ -174,6 +176,9 @@ export function ProjectScheduleModal({
           </button>
         </div>
         <div className="glass-scroll min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          {loaded && !loadError && visibleEvents.length ? (
+            <ProjectEventsTimeline events={visibleEvents} categoryOf={categoryOf} onOpenEvent={openInCalendar} />
+          ) : null}
           {loadError ? (
             <p className="text-[12.5px] font-medium" style={{ color: "var(--danger-strong)" }}>{loadError}</p>
           ) : !loaded ? (

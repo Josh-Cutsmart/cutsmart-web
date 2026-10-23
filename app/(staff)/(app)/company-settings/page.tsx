@@ -87,7 +87,8 @@ import {
 import { FileText, Lightbulb } from "lucide-react";
 import { Box, FolderTree, LayoutTemplate, Lock, Percent, Receipt, Shield, ShieldCheck, UserMinus, UserPlus } from "lucide-react";
 import { isStaffContactCategory, withStaffContactCategory } from "@/lib/staff-contacts";
-import { Archive, Award, CalendarDays, CircleDashed, Cog, Columns3, Contact, Copy, Cpu, DoorClosed, DoorOpen, Eye, Factory, Globe2, HardHat as TradeIcon, ImageUp, Inbox, KanbanSquare, KeyRound, Palette, PanelLeft, RefreshCw, Ruler, Shapes, SlidersHorizontal, Star, Tags, Trash2 } from "lucide-react";
+import { Archive, Award, CalendarDays, CircleDashed, Cog, Columns3, Contact, Copy, Cpu, DoorClosed, DoorOpen, Eye, Factory, Globe2, Hammer, HardHat as TradeIcon, ImageUp, Inbox, KanbanSquare, KeyRound, Palette, PanelLeft, RefreshCw, Ruler, Shapes, SlidersHorizontal, Star, Tags, Trash2 } from "lucide-react";
+import { normalizeSmallJobStatuses } from "@/lib/small-jobs";
 import {
   ColorCircle,
   GlassSwitch,
@@ -113,7 +114,7 @@ import {
 } from "@/components/settings-ui";
 
 type SettingsSection =
-  | "company" | "dashboard" | "calendar" | "leads" | "sales" | "production" | "nesting" | "materials"
+  | "company" | "dashboard" | "smalljobs" | "calendar" | "leads" | "sales" | "production" | "nesting" | "materials"
   | "hardware" | "staff" | "integrations" | "backup";
 
 type SubStageRow = { name: string; color: string; isDefault?: boolean };
@@ -389,6 +390,7 @@ const desktopPermissionKeys = [
   "projects.status",
   "projects.assign.other",
   "projects.create.others",
+  "projects.automate",
   "sales.view",
   "sales.edit",
   "production.view",
@@ -442,6 +444,7 @@ const permissionLabels: Record<string, string> = {
   "projects.status": "projects.status - Edit Any Project Status",
   "projects.assign.other": "projects.assign.other - Assign Projects To Other Staff",
   "projects.create.others": "projects.create.others - Legacy Assign/Create Other Projects",
+  "projects.automate": "projects.automate - Automate Board Columns (Right-Click A Dashboard Or Leads Column To Notify Staff As Projects Enter, Leave Or Stay)",
   "sales.view": "sales.view - View Sales Tab",
   "sales.edit": "sales.edit - Edit Sales Tab",
   "production.view": "production.view - View Production Tab",
@@ -542,6 +545,8 @@ const sections: Array<{
   { key: "company", label: "Company", group: "General", icon: Building2, description: "Your brand and the formats used everywhere in CutSmart." },
   // Same icon as the sidebar's Dashboard item (components/app-shell.tsx topNav).
   { key: "dashboard", label: "Dashboard", group: "General", icon: LayoutDashboard, description: "Statuses, tags, contact categories, how long deleted items are kept and when finished projects are archived." },
+  // Same icon as the sidebar's Small Jobs item.
+  { key: "smalljobs", label: "Small Jobs", group: "General", icon: Hammer, description: "The statuses your small jobs move through." },
   { key: "calendar", label: "Calendar", group: "General", icon: CalendarDays, description: "The categories events can belong to on the Calendar tab." },
   { key: "leads", label: "Leads", group: "Sales", icon: Inbox, description: "Your lead forms, your leads email inbox and the statuses on your Leads board." },
   { key: "sales", label: "Sales", group: "Sales", icon: CircleDollarSign, description: "Quote & specs layouts, products, helpers and discounts." },
@@ -566,6 +571,7 @@ const SETTINGS_SEARCH_INDEX: Array<{ section: SettingsSection; label: string; ca
   { section: "dashboard", card: "Completion bonus", label: "Completion bonus", keywords: "bonus period quarter paid non qualified minimum quote" },
   { section: "dashboard", card: "Tags", label: "Tags" },
   { section: "dashboard", card: "Finished projects", label: "Archive completed projects", keywords: "archived client portal link completed instantly recently deleted trash" },
+  { section: "smalljobs", card: "Small job statuses", label: "Small job statuses", keywords: "small jobs fixes open closed" },
   { section: "calendar", card: "Calendar categories", label: "Calendar categories", keywords: "events sub-calendars colours teamup" },
   { section: "calendar", card: "Workdays", label: "Workdays", keywords: "business days weekends" },
   { section: "calendar", card: "Workdays", label: "Show non-workdays", keywords: "hide weekends month week view" },
@@ -1107,9 +1113,10 @@ function normalizeJobTypes(raw: unknown): JobTypeRow[] {
     .filter((r) => r.name);
 }
 
-// Edge tape is priced for Grain and Melteca products; lacquer per m² for the two Lacquer types.
+// Edge tape is priced for every typed product (Grain, Melteca and the Lacquers); lacquer per m² for the two Lacquer
+// types too.
 function jobTypeHasEdgeTape(type: JobTypeProductType) {
-  return type === "grain" || type === "melteca";
+  return type === "grain" || type === "melteca" || type === "lacquer-1" || type === "lacquer-2";
 }
 function jobTypeHasLacquer(type: JobTypeProductType) {
   return type === "lacquer-1" || type === "lacquer-2";
@@ -1779,6 +1786,9 @@ export default function CompanySettingsPage() {
   // ...and as the won one (Reports).
   const hasWonStatus = statuses.some((row) => Boolean(row.isWon));
   const [leadStatuses, setLeadStatuses] = useState<StatusRow[]>([]);
+  // Small Jobs' statuses (lib/small-jobs.ts — Open and Closed to start with).
+  const [smallJobStatuses, setSmallJobStatuses] = useState<StatusRow[]>([]);
+  const [smallJobStatusDragIndex, setSmallJobStatusDragIndex] = useState<number | null>(null);
   // The company's lead forms (Company Settings → Leads — components/lead-forms-settings.tsx; lib/lead-forms.ts).
   const [leadForms, setLeadForms] = useState<LeadForm[]>([]);
   // Dashboard > Completion bonus (lib/completion-bonus.ts — seen only with dashboard.complete.bonus): the bonus period's
@@ -2164,6 +2174,7 @@ export default function CompanySettingsPage() {
         });
         setStatuses(normalizeStatuses(doc.projectStatuses));
         setLeadStatuses(normalizeLeadStatuses((doc as Record<string, unknown>).leadStatuses));
+        setSmallJobStatuses(normalizeSmallJobStatuses((doc as Record<string, unknown>).smallJobStatuses));
         setLeadForms(normalizeLeadForms((doc as Record<string, unknown>).leadForms));
         {
           const bonus = completionBonusSettingsFrom(doc);
@@ -3615,6 +3626,13 @@ export default function CompanySettingsPage() {
         name: toStr(row.name),
         color: toStr(row.color, "#64748B"),
       })),
+      smallJobStatuses: smallJobStatuses
+        .map((row, idx) => ({
+          id: toStr(row.name, `small_job_status_${idx + 1}`).toLowerCase().replace(/\s+/g, "_"),
+          name: toStr(row.name),
+          color: toStr(row.color, "#64748B"),
+        }))
+        .filter((row) => row.name),
       leadForms: normalizeLeadForms(leadForms),
       ...completionBonusPatch,
       projectTagUsage: {
@@ -3881,6 +3899,7 @@ export default function CompanySettingsPage() {
           ...form,
         projectStatuses: statuses,
         leadStatuses,
+        smallJobStatuses,
         leadForms,
         ...completionBonusPatch,
         projectTagUsage: { tags: projectTagUsage },
@@ -4299,6 +4318,7 @@ export default function CompanySettingsPage() {
     form,
     statuses,
     leadStatuses,
+    smallJobStatuses,
     leadForms,
     bonusPeriodMonths,
     bonusStartMonth,
@@ -7291,6 +7311,81 @@ export default function CompanySettingsPage() {
                 </div>
               )}
 
+              {active === "smalljobs" && (
+                <div className="grid gap-[18px] max-lg:grid-cols-1 xl:grid-cols-2">
+                  <Panel
+                    title="Small job statuses"
+                    icon={Hammer}
+                    description="The statuses on your Small Jobs list, in order — number 1 is where every new small job starts. Drag to reorder."
+                  >
+                    <div className="space-y-1.5">
+                      {smallJobStatuses.map((row, idx) => (
+                        <div
+                          key={`small_job_status_${idx}`}
+                          id={`settings_small_job_status_${idx}`}
+                          className={listRowClass}
+                          style={{ opacity: smallJobStatusDragIndex === idx ? 0.45 : 1 }}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = "move";
+                          }}
+                          onDragEnter={(e) => {
+                            e.preventDefault();
+                            if (smallJobStatusDragIndex == null || smallJobStatusDragIndex === idx) return;
+                            setSmallJobStatuses((prev) => moveRowTo(prev, smallJobStatusDragIndex, idx));
+                            setSmallJobStatusDragIndex(idx);
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            setSmallJobStatusDragIndex(null);
+                            endRowDrag();
+                            triggerAutosaveAfterRowDrop();
+                          }}
+                        >
+                          <button
+                            type="button"
+                            draggable
+                            onDragStart={(e) => {
+                              setSmallJobStatusDragIndex(idx);
+                              e.dataTransfer.setData("text/plain", `${idx}`);
+                              startRowDrag(e, `settings_small_job_status_${idx}`, row.name, row.color);
+                            }}
+                            onDragEnd={() => {
+                              setSmallJobStatusDragIndex(null);
+                              endRowDrag();
+                            }}
+                            className={gripClass}
+                            title="Drag to reorder"
+                          >
+                            <GripVertical size={15} />
+                          </button>
+                          <StatusNumber index={idx} startsHere="New small jobs start here" />
+                          <ColorCircle value={row.color || "#64748B"} onChange={(hex) => setSmallJobStatuses((prev) => prev.map((v, i) => (i === idx ? { ...v, color: hex } : v)))} />
+                          <input
+                            value={row.name}
+                            placeholder="Status name"
+                            onChange={(e) => setSmallJobStatuses((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))}
+                            className={gridCellInputClass}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setSmallJobStatuses((prev) => prev.filter((_, i) => i !== idx))}
+                            disabled={smallJobStatuses.length <= 1}
+                            className={dangerIconButtonClass}
+                            title={smallJobStatuses.length <= 1 ? "Small jobs need at least one status" : "Remove"}
+                          >
+                            <X size={15} />
+                          </button>
+                        </div>
+                      ))}
+                      <button type="button" onClick={() => setSmallJobStatuses((prev) => [...prev, { name: "", color: "#64748B" }])} className={`${secondaryButtonClass} mt-1.5`}>
+                        <Plus size={14} /> Add status
+                      </button>
+                    </div>
+                  </Panel>
+                </div>
+              )}
+
               {active === "sales" && (
                 <div className="grid gap-[18px] max-lg:grid-cols-1 xl:grid-cols-2">
                   <Panel title="GST" icon={Receipt} description="Tax added on top of the quote total.">
@@ -8085,7 +8180,7 @@ export default function CompanySettingsPage() {
                     className="xl:col-span-2"
                     title="Products"
                     icon={Box}
-                    description="Your products and how they're priced on a quote — each sheet size with its own margin and misc charges per sheet used, plus edge tape per metre (Grain, Melteca) or lacquer per m² (Lacquer) on the metres / m² in the project's Product table."
+                    description="Your products and how they're priced on a quote — each sheet size with its own margin and misc charges per sheet used, plus edge tape per metre, and lacquer per m² (Lacquer), on the metres / m² in the project's Product table."
                     headerRight={
                       <button type="button" onClick={openProductsSheet} className={primaryButtonClass} style={primaryButtonStyle}>
                         <Box size={15} /> Edit products
@@ -8147,13 +8242,19 @@ export default function CompanySettingsPage() {
                                   )}
                                 </td>
                                 <td className="whitespace-nowrap px-2 py-2.5 tabular-nums" style={{ color: "var(--text-main)" }}>
-                                  {jobTypeHasEdgeTape(row.type) && toStr(row.edgeTapePrice) ? (
+                                  {/* (A Lacquer product: its edge tape and its lacquer, one under the other.) */}
+                                  {(jobTypeHasEdgeTape(row.type) && toStr(row.edgeTapePrice)) || (jobTypeHasLacquer(row.type) && toStr(row.lacquerSqmPrice)) ? (
                                     <>
-                                      <span className="font-semibold">{computeOutputPrice(row.edgeTapePrice, row.edgeTapeMarginPercent)}</span> / m
-                                    </>
-                                  ) : jobTypeHasLacquer(row.type) && toStr(row.lacquerSqmPrice) ? (
-                                    <>
-                                      <span className="font-semibold">{computeOutputPrice(row.lacquerSqmPrice, row.lacquerMarginPercent)}</span> / m²
+                                      {jobTypeHasEdgeTape(row.type) && toStr(row.edgeTapePrice) ? (
+                                        <p>
+                                          <span className="font-semibold">{computeOutputPrice(row.edgeTapePrice, row.edgeTapeMarginPercent)}</span> / m
+                                        </p>
+                                      ) : null}
+                                      {jobTypeHasLacquer(row.type) && toStr(row.lacquerSqmPrice) ? (
+                                        <p>
+                                          <span className="font-semibold">{computeOutputPrice(row.lacquerSqmPrice, row.lacquerMarginPercent)}</span> / m²
+                                        </p>
+                                      ) : null}
                                     </>
                                   ) : (
                                     "—"
@@ -8500,42 +8601,51 @@ export default function CompanySettingsPage() {
                                         a quote adds them later, on the project's own metres / m² (its Product table). */}
                                     {sectionLabel("On the quote", "Not in the total — added from the project's Product table")}
                                     {jobTypeHasEdgeTape(row.type) || jobTypeHasLacquer(row.type) ? (
-                                      <div className={lineClass} style={lineStyle}>
-                                        <span />
-                                        <span className="px-1 text-[12.5px] font-medium" style={{ color: "var(--text-main)" }}>
-                                          {jobTypeHasEdgeTape(row.type)
-                                            ? "Edge tape · per metre"
-                                            : `Lacquer · per m² (${row.type === "lacquer-2" ? "2 sides" : "1 side"})`}
-                                        </span>
-                                        <input inputMode="decimal"
-                                          value={jobTypeHasEdgeTape(row.type) ? row.edgeTapePrice : row.lacquerSqmPrice}
-                                          onChange={(e) =>
-                                            updateJobType(idx, jobTypeHasEdgeTape(row.type) ? { edgeTapePrice: e.target.value } : { lacquerSqmPrice: e.target.value })
-                                          }
-                                          onBlur={(e) => {
-                                            const value = e.target.value.trim() ? ensureDollarFormat(e.target.value) : "";
-                                            updateJobType(idx, jobTypeHasEdgeTape(row.type) ? { edgeTapePrice: value } : { lacquerSqmPrice: value });
-                                          }}
-                                          className={glassFieldSmClass}
-                                          placeholder={formatMoney(0, companyCurrency)}
-                                          aria-label={jobTypeHasEdgeTape(row.type) ? "Edge tape cost per metre" : "Lacquer cost per square metre"}
-                                        />
-                                        <MarginInput
-                                          value={jobTypeHasEdgeTape(row.type) ? row.edgeTapeMarginPercent : row.lacquerMarginPercent}
-                                          onChange={(next) =>
-                                            updateJobType(idx, jobTypeHasEdgeTape(row.type) ? { edgeTapeMarginPercent: next } : { lacquerMarginPercent: next })
-                                          }
-                                        />
-                                        {jobTypeHasEdgeTape(row.type)
-                                          ? sellCell(row.edgeTapePrice, row.edgeTapeMarginPercent, "/ m")
-                                          : sellCell(row.lacquerSqmPrice, row.lacquerMarginPercent, "/ m²")}
-                                        <span />
-                                      </div>
+                                      <>
+                                        {jobTypeHasEdgeTape(row.type) ? (
+                                          <div className={lineClass} style={lineStyle}>
+                                            <span />
+                                            <span className="px-1 text-[12.5px] font-medium" style={{ color: "var(--text-main)" }}>
+                                              Edge tape · per metre
+                                            </span>
+                                            <input inputMode="decimal"
+                                              value={row.edgeTapePrice}
+                                              onChange={(e) => updateJobType(idx, { edgeTapePrice: e.target.value })}
+                                              onBlur={(e) => updateJobType(idx, { edgeTapePrice: e.target.value.trim() ? ensureDollarFormat(e.target.value) : "" })}
+                                              className={glassFieldSmClass}
+                                              placeholder={formatMoney(0, companyCurrency)}
+                                              aria-label="Edge tape cost per metre"
+                                            />
+                                            <MarginInput value={row.edgeTapeMarginPercent} onChange={(next) => updateJobType(idx, { edgeTapeMarginPercent: next })} />
+                                            {sellCell(row.edgeTapePrice, row.edgeTapeMarginPercent, "/ m")}
+                                            <span />
+                                          </div>
+                                        ) : null}
+                                        {jobTypeHasLacquer(row.type) ? (
+                                          <div className={lineClass} style={lineStyle}>
+                                            <span />
+                                            <span className="px-1 text-[12.5px] font-medium" style={{ color: "var(--text-main)" }}>
+                                              {`Lacquer · per m² (${row.type === "lacquer-2" ? "2 sides" : "1 side"})`}
+                                            </span>
+                                            <input inputMode="decimal"
+                                              value={row.lacquerSqmPrice}
+                                              onChange={(e) => updateJobType(idx, { lacquerSqmPrice: e.target.value })}
+                                              onBlur={(e) => updateJobType(idx, { lacquerSqmPrice: e.target.value.trim() ? ensureDollarFormat(e.target.value) : "" })}
+                                              className={glassFieldSmClass}
+                                              placeholder={formatMoney(0, companyCurrency)}
+                                              aria-label="Lacquer cost per square metre"
+                                            />
+                                            <MarginInput value={row.lacquerMarginPercent} onChange={(next) => updateJobType(idx, { lacquerMarginPercent: next })} />
+                                            {sellCell(row.lacquerSqmPrice, row.lacquerMarginPercent, "/ m²")}
+                                            <span />
+                                          </div>
+                                        ) : null}
+                                      </>
                                     ) : (
                                       <div className={lineClass} style={lineStyle}>
                                         <span />
                                         <span className="col-span-4 px-1 text-[12.5px]" style={{ color: "var(--text-main)" }}>
-                                          Set a type to price edge tape (Grain, Melteca) or lacquer per m² (Lacquer).
+                                          Set a type to price its edge tape (and its lacquer per m², for Lacquer).
                                         </span>
                                         <span />
                                       </div>
@@ -9474,6 +9584,7 @@ export default function CompanySettingsPage() {
   projectArchiveAfter,
   projectStatuses: statuses,
   leadStatuses,
+  smallJobStatuses,
   completionBonus: completionBonusPatch,
   projectTagUsage,
   quoteTemplatePageSize: backupTemplate.quoteTemplatePageSize,

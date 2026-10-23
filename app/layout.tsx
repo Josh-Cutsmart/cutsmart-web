@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { DocumentScrollbar } from "@/components/glass-scrollbar-thumb";
 import { ScrollLockWatcher } from "@/components/scroll-lock-watcher";
+import { DropdownSqueezeWatcher } from "@/components/dropdown-squeeze-watcher";
 
 export const metadata: Metadata = {
   title: "CutSmart Web",
@@ -191,6 +192,8 @@ export default function RootLayout({
         {/* The page's own scrollbar, as the glass thumb (below the title bars) — every route. */}
         <DocumentScrollbar />
         <ScrollLockWatcher />
+        {/* Every dropdown squeezing out of what opened it as it opens — every route. */}
+        <DropdownSqueezeWatcher />
       </body>
     </html>
   );

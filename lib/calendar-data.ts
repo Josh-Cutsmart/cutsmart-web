@@ -121,6 +121,24 @@ export async function saveUserCalendarShowNonWorkdays(uid: string, value: boolea
   }
 }
 
+// A project's Schedule pop-up's timeline (components/project-timeline.tsx) put away, or not — a person's own choice, the
+// same on every project and every device they sign in on (users/{uid}.scheduleTimelineCollapsed; open till they say).
+export async function fetchUserScheduleTimelineCollapsed(uid: string): Promise<boolean> {
+  const data = await readUserDocCached(uid).catch(() => null);
+  return data?.scheduleTimelineCollapsed === true;
+}
+export async function saveUserScheduleTimelineCollapsed(uid: string, collapsed: boolean): Promise<boolean> {
+  const userId = String(uid || "").trim();
+  if (!db || !userId) return false;
+  try {
+    await setDoc(doc(db, "users", userId), { scheduleTimelineCollapsed: collapsed }, { merge: true });
+    invalidateUserCache(userId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Company Settings > Calendar > "Archive events after": events that ended longer ago than this are
 // archived (kept in the database, no longer shown on the calendar).
 export type CalendarRetention = "never" | "1w" | "1m" | "3m" | "6m" | "1y" | "2y";

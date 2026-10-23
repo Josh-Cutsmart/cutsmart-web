@@ -88,7 +88,9 @@ type Press = {
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 
-export function attachBoardDragScroll(container: HTMLElement): () => void {
+// `options.dragFrom`: controls inside it a drag may start on after all (a project's Schedule timeline's cards —
+// components/project-timeline.tsx — slide it as the rest of it does; a press without a drag is still their click).
+export function attachBoardDragScroll(container: HTMLElement, options: { dragFrom?: string } = {}): () => void {
   const desktopQuery = window.matchMedia(DESKTOP_QUERY);
   const canDragNow = () => desktopQuery.matches && container.scrollWidth > container.clientWidth + 1;
 
@@ -283,7 +285,7 @@ export function attachBoardDragScroll(container: HTMLElement): () => void {
     if (!target) return;
     // Only blockers inside the board count — never some ancestor of the board itself.
     const blocker = target.closest(NO_DRAG_SELECTOR);
-    if (blocker && container.contains(blocker)) return;
+    if (blocker && container.contains(blocker) && !(options.dragFrom && blocker.closest(options.dragFrom))) return;
     if (!canDragNow()) return;
     // Vertical dragging only applies to a card list that can scroll right now — while the board is
     // still scrolling up into its stuck position, lib/board-sticky-scroll.ts keeps every list at
