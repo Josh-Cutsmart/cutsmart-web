@@ -30,6 +30,7 @@ import { storage } from "@/lib/firebase";
 import { getFirebaseStorageQuotaExceededMessage, isFirebaseStorageQuotaExceeded } from "@/lib/firebase-storage-errors";
 import { retryAsync } from "@/lib/load-retry";
 import { hasPermissionKey, invalidateCompanyAccessCache, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
+import { ColumnAutomationButton, useColumnAutomations } from "@/components/column-automations";
 import { invalidateCompanyRoleOverridesCache } from "@/lib/membership";
 import { type RoleRow, normalizeRoles, normalizeRoleKey } from "@/lib/company-roles";
 import { QUOTE_TEMPLATE_PLACEHOLDERS } from "@/lib/quote-template-placeholders";
@@ -2411,6 +2412,27 @@ export default function CompanySettingsPage() {
   };
 
   const access = useCompanyAccess();
+  // Each project status (and its sub-stages) and lead status has an Automate button (projects.automate) — that board
+  // column's automations (components/column-automations.tsx), as right-clicking it on the board opens. The lists as
+  // they stand here, named, for where a move can go.
+  const projectAutomationColumns = useMemo(
+    () =>
+      statuses
+        .filter((row) => row.name.trim())
+        .flatMap((row) => [
+          { status: row.name.trim(), subStage: "", color: row.color || "#64748B" },
+          ...(row.subStages ?? [])
+            .filter((sub) => sub.name.trim())
+            .map((sub) => ({ status: row.name.trim(), subStage: sub.name.trim(), color: sub.color || "#64748B" })),
+        ]),
+    [statuses],
+  );
+  const leadAutomationColumns = useMemo(
+    () => leadStatuses.filter((row) => row.name.trim()).map((row) => ({ status: row.name.trim(), subStage: "", color: row.color || "#64748B" })),
+    [leadStatuses],
+  );
+  const projectAutomations = useColumnAutomations("projects", projectAutomationColumns);
+  const leadAutomations = useColumnAutomations("leads", leadAutomationColumns);
 
   const currentMemberRole = useMemo(() => {
     const fromMembership = staff.find((m) => m.uid === user?.uid)?.role;
@@ -6665,6 +6687,13 @@ export default function CompanySettingsPage() {
                               <Trophy size={13} />
                               <span className="max-sm:hidden @max-md:hidden">Won</span>
                             </button>
+                            {projectAutomations.canAutomate ? (
+                              <ColumnAutomationButton
+                                count={projectAutomations.countFor(row.name.trim())}
+                                disabled={!row.name.trim()}
+                                onOpen={() => projectAutomations.open({ status: row.name.trim(), subStage: "", color: row.color || "#64748B" })}
+                              />
+                            ) : null}
                             {(row.subStages ?? []).length > 0 ? (
                               <span className={countPillClass} title="Sub-stages">
                                 {(row.subStages ?? []).length}
@@ -6701,6 +6730,15 @@ export default function CompanySettingsPage() {
                                     placeholder="Sub-stage name"
                                     className={gridCellInputClass}
                                   />
+                                  {projectAutomations.canAutomate ? (
+                                    <ColumnAutomationButton
+                                      count={projectAutomations.countFor(row.name.trim(), sub.name.trim())}
+                                      disabled={!row.name.trim() || !sub.name.trim()}
+                                      onOpen={() =>
+                                        projectAutomations.open({ status: row.name.trim(), subStage: sub.name.trim(), color: sub.color || "#64748B" })
+                                      }
+                                    />
+                                  ) : null}
                                   <button
                                     type="button"
                                     onClick={() => setDefaultStatusSubStage(idx, subIdx)}
@@ -7298,6 +7336,13 @@ export default function CompanySettingsPage() {
                             onChange={(e) => setLeadStatuses((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))}
                             className={gridCellInputClass}
                           />
+                          {leadAutomations.canAutomate ? (
+                            <ColumnAutomationButton
+                              count={leadAutomations.countFor(row.name.trim())}
+                              disabled={!row.name.trim()}
+                              onOpen={() => leadAutomations.open({ status: row.name.trim(), subStage: "", color: row.color || "#64748B" })}
+                            />
+                          ) : null}
                           <button type="button" onClick={() => setLeadStatuses((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} title="Remove">
                             <X size={15} />
                           </button>
@@ -9833,6 +9878,8 @@ export default function CompanySettingsPage() {
           </ModalPortal>
         ) : null}
         <DragGhostLayer controller={rowDragGhost} />
+        {projectAutomations.layer}
+        {leadAutomations.layer}
         {ask.element}
     </>
   );

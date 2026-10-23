@@ -862,6 +862,7 @@ function MobileLongPressMenu({
   return createPortal(
     <div
       ref={menuRef}
+      data-hold-menu="true"
       className={`${menuClosing ? "floating-bar-slot-pop" : "glass-bubble-pop"} fixed z-[2000] w-[240px] overflow-hidden rounded-[10px] border py-1.5`}
       style={{
         // Positioning is baked into plain left/top pixel values (centered above the press point,

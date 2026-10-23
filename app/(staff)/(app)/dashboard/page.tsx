@@ -15,7 +15,7 @@ import { useBoardStickyRef } from "@/lib/board-sticky-scroll";
 import { collapseBoardColumnAnimated, expandBoardColumnAnimated } from "@/lib/board-column-collapse";
 import { BoardColumnFrame, ColumnCollapseChevrons, getBoardColumnVisibleRect } from "@/components/board-column-frame";
 import { BoardTitleBar } from "@/components/board-title-bar";
-import { ColumnAutomationBadge, columnAutomationAttrs, useColumnAutomations } from "@/components/column-automations";
+import { columnAutomationAttrs, useColumnAutomations } from "@/components/column-automations";
 import { SPLIT_STATUS_PILL_CLASS, SplitStatusPillContent } from "@/components/status-pill-split";
 import { StatusMenuPanels, statusMenuRowCount, type StatusMenuStatus } from "@/components/status-menu-panels";
 import { flatPageBg } from "@/lib/flat-page";
@@ -580,9 +580,9 @@ export default function DashboardPage() {
   const shouldRenderCompletedModal = useGlassModalPopOrigin(showCompletedProjectsModal, completedModalOrigin, completedModalPanelRef, undefined, completedCardRef);
   const shouldRenderStaffModal = useGlassModalPopOrigin(showStaffModal, staffModalOrigin, staffModalPanelRef, undefined, staffCardRef);
   const access = useCompanyAccess();
-  // Its columns' automations (projects.automate): right-click a column (or its sub-column) → Automate, and each
-  // column's ⚡ count on its header (components/column-automations.tsx). Every column and sub-column, for where a move
-  // can go.
+  // Its columns' automations (projects.automate): right-click a column (or its sub-column) → Automate
+  // (components/column-automations.tsx; Company Settings' Project statuses opens them too). Every column and
+  // sub-column, for where a move can go.
   const automationColumns = useMemo(
     () =>
       statusRows.flatMap((row) => [
@@ -2037,8 +2037,6 @@ export default function DashboardPage() {
     left: React.ReactNode;
     // The column's sort button, at the right of its header after the count.
     sortControl?: React.ReactNode;
-    // Its automations' ⚡ count, before the count.
-    automation?: React.ReactNode;
     count: number;
     badgeBg: string;
     badgeText: string;
@@ -2065,7 +2063,6 @@ export default function DashboardPage() {
         {options.left}
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
-        {options.automation}
         <span
           className="inline-flex h-7 min-w-[28px] items-center justify-center rounded-full px-2 text-[11px] font-bold"
           style={{ color: options.badgeText, backgroundColor: options.badgeBg }}
@@ -2236,13 +2233,6 @@ export default function DashboardPage() {
               }),
             renderHeader: (badgeBg, badgeText) =>
               renderColumnHeaderBar({
-                automation: (
-                  <ColumnAutomationBadge
-                    count={columnAutomation.canAutomate ? columnAutomation.countFor(openSubBoardColumnName, col.name) : 0}
-                    onOpen={() => columnAutomation.open({ status: openSubBoardColumnName, subStage: col.name, color: col.color })}
-                    style={{ color: badgeText, backgroundColor: badgeBg }}
-                  />
-                ),
                 sortControl: (
                   <BoardColumnSortMenu
                     columnName={col.name}
@@ -2354,13 +2344,6 @@ export default function DashboardPage() {
             renderCard: (project) => renderProjectBoardCard(project, column.color),
             renderHeader: (badgeBg, badgeText) =>
               renderColumnHeaderBar({
-                automation: (
-                  <ColumnAutomationBadge
-                    count={columnAutomation.canAutomate ? columnAutomation.countFor(column.name) : 0}
-                    onOpen={() => columnAutomation.open({ status: column.name, subStage: "", color: column.color })}
-                    style={{ color: badgeText, backgroundColor: badgeBg }}
-                  />
-                ),
                 sortControl: (
                   <BoardColumnSortMenu
                     columnName={column.name}

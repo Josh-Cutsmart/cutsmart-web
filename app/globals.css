@@ -807,6 +807,21 @@ body .drawer-toolbar-slim .cutsmart-quote-document-toolbar > .ck.ck-toolbar > .c
   }
 }
 
+/* A menu's text isn't for selecting. A press-and-hold menu (a notification's, a contact row's, a Specs cell's, a
+ * board column's) opens under the finger that's still holding — and the phone's own hold-to-select then lands on the
+ * menu, highlighting its text. Menus (role="menu", or marked data-hold-menu) and everything in them: no selection, no
+ * iOS callout. Not their text boxes — a search box in a menu still types and selects. */
+:is([role="menu"], [data-hold-menu]),
+:is([role="menu"], [data-hold-menu]) * {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+:is([role="menu"], [data-hold-menu]) :is(input, textarea, [contenteditable="true"]) {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
 /* Sidebar labels/text that only mount once the sidebar has finished expanding (app-shell.tsx's
    isSidebarIconOnlyContent) — a plain conditional mount otherwise just pops into existence
    instantly, since there's no "before" state for a CSS transition to animate from. An animation

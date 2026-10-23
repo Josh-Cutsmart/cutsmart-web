@@ -24,7 +24,11 @@ export function pushSubscriptionDocId(endpoint: string): string {
 let configuredSubject = "";
 // The keys come from the environment (NEXT_PUBLIC_VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY). VAPID_SUBJECT is
 // a contact for the push services (mailto: or https:) — without one, the site's own address is used, or
-// on a local dev server (plain http://localhost, which the push services don't accept) a stand-in.
+// on a local dev server (plain http://localhost, which the push services don't accept) the real site's.
+// Not a made-up address: Apple's push service (iPhones, Macs) turns down a push from one, where Google's lets
+// it through — so pushes sent from a local copy reached computers and Android but never an iPhone.
+const PUSH_SUBJECT_FALLBACK = "https://www.cutsmart.nz";
+
 function configureWebPush(siteOrigin: string): boolean {
   const publicKey = String(process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || "").trim();
   const privateKey = String(process.env.VAPID_PRIVATE_KEY || "").trim();
@@ -34,7 +38,7 @@ function configureWebPush(siteOrigin: string): boolean {
     ? envSubject
     : /^https:\/\//i.test(siteOrigin)
       ? siteOrigin
-      : "mailto:notifications@cutsmart.local";
+      : PUSH_SUBJECT_FALLBACK;
   if (configuredSubject !== subject) {
     webpush.setVapidDetails(subject, publicKey, privateKey);
     configuredSubject = subject;
@@ -191,6 +195,16 @@ export async function sendPushToUser(
           result.removed += 1;
         } else {
           result.failed += 1;
+          // Which push service turned it down and why (its status and reason) — no address or keys.
+          const host = (() => {
+            try {
+              return new URL(data.endpoint ?? "").host;
+            } catch {
+              return "?";
+            }
+          })();
+          const reason = String((error as { body?: unknown }).body ?? "").slice(0, 160);
+          console.warn(`[push] ${host} refused a push (${statusCode ?? "no status"}): ${reason}`);
         }
       }
     }),

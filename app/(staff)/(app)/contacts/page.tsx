@@ -2020,6 +2020,7 @@ function ClientsPageInner() {
         ? createPortal(
             <div
               ref={rowMenuRef}
+              data-hold-menu="true"
               className={`${rowMenuClosing ? "floating-bar-slot-pop" : "glass-bubble-pop"} fixed z-[2000] w-[220px] overflow-hidden rounded-[12px] border py-1.5`}
               style={{
                 left: rowMenu.left,

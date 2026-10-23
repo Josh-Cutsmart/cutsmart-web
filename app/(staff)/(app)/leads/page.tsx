@@ -34,7 +34,7 @@ import { isPreviewMode } from "@/lib/preview-mode";
 import { useBoardStickyRef } from "@/lib/board-sticky-scroll";
 import { collapseBoardColumnAnimated, expandBoardColumnAnimated } from "@/lib/board-column-collapse";
 import { BoardColumnFrame, ColumnCollapseChevrons } from "@/components/board-column-frame";
-import { ColumnAutomationBadge, columnAutomationAttrs, useColumnAutomations } from "@/components/column-automations";
+import { columnAutomationAttrs, useColumnAutomations } from "@/components/column-automations";
 import { BoardTitleBar } from "@/components/board-title-bar";
 import { attachBoardArrowKeyScroll } from "@/lib/board-arrow-key-scroll";
 import { scrollBoardToSearchMatch } from "@/lib/board-search-scroll";
@@ -5715,11 +5715,6 @@ export default function LeadsPage() {
                             <p className="truncate text-[15px] font-semibold" style={{ color: columnTitleTextColor }}>{column.name}</p>
                           </div>
                           <div className="flex shrink-0 items-center gap-1.5">
-                            <ColumnAutomationBadge
-                              count={columnAutomation.canAutomate ? columnAutomation.countFor(column.name) : 0}
-                              onOpen={() => columnAutomation.open({ status: column.name, subStage: "", color: column.color })}
-                              style={{ color: columnBadgeText, backgroundColor: columnBadgeBg }}
-                            />
                             <span
                               className="inline-flex h-7 min-w-[28px] items-center justify-center rounded-full px-2 text-[11px] font-bold"
                               style={{ color: columnBadgeText, backgroundColor: columnBadgeBg }}

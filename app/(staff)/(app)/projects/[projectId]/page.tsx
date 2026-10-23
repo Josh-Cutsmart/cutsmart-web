@@ -9400,6 +9400,8 @@ export default function ProjectDetailsPage() {
   // bottom bar's own button (matching Quote's mobile bottom action bar), not a second tab that
   // replaces the sheet pager.
   const [isNestingMobileVisibilityOpen, setIsNestingMobileVisibilityOpen] = useState(false);
+  // Labels' own (a phone's), the same slide-up Visibility.
+  const [isLabelsMobilePanelOpen, setIsLabelsMobilePanelOpen] = useState(false);
   // The overlay above stays mounted at all times on mobile so its closed position is already
   // correctly off-screen the moment it needs to open, rather than needing a fresh mount.
   const nestingMobileVisibilityPanelRef = useRef<HTMLDivElement | null>(null);
@@ -29878,7 +29880,7 @@ export default function ProjectDetailsPage() {
   // its focus-scroll behavior.
   useEffect(() => {
     if (typeof document === "undefined") return;
-    if (!isNestingMobileVisibilityOpen && !isCncMobileVisibilityOpen) return;
+    if (!isNestingMobileVisibilityOpen && !isCncMobileVisibilityOpen && !isLabelsMobilePanelOpen) return;
     const scrollY = window.scrollY;
     const scrollbarGutterWidth = Math.max(0, window.innerWidth - document.documentElement.clientWidth);
     const prevHtmlOverflow = document.documentElement.style.overflow;
@@ -29908,7 +29910,7 @@ export default function ProjectDetailsPage() {
       document.body.style.paddingRight = prevBodyPaddingRight;
       window.scrollTo(0, scrollY);
     };
-  }, [isNestingMobileVisibilityOpen, isCncMobileVisibilityOpen]);
+  }, [isNestingMobileVisibilityOpen, isCncMobileVisibilityOpen, isLabelsMobilePanelOpen]);
   // Whether the current press on a mobile Visibility header (Nesting's or CNC's — only one is ever
   // on screen) went down on the bar's own background rather than on the search box or Show All.
   // See the headers' own onClick for why the click on its own can't tell.
@@ -29959,6 +29961,61 @@ export default function ProjectDetailsPage() {
     const progress = drag.panelHeight > 0 ? currentPx / drag.panelHeight : 0;
     if (progress > 0.35 || drag.velocity > 0.5) {
       setIsCncMobileVisibilityOpen(false);
+      return;
+    }
+    panel.style.transition = "transform 280ms cubic-bezier(0.32, 0.72, 0, 1)";
+    panel.style.transform = "translateY(0px)";
+  };
+  // Labels' phone Visibility: the same slide-up panel as CNC Cutlist's (just above) — always there, off-screen below
+  // until it opens; its bar dragged, or flicked, down to close it.
+  const labelsMobileVisibilityPanelRef = useRef<HTMLElement | null>(null);
+  const labelsMobileVisibilityDragRef = useRef({ startY: 0, dragging: false, panelHeight: 0, lastY: 0, lastT: 0, velocity: 0 });
+  useLayoutEffect(() => {
+    const panel = labelsMobileVisibilityPanelRef.current;
+    if (!panel) return;
+    panel.style.transition = "transform 280ms cubic-bezier(0.32, 0.72, 0, 1)";
+    panel.style.transform = isLabelsMobilePanelOpen ? "translateY(0px)" : "translateY(100%)";
+    const active = document.activeElement;
+    if (!isLabelsMobilePanelOpen && active instanceof HTMLElement && panel.contains(active)) active.blur();
+  }, [isLabelsMobilePanelOpen, isCompactProjectViewport]);
+  const onLabelsVisibilityHeaderTouchStart = (e: ReactTouchEvent<HTMLDivElement>) => {
+    const touch = e.touches[0];
+    const panel = labelsMobileVisibilityPanelRef.current;
+    if (!touch || !panel || !isLabelsMobilePanelOpen || e.target !== e.currentTarget) return;
+    labelsMobileVisibilityDragRef.current = {
+      startY: touch.clientY,
+      dragging: true,
+      panelHeight: panel.getBoundingClientRect().height || 1,
+      lastY: touch.clientY,
+      lastT: e.timeStamp,
+      velocity: 0,
+    };
+  };
+  const onLabelsVisibilityHeaderTouchMove = (e: ReactTouchEvent<HTMLDivElement>) => {
+    const drag = labelsMobileVisibilityDragRef.current;
+    const touch = e.touches[0];
+    const panel = labelsMobileVisibilityPanelRef.current;
+    if (!drag.dragging || !touch || !panel) return;
+    const dy = touch.clientY - drag.startY;
+    if (dy < 6) return;
+    e.preventDefault();
+    panel.style.transition = "none";
+    panel.style.transform = `translateY(${Math.min(1, dy / drag.panelHeight) * drag.panelHeight}px)`;
+    const dt = e.timeStamp - drag.lastT;
+    if (dt > 0) drag.velocity = (touch.clientY - drag.lastY) / dt;
+    drag.lastY = touch.clientY;
+    drag.lastT = e.timeStamp;
+  };
+  const onLabelsVisibilityHeaderTouchEnd = () => {
+    const drag = labelsMobileVisibilityDragRef.current;
+    const panel = labelsMobileVisibilityPanelRef.current;
+    if (!drag.dragging) return;
+    drag.dragging = false;
+    if (!panel) return;
+    const match = /translateY\(([-\d.]+)px\)/.exec(panel.style.transform);
+    const progress = drag.panelHeight > 0 && match ? Number.parseFloat(match[1]) / drag.panelHeight : 0;
+    if (progress > 0.35 || drag.velocity > 0.5) {
+      setIsLabelsMobilePanelOpen(false);
       return;
     }
     panel.style.transition = "transform 280ms cubic-bezier(0.32, 0.72, 0, 1)";
@@ -30323,7 +30380,6 @@ export default function ProjectDetailsPage() {
   const [isLabelsPanelOpen, setIsLabelsPanelOpen] = useState(true);
   const [isLabelsPanelClosing, setIsLabelsPanelClosing] = useState(false);
   const [isLabelsPanelJustOpened, setIsLabelsPanelJustOpened] = useState(false);
-  const [isLabelsMobilePanelOpen, setIsLabelsMobilePanelOpen] = useState(false);
   const labelsPanelTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const labelsPanelScrollRef = useRef<HTMLElement | null>(null);
   const labelsGridScrollRef = useRef<HTMLElement | null>(null);
@@ -50388,39 +50444,31 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     // The sidebar (as CNC Cutlist's Visibility): a search and Show All, then each part type's pill — its labels all on
     // or off, folded away or not — and its parts' bubbles: each switching all its labels, or opened out to switch its
     // labels one by one (a part with more than one).
+    // A phone's search and Show All are on its slide-up panel's own bar instead (below).
     const renderLabelsSidebar = (mobile: boolean) => (
       <>
-        <div className="flex items-center gap-2 p-3" style={bubbleMotion("search", mobile, true)}>
-          {mobile ? (
+        {mobile ? null : (
+          <div className="flex items-center gap-2 p-3" style={bubbleMotion("search", false, true)}>
+            <input
+              value={partLabelSearch}
+              onChange={(e) => setPartLabelSearch(e.target.value)}
+              placeholder="Search labels..."
+              aria-label="Search labels"
+              className="h-8 min-w-0 flex-1 rounded-full border px-3 text-[12px]"
+              style={fieldStyle}
+            />
             <button
               type="button"
-              onClick={() => setIsLabelsMobilePanelOpen(false)}
-              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95"
+              disabled={hiddenLabelCount === 0}
+              onClick={() => setHiddenPartLabels({})}
+              className="h-8 shrink-0 rounded-full border px-3 text-[11px] font-bold hover:brightness-95 disabled:opacity-55"
               style={fieldStyle}
-              aria-label="Close Visibility"
             >
-              <ChevronLeft size={16} />
+              Show All
             </button>
-          ) : null}
-          <input
-            value={partLabelSearch}
-            onChange={(e) => setPartLabelSearch(e.target.value)}
-            placeholder="Search labels..."
-            aria-label="Search labels"
-            className="h-8 min-w-0 flex-1 rounded-full border px-3 text-[12px]"
-            style={fieldStyle}
-          />
-          <button
-            type="button"
-            disabled={hiddenLabelCount === 0}
-            onClick={() => setHiddenPartLabels({})}
-            className="h-8 shrink-0 rounded-full border px-3 text-[11px] font-bold hover:brightness-95 disabled:opacity-55"
-            style={fieldStyle}
-          >
-            Show All
-          </button>
-        </div>
-        <div className="px-3 pb-3">
+          </div>
+        )}
+        <div className={mobile ? "px-3 pb-3 pt-[10px]" : "px-3 pb-3"}>
           <div className="space-y-1">
             {partLabelSidebarGroups.map((group) => {
               const color = partTypeColors[group.partType] ?? "#CBD5E1";
@@ -50710,15 +50758,77 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               )}
             </section>
           </div>
-          {/* A phone: the sidebar as a page of its own over the labels (from the bar along the bottom, as CNC Cutlist's). */}
-          {!large && isLabelsMobilePanelOpen ? (
-            <section
+          {/* A phone: the sidebar slides up over the labels from the bar along the bottom, and its own bar drags (or
+              flicks) it back down — CNC Cutlist's and Nesting's Visibility exactly: always there, off-screen until it
+              opens (top/bottom: within what's visible above the keyboard, as theirs); its bar the bottom bar's blue, with
+              the search (growing over "Visibility" as it's tapped into) and Show All. A tap on the bar's own background
+              closes it too — only one that started there (see Nesting's). */}
+          {!large ? (
+            <aside
+              ref={labelsMobileVisibilityPanelRef}
               data-app-gesture-exempt="true"
-              className="hide-native-scrollbar fixed inset-x-0 bottom-0 top-[56px] z-[130] overflow-y-auto overscroll-contain"
-              style={{ backgroundColor: "var(--bg-app)" }}
+              className="fixed inset-x-0 z-[130] overflow-y-auto overscroll-contain bg-white"
+              style={{
+                top: "calc(56px + var(--keyboard-offset-top-px, 0px))",
+                bottom: "var(--keyboard-inset-px, 0px)",
+                transform: "translateY(100%)",
+              }}
             >
+              <div
+                className="sticky top-0 z-10 flex h-[56px] items-center gap-2 border-b px-3"
+                style={{ borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)" }}
+                onPointerDown={(e) => {
+                  mobileVisibilityHeaderPressOnBarRef.current = e.target === e.currentTarget;
+                }}
+                onClick={(e) => {
+                  if (e.target !== e.currentTarget || !mobileVisibilityHeaderPressOnBarRef.current) return;
+                  setIsLabelsMobilePanelOpen(false);
+                }}
+                onTouchStart={onLabelsVisibilityHeaderTouchStart}
+                onTouchMove={onLabelsVisibilityHeaderTouchMove}
+                onTouchEnd={onLabelsVisibilityHeaderTouchEnd}
+                onTouchCancel={onLabelsVisibilityHeaderTouchEnd}
+              >
+                <div
+                  className="peer relative z-10 w-[84px] min-w-[84px] shrink-0 flex-none transition-[flex-grow,width] duration-200 focus-within:w-auto focus-within:flex-1"
+                  onClick={(e) => e.stopPropagation()}
+                  onTouchStart={(e) => e.stopPropagation()}
+                >
+                  <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }} />
+                  <input
+                    value={partLabelSearch}
+                    onChange={(e) => setPartLabelSearch(e.target.value)}
+                    placeholder="Search"
+                    aria-label="Search labels"
+                    className="h-9 w-full rounded-full border border-[#D8DEE8] bg-white pl-8 pr-3 text-[12px] outline-none transition focus:border-[var(--brand)]"
+                  />
+                </div>
+                {/* After the search — peer-focus-within only matches what follows it. */}
+                <div
+                  className="pointer-events-none absolute left-1/2 top-1.5 h-1 w-16 -translate-x-1/2 rounded-full transition-opacity duration-200 peer-focus-within:opacity-0"
+                  style={{ backgroundColor: "rgba(255,255,255,0.45)" }}
+                />
+                <span
+                  className="pointer-events-none absolute left-1/2 top-1/2 z-0 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap text-[18px] font-medium transition-opacity duration-200 peer-focus-within:opacity-0"
+                  style={{ color: "#ffffff" }}
+                >
+                  Visibility
+                </span>
+                <button
+                  type="button"
+                  disabled={hiddenLabelCount === 0}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setHiddenPartLabels({});
+                  }}
+                  className={`glass-shine glass-shine-neutral relative z-10 ml-auto inline-flex h-9 shrink-0 items-center rounded-full px-3.5 text-[12px] font-medium transition-opacity duration-[280ms] disabled:opacity-55 ${isLabelsMobilePanelOpen ? "opacity-100" : "pointer-events-none opacity-0"}`}
+                  style={{ color: "var(--text-main)" }}
+                >
+                  Show All
+                </button>
+              </div>
               {renderLabelsSidebar(true)}
-            </section>
+            </aside>
           ) : null}
           {!large && !isLabelsMobilePanelOpen ? (
             <div
@@ -52080,12 +52190,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     onClick={(e) => e.stopPropagation()}
                     onTouchStart={(e) => e.stopPropagation()}
                   >
-                    <Search size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }} />
+                    <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }} />
                     <input
                       value={cncVisibilitySearch}
                       onChange={(e) => setCncVisibilitySearch(e.target.value)}
                       placeholder="Search"
-                      className="h-9 w-full rounded-[8px] border border-[#D8DEE8] bg-white pl-8 pr-2 text-[12px] outline-none transition focus:border-[var(--brand)]"
+                      className="h-9 w-full rounded-full border border-[#D8DEE8] bg-white pl-8 pr-3 text-[12px] outline-none transition focus:border-[var(--brand)]"
                     />
                   </div>
                   {/* Must come AFTER the search wrapper in the DOM — peer-focus-within only
@@ -52107,7 +52217,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       e.stopPropagation();
                       void onShowAllCncRows();
                     }}
-                    className={`relative z-10 ml-auto shrink-0 rounded-[8px] border border-[#D8DEE8] bg-white px-2 py-1 text-[11px] font-bold text-[#334155] transition-opacity duration-[280ms] disabled:opacity-55 ${isCncMobileVisibilityOpen ? "opacity-100" : "pointer-events-none opacity-0"}`}
+                    className={`glass-shine glass-shine-neutral relative z-10 ml-auto inline-flex h-9 shrink-0 items-center rounded-full px-3.5 text-[12px] font-medium transition-opacity duration-[280ms] disabled:opacity-55 ${isCncMobileVisibilityOpen ? "opacity-100" : "pointer-events-none opacity-0"}`}
+                    style={{ color: "var(--text-main)" }}
                   >
                     Show All
                   </button>
@@ -56827,12 +56938,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       // the header's own close-drag gesture.
                       onTouchStart={(e) => e.stopPropagation()}
                     >
-                      <Search size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2" style={{ color: projectPalette.textMuted }} />
+                      <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2" style={{ color: projectPalette.textMuted }} />
                       <input
                         value={nestingSearch}
                         onChange={(e) => setNestingSearch(e.target.value)}
                         placeholder="Search"
-                        className="h-9 w-full rounded-[8px] border border-[#D8DEE8] bg-white pl-8 pr-2 text-[12px] outline-none transition focus:border-[var(--brand)]"
+                        className="h-9 w-full rounded-full border border-[#D8DEE8] bg-white pl-8 pr-3 text-[12px] outline-none transition focus:border-[var(--brand)]"
                       />
                     </div>
                     {/* Must come AFTER the search wrapper in the DOM — peer-focus-within only
@@ -56859,7 +56970,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         e.stopPropagation();
                         void onShowAllNestingRows();
                       }}
-                      className={`relative z-10 ml-auto shrink-0 rounded-[8px] border border-[#D8DEE8] bg-white px-2 py-1 text-[11px] font-bold text-[#334155] transition-opacity duration-[280ms] disabled:opacity-55 ${isNestingMobileVisibilityOpen ? "opacity-100" : "pointer-events-none opacity-0"}`}
+                      className={`glass-shine glass-shine-neutral relative z-10 ml-auto inline-flex h-9 shrink-0 items-center rounded-full px-3.5 text-[12px] font-medium transition-opacity duration-[280ms] disabled:opacity-55 ${isNestingMobileVisibilityOpen ? "opacity-100" : "pointer-events-none opacity-0"}`}
+                      style={{ color: "var(--text-main)" }}
                     >
                       Show All
                     </button>

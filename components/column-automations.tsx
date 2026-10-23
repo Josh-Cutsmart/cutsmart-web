@@ -37,9 +37,9 @@ import { cn } from "@/lib/utils";
 //   Move a project to <any of the board's other columns> when it enters <column> <straight away | after <n> <unit>>
 // People and roles are kept by their ids and shown by their names as they are now, so a rename doesn't lose them; a role
 // tells everyone in it when it's sent.
-// each part a dropdown, any number of them (one move a column); saved to the company doc. The board shows how many a
-// column has (countFor) on its header, which opens them too (open). Dev mode: a notify one's Test sends it to yourself,
-// as it would read.
+// each part a dropdown, any number of them (one move a column); saved to the company doc. Company Settings' status
+// lists show how many each column has (countFor) on its row's Automate button, which opens them too (open). Dev mode: a
+// notify one's Test sends it to yourself, as it would read.
 
 export type ColumnAutomationTarget = { status: string; subStage: string; color: string };
 // One of the board's columns (a status, or a Dashboard status's sub-stage) — somewhere a move can go.
@@ -238,28 +238,35 @@ export function columnAutomationAttrs(board: ColumnAutomationBoard, status: stri
   };
 }
 
-// A column header's "⚡ 2": how many automations it has — opens them.
-export function ColumnAutomationBadge({
+// A Company Settings status row's "⚡ Automate 2": opens that column's automations, with how many it has. Narrow rows
+// (the settings list's @container under 448px, or a phone) keep the icon and count only.
+export function ColumnAutomationButton({
   count,
   onOpen,
-  style,
+  disabled,
 }: {
   count: number;
   onOpen: () => void;
-  style: { color: string; backgroundColor: string };
+  disabled?: boolean;
 }) {
-  if (!count) return null;
+  const label = count ? `${count} automation${count === 1 ? "" : "s"}` : "Automate";
   return (
     <button
       type="button"
       onClick={onOpen}
-      className="inline-flex h-7 shrink-0 items-center gap-0.5 rounded-full px-2 text-[11px] font-bold transition hover:brightness-95"
-      style={style}
-      title={`${count} automation${count === 1 ? "" : "s"}`}
-      aria-label={`${count} automation${count === 1 ? "" : "s"}`}
+      disabled={disabled}
+      title={disabled ? "Name the status first" : label}
+      aria-label={label}
+      className="inline-flex h-7 shrink-0 items-center gap-1 rounded-full border px-2 text-[11.5px] font-medium transition hover:brightness-95 disabled:opacity-40 max-sm:min-w-7 max-sm:justify-center max-sm:px-1.5 @max-md:min-w-7 @max-md:justify-center @max-md:px-1.5"
+      style={
+        count
+          ? { borderColor: "color-mix(in srgb, var(--brand) 40%, var(--glass-border))", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }
+          : { borderColor: "var(--glass-border)", backgroundColor: "transparent", color: "var(--text-muted)" }
+      }
     >
-      <Zap size={12} className="shrink-0" fill="currentColor" />
-      {count}
+      <Zap size={13} className="shrink-0" fill={count ? "currentColor" : "none"} />
+      <span className="max-sm:hidden @max-md:hidden">Automate</span>
+      {count ? <span className="font-semibold">{count}</span> : null}
     </button>
   );
 }

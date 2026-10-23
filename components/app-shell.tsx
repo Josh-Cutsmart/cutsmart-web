@@ -1018,6 +1018,15 @@ export function AppShell({
   // resolved once per gesture in onMainTouchStart, not re-queried every touchmove tick.
   const pullTopBarElRef = useRef<HTMLElement | null>(null);
   const pullTopBarContentElRef = useRef<HTMLElement | null>(null);
+  // The bar's own height as it rests (its inline height — a fullscreen view's glass backdrop has no other, the tab
+  // bar's is its class, so ""), put back once a pull's over. Clearing it instead left that backdrop no height at all:
+  // after any touch begun at the top of a fullscreen view, its glass was gone, its title over the page unreadable.
+  const pullTopBarRestHeightRef = useRef("");
+  const findPullTopBar = () => {
+    const topBarEl = document.querySelector<HTMLElement>('[data-app-top-bar="true"]');
+    if (topBarEl && !topBarEl.hasAttribute("data-pulling")) pullTopBarRestHeightRef.current = topBarEl.style.height;
+    pullTopBarElRef.current = topBarEl;
+  };
   type PullZone = "reload" | "dashboard" | "saveBack";
   const pullDashboardRef = useRef<{ startY: number; active: boolean; armed: boolean; selected: PullZone } | null>(null);
   // The bar's resting height (matches the tab bar's own h-12) and how tall it can grow if you keep
@@ -1172,7 +1181,7 @@ export function AppShell({
     const topBarEl = pullTopBarElRef.current;
     if (topBarEl) {
       topBarEl.style.transition = animate ? `height ${PULL_BANNER_RESET_DURATION_MS}ms ease` : "none";
-      topBarEl.style.height = "";
+      topBarEl.style.height = pullTopBarRestHeightRef.current;
       topBarEl.removeAttribute("data-pulling");
     }
     const topBarContentEl = pullTopBarContentElRef.current;
@@ -1192,7 +1201,7 @@ export function AppShell({
   if (pullPreviewOpen && !devModeOn) setPullPreviewOpen(false);
   const openPullPreview = () => {
     if (typeof document === "undefined") return;
-    pullTopBarElRef.current = document.querySelector<HTMLElement>('[data-app-top-bar="true"]');
+    findPullTopBar();
     pullTopBarContentElRef.current = document.querySelector<HTMLElement>('[data-app-top-bar-content="true"]');
     const transition = `opacity ${PULL_BANNER_RESET_DURATION_MS}ms ease, height ${PULL_BANNER_RESET_DURATION_MS}ms ease`;
     const banner = pullBannerRef.current;
@@ -1335,8 +1344,8 @@ export function AppShell({
     // starts before React has caught up, which let this pulldown arm mid-zoom.
     if (alreadyAtTop && mobileTopBarEnabled && !isSheetZoomedAwayFromEdgeRef.current) {
       pullDashboardRef.current = { startY: touch.clientY, active: false, armed: false, selected: "dashboard" };
-      pullTopBarElRef.current =
-        typeof document !== "undefined" ? document.querySelector<HTMLElement>('[data-app-top-bar="true"]') : null;
+      if (typeof document !== "undefined") findPullTopBar();
+      else pullTopBarElRef.current = null;
       pullTopBarContentElRef.current =
         typeof document !== "undefined" ? document.querySelector<HTMLElement>('[data-app-top-bar-content="true"]') : null;
       pullPrevSelectedRef.current = "dashboard";
@@ -3586,6 +3595,9 @@ export function AppShell({
         textMuted: "#475467",
         hoverBg: "#F7F8FC",
       };
+  // The phone's menu is see-through glass over the page, where the muted grey was hard to read: its pages and icons
+  // are in the main text colour, its group names a darker grey than the muted one.
+  const mobileNavHeadingColor = `color-mix(in srgb, ${shellPalette.text} 65%, ${shellPalette.textMuted})`;
 
   // Fixed at the CLOSED (rest) height always, regardless of how tall the settings panel grows
   // when open — the nav list never gets pushed up or scrolls to make room for it; the white bar
@@ -3672,7 +3684,7 @@ export function AppShell({
               type="button"
               onClick={() => setMobileNavOpen(false)}
               className="absolute right-3 top-3 z-10 inline-flex h-10 w-10 items-center justify-center rounded-full border"
-              style={{ borderColor: shellPalette.border, backgroundColor: shellPalette.panelBg, color: shellPalette.textMuted }}
+              style={{ borderColor: shellPalette.border, backgroundColor: shellPalette.panelBg, color: shellPalette.text }}
               aria-label="Close menu"
             >
               <ChevronLeft size={20} />
@@ -3729,7 +3741,7 @@ export function AppShell({
                           "flex w-full items-center gap-2.5 px-4 pb-1 text-left text-[12px] font-bold uppercase tracking-[0.8px]",
                           groupIdx === 0 ? "pt-1" : "pt-4",
                         )}
-                        style={{ color: shellPalette.textMuted }}
+                        style={{ color: mobileNavHeadingColor }}
                       >
                         <span className="shrink-0">{group.name}</span>
                         <span aria-hidden="true" className="h-px min-w-0 flex-1" style={{ backgroundColor: shellPalette.border }} />
@@ -3762,7 +3774,7 @@ export function AppShell({
                                   active ? "bg-[var(--brand-soft)]" : "hover:bg-[var(--panel-muted)]",
                                 )}
                                 style={{
-                                  color: active ? "var(--brand)" : shellPalette.textMuted,
+                                  color: active ? "var(--brand)" : shellPalette.text,
                                 }}
                               >
                                 <Icon size={22} />
@@ -3828,7 +3840,7 @@ export function AppShell({
                           router.push("/user-settings");
                         }}
                         className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[12px] transition hover:bg-[var(--panel-muted)]"
-                        style={{ color: shellPalette.textMuted }}
+                        style={{ color: shellPalette.text }}
                         aria-label="User Settings"
                         title="User Settings"
                       >
