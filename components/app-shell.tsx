@@ -660,6 +660,10 @@ export function AppShell({
   const [navHighlightRect, setNavHighlightRect] = useState<{ top: number; height: number; folded: boolean } | null>(null);
   const navHighlightRef = useRef<HTMLDivElement | null>(null);
   const navListRef = useRef<HTMLDivElement | null>(null);
+  // The phone's menu: its list, and — while a section folds or opens (toggleNavGroup) — which, and where each of the
+  // list's rows was just before, to slide them from there.
+  const mobileNavListRef = useRef<HTMLDivElement | null>(null);
+  const mobileNavFoldRef = useRef<{ group: string; opening: boolean; rects: Map<HTMLElement, DOMRect> } | null>(null);
   // The sidebar's sections folded away (their headings' arrows), as each person left them (readFoldedNavGroups) —
   // straight from what's saved until they fold or open one here.
   const foldedNavGroupsKey = user?.uid ? foldedNavGroupsStorageKey(user.uid) : "";
@@ -1692,6 +1696,11 @@ export function AppShell({
   // keeps to its page as the pages above it move (straight with it, no slide of its own), then it's measured again
   // once they've settled.
   const toggleNavGroup = (name: string) => {
+    const mobileList = isDesktopViewport ? null : mobileNavListRef.current;
+    if (mobileList) {
+      const rows = Array.from(mobileList.children) as HTMLElement[];
+      mobileNavFoldRef.current = { group: name, opening: Boolean(foldedNavGroups[name]), rects: new Map(rows.map((row) => [row, row.getBoundingClientRect()])) };
+    }
     const next = { ...foldedNavGroups };
     if (next[name]) delete next[name];
     else next[name] = true;
@@ -1704,6 +1713,8 @@ export function AppShell({
         // Storage unavailable — it just won't be remembered.
       }
     }
+    // (The page highlight is the computer's sidebar's — nothing to keep up with on a phone.)
+    if (!isDesktopViewport) return;
     let settled = false;
     const follow = () => {
       const container = navListRef.current;
@@ -1722,6 +1733,53 @@ export function AppShell({
       setNavLayoutTick((tick) => tick + 1);
     }, NAV_GROUP_FOLD_MS + 40);
   };
+  // The phone's menu, a section folded or opened (toggleNavGroup): the rows under it slide from where they were to where
+  // they are now — a transform, smooth on a phone, where animating the list's own layout (as the computer's sidebar
+  // does) stuttered. An opened section's pages fade in under them; a folded one's fade out where they were (a copy,
+  // behind the rows) as the rest slides up over them.
+  useLayoutEffect(() => {
+    const fold = mobileNavFoldRef.current;
+    const list = mobileNavListRef.current;
+    mobileNavFoldRef.current = null;
+    if (!fold || !list) return;
+    const timing = { duration: NAV_GROUP_FOLD_MS, easing: "cubic-bezier(0.22, 1, 0.36, 1)" };
+    const rows = Array.from(list.children) as HTMLElement[];
+    for (const row of rows) {
+      const before = fold.rects.get(row);
+      if (!before) continue;
+      const shift = before.top - row.getBoundingClientRect().top;
+      if (Math.abs(shift) > 0.5) row.animate([{ transform: `translateY(${shift}px)` }, { transform: "none" }], timing);
+    }
+    const section = rows.find((row) => row.dataset.mobileNavGroup === fold.group);
+    if (!section) return;
+    if (fold.opening) {
+      section.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 220, easing: "ease" });
+      return;
+    }
+    const was = fold.rects.get(section);
+    if (!was || was.height < 1) return;
+    const listRect = list.getBoundingClientRect();
+    const ghost = section.cloneNode(true) as HTMLElement;
+    delete ghost.dataset.mobileNavGroup;
+    ghost.setAttribute("aria-hidden", "true");
+    ghost.inert = true;
+    Object.assign(ghost.style, {
+      position: "absolute",
+      left: `${was.left - listRect.left}px`,
+      top: `${was.top - listRect.top + list.scrollTop}px`,
+      width: `${was.width}px`,
+      height: `${was.height}px`,
+      margin: "0",
+      zIndex: "-1",
+      pointerEvents: "none",
+      gridTemplateRows: "1fr",
+    });
+    list.appendChild(ghost);
+    void ghost
+      .animate([{ opacity: 1 }, { opacity: 0 }], { duration: 180, easing: "ease", fill: "forwards" })
+      .finished.catch(() => undefined)
+      .finally(() => ghost.remove());
+  }, [foldedNavGroups]);
   useLayoutEffect(() => {
     const nextMode = readThemeMode();
     setThemeMode(nextMode);
@@ -3596,7 +3654,7 @@ export function AppShell({
         hoverBg: "#F7F8FC",
       };
   // The phone's menu is see-through glass over the page, where the muted grey was hard to read: its pages and icons
-  // are in the main text colour, its group names a darker grey than the muted one.
+  // are in the main text colour, its group names (and the line on from each) a darker grey than the muted one.
   const mobileNavHeadingColor = `color-mix(in srgb, ${shellPalette.text} 65%, ${shellPalette.textMuted})`;
 
   // Fixed at the CLOSED (rest) height always, regardless of how tall the settings panel grows
@@ -3726,7 +3784,7 @@ export function AppShell({
                   New Project
                 </button>
               )}
-              <div className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
+              <div ref={mobileNavListRef} className="relative min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
                 {visibleNavGroups.map((group, groupIdx) => {
                   const isFolded = Boolean(foldedNavGroups[group.name]);
                   return (
@@ -3744,7 +3802,7 @@ export function AppShell({
                         style={{ color: mobileNavHeadingColor }}
                       >
                         <span className="shrink-0">{group.name}</span>
-                        <span aria-hidden="true" className="h-px min-w-0 flex-1" style={{ backgroundColor: shellPalette.border }} />
+                        <span aria-hidden="true" className="h-px min-w-0 flex-1" style={{ backgroundColor: mobileNavHeadingColor }} />
                         <ChevronDown
                           size={16}
                           strokeWidth={2.5}
@@ -3755,11 +3813,9 @@ export function AppShell({
                       </button>
                       <div
                         inert={isFolded}
+                        data-mobile-nav-group={group.name}
                         className="grid"
-                        style={{
-                          gridTemplateRows: isFolded ? "0fr" : "1fr",
-                          transition: animatedNavGroup === group.name ? NAV_GROUP_FOLD_TRANSITION : undefined,
-                        }}
+                        style={{ gridTemplateRows: isFolded ? "0fr" : "1fr" }}
                       >
                         <div className="min-h-0 space-y-1 overflow-hidden">
                           {group.items.map((item) => {

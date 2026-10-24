@@ -25,11 +25,6 @@ export const PUSH_NOTIFICATION_CATEGORIES: readonly PushNotificationCategory[] =
         description: "Someone asks to unlock a project's production — on Android and computers you can approve or deny it right from the notification.",
       },
       { type: "production_unlock_response", label: "Unlock request answered", description: "Your request to unlock a project's production is approved or denied." },
-      {
-        type: "column_automation",
-        label: "Column automations",
-        description: "A project or lead enters, leaves or has been in a board column someone's set you to hear about.",
-      },
     ],
   },
   {
@@ -38,6 +33,19 @@ export const PUSH_NOTIFICATION_CATEGORIES: readonly PushNotificationCategory[] =
     types: [
       { type: "lead_new", label: "New leads", description: "A new lead comes in (only leads you can see)." },
       { type: "lead_access", label: "Added to a lead", description: "A lead is assigned to you." },
+    ],
+  },
+  // Their own group (its own switch, not under Projects): the Dashboard's and Leads' column automations.
+  {
+    id: "automations",
+    label: "Automations",
+    types: [
+      {
+        type: "column_automation",
+        label: "Column automations",
+        description:
+          "A project or lead enters, leaves or has been in a board column someone's set you to hear about, or an automation moves on a project you moved.",
+      },
     ],
   },
   {

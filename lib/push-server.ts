@@ -59,7 +59,8 @@ export type PushPayload = {
   actionUrl?: string;
   actionToken?: string;
 };
-export type PushSendResult = { sent: number; removed: number; failed: number; reason?: string };
+// errors: each device whose push service turned it down — which service, its status and its reason (no address or keys).
+export type PushSendResult = { sent: number; removed: number; failed: number; reason?: string; errors?: string[] };
 
 // ---- Time between notifications (User Settings — users/{uid}.pushQuietMinutes): after a notification
 // reaches someone's devices, any more within that time are held in pushThrottle/{uid} (server-only) and
@@ -205,6 +206,7 @@ export async function sendPushToUser(
           })();
           const reason = String((error as { body?: unknown }).body ?? "").slice(0, 160);
           console.warn(`[push] ${host} refused a push (${statusCode ?? "no status"}): ${reason}`);
+          result.errors = [...(result.errors ?? []), `${host} ${statusCode ?? "no status"} ${reason}`.trim()];
         }
       }
     }),
@@ -304,7 +306,7 @@ export async function pushStoredNotification(
     return data;
   });
   if (!claimed) return { ...empty, skipped: "missing-or-already-sent" };
-  return sendPushToUser(
+  const result = await sendPushToUser(
     uid,
     {
       title: String(claimed.title || "CutSmart").trim() || "CutSmart",
@@ -314,6 +316,21 @@ export async function pushStoredNotification(
     },
     { type: String(claimed.type || ""), siteOrigin },
   );
+  // How it went, kept on the notification — how many devices took it, and why any didn't (no devices, switched
+  // off, held for the time between notifications, or a push service's refusal) — so a missing one can be traced.
+  await ref
+    .update({
+      pushResult: {
+        sent: result.sent,
+        failed: result.failed,
+        removed: result.removed,
+        reason: result.reason ?? null,
+        errors: result.errors ?? [],
+        origin: siteOrigin,
+      },
+    })
+    .catch(() => undefined);
+  return result;
 }
 
 // Whether `uid` belongs to `companyId` (a membership doc, or an older account's own user doc naming it).

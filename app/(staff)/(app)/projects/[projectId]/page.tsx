@@ -50767,7 +50767,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             <aside
               ref={labelsMobileVisibilityPanelRef}
               data-app-gesture-exempt="true"
-              className="fixed inset-x-0 z-[130] overflow-y-auto overscroll-contain bg-white"
+              className="fixed inset-x-0 z-[130] overflow-y-auto overscroll-none bg-white"
               style={{
                 top: "calc(56px + var(--keyboard-offset-top-px, 0px))",
                 bottom: "var(--keyboard-inset-px, 0px)",
@@ -50776,7 +50776,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             >
               <div
                 className="sticky top-0 z-10 flex h-[56px] items-center gap-2 border-b px-3"
-                style={{ borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)" }}
+                style={{ borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)", touchAction: "none" }}
                 onPointerDown={(e) => {
                   mobileVisibilityHeaderPressOnBarRef.current = e.target === e.currentTarget;
                 }}
@@ -52146,11 +52146,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <aside
                 ref={cncMobileVisibilityPanelRef}
                 data-app-gesture-exempt="true"
-                // overscroll-contain: without it, the rubber-band overscroll at the top/bottom of
-                // this panel's own scroll bleeds into scrolling the page underneath once this
-                // panel's own scroll is exhausted — both "content behind scrolls too" and "gets
-                // stuck at the bottom" (the browser handing the gesture to the page behind).
-                className="fixed inset-x-0 z-[130] overflow-y-auto overscroll-contain bg-white"
+                // overscroll-none: see Nesting's own identical panel — the page behind never takes over
+                // its scroll, and it doesn't bounce at its ends.
+                className="fixed inset-x-0 z-[130] overflow-y-auto overscroll-none bg-white"
                 // top/bottom: see Nesting's own identical style — stays within what's visible above
                 // the keyboard while it's open.
                 style={{
@@ -52167,7 +52165,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     panel is actually open. */}
                 <div
                   className="sticky top-0 z-10 flex h-[56px] items-center gap-2 border-b px-3"
-                  style={{ borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)" }}
+                  style={{ borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)", touchAction: "none" }}
                   onPointerDown={(e) => {
                     mobileVisibilityHeaderPressOnBarRef.current = e.target === e.currentTarget;
                   }}
@@ -56871,13 +56869,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 <aside
                   ref={nestingMobileVisibilityPanelRef}
                   data-app-gesture-exempt="true"
-                  // overscroll-contain: without it, iOS/Android let the rubber-band overscroll at
+                  // overscroll-none: without it, iOS/Android let the rubber-band overscroll at
                   // the top/bottom of this panel's own scroll "bleed through" into scrolling the
                   // dashboard page underneath once this panel's own scroll is exhausted — which is
                   // both "the content behind scrolls too" and "gets stuck at the bottom, can't
                   // scroll back up" (the stuck feeling is the browser having handed the gesture to
-                  // the page behind instead of this panel's own scroller).
-                  className="fixed inset-x-0 z-[130] overflow-y-auto overscroll-contain bg-white"
+                  // the page behind instead of this panel's own scroller). none rather than contain: not
+                  // even a bounce of its own at its ends — at the top, its white showed above the blue bar
+                  // (the sticky bar rode the bounce down) while the bar was dragged down to close it.
+                  className="fixed inset-x-0 z-[130] overflow-y-auto overscroll-none bg-white"
                   // top/bottom track what's actually visible while the on-screen keyboard is up (both
                   // vars are 0 while it's closed; see lib/use-keyboard-inset.ts). bottom: the top of
                   // the keyboard rather than the bottom of the screen, so while typing in the search
@@ -56900,7 +56900,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       actually open. */}
                   <div
                     className="sticky top-0 z-10 flex h-[56px] items-center gap-2 border-b px-3"
-                    style={{ borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)" }}
+                    style={{ borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)", touchAction: "none" }}
                     onPointerDown={(e) => {
                       mobileVisibilityHeaderPressOnBarRef.current = e.target === e.currentTarget;
                     }}

@@ -30,6 +30,7 @@ import {
   UserMinus,
   Users,
   X,
+  Zap,
   type LucideIcon,
 } from "lucide-react";
 import { requestNotificationReminderPush } from "@/lib/push-client";
@@ -110,6 +111,7 @@ const NOTIF_TYPE_ICONS: Record<string, LucideIcon> = {
 const NOTIF_CATEGORY_ICONS: Record<string, LucideIcon> = {
   projects: FolderKanban,
   leads: Inbox,
+  automations: Zap,
   client_portal: Globe,
   calendar: CalendarDays,
   cutsmart: Sparkles,
@@ -143,6 +145,7 @@ const NOTIF_CARD_BG = "color-mix(in srgb, var(--panel-bg) 62%, transparent)";
 const NOTIF_CATEGORY_COLORS: Record<string, string> = {
   projects: "#3B82F6",
   leads: "#8B5CF6",
+  automations: "#0EA5E9",
   client_portal: "#14B8A6",
   calendar: "#F59E0B",
   cutsmart: "#EC4899",

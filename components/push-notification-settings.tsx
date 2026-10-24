@@ -13,7 +13,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { doc, getDoc, setDoc } from "@/lib/firestore-client";
-import { Bell, CalendarDays, ChevronLeft, ChevronRight, FolderKanban, Globe, Inbox, Plus, Search, Share, Sparkles, Timer, X, type LucideIcon } from "lucide-react";
+import { Bell, CalendarDays, ChevronLeft, ChevronRight, FolderKanban, Globe, Inbox, Plus, Search, Share, Sparkles, Timer, X, Zap, type LucideIcon } from "lucide-react";
 import { db } from "@/lib/firebase";
 import { GlassDropdown } from "@/components/glass-dropdown";
 import { DevTestButton } from "@/components/dev-mode";
@@ -331,6 +331,7 @@ const ROWS_PAGE_TOP_CLASS = "top-[92px]";
 export const PUSH_CATEGORY_ICONS: Record<string, LucideIcon> = {
   projects: FolderKanban,
   leads: Inbox,
+  automations: Zap,
   client_portal: Globe,
   calendar: CalendarDays,
   cutsmart: Sparkles,
