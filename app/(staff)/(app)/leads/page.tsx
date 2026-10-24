@@ -24,7 +24,6 @@ import { glassFieldClass, modalCloseButtonClass, primaryButtonClass, primaryButt
 import { LeadFormFields } from "@/components/lead-form-fields";
 import {
   collectLeadFormAnswers,
-  leadFormFieldLayout,
   MANUAL_LEAD_SOURCES,
   normalizeLeadForms,
   type LeadForm,
@@ -66,6 +65,23 @@ import {
   OPEN_NEW_PROJECT_EVENT,
   type NewProjectPrefillPayload,
 } from "@/lib/new-project-bridge";
+import {
+  buildLeadProjectPrefill,
+  findBestLeadField,
+  getLeadDynamicFields,
+  isLikelyEmailValue,
+  isLikelyPhoneValue,
+  leadClientName,
+  leadFieldLayoutFor,
+  mergeLeadFieldLayout,
+  normalizeLeadFieldKey,
+  normalizeLeadFieldLayout,
+  normalizeLeadImageItems,
+  type LeadFieldLayoutRow,
+  type LeadProjectFieldTarget,
+  leadDetailFields,
+  resolveLeadColumnValue,
+} from "@/lib/lead-project-prefill";
 import { retryAsync } from "@/lib/load-retry";
 import { swallowNextClick } from "@/lib/swallow-dismiss-click";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
@@ -111,36 +127,6 @@ function leadDateMs(lead: CompanyLeadRow): number {
 }
 const LEADS_BOARD_PREFS_STORAGE_PREFIX = "cutsmart_leads_board_prefs:";
 const LEAD_ARCHIVE_UPDATED_EVENT = "cutsmart_lead_archive_updated";
-const RESERVED_LEAD_FIELD_KEYS = new Set([
-  "companyid",
-  "source",
-  "status",
-]);
-
-type LeadProjectFieldTarget =
-  | ""
-  | "clientName"
-  | "clientFirstName"
-  | "clientLastName"
-  | "clientPhone"
-  | "clientEmail"
-  | "projectAddress"
-  | "projectNotes";
-type LeadFieldLayoutRow = {
-  key: string;
-  label: string;
-  showInRow: boolean;
-  showInDetail: boolean;
-  order: number;
-  projectFieldTarget: LeadProjectFieldTarget;
-};
-
-type LeadDynamicField = {
-  key: string;
-  label: string;
-  value: string;
-};
-
 type StatusRow = { name: string; color: string };
 
 function buildTemporarySampleLeads(_companyId: string): CompanyLeadRow[] {
@@ -279,110 +265,8 @@ function formatLeadDate(value: string) {
   return activeDateTime(value) || "-";
 }
 
-function formatLeadFieldLabel(key: string) {
-  const raw = String(key || "").trim();
-  if (!raw) return "Field";
-  return raw
-    .replace(/[_-]+/g, " ")
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/\b\w/g, (match) => match.toUpperCase());
-}
-
-function normalizeLeadFieldKey(key: string) {
-  return String(key || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "");
-}
-
-function normalizeLeadFieldLayout(raw: unknown): LeadFieldLayoutRow[] {
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .map((item, idx) => {
-      const row = (item ?? {}) as Record<string, unknown>;
-      const key = String(row.key || "").trim();
-      if (!key) return null;
-      const label = String(row.label || "").trim() || formatLeadFieldLabel(key);
-        return {
-          key,
-          label,
-          showInRow: Boolean(row.showInRow),
-          showInDetail: row.showInDetail == null ? true : Boolean(row.showInDetail),
-          order: Number.isFinite(Number(row.order)) ? Number(row.order) : idx,
-          projectFieldTarget: ([
-            "",
-            "clientName",
-            "clientFirstName",
-            "clientLastName",
-            "clientPhone",
-            "clientEmail",
-            "projectAddress",
-            "projectNotes",
-        ] as LeadProjectFieldTarget[]).includes(String(row.projectFieldTarget || "").trim() as LeadProjectFieldTarget)
-          ? (String(row.projectFieldTarget || "").trim() as LeadProjectFieldTarget)
-          : "",
-      } satisfies LeadFieldLayoutRow;
-    })
-    .filter((row): row is LeadFieldLayoutRow => Boolean(row));
-}
-
-function mergeLeadFieldLayout(
-  availableFields: Array<{ key: string; label: string }>,
-  savedLayout: LeadFieldLayoutRow[],
-): LeadFieldLayoutRow[] {
-  const byKey = new Map(
-    savedLayout.map((row) => [normalizeLeadFieldKey(row.key), row] as const),
-  );
-  return availableFields
-    .map((field, idx) => {
-      const existing = byKey.get(normalizeLeadFieldKey(field.key));
-      return {
-        key: existing?.key || field.key,
-        label: existing?.label || field.label,
-        showInRow: existing?.showInRow ?? idx < 3,
-        showInDetail: existing?.showInDetail ?? true,
-        order: Number.isFinite(Number(existing?.order)) ? Number(existing?.order) : idx,
-        projectFieldTarget: existing?.projectFieldTarget ?? "",
-      } satisfies LeadFieldLayoutRow;
-    })
-    .sort((a, b) => {
-      const orderDiff = Number(a.order) - Number(b.order);
-      if (orderDiff !== 0) return orderDiff;
-      return a.label.localeCompare(b.label);
-    });
-}
-
-function isInternalTestLead(lead: CompanyLeadRow) {
-  const raw = lead.rawFields ?? {};
-  return (
-    raw.__cutsmartTest === true ||
-    String(raw.__cutsmartTest || "").trim().toLowerCase() === "true" ||
-    String(raw.FullName || "").trim() === "CutSmart Test Lead" ||
-    String(raw.Source || "").trim() === "CutSmart Integration Test"
-  );
-}
-
 function isTemporarySampleLead(lead: CompanyLeadRow) {
   return String(lead.id || "").startsWith("temporary-sample-lead-") || String(lead.source || "").trim() === "local-sample";
-}
-
-function leadValueToText(value: unknown): string {
-  if (value == null) return "";
-  if (Array.isArray(value)) {
-    return value
-      .map((item) => leadValueToText(item))
-      .filter(Boolean)
-      .join(", ");
-  }
-  if (typeof value === "object") {
-    return Object.entries(value as Record<string, unknown>)
-      .map(([key, item]) => `${formatLeadFieldLabel(key)}: ${leadValueToText(item)}`)
-      .filter((item) => item.endsWith(": ") === false)
-      .join(" | ");
-  }
-  return String(value).trim();
 }
 
 async function readFileAsDataUrl(file: File): Promise<string> {
@@ -394,44 +278,6 @@ async function readFileAsDataUrl(file: File): Promise<string> {
   });
 }
 
-function normalizeLeadImageItems(
-  lead: CompanyLeadRow,
-): Array<{ url: string; name: string; annotations: Array<{ id: string; x: number; y: number; xPx?: number; yPx?: number; note: string; createdByName?: string; createdByColor?: string }> }> {
-  if (Array.isArray(lead.imageItems) && lead.imageItems.length > 0) {
-    return lead.imageItems
-      .map((item) => ({
-        url: String(item?.url || "").trim(),
-        name: String(item?.name || "").trim(),
-        annotations: Array.isArray(item?.annotations)
-          ? item.annotations
-              .map((annotation) => ({
-                id: String(annotation?.id || "").trim(),
-                x: Number(annotation?.x ?? 0),
-                y: Number(annotation?.y ?? 0),
-                xPx: Number(annotation?.xPx),
-                yPx: Number(annotation?.yPx),
-                note: String(annotation?.note || "").trim(),
-                createdByName: String(annotation?.createdByName || "").trim(),
-                createdByColor: String(annotation?.createdByColor || "").trim(),
-              }))
-              .filter(
-                (annotation) =>
-                  annotation.id &&
-                  annotation.note &&
-                  Number.isFinite(annotation.x) &&
-                  Number.isFinite(annotation.y),
-              )
-          : [],
-      }))
-      .filter((item) => item.url)
-      .slice(0, 10);
-  }
-  return (Array.isArray(lead.imageUrls) ? lead.imageUrls : [])
-    .map((url) => ({ url: String(url || "").trim(), name: "", annotations: [] }))
-    .filter((item) => item.url)
-    .slice(0, 10);
-}
-
 function fileNameWithoutExtension(fileName: string): string {
   const raw = String(fileName || "").trim();
   if (!raw) return "";
@@ -439,267 +285,6 @@ function fileNameWithoutExtension(fileName: string): string {
   if (parts.length <= 1) return raw;
   parts.pop();
   return parts.join(".").trim();
-}
-
-function getLeadDynamicFields(lead: CompanyLeadRow): LeadDynamicField[] {
-  if (isInternalTestLead(lead)) return [];
-  const raw = lead.rawFields ?? {};
-  return Object.entries(raw)
-    .filter(([key]) => {
-      const normalized = normalizeLeadFieldKey(key);
-      return !RESERVED_LEAD_FIELD_KEYS.has(normalized) && !String(key || "").startsWith("__");
-    })
-    .map(([key, value]) => ({
-      key,
-      label: formatLeadFieldLabel(key),
-      value: leadValueToText(value),
-    }))
-    .filter((field) => field.value);
-}
-
-function scoreLeadFieldKey(field: LeadDynamicField, patterns: RegExp[]) {
-  const haystack = `${field.key} ${field.label}`.toLowerCase();
-  return patterns.reduce((best, pattern) => (pattern.test(haystack) ? best + 1 : best), 0);
-}
-
-function findBestLeadField(
-  fields: LeadDynamicField[],
-  patterns: RegExp[],
-  predicate?: (field: LeadDynamicField) => boolean,
-) {
-  let bestField: LeadDynamicField | null = null;
-  let bestScore = -1;
-  for (const field of fields) {
-    if (predicate && !predicate(field)) continue;
-    const score = scoreLeadFieldKey(field, patterns);
-    if (score <= 0) continue;
-    // Tie-break alphabetically by key, not by array order — `fields` comes
-    // from Object.entries() on data fetched fresh on every poll, and if the
-    // server doesn't guarantee stable key order, a plain `score > bestScore`
-    // check lets the winner among tied candidates flip between requests,
-    // which reads as a field's value randomly flickering between two leads'
-    // worth of otherwise-identical data.
-    if (score > bestScore || (score === bestScore && bestField && field.key.localeCompare(bestField.key) < 0)) {
-      bestField = field;
-      bestScore = score;
-    }
-  }
-  return bestScore > 0 ? bestField : null;
-}
-
-function isLikelyEmailValue(value: string) {
-  return /\S+@\S+\.\S+/.test(String(value || "").trim());
-}
-
-function isLikelyPhoneValue(value: string) {
-  const raw = String(value || "").trim();
-  const digits = raw.replace(/\D/g, "");
-  if (digits.length < 7 || digits.length > 15) return false;
-  return /^[+\d()\s-]+$/.test(raw) || /^\d+$/.test(raw);
-}
-
-// Returns consumedKeys alongside the built value — whichever raw field(s) fed into it — so
-// buildLeadProjectPrefill can exclude them from the project's own "leadCustomFields" list; without
-// that, an address already folded into projectAddress would also show up a second time as a
-// generic custom field.
-function buildLeadAddress(fields: LeadDynamicField[]): { value: string; consumedKeys: string[] } {
-  const directAddress = findBestLeadField(fields, [/address/, /street/, /location/]);
-  if (directAddress?.value) return { value: directAddress.value, consumedKeys: [directAddress.key] };
-  const matched = fields.filter((field) =>
-    [/(^|[^a-z])suburb([^a-z]|$)/, /city/, /region/, /postcode/, /zip/, /state/, /country/].some((pattern) =>
-      pattern.test(`${field.key} ${field.label}`.toLowerCase()),
-    ),
-  );
-  const parts = matched.map((field) => field.value.trim()).filter(Boolean);
-  return { value: Array.from(new Set(parts)).join(", "), consumedKeys: matched.map((field) => field.key) };
-}
-
-// Project name = whichever field is mapped to "Client Name" + whichever field is mapped to
-// "Client Last Name" (the "Use For" column in the lead field Customise settings), combined in
-// that order — e.g. a form with separate first/last name fields mapped to these two targets
-// produces "John Smith" as the new project's name, rather than guessing at a surname from a
-// single full-name field.
-function buildLeadProjectName(clientName: string, clientLastName: string) {
-  const name = String(clientName || "").trim();
-  const lastName = String(clientLastName || "").trim();
-  // A full name in the "Client Name" field may already end with the surname — don't repeat it.
-  if (name && lastName && name.toLowerCase().endsWith(lastName.toLowerCase())) return name;
-  return [name, lastName].filter(Boolean).join(" ");
-}
-
-function splitClientName(fullName: string) {
-  const parts = String(fullName || "")
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
-  if (!parts.length) {
-    return { firstName: "", lastName: "" };
-  }
-  if (parts.length === 1) {
-    return { firstName: parts[0], lastName: "" };
-  }
-  return {
-    firstName: parts[0] || "",
-    lastName: parts.slice(1).join(" "),
-  };
-}
-
-function buildLeadClientNameParts(fields: LeadDynamicField[], fieldLayout: LeadFieldLayoutRow[]) {
-  const findMappedField = (target: LeadProjectFieldTarget) => {
-    const mapped = fieldLayout.find((row) => row.projectFieldTarget === target);
-    if (!mapped) return null;
-    return fields.find((field) => normalizeLeadFieldKey(field.key) === normalizeLeadFieldKey(mapped.key)) || null;
-  };
-
-  const explicitNameField =
-    findMappedField("clientName") ||
-    findBestLeadField(fields, [/client\s*name/, /full\s*name/, /(^|[^a-z])name([^a-z]|$)/], (field) => {
-      const haystack = `${field.key} ${field.label}`.toLowerCase();
-      return !/company|business|organisation|organization/.test(haystack);
-    }) ||
-    fields.find((field) => {
-      const words = field.value.trim().split(/\s+/).filter(Boolean);
-      return words.length >= 2 && /^[a-z ,.'-]+$/i.test(field.value.trim());
-    }) ||
-    null;
-
-  const firstNameField =
-    findMappedField("clientFirstName") ||
-    findBestLeadField(fields, [/(^|[^a-z])first([^a-z]|$)/, /first\s*name/, /given\s*name/]) ||
-    null;
-  const lastNameField =
-    findMappedField("clientLastName") ||
-    findBestLeadField(fields, [/(^|[^a-z])last([^a-z]|$)/, /last\s*name/, /surname/, /family\s*name/]) ||
-    null;
-
-  if (explicitNameField?.value) {
-    const split = splitClientName(explicitNameField.value);
-    return {
-      fullName: explicitNameField.value.trim(),
-      firstName: firstNameField?.value?.trim() || split.firstName,
-      lastName: lastNameField?.value?.trim() || split.lastName,
-      consumedKeys: [explicitNameField.key, firstNameField?.key, lastNameField?.key].filter(
-        (key): key is string => Boolean(key),
-      ),
-    };
-  }
-
-  const firstName = String(firstNameField?.value || "").trim();
-  const lastName = String(lastNameField?.value || "").trim();
-  return {
-    fullName: [firstName, lastName].filter(Boolean).join(" ").trim(),
-    firstName,
-    lastName,
-    consumedKeys: [firstNameField?.key, lastNameField?.key].filter((key): key is string => Boolean(key)),
-  };
-}
-
-// The lead's name everywhere on this page — its card, drag preview, details, pop-ups and sorting:
-// "Client Name" + "Client Last Name", the same name a project created from the lead gets (it used to
-// be the "Client Name" field on its own, so a card read "John" while its project became "John Smith").
-function leadClientName(fields: LeadDynamicField[], fieldLayout: LeadFieldLayoutRow[]) {
-  const parts = buildLeadClientNameParts(fields, fieldLayout);
-  return buildLeadProjectName(parts.fullName || parts.firstName, parts.lastName);
-}
-
-function resolveLeadColumnValue(
-  fields: LeadDynamicField[],
-  column: LeadFieldLayoutRow,
-  fieldLayout: LeadFieldLayoutRow[],
-) {
-  const match = fields.find((field) => normalizeLeadFieldKey(field.key) === normalizeLeadFieldKey(column.key));
-  if (match?.value) return match.value;
-
-  const nameParts = buildLeadClientNameParts(fields, fieldLayout);
-  if (column.projectFieldTarget === "clientName") return nameParts.fullName;
-  if (column.projectFieldTarget === "clientFirstName") return nameParts.firstName;
-  if (column.projectFieldTarget === "clientLastName") return nameParts.lastName;
-
-  const normalizedKey = normalizeLeadFieldKey(column.key);
-  if (["name", "fullname", "clientname"].includes(normalizedKey)) {
-    return nameParts.fullName;
-  }
-  return "";
-}
-
-function buildLeadProjectPrefill(lead: CompanyLeadRow, fieldLayout: LeadFieldLayoutRow[]): NewProjectPrefillPayload {
-  const fields = getLeadDynamicFields(lead);
-  const findMappedField = (target: LeadProjectFieldTarget) => {
-    const mapped = fieldLayout.find((row) => row.projectFieldTarget === target);
-    if (!mapped) return null;
-    return (
-      fields.find((field) => normalizeLeadFieldKey(field.key) === normalizeLeadFieldKey(mapped.key)) || null
-    );
-  };
-  // Tracks every raw field key that ends up folded into one of the fixed fields below, so the
-  // custom-fields list further down can exclude them — otherwise a field already surfaced as the
-  // project's real clientEmail/clientAddress/etc. would ALSO show up a second time as a generic
-  // "custom field," duplicating the same data under two labels.
-  const consumedKeys = new Set<string>();
-  const emailField =
-    findMappedField("clientEmail") ||
-    findBestLeadField(fields, [/email/, /e-mail/], (field) => isLikelyEmailValue(field.value)) ||
-    fields.find((field) => isLikelyEmailValue(field.value)) ||
-    null;
-  if (emailField) consumedKeys.add(emailField.key);
-  const phoneField =
-    findMappedField("clientPhone") ||
-    findBestLeadField(fields, [/phone/, /mobile/, /cell/, /contact/], (field) => isLikelyPhoneValue(field.value)) ||
-    fields.find((field) => isLikelyPhoneValue(field.value)) ||
-    null;
-  if (phoneField) consumedKeys.add(phoneField.key);
-  const {
-    fullName: clientName,
-    firstName: clientFirstName,
-    lastName: clientLastName,
-    consumedKeys: nameConsumedKeys,
-  } = buildLeadClientNameParts(fields, fieldLayout);
-  nameConsumedKeys.forEach((key) => consumedKeys.add(key));
-  const notesField = findMappedField("projectNotes");
-  if (notesField) consumedKeys.add(notesField.key);
-  const mappedAddressField = findMappedField("projectAddress");
-  let projectAddress: string;
-  if (mappedAddressField?.value) {
-    projectAddress = mappedAddressField.value.trim();
-    consumedKeys.add(mappedAddressField.key);
-  } else {
-    const builtAddress = buildLeadAddress(fields);
-    projectAddress = builtAddress.value.trim();
-    builtAddress.consumedKeys.forEach((key) => consumedKeys.add(key));
-  }
-  const leadCustomFields = fields
-    .filter((field) => !consumedKeys.has(field.key))
-    .map((field) => ({ key: field.key, label: field.label, value: field.value }));
-  return {
-    projectName: buildLeadProjectName(clientName, clientLastName),
-    clientFirstName,
-    clientLastName,
-    clientName,
-    clientPhone: String(phoneField?.value || "").trim(),
-    clientEmail: String(emailField?.value || "").trim(),
-    projectAddress,
-    projectNotes: String(notesField?.value || "").trim(),
-    projectImages: normalizeLeadImageItems(lead).map((item) => item.url),
-    projectImageItems: normalizeLeadImageItems(lead).map((item) => ({
-      url: item.url,
-      name: item.name,
-      annotations: Array.isArray(item.annotations)
-        ? item.annotations.map((annotation) => ({
-            id: annotation.id,
-            x: annotation.x,
-            y: annotation.y,
-            xPx: annotation.xPx,
-            yPx: annotation.yPx,
-            note: annotation.note,
-            createdByName: annotation.createdByName,
-            createdByColor: annotation.createdByColor,
-          }))
-        : [],
-    })),
-    assignedToUid: String(lead.assignedToUid || "").trim(),
-    assignedToName: String(lead.assignedToName || lead.assignedTo || "").trim(),
-    leadCustomFields: leadCustomFields.length > 0 ? leadCustomFields : undefined,
-  };
 }
 
 // The stat cards across the top (the Dashboard's): leads still being worked on, new ones, converted ones (by their
@@ -737,11 +322,6 @@ function fadedRowLineStyle(lineColor: string, rowBackground = "none"): React.CSS
 function leadRowFields(layout: LeadFieldLayoutRow[]) {
   const configured = layout.filter((field) => field.showInRow);
   return configured.length > 0 ? configured : layout.slice(0, 3);
-}
-
-function leadDetailFields(layout: LeadFieldLayoutRow[]) {
-  const configured = layout.filter((field) => field.showInDetail);
-  return configured.length > 0 ? configured : layout;
 }
 
 function leadListDetails(lead: CompanyLeadRow, fieldLayout: LeadFieldLayoutRow[]) {
@@ -1662,47 +1242,7 @@ export default function LeadsPage() {
   // said, then the message — its phone and subject on its card. Any other lead: the Zapier field layout above.
   const leadFormsById = useMemo(() => new Map(leadForms.map((form) => [form.id, form] as const)), [leadForms]);
   const fieldLayoutForLead = useCallback(
-    (lead: CompanyLeadRow | null | undefined): LeadFieldLayoutRow[] => {
-      const formId = String(lead?.formId || "").trim();
-      if (lead && !formId && lead.source === "email") {
-        const order = ["name", "email", "phone", "address", "subject"];
-        const last = ["attachments", "message"];
-        const rank = (key: string) => {
-          const normalized = normalizeLeadFieldKey(key);
-          if (order.includes(normalized)) return order.indexOf(normalized);
-          if (last.includes(normalized)) return 100 + last.indexOf(normalized);
-          return 50;
-        };
-        const targets: Record<string, LeadProjectFieldTarget> = {
-          name: "clientName",
-          email: "clientEmail",
-          phone: "clientPhone",
-          address: "projectAddress",
-          message: "projectNotes",
-        };
-        return getLeadDynamicFields(lead)
-          .sort((a, b) => rank(a.key) - rank(b.key) || a.key.localeCompare(b.key))
-          .map((field, index) => ({
-            key: field.key,
-            label: field.label,
-            showInRow: ["phone", "subject"].includes(normalizeLeadFieldKey(field.key)),
-            showInDetail: true,
-            order: index,
-            projectFieldTarget: targets[normalizeLeadFieldKey(field.key)] ?? "",
-          }));
-      }
-      if (!lead || !formId) return mergedFieldLayout;
-      const form = leadFormsById.get(formId);
-      const rows: LeadFieldLayoutRow[] = form ? leadFormFieldLayout(form, lead.formFieldKeys) : [];
-      const known = new Set(rows.map((row) => normalizeLeadFieldKey(row.key)));
-      for (const field of getLeadDynamicFields(lead)) {
-        const normalized = normalizeLeadFieldKey(field.key);
-        if (known.has(normalized)) continue;
-        known.add(normalized);
-        rows.push({ key: field.key, label: field.label, showInRow: !form && rows.length < 2, showInDetail: true, order: rows.length, projectFieldTarget: "" });
-      }
-      return rows;
-    },
+    (lead: CompanyLeadRow | null | undefined): LeadFieldLayoutRow[] => leadFieldLayoutFor(lead, leadFormsById, mergedFieldLayout),
     [leadFormsById, mergedFieldLayout],
   );
 
@@ -2891,7 +2431,14 @@ export default function LeadsPage() {
       return;
     }
     // Moved on by the column it went into (a column automation — lib/column-automations-server.ts): shown where it went.
-    const saved = (await response.json().catch(() => null)) as { automatedStatus?: string } | null;
+    // Or on to the Dashboard — converted to a project, and archived: off the board (and the Archived page told).
+    const saved = (await response.json().catch(() => null)) as { automatedStatus?: string; convertedProjectId?: string } | null;
+    if (saved?.convertedProjectId) {
+      setLeads((prev) => prev.filter((row) => row.id !== lead.id));
+      window.dispatchEvent(new CustomEvent(LEAD_ARCHIVE_UPDATED_EVENT, { detail: { companyId: lead.companyId, leadId: lead.id, isDeleted: true } }));
+      void loadLeads(lead.companyId);
+      return;
+    }
     if (saved?.automatedStatus) applyToLead({ status: saved.automatedStatus, updatedAtIso: new Date().toISOString() });
   };
 
@@ -3034,12 +2581,15 @@ export default function LeadsPage() {
   const handleCreateProjectFromLead = async (lead: CompanyLeadRow) => {
     if (typeof window === "undefined") return;
     const fullLead = (await loadLeadDetail(lead.id)) ?? getLeadById(lead.id) ?? lead;
+    // Its notes as the list has them (kept live), oldest first — for the New Project pop-up's "Import from Notes".
+    const notes = (leads.find((row) => row.id === lead.id) ?? fullLead).notes ?? [];
     window.dispatchEvent(
       new CustomEvent<NewProjectPrefillPayload>(OPEN_NEW_PROJECT_EVENT, {
         detail: {
           ...buildLeadProjectPrefill(fullLead, fieldLayoutForLead(fullLead)),
           sourceLeadId: String(fullLead.id || "").trim(),
           sourceLeadCompanyId: String(fullLead.companyId || "").trim(),
+          leadNotes: notes.map((note) => String(note.text || "").trim()).filter(Boolean),
         },
       }),
     );
@@ -3191,6 +2741,12 @@ export default function LeadsPage() {
         );
         return canViewOtherLeads ? nextRows : nextRows.filter((row) => String(row.assignedToUid || "").trim() === currentUserUid);
       });
+      // Its opened details too (getLeadById prefers them).
+      setLeadDetailsById((prev) =>
+        prev[assignLead.id]
+          ? { ...prev, [assignLead.id]: { ...prev[assignLead.id], assignedToUid: member.uid, assignedToName: assignedName, assignedTo: assignedName, updatedAtIso } }
+          : prev,
+      );
       closeAssignLeadModal();
       void loadLeads(assignLead.companyId);
     }
@@ -4400,7 +3956,7 @@ export default function LeadsPage() {
           {list ?? (
             // Nothing added yet: what this is for, quietly.
             <div className="flex flex-col items-center gap-2 pt-10 text-center" style={{ color: "var(--text-muted)" }}>
-              <ListChecks size={26} strokeWidth={1.75} />
+              <ListChecks size={26} strokeWidth={1.75} style={{ color: "var(--text-main)" }} />
               <p className="max-w-[220px] text-[12.5px] font-medium">Add one of your saved checklists to tick off for this lead.</p>
             </div>
           )}
@@ -4577,9 +4133,30 @@ export default function LeadsPage() {
       lead.name || lead.email || lead.phone || "Untitled Lead";
     const isDetailLoading = detailLoadingLeadId === lead.id && !leadDetailsById[lead.id];
     const leadPhotoItems = normalizeLeadImageItems(renderLead);
-    const assignedUid = String(lead.assignedToUid || "").trim();
+    // Under its name: when it came in, and where from.
+    const receivedIso = lead.createdAtIso || lead.submittedAtIso || "";
+    const receivedLabel = receivedIso ? formatLeadDate(receivedIso) : "";
+    const leadSource = String(lead.source || "").trim();
+    const sourceLabel =
+      leadSource === "web-form"
+        ? `Form: ${String(lead.formName || "").trim() || "Lead form"}`
+        : leadSource === "email"
+          ? "Leads email inbox"
+          : leadSource === "manual"
+            ? `Added by hand${String(lead.sourceDetail || "").trim() ? ` — ${String(lead.sourceDetail).trim()}` : ""}`
+            : leadSource && leadSource !== "local-sample"
+              ? "Zapier"
+              : "";
+    // Its phone and email — as a project made from it would have them — to call or email them in one tap.
+    const contact = buildLeadProjectPrefill(renderLead, leadLayout);
+    const contactPhone = String(contact.clientPhone || "").trim();
+    const contactEmail = String(contact.clientEmail || "").trim();
+    // Who it's assigned to as the list has it (kept live — as its card shows it), not its opened details from before:
+    // assigned here, by someone else, or by a column automation, it shows straight away.
+    const liveLead = leads.find((row) => row.id === lead.id) ?? lead;
+    const assignedUid = String(liveLead.assignedToUid || "").trim();
     const assignedMember = companyMembers.find((member) => member.uid === assignedUid) ?? null;
-    const assignedLabel = String(lead.assignedToName || lead.assignedTo || assignedMember?.displayName || "").trim();
+    const assignedLabel = String(liveLead.assignedToName || liveLead.assignedTo || assignedMember?.displayName || "").trim();
     const assignedColor = String(assignedMember?.badgeColor || assignedMember?.userColor || companyThemeColor).trim() || companyThemeColor;
     const assignedInitials = assignedLabel.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase() || "").join("");
     // Its notes and checklists from the list (kept live), else its opened details.
@@ -4614,9 +4191,9 @@ export default function LeadsPage() {
           data-phone-fullscreen="true"
           className="glass-modal-panel relative isolate flex max-h-[min(720px,90vh)] w-[min(560px,96vw)] flex-col overflow-hidden max-sm:h-full max-sm:max-h-none max-sm:w-full max-sm:rounded-none! max-sm:border-0!"
         >
-          {/* The Calendar event pop-up's look: its status's colour washed across it, the X alone in the top right corner,
-              the status (a dropdown pill) over the lead's name, and each field in a white see-through box. All its text
-              black. */}
+          {/* Its status's colour washed across it, the X alone in the top right corner, the lead's name with its status (a
+              dropdown pill) beside it and when and where it came in under it; then ways to reach them, its photos, and its
+              details — one see-through card, each answer beside its question. */}
           <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10" style={popupTint} />
           <div className="relative shrink-0 px-5 pb-3 pt-5 max-sm:pt-[calc(1.25rem+env(safe-area-inset-top))]">
             <button
@@ -4655,6 +4232,40 @@ export default function LeadsPage() {
               />
               </div>
             </div>
+            {receivedLabel || sourceLabel ? (
+              <p className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12.5px] font-medium" style={{ color: "var(--text-main)" }}>
+                {receivedLabel ? <span>Came in {receivedLabel}</span> : null}
+                {receivedLabel && sourceLabel ? <span aria-hidden="true">·</span> : null}
+                {sourceLabel ? <span>{sourceLabel}</span> : null}
+              </p>
+            ) : null}
+            {/* Call or email them (the phone's dialler, the mail app). */}
+            {contactPhone || contactEmail ? (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {contactPhone ? (
+                  <a
+                    href={`tel:${contactPhone.replace(/[^\d+]/g, "")}`}
+                    className="inline-flex h-9 min-w-0 items-center gap-1.5 rounded-full border px-3.5 text-[13px] font-medium transition hover:brightness-95"
+                    style={{ ...LEAD_POPUP_BOX_STYLE, color: "var(--text-main)" }}
+                    title={`Call ${contactPhone}`}
+                  >
+                    <Phone size={14} className="shrink-0" style={{ color: "var(--brand-strong)" }} />
+                    <span className="truncate">{contactPhone}</span>
+                  </a>
+                ) : null}
+                {contactEmail ? (
+                  <a
+                    href={`mailto:${contactEmail}`}
+                    className="inline-flex h-9 min-w-0 max-w-full items-center gap-1.5 rounded-full border px-3.5 text-[13px] font-medium transition hover:brightness-95"
+                    style={{ ...LEAD_POPUP_BOX_STYLE, color: "var(--text-main)" }}
+                    title={`Email ${contactEmail}`}
+                  >
+                    <Mail size={14} className="shrink-0" style={{ color: "var(--brand-strong)" }} />
+                    <span className="truncate">{contactEmail}</span>
+                  </a>
+                ) : null}
+              </div>
+            ) : null}
           </div>
           {/* Its photos, as a strip of thumbnails under its name — a set height, scrolling sideways when there are more
               than fit (a mouse wheel turns it too). One opens that photo in the photo viewer. */}
@@ -4702,7 +4313,12 @@ export default function LeadsPage() {
                 No detail fields configured yet.
               </p>
             ) : (
-              <div className="space-y-2">
+              <section aria-label="Lead details">
+              {/* (Headed as its Checklists and Notes are.) */}
+              <p className="mb-2 text-[16px] font-semibold" style={{ color: "var(--text-main)" }}>
+                Details
+              </p>
+              <div className="overflow-hidden rounded-[14px] border" style={LEAD_POPUP_BOX_STYLE}>
                 {detailFields.map((column) => {
                   const value = resolveLeadColumnValue(leadFields, column, leadLayout);
                   const editing = leadFieldEdit && leadFieldEdit.leadId === lead.id && leadFieldEdit.key === column.key ? leadFieldEdit : null;
@@ -4720,7 +4336,7 @@ export default function LeadsPage() {
                   // Longer answers (a message, notes, several lines) get a bigger box.
                   const draft = editing?.value ?? "";
                   const multiline = /message|note|comment|description|detail|enquiry|inquiry/i.test(`${column.key} ${column.label}`) || draft.includes("\n") || draft.length > 60;
-                  const fieldClass = "mt-1 block w-full rounded-[10px] border px-2.5 text-[14px] font-medium outline-none transition focus:border-[var(--brand)]";
+                  const fieldClass = "block w-full rounded-[10px] border px-2.5 text-[14px] font-medium outline-none transition focus:border-[var(--brand)]";
                   const fieldStyle = { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" };
                   const fieldProps = {
                     value: draft,
@@ -4737,12 +4353,18 @@ export default function LeadsPage() {
                     },
                   };
                   return (
-                    // Its pencil — the one Client Details uses — sits at its right: showing on hover (always on a touch
-                    // screen); a tick while it's being edited, which saves.
-                    <div key={`${lead.id}:detail:${column.key}`} className="group/field relative rounded-[14px] border py-2.5 pl-3 pr-11" style={LEAD_POPUP_BOX_STYLE}>
-                      <p className="text-[11.5px] font-medium" style={{ color: "var(--text-main)" }}>
+                    // A row of the card: its question on the left (over it, on a phone), its answer beside it. Its pencil —
+                    // the one Client Details uses — sits at its right: showing on hover (always on a touch screen); a tick
+                    // while it's being edited, which saves.
+                    <div
+                      key={`${lead.id}:detail:${column.key}`}
+                      className="group/field relative grid gap-0.5 border-t py-2.5 pl-3.5 pr-11 first:border-t-0 sm:grid-cols-[136px_minmax(0,1fr)] sm:gap-3"
+                      style={{ borderTopColor: "var(--glass-border)" }}
+                    >
+                      <p className="text-[12.5px] font-medium leading-5" style={{ color: "var(--text-main)" }}>
                         {column.label}
                       </p>
+                      <div className="min-w-0">
                       {editing ? (
                         multiline ? (
                           <textarea
@@ -4774,8 +4396,9 @@ export default function LeadsPage() {
                           />
                         )
                       ) : (
-                        <p className="mt-0.5 whitespace-pre-wrap text-[14px] font-medium" style={{ color: "var(--text-main)" }}>
-                          {value || "-"}
+                        // (An empty answer is just left empty.)
+                        <p className="min-h-5 whitespace-pre-wrap break-words text-[14px] font-medium leading-5" style={{ color: "var(--text-main)" }}>
+                          {value}
                         </p>
                       )}
                       {editing && leadFieldError ? (
@@ -4783,6 +4406,7 @@ export default function LeadsPage() {
                           {leadFieldError}
                         </p>
                       ) : null}
+                      </div>
                       {canEdit ? (
                         <button
                           type="button"
@@ -4792,7 +4416,7 @@ export default function LeadsPage() {
                             if (editing) e.preventDefault();
                           }}
                           onClick={() => (editing ? void saveLeadFieldEdit(renderLead, column, leadLayout) : startEditingField())}
-                          className={`absolute right-2 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-[8px] transition-opacity hover:bg-[var(--panel-muted)] focus-visible:opacity-100 disabled:opacity-60 ${
+                          className={`absolute right-2 top-1.5 inline-flex h-7 w-7 items-center justify-center rounded-[8px] transition-opacity hover:bg-[var(--panel-muted)] focus-visible:opacity-100 disabled:opacity-60 ${
                             editing ? "opacity-100" : "pointer-fine:opacity-0 pointer-fine:group-hover/field:opacity-100"
                           }`}
                           style={{ color: "var(--text-muted)" }}
@@ -4806,25 +4430,29 @@ export default function LeadsPage() {
                   );
                 })}
               </div>
+              </section>
             )}
             <div className="xl:hidden">
               {renderLeadChecklists(renderLead, leadChecklists, "inline")}
               {renderLeadNotes(renderLead, leadNotes, "inline")}
             </div>
           </div>
-          {/* Its buttons along the bottom, under its fields. */}
-          <div className="flex shrink-0 flex-wrap gap-2 border-t px-5 py-4 max-sm:pb-[calc(1rem+env(safe-area-inset-bottom))]" style={{ borderTopColor: "var(--glass-border)" }}>
-            {/* (Only for a role that can create projects — Company Settings › Roles.) */}
-            {canCreateProject ? (
-              <button
-                type="button"
-                onClick={() => void handleCreateProjectFromLead(renderLead)}
-                className="inline-flex h-9 items-center justify-center gap-1.5 rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95"
-                style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
-              >
-                Create Project
-              </button>
-            ) : null}
+          {/* Its buttons along the bottom, under its fields: Archive on its own at the left (red outline — it takes the lead
+              off the board), then Photos, who it's assigned to, and Create Project at the right. */}
+          <div className="flex shrink-0 flex-wrap items-center gap-2 border-t px-5 py-4 max-sm:pb-[calc(1rem+env(safe-area-inset-bottom))]" style={{ borderTopColor: "var(--glass-border)" }}>
+            <button
+              type="button"
+              onClick={(e) => {
+                deleteConfirmModalOriginElRef.current = e.currentTarget;
+                setDeleteConfirmModalOrigin(captureGlassModalOrigin(e));
+                setConfirmDeleteLeadId(lead.id);
+              }}
+              className="mr-auto inline-flex h-9 items-center justify-center gap-1.5 rounded-full border px-3.5 text-[12.5px] font-semibold transition hover:bg-[var(--danger-soft)]"
+              style={{ borderColor: "color-mix(in srgb, var(--danger) 45%, var(--glass-border))", color: "var(--danger-strong)", backgroundColor: "transparent" }}
+            >
+              <Trash2 size={13} />
+              Archive
+            </button>
             <button
               type="button"
               onClick={(e) => {
@@ -4833,7 +4461,7 @@ export default function LeadsPage() {
                 setLeadImagesLeadId(lead.id);
                 setLeadImagesDragActive(false);
               }}
-              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-full border px-3 text-[12px] font-bold hover:brightness-95"
+              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-full border px-3.5 text-[12.5px] font-semibold transition hover:brightness-95"
               style={{ ...LEAD_POPUP_BOX_STYLE, color: "var(--text-main)" }}
             >
               <ImagePlus size={13} />
@@ -4846,7 +4474,8 @@ export default function LeadsPage() {
                 setAssignModalOrigin(captureGlassModalOrigin(e));
                 openAssignLeadModal(renderLead);
               }}
-              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-full border px-3 text-[12px] font-bold hover:brightness-95"
+              title={assignedLabel ? `Assigned to ${assignedLabel} — change` : "Assign it to someone"}
+              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-full border px-3.5 text-[12.5px] font-semibold transition hover:brightness-95"
               style={{ ...LEAD_POPUP_BOX_STYLE, color: "var(--text-main)" }}
             >
               {assignedLabel ? (
@@ -4863,18 +4492,18 @@ export default function LeadsPage() {
                 "Assign"
               )}
             </button>
-            <button
-              type="button"
-              onClick={(e) => {
-                deleteConfirmModalOriginElRef.current = e.currentTarget;
-                setDeleteConfirmModalOrigin(captureGlassModalOrigin(e));
-                setConfirmDeleteLeadId(lead.id);
-              }}
-              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95"
-              style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
-            >
-              Archive
-            </button>
+            {/* (Only for a role that can create projects — Company Settings › Roles.) */}
+            {canCreateProject ? (
+              <button
+                type="button"
+                onClick={() => void handleCreateProjectFromLead(renderLead)}
+                className="glass-shine inline-flex h-9 items-center justify-center gap-1.5 rounded-full px-4 text-[12.5px] font-semibold text-white transition hover:brightness-105"
+                style={glassShineStyle("var(--brand)")}
+              >
+                <Plus size={14} strokeWidth={2.5} />
+                Create Project
+              </button>
+            ) : null}
           </div>
         </div>
         {/* Its Notes: as tall as the pop-up (at least 440px), its notes scrolling inside. */}
@@ -5537,15 +5166,11 @@ export default function LeadsPage() {
                     : null}
                 </>
               )
-            ) : searchFilteredLeads.length === 0 ? (
-              <div className="flex flex-col items-center gap-2 rounded-[14px] border border-dashed px-4 py-10 text-center" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>
-                <Inbox size={22} style={{ color: "var(--text-muted)" }} />
-                <p className="text-[13px] font-semibold" style={{ color: "var(--text-muted)" }}>No leads yet.</p>
-              </div>
             ) : (
               // The board's panel — stuck as the row used to be (see the row's own note below for where) — with which board
               // this is over the columns (components/board-title-bar.tsx: Leads, in purple), clear of the toolbar the
-              // panel reaches up under (mt-6 / max-md:mt-3 — its -mt).
+              // panel reaches up under (mt-6 / max-md:mt-3 — its -mt). With no leads (or none matching the search), its
+              // columns all the same, just empty — as the Dashboard's board.
               <div
                 ref={boardStickyRef}
                 className="sticky -top-3 -mx-3 -mt-6 flex h-[calc(100svh-36px)] min-h-[280px] flex-col md:-mx-4 lg:-mx-5 max-md:top-0 max-md:-mt-3 max-md:h-[calc(100svh-48px)] lg:top-[36px] lg:h-[calc(100svh-36px)] lg:min-h-[320px]"

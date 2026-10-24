@@ -5,7 +5,7 @@ import { glassShineStyle } from "@/lib/glass-shine";
 import { createPortal } from "react-dom";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Great_Vibes } from "next/font/google";
-import { ArrowLeft, ArrowLeftRight, ArrowRight, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, CloudCheck, CloudOff, CloudUpload, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, File as FileIcon, FileSpreadsheet, FileUp, FileText, GitBranch, Eraser, GripVertical, HardHat, Image as ImageIcon, ImagePlus, Import as ImportIcon, Info, Link2, ListChecks, Lock, Mail, MapPin, Maximize2, Minimize2, Minus, PanelRightClose, MoreHorizontal, NotebookPen, Pencil, Phone, Plus, Printer, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, Unlock, User, UserPlus, Users, Wrench, X } from "lucide-react";
+import { ArrowLeft, ArrowLeftRight, ArrowRight, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, CloudCheck, CloudOff, CloudUpload, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, File as FileIcon, FileSpreadsheet, FileUp, FileText, GitBranch, Eraser, GripVertical, HardHat, Image as ImageIcon, ImagePlus, Import as ImportIcon, Inbox, Info, Link2, ListChecks, Lock, Mail, MapPin, Maximize2, Minimize2, Minus, PanelRightClose, MoreHorizontal, NotebookPen, Pencil, Phone, Plus, Printer, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, Unlock, User, UserPlus, Users, Wrench, X } from "lucide-react";
 import type { DecoupledEditor, ModelWriter } from "ckeditor5";
 import type { RichText as ExcelRichText } from "exceljs";
 import type { CellInput as AutoTableCellInput, RowInput as AutoTableRowInput } from "jspdf-autotable";
@@ -28,6 +28,7 @@ import { QuoteDocumentEditor } from "@/components/quote-document-editor";
 import { LengthField } from "@/components/settings-ui";
 import { activeDate, activeDateTime, activeLength, activeMoney, activeUnit, activeUnitLabel, useCompanyFormats } from "@/lib/company-formats";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { LeadDetailsModal } from "@/components/lead-details-modal";
 import { useAppTabs } from "@/lib/app-tabs-context";
 import { useAuth } from "@/lib/auth-context";
 import {
@@ -10248,6 +10249,11 @@ export default function ProjectDetailsPage() {
   const [projectImagePan, setProjectImagePan] = useState({ x: 0, y: 0 });
   const [projectImageDragging, setProjectImageDragging] = useState(false);
   const clientDetailsContainerRef = useRef<HTMLDivElement | null>(null);
+  // A project made from a lead: the General tab's side tabs (generalSideTabs) have its Lead — the lead's pop-up, read
+  // only (components/lead-details-modal.tsx), over the page.
+  const [isSourceLeadOpen, setIsSourceLeadOpen] = useState(false);
+  const [sourceLeadOrigin, setSourceLeadOrigin] = useState<GlassModalOrigin>(null);
+  const sourceLeadButtonRef = useRef<HTMLButtonElement | null>(null);
   const notesContainerRef = useRef<HTMLDivElement | null>(null);
   const productionNotesContainerRef = useRef<HTMLDivElement | null>(null);
   const designNotesContainerRef = useRef<HTMLDivElement | null>(null);
@@ -37682,6 +37688,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   // The project's tab containers — General's, Design's (its stat cards, Rooms, Product, Extra Charges, Notes),
   // Production's and Settings' — with the glass shine's neutral version (className "glass-shine glass-shine-neutral" —
   // lib/glass-shine.ts; no colour of their own), still frosted.
+  // The General tab's side tabs (as Design's and Production's), each a pop-up over the page: the Lead it came from (a
+  // project made from one), its Specifications (Production's), and its Schedule (Design's — for those who can see the
+  // Calendar). None for someone who can see none of them: no side column then.
+  const generalSideTabs = [
+    ...(project?.sourceLeadId ? [{ label: "Lead", icon: Inbox, key: "lead" as const }] : []),
+    ...(productionAccess.view || salesAccess.view ? [{ label: "Specifications", icon: ClipboardList, key: "specifications" as const }] : []),
+    ...(projectScheduleViewer.canViewCalendar ? [{ label: "Schedule", icon: CalendarDays, key: "schedule" as const }] : []),
+  ];
   const tabContainerStyle: React.CSSProperties = {
     backdropFilter: "blur(20px) saturate(180%)",
     WebkitBackdropFilter: "blur(20px) saturate(180%)",
@@ -59366,9 +59380,70 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           )}
 
           {resolvedTab === "general" && (
-            <div ref={projectTabContentRef} key={resolvedTab} className="-mx-4 -mb-4 md:-mx-5" style={{ backgroundColor: projectTabAreaBg, animation: projectTabSlideAnimation }}>
-              {/* Its sides as Design's and Production's content: 12px on a phone, 16px, then 20px. */}
-              <div className="space-y-4 px-3 pb-4 pt-[22px] sm:px-4 md:px-5 xl:pb-4" style={{ backgroundColor: projectTabAreaBg }}>
+            <div
+              ref={projectTabContentRef}
+              key={resolvedTab}
+              className={`-mx-4 -mb-4 md:-mx-5 ${generalSideTabs.length ? "items-stretch gap-4 xl:grid xl:grid-cols-[205px_1fr]" : ""}`}
+              style={{ backgroundColor: projectTabAreaBg, animation: projectTabSlideAnimation }}
+            >
+              {/* Its side tabs, as Design's and Production's (the same buttons and sidebar — along the top on a phone), each
+                  a pop-up over the page (generalSideTabs): the Lead (read only), Specifications, Schedule. Their top
+                  matches the content's (xl:pt-[22px]). */}
+              {generalSideTabs.length ? (
+                <aside className="h-full overflow-hidden px-3 pb-3 pt-3 sm:overflow-x-auto xl:overflow-hidden xl:pb-4 xl:pl-5 xl:pr-2 xl:pt-[22px]">
+                  <div className="grid grid-cols-2 gap-1.5 sm:flex sm:min-w-max sm:flex-row xl:block xl:min-w-0 xl:space-y-1.5">
+                    {generalSideTabs.map((item) => {
+                      const Icon = item.icon;
+                      return (
+                        <div key={item.key} className="w-full sm:w-auto xl:w-full">
+                          <button
+                            ref={item.key === "lead" ? sourceLeadButtonRef : undefined}
+                            type="button"
+                            onClick={(e) => {
+                              if (item.key === "lead") {
+                                setSourceLeadOrigin(captureGlassModalOrigin(e));
+                                setIsSourceLeadOpen(true);
+                              } else if (item.key === "specifications") {
+                                productionSpecsModalOriginElRef.current = e.currentTarget;
+                                setProductionSpecsModalOrigin(captureGlassModalOrigin(e));
+                                setIsProductionSpecsModalOpen(true);
+                              } else {
+                                projectScheduleModalOriginElRef.current = e.currentTarget;
+                                setProjectScheduleModalOrigin(captureGlassModalOrigin(e));
+                                setIsProjectScheduleModalOpen(true);
+                              }
+                            }}
+                            className="project-subtab-button glass-shine glass-shine-neutral relative inline-flex w-full min-w-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 py-2.5 text-left text-[13px] font-semibold transition hover:z-10 hover:scale-[1.04] hover:brightness-95 sm:w-auto sm:min-w-[120px] xl:w-full xl:min-w-0 xl:whitespace-normal"
+                            style={glassShineStyle("var(--brand)", {
+                              color: isDarkMode ? "#cbd5e1" : "#243B58",
+                              boxShadow: `0 1px 4px rgba(15, 23, 42, ${isDarkMode ? "0.3" : "0.08"}), inset 0 1px 0 rgba(255, 255, 255, ${isDarkMode ? "0.1" : "0.7"})`,
+                            })}
+                          >
+                            <Icon size={13} />
+                            {item.label}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {project.sourceLeadId ? (
+                    <LeadDetailsModal
+                      companyId={String(project.companyId || "").trim()}
+                      leadId={project.sourceLeadId}
+                      open={isSourceLeadOpen}
+                      origin={sourceLeadOrigin}
+                      originElRef={sourceLeadButtonRef}
+                      onClose={() => setIsSourceLeadOpen(false)}
+                    />
+                  ) : null}
+                </aside>
+              ) : null}
+              {/* Its sides as Design's and Production's content: 12px on a phone, 16px, then 20px — none on the left beside
+                  the side tabs. */}
+              <div
+                className={`min-w-0 space-y-4 px-3 pb-4 sm:px-4 md:px-5 xl:pb-4 ${generalSideTabs.length ? "pt-3 xl:pl-0 xl:pt-[22px]" : "pt-[22px]"}`}
+                style={{ backgroundColor: projectTabAreaBg }}
+              >
                 <div className="grid gap-4 xl:grid-cols-2">
                   {/* A small job: its client details and images down the left, its notes down the right as tall as both
                       (its two columns set aside — `contents` — and each part placed on the grid itself). */}
@@ -60381,8 +60456,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         if (item.key === salesNav) return;
                         void leaveQuoteWindow(item.key);
                       }}
-                      // The glass shine (lib/glass-shine.ts), as the Design tab's containers: its neutral version — the open
-                      // one the full brand blue, with white text.
+                      // The glass shine (lib/glass-shine.ts): its neutral version, frosted white (app/globals.css) — the open one
+                      // the full brand blue, with white text.
                       className={`project-subtab-button glass-shine ${active ? "" : "glass-shine-neutral"} relative inline-flex w-full min-w-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 py-2.5 text-left text-[13px] font-semibold transition hover:z-10 hover:scale-[1.04] hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-55 disabled:hover:scale-100 sm:w-auto sm:min-w-[120px] xl:w-full xl:min-w-0 xl:whitespace-normal`}
                       style={glassShineStyle("var(--brand)", {
                         color: active ? "#FFFFFF" : isDarkMode ? "#cbd5e1" : "#243B58",
@@ -60741,16 +60816,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 )}
               </div>
               {projectManagementModalPortal}
-              <ProjectScheduleModal
-                open={isProjectScheduleModalOpen}
-                origin={projectScheduleModalOrigin}
-                originElRef={projectScheduleModalOriginElRef}
-                onClose={() => setIsProjectScheduleModalOpen(false)}
-                companyId={String(project?.companyId || "")}
-                projectId={String(project?.id || "")}
-                calendarCategories={(companyDoc as Record<string, unknown> | null)?.calendarCategories}
-                viewer={projectScheduleViewer}
-              />
             </div>
           )}
 
@@ -60837,8 +60902,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             nestingFullscreen: false,
                           });
                         }}
-                        // As the Design tab's side buttons: the glass shine's neutral version (lib/glass-shine.ts) — the open
-                        // one the full brand blue, with white text — and a button-sized shadow (its strip cuts off more).
+                        // As the Design tab's side buttons: the glass shine's neutral version, frosted white (lib/glass-shine.ts,
+                        // app/globals.css) — the open one the full brand blue, with white text — and a button-sized shadow (its strip
+                        // cuts off more).
                         className={`project-subtab-button glass-shine ${active ? "" : "glass-shine-neutral"} relative inline-flex w-full min-w-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 py-2.5 text-left text-[13px] font-semibold transition hover:z-10 hover:scale-[1.04] hover:brightness-95 sm:w-auto sm:min-w-[120px] xl:w-full xl:min-w-0 xl:whitespace-normal`}
                         style={glassShineStyle("var(--brand)", {
                           color: active ? "#FFFFFF" : isDarkMode ? "#cbd5e1" : "#243B58",
@@ -63689,6 +63755,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             originElRef={productionSpecsModalOriginElRef}
             onClose={() => setIsProductionSpecsModalOpen(false)}
             project={project}
+          />
+          {/* The Calendar's events for this project — from the Design tab's Schedule, or the General tab's. */}
+          <ProjectScheduleModal
+            open={isProjectScheduleModalOpen}
+            origin={projectScheduleModalOrigin}
+            originElRef={projectScheduleModalOriginElRef}
+            onClose={() => setIsProjectScheduleModalOpen(false)}
+            companyId={String(project?.companyId || "")}
+            projectId={String(project?.id || "")}
+            calendarCategories={(companyDoc as Record<string, unknown> | null)?.calendarCategories}
+            viewer={projectScheduleViewer}
           />
 
           {resolvedTab === "settings" && settingsAccess.view && (

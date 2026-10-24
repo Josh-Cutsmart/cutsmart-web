@@ -2988,104 +2988,116 @@ function CalendarPageContent() {
                   }}
                 >
                   <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4">
-                    <input
-                      ref={(el) => {
-                        // New event: the cursor goes in the title straight away, without scrolling the page.
-                        if (el && d.isNew && focusedDraftIdRef.current !== d.id) {
-                          focusedDraftIdRef.current = d.id;
-                          el.focus({ preventScroll: true });
-                        }
-                      }}
-                      readOnly={readOnly}
-                      value={d.title}
-                      onChange={(e) => {
-                        setDraft((prev) => (prev ? { ...prev, title: e.target.value } : prev));
-                        setModalError("");
-                        setTitleSuggestIndex(-1);
-                      }}
-                      // Its suggestions (under it): ↑ / ↓ through them, Enter links the one picked, Esc puts them away.
-                      onKeyDown={(e) => {
-                        if (!titleSuggestions.length) return;
-                        if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-                          e.preventDefault();
-                          setTitleSuggestIndex((index) =>
-                            e.key === "ArrowDown" ? Math.min(titleSuggestions.length - 1, index + 1) : Math.max(-1, index - 1),
-                          );
-                        } else if (e.key === "Enter" && titleSuggestions[titleSuggestIndex]) {
-                          e.preventDefault();
-                          linkDraftProject(titleSuggestions[titleSuggestIndex].project);
-                        } else if (e.key === "Escape") {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          setTitleSuggestDismissedFor(d.id);
-                        }
-                      }}
-                      placeholder="Event title"
-                      aria-autocomplete="list"
-                      className={`${glassFieldClass} h-11 text-[15px]`}
-                    />
-                    {/* The projects its title sounds like — picking one links it (the title stays as typed) and brings
-                        its details: its address, its people. "Not now" puts them away for this event. */}
-                    {titleSuggestions.length ? (
-                      <div
-                        className="glass-bubble-pop rounded-[14px] border p-1.5"
-                        style={{ borderColor: "var(--glass-border)", backgroundColor: "color-mix(in srgb, var(--panel-bg) 70%, transparent)", transformOrigin: "50% 0%" }}
-                        role="listbox"
-                        aria-label="Projects this event could be for"
-                      >
-                        <div className="flex items-center justify-between gap-2 px-2 pb-1 pt-0.5">
-                          <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-main)" }}>
-                            <FolderKanban size={12} />
-                            Link a project?
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => setTitleSuggestDismissedFor(d.id)}
-                            className="rounded-full px-2 py-0.5 text-[11.5px] font-medium transition hover:bg-[color-mix(in_srgb,var(--text-main)_6%,transparent)]"
-                            style={{ color: "var(--text-muted)" }}
-                          >
-                            Not now
-                          </button>
-                        </div>
-                        {titleSuggestions.map(({ project: p }, index) => (
-                          <button
-                            key={p.id}
-                            type="button"
-                            role="option"
-                            aria-selected={index === titleSuggestIndex}
-                            // (Not taking the focus from the title — typing carries on.)
-                            onMouseDown={(e) => e.preventDefault()}
-                            onMouseEnter={() => setTitleSuggestIndex(index)}
-                            onClick={() => linkDraftProject(p)}
-                            className="flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-2 text-left transition-colors"
-                            style={{ backgroundColor: index === titleSuggestIndex ? "color-mix(in srgb, var(--brand) 9%, transparent)" : undefined }}
-                          >
-                            <FolderKanban size={15} className="shrink-0" style={{ color: themeColor || "var(--brand-strong)" }} />
-                            <span className="min-w-0 flex-1">
-                              <span className="flex min-w-0 items-center gap-1.5">
-                                <span className="truncate text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
-                                  {p.name}
-                                </span>
-                                {index === 0 ? (
-                                  <span className="shrink-0 text-[10.5px] font-semibold uppercase tracking-[0.5px]" style={{ color: "var(--brand-strong)" }}>
-                                    Best match
-                                  </span>
-                                ) : null}
-                              </span>
-                              <span className="block truncate text-[11.5px] font-normal" style={{ color: "var(--text-muted)" }}>
-                                {[p.customer, p.clientAddress].filter(Boolean).join(" · ")}
-                              </span>
+                    {/* The title, with its suggestions dropping down over what's under it (not pushing it down). */}
+                    <div className="relative">
+                      <input
+                        ref={(el) => {
+                          // New event: the cursor goes in the title straight away, without scrolling the page.
+                          if (el && d.isNew && focusedDraftIdRef.current !== d.id) {
+                            focusedDraftIdRef.current = d.id;
+                            el.focus({ preventScroll: true });
+                          }
+                        }}
+                        readOnly={readOnly}
+                        value={d.title}
+                        onChange={(e) => {
+                          setDraft((prev) => (prev ? { ...prev, title: e.target.value } : prev));
+                          setModalError("");
+                          setTitleSuggestIndex(-1);
+                        }}
+                        // Its suggestions (under it): ↑ / ↓ through them, Enter links the one picked, Esc puts them away.
+                        onKeyDown={(e) => {
+                          if (!titleSuggestions.length) return;
+                          if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                            e.preventDefault();
+                            setTitleSuggestIndex((index) =>
+                              e.key === "ArrowDown" ? Math.min(titleSuggestions.length - 1, index + 1) : Math.max(-1, index - 1),
+                            );
+                          } else if (e.key === "Enter" && titleSuggestions[titleSuggestIndex]) {
+                            e.preventDefault();
+                            linkDraftProject(titleSuggestions[titleSuggestIndex].project);
+                          } else if (e.key === "Escape") {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setTitleSuggestDismissedFor(d.id);
+                          }
+                        }}
+                        placeholder="Event title"
+                        aria-autocomplete="list"
+                        className={`${glassFieldClass} h-11 text-[15px]`}
+                      />
+                      {/* The projects its title sounds like — picking one links it (the title stays as typed) and brings
+                          its details: its address, its people. "Not now" puts them away for this event. A dropdown under
+                          the title, over the fields below it. */}
+                      {titleSuggestions.length ? (
+                        <div
+                          className="glass-bubble-pop absolute inset-x-0 top-full z-30 mt-1.5 rounded-[14px] border p-1.5"
+                          style={{
+                            borderColor: "var(--glass-border)",
+                            // Nearly solid: the fields it's over don't read through it.
+                            backgroundColor: "color-mix(in srgb, var(--panel-bg) 94%, transparent)",
+                            backdropFilter: "blur(16px) saturate(200%)",
+                            WebkitBackdropFilter: "blur(16px) saturate(200%)",
+                            boxShadow: "var(--shadow-md)",
+                            transformOrigin: "50% 0%",
+                          }}
+                          role="listbox"
+                          aria-label="Projects this event could be for"
+                        >
+                          <div className="flex items-center justify-between gap-2 px-2 pb-1 pt-0.5">
+                            <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-main)" }}>
+                              <FolderKanban size={12} />
+                              Link a project?
                             </span>
-                            <span
-                              className="glass-shine shrink-0 rounded-full border px-3 py-0.5 text-[11.5px] font-semibold text-white"
-                              style={glassShineStyle(themeColor || "var(--brand)")}
+                            <button
+                              type="button"
+                              onClick={() => setTitleSuggestDismissedFor(d.id)}
+                              className="rounded-full px-2 py-0.5 text-[11.5px] font-medium transition hover:bg-[color-mix(in_srgb,var(--text-main)_6%,transparent)]"
+                              style={{ color: "var(--text-muted)" }}
                             >
-                              Link
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                    ) : null}
+                              Not now
+                            </button>
+                          </div>
+                          {titleSuggestions.map(({ project: p }, index) => (
+                            <button
+                              key={p.id}
+                              type="button"
+                              role="option"
+                              aria-selected={index === titleSuggestIndex}
+                              // (Not taking the focus from the title — typing carries on.)
+                              onMouseDown={(e) => e.preventDefault()}
+                              onMouseEnter={() => setTitleSuggestIndex(index)}
+                              onClick={() => linkDraftProject(p)}
+                              className="flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-2 text-left transition-colors"
+                              style={{ backgroundColor: index === titleSuggestIndex ? "color-mix(in srgb, var(--brand) 9%, transparent)" : undefined }}
+                            >
+                              <FolderKanban size={15} className="shrink-0" style={{ color: themeColor || "var(--brand-strong)" }} />
+                              <span className="min-w-0 flex-1">
+                                <span className="flex min-w-0 items-center gap-1.5">
+                                  <span className="truncate text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
+                                    {p.name}
+                                  </span>
+                                  {index === 0 ? (
+                                    <span className="shrink-0 text-[10.5px] font-semibold uppercase tracking-[0.5px]" style={{ color: "var(--brand-strong)" }}>
+                                      Best match
+                                    </span>
+                                  ) : null}
+                                </span>
+                                <span className="block truncate text-[11.5px] font-normal" style={{ color: "var(--text-muted)" }}>
+                                  {[p.customer, p.clientAddress].filter(Boolean).join(" · ")}
+                                </span>
+                              </span>
+                              <span
+                                className="glass-shine shrink-0 rounded-full border px-3 py-0.5 text-[11.5px] font-semibold text-white"
+                                style={glassShineStyle(themeColor || "var(--brand)")}
+                              >
+                                Link
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
                     <div className="grid gap-3">
                       <label className="grid gap-1.5 text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
                         Category

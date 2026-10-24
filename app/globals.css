@@ -797,6 +797,20 @@ body .drawer-toolbar-slim .cutsmart-quote-document-toolbar > .ck.ck-toolbar > .c
   }
 }
 /* (backwards: once it's open, nothing of it's left on the menu — its own transform, if it has one, is its own again.) */
+/* The New Project pop-up's Notes card (components/app-shell.tsx): its editor's toolbar sits in the card's header, so it's
+ * kept to the header's row — no border, and no space above and below its buttons — and the header doesn't grow as the
+ * notes are written. (!important: CKEditor's own styles are added after these, as the editor loads.) */
+.new-project-notes-toolbar .ck.ck-toolbar {
+  border: 0 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  background: transparent !important;
+}
+.new-project-notes-toolbar .ck.ck-toolbar > .ck-toolbar__items > * {
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+}
+
 .glass-menu-squeeze {
   transform-origin: 50% 0%;
   animation: glass-menu-squeeze 260ms cubic-bezier(0.22, 1.25, 0.36, 1) backwards;
@@ -1808,6 +1822,29 @@ body[data-theme="dark"] .glass-shine.glass-shine-neutral {
   background: linear-gradient(145deg, color-mix(in srgb, white 6%, var(--panel-bg)), var(--panel-bg));
   border-color: rgba(255, 255, 255, 0.12);
   box-shadow: var(--shadow-glass), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+/* The project tabs' side buttons (General, Design, Production) that aren't open: the glass shine without a colour —
+ * glossy white, bright across its top half and easing to a soft silver at the bottom right, a crisp white edge, a white
+ * highlight along its top inside and a faint line along its bottom, and a small soft shadow (the strip they're in cuts
+ * off anything bigger; !important over the shadow set on them). The open one is the full brand blue. */
+.project-subtab-button.glass-shine.glass-shine-neutral {
+  background: linear-gradient(160deg, #ffffff 0%, #ffffff 40%, #e9edf3 100%);
+  border-color: rgba(255, 255, 255, 0.95);
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.06),
+    0 2px 6px rgba(15, 23, 42, 0.07),
+    inset 0 1px 0 #ffffff,
+    inset 0 -1px 0 rgba(15, 23, 42, 0.06) !important;
+}
+
+body[data-theme="dark"] .project-subtab-button.glass-shine.glass-shine-neutral {
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.16) 0%, rgba(255, 255, 255, 0.1) 40%, rgba(255, 255, 255, 0.03) 100%);
+  border-color: rgba(255, 255, 255, 0.14);
+  box-shadow:
+    0 2px 6px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.25) !important;
 }
 
 /* The tint: between the tab's own background (set inline) and its label, so it works over whatever

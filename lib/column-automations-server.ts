@@ -1,7 +1,12 @@
 import { FieldPath, FieldValue, type DocumentReference } from "firebase-admin/firestore";
 import { adminDb } from "@/lib/firebase-admin";
 import {
+  automationConditionsMet,
+  automationItemFacts,
   automationsSetOffByMove,
+  columnActionsSetOffByMove,
+  columnAutomationAssignedText,
+  columnAutomationsEnteredBy,
   columnAutomationColumnLabel,
   columnAutomationRecipients,
   columnAutomationDurationLabel,
@@ -13,16 +18,23 @@ import {
   COLUMN_AUTOMATION_NOTIFICATION_TYPE,
   COLUMN_MOVE_CHAIN_LIMIT,
   hasColumnAutomationRecipients,
+  HAS_WAITING_COLUMN_AUTOMATIONS_FIELD,
   isInAutomationColumn,
   normalizeColumnAutomations,
+  normalizeWaitingColumnAutomations,
+  readyWaitingColumnAutomations,
   SCHEDULED_COLUMN_MOVE_DUE_FIELD,
   SCHEDULED_COLUMN_MOVE_FIELD,
   scheduledColumnMoveFor,
   stayStartedAtIso,
+  WAITING_COLUMN_AUTOMATIONS_FIELD,
+  waitingAfterMove,
+  type AutomationItemFacts,
   type BoardSpot,
   type ColumnAutomation,
   type ColumnAutomationBoard,
 } from "@/lib/column-automations";
+import { convertLeadToProject } from "@/lib/lead-convert-server";
 import { isBonusPeriodKey } from "@/lib/completion-bonus";
 import { leadNameForNotification } from "@/lib/lead-notify-server";
 import { completedStatusMatcher, normalizeProjectArchiveDelay } from "@/lib/project-archive";
@@ -37,7 +49,15 @@ import { addNotificationAndPush, isCompanyMemberUid } from "@/lib/push-server";
 //   when that stay began), so a later stay in the same column is told again;
 // - a move on a timer (a project's started by the app as it's moved — lib/firestore-data.ts): carried out by the same
 //   job once it's due, if the project or lead is still in the column it was started from — told, and moved on again,
-//   as any move.
+//   as any move;
+// - a lead moved on to one of the Dashboard's columns: converted to a project there (lib/lead-convert-server.ts) — the
+//   project's own column automations then, as any project new into a column;
+// - assign and tag automations: done as something enters their column, before it's told (so "the person it's
+//   assigned to" is whoever it was just assigned to) and moved on.
+// Each automation only if its conditions hold (automationConditionsMet) — a timed move's when it entered (its timer only
+// started then), not again when it's due. One whose conditions didn't hold as it entered waits (on it — lib/
+// column-automations.ts), looked at again as what they look at changes (recheckWaitingColumnAutomations: a lead's
+// assignee or details changed — app/api/leads; and the scheduled job, for any change made anywhere else).
 
 const str = (value: unknown) => String(value ?? "").trim();
 const same = (a: unknown, b: unknown) => str(a).toLowerCase() === str(b).toLowerCase();
@@ -56,6 +76,8 @@ type Ctx = {
   siteOrigin: string;
   members: Map<string, boolean>;
   memberRoles: Array<{ uid: string; roleId: string }> | null;
+  // A lead this run converted to a project: the project (app/api/leads tells the board).
+  convertedProjectId?: string;
 };
 
 async function contextFor(companyId: string, siteOrigin: string, companyData?: Record<string, unknown>): Promise<Ctx | null> {
@@ -79,7 +101,7 @@ async function isMember(ctx: Pick<Ctx, "companyId" | "members">, uid: string): P
 
 // Everyone a notify one tells, as the company is now: its people (still in it), and everyone in its roles — each
 // member's role as the company has it (Company Settings' staffRoleIdsByUid, else their membership's).
-async function recipientsOf(ctx: Ctx, automation: ColumnAutomation): Promise<string[]> {
+async function recipientsOf(ctx: Ctx, automation: ColumnAutomation, assigneeUid = ""): Promise<string[]> {
   if (automation.notifyRoleIds.length && !ctx.memberRoles) {
     const overrides = (ctx.companyData.staffRoleIdsByUid ?? {}) as Record<string, unknown>;
     const memberships = await ctx.db.collection("companies").doc(ctx.companyId).collection("memberships").get().catch(() => null);
@@ -92,16 +114,27 @@ async function recipientsOf(ctx: Ctx, automation: ColumnAutomation): Promise<str
     });
   }
   const recipients: string[] = [];
-  for (const uid of columnAutomationRecipients(automation, ctx.memberRoles ?? [])) {
+  for (const uid of columnAutomationRecipients(automation, ctx.memberRoles ?? [], assigneeUid)) {
     if (await isMember(ctx, uid)) recipients.push(uid);
   }
   return recipients;
 }
 
 // Its columns' "enters" / "leaves" automations' people, told — and whoever moved it too (once), so they know what their
-// move set off (none, for one the scheduled job made).
-async function tellMove(ctx: Ctx, board: ColumnAutomationBoard, item: { id: string; name: string }, from: BoardSpot | null, to: BoardSpot, actorUid?: string) {
+// move set off (none, for one the scheduled job made). Not them for a move an automation made straight after theirs
+// (depth): afterMove's tellActor tells them that, where it went — not twice.
+async function tellMove(
+  ctx: Ctx,
+  board: ColumnAutomationBoard,
+  item: { id: string; name: string },
+  from: BoardSpot | null,
+  to: BoardSpot,
+  depth: number,
+  facts: AutomationItemFacts,
+  actorUid?: string,
+) {
   for (const { automation, event } of automationsSetOffByMove(ctx.automations, board, from, to)) {
+    if (!automationConditionsMet(automation, facts, from)) continue;
     const text = columnAutomationNotificationText({
       board,
       event,
@@ -109,8 +142,9 @@ async function tellMove(ctx: Ctx, board: ColumnAutomationBoard, item: { id: stri
       column: columnAutomationColumnLabel(automation),
       movedTo: columnAutomationColumnLabel(to),
     });
-    const recipients = new Set(await recipientsOf(ctx, automation));
-    if (actorUid && (await isMember(ctx, actorUid))) recipients.add(actorUid);
+    const recipients = new Set(await recipientsOf(ctx, automation, facts.assignedToUid));
+    if (actorUid && depth > 0) recipients.delete(actorUid);
+    else if (actorUid && (await isMember(ctx, actorUid))) recipients.add(actorUid);
     for (const uid of recipients) {
       await addNotificationAndPush(
         uid,
@@ -133,25 +167,25 @@ async function afterMove(
   to: BoardSpot,
   depth: number,
   actorUid?: string,
+  knownData?: Record<string, unknown>,
 ): Promise<BoardSpot> {
-  await tellMove(ctx, board, item, from, to, actorUid);
-  const rule = columnMoveSetOffByMove(ctx.automations, board, from, to);
+  // (Its stored fields — what its conditions look at — read now, unless whoever moved it has them already.)
+  const data = knownData ?? (((await ref.get().catch(() => null))?.data() ?? {}) as Record<string, unknown>);
+  let facts = automationItemFacts(data, item.name);
+  facts = await runColumnActions(ctx, board, ref, item, from, to, facts, actorUid);
+  await tellMove(ctx, board, item, from, to, depth, facts, actorUid);
+  // What waits on its conditions in this column (those that didn't hold) — instead of what waited in the one it left.
+  const waiting = waitingAfterMove(columnAutomationsEnteredBy(ctx.automations, board, from, to), facts, from, new Date().toISOString());
+  if (Object.keys(waiting).length || data[HAS_WAITING_COLUMN_AUTOMATIONS_FIELD] === true) {
+    await ref
+      .update({ [WAITING_COLUMN_AUTOMATIONS_FIELD]: waiting, [HAS_WAITING_COLUMN_AUTOMATIONS_FIELD]: Object.keys(waiting).length > 0 })
+      .catch(() => undefined);
+  }
+  const rule = columnMoveSetOffByMove(ctx.automations, board, from, to, facts);
   if (!rule) return to;
-  const tellActor = async (after: string) => {
-    if (!actorUid || !(await isMember(ctx, actorUid))) return;
-    const notice = columnAutomationMoveNoticeText({
-      board,
-      itemName: item.name,
-      column: columnAutomationColumnLabel(to),
-      movedTo: columnAutomationColumnLabel(columnMoveTarget(rule)),
-      after,
-    });
-    await addNotificationAndPush(
-      actorUid,
-      { ...notice, type: COLUMN_AUTOMATION_NOTIFICATION_TYPE, ...(board === "leads" ? { leadId: item.id } : { projectId: item.id }), companyId: ctx.companyId },
-      ctx.siteOrigin,
-    );
-  };
+  // A lead moved on to the Dashboard: made into a project there.
+  const converts = board === "leads" && rule.moveToBoard === "projects";
+  const tellActor = (after: string, projectId = "") => tellMoveNotice(ctx, board, item, to, rule, after, actorUid, projectId);
   if (rule.moveAfter) {
     const scheduled = scheduledColumnMoveFor(rule, to, Date.now());
     const ok = await ref
@@ -162,6 +196,11 @@ async function afterMove(
     return to;
   }
   if (depth >= COLUMN_MOVE_CHAIN_LIMIT) return to;
+  if (converts) {
+    const projectId = await convertAndCarryOn(ctx, ref, (here) => same(here.status, to.status), columnMoveTarget(rule), depth + 1, undefined, actorUid);
+    if (projectId) await tellActor("", projectId);
+    return to;
+  }
   // (Still where it was just moved — nothing else has moved it since.)
   const moved = await applyMove(
     ctx,
@@ -175,6 +214,124 @@ async function afterMove(
   );
   if (moved) await tellActor("");
   return moved ?? to;
+}
+
+// Its column's assign and tag automations (the ones whose conditions hold), as it enters: assigned to their person
+// (told, unless they set it off themselves), given their tag. Its facts as they are after.
+async function runColumnActions(
+  ctx: Ctx,
+  board: ColumnAutomationBoard,
+  ref: DocumentReference,
+  item: { id: string; name: string },
+  from: BoardSpot | null,
+  to: BoardSpot,
+  facts: AutomationItemFacts,
+  actorUid?: string,
+): Promise<AutomationItemFacts> {
+  return doColumnActions(ctx, board, ref, item, columnActionsSetOffByMove(ctx.automations, board, from, to, facts), facts, actorUid);
+}
+
+// These assign and tag automations, done. Its facts as they are after.
+async function doColumnActions(
+  ctx: Ctx,
+  board: ColumnAutomationBoard,
+  ref: DocumentReference,
+  item: { id: string; name: string },
+  actions: ColumnAutomation[],
+  facts: AutomationItemFacts,
+  actorUid?: string,
+): Promise<AutomationItemFacts> {
+  const next = { ...facts, tags: [...facts.tags] };
+  for (const automation of actions) {
+    try {
+      if (automation.action === "assign") {
+        const uid = automation.assignToUid;
+        if (uid === next.assignedToUid || !(await isMember(ctx, uid))) continue;
+        const membership = (await ctx.db.collection("companies").doc(ctx.companyId).collection("memberships").doc(uid).get()).data() ?? {};
+        const name = str(membership.displayName ?? membership.name) || "A teammate";
+        await ref.update({ assignedToUid: uid, assignedToName: name, assignedTo: name, updatedAtIso: new Date().toISOString() });
+        next.assignedToUid = uid;
+        if (uid !== actorUid) {
+          await addNotificationAndPush(
+            uid,
+            {
+              ...columnAutomationAssignedText({ board, itemName: item.name, column: columnAutomationColumnLabel(automation) }),
+              type: board === "leads" ? "lead_access" : "project_assigned",
+              ...(board === "leads" ? { leadId: item.id } : { projectId: item.id }),
+              companyId: ctx.companyId,
+            },
+            ctx.siteOrigin,
+          );
+        }
+      } else if (automation.action === "tag" && board === "projects") {
+        if (next.tags.some((tag) => same(tag, automation.tagValue))) continue;
+        await ref.update({ tags: FieldValue.arrayUnion(automation.tagValue), updatedAtIso: new Date().toISOString() });
+        next.tags.push(automation.tagValue);
+      }
+    } catch (error) {
+      console.error("[column-automations] assign/tag failed:", error);
+    }
+  }
+  return next;
+}
+
+// Whoever set a move automation off, told it's moved on (straight away), or will (`after`: how long) — `projectId`: the
+// project a lead became (the notification opens that, not the archived lead).
+async function tellMoveNotice(
+  ctx: Ctx,
+  board: ColumnAutomationBoard,
+  item: { id: string; name: string },
+  column: BoardSpot,
+  rule: ColumnAutomation,
+  after: string,
+  actorUid?: string,
+  projectId = "",
+) {
+  if (!actorUid || !(await isMember(ctx, actorUid))) return;
+  const notice = columnAutomationMoveNoticeText({
+    board,
+    itemName: item.name,
+    column: columnAutomationColumnLabel(column),
+    movedTo: columnAutomationColumnLabel(columnMoveTarget(rule)),
+    after,
+    converts: board === "leads" && rule.moveToBoard === "projects",
+  });
+  await addNotificationAndPush(
+    actorUid,
+    {
+      ...notice,
+      type: COLUMN_AUTOMATION_NOTIFICATION_TYPE,
+      ...(projectId ? { projectId } : board === "leads" ? { leadId: item.id } : { projectId: item.id }),
+      companyId: ctx.companyId,
+    },
+    ctx.siteOrigin,
+  );
+}
+
+// A lead converted to a project in `to` (one of the Dashboard's columns — lib/lead-convert-server.ts), then that
+// project's own column automations, as any project new into a column. The project's id (null: not converted).
+async function convertAndCarryOn(
+  ctx: Ctx,
+  leadRef: DocumentReference,
+  isStillThere: (here: BoardSpot) => boolean,
+  to: BoardSpot,
+  depth: number,
+  scheduledDueAtIso?: string,
+  actorUid?: string,
+): Promise<string | null> {
+  const made = await convertLeadToProject({
+    companyId: ctx.companyId,
+    leadRef,
+    to,
+    isStillThere: (status) => isStillThere({ status, subStage: "" }),
+    scheduledDueAtIso,
+    actorUid,
+  });
+  if (!made) return null;
+  ctx.convertedProjectId = made.projectId;
+  const projectRef = ctx.db.collection("companies").doc(ctx.companyId).collection("jobs").doc(made.projectId);
+  await afterMove(ctx, "projects", projectRef, { id: made.projectId, name: made.name }, null, to, depth, actorUid, made.data);
+  return made.projectId;
 }
 
 // Moves a project or lead (if it's still where it should be — `isStillThere` — still on its board, and not a project
@@ -292,7 +449,7 @@ async function applyMove(
     }
   }
   const name = isLeads ? await leadNameForNotification(ctx.companyId, data, "A lead") : str(data.name) || "A project";
-  return afterMove(ctx, board, ref, { id: itemId, name }, here, to, depth, actorUid);
+  return afterMove(ctx, board, ref, { id: itemId, name }, here, to, depth, actorUid, data);
 }
 
 // A lead moved (or new — `from` null) by someone, from app/api/leads or lib/lead-notify-server.ts: the automations it
@@ -305,7 +462,7 @@ export async function runLeadColumnAutomations(input: {
   to: BoardSpot;
   actorUid?: string;
   siteOrigin: string;
-}): Promise<{ finalStatus: string }> {
+}): Promise<{ finalStatus: string; convertedProjectId?: string }> {
   const finalStatus = { finalStatus: input.to.status };
   if (!input.to.status || (input.from && same(input.from.status, input.to.status))) return finalStatus;
   try {
@@ -313,10 +470,115 @@ export async function runLeadColumnAutomations(input: {
     if (!ctx || !ctx.automations.length) return finalStatus;
     const ref = ctx.db.collection("companies").doc(input.companyId).collection("leads").doc(input.leadId);
     const ended = await afterMove(ctx, "leads", ref, { id: input.leadId, name: input.leadName }, input.from, input.to, 0, input.actorUid);
-    return { finalStatus: ended.status };
+    // (Converted to a project: it's archived now — the board takes it off.)
+    return { finalStatus: ended.status, convertedProjectId: ctx.convertedProjectId };
   } catch (error) {
     console.error("[column-automations] lead automations failed:", error);
     return finalStatus;
+  }
+}
+
+// Its waiting automations (those whose conditions didn't hold as it entered its column) looked at again — what they
+// look at has changed (its assignee, tags or name): any whose conditions hold now done, as they'd have been as it entered
+// — its assign and tag ones, its notify ones (their people told), then a move (straight away; a timed one once its time
+// from entering is up — now, if it already is; a lead's on to the Dashboard converting it). `actorUid`: whoever changed
+// it, told of a move it set off. From app/api/leads, and the scheduled job (for changes made anywhere else). Where it
+// ended up, and a lead's project if it became one (null: nothing done).
+export async function recheckWaitingColumnAutomations(input: {
+  companyId: string;
+  board: ColumnAutomationBoard;
+  itemId: string;
+  actorUid?: string;
+  siteOrigin: string;
+  ctx?: Ctx;
+}): Promise<{ finalStatus: string; convertedProjectId?: string } | null> {
+  try {
+    const ctx = input.ctx ?? (await contextFor(input.companyId, input.siteOrigin));
+    if (!ctx) return null;
+    // (A run the scheduled job shares across items: this one's own.)
+    ctx.convertedProjectId = undefined;
+    const board = input.board;
+    const isLeads = board === "leads";
+    const ref = ctx.db.collection("companies").doc(ctx.companyId).collection(isLeads ? "leads" : "jobs").doc(input.itemId);
+    const first = (await ref.get()).data();
+    if (!first || first[HAS_WAITING_COLUMN_AUTOMATIONS_FIELD] !== true) return null;
+    const name = isLeads ? await leadNameForNotification(ctx.companyId, first, "A lead") : str(first.name) || "A project";
+    // What's ready, taken off its waiting list in one go — so two looks at once can't both do it.
+    const claimed = await ctx.db
+      .runTransaction(async (tx) => {
+        const snap = await tx.get(ref);
+        if (!snap.exists) return null;
+        const data = (snap.data() ?? {}) as Record<string, unknown>;
+        const waiting = normalizeWaitingColumnAutomations(data[WAITING_COLUMN_AUTOMATIONS_FIELD]);
+        const offBoard = data.isDeleted === true || data.isArchived === true || data.isPurged === true || (!isLeads && data.isSmallJob === true);
+        if (offBoard || !Object.keys(waiting).length) {
+          tx.update(ref, { [WAITING_COLUMN_AUTOMATIONS_FIELD]: {}, [HAS_WAITING_COLUMN_AUTOMATIONS_FIELD]: false });
+          return null;
+        }
+        const here: BoardSpot = { status: str(data.status), subStage: isLeads ? "" : str(data.dashboardSubStageId) };
+        const { ready, still } = readyWaitingColumnAutomations(ctx.automations, board, waiting, here, automationItemFacts(data, name));
+        if (Object.keys(still).length !== Object.keys(waiting).length) {
+          tx.update(ref, { [WAITING_COLUMN_AUTOMATIONS_FIELD]: still, [HAS_WAITING_COLUMN_AUTOMATIONS_FIELD]: Object.keys(still).length > 0 });
+        }
+        return ready.length ? { data, here, ready } : null;
+      })
+      .catch(() => null);
+    if (!claimed) return null;
+    const { data, here, ready } = claimed;
+    const item = { id: str(data.id) || ref.id, name };
+    let facts = automationItemFacts(data, name);
+    facts = await doColumnActions(
+      ctx,
+      board,
+      ref,
+      item,
+      ready.filter(({ automation }) => automation.action === "assign" || automation.action === "tag").map(({ automation }) => automation),
+      facts,
+      input.actorUid,
+    );
+    for (const { automation } of ready) {
+      if (automation.action !== "notify") continue;
+      const text = columnAutomationNotificationText({
+        board,
+        event: "enters",
+        itemName: name,
+        column: columnAutomationColumnLabel(automation),
+        movedTo: columnAutomationColumnLabel(here),
+      });
+      for (const uid of await recipientsOf(ctx, automation, facts.assignedToUid)) {
+        await addNotificationAndPush(
+          uid,
+          { ...text, type: COLUMN_AUTOMATION_NOTIFICATION_TYPE, ...(isLeads ? { leadId: item.id } : { projectId: item.id }), companyId: ctx.companyId },
+          ctx.siteOrigin,
+        );
+      }
+    }
+    let finalStatus = here.status;
+    const move = ready.find(({ automation }) => automation.action === "move");
+    if (move) {
+      const rule = move.automation;
+      const startedMs = Date.parse(move.entry.atIso) || Date.now();
+      const isStillThere = (spot: BoardSpot) => isInAutomationColumn(rule, spot);
+      if (rule.moveAfter && startedMs + columnAutomationStayMs(rule) > Date.now()) {
+        // Its time in the column's not up yet: its timer, from when it entered.
+        const scheduled = scheduledColumnMoveFor(rule, here, Date.now(), startedMs);
+        await ref.update({ [SCHEDULED_COLUMN_MOVE_FIELD]: scheduled, [SCHEDULED_COLUMN_MOVE_DUE_FIELD]: scheduled.dueAtIso });
+        await tellMoveNotice(ctx, board, item, here, rule, columnAutomationDurationLabel(rule), input.actorUid);
+      } else if (isLeads && rule.moveToBoard === "projects") {
+        const projectId = await convertAndCarryOn(ctx, ref, isStillThere, columnMoveTarget(rule), 1, undefined, input.actorUid);
+        if (projectId) await tellMoveNotice(ctx, board, item, here, rule, "", input.actorUid, projectId);
+      } else {
+        const moved = await applyMove(ctx, board, ref, isStillThere, columnMoveTarget(rule), 1, undefined, input.actorUid);
+        if (moved) {
+          finalStatus = moved.status;
+          await tellMoveNotice(ctx, board, item, here, rule, "", input.actorUid);
+        }
+      }
+    }
+    return { finalStatus, convertedProjectId: ctx.convertedProjectId };
+  } catch (error) {
+    console.error("[column-automations] re-checking waiting automations failed:", error);
+    return null;
   }
 }
 
@@ -372,6 +634,8 @@ export async function runColumnAutomationStays(options: { siteOrigin: string; no
         if (!Number.isFinite(startedMs) || now - startedMs < columnAutomationStayMs(automation)) continue;
         const sentMap = (data.columnAutomationsSent ?? {}) as Record<string, unknown>;
         if (sentMap[automation.id] === started) continue;
+        const itemName = isLeads ? await leadNameForNotification(companyId, data, "A lead") : str(data.name) || "A project";
+        if (!automationConditionsMet(automation, automationItemFacts(data, itemName), null)) continue;
         // Claimed first, so two runs at once can't both tell it.
         const claimed = await db
           .runTransaction(async (tx) => {
@@ -384,7 +648,6 @@ export async function runColumnAutomationStays(options: { siteOrigin: string; no
           })
           .catch(() => false);
         if (!claimed) continue;
-        const itemName = isLeads ? await leadNameForNotification(companyId, data, "A lead") : str(data.name) || "A project";
         const text = columnAutomationNotificationText({
           board: automation.board,
           event: "stays",
@@ -393,7 +656,7 @@ export async function runColumnAutomationStays(options: { siteOrigin: string; no
           duration: columnAutomationDurationLabel(automation),
         });
         const itemId = str(data.id) || itemSnap.id;
-        for (const uid of await recipientsOf(ctx, automation)) {
+        for (const uid of await recipientsOf(ctx, automation, str(data.assignedToUid))) {
           await addNotificationAndPush(
             uid,
             {
@@ -412,22 +675,37 @@ export async function runColumnAutomationStays(options: { siteOrigin: string; no
   return result;
 }
 
-export type ScheduledColumnMovesResult = { companies: number; moved: number };
+export type ScheduledColumnMovesResult = { companies: number; moved: number; rechecked: number };
 
 // Moves on a timer that are due — every call of the scheduled job (a minute's the smallest timer), for the companies with
 // any timed move: each project or lead whose due time has come, moved if it's still in the column its timer started in
-// (its automation still there), its timer cleared either way.
+// (its automation still there), its timer cleared either way. And — for companies with any automation with conditions —
+// every project or lead with automations waiting on theirs, looked at again (a change made somewhere that doesn't look
+// itself: recheckWaitingColumnAutomations).
 export async function runScheduledColumnMoves(options: { siteOrigin: string; now?: number }): Promise<ScheduledColumnMovesResult> {
-  const result: ScheduledColumnMovesResult = { companies: 0, moved: 0 };
+  const result: ScheduledColumnMovesResult = { companies: 0, moved: 0, rechecked: 0 };
   if (!adminDb) return result;
   const nowIso = new Date(options.now ?? Date.now()).toISOString();
   const companies = await adminDb.collection("companies").select("columnAutomations", "projectStatuses", "projectArchiveAfter", "staffRoleIdsByUid").get();
   for (const companySnap of companies.docs) {
     const companyData = (companySnap.data() ?? {}) as Record<string, unknown>;
     const ctx = await contextFor(companySnap.id, options.siteOrigin, companyData);
-    if (!ctx || !ctx.automations.some((automation) => automation.action === "move" && automation.moveAfter)) continue;
+    const hasTimed = Boolean(ctx?.automations.some((automation) => automation.action === "move" && automation.moveAfter));
+    const hasConditions = Boolean(ctx?.automations.some((automation) => automation.conditions.length > 0));
+    if (!ctx || (!hasTimed && !hasConditions)) continue;
     result.companies += 1;
-    for (const board of ["projects", "leads"] as const) {
+    for (const board of hasConditions ? (["projects", "leads"] as const) : []) {
+      const waiting = await companySnap.ref
+        .collection(board === "leads" ? "leads" : "jobs")
+        .where(HAS_WAITING_COLUMN_AUTOMATIONS_FIELD, "==", true)
+        .get()
+        .catch(() => null);
+      for (const itemSnap of waiting?.docs ?? []) {
+        const done = await recheckWaitingColumnAutomations({ companyId: companySnap.id, board, itemId: itemSnap.id, siteOrigin: options.siteOrigin, ctx });
+        if (done) result.rechecked += 1;
+      }
+    }
+    for (const board of hasTimed ? (["projects", "leads"] as const) : []) {
       const due = await companySnap.ref
         .collection(board === "leads" ? "leads" : "jobs")
         .where(SCHEDULED_COLUMN_MOVE_DUE_FIELD, "<=", nowIso)
@@ -446,8 +724,12 @@ export async function runScheduledColumnMoves(options: { siteOrigin: string; now
           continue;
         }
         // Still in the automation's column (a status's own column takes in its sub-stages — moved between those, it's
-        // still there).
-        const moved = await applyMove(ctx, board, itemSnap.ref, (here) => isInAutomationColumn(automation, here), columnMoveTarget(automation), 1, dueAtIso);
+        // still there). A lead's on to the Dashboard: converted to a project there.
+        const isStillThere = (here: BoardSpot) => isInAutomationColumn(automation, here);
+        const moved =
+          board === "leads" && automation.moveToBoard === "projects"
+            ? await convertAndCarryOn(ctx, itemSnap.ref, isStillThere, columnMoveTarget(automation), 1, dueAtIso)
+            : await applyMove(ctx, board, itemSnap.ref, isStillThere, columnMoveTarget(automation), 1, dueAtIso);
         if (moved) result.moved += 1;
       }
     }

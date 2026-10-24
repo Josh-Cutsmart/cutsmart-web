@@ -19,6 +19,9 @@ export type NewProjectPrefillPayload = {
   sourceLeadId?: string;
   sourceLeadCompanyId?: string;
   // Lead custom fields not already captured by one of the fixed fields above — see
-  // buildLeadProjectPrefill in app/(staff)/(app)/leads/page.tsx.
+  // buildLeadProjectPrefill in lib/lead-project-prefill.ts.
   leadCustomFields?: LeadCustomFieldSnapshot[];
+  // The lead's notes (the lead pop-up's Notes), oldest first — the Notes box's "Import from Notes" adds them, a bullet
+  // each.
+  leadNotes?: string[];
 };

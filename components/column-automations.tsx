@@ -2,13 +2,18 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Check, Plus, Search, Trash2, Users, X, Zap } from "lucide-react";
+import { Check, FolderPlus, Plus, Search, Trash2, UserCheck, Users, X, Zap } from "lucide-react";
 import { GLASS_MENU_CLASS, GLASS_MENU_STYLE, GlassDropdown } from "@/components/glass-dropdown";
 import { modalCloseButtonClass } from "@/components/settings-ui";
 import { useAuth } from "@/lib/auth-context";
 import { normalizeRoles, type RoleRow } from "@/lib/company-roles";
 import {
   automationRoleKey,
+  CONDITION_ANYONE,
+  CONDITION_NOBODY,
+  conditionFieldsFor,
+  conditionOpsFor,
+  LEAD_SOURCE_OPTIONS,
   COLUMN_AUTOMATION_MAX_AMOUNT,
   COLUMN_AUTOMATION_NOTIFICATION_TYPE,
   COLUMN_AUTOMATION_UNITS,
@@ -18,6 +23,9 @@ import {
   columnAutomationsFor,
   newColumnAutomationId,
   normalizeColumnAutomations,
+  type AutomationCondition,
+  type AutomationConditionField,
+  type AutomationConditionOp,
   type ColumnAutomation,
   type ColumnAutomationAction,
   type ColumnAutomationBoard,
@@ -33,11 +41,16 @@ import { cn } from "@/lib/utils";
 // A board's column automations (lib/column-automations.ts), for whoever's role has projects.automate: right-click a
 // column (an element marked data-automation-board / -status / -substage / -color — the Dashboard's and Leads' column
 // frames) for its menu → Automate, a pop-up of its automations:
-//   Notify <people and roles> when a project <enters | leaves | has been in> <column> [for <n> <unit>]
+//   Notify <people, roles, the person it's assigned to> when a project <enters | leaves | has been in> <column> [for <n> <unit>]
 //   Move a project to <any of the board's other columns> when it enters <column> <straight away | after <n> <unit>>
+//     — a lead's to one of the Dashboard's columns too: "and convert it to a project"
+//   Assign a project to <person> when it enters <column>
+//   Tag a project <tag> when it enters <column> (projects)
+//   … but only if <who it's assigned to | the column it came from | its tags | where it came in from | its name> <is …>
 // People and roles are kept by their ids and shown by their names as they are now, so a rename doesn't lose them; a role
 // tells everyone in it when it's sent.
-// each part a dropdown, any number of them (one move a column); saved to the company doc. Company Settings' status
+// each part a dropdown, any number of them (more than one move in a column: the first whose conditions hold); saved to
+// the company doc. Company Settings' status
 // lists show how many each column has (countFor) on its row's Automate button, which opens them too (open). Dev mode: a
 // notify one's Test sends it to yourself, as it would read.
 
@@ -57,7 +70,25 @@ const UNIT_OPTIONS = COLUMN_AUTOMATION_UNITS.map((unit) => ({ value: unit.value,
 const ACTION_OPTIONS: Array<{ value: ColumnAutomationAction; label: string }> = [
   { value: "notify", label: "Notify" },
   { value: "move", label: "Move" },
+  { value: "assign", label: "Assign" },
+  { value: "tag", label: "Tag" },
 ];
+// "But only if" — each condition read as the rest of the sentence: "who it's assigned to" "is" "Liam".
+const CONDITION_FIELD_LABELS: Record<AutomationConditionField, string> = {
+  assignee: "who it's assigned to",
+  from: "the column it came from",
+  tag: "its tags",
+  source: "where it came in from",
+  name: "its name",
+};
+const CONDITION_OP_LABELS: Record<AutomationConditionOp, string> = {
+  is: "is",
+  isNot: "isn't",
+  has: "include",
+  hasNot: "don't include",
+  contains: "contains",
+  notContains: "doesn't contain",
+};
 const TIMING_OPTIONS = [
   { value: "now", label: "straight away" },
   { value: "after", label: "after" },
@@ -104,6 +135,8 @@ export function useColumnAutomations(
   const canAutomate =
     access.status === "ready" && (isOwnerOrAdmin(access.role) || hasPermissionKey(access.permissionKeys, "projects.automate"));
   const [automations, setAutomations] = useState<ColumnAutomation[]>([]);
+  // The Dashboard's columns — where a Leads column can move a lead on to (converting it to a project).
+  const [dashboardColumns, setDashboardColumns] = useState<ColumnAutomationColumn[]>([]);
   const [menu, setMenu] = useState<{ x: number; y: number; target: ColumnAutomationTarget } | null>(null);
   const [editing, setEditing] = useState<ColumnAutomationTarget | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -113,7 +146,9 @@ export function useColumnAutomations(
     if (!companyId) return;
     let cancelled = false;
     void fetchCompanyDoc(companyId).then((companyDoc) => {
-      if (!cancelled) setAutomations(normalizeColumnAutomations(companyDoc?.columnAutomations));
+      if (cancelled) return;
+      setAutomations(normalizeColumnAutomations(companyDoc?.columnAutomations));
+      setDashboardColumns(dashboardColumnsOf(companyDoc?.projectStatuses));
     });
     const onUpdated = (event: Event) => {
       const detail = (event as CustomEvent<{ companyId: string; automations: ColumnAutomation[] }>).detail;
@@ -212,6 +247,7 @@ export function useColumnAutomations(
           board={board}
           companyId={companyId}
           columns={columns}
+          dashboardColumns={board === "leads" ? dashboardColumns : []}
           target={editing}
           automations={automations}
           onClose={() => setEditing(null)}
@@ -226,6 +262,26 @@ export function useColumnAutomations(
   );
 
   return { canAutomate, countFor, open: setEditing, layer };
+}
+
+// The Dashboard's columns: Company Settings' project statuses, each with its sub-stages.
+function dashboardColumnsOf(raw: unknown): ColumnAutomationColumn[] {
+  if (!Array.isArray(raw)) return [];
+  const text = (value: unknown) => String(value ?? "").trim();
+  return raw
+    .filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === "object")
+    .flatMap((row) => {
+      const status = text(row.name);
+      if (!status) return [];
+      const color = text(row.color) || "#64748B";
+      const subs = Array.isArray(row.subStages) ? (row.subStages as unknown[]) : [];
+      return [
+        { status, subStage: "", color },
+        ...subs
+          .filter((sub): sub is Record<string, unknown> => Boolean(sub) && typeof sub === "object" && Boolean(text((sub as Record<string, unknown>).name)))
+          .map((sub) => ({ status, subStage: text(sub.name), color: text(sub.color) || color })),
+      ];
+    });
 }
 
 // A column frame's marks for its right-click menu (useColumnAutomations): which board and column it is, and its colour.
@@ -277,6 +333,7 @@ function ColumnAutomationModal({
   board,
   companyId,
   columns,
+  dashboardColumns,
   target,
   automations,
   onClose,
@@ -285,6 +342,7 @@ function ColumnAutomationModal({
   board: ColumnAutomationBoard;
   companyId: string;
   columns: ColumnAutomationColumn[];
+  dashboardColumns: ColumnAutomationColumn[];
   target: ColumnAutomationTarget;
   automations: ColumnAutomation[];
   onClose: () => void;
@@ -308,6 +366,11 @@ function ColumnAutomationModal({
     moveToStatus: "",
     moveToSubStage: "",
     moveAfter: false,
+    moveToBoard: board,
+    notifyAssignee: false,
+    assignToUid: "",
+    tagValue: "",
+    conditions: [],
     createdByUid: String(user?.uid || ""),
     updatedAtIso: "",
   });
@@ -336,30 +399,66 @@ function ColumnAutomationModal({
   }, [companyId]);
 
   const update = (id: string, patch: Partial<DraftRow>) => setRows((prev) => prev.map((row) => (row.id === id ? { ...row, ...patch } : row)));
-  const missingPeople = rows.some((row) => row.action === "notify" && !row.notifyUids.length && !row.notifyRoleIds.length);
-  // Where a move can go: every other column of the board.
-  const moveOptions = columns
+  // What's still to fill in on one (shown under it once Save's been tried).
+  const rowProblem = (row: DraftRow): string => {
+    if (row.action === "notify" && !row.notifyUids.length && !row.notifyRoleIds.length && !row.notifyAssignee) {
+      return "Pick who to notify — people, roles, or the person it's assigned to.";
+    }
+    if (row.action === "assign" && !row.assignToUid) return "Pick who to assign it to.";
+    if (row.action === "tag" && !row.tagValue.trim()) return "Type the tag to give it.";
+    if (row.conditions.some((condition) => !condition.value.trim())) return "Finish each condition, or take it off.";
+    return "";
+  };
+  const hasProblem = rows.some((row) => Boolean(rowProblem(row)));
+  // Where a move can go: every other column of the board — and, a lead's, every column of the Dashboard (converting it),
+  // the two in their groups ("Leads ———", "Dashboard ———"), a Dashboard one's trigger saying which ("Dashboard › Design").
+  const moveOption = (toBoard: ColumnAutomationBoard, option: ColumnAutomationColumn) => ({
+    value: [toBoard, option.status, option.subStage].join(COLUMN_KEY_SEP),
+    label: columnAutomationColumnLabel(option),
+    color: option.color,
+    ...(dashboardColumns.length ? { group: toBoard === "leads" ? "Leads" : "Dashboard" } : {}),
+    ...(toBoard !== board ? { triggerLabel: `Dashboard › ${columnAutomationColumnLabel(option)}` } : {}),
+  });
+  const moveOptions = [
+    ...columns.filter((option) => !(same(option.status, target.status) && same(option.subStage, target.subStage))).map((option) => moveOption(board, option)),
+    ...dashboardColumns.map((option) => moveOption("projects", option)),
+  ];
+  // The board's columns as a condition's "came from" (any but this one).
+  const fromOptions = columns
     .filter((option) => !(same(option.status, target.status) && same(option.subStage, target.subStage)))
     .map((option) => ({ value: `${option.status}${COLUMN_KEY_SEP}${option.subStage}`, label: columnAutomationColumnLabel(option), color: option.color }));
-  // Notify or Move — a move starts off going to the first other column.
+  const personOptions = (members ?? []).map((member) => ({ value: member.uid, label: memberName(member), color: memberColor(member) }));
+  // Notify, Move, Assign or Tag — a move starts off going to the first other column; the rest are on entering.
   const setAction = (row: DraftRow, action: ColumnAutomationAction) => {
     if (action === row.action) return;
-    if (action === "notify") {
-      update(row.id, { action });
+    if (action !== "move") {
+      update(row.id, { action, trigger: action === "notify" ? row.trigger : "enters" });
       return;
     }
-    const [firstStatus = "", firstSubStage = ""] = (moveOptions[0]?.value ?? "").split(COLUMN_KEY_SEP);
+    const [firstBoard = board, firstStatus = "", firstSubStage = ""] = (moveOptions[0]?.value ?? "").split(COLUMN_KEY_SEP);
     update(row.id, {
       action,
       trigger: "enters",
+      moveToBoard: row.moveToStatus ? row.moveToBoard : (firstBoard as ColumnAutomationBoard),
       moveToStatus: row.moveToStatus || firstStatus,
       moveToSubStage: row.moveToStatus ? row.moveToSubStage : firstSubStage,
     });
   };
+  // Its conditions: one added (who it's assigned to — anyone), changed (a new field starts from its first choice), or
+  // taken off.
+  const conditionStartValue = (field: AutomationConditionField) =>
+    field === "assignee" ? CONDITION_ANYONE : field === "from" ? fromOptions[0]?.value ?? "" : field === "source" ? LEAD_SOURCE_OPTIONS[0].value : "";
+  const addCondition = (row: DraftRow) =>
+    update(row.id, {
+      conditions: [...row.conditions, { id: newColumnAutomationId(), field: "assignee", op: "is", value: CONDITION_ANYONE }],
+    });
+  const changeCondition = (row: DraftRow, id: string, patch: Partial<AutomationCondition>) =>
+    update(row.id, { conditions: row.conditions.map((condition) => (condition.id === id ? { ...condition, ...patch } : condition)) });
+  const removeCondition = (row: DraftRow, id: string) => update(row.id, { conditions: row.conditions.filter((condition) => condition.id !== id) });
 
   const save = async () => {
     setTriedSave(true);
-    if (missingPeople || saving) return;
+    if (hasProblem || saving) return;
     setSaving(true);
     setError("");
     const nowIso = new Date().toISOString();
@@ -375,6 +474,11 @@ function ColumnAutomationModal({
         row.moveToStatus,
         row.moveToSubStage,
         row.moveAfter,
+        row.moveToBoard,
+        row.notifyAssignee,
+        row.assignToUid,
+        row.tagValue,
+        row.conditions.map((condition) => [condition.field, condition.op, condition.value]),
       ]);
     // Anyone who's left the company, or a role since deleted, left off.
     const roleIds = new Set(roles.map((role) => automationRoleKey(role.id)));
@@ -383,6 +487,8 @@ function ColumnAutomationModal({
       ...row,
       notifyUids: members ? row.notifyUids.filter((uid) => memberIds.has(uid)) : row.notifyUids,
       notifyRoleIds: roles.length ? row.notifyRoleIds.filter((id) => roleIds.has(id)) : row.notifyRoleIds,
+      tagValue: row.tagValue.trim(),
+      conditions: row.conditions.map((condition) => ({ ...condition, value: condition.value.trim() })),
     });
     const saved = rows.map(tidy).map((row) => {
       const before = original.find((item) => item.id === row.id);
@@ -456,9 +562,12 @@ function ColumnAutomationModal({
             </p>
           ) : null}
           {rows.map((row) => {
-            const needsPeople = triedSave && row.action === "notify" && !row.notifyUids.length && !row.notifyRoleIds.length;
-            // One move a column: Move's only offered on another while no other one moves.
-            const canMove = row.action === "move" || !rows.some((other) => other.id !== row.id && other.action === "move");
+            const problem = triedSave ? rowProblem(row) : "";
+            // (Tagging's a project's.)
+            const actionOptions = ACTION_OPTIONS.filter((option) => option.value !== "tag" || board === "projects");
+            // What its conditions can look at — "the column it came from" only for one set off as it enters.
+            const conditionFields = conditionFieldsFor(board).filter((field) => field !== "from" || row.trigger === "enters");
+            const converts = row.action === "move" && board === "leads" && row.moveToBoard === "projects";
             // How long — a "has been in" one's, or a move's timer.
             const duration = (
               <>
@@ -502,9 +611,9 @@ function ColumnAutomationModal({
                   <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-2 text-[13px] font-medium text-[var(--text-main)]">
                     <GlassDropdown
                       value={row.action}
-                      options={canMove ? ACTION_OPTIONS : ACTION_OPTIONS.filter((option) => option.value !== "move")}
+                      options={actionOptions}
                       onChange={(value) => setAction(row, value as ColumnAutomationAction)}
-                      ariaLabel="Notify or move"
+                      ariaLabel="Notify, move, assign or tag"
                       hideTriggerDot
                       menuMinWidth={130}
                       triggerClassName={PILL_CLASS}
@@ -514,14 +623,14 @@ function ColumnAutomationModal({
                       <>
                         <span>a {thing} to</span>
                         <GlassDropdown
-                          value={`${row.moveToStatus}${COLUMN_KEY_SEP}${row.moveToSubStage}`}
+                          value={[row.moveToBoard, row.moveToStatus, row.moveToSubStage].join(COLUMN_KEY_SEP)}
                           options={moveOptions}
                           onChange={(value) => {
-                            const [moveToStatus = "", moveToSubStage = ""] = value.split(COLUMN_KEY_SEP);
-                            update(row.id, { moveToStatus, moveToSubStage });
+                            const [moveToBoard = board, moveToStatus = "", moveToSubStage = ""] = value.split(COLUMN_KEY_SEP);
+                            update(row.id, { moveToBoard: moveToBoard as ColumnAutomationBoard, moveToStatus, moveToSubStage });
                           }}
                           ariaLabel="Move to"
-                          menuMinWidth={240}
+                          menuMinWidth={260}
                           triggerClassName={PILL_CLASS}
                           triggerStyle={PILL_STYLE}
                         />
@@ -539,6 +648,39 @@ function ColumnAutomationModal({
                         />
                         {row.moveAfter ? duration : null}
                       </>
+                    ) : row.action === "assign" ? (
+                      <>
+                        <span>a {thing} to</span>
+                        <GlassDropdown
+                          value={row.assignToUid}
+                          options={personOptions}
+                          onChange={(assignToUid) => update(row.id, { assignToUid })}
+                          ariaLabel="Assign to"
+                          placeholder={members === null ? "Loading..." : "Choose someone"}
+                          menuMinWidth={220}
+                          triggerClassName={cn(PILL_CLASS, problem && !row.assignToUid ? "border-[var(--danger)]!" : "")}
+                          triggerStyle={PILL_STYLE}
+                        />
+                        <span>when it enters</span>
+                        {columnChip}
+                      </>
+                    ) : row.action === "tag" ? (
+                      <>
+                        <span>a {thing}</span>
+                        <input
+                          value={row.tagValue}
+                          onChange={(e) => update(row.id, { tagValue: e.target.value.slice(0, 60) })}
+                          placeholder="tag"
+                          aria-label="Tag"
+                          autoComplete="cs-automation-tag"
+                          className={cn(
+                            "h-9 w-[150px] rounded-full border bg-[var(--panel-bg)] px-3.5 text-[13px] font-medium text-[var(--text-main)] outline-none transition focus:border-[var(--brand)]",
+                            problem && !row.tagValue.trim() ? "border-[var(--danger)]" : "border-[var(--panel-border)]",
+                          )}
+                        />
+                        <span>when it enters</span>
+                        {columnChip}
+                      </>
                     ) : (
                       <>
                         <PeoplePicker
@@ -546,9 +688,12 @@ function ColumnAutomationModal({
                           roles={roles}
                           value={row.notifyUids}
                           roleValue={row.notifyRoleIds}
-                          invalid={needsPeople}
+                          assignee={row.notifyAssignee}
+                          thing={thing}
+                          invalid={Boolean(problem) && !row.notifyUids.length && !row.notifyRoleIds.length && !row.notifyAssignee}
                           onChange={(notifyUids) => update(row.id, { notifyUids })}
                           onChangeRoles={(notifyRoleIds) => update(row.id, { notifyRoleIds })}
+                          onChangeAssignee={(notifyAssignee) => update(row.id, { notifyAssignee })}
                         />
                         <span>when a {thing}</span>
                         <GlassDropdown
@@ -588,7 +733,108 @@ function ColumnAutomationModal({
                     </button>
                   </span>
                 </div>
-                {needsPeople ? <p className="mt-2 text-[11.5px] font-medium text-[var(--danger)]">Pick who to notify — people, or a role.</p> : null}
+                {/* A lead moved on to the Dashboard becomes a project there (lib/lead-convert-server.ts). */}
+                {converts ? (
+                  <div className="mt-2.5 flex items-start gap-2 pl-1">
+                    <FolderPlus size={15} className="mt-0.5 shrink-0" style={{ color: "var(--brand-strong)" }} />
+                    <p className="min-w-0 text-[13px] font-medium text-[var(--text-main)]">
+                      and convert it to a project
+                      <span className="block text-[11.5px] font-normal text-[var(--text-muted)]">
+                        Its client, contact details, address, notes, photos and answers go onto the project, as Create Project
+                        fills them in — and the lead&apos;s archived.
+                      </span>
+                    </p>
+                  </div>
+                ) : null}
+                {/* But only if … and … */}
+                <div className="mt-2.5 space-y-2">
+                  {row.conditions.map((condition, index) => (
+                    <div key={condition.id} className="flex flex-wrap items-center gap-x-2 gap-y-2 text-[13px] font-medium text-[var(--text-main)]">
+                      <span className="w-[84px] shrink-0 text-[var(--text-muted)]">{index === 0 ? "but only if" : "and"}</span>
+                      <GlassDropdown
+                        value={condition.field}
+                        options={(conditionFields.includes(condition.field) ? conditionFields : [condition.field, ...conditionFields]).map((field) => ({
+                          value: field,
+                          label: CONDITION_FIELD_LABELS[field],
+                        }))}
+                        onChange={(value) => {
+                          const field = value as AutomationConditionField;
+                          changeCondition(row, condition.id, { field, op: conditionOpsFor(field)[0], value: conditionStartValue(field) });
+                        }}
+                        ariaLabel="What it looks at"
+                        hideTriggerDot
+                        menuMinWidth={210}
+                        triggerClassName={PILL_CLASS}
+                        triggerStyle={PILL_STYLE}
+                      />
+                      <GlassDropdown
+                        value={condition.op}
+                        options={conditionOpsFor(condition.field).map((op) => ({ value: op, label: CONDITION_OP_LABELS[op] }))}
+                        onChange={(value) => changeCondition(row, condition.id, { op: value as AutomationConditionOp })}
+                        ariaLabel="How"
+                        hideTriggerDot
+                        menuMinWidth={150}
+                        triggerClassName={PILL_CLASS}
+                        triggerStyle={PILL_STYLE}
+                      />
+                      {condition.field === "assignee" || condition.field === "from" || condition.field === "source" ? (
+                        <GlassDropdown
+                          value={condition.value}
+                          options={
+                            condition.field === "assignee"
+                              ? [
+                                  { value: CONDITION_ANYONE, label: "anyone" },
+                                  { value: CONDITION_NOBODY, label: "nobody" },
+                                  ...personOptions,
+                                ]
+                              : condition.field === "from"
+                                ? fromOptions
+                                : LEAD_SOURCE_OPTIONS.map((option) => ({ value: option.value, label: option.label }))
+                          }
+                          onChange={(value) => changeCondition(row, condition.id, { value })}
+                          ariaLabel="Which"
+                          placeholder="Choose..."
+                          hideTriggerDot={condition.field === "source"}
+                          menuMinWidth={220}
+                          triggerClassName={PILL_CLASS}
+                          triggerStyle={PILL_STYLE}
+                        />
+                      ) : (
+                        <input
+                          value={condition.value}
+                          onChange={(e) => changeCondition(row, condition.id, { value: e.target.value.slice(0, 120) })}
+                          placeholder={condition.field === "tag" ? "tag" : "text"}
+                          aria-label={condition.field === "tag" ? "Tag" : "Text"}
+                          autoComplete="cs-automation-condition"
+                          className={cn(
+                            "h-9 w-[160px] rounded-full border bg-[var(--panel-bg)] px-3.5 text-[13px] font-medium text-[var(--text-main)] outline-none transition focus:border-[var(--brand)]",
+                            problem && !condition.value.trim() ? "border-[var(--danger)]" : "border-[var(--panel-border)]",
+                          )}
+                        />
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => removeCondition(row, condition.id)}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[var(--text-muted)] transition hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
+                        aria-label="Take off this condition"
+                        title="Take off this condition"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  ))}
+                  {row.conditions.length < 8 ? (
+                    <button
+                      type="button"
+                      onClick={() => addCondition(row)}
+                      className="inline-flex items-center gap-1 rounded-full px-1 text-[12px] font-medium text-[var(--brand-strong)] transition hover:underline"
+                    >
+                      <Plus size={13} strokeWidth={2.5} />
+                      {row.conditions.length ? "And…" : "Only if…"}
+                    </button>
+                  ) : null}
+                </div>
+                {problem ? <p className="mt-2 text-[11.5px] font-medium text-[var(--danger)]">{problem}</p> : null}
               </div>
             );
           })}
@@ -645,17 +891,24 @@ function PeoplePicker({
   roles,
   value,
   roleValue,
+  assignee,
+  thing,
   invalid,
   onChange,
   onChangeRoles,
+  onChangeAssignee,
 }: {
   members: CompanyMemberOption[] | null;
   roles: RoleRow[];
   value: string[];
   roleValue: string[];
+  // The person it's assigned to (whoever that is when it's sent) — `thing`: "project" or "lead".
+  assignee: boolean;
+  thing: string;
   invalid: boolean;
   onChange: (uids: string[]) => void;
   onChangeRoles: (roleIds: string[]) => void;
+  onChangeAssignee: (on: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -669,7 +922,13 @@ function PeoplePicker({
   const query = search.trim().toLowerCase();
   const shownRoles = roles.filter((role) => !query || role.name.toLowerCase().includes(query));
   const shown = (members ?? []).filter((member) => !query || `${memberName(member)} ${member.email ?? ""}`.toLowerCase().includes(query));
-  const pickedNames = [...pickedRoles.map((role) => role.name), ...picked.map(memberName)];
+  const pickedNames = [...(assignee ? ["Assigned person"] : []), ...pickedRoles.map((role) => role.name), ...picked.map(memberName)];
+  const showAssignee = !query || "assigned person it's".includes(query);
+  const assigneeBadge = (size = 24) => (
+    <span className="inline-flex shrink-0 items-center justify-center rounded-full text-white" style={{ width: size, height: size, backgroundImage: "var(--brand-gradient)" }}>
+      <UserCheck size={size <= 22 ? 11 : 13} strokeWidth={2.5} />
+    </span>
+  );
 
   // Closes with a press elsewhere, Escape, a scroll (not its own list's) or a resize.
   useEffect(() => {
@@ -777,6 +1036,7 @@ function PeoplePicker({
         {pickedNames.length ? (
           <>
             <span className="flex shrink-0 -space-x-1.5">
+              {assignee ? <span className="rounded-full ring-2 ring-[var(--panel-bg)]">{assigneeBadge()}</span> : null}
               {pickedRoles.slice(0, 2).map((role) => (
                 <span key={role.id} className="rounded-[8px] ring-2 ring-[var(--panel-bg)]">
                   {roleBadge(role)}
@@ -798,7 +1058,7 @@ function PeoplePicker({
           </>
         ) : (
           <span className="px-1.5 text-[var(--text-muted)]">
-            {members === null && (value.length || roleValue.length) ? "Loading..." : "Choose people or roles"}
+            {members === null && (value.length || roleValue.length) ? "Loading..." : "Choose who"}
           </span>
         )}
       </button>
@@ -823,8 +1083,18 @@ function PeoplePicker({
               <div role="listbox" aria-multiselectable="true" className="glass-scroll min-h-0 flex-1 overflow-y-auto p-1">
                 {members === null ? (
                   <p className="px-2 py-3 text-center text-[12px] text-[var(--text-muted)]">Loading staff...</p>
-                ) : shownRoles.length || shown.length ? (
+                ) : showAssignee || shownRoles.length || shown.length ? (
                   <>
+                    {showAssignee
+                      ? optionRow({
+                          key: "assignee",
+                          isOn: assignee,
+                          onToggle: () => onChangeAssignee(!assignee),
+                          badge: assigneeBadge(),
+                          title: "The person it's assigned to",
+                          detail: `Whoever the ${thing}'s assigned to at the time`,
+                        })
+                      : null}
                     {shownRoles.length ? sectionLabel("Roles") : null}
                     {shownRoles.map((role) => {
                       const id = automationRoleKey(role.id);

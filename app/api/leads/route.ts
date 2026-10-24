@@ -4,7 +4,7 @@ import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
 import { apiHasPermission, requireCompanyMember } from "@/lib/api-company-access";
 import { addNotificationAndPush } from "@/lib/push-server";
 import { leadNameForNotification, notifyNewLead } from "@/lib/lead-notify-server";
-import { runLeadColumnAutomations } from "@/lib/column-automations-server";
+import { recheckWaitingColumnAutomations, runLeadColumnAutomations } from "@/lib/column-automations-server";
 // A lead as the app works with it — shared with the Leads page's own direct reads (lib/firestore-data.ts).
 import {
   buildLeadRow as buildLeadResponse,
@@ -504,10 +504,12 @@ export async function PATCH(request: NextRequest) {
     }
     await leadRef.update(patch);
     // Moved to another column: its column automations — their people told (not whoever moved it), and on to another
-    // column if the one it went into moves things straight away (automatedStatus: where it ended up, for the board).
+    // column if the one it went into moves things straight away (automatedStatus: where it ended up, for the board), or
+    // on to the Dashboard: converted to a project (automatedProjectId — the lead's archived, so the board takes it off).
     let automatedStatus: string | undefined;
+    let automatedProjectId: string | undefined;
     if (status && patch.statusChangedAtIso) {
-      const { finalStatus } = await runLeadColumnAutomations({
+      const automated = await runLeadColumnAutomations({
         companyId,
         leadId,
         leadName: await leadNameForNotification(companyId, (leadSnap.data() ?? {}) as Record<string, unknown>, "A lead"),
@@ -516,7 +518,20 @@ export async function PATCH(request: NextRequest) {
         actorUid: callerAccess.uid,
         siteOrigin: new URL(request.url).origin,
       });
-      if (finalStatus.toLowerCase() !== status.toLowerCase()) automatedStatus = finalStatus;
+      if (automated.finalStatus.toLowerCase() !== status.toLowerCase()) automatedStatus = automated.finalStatus;
+      automatedProjectId = automated.convertedProjectId;
+    } else if (hasAssignmentPatch || hasFieldsPatch) {
+      // Its assignee or details changed (not moved — a move looks for itself, above): any of its column's automations
+      // waiting on their conditions (who it's assigned to, its name…) looked at again — and done, if they hold now.
+      const rechecked = await recheckWaitingColumnAutomations({
+        companyId,
+        board: "leads",
+        itemId: leadId,
+        actorUid: callerAccess.uid,
+        siteOrigin: new URL(request.url).origin,
+      });
+      if (rechecked && rechecked.finalStatus.toLowerCase() !== (status || previousStatus).toLowerCase()) automatedStatus = rechecked.finalStatus;
+      if (rechecked?.convertedProjectId) automatedProjectId = rechecked.convertedProjectId;
     }
     // Assigned to someone new (not themselves): let them know.
     const previousAssigneeUid = toStr((leadSnap.data() ?? {}).assignedToUid);
@@ -542,6 +557,7 @@ export async function PATCH(request: NextRequest) {
       leadId,
       status,
       automatedStatus,
+      convertedProjectId: automatedProjectId,
       isDeleted,
       assignedToUid: hasAssignmentPatch ? assignedToUid : undefined,
       assignedToName: hasAssignmentPatch ? assignedToName : undefined,

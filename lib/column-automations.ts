@@ -2,17 +2,59 @@
 // whose role has projects.automate, from the column's right-click menu (components/column-automations.tsx) — to tell
 // the people picked when a project (or lead) enters it, leaves it, or has been in it a while, or to move what enters
 // it on to another column (straight away, or after a while):
-//   Notify <people> when a project <enters | leaves | has been in> <column> [for <n> <unit>]
+//   Notify <people, roles, the person it's assigned to> when a project <enters | leaves | has been in> <column> [for <n> <unit>]
 //   Move a project to <another column> when it enters <column> <straight away | after <n> <unit>>
+//     (a lead's can go to one of the Dashboard's columns: and convert it to a project — lib/column-automations-server.ts)
+//   Assign a project to <person> when it enters <column>
+//   Tag a project <tag> when it enters <column> (projects only)
+// each "but only if" any conditions it has all hold (automationConditionsMet): who it's assigned to, which column it came
+// from, a tag it has, where a lead came from, what its name has in it. One whose conditions didn't hold as it entered
+// waits (columnAutomationsWaiting, on the project or lead) — looked at again as what they look at changes (its
+// assignee, tags or name — recheckWaitingColumnAutomations, app and server), and done then if they hold; given up as it
+// leaves the column.
 // Kept on the company doc (columnAutomations). Moves are told (and moved on) straight away — a project's from the app
 // as it's moved (notifyColumnAutomationMove in lib/firestore-data.ts), a lead's by the server as it's changed
 // (app/api/leads); a stay, and a move on a timer, by the notifications scheduled job (lib/column-automations-server.ts).
 // Shared by the app and the server.
 
 export type ColumnAutomationBoard = "projects" | "leads";
-export type ColumnAutomationAction = "notify" | "move";
+export type ColumnAutomationAction = "notify" | "move" | "assign" | "tag";
 export type ColumnAutomationTrigger = "enters" | "leaves" | "stays";
 export type ColumnAutomationUnit = "minutes" | "hours" | "days" | "weeks" | "months";
+
+// "But only if": what a condition looks at, and how —
+//   assignee  is / isn't  <person> | anyone (someone's assigned) | nobody (no one is)
+//   from      is / isn't  <column> — the column it came from (one just created came from none)
+//   tag       has / hasn't <tag> (a project's)
+//   source    is / isn't  where a lead came in: one of the company's forms, its leads email inbox, Zapier, Create Lead
+//   name      contains / doesn't contain <text>
+export type AutomationConditionField = "assignee" | "from" | "tag" | "source" | "name";
+export type AutomationConditionOp = "is" | "isNot" | "has" | "hasNot" | "contains" | "notContains";
+export type AutomationCondition = { id: string; field: AutomationConditionField; op: AutomationConditionOp; value: string };
+export const CONDITION_ANYONE = "__anyone__";
+export const CONDITION_NOBODY = "__nobody__";
+// A column as a condition's (or a dropdown's) value: its status and sub-stage, apart.
+export const COLUMN_VALUE_SEP = "\u001f";
+export const LEAD_SOURCE_OPTIONS: readonly { value: string; label: string }[] = [
+  { value: "web-form", label: "a lead form" },
+  { value: "email", label: "the leads email inbox" },
+  { value: "zapier", label: "Zapier" },
+  { value: "manual", label: "Create Lead" },
+];
+const CONDITION_FIELD_OPS: Record<AutomationConditionField, readonly AutomationConditionOp[]> = {
+  assignee: ["is", "isNot"],
+  from: ["is", "isNot"],
+  tag: ["has", "hasNot"],
+  source: ["is", "isNot"],
+  name: ["contains", "notContains"],
+};
+// What each board's conditions can look at.
+export function conditionFieldsFor(board: ColumnAutomationBoard): AutomationConditionField[] {
+  return board === "leads" ? ["assignee", "from", "source", "name"] : ["assignee", "from", "tag", "name"];
+}
+export function conditionOpsFor(field: AutomationConditionField): readonly AutomationConditionOp[] {
+  return CONDITION_FIELD_OPS[field];
+}
 
 export type ColumnAutomation = {
   id: string;
@@ -34,9 +76,22 @@ export type ColumnAutomation = {
   moveToStatus: string;
   moveToSubStage: string;
   moveAfter: boolean;
+  // Which board that column's on: its own — or, a lead's, the Dashboard's (the lead converted to a project as it goes).
+  moveToBoard: ColumnAutomationBoard;
+  // A notify one tells the person it's assigned to as well (whoever that is when it's sent).
+  notifyAssignee: boolean;
+  // An assign one: who it's assigned to.
+  assignToUid: string;
+  // A tag one: the tag it's given.
+  tagValue: string;
+  // "But only if" — every one of them.
+  conditions: AutomationCondition[];
   createdByUid: string;
   updatedAtIso: string;
 };
+
+// What its conditions look at, on a project or lead, as it is now.
+export type AutomationItemFacts = { assignedToUid: string; tags: string[]; source: string; name: string };
 
 // Where something is on a board: its status, and its sub-stage ("" for none).
 export type BoardSpot = { status: string; subStage: string };
@@ -70,14 +125,20 @@ export function normalizeColumnAutomations(raw: unknown): ColumnAutomation[] {
     .map((row) => {
       const trigger = str(row.trigger);
       const unit = str(row.unit);
-      const action = (str(row.action) === "move" ? "move" : "notify") as ColumnAutomationAction;
+      const board = (str(row.board) === "leads" ? "leads" : "projects") as ColumnAutomationBoard;
+      const rawAction = str(row.action);
+      // (Tagging's a project's only.)
+      const action = (
+        rawAction === "move" || rawAction === "assign" || (rawAction === "tag" && board === "projects") ? rawAction : "notify"
+      ) as ColumnAutomationAction;
       return {
         id: str(row.id),
-        board: (str(row.board) === "leads" ? "leads" : "projects") as ColumnAutomationBoard,
+        board,
         status: str(row.status),
         subStage: str(row.subStage),
         action,
-        trigger: (action === "move" ? "enters" : trigger === "leaves" || trigger === "stays" ? trigger : "enters") as ColumnAutomationTrigger,
+        // (Only a notify one has a choice — the rest are on entering.)
+        trigger: (action !== "notify" ? "enters" : trigger === "leaves" || trigger === "stays" ? trigger : "enters") as ColumnAutomationTrigger,
         amount: Math.min(COLUMN_AUTOMATION_MAX_AMOUNT, Math.max(1, Math.round(Number(row.amount) || 1))),
         unit: (COLUMN_AUTOMATION_UNITS.some((option) => option.value === unit) ? unit : "days") as ColumnAutomationUnit,
         notifyUids: Array.isArray(row.notifyUids) ? Array.from(new Set(row.notifyUids.map(str).filter(Boolean))) : [],
@@ -85,17 +146,86 @@ export function normalizeColumnAutomations(raw: unknown): ColumnAutomation[] {
         moveToStatus: str(row.moveToStatus),
         moveToSubStage: str(row.moveToSubStage),
         moveAfter: row.moveAfter === true,
+        moveToBoard: (board === "leads" && str(row.moveToBoard) === "projects" ? "projects" : board) as ColumnAutomationBoard,
+        notifyAssignee: row.notifyAssignee === true,
+        assignToUid: str(row.assignToUid),
+        tagValue: str(row.tagValue).slice(0, 60),
+        conditions: normalizeAutomationConditions(row.conditions, board),
         createdByUid: str(row.createdByUid),
         updatedAtIso: str(row.updatedAtIso),
       };
     })
-    // (A move needs somewhere to go — not the column it's on.)
+    // (A move needs somewhere to go — not the column it's on; an assign, someone; a tag, its tag.)
     .filter(
       (row) =>
         row.id &&
         row.status &&
-        (row.action !== "move" || (row.moveToStatus && !(same(row.moveToStatus, row.status) && same(row.moveToSubStage, row.subStage)))),
+        (row.action !== "move" ||
+          (row.moveToStatus && !(row.moveToBoard === row.board && same(row.moveToStatus, row.status) && same(row.moveToSubStage, row.subStage)))) &&
+        (row.action !== "assign" || row.assignToUid) &&
+        (row.action !== "tag" || row.tagValue),
     );
+}
+
+function normalizeAutomationConditions(raw: unknown, board: ColumnAutomationBoard): AutomationCondition[] {
+  if (!Array.isArray(raw)) return [];
+  const fields = conditionFieldsFor(board);
+  return raw
+    .filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === "object")
+    .map((row) => {
+      const field = str(row.field) as AutomationConditionField;
+      const ops = fields.includes(field) ? CONDITION_FIELD_OPS[field] : [];
+      const op = str(row.op) as AutomationConditionOp;
+      return { id: str(row.id) || newColumnAutomationId(), field, op: ops.includes(op) ? op : ops[0], value: str(row.value).slice(0, 120) };
+    })
+    .filter((row) => fields.includes(row.field) && row.op && row.value)
+    .slice(0, 8);
+}
+
+// Whether everything its conditions ask holds for this project or lead — `from`: the column it came from (none: it's
+// new, or it's not a move that's asking).
+export function automationConditionsMet(
+  automation: Pick<ColumnAutomation, "conditions">,
+  facts: AutomationItemFacts,
+  from: BoardSpot | null,
+): boolean {
+  return automation.conditions.every((condition) => {
+    const negate = condition.op === "isNot" || condition.op === "hasNot" || condition.op === "notContains";
+    let holds: boolean;
+    if (condition.field === "assignee") {
+      const uid = str(facts.assignedToUid);
+      holds = condition.value === CONDITION_ANYONE ? Boolean(uid) : condition.value === CONDITION_NOBODY ? !uid : uid === condition.value;
+    } else if (condition.field === "from") {
+      const [status = "", subStage = ""] = condition.value.split(COLUMN_VALUE_SEP);
+      // A status's own column takes in its sub-stages (as a column's automations do).
+      holds = Boolean(from) && same(from!.status, status) && (!subStage || same(from!.subStage, subStage));
+    } else if (condition.field === "tag") {
+      holds = facts.tags.some((tag) => same(tag, condition.value));
+    } else if (condition.field === "source") {
+      const source = str(facts.source).toLowerCase();
+      // Zapier's is whatever isn't one of the others (as the "New Lead" notification reads it).
+      holds = condition.value === "zapier" ? !["web-form", "email", "manual"].includes(source) : source === condition.value;
+    } else {
+      holds = str(facts.name).toLowerCase().includes(condition.value.toLowerCase());
+    }
+    return negate ? !holds : holds;
+  });
+}
+
+// A project's or lead's facts for its automations' conditions (its stored fields).
+export function automationItemFacts(data: Record<string, unknown>, name: string): AutomationItemFacts {
+  return {
+    assignedToUid: str(data.assignedToUid),
+    tags: Array.isArray(data.tags) ? data.tags.map(str).filter(Boolean) : [],
+    source: str(data.source),
+    name,
+  };
+}
+
+// Whether any of these automations has a condition, or needs to know who something's assigned to — so its facts are
+// worth reading.
+export function automationsNeedFacts(automations: ColumnAutomation[]): boolean {
+  return automations.some((automation) => automation.conditions.length > 0 || automation.notifyAssignee);
 }
 
 // A column's own automations (its status's column, or exactly that sub-column).
@@ -129,28 +259,34 @@ export function automationsSetOffByMove(
   return result;
 }
 
-// Whether a notify one has anyone to tell (a person, or a role).
-export function hasColumnAutomationRecipients(automation: Pick<ColumnAutomation, "notifyUids" | "notifyRoleIds">): boolean {
-  return automation.notifyUids.length > 0 || automation.notifyRoleIds.length > 0;
+// Whether a notify one has anyone to tell (a person, a role, or the person it's assigned to).
+export function hasColumnAutomationRecipients(
+  automation: Pick<ColumnAutomation, "notifyUids" | "notifyRoleIds"> & { notifyAssignee?: boolean },
+): boolean {
+  return automation.notifyUids.length > 0 || automation.notifyRoleIds.length > 0 || automation.notifyAssignee === true;
 }
 
-// Everyone a notify one tells: its people, and everyone whose role (their role id) is one of its roles — as the company
-// is now (`members`: each person's user id and role id).
+// Everyone a notify one tells: its people, everyone whose role (their role id) is one of its roles — as the company is
+// now (`members`: each person's user id and role id) — and the person it's assigned to (`assigneeUid`), if it says to.
 export function columnAutomationRecipients(
-  automation: Pick<ColumnAutomation, "notifyUids" | "notifyRoleIds">,
+  automation: Pick<ColumnAutomation, "notifyUids" | "notifyRoleIds"> & { notifyAssignee?: boolean },
   members: Array<{ uid: string; roleId?: string }>,
+  assigneeUid = "",
 ): string[] {
   const roles = new Set(automation.notifyRoleIds.map(automationRoleKey));
   const fromRoles = roles.size ? members.filter((member) => roles.has(automationRoleKey(member.roleId))).map((member) => member.uid) : [];
-  return Array.from(new Set([...automation.notifyUids, ...fromRoles].filter(Boolean)));
+  const assignee = automation.notifyAssignee ? [str(assigneeUid)] : [];
+  return Array.from(new Set([...automation.notifyUids, ...fromRoles, ...assignee].filter(Boolean)));
 }
 
-// The move a move sets off: the first move automation of a column it went into (one per column), or none.
+// The move a move sets off: the first move automation of a column it went into whose conditions hold (`facts`; none
+// given: conditions aren't looked at), or none.
 export function columnMoveSetOffByMove(
   automations: ColumnAutomation[],
   board: ColumnAutomationBoard,
   from: BoardSpot | null,
   to: BoardSpot,
+  facts?: AutomationItemFacts,
 ): ColumnAutomation | null {
   return (
     automations.find(
@@ -158,8 +294,27 @@ export function columnMoveSetOffByMove(
         automation.board === board &&
         automation.action === "move" &&
         isInAutomationColumn(automation, to) &&
-        !(from && isInAutomationColumn(automation, from)),
+        !(from && isInAutomationColumn(automation, from)) &&
+        (!facts || automationConditionsMet(automation, facts, from)),
     ) ?? null
+  );
+}
+
+// The assign and tag automations a move sets off: those of the columns it went into, whose conditions hold.
+export function columnActionsSetOffByMove(
+  automations: ColumnAutomation[],
+  board: ColumnAutomationBoard,
+  from: BoardSpot | null,
+  to: BoardSpot,
+  facts: AutomationItemFacts,
+): ColumnAutomation[] {
+  return automations.filter(
+    (automation) =>
+      automation.board === board &&
+      (automation.action === "assign" || automation.action === "tag") &&
+      isInAutomationColumn(automation, to) &&
+      !(from && isInAutomationColumn(automation, from)) &&
+      automationConditionsMet(automation, facts, from),
   );
 }
 
@@ -184,16 +339,96 @@ export const SCHEDULED_COLUMN_MOVE_DUE_FIELD = "scheduledColumnMoveDueAtIso";
 // things to each other can't go round for ever.
 export const COLUMN_MOVE_CHAIN_LIMIT = 4;
 
-export function scheduledColumnMoveFor(automation: ColumnAutomation, from: BoardSpot, nowMs: number): ScheduledColumnMove {
+// `startedMs`: when its time in the column began (a move that waited on its conditions: when it entered) — now if not given.
+export function scheduledColumnMoveFor(automation: ColumnAutomation, from: BoardSpot, nowMs: number, startedMs = nowMs): ScheduledColumnMove {
   return {
     automationId: automation.id,
     fromStatus: from.status,
     fromSubStage: from.subStage,
     toStatus: automation.moveToStatus,
     toSubStage: automation.moveToSubStage,
-    dueAtIso: new Date(nowMs + columnAutomationStayMs(automation)).toISOString(),
+    dueAtIso: new Date(startedMs + columnAutomationStayMs(automation)).toISOString(),
     setAtIso: new Date(nowMs).toISOString(),
   };
+}
+
+// Waiting on its conditions: an automation of the column something's in that it entered while they didn't hold — by the
+// automation's id: when it entered, and from which column (for a "came from" condition). Kept on the project or lead
+// (WAITING_COLUMN_AUTOMATIONS_FIELD — HAS_WAITING_FIELD alongside it, true while there are any, for the scheduled job to
+// find them by), replaced each time it moves.
+export type WaitingColumnAutomation = { atIso: string; fromStatus: string; fromSubStage: string };
+export const WAITING_COLUMN_AUTOMATIONS_FIELD = "columnAutomationsWaiting";
+export const HAS_WAITING_COLUMN_AUTOMATIONS_FIELD = "hasWaitingColumnAutomations";
+
+export function normalizeWaitingColumnAutomations(raw: unknown): Record<string, WaitingColumnAutomation> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const result: Record<string, WaitingColumnAutomation> = {};
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    const row = (value ?? {}) as Record<string, unknown>;
+    if (!str(id) || !str(row.atIso)) continue;
+    result[id] = { atIso: str(row.atIso), fromStatus: str(row.fromStatus), fromSubStage: str(row.fromSubStage) };
+  }
+  return result;
+}
+
+// Every automation a move into `to` sets off — notify ones (on entering), assign, tag and move ones — whatever their
+// conditions: those that didn't hold wait.
+export function columnAutomationsEnteredBy(
+  automations: ColumnAutomation[],
+  board: ColumnAutomationBoard,
+  from: BoardSpot | null,
+  to: BoardSpot,
+): ColumnAutomation[] {
+  return automations.filter(
+    (automation) =>
+      automation.board === board &&
+      (automation.action === "notify" ? automation.trigger === "enters" && hasColumnAutomationRecipients(automation) : true) &&
+      isInAutomationColumn(automation, to) &&
+      !(from && isInAutomationColumn(automation, from)),
+  );
+}
+
+// What waits after a move: those of `entered` whose conditions don't hold (with the facts as they ended up).
+export function waitingAfterMove(
+  entered: ColumnAutomation[],
+  facts: AutomationItemFacts,
+  from: BoardSpot | null,
+  atIso: string,
+): Record<string, WaitingColumnAutomation> {
+  const waiting: Record<string, WaitingColumnAutomation> = {};
+  for (const automation of entered) {
+    if (automation.conditions.length && !automationConditionsMet(automation, facts, from)) {
+      waiting[automation.id] = { atIso, fromStatus: from?.status ?? "", fromSubStage: from?.subStage ?? "" };
+    }
+  }
+  return waiting;
+}
+
+// Of what's waiting, those that can be done now (still in their column, their conditions holding — in the order assign
+// and tag, notify, move: as a move does them), and those that still wait. Any whose automation's gone, or whose column
+// it's left, drops out.
+export function readyWaitingColumnAutomations(
+  automations: ColumnAutomation[],
+  board: ColumnAutomationBoard,
+  waiting: Record<string, WaitingColumnAutomation>,
+  here: BoardSpot,
+  facts: AutomationItemFacts,
+): {
+  ready: Array<{ automation: ColumnAutomation; entry: WaitingColumnAutomation; from: BoardSpot | null }>;
+  still: Record<string, WaitingColumnAutomation>;
+} {
+  const ready: Array<{ automation: ColumnAutomation; entry: WaitingColumnAutomation; from: BoardSpot | null }> = [];
+  const still: Record<string, WaitingColumnAutomation> = {};
+  for (const [id, entry] of Object.entries(waiting)) {
+    const automation = automations.find((row) => row.id === id && row.board === board);
+    if (!automation || !isInAutomationColumn(automation, here)) continue;
+    const from = entry.fromStatus ? { status: entry.fromStatus, subStage: entry.fromSubStage } : null;
+    if (automationConditionsMet(automation, facts, from)) ready.push({ automation, entry, from });
+    else still[id] = entry;
+  }
+  const rank = (action: ColumnAutomationAction) => (action === "assign" || action === "tag" ? 0 : action === "notify" ? 1 : 2);
+  ready.sort((a, b) => rank(a.automation.action) - rank(b.automation.action));
+  return { ready, still };
 }
 
 export function columnAutomationStayMs(automation: Pick<ColumnAutomation, "amount" | "unit">): number {
@@ -231,23 +466,38 @@ export function stayStartedAtIso(
 }
 
 // The notification's words: "Moved into Production" — "Smith Kitchen" moved into Production.
-// Whoever moved something, told of the move automation their move set off: that it's moved on (straight away), or will
-// (on a timer — `after`: how long).
+// Whoever moved something, told of the move automation their move set off: that it's moved on (straight away — just
+// where it is now, in a notify rule's own words: "Moved into Site Measure"), or will (on a timer — `after`: how long).
+// A lead moved on to the Dashboard (`converts`) becomes a project as it goes.
 export function columnAutomationMoveNoticeText(input: {
   board: ColumnAutomationBoard;
   itemName: string;
   column: string;
   movedTo: string;
   after?: string;
+  converts?: boolean;
 }): { title: string; message: string } {
   const thing = input.board === "leads" ? `The lead "${input.itemName}"` : `"${input.itemName}"`;
   if (input.after) {
     return {
       title: `Moving on to ${input.movedTo}`,
-      message: `${thing} will move on from ${input.column} to ${input.movedTo} in ${input.after} — ${input.column}'s automation.`,
+      message: `${thing} will move on from ${input.column} to ${input.movedTo}${input.converts ? " as a project" : ""} in ${input.after} — ${input.column}'s automation.`,
     };
   }
-  return { title: `Moved on to ${input.movedTo}`, message: `${thing} was moved on from ${input.column} to ${input.movedTo} by ${input.column}'s automation.` };
+  return {
+    title: `Moved into ${input.movedTo}`,
+    message: input.converts ? `${thing} moved into ${input.movedTo} and became a project.` : `${thing} moved into ${input.movedTo}.`,
+  };
+}
+
+// Someone an assign automation assigned something to, told.
+export function columnAutomationAssignedText(input: { board: ColumnAutomationBoard; itemName: string; column: string }): {
+  title: string;
+  message: string;
+} {
+  return input.board === "leads"
+    ? { title: "Added to a lead", message: `The lead "${input.itemName}" was assigned to you — ${input.column}'s automation.` }
+    : { title: "Assigned to a project", message: `"${input.itemName}" was assigned to you — ${input.column}'s automation.` };
 }
 
 export function columnAutomationNotificationText(input: {

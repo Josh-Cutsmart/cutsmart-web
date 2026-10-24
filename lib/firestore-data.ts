@@ -27,7 +27,19 @@ import { auth, db, hasFirebaseConfig, storage } from "@/lib/firebase";
 import { deleteObject, listAll, ref as storageRef, type StorageReference } from "firebase/storage";
 import { isPreviewMode } from "@/lib/preview-mode";
 import {
+  automationConditionsMet,
+  automationItemFacts,
   automationsSetOffByMove,
+  columnActionsSetOffByMove,
+  columnAutomationAssignedText,
+  columnAutomationsEnteredBy,
+  columnAutomationStayMs,
+  HAS_WAITING_COLUMN_AUTOMATIONS_FIELD,
+  normalizeWaitingColumnAutomations,
+  readyWaitingColumnAutomations,
+  WAITING_COLUMN_AUTOMATIONS_FIELD,
+  waitingAfterMove,
+  type AutomationItemFacts,
   columnAutomationColumnLabel,
   columnAutomationDurationLabel,
   columnAutomationMoveNoticeText,
@@ -1902,6 +1914,8 @@ export async function updateProjectTags(
       }
       if (updated) {
         await patchCompanyTagUsageByDelta(project.companyId, previousCleaned, cleanedTags);
+        // Its tags changed: any of its column's automations waiting on their conditions looked at again.
+        void recheckProjectColumnAutomations(project.companyId, project.id);
       }
     } catch {
       // keep trying top-level mirror/fallback
@@ -2362,6 +2376,10 @@ export async function updateProjectPatch(
         from: { status: String(project.statusLabel || "").trim(), subStage: String(project.dashboardSubStageId ?? "").trim() },
         to: { status: String(project.statusLabel || "").trim(), subStage: String(patch.dashboardSubStageId ?? "").trim() },
       });
+    } else if (["assignedToUid", "tags", "name"].some((key) => Object.prototype.hasOwnProperty.call(patch, key))) {
+      // Who it's assigned to, its tags or its name changed: any of its column's automations waiting on their conditions
+      // looked at again.
+      void recheckProjectColumnAutomations(String(project.companyId || "").trim(), project.id);
     }
     return true;
   } catch (error) {
@@ -2506,8 +2524,10 @@ export const PROJECT_COLUMN_MOVED_EVENT = "cutsmart:project-column-moved";
 export type ProjectColumnMovedDetail = { projectId: string; status: string; subStage: string };
 
 // A project moved on the Dashboard (or created, or a small job turned into one — `from` null): its columns' automations
-// (lib/column-automations.ts). The people those of the columns it left and went into are set to tell, told (their
-// Notifications, and phone/desktop) — and whoever moved it too (once), so they know what their move set off. And the
+// (lib/column-automations.ts), each only if its conditions hold. First the assign and tag ones of the column it went
+// into (assigned to their person — told — and given their tag), then the people those of the columns it left and went
+// into are set to tell (the person it's assigned to, as it is now, among them), told (their Notifications, and
+// phone/desktop) — and whoever moved it too (once), so they know what their move set off. And the
 // column it went into, if it moves things on: straight away (moved again, as far as COLUMN_MOVE_CHAIN_LIMIT — `depth`: how
 // many moves on this is), or its timer started (kept on the project — the scheduled job moves it when it's due, if it's
 // still there: lib/column-automations-server.ts) — whoever moved it told that it has, or will. A lead's are run by the
@@ -2532,7 +2552,16 @@ export async function notifyColumnAutomationMove(input: {
     const automations = normalizeColumnAutomations(companyDoc?.columnAutomations);
     const actorUid = String(auth?.currentUser?.uid || "").trim();
     let sent = 0;
-    const setOff = automationsSetOffByMove(automations, input.board, input.from, input.to);
+    // What its automations' conditions look at — who it's assigned to, its tags, its name — as it is now.
+    const projectRef = await resolveProjectDocRef({ id: input.item.id, companyId: cid } as Project);
+    const stored = projectRef ? (((await getDoc(projectRef).catch(() => null))?.data() ?? {}) as Record<string, unknown>) : {};
+    const startFacts = automationItemFacts(stored, input.item.name);
+    const facts = projectRef
+      ? await doProjectColumnActions(cid, projectRef, input.item, columnActionsSetOffByMove(automations, input.board, input.from, input.to, startFacts), startFacts, actorUid)
+      : startFacts;
+    const setOff = automationsSetOffByMove(automations, input.board, input.from, input.to).filter(({ automation }) =>
+      automationConditionsMet(automation, facts, input.from),
+    );
     // Who's in each role now (only read when one of them tells a role).
     const members = setOff.some(({ automation }) => automation.notifyRoleIds.length)
       ? (await fetchCompanyMembers(cid).catch(() => [] as CompanyMemberOption[])).map((member) => ({ uid: member.uid, roleId: member.roleId || member.role }))
@@ -2545,14 +2574,23 @@ export async function notifyColumnAutomationMove(input: {
         column: columnAutomationColumnLabel(automation),
         movedTo: columnAutomationColumnLabel(input.to),
       });
-      // (Whoever moved it as well — once, if they're one of its people.)
-      const recipients = new Set(columnAutomationRecipients(automation, members));
-      if (actorUid) recipients.add(actorUid);
+      // Whoever moved it as well — once, if they're one of its people. Not when this move was an automation's, set off
+      // by theirs (depth): its own notice tells them (the "Moved into …" below, from the move before), where it went —
+      // not twice.
+      const recipients = new Set(columnAutomationRecipients(automation, members, facts.assignedToUid));
+      if (actorUid && (input.depth ?? 0) > 0) recipients.delete(actorUid);
+      else if (actorUid) recipients.add(actorUid);
       for (const uid of recipients) {
         if (await addUserNotification(uid, { ...text, type: COLUMN_AUTOMATION_NOTIFICATION_TYPE, projectId: input.item.id, companyId: cid })) sent += 1;
       }
     }
-    const moveRule = columnMoveSetOffByMove(automations, input.board, input.from, input.to);
+    // What waits on its conditions in this column (those that didn't hold — recheckProjectColumnAutomations looks again
+    // as they change) — instead of what waited in the one it left.
+    const waiting = waitingAfterMove(columnAutomationsEnteredBy(automations, input.board, input.from, input.to), facts, input.from, new Date().toISOString());
+    if (projectRef && (Object.keys(waiting).length || stored[HAS_WAITING_COLUMN_AUTOMATIONS_FIELD] === true)) {
+      await updateDoc(projectRef, { [WAITING_COLUMN_AUTOMATIONS_FIELD]: waiting, [HAS_WAITING_COLUMN_AUTOMATIONS_FIELD]: Object.keys(waiting).length > 0 }).catch(() => undefined);
+    }
+    const moveRule = columnMoveSetOffByMove(automations, input.board, input.from, input.to, facts);
     if (moveRule) {
       const outcome = await runColumnMoveAutomation(cid, input.item.id, moveRule, input.to, input.depth ?? 0);
       // Whoever moved it: told it's moved on, or will.
@@ -2571,6 +2609,116 @@ export async function notifyColumnAutomationMove(input: {
   } catch (error) {
     console.warn("[notifyColumnAutomationMove] failed:", error);
     return 0;
+  }
+}
+
+// These assign and tag automations, on a project: assigned to their person (told, unless it's whoever set it off) and
+// given their tag. Its facts as they are after.
+async function doProjectColumnActions(
+  companyId: string,
+  projectRef: DocumentReference,
+  item: { id: string; name: string },
+  actions: ColumnAutomation[],
+  start: AutomationItemFacts,
+  actorUid: string,
+): Promise<AutomationItemFacts> {
+  const facts = { ...start, tags: [...start.tags] };
+  for (const automation of actions) {
+    if (automation.action === "assign" && automation.assignToUid !== facts.assignedToUid) {
+      const member = (await fetchCompanyMembers(companyId).catch(() => [] as CompanyMemberOption[])).find((row) => row.uid === automation.assignToUid);
+      if (!member) continue;
+      const name = String(member.membershipDisplayName || member.displayName || member.email || "A teammate").trim();
+      await updateDoc(projectRef, { assignedToUid: member.uid, assignedToName: name, assignedTo: name, updatedAtIso: new Date().toISOString() });
+      facts.assignedToUid = member.uid;
+      if (member.uid !== actorUid) {
+        const assigned = columnAutomationAssignedText({ board: "projects", itemName: item.name || "A project", column: columnAutomationColumnLabel(automation) });
+        await addUserNotification(member.uid, { ...assigned, type: "project_assigned", projectId: item.id, companyId });
+      }
+    } else if (automation.action === "tag" && !facts.tags.some((tag) => tag.toLowerCase() === automation.tagValue.toLowerCase())) {
+      await updateDoc(projectRef, { tags: arrayUnion(automation.tagValue), updatedAtIso: new Date().toISOString() });
+      facts.tags.push(automation.tagValue);
+      void resyncCompanyProjectTagUsage(companyId);
+    }
+  }
+  return facts;
+}
+
+// A project's column automations waiting on their conditions (they didn't hold as it entered its column — lib/
+// column-automations.ts), looked at again now that what they look at has changed (who it's assigned to, its tags, its
+// name — updateProjectPatch, updateProjectTags): any that hold now done, as they'd have been as it entered — its assign
+// and tag ones, its notify ones (their people told), then a move (straight away; a timed one once its time from entering
+// is up — now, if it already is), whoever changed it told of that. Taken off its waiting list first, so the scheduled job
+// (which looks too, for changes made elsewhere) doesn't do them again.
+export async function recheckProjectColumnAutomations(companyId: string, projectId: string): Promise<void> {
+  const cid = String(companyId || "").trim();
+  if (!db || !cid || !projectId) return;
+  try {
+    const projectRef = await resolveProjectDocRef({ id: projectId, companyId: cid } as Project);
+    if (!projectRef) return;
+    const snap = await getDoc(projectRef);
+    const data = (snap.exists() ? snap.data() : {}) as Record<string, unknown>;
+    if (data[HAS_WAITING_COLUMN_AUTOMATIONS_FIELD] !== true) return;
+    const waiting = normalizeWaitingColumnAutomations(data[WAITING_COLUMN_AUTOMATIONS_FIELD]);
+    const automations = normalizeColumnAutomations((await fetchCompanyDoc(cid))?.columnAutomations);
+    const item = { id: projectId, name: String(data.name || "").trim() || "A project" };
+    const here = { status: String(data.status || "").trim(), subStage: String(data.dashboardSubStageId || "").trim() };
+    const offBoard = data.isDeleted === true || data.isArchived === true || data.isSmallJob === true;
+    const { ready, still } = offBoard
+      ? { ready: [], still: {} }
+      : readyWaitingColumnAutomations(automations, "projects", waiting, here, automationItemFacts(data, item.name));
+    if (Object.keys(still).length !== Object.keys(waiting).length) {
+      await updateDoc(projectRef, { [WAITING_COLUMN_AUTOMATIONS_FIELD]: still, [HAS_WAITING_COLUMN_AUTOMATIONS_FIELD]: Object.keys(still).length > 0 });
+    }
+    if (!ready.length) return;
+    const actorUid = String(auth?.currentUser?.uid || "").trim();
+    const facts = await doProjectColumnActions(
+      cid,
+      projectRef,
+      item,
+      ready.filter(({ automation }) => automation.action === "assign" || automation.action === "tag").map(({ automation }) => automation),
+      automationItemFacts(data, item.name),
+      actorUid,
+    );
+    const notifies = ready.filter(({ automation }) => automation.action === "notify");
+    const members = notifies.some(({ automation }) => automation.notifyRoleIds.length)
+      ? (await fetchCompanyMembers(cid).catch(() => [] as CompanyMemberOption[])).map((member) => ({ uid: member.uid, roleId: member.roleId || member.role }))
+      : [];
+    for (const { automation } of notifies) {
+      const text = columnAutomationNotificationText({
+        board: "projects",
+        event: "enters",
+        itemName: item.name,
+        column: columnAutomationColumnLabel(automation),
+        movedTo: columnAutomationColumnLabel(here),
+      });
+      for (const uid of columnAutomationRecipients(automation, members, facts.assignedToUid)) {
+        await addUserNotification(uid, { ...text, type: COLUMN_AUTOMATION_NOTIFICATION_TYPE, projectId, companyId: cid });
+      }
+    }
+    const move = ready.find(({ automation }) => automation.action === "move");
+    if (!move) return;
+    const rule = move.automation;
+    const startedMs = Date.parse(move.entry.atIso) || Date.now();
+    const waitsStill = rule.moveAfter && startedMs + columnAutomationStayMs(rule) > Date.now();
+    if (waitsStill) {
+      // Its time in the column's not up yet: its timer, from when it entered.
+      const scheduled = scheduledColumnMoveFor(rule, here, Date.now(), startedMs);
+      await updateDoc(projectRef, { [SCHEDULED_COLUMN_MOVE_FIELD]: scheduled, [SCHEDULED_COLUMN_MOVE_DUE_FIELD]: scheduled.dueAtIso });
+    } else if ((await runColumnMoveAutomation(cid, projectId, { ...rule, moveAfter: false }, here, 0)) !== "moved") {
+      return;
+    }
+    if (actorUid) {
+      const notice = columnAutomationMoveNoticeText({
+        board: "projects",
+        itemName: item.name,
+        column: columnAutomationColumnLabel(here),
+        movedTo: columnAutomationColumnLabel(columnMoveTarget(rule)),
+        after: waitsStill ? columnAutomationDurationLabel(rule) : "",
+      });
+      await addUserNotification(actorUid, { ...notice, type: COLUMN_AUTOMATION_NOTIFICATION_TYPE, projectId, companyId: cid });
+    }
+  } catch (error) {
+    console.warn("[recheckProjectColumnAutomations] failed:", error);
   }
 }
 
@@ -5506,6 +5654,21 @@ export async function fetchCompanyLeadDirect(companyId: string, leadId: string):
     const snap = await getDoc(doc(db, "companies", cid, "leads", id));
     if (!snap.exists()) return null;
     return buildLeadRow(cid, snap.id, (snap.data() ?? {}) as Record<string, unknown>, "detail");
+  } catch {
+    return undefined;
+  }
+}
+
+// One lead, read straight from Firestore whatever page this is (archived ones too) — undefined if this browser can't read
+// it (the leads rule); null if it's gone. The Preview's (its leads are this browser's own); the app otherwise asks the
+// server first (components/lead-details-modal.tsx).
+export async function fetchCompanyLeadById(companyId: string, leadId: string): Promise<CompanyLeadRow | null | undefined> {
+  const cid = String(companyId || "").trim();
+  const id = String(leadId || "").trim();
+  if (!db || !cid || !id) return undefined;
+  try {
+    const snap = await getDoc(doc(db, "companies", cid, "leads", id));
+    return snap.exists() ? buildLeadRow(cid, snap.id, (snap.data() ?? {}) as Record<string, unknown>, "detail") : null;
   } catch {
     return undefined;
   }

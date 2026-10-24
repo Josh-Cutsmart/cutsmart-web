@@ -625,6 +625,9 @@ export function AppShell({
   // Lead custom fields not already mapped into one of the fixed fields above — carried through so
   // they're still visible on the project after conversion (see lib/new-project-bridge.ts).
   const [prefilledLeadCustomFields, setPrefilledLeadCustomFields] = useState<LeadCustomFieldSnapshot[]>([]);
+  // Made from a lead: its notes, for the Notes box's "Import from Notes" (a bullet each) — and whether they've been added.
+  const [prefilledLeadNotes, setPrefilledLeadNotes] = useState<string[]>([]);
+  const [leadNotesImported, setLeadNotesImported] = useState(false);
   const [previewPhotoId, setPreviewPhotoId] = useState("");
   const [previewAnim, setPreviewAnim] = useState<PreviewAnimState | null>(null);
   const [previewBackdropOpacity, setPreviewBackdropOpacity] = useState(0);
@@ -1822,6 +1825,8 @@ export function AppShell({
       setProjectAddress(String(detail.projectAddress || "").trim());
       setProjectNotes(String(detail.projectNotes || "").trim());
       setSourceLeadId(String(detail.sourceLeadId || "").trim());
+      setPrefilledLeadNotes(Array.isArray(detail.leadNotes) ? detail.leadNotes.map((text) => String(text || "").trim()).filter(Boolean) : []);
+      setLeadNotesImported(false);
       setSourceLeadCompanyId(String(detail.sourceLeadCompanyId || "").trim());
       setPrefilledLeadCustomFields(
         Array.isArray(detail.leadCustomFields)
@@ -2757,6 +2762,8 @@ export function AppShell({
     setSourceLeadId("");
     setSourceLeadCompanyId("");
     setPrefilledLeadCustomFields([]);
+    setPrefilledLeadNotes([]);
+    setLeadNotesImported(false);
     setPreviewPhotoId("");
     setPreviewAnim(null);
     setPreviewBackdropOpacity(0);
@@ -3654,7 +3661,8 @@ export function AppShell({
         hoverBg: "#F7F8FC",
       };
   // The phone's menu is see-through glass over the page, where the muted grey was hard to read: its pages and icons
-  // are in the main text colour, its group names (and the line on from each) a darker grey than the muted one.
+  // are in the main text colour, its group names (and the line on from each, and the one over the user's bar) a darker
+  // grey than the muted one.
   const mobileNavHeadingColor = `color-mix(in srgb, ${shellPalette.text} 65%, ${shellPalette.textMuted})`;
 
   // Fixed at the CLOSED (rest) height always, regardless of how tall the settings panel grows
@@ -3852,7 +3860,7 @@ export function AppShell({
               <div
                 className="shrink-0 overflow-hidden border-t border-[var(--panel-border)]"
                 style={{
-                  borderColor: shellPalette.border,
+                  borderColor: mobileNavHeadingColor,
                   height: (isUserSettingsPanelOpen ? mobilePanelContentHeight : mobileRestContentHeight) ?? undefined,
                   transition: "height 320ms cubic-bezier(0.22, 1, 0.36, 1)",
                 }}
@@ -5066,8 +5074,39 @@ export function AppShell({
                     <div className={newProjectCardHeaderClass}>
                       <FileText size={14} className="shrink-0 text-[var(--text-muted)]" />
                       <span className={newProjectCardTitleClass}>Notes</span>
+                      {/* Made from a lead: its notes added to these, a bullet each — greyed out when it has none (not while
+                          they're being written — the editor's toolbar has the header then). */}
+                      {sourceLeadId && !isNewProjectNotesEditing ? (
+                        <button
+                          type="button"
+                          disabled={leadNotesImported || creatingProject || prefilledLeadNotes.length === 0}
+                          onClick={() => {
+                            const list = `<ul>${prefilledLeadNotes
+                              .map((text) => `<li>${escapeHtml(text).replace(/\n/g, "<br />")}</li>`)
+                              .join("")}</ul>`;
+                            setProjectNotes((prev) => (notesHtmlIsEmpty(prev) ? list : `${notesToDisplayHtml(prev)}${list}`));
+                            setLeadNotesImported(true);
+                          }}
+                          // The brand blue's glass shine (lib/glass-shine.ts).
+                          className="glass-shine ml-auto inline-flex h-7 shrink-0 items-center gap-1 rounded-full px-2.5 text-[11.5px] font-medium text-white transition hover:brightness-105 disabled:cursor-default disabled:opacity-60 disabled:hover:brightness-100"
+                          style={glassShineStyle("var(--brand)")}
+                          title={
+                            leadNotesImported
+                              ? "The lead's notes are in"
+                              : prefilledLeadNotes.length
+                                ? `Add the lead's ${prefilledLeadNotes.length} ${prefilledLeadNotes.length === 1 ? "note" : "notes"}, a bullet each`
+                                : "The lead has no notes"
+                          }
+                        >
+                          {leadNotesImported ? <Check size={12} strokeWidth={2.5} /> : <Download size={12} strokeWidth={2.5} />}
+                          {leadNotesImported ? "Imported" : prefilledLeadNotes.length ? "Import from Notes" : "No notes to import"}
+                        </button>
+                      ) : null}
                       <div
-                        className="ml-auto flex min-h-[30px] min-w-0 items-center justify-end"
+                        className={cn(
+                          "new-project-notes-toolbar flex min-h-[30px] min-w-0 items-center justify-end",
+                          sourceLeadId && !isNewProjectNotesEditing ? "" : "ml-auto",
+                        )}
                         ref={setNewProjectNotesToolbarHost}
                         onMouseDownCapture={(e) => e.preventDefault()}
                       />

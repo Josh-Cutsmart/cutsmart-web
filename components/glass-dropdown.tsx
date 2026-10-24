@@ -288,6 +288,10 @@ export type GlassDropdownOption = {
   label: string;
   // Optional colour dot shown to the left of the label (e.g. a contact category's colour).
   color?: string;
+  // Options in groups: each group's name heads its options in the menu ("Leads ———"), where the group changes.
+  group?: string;
+  // What the trigger shows once it's chosen, instead of its label — e.g. its group too ("Dashboard › Design").
+  triggerLabel?: string;
 };
 
 type GlassDropdownProps = {
@@ -332,8 +336,10 @@ export function GlassDropdown({
   triggerContent,
   triggerTitle,
 }: GlassDropdownProps) {
+  // (A group's heading where the group changes — a row of the menu too.)
+  const headingCount = options.filter((option, index) => option.group && option.group !== options[index - 1]?.group).length;
   const { position, isOpen, triggerRef, menuRef, toggle, close } = useAnchoredGlassMenu({
-    rowCount: options.length,
+    rowCount: options.length + headingCount,
     minWidth: menuMinWidth,
     align: menuAlign,
     matchTriggerWidth: true,
@@ -350,7 +356,7 @@ export function GlassDropdown({
         onClick={toggle}
         disabled={disabled}
         // The accessible name keeps the field's label and the current value (a bare aria-label would hide it).
-        aria-label={ariaLabel ? `${ariaLabel}: ${selected?.label ?? placeholder ?? ""}` : undefined}
+        aria-label={ariaLabel ? `${ariaLabel}: ${selected?.triggerLabel ?? selected?.label ?? placeholder ?? ""}` : undefined}
         aria-haspopup="listbox"
         aria-expanded={isOpen}
         className={`inline-flex items-center gap-2 text-left disabled:opacity-60 ${triggerClassName ?? ""}`}
@@ -365,7 +371,7 @@ export function GlassDropdown({
         ) : null}
         {triggerContent !== undefined ? null : (
           <span className="min-w-0 flex-1 truncate" style={selected ? undefined : { color: "var(--text-muted)" }}>
-            {selected?.label ?? placeholder ?? ""}
+            {selected?.triggerLabel ?? selected?.label ?? placeholder ?? ""}
           </span>
         )}
         {hideChevron ? null : (
@@ -377,9 +383,21 @@ export function GlassDropdown({
       </button>
       {position ? (
         <GlassMenuPortal position={position} menuRef={menuRef} role="listbox" ariaLabel={ariaLabel}>
-          {options.map((option) => {
+          {options.map((option, index) => {
             const isSelected = option.value === value;
-            return (
+            const heading =
+              option.group && option.group !== options[index - 1]?.group ? (
+                <div
+                  key={`__group_${option.group}`}
+                  role="presentation"
+                  className="flex items-center gap-2 px-2.5 text-[11px] font-bold uppercase tracking-[0.8px]"
+                  style={{ height: position.rowHeight, color: "var(--text-muted)" }}
+                >
+                  <span className="shrink-0">{option.group}</span>
+                  <span aria-hidden="true" className="h-px min-w-0 flex-1" style={{ backgroundColor: "var(--glass-border)" }} />
+                </div>
+              ) : null;
+            const row = (
               <button
                 key={option.value || "__none"}
                 type="button"
@@ -407,6 +425,7 @@ export function GlassDropdown({
                 <span className="min-w-0 flex-1 truncate">{option.label}</span>
               </button>
             );
+            return heading ? [heading, row] : row;
           })}
         </GlassMenuPortal>
       ) : null}
