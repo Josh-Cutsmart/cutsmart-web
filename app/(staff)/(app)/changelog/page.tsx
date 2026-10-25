@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { GlassModalHeader } from "@/components/glass-modal-header";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Check, ChevronDown, ChevronLeft, Copy, Pencil, Search, Sparkles, X } from "lucide-react";
+import { Check, ChevronDown, ChevronLeft, Copy, Pencil, Search, Sparkles } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import {
   fetchAppChangelogHistory,
@@ -1547,26 +1548,7 @@ export default function ChangelogPage() {
                 className="glass-modal-backdrop absolute inset-0"
               />
               <div ref={mobileVersionPopupPanelRef} className="glass-modal-panel relative flex w-full max-w-[520px] flex-col overflow-hidden" style={{ maxHeight: "80svh" }}>
-                <div className="glass-modal-header flex h-[50px] shrink-0 items-center justify-between px-4">
-                  <p className="text-[15px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                    {openMobileVersionEntry.version || "Unknown Version"}
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => setIsMobileVersionPopupOpen(false)}
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border hover:brightness-95"
-                    style={{
-                      borderColor: "var(--danger-glass-border)",
-                      backgroundColor: "var(--danger-glass-bg)",
-                      backdropFilter: "blur(10px) saturate(180%)",
-                      WebkitBackdropFilter: "blur(10px) saturate(180%)",
-                      color: "#FFFFFF",
-                    }}
-                    title="Close"
-                  >
-                    <X size={16} strokeWidth={2.4} />
-                  </button>
-                </div>
+                <GlassModalHeader title={openMobileVersionEntry.version || "Unknown Version"} onClose={() => setIsMobileVersionPopupOpen(false)} />
                 <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
                   <div
                     className="notes-rich text-[13px] leading-5"
@@ -1594,26 +1576,7 @@ export default function ChangelogPage() {
                 className="glass-modal-panel relative flex w-[94vw] max-w-[1200px] flex-col overflow-hidden"
                 style={{ height: "92svh" }}
               >
-                <div className="glass-modal-header flex h-[50px] shrink-0 items-center justify-between px-4">
-                  <p className="text-[15px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                    Edit {editingVersionEntry.version || "Unknown Version"}
-                  </p>
-                  <button
-                    type="button"
-                    onClick={closeEditVersionModal}
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border hover:brightness-95"
-                    style={{
-                      borderColor: "var(--danger-glass-border)",
-                      backgroundColor: "var(--danger-glass-bg)",
-                      backdropFilter: "blur(10px) saturate(180%)",
-                      WebkitBackdropFilter: "blur(10px) saturate(180%)",
-                      color: "#FFFFFF",
-                    }}
-                    title="Close"
-                  >
-                    <X size={16} strokeWidth={2.4} />
-                  </button>
-                </div>
+                <GlassModalHeader title={<>Edit {editingVersionEntry.version || "Unknown Version"}</>} onClose={closeEditVersionModal} />
                 <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 p-3 lg:grid-cols-[1fr_260px]">
                   <textarea
                     ref={editVersionTextareaRef}
@@ -1693,19 +1656,7 @@ export default function ChangelogPage() {
                 className="glass-modal-backdrop absolute inset-0"
               />
               <div ref={composerPanelRef} className="glass-modal-panel relative w-full max-w-[760px] overflow-hidden">
-                <div className="glass-modal-header flex h-[50px] items-center justify-between px-4">
-                  <p className="text-[15px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                    {composerKind === "issue" ? "Report Issue" : "Suggest Feature"}
-                  </p>
-                  <button
-                    type="button"
-                    onClick={closeComposer}
-                    className="h-8 rounded-[8px] border px-3 text-[12px] font-bold transition hover:brightness-95"
-                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
-                  >
-                    Close
-                  </button>
-                </div>
+                <GlassModalHeader title={composerKind === "issue" ? "Report Issue" : "Suggest Feature"} onClose={closeComposer} />
                 <div className="space-y-4 p-4 sm:p-6">
                   <select
                     value={composerDevice}

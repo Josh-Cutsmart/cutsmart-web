@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { GlassModalHeader } from "@/components/glass-modal-header";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import {
@@ -1886,19 +1887,7 @@ export default function UserSettingsPage() {
             className="glass-modal-backdrop absolute inset-0"
           />
           <div ref={pwaHelpPanelRef} className="glass-modal-panel relative w-full max-w-[420px] overflow-hidden">
-            <div className="glass-modal-header flex h-[50px] items-center justify-between px-4">
-              <p className="text-[15px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                Save as App
-              </p>
-              <button
-                type="button"
-                onClick={() => setIsPwaHelpOpen(false)}
-                className="h-8 rounded-[8px] border px-3 text-[12px] font-bold transition hover:brightness-95"
-                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
-              >
-                Close
-              </button>
-            </div>
+            <GlassModalHeader title="Save as App" onClose={() => setIsPwaHelpOpen(false)} />
             <div className="space-y-4 p-4 sm:p-6">
               {isIosInstallHint ? (
                 <div>

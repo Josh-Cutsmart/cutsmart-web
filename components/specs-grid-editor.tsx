@@ -1,6 +1,7 @@
 "use client";
 
 import { activeDateTime, activeMoney } from "@/lib/company-formats";
+import { GlassModalHeader } from "@/components/glass-modal-header";
 import {
   Fragment,
   useCallback,
@@ -4922,11 +4923,7 @@ export default function SpecsGridEditor({
                 className="glass-modal-backdrop absolute inset-0"
               />
               <div ref={groupModalPanelRef} className="glass-modal-panel relative w-[min(880px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
-                <div className="glass-modal-header px-5 py-4">
-                  <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                    {groupModalTarget?.groupId ? "Group Settings" : "New Group"}
-                  </p>
-                </div>
+                <GlassModalHeader title={<>{groupModalTarget?.groupId ? "Group Settings" : "New Group"}</>} onClose={() => setGroupModalTarget(null)} />
                 <form
                   className="max-h-[70vh] space-y-4 overflow-y-auto px-5 py-4"
                   onSubmit={(e) => {
@@ -5425,11 +5422,7 @@ export default function SpecsGridEditor({
                 className="glass-modal-backdrop absolute inset-0"
               />
               <div className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
-                <div className="glass-modal-header px-5 py-4">
-                  <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                    Replace Zone Content?
-                  </p>
-                </div>
+                <GlassModalHeader title="Replace Zone Content?" onClose={() => setPendingImportGroupId(null)} />
                 <div className="space-y-4 px-5 py-4">
                   <p className="text-[12px]" style={{ color: "var(--text-main)" }}>
                     This zone&apos;s text doesn&apos;t match the last import — it looks like it&apos;s been edited since. Importing now will

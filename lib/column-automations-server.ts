@@ -185,20 +185,19 @@ async function afterMove(
   if (!rule) return to;
   // A lead moved on to the Dashboard: made into a project there.
   const converts = board === "leads" && rule.moveToBoard === "projects";
-  const tellActor = (after: string, projectId = "") => tellMoveNotice(ctx, board, item, to, rule, after, actorUid, projectId);
+  const tellActor = (projectId = "") => tellMoveNotice(ctx, board, item, to, rule, actorUid, projectId);
   if (rule.moveAfter) {
-    const scheduled = scheduledColumnMoveFor(rule, to, Date.now());
-    const ok = await ref
+    // (Its timer started — whoever set it off told when it moves, by the scheduled job, not now.)
+    const scheduled = scheduledColumnMoveFor(rule, to, Date.now(), undefined, actorUid);
+    await ref
       .update({ [SCHEDULED_COLUMN_MOVE_FIELD]: scheduled, [SCHEDULED_COLUMN_MOVE_DUE_FIELD]: scheduled.dueAtIso })
-      .then(() => true)
-      .catch(() => false);
-    if (ok) await tellActor(columnAutomationDurationLabel(rule));
+      .catch(() => undefined);
     return to;
   }
   if (depth >= COLUMN_MOVE_CHAIN_LIMIT) return to;
   if (converts) {
     const projectId = await convertAndCarryOn(ctx, ref, (here) => same(here.status, to.status), columnMoveTarget(rule), depth + 1, undefined, actorUid);
-    if (projectId) await tellActor("", projectId);
+    if (projectId) await tellActor(projectId);
     return to;
   }
   // (Still where it was just moved — nothing else has moved it since.)
@@ -212,7 +211,7 @@ async function afterMove(
     undefined,
     actorUid,
   );
-  if (moved) await tellActor("");
+  if (moved) await tellActor();
   return moved ?? to;
 }
 
@@ -275,7 +274,7 @@ async function doColumnActions(
   return next;
 }
 
-// Whoever set a move automation off, told it's moved on (straight away), or will (`after`: how long) — `projectId`: the
+// Whoever set a move automation off, told it's moved on — straight away, or when its timer's up — `projectId`: the
 // project a lead became (the notification opens that, not the archived lead).
 async function tellMoveNotice(
   ctx: Ctx,
@@ -283,7 +282,6 @@ async function tellMoveNotice(
   item: { id: string; name: string },
   column: BoardSpot,
   rule: ColumnAutomation,
-  after: string,
   actorUid?: string,
   projectId = "",
 ) {
@@ -293,7 +291,6 @@ async function tellMoveNotice(
     itemName: item.name,
     column: columnAutomationColumnLabel(column),
     movedTo: columnAutomationColumnLabel(columnMoveTarget(rule)),
-    after,
     converts: board === "leads" && rule.moveToBoard === "projects",
   });
   await addNotificationAndPush(
@@ -560,18 +557,17 @@ export async function recheckWaitingColumnAutomations(input: {
       const startedMs = Date.parse(move.entry.atIso) || Date.now();
       const isStillThere = (spot: BoardSpot) => isInAutomationColumn(rule, spot);
       if (rule.moveAfter && startedMs + columnAutomationStayMs(rule) > Date.now()) {
-        // Its time in the column's not up yet: its timer, from when it entered.
-        const scheduled = scheduledColumnMoveFor(rule, here, Date.now(), startedMs);
+        // Its time in the column's not up yet: its timer, from when it entered (whoever set it off told when it moves).
+        const scheduled = scheduledColumnMoveFor(rule, here, Date.now(), startedMs, input.actorUid);
         await ref.update({ [SCHEDULED_COLUMN_MOVE_FIELD]: scheduled, [SCHEDULED_COLUMN_MOVE_DUE_FIELD]: scheduled.dueAtIso });
-        await tellMoveNotice(ctx, board, item, here, rule, columnAutomationDurationLabel(rule), input.actorUid);
       } else if (isLeads && rule.moveToBoard === "projects") {
         const projectId = await convertAndCarryOn(ctx, ref, isStillThere, columnMoveTarget(rule), 1, undefined, input.actorUid);
-        if (projectId) await tellMoveNotice(ctx, board, item, here, rule, "", input.actorUid, projectId);
+        if (projectId) await tellMoveNotice(ctx, board, item, here, rule, input.actorUid, projectId);
       } else {
         const moved = await applyMove(ctx, board, ref, isStillThere, columnMoveTarget(rule), 1, undefined, input.actorUid);
         if (moved) {
           finalStatus = moved.status;
-          await tellMoveNotice(ctx, board, item, here, rule, "", input.actorUid);
+          await tellMoveNotice(ctx, board, item, here, rule, input.actorUid);
         }
       }
     }
@@ -726,11 +722,27 @@ export async function runScheduledColumnMoves(options: { siteOrigin: string; now
         // Still in the automation's column (a status's own column takes in its sub-stages — moved between those, it's
         // still there). A lead's on to the Dashboard: converted to a project there.
         const isStillThere = (here: BoardSpot) => isInAutomationColumn(automation, here);
-        const moved =
-          board === "leads" && automation.moveToBoard === "projects"
-            ? await convertAndCarryOn(ctx, itemSnap.ref, isStillThere, columnMoveTarget(automation), 1, dueAtIso)
-            : await applyMove(ctx, board, itemSnap.ref, isStillThere, columnMoveTarget(automation), 1, dueAtIso);
-        if (moved) result.moved += 1;
+        const converts = board === "leads" && automation.moveToBoard === "projects";
+        const moved = converts
+          ? await convertAndCarryOn(ctx, itemSnap.ref, isStillThere, columnMoveTarget(automation), 1, dueAtIso)
+          : await applyMove(ctx, board, itemSnap.ref, isStillThere, columnMoveTarget(automation), 1, dueAtIso);
+        if (moved) {
+          result.moved += 1;
+          // Whoever's move set its timer off: told it's moved on, now that it has.
+          const byUid = str(scheduled.byUid);
+          if (byUid) {
+            const name = board === "leads" ? await leadNameForNotification(ctx.companyId, data, "A lead") : str(data.name) || "A project";
+            await tellMoveNotice(
+              ctx,
+              board,
+              { id: str(data.id) || itemSnap.id, name },
+              { status: str(scheduled.fromStatus), subStage: str(scheduled.fromSubStage) },
+              automation,
+              byUid,
+              converts && typeof moved === "string" ? moved : "",
+            );
+          }
+        }
       }
     }
   }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { GlassModalHeader } from "@/components/glass-modal-header";
 import { createPortal } from "react-dom";
 import { ChevronDown } from "lucide-react";
 import { swallowNextClick } from "@/lib/swallow-dismiss-click";
@@ -116,11 +117,8 @@ export function RestoreDialog({
       />
       {/* Not overflow-hidden, so the status list can hang over the pop-up's edge. */}
       <div role="dialog" aria-modal="true" className="glass-modal-panel relative w-full max-w-[420px]">
-        <div className="glass-modal-header rounded-t-[20px] px-5 py-4">
-          <p className="text-[16px] font-medium" style={{ color: "var(--text-main)" }}>
-            {title}
-          </p>
-        </div>
+        {/* (Its top corners rounded as the pop-up's — it isn't overflow-hidden; square on a phone, where it's the whole screen.) */}
+        <GlassModalHeader title={title} onClose={onCancel} closeDisabled={busy} className="rounded-t-[20px] max-sm:rounded-none" />
         {statusOptions ? (
           <div className="flex items-center gap-3 px-5 py-4">
             <p className="shrink-0 text-[14px] font-medium" style={{ color: "var(--text-main)" }}>

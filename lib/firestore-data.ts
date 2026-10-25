@@ -41,7 +41,6 @@ import {
   waitingAfterMove,
   type AutomationItemFacts,
   columnAutomationColumnLabel,
-  columnAutomationDurationLabel,
   columnAutomationMoveNoticeText,
   columnAutomationNotificationText,
   columnAutomationRecipients,
@@ -2592,15 +2591,15 @@ export async function notifyColumnAutomationMove(input: {
     }
     const moveRule = columnMoveSetOffByMove(automations, input.board, input.from, input.to, facts);
     if (moveRule) {
-      const outcome = await runColumnMoveAutomation(cid, input.item.id, moveRule, input.to, input.depth ?? 0);
-      // Whoever moved it: told it's moved on, or will.
-      if (outcome && actorUid) {
+      const outcome = await runColumnMoveAutomation(cid, input.item.id, moveRule, input.to, input.depth ?? 0, actorUid);
+      // Whoever moved it: told it's moved on, once it has — straight away, or (on a timer) by the scheduled job when it
+      // does, not ahead of it.
+      if (outcome === "moved" && actorUid) {
         const notice = columnAutomationMoveNoticeText({
           board: input.board,
           itemName: input.item.name || "A project",
           column: columnAutomationColumnLabel(input.to),
           movedTo: columnAutomationColumnLabel(columnMoveTarget(moveRule)),
-          after: outcome === "scheduled" ? columnAutomationDurationLabel(moveRule) : "",
         });
         if (await addUserNotification(actorUid, { ...notice, type: COLUMN_AUTOMATION_NOTIFICATION_TYPE, projectId: input.item.id, companyId: cid })) sent += 1;
       }
@@ -2701,9 +2700,10 @@ export async function recheckProjectColumnAutomations(companyId: string, project
     const startedMs = Date.parse(move.entry.atIso) || Date.now();
     const waitsStill = rule.moveAfter && startedMs + columnAutomationStayMs(rule) > Date.now();
     if (waitsStill) {
-      // Its time in the column's not up yet: its timer, from when it entered.
-      const scheduled = scheduledColumnMoveFor(rule, here, Date.now(), startedMs);
+      // Its time in the column's not up yet: its timer, from when it entered (whoever set it off told when it moves).
+      const scheduled = scheduledColumnMoveFor(rule, here, Date.now(), startedMs, actorUid);
       await updateDoc(projectRef, { [SCHEDULED_COLUMN_MOVE_FIELD]: scheduled, [SCHEDULED_COLUMN_MOVE_DUE_FIELD]: scheduled.dueAtIso });
+      return;
     } else if ((await runColumnMoveAutomation(cid, projectId, { ...rule, moveAfter: false }, here, 0)) !== "moved") {
       return;
     }
@@ -2713,7 +2713,6 @@ export async function recheckProjectColumnAutomations(companyId: string, project
         itemName: item.name,
         column: columnAutomationColumnLabel(here),
         movedTo: columnAutomationColumnLabel(columnMoveTarget(rule)),
-        after: waitsStill ? columnAutomationDurationLabel(rule) : "",
       });
       await addUserNotification(actorUid, { ...notice, type: COLUMN_AUTOMATION_NOTIFICATION_TYPE, projectId, companyId: cid });
     }
@@ -2731,11 +2730,13 @@ async function runColumnMoveAutomation(
   rule: ColumnAutomation,
   at: BoardSpot,
   depth: number,
+  // Whoever's move set it off (a timer: told when it moves).
+  actorUid = "",
 ): Promise<"scheduled" | "moved" | null> {
   const ref = await resolveProjectDocRef({ id: projectId, companyId } as Project);
   if (!ref) return null;
   if (rule.moveAfter) {
-    const scheduled = scheduledColumnMoveFor(rule, at, Date.now());
+    const scheduled = scheduledColumnMoveFor(rule, at, Date.now(), undefined, actorUid);
     await updateDoc(ref, { [SCHEDULED_COLUMN_MOVE_FIELD]: scheduled, [SCHEDULED_COLUMN_MOVE_DUE_FIELD]: scheduled.dueAtIso });
     return "scheduled";
   }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useId, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { GlassModalHeader } from "@/components/glass-modal-header";
 import { createPortal } from "react-dom";
 import { AlertTriangle, Archive, Ban, CalendarDays, Check, CheckCircle2, ChevronLeft, ChevronRight, Copy, Inbox, Lock, PencilLine, RotateCcw, Search, Trash2, X } from "lucide-react";
 import { activeDate, activeMoney } from "@/lib/company-formats";
@@ -1003,11 +1004,10 @@ export function CompletedProjectsModal({
         aria-label="Completed projects"
         className={`glass-modal-panel relative z-[1601] flex h-[min(820px,90svh)] w-full flex-col overflow-hidden ${canSortBonus ? "max-w-[1220px]" : "max-w-[980px]"}`}
       >
-        <div className="glass-modal-header flex h-[56px] shrink-0 items-center gap-2.5 px-4 sm:px-5">
-          <span className="glass-shine inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-white" style={glassShineStyle(GREEN)}>
-            <CheckCircle2 size={15} strokeWidth={2.4} />
-          </span>
-          <p className="min-w-0 truncate text-[15px] font-medium" style={{ color: "var(--text-main)" }}>
+        {/* As every pop-up's header (GlassModalHeader — the Schedule pop-up's): 56px, its icon and title in 14px bold capitals. */}
+        <div className="glass-modal-header flex h-[56px] shrink-0 items-center gap-2 px-5">
+          <CheckCircle2 size={16} className="shrink-0" style={{ color: "var(--text-main)" }} />
+          <p className="min-w-0 truncate text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
             Completed Projects
           </p>
           {/* The bin: faint until a project's dragged — then a "Remove" to drop it on (red under it). Dropped: confirmed
@@ -1294,17 +1294,7 @@ export function CompletedProjectsModal({
             aria-label="Remove from the list"
             className="glass-modal-panel glass-bar-pop relative w-full max-w-[400px] overflow-hidden"
           >
-            <div className="glass-modal-header flex items-center gap-3 px-5 py-4">
-              <span className="glass-shine inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-white" style={glassShineStyle(RED)}>
-                <Trash2 size={14} />
-              </span>
-              <p className="min-w-0 flex-1 text-[15px] font-medium" style={{ color: "var(--text-main)" }}>
-                Remove from the list?
-              </p>
-              <button type="button" onClick={() => setRemoveTarget(null)} className={modalCloseButtonClass} aria-label="Close">
-                <X size={16} />
-              </button>
-            </div>
+            <GlassModalHeader title="Remove from the list?" icon={<Trash2 size={16} />} onClose={() => setRemoveTarget(null)} />
             <div className="space-y-2 px-5 py-4">
               <p className="text-[13px] font-medium leading-[1.5]" style={{ color: "var(--text-main)" }}>
                 <b>{removeTarget.record.projectName || "Untitled"}</b> comes off Completed

@@ -8,6 +8,7 @@
 // category is set per role on the category (Company Settings > Calendar).
 
 import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { GlassModalHeader } from "@/components/glass-modal-header";
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
@@ -2971,15 +2972,11 @@ function CalendarPageContent() {
                   </>
                 ) : (
                 <>
-                <div className="glass-modal-header flex items-center gap-2.5 px-4 py-3">
-                  <span className="h-3.5 w-3.5 shrink-0 rounded-full transition-colors" style={{ backgroundColor: draftCategory.color }} />
-                  <p className="flex-1 truncate text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
-                    {d.isNew ? "New event" : readOnly ? "Event" : "Edit event"}
-                  </p>
-                  <button type="button" onClick={closeModal} className={modalCloseButtonClass} aria-label="Close">
-                    <X size={16} />
-                  </button>
-                </div>
+                <GlassModalHeader
+                  title={d.isNew ? "New event" : readOnly ? "Event" : "Edit event"}
+                  icon={<span className="block h-3.5 w-3.5 rounded-full transition-colors" style={{ backgroundColor: draftCategory.color }} />}
+                  onClose={closeModal}
+                />
                 <form
                   className="flex min-h-0 flex-1 flex-col"
                   onSubmit={(e) => {

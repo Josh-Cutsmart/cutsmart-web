@@ -1,11 +1,12 @@
 "use client";
 
 import { activeDateTime, useCompanyFormats } from "@/lib/company-formats";
+import { GlassModalHeader } from "@/components/glass-modal-header";
 import { glassShineStyle } from "@/lib/glass-shine";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { useRouter } from "next/navigation";
 import { createPortal } from "react-dom";
-import { Activity, CalendarDays, CheckCircle2, ChevronRight, FolderKanban, Kanban, ListFilter, Lock, RefreshCw, Rows3, Search, Users2, X } from "lucide-react";
+import { Activity, CalendarDays, CheckCircle2, ChevronRight, FolderKanban, Kanban, ListFilter, Lock, RefreshCw, Rows3, Search, Users2 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
 import { GlassDropdown, GLASS_MENU_CLASS, GLASS_MENU_MIN_WIDTH_PHONE_PX, GLASS_MENU_MIN_WIDTH_PX, GLASS_MENU_STYLE, glassMenuHeight } from "@/components/glass-dropdown";
@@ -57,7 +58,6 @@ import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/use
 import { hedgedAsync } from "@/lib/load-retry";
 import { readLastKnown, saveLastKnown } from "@/lib/last-known";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
-import { modalCloseButtonClass } from "@/components/settings-ui";
 import { CompletedProjectsModal } from "@/components/completed-projects-modal";
 import { bonusLockMessage, bonusLockOf, fetchBonusLock, fetchCompletedProjectRecords, type CompletedProjectRecord } from "@/lib/completed-projects";
 import { completionBonusSettingsFrom, type CompletionBonusSettings } from "@/lib/completion-bonus";
@@ -2630,31 +2630,14 @@ export default function DashboardPage() {
               data-staff-modal="true"
               className="glass-modal-panel relative z-[1601] flex h-[min(760px,86svh)] w-full max-w-[920px] flex-col overflow-hidden"
             >
-              <div className="glass-modal-header flex h-[56px] shrink-0 items-center justify-between px-5">
-                <div className="flex items-center gap-2.5">
-                  <div
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-full text-white"
-                    style={{ backgroundImage: "linear-gradient(135deg, #A796F0 0%, #6E56D9 100%)" }}
-                  >
-                    <Users2 size={14} strokeWidth={2.6} />
-                  </div>
-                  <p className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>Staff Members</p>
-                  <span
-                    className="rounded-full border px-2 py-[2px] text-[11px] font-bold"
-                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
-                  >
-                    {companyMembers.length}
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={onCloseStaffModal}
-                  className={modalCloseButtonClass}
-                  aria-label="Close"
+              <GlassModalHeader title="Staff Members" icon={<Users2 size={16} />} onClose={onCloseStaffModal}>
+                <span
+                  className="rounded-full border px-2 py-[2px] text-[11px] font-bold"
+                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
                 >
-                  <X size={16} />
-                </button>
-              </div>
+                  {companyMembers.length}
+                </span>
+              </GlassModalHeader>
               <div ref={staffMembersScrollRef} className="glass-scroll hide-native-scrollbar min-h-0 flex-1 overflow-auto px-5 py-2">
                 {!companyMembers.length ? (
                   <div

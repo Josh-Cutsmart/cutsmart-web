@@ -108,7 +108,7 @@ export function ProductionSpecificationsModal({
     <div className="fixed inset-0 z-[1700] flex items-center justify-center px-3 py-3 sm:px-4 sm:py-4">
       <button type="button" aria-label="Close specifications" onClick={onClose} className="glass-modal-backdrop absolute inset-0" />
       <div ref={panelRef} className="glass-modal-panel relative flex h-[min(900px,94svh)] w-[min(1100px,96vw)] flex-col overflow-hidden">
-        <div className="glass-modal-header flex h-[56px] shrink-0 items-center justify-between gap-3 px-4 sm:px-5">
+        <div className="glass-modal-header flex h-[56px] shrink-0 items-center justify-between gap-3 px-5">
           <div className="flex min-w-0 items-center gap-2">
             <ClipboardList size={16} className="shrink-0" style={{ color: "var(--text-main)" }} />
             <p className="truncate text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>

@@ -1,6 +1,7 @@
 "use client";
 
 import { setActiveCompanyFormats } from "@/lib/company-formats";
+import { GlassModalHeader } from "@/components/glass-modal-header";
 import { glassShineStyle } from "@/lib/glass-shine";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type TouchEvent as ReactTouchEvent } from "react";
 import { createPortal } from "react-dom";
@@ -4614,16 +4615,12 @@ export function AppShell({
               void onCreateProject();
             }}
           >
-            <div className="glass-modal-header flex items-center gap-3 px-4 py-3 max-sm:pt-[calc(12px+env(safe-area-inset-top))] sm:px-6 sm:py-4">
-              {/* (Not on a phone — the room's for the Small Job switch's name.) */}
-              <span
-                className="glass-shine inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-white max-sm:hidden"
-                style={glassShineStyle(newProjectAccent)}
-              >
-                {newProjectIsSmallJob ? <Hammer size={18} /> : <FolderPlus size={18} />}
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-[18px] font-medium text-[var(--text-main)]">{newProjectIsSmallJob ? "New Small Job" : "New Project"}</p>
+            {/* As every pop-up's header (GlassModalHeader — the Schedule pop-up's): 56px, its icon and title in 14px bold
+                capitals; on a phone, under the notch. */}
+            <div className="glass-modal-header flex h-[56px] shrink-0 items-center gap-3 px-5 max-sm:h-[calc(56px+env(safe-area-inset-top))] max-sm:pt-[env(safe-area-inset-top)]">
+              <div className="flex min-w-0 flex-1 items-center gap-2 text-[var(--text-main)]">
+                {newProjectIsSmallJob ? <Hammer size={16} className="shrink-0" /> : <FolderPlus size={16} className="shrink-0" />}
+                <p className="min-w-0 truncate text-[14px] font-bold uppercase tracking-[1px]">{newProjectIsSmallJob ? "New Small Job" : "New Project"}</p>
               </div>
               {/* Small Job: this one into Small Jobs instead of onto the Dashboard. */}
               <button
@@ -5452,9 +5449,7 @@ export function AppShell({
             className="glass-modal-backdrop absolute inset-0"
           />
           <div ref={logoutConfirmPanelRef} className="glass-modal-panel relative w-full max-w-[380px] overflow-hidden">
-            <div className="glass-modal-header px-5 py-4">
-              <h3 className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>Log out?</h3>
-            </div>
+            <GlassModalHeader title="Log out?" onClose={() => setShowLogoutConfirm(false)} />
             <div className="px-5 py-4">
               <p className="text-[13px]" style={{ color: "var(--text-main)" }}>
                 You&apos;ll need to sign back in to access your account.

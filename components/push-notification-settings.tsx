@@ -910,13 +910,13 @@ export function PushNotificationSettings({
             <div className="fixed inset-0 z-[9998] flex items-center justify-center p-4">
               <button type="button" aria-label="Close" onClick={() => setIsCategoryOpen(false)} className="glass-modal-backdrop absolute inset-0" />
               <div ref={popPanelRef} className="glass-modal-panel relative flex max-h-[min(640px,90vh)] w-full max-w-[520px] flex-col overflow-hidden">
-                <div className="glass-modal-header flex h-[54px] shrink-0 items-center justify-between gap-3 px-4">
+                <div className="glass-modal-header flex h-[56px] shrink-0 items-center justify-between gap-3 px-5">
                   <div className="flex min-w-0 items-center gap-3">
                     <Toggle
                       checked={isPushNotificationCategoryEnabled(categoryChoices, openCategory.id)}
                       onChange={(next) => onToggleCategory(openCategory.id, next)}
                     />
-                    <p className="truncate text-[15px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>{openCategory.label}</p>
+                    <p className="truncate text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>{openCategory.label}</p>
                   </div>
                   <button type="button" onClick={() => setIsCategoryOpen(false)} className={modalCloseButtonClass} aria-label="Close">
                     <X size={16} />

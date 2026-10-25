@@ -1,6 +1,7 @@
 "use client";
 
 import { activeDate, activeDateRange, useCompanyFormats } from "@/lib/company-formats";
+import { GlassModalHeader } from "@/components/glass-modal-header";
 import { Suspense, useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
@@ -2160,13 +2161,15 @@ function ArchivedPageInner() {
             aria-modal="true"
             className={`glass-modal-panel relative flex max-h-[calc(100svh-32px)] w-full flex-col overflow-hidden ${pendingProjects.length ? "max-w-[560px]" : "max-w-[440px]"}`}
           >
-            <div className="glass-modal-header px-5 py-4">
-              <p className="text-[15px] font-medium" style={{ color: "var(--text-main)" }}>
-                {pendingDelete.rows.length === 1
+            <GlassModalHeader
+              title={
+                pendingDelete.rows.length === 1
                   ? `Delete “${pendingDelete.rows[0].title}” permanently?`
-                  : `Delete ${itemCount(pendingDelete.rows.length)} permanently?`}
-              </p>
-            </div>
+                  : `Delete ${itemCount(pendingDelete.rows.length)} permanently?`
+              }
+              onClose={() => setPendingDelete(null)}
+              closeDisabled={copySending}
+            />
             <div className="min-h-0 space-y-2 overflow-y-auto px-5 py-4">
               {pendingDelete.rows.length > 1 ? (
                 <p className="text-[12.5px] font-medium" style={{ color: "var(--text-muted)" }}>

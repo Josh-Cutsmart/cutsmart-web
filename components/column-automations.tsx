@@ -540,16 +540,16 @@ function ColumnAutomationModal({
         data-phone-fullscreen="true"
         className="glass-modal-panel relative flex h-full w-full flex-col overflow-hidden max-sm:rounded-none! max-sm:border-0! sm:h-auto sm:max-h-[min(760px,92vh)] sm:w-[min(680px,96vw)] lg:w-[min(1000px,94vw)]"
       >
-        <div className="glass-modal-header flex items-center gap-3 px-5 py-4 max-sm:pt-[calc(16px+env(safe-area-inset-top))]">
-          <span className="glass-shine inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-white" style={glassShineStyle("var(--brand)")}>
-            <Zap size={18} />
-          </span>
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-[18px] font-medium text-[var(--text-main)]">Automate</p>
-            <p className="flex min-w-0 items-center gap-1.5 text-[12px] text-[var(--text-muted)]">
+        {/* As every pop-up's header (GlassModalHeader — the Schedule pop-up's): 56px, its icon and title in 14px bold
+            capitals — the column it's for beside it; on a phone, under the notch. */}
+        <div className="glass-modal-header flex h-[56px] shrink-0 items-center gap-3 px-5 max-sm:h-[calc(56px+env(safe-area-inset-top))] max-sm:pt-[env(safe-area-inset-top)]">
+          <div className="flex min-w-0 flex-1 items-center gap-2 text-[var(--text-main)]">
+            <Zap size={16} className="shrink-0" />
+            <p className="shrink-0 text-[14px] font-bold uppercase tracking-[1px]">Automate</p>
+            <span className="inline-flex min-w-0 items-center gap-1.5 text-[13px] font-medium text-[var(--text-muted)]">
               <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: target.color }} />
               <span className="truncate">{column}</span>
-            </p>
+            </span>
           </div>
           <button type="button" onClick={onClose} className={modalCloseButtonClass} aria-label="Close" title="Close">
             <X size={16} />

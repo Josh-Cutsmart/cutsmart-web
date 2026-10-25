@@ -88,7 +88,7 @@ export function ContactCardPopup({
             ].join(", "),
           }}
         />
-        <button type="button" onClick={onClose} className={`${modalCloseButtonClass} absolute right-3 top-3 z-[1]`} aria-label="Close contact card">
+        <button type="button" onClick={onClose} className={`${modalCloseButtonClass} absolute right-3 top-3 z-[1] max-sm:top-[calc(0.75rem+env(safe-area-inset-top))]`} aria-label="Close contact card">
           <X size={16} />
         </button>
         <div className="glass-scroll min-h-0 flex-1 overflow-y-auto px-5 pb-5 pt-7">

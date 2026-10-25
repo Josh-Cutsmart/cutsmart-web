@@ -1,11 +1,12 @@
 "use client";
 
 import { createContext, Fragment, startTransition, useCallback, useContext, useDeferredValue, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type FocusEvent as ReactFocusEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type TouchEvent as ReactTouchEvent, type WheelEvent as ReactWheelEvent } from "react";
+import { GlassModalHeader } from "@/components/glass-modal-header";
 import { glassShineStyle } from "@/lib/glass-shine";
 import { createPortal } from "react-dom";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Great_Vibes } from "next/font/google";
-import { ArrowLeft, ArrowLeftRight, ArrowRight, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, CloudCheck, CloudOff, CloudUpload, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, File as FileIcon, FileSpreadsheet, FileUp, FileText, GitBranch, Eraser, GripVertical, HardHat, Image as ImageIcon, ImagePlus, Import as ImportIcon, Inbox, Info, Link2, ListChecks, Lock, Mail, MapPin, Maximize2, Minimize2, Minus, PanelRightClose, MoreHorizontal, NotebookPen, Pencil, Phone, Plus, Printer, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, Unlock, User, UserPlus, Users, Wrench, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowLeftRight, ArrowRight, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, CloudCheck, CloudOff, CloudUpload, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, File as FileIcon, FileSpreadsheet, FileUp, FileText, GitBranch, Eraser, GripVertical, HardHat, Image as ImageIcon, ImagePlus, Import as ImportIcon, Inbox, Info, Link2, ListChecks, Lock, Mail, MapPin, Maximize2, Minimize2, Minus, PanelRightClose, MoreHorizontal, NotebookPen, Pencil, Phone, Plus, Printer, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, Unlock, User, UserPlus, Users, Wrench, X } from "lucide-react";
 import type { DecoupledEditor, ModelWriter } from "ckeditor5";
 import type { RichText as ExcelRichText } from "exceljs";
 import type { CellInput as AutoTableCellInput, RowInput as AutoTableRowInput } from "jspdf-autotable";
@@ -29,6 +30,8 @@ import { LengthField } from "@/components/settings-ui";
 import { activeDate, activeDateTime, activeLength, activeMoney, activeUnit, activeUnitLabel, useCompanyFormats } from "@/lib/company-formats";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LeadDetailsModal } from "@/components/lead-details-modal";
+import { DoorHingeDiagram, HingeSideToggle } from "@/components/door-hinge-diagram";
+import { useFloatingStickyHeader } from "@/lib/use-floating-sticky-header";
 import { useAppTabs } from "@/lib/app-tabs-context";
 import { useAuth } from "@/lib/auth-context";
 import {
@@ -5158,6 +5161,63 @@ function groupColorPalette(baseColor: string) {
   };
 }
 
+// The Production Cutlist's tables (its list's groups, its entry's rows), coloured by part type as the cutlist mock-up:
+// the part type's own colour along a group's title bar, a lighter wash of it over the column headings, a pale one over
+// the rows (the lines between them a little deeper; an opened row, and its details below it, between the two), words in
+// a dark shade of it. A dark part type (Cabinet's slate): white words on its title bar and headings, its rows a pale
+// grey of it.
+// A cutlist's rows by room (and all of them under "Project Cutlist"): each room's part types, their quantities added up,
+// in the part types' own order — the Rooms column's coloured bar under each room.
+function cutlistPartMixByRoom(rows: CutlistRow[], partTypeOrder: string[]) {
+  const byRoom = new Map<string, Map<string, number>>();
+  const add = (room: string, partType: string, quantity: number) => {
+    const counts = byRoom.get(room) ?? new Map<string, number>();
+    counts.set(partType, (counts.get(partType) ?? 0) + quantity);
+    byRoom.set(room, counts);
+  };
+  for (const row of rows) {
+    const quantity = Number(row.quantity) || 0;
+    if (quantity <= 0) continue;
+    const partType = String(row.partType || "").trim() || "Unassigned";
+    add(String(row.room || "").trim(), partType, quantity);
+    add("Project Cutlist", partType, quantity);
+  }
+  const order = new Map(partTypeOrder.map((name, index) => [name, index]));
+  const out = new Map<string, { partType: string; count: number }[]>();
+  for (const [room, counts] of byRoom) {
+    out.set(
+      room,
+      Array.from(counts, ([partType, count]) => ({ partType, count })).sort(
+        (a, b) => (order.get(a.partType) ?? 999) - (order.get(b.partType) ?? 999) || a.partType.localeCompare(b.partType),
+      ),
+    );
+  }
+  return out;
+}
+
+// The cutlist screens' feed of changes: its band under the 56px top bar — its bubbles (32px) 13px down from the top bar,
+// and as far off its bottom as the Rooms container and the Cutlist Entry's held top are off it (8px).
+const CUTLIST_FEED_BAND_HEIGHT = 13 + 32 + 8;
+const CUTLIST_FEED_BAND_BOTTOM = 56 + CUTLIST_FEED_BAND_HEIGHT;
+
+function cutlistTablePalette(baseColor: string) {
+  const light = isLightHex(baseColor);
+  return {
+    titleBarBg: baseColor,
+    titleText: light ? darkenHex(baseColor, 0.85) : "#FFFFFF",
+    countChipBg: light ? "rgba(255, 255, 255, 0.6)" : "rgba(255, 255, 255, 0.16)",
+    headerBg: light ? lightenHex(baseColor, 0.3) : lightenHex(baseColor, 0.1),
+    headerText: light ? darkenHex(baseColor, 0.85) : "#FFFFFF",
+    rowBg: light ? lightenHex(baseColor, 0.68) : lightenHex(baseColor, 0.86),
+    rowOpenBg: light ? lightenHex(baseColor, 0.5) : lightenHex(baseColor, 0.79),
+    subRowBg: light ? lightenHex(baseColor, 0.4) : lightenHex(baseColor, 0.74),
+    divider: light ? lightenHex(baseColor, 0.3) : lightenHex(baseColor, 0.68),
+    border: light ? darkenHex(baseColor, 0.08) : lightenHex(baseColor, 0.55),
+    fieldBorder: light ? darkenHex(baseColor, 0.1) : lightenHex(baseColor, 0.5),
+    text: light ? darkenHex(baseColor, 0.86) : darkenHex(baseColor, 0.7),
+  };
+}
+
 const CLASH_LEFT_OPTIONS = ["1L", "2L"] as const;
 const CLASH_RIGHT_OPTIONS = ["1S", "2S"] as const;
 const DRILLING_OPTIONS = ["No", "Even Spacing", "Centre"] as const;
@@ -9194,34 +9254,12 @@ export default function ProjectDetailsPage() {
   const [cutlistPartTypeFilter, setCutlistPartTypeFilter] = useState("All Part Types");
   const [cutlistRoomFilter, setCutlistRoomFilter] = useState("Project Cutlist");
   const [cutlistRoomHighlightRect, setCutlistRoomHighlightRect] = useState<{ top: number; height: number } | null>(null);
-  // The production cutlist screen's Rooms column: popped out from the left side and back in (its toggle, "Rooms", in
-  // the band above it) — Nesting's Visibility panel's way: its bubbles slide in from the edge as it opens (staggered)
-  // and back out before it closes, the cutlist beside it moving over meanwhile.
-  const [isCutlistRoomsPanelOpen, setIsCutlistRoomsPanelOpen] = useState(true);
-  const [isCutlistRoomsPanelClosing, setIsCutlistRoomsPanelClosing] = useState(false);
-  const [isCutlistRoomsPanelJustOpened, setIsCutlistRoomsPanelJustOpened] = useState(false);
-  const cutlistRoomsPanelTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const isCutlistRoomsPanelShown = isCutlistRoomsPanelOpen && !isCutlistRoomsPanelClosing;
-  const toggleCutlistRoomsPanel = () => {
-    if (cutlistRoomsPanelTimeoutRef.current) clearTimeout(cutlistRoomsPanelTimeoutRef.current);
-    if (!isCutlistRoomsPanelShown) {
-      setIsCutlistRoomsPanelOpen(true);
-      setIsCutlistRoomsPanelClosing(false);
-      setIsCutlistRoomsPanelJustOpened(true);
-      cutlistRoomsPanelTimeoutRef.current = setTimeout(() => {
-        setIsCutlistRoomsPanelJustOpened(false);
-        cutlistRoomsPanelTimeoutRef.current = null;
-      }, 800);
-      return;
-    }
-    setIsCutlistRoomsPanelClosing(true);
-    setIsCutlistRoomsPanelJustOpened(false);
-    cutlistRoomsPanelTimeoutRef.current = setTimeout(() => {
-      setIsCutlistRoomsPanelOpen(false);
-      setIsCutlistRoomsPanelClosing(false);
-      cutlistRoomsPanelTimeoutRef.current = null;
-    }, 360);
-  };
+  // The cutlist screens' Rooms column (the production cutlist's and Initial Measure's): always out, fixed in its own
+  // container beside the cutlist — no longer put away. (What's laid out round it still reads these, as when it could be.)
+  const isCutlistRoomsPanelOpen = true;
+  const isCutlistRoomsPanelClosing = false;
+  const isCutlistRoomsPanelJustOpened = false;
+  const isCutlistRoomsPanelShown = true;
   // Beside the column (out), the cutlist's bars and rows are round-ended and clear of the sides; without it, edge to edge
   // and square — the change timed as the column's: at once as it opens, once its rooms have slid out as it closes.
   const cutlistRoomsShapeTransition = (props: string[]) =>
@@ -9625,8 +9663,11 @@ export default function ProjectDetailsPage() {
   type CutlistBubbleAnchor = { left: number; top: number; right: number; bottom: number; centerX: number; centerY: number };
   type CutlistFieldBubble = {
     id: string;
+    // One bubble a row: its row's key, and the fields it's about (each "rowKey::field", lit red while it's up) with what
+    // each one's warning says (same order).
     key: string;
-    message: string;
+    fieldKeys: string[];
+    messages: string[];
     // The real cell rect at creation time — rendering derives its exact CSS position from this
     // plus `placement`, using a CSS transform for the size-dependent axis, so the tail always
     // touches the true cell edge regardless of how tall/wide the message makes the bubble.
@@ -10092,6 +10133,27 @@ export default function ProjectDetailsPage() {
   const wantProductionCutlistBar = !isProductionCutlistBarInTheWay;
   const [productionCutlistBarShown, setProductionCutlistBarShown] = useState(wantProductionCutlistBar);
   const [productionCutlistBarLeaving, setProductionCutlistBarLeaving] = useState(false);
+  // The Production Cutlist's Needs-attention bubble (renderCutlistAttentionBubble): its list of parts open, and the part
+  // it last took you to (its row outlined a moment).
+  const [isCutlistAttentionOpen, setIsCutlistAttentionOpen] = useState(false);
+  const [cutlistAttentionFocusRowId, setCutlistAttentionFocusRowId] = useState("");
+  const cutlistAttentionRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!isCutlistAttentionOpen) return;
+    // (Closed by a click anywhere else, or Escape.)
+    const onPointerDown = (e: PointerEvent) => {
+      if (cutlistAttentionRef.current && !cutlistAttentionRef.current.contains(e.target as Node)) setIsCutlistAttentionOpen(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setIsCutlistAttentionOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [isCutlistAttentionOpen]);
   if (wantProductionCutlistBar && (!productionCutlistBarShown || productionCutlistBarLeaving)) {
     setProductionCutlistBarShown(true);
     setProductionCutlistBarLeaving(false);
@@ -10130,6 +10192,11 @@ export default function ProjectDetailsPage() {
   // underneath them.
   const initialMeasureCompactScrollRef = useRef<HTMLDivElement | null>(null);
   const initialMeasureDesktopScrollRef = useRef<HTMLDivElement | null>(null);
+  const [initialMeasureDesktopScrollEl, setInitialMeasureDesktopScrollEl] = useState<HTMLDivElement | null>(null);
+  const initialMeasureDesktopScrollCallbackRef = useCallback((el: HTMLDivElement | null) => {
+    initialMeasureDesktopScrollRef.current = el;
+    setInitialMeasureDesktopScrollEl(el);
+  }, []);
   const productionCutlistCompactScrollRef = useRef<HTMLDivElement | null>(null);
   const [initialEditingCellValue, setInitialEditingCellValue] = useState("");
   const [editingCellValue, setEditingCellValue] = useState("");
@@ -13134,6 +13201,128 @@ export default function ProjectDetailsPage() {
       pillText: useDark ? textDark : textLight,
     };
   };
+  // A cutlist's feed of changes (the production cutlist's or Initial Measure's): one change's bubble.
+  const renderCutlistActivityChip = (entry: CutlistActivityEntry, isLast: boolean) => {
+    // Each change a round-ended glass bubble in a pale wash of its part type, words in a dark shade of it — as
+    // the cutlist's tables — the part in a pill of the part type's own colour, values in white ones, a drawn
+    // arrow between. A clearing: red.
+    const isClear = String(entry.actionKind || "") === "clear";
+    const partColorFor = (partType: string) =>
+      normalizeHexColor(partTypeColors[String(partType || "").trim()]) ?? "#C8D6E6";
+    const partPillStyle = (partType: string): React.CSSProperties => {
+      const base = partColorFor(partType);
+      return { backgroundColor: base, color: cutlistTablePalette(base).titleText };
+    };
+    const chipPalette = cutlistTablePalette(partColorFor(entry.partType || ""));
+    const chipStyle: React.CSSProperties = isClear
+      ? { backgroundColor: "#FFF1F1", borderColor: "#F7B8B8", color: "#7F1D1D" }
+      : { backgroundColor: chipPalette.rowBg, borderColor: chipPalette.divider, color: chipPalette.text };
+    const namePillStyle: React.CSSProperties = isClear
+      ? { backgroundColor: "#FFDCDC", color: "#991B1B" }
+      : partPillStyle(entry.partType || "");
+    const valuePillStyle: React.CSSProperties = {
+      backgroundColor: "rgba(255, 255, 255, 0.88)",
+      boxShadow: `inset 0 0 0 1px ${isClear ? "#F7B8B8" : chipPalette.divider}`,
+    };
+    const pillClass = "inline-flex h-6 shrink-0 items-center rounded-full px-2.5";
+    const arrow = (
+      <>
+        <ArrowRight size={13} strokeWidth={2.4} className="shrink-0 opacity-70" aria-hidden="true" />
+        <span className="sr-only">to</span>
+      </>
+    );
+    const isPartTypeMove = Boolean(entry.partType && entry.partTypeTo);
+    const isValueMove = Boolean(entry.valueFrom || entry.valueTo);
+    const isEntering = Boolean(cutlistActivityEnteringIds[entry.id]);
+    const rawMessage = String(entry.message || "");
+    const messageLower = rawMessage.toLowerCase();
+    let partName = "";
+    let messagePrefix = rawMessage;
+    let actionText = "";
+    let messageSuffix = "";
+    if (!isPartTypeMove && !isValueMove) {
+      const addedToken = " added to ";
+      const addedIdx = messageLower.indexOf(addedToken);
+      if (addedIdx > 0) {
+        partName = rawMessage.slice(0, addedIdx).trim();
+        messagePrefix = "";
+        actionText = "added to";
+        messageSuffix = rawMessage.slice(addedIdx + addedToken.length).trim();
+      } else if (messageLower.endsWith(" removed")) {
+        partName = rawMessage.slice(0, rawMessage.length - " removed".length).trim();
+        messagePrefix = "";
+        actionText = "removed";
+      }
+    } else if (isValueMove && !isPartTypeMove && rawMessage.includes(" | ")) {
+      // ("Sink Doors | Width:" — the part in its pill, then what changed.)
+      const splitAt = rawMessage.indexOf(" | ");
+      partName = rawMessage.slice(0, splitAt).trim();
+      messagePrefix = rawMessage.slice(splitAt + 3).replace(/:\s*$/, "").trim();
+    }
+    // (Its ends alike: a pill at its end as close to the edge as the one at its start, words as far in as
+    // that pill's words are.)
+    const endsWithWords = !isClear && !entry.partTypeTo && !(isValueMove && !isPartTypeMove);
+    return (
+      <div
+        key={entry.id}
+        className={`inline-flex h-8 items-center gap-1.5 rounded-full border pl-1 text-[11.5px] font-semibold ${endsWithWords ? "pr-3.5" : "pr-1"}`}
+        style={{
+          ...chipStyle,
+          boxShadow: "0 1px 3px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.6)",
+          marginRight: isLast ? 0 : 10,
+          opacity: isEntering ? 0 : 1,
+          transform: isEntering ? "translate3d(12px,0,0)" : "translate3d(0,0,0)",
+          transition: "opacity 240ms ease, transform 240ms ease",
+        }}
+      >
+        {!!partName && (
+          <span className={pillClass} style={namePillStyle}>
+            {partName}
+          </span>
+        )}
+        {!!messagePrefix && <span className={partName ? "" : "pl-2"}>{messagePrefix}</span>}
+        {!!actionText && <span>{actionText}</span>}
+        {!!messageSuffix && <span>{messageSuffix}</span>}
+        {isPartTypeMove && !!entry.partType && (
+          <>
+            <span className={pillClass} style={partPillStyle(entry.partType)}>
+              {entry.partType}
+            </span>
+            {arrow}
+          </>
+        )}
+        {isValueMove && !isPartTypeMove && (
+          <>
+            <span className={pillClass} style={valuePillStyle}>
+              {entry.valueFrom || "-"}
+            </span>
+            {arrow}
+          </>
+        )}
+        {!!entry.partTypeTo && (
+          <span className={pillClass} style={partPillStyle(entry.partTypeTo)}>
+            {entry.partTypeTo}
+          </span>
+        )}
+        {isValueMove && !isPartTypeMove && (
+          <span className={pillClass} style={valuePillStyle}>
+            {entry.valueTo || "-"}
+          </span>
+        )}
+        {isClear && (
+          <button
+            type="button"
+            onClick={() => removeCutlistActivity(entry.id)}
+            data-cutlist-activity-control="true"
+            className="inline-flex h-6 items-center rounded-full border px-2.5 text-[11px] font-semibold hover:brightness-95"
+            style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
+          >
+            {entry.action || "Clear"}
+          </button>
+        )}
+      </div>
+    );
+  };
   const logCutlistActivity = (
     message: string,
     opts?: Partial<Omit<CutlistActivityEntry, "id" | "message">>,
@@ -13497,6 +13686,23 @@ export default function ProjectDetailsPage() {
     () => cutlistActivityFeed.filter((entry) => (entry.scope || "production") === "initial"),
     [cutlistActivityFeed],
   );
+  // The Production Cutlist Entry's top (its title, part types and column headings), held 8px under the top bar — under
+  // the feed of changes' band below it, while there's one — as its rows scroll: a floating glass bubble while it's held
+  // (its render), its rows and Add to Cutlist cut off at the bubble's top (useFloatingStickyHeader).
+  const cutlistEntryStickMarkerRef = useRef<HTMLDivElement | null>(null);
+  const cutlistEntryStickyRef = useRef<HTMLDivElement | null>(null);
+  const cutlistEntryRowsRef = useRef<HTMLDivElement | null>(null);
+  const cutlistEntryAddButtonRef = useRef<HTMLButtonElement | null>(null);
+  const cutlistEntryClipRefs = useMemo(() => [cutlistEntryRowsRef, cutlistEntryAddButtonRef], []);
+  const isCutlistEntryHeaderStuck = useFloatingStickyHeader({
+    scrollEl: productionCutlistScrollEl,
+    markerRef: cutlistEntryStickMarkerRef,
+    headerRef: cutlistEntryStickyRef,
+    clipRefs: cutlistEntryClipRefs,
+    holdOffset: productionCutlistActivityFeed.length ? CUTLIST_FEED_BAND_BOTTOM + 8 : 64,
+    inset: isCutlistRoomsPanelShown ? 12 : 4,
+    remountKey: cutlistRoomFilter,
+  });
 
   useEffect(() => {
     cutlistActivityFeedRef.current = cutlistActivityFeed;
@@ -14979,6 +15185,33 @@ export default function ProjectDetailsPage() {
     () => cutlistRoomTabs.filter((tab) => tab.filter !== "Project Cutlist"),
     [cutlistRoomTabs],
   );
+  // Each room's parts by part type (cutlistPartMixByRoom) — the production cutlist's, and Initial Measure's: the Rooms
+  // column's coloured bar under each room (and the whole project's under Project Cutlist).
+  const cutlistRoomPartMix = useMemo(() => cutlistPartMixByRoom(cutlistRows, partTypeOptions), [cutlistRows, partTypeOptions]);
+  const initialCutlistRoomPartMix = useMemo(
+    () => cutlistPartMixByRoom(initialCutlistRows, initialMeasurePartTypeOptions),
+    [initialCutlistRows, initialMeasurePartTypeOptions],
+  );
+  const renderCutlistRoomPartMix = (room: string, mixByRoom = cutlistRoomPartMix) => {
+    const mix = mixByRoom.get(room) ?? [];
+    return (
+      <span aria-hidden="true" className="mt-[6px] flex h-[5px] w-full gap-[2px]">
+        {mix.length ? (
+          mix.map((item) => (
+            <span
+              key={item.partType}
+              className="h-full min-w-[3px] rounded-full"
+              style={{ flex: item.count, backgroundColor: partTypeColors[item.partType] ?? "#CBD5E1" }}
+            />
+          ))
+        ) : (
+          <span className="h-full flex-1 rounded-full bg-[var(--glass-border)]" />
+        )}
+      </span>
+    );
+  };
+  const cutlistRoomPartMixTitle = (room: string, mixByRoom = cutlistRoomPartMix) =>
+    (mixByRoom.get(room) ?? []).map((item) => `${item.partType} ${item.count}`).join(" · ") || undefined;
   useLayoutEffect(() => {
     const measure = () => {
       const container = cutlistRoomListRef.current;
@@ -22079,6 +22312,142 @@ export default function ProjectDetailsPage() {
       </CutlistSideDrawer>
     );
   };
+  // Needs attention: the cutlist's parts that wouldn't get past the Cutlist Entry's own checks (validateCutlistRowInput —
+  // a board, a name, sizes, the sheet they're cut from, the grain, a drawer's runners) — the room's, or the whole
+  // project's on Project Cutlist. A floating bubble over the cutlist just above the bottom bar (down in its place while
+  // the bar's away), opening upward into a list of them: one picked is scrolled to, its row outlined and the field
+  // flashed. None: no bubble. (Initial Measure's: its own rows, checks, search and groups — config — just above the
+  // bottom of the screen, there being no bar there.)
+  const renderCutlistAttentionBubble = (config?: {
+    rows: CutlistRow[];
+    roomFilter: string;
+    visibleRows: CutlistRow[];
+    validate: (row: CutlistRow, label: string) => CutlistValidationIssue[];
+    clearFilters: () => void;
+    collapsedGroups: Record<string, boolean>;
+    toggleGroup: (groupKey: string) => void;
+    bottom: number;
+  }) => {
+    const setup = config ?? {
+      rows: cutlistRows,
+      roomFilter: cutlistRoomFilter,
+      visibleRows: visibleCutlistRows,
+      validate: (row: CutlistRow, label: string) => validateCutlistRowInput(row, row.partType, label),
+      clearFilters: () => {
+        setCutlistSearch("");
+        setCutlistPartTypeFilter("All Part Types");
+      },
+      collapsedGroups: collapsedCutlistGroups,
+      toggleGroup: toggleCutlistGroup,
+      // (Just above the bar — its 24px off the bottom, 50px tall, then 10px — or down in its place while it's away.)
+      bottom: productionCutlistBarShown && !productionCutlistBarLeaving ? 84 : 24,
+    };
+    const parts = setup.rows
+      .filter((row) => setup.roomFilter === "Project Cutlist" || row.room === setup.roomFilter)
+      .flatMap((row) => {
+        const label = String(row.name || "").trim() || "A part";
+        const seen = new Set<string>();
+        const issues = setup.validate(row, label)
+          .map((issue) => ({ ...issue, message: issue.message.startsWith(`${label}: `) ? issue.message.slice(label.length + 2) : issue.message }))
+          .filter((issue) => (seen.has(issue.message) ? false : (seen.add(issue.message), true)));
+        return issues.length ? [{ row, label, issues }] : [];
+      });
+    if (!parts.length) return null;
+    const goToPart = (row: CutlistRow, issue: CutlistValidationIssue) => {
+      setIsCutlistAttentionOpen(false);
+      // (Out from behind the search or part type picked, and its group opened, first.)
+      if (!setup.visibleRows.some((visible) => visible.id === row.id)) setup.clearFilters();
+      const groupKey = String(row.partType || "Unassigned");
+      if (setup.collapsedGroups[groupKey]) setup.toggleGroup(groupKey);
+      setCutlistAttentionFocusRowId(row.id);
+      flashCutlistWarningCells({ [row.id]: { [issue.field]: issue.message } });
+      window.setTimeout(() => {
+        document
+          .querySelector(`[data-cutlist-row-id="${CSS.escape(row.id)}"]`)
+          ?.scrollIntoView({ block: "center", behavior: "smooth" });
+      }, 80);
+      window.setTimeout(() => setCutlistAttentionFocusRowId((prev) => (prev === row.id ? "" : prev)), 3000);
+    };
+    return (
+      <div
+        className="pointer-events-none fixed right-0 z-[96] flex justify-center px-4"
+        style={{
+          left: isCutlistRoomsPanelShown ? 190 : 0,
+          bottom: setup.bottom,
+          transition: `${isCutlistRoomsPanelShown ? "left 180ms ease" : "left 200ms ease 280ms"}, bottom 260ms cubic-bezier(0.22, 1, 0.36, 1)`,
+        }}
+      >
+        <div ref={cutlistAttentionRef} className="pointer-events-auto flex flex-col items-center gap-2">
+          {isCutlistAttentionOpen ? (
+            <div
+              role="dialog"
+              aria-label="Parts that need attention"
+              className="glass-bar-pop max-h-[300px] w-[min(380px,calc(100vw-32px))] overflow-y-auto rounded-[16px] border p-1.5"
+              style={{
+                borderColor: "#F1D29B",
+                backgroundColor: "rgba(255, 250, 240, 0.94)",
+                backdropFilter: "blur(16px) saturate(200%)",
+                WebkitBackdropFilter: "blur(16px) saturate(200%)",
+                boxShadow: "inset 0 1px 0 rgba(255, 255, 255, 0.7), 0 16px 40px rgba(15, 23, 42, 0.22)",
+              }}
+            >
+              {parts.map(({ row, label, issues }) => (
+                <button
+                  key={row.id}
+                  type="button"
+                  onClick={() => goToPart(row, issues[0])}
+                  className="flex w-full items-start gap-2.5 rounded-[11px] px-2.5 py-2 text-left transition-colors hover:bg-[#FDE7BF]"
+                >
+                  <span
+                    aria-hidden="true"
+                    className="mt-[3px] h-2.5 w-2.5 shrink-0 rounded-full"
+                    style={{ backgroundColor: partTypeColors[row.partType || "Unassigned"] ?? "#CBD5E1" }}
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-baseline gap-2">
+                      <span className="truncate text-[13px] font-semibold text-[#3B2A06]">{label}</span>
+                      <span className="shrink-0 text-[11.5px] font-medium text-[#7A5A1E]">
+                        {[row.partType, setup.roomFilter === "Project Cutlist" ? row.room : ""].filter(Boolean).join(" · ")}
+                      </span>
+                    </span>
+                    {issues.map((issue) => (
+                      <span key={issue.message} className="block text-[12px] font-medium leading-[1.35] text-[#7A4A00]">
+                        {issue.message}
+                      </span>
+                    ))}
+                  </span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => setIsCutlistAttentionOpen((open) => !open)}
+            aria-expanded={isCutlistAttentionOpen}
+            className="glass-bar-pop flex h-11 items-center gap-2.5 rounded-full border py-1.5 pl-1.5 pr-3.5 text-[13px] font-semibold text-[#7A4A00] transition hover:brightness-[0.98]"
+            style={{
+              borderColor: "#F1D29B",
+              backgroundColor: "rgba(255, 247, 232, 0.94)",
+              backdropFilter: "blur(16px) saturate(200%)",
+              WebkitBackdropFilter: "blur(16px) saturate(200%)",
+              boxShadow: "inset 0 1px 0 rgba(255, 255, 255, 0.7), 0 12px 30px rgba(15, 23, 42, 0.2)",
+            }}
+          >
+            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#FDE7BF]">
+              <AlertTriangle size={16} strokeWidth={2.2} />
+            </span>
+            {parts.length === 1 ? "1 part needs attention" : `${parts.length} parts need attention`}
+            <ChevronDown
+              size={15}
+              strokeWidth={2.4}
+              style={{ transform: isCutlistAttentionOpen ? "rotate(0deg)" : "rotate(180deg)", transition: "transform 160ms ease" }}
+            />
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   const renderCutlistBarButtons = (separate: boolean, measure = false) => {
     const buttonClass = (on: boolean) =>
       `inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3.5 text-[12px] font-bold transition hover:brightness-95 ${
@@ -23831,7 +24200,7 @@ export default function ProjectDetailsPage() {
   };
   const CUTLIST_FIELD_BUBBLE_DURATION_MS = 10000;
   const CUTLIST_FIELD_BUBBLE_EXIT_MS = 200;
-  const CUTLIST_BUBBLE_WIDTH = 220;
+  const CUTLIST_BUBBLE_WIDTH = 260;
   const CUTLIST_BUBBLE_HEIGHT_ESTIMATE = 64;
   const CUTLIST_BUBBLE_GAP = 10;
   const CUTLIST_BUBBLE_SCREEN_MARGIN = 8;
@@ -23860,20 +24229,33 @@ export default function ProjectDetailsPage() {
   const dismissCutlistFieldBubble = (id: string) => {
     delete cutlistFieldBubbleRectsRef.current[id];
     const bubble = cutlistFieldBubblesRef.current.find((b) => b.id === id);
-    if (bubble) clearCutlistCellFlash(bubble.key);
+    if (bubble) bubble.fieldKeys.forEach((fieldKey) => clearCutlistCellFlash(fieldKey));
     setCutlistFieldBubblesTracked((prev) => prev.map((b) => (b.id === id ? { ...b, removing: true } : b)));
     window.setTimeout(() => {
       setCutlistFieldBubblesTracked((prev) => prev.filter((b) => b.id !== id));
     }, CUTLIST_FIELD_BUBBLE_EXIT_MS);
   };
+  // A row's key: its bubble gone. One of its fields ("rowKey::field" — clicked to fix it): just that field's line off its
+  // row's bubble, the bubble gone with its last.
   const dismissCutlistFieldBubbleByKey = (key: string) => {
-    const timer = cutlistFieldBubbleTimersRef.current[key];
+    const match = cutlistFieldBubblesRef.current.find((b) => !b.removing && (b.key === key || b.fieldKeys.includes(key)));
+    if (!match) return;
+    if (match.key !== key && match.fieldKeys.length > 1) {
+      setCutlistFieldBubblesTracked((prev) =>
+        prev.map((b) => {
+          if (b.id !== match.id) return b;
+          const index = b.fieldKeys.indexOf(key);
+          return { ...b, fieldKeys: b.fieldKeys.filter((_, i) => i !== index), messages: b.messages.filter((_, i) => i !== index) };
+        }),
+      );
+      return;
+    }
+    const timer = cutlistFieldBubbleTimersRef.current[match.key];
     if (timer) {
       window.clearTimeout(timer);
-      delete cutlistFieldBubbleTimersRef.current[key];
+      delete cutlistFieldBubbleTimersRef.current[match.key];
     }
-    const match = cutlistFieldBubblesRef.current.find((b) => b.key === key && !b.removing);
-    if (match) dismissCutlistFieldBubble(match.id);
+    dismissCutlistFieldBubble(match.id);
   };
   // A row's warning bubbles/red-highlight normally clear themselves once the field they're
   // anchored to is fixed — but a force-deleted row (double-click on its own X, bypassing the
@@ -23884,9 +24266,8 @@ export default function ProjectDetailsPage() {
   // flashCutlistWarningCells/showCutlistFieldBubbles — they never touch cutlistCellWarnings at
   // all, so keying off that state here would silently find nothing to dismiss.
   const dismissAllWarningsForRow = (rowId: string) => {
-    const prefix = `${rowId}::`;
     cutlistFieldBubblesRef.current
-      .filter((bubble) => bubble.key.startsWith(prefix) && !bubble.removing)
+      .filter((bubble) => bubble.key === rowId && !bubble.removing)
       .forEach((bubble) => dismissCutlistFieldBubbleByKey(bubble.key));
     setCutlistCellWarnings((prev) => {
       if (!prev[rowId]) return prev;
@@ -23968,6 +24349,20 @@ export default function ProjectDetailsPage() {
   // one specific dimension cell.
   const stripCutlistBubbleRowLabel = (message: string) =>
     message.replace(/^[^:|]+[:|]\s*/, "").replace(/\s*\(Height\/Width\/Depth\)/i, "");
+  const CUTLIST_BUBBLE_FIELD_ORDER = ["partType", "room", "board", "name", "height", "width", "depth", "quantity", "clashing", "information", "grain"];
+  const cutlistBubbleFieldRank = (field: string) => {
+    const rank = CUTLIST_BUBBLE_FIELD_ORDER.indexOf(field);
+    return rank < 0 ? CUTLIST_BUBBLE_FIELD_ORDER.length : rank;
+  };
+  // A row bubble's lines: what it's missing on one ("Missing: Board, Part Name, Quantity" — from the "… is required"
+  // kind of warning), then anything else wrong, each its own line.
+  const cutlistBubbleMissingName = (message: string) => {
+    const required = /^(.+?) is required(?: for drawer parts)?\.?$/i.exec(message.trim());
+    if (required) return required[1];
+    if (/^quantity must be greater than 0\.?$/i.test(message.trim())) return "Quantity";
+    if (/^fill at least 2 dimensions\.?$/i.test(message.trim())) return "2 of Height / Width / Depth";
+    return "";
+  };
   const showCutlistFieldBubbles = (rawWarnings: Record<string, Record<string, string>>) => {
     if (typeof window === "undefined") return;
     const warnings = normalizeCutlistWarningsForDisplay(rawWarnings);
@@ -23976,96 +24371,98 @@ export default function ProjectDetailsPage() {
     // again) is about to be replaced by a fresh one at the same spot — its own stale rect must
     // not count as an obstacle against itself, or the remembered-placement check below would
     // always see a "collision" with its own old position and needlessly relocate every time.
-    const incomingFullKeys = new Set<string>();
-    for (const [rowKey, rowWarnings] of Object.entries(warnings)) {
-      for (const field of Object.keys(rowWarnings)) incomingFullKeys.add(`${rowKey}::${field}`);
-    }
+    const incomingRowKeys = new Set(Object.keys(warnings));
     const obstacles: Array<{ left: number; top: number; right: number; bottom: number }> = cutlistFieldBubblesRef.current
-      .filter((b) => !incomingFullKeys.has(b.key))
+      .filter((b) => !incomingRowKeys.has(b.key))
       .map((b) => cutlistFieldBubbleRectsRef.current[b.id])
       .filter((rect): rect is { left: number; top: number; right: number; bottom: number } => Boolean(rect));
     const additions: CutlistFieldBubble[] = [];
     for (const [rowKey, rowWarnings] of Object.entries(warnings)) {
-      for (const [field, message] of Object.entries(rowWarnings)) {
-        if (!message) continue;
-        const key = `${rowKey}::${field}`;
-        const el = cutlistWarnCellElRefs.current[key];
-        if (!el) continue;
-        const rect = el.getBoundingClientRect();
-        if (!rect.width && !rect.height) continue;
-        const anchor: CutlistBubbleAnchor = {
-          left: rect.left,
-          top: rect.top,
-          right: rect.right,
-          bottom: rect.bottom,
-          centerX: rect.left + rect.width / 2,
-          centerY: rect.top + rect.height / 2,
+      // One bubble for the row, listing everything it's missing — pointing at the first of its fields with a warning
+      // that's on screen (in the order its fields run), each of them still lit red.
+      const fieldEntries = Object.entries(rowWarnings)
+        .filter(([, message]) => Boolean(message))
+        .sort(([a], [b]) => cutlistBubbleFieldRank(a) - cutlistBubbleFieldRank(b));
+      const fieldKeys = fieldEntries.map(([field]) => `${rowKey}::${field}`);
+      const messages = fieldEntries.map(([, message]) => stripCutlistBubbleRowLabel(message));
+      const rect = fieldKeys
+        .map((fieldKey) => cutlistWarnCellElRefs.current[fieldKey]?.getBoundingClientRect())
+        .find((r): r is DOMRect => Boolean(r && (r.width || r.height)));
+      if (!rect) continue;
+      const key = rowKey;
+      const anchor: CutlistBubbleAnchor = {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+        centerX: rect.left + rect.width / 2,
+        centerY: rect.top + rect.height / 2,
+      };
+      let chosen: { boxLeft: number; boxTop: number; tailOffset: number; placement: CutlistBubblePlacement } | null = null;
+      // If this exact cell already settled on a placement before (e.g. it had to dodge another
+      // bubble last time), keep reusing that spot as long as it's still valid — otherwise the
+      // bubble would hop to a different side every time the same issue re-triggers.
+      const remembered = cutlistBubblePlacementMemoryRef.current[key];
+      if (remembered) {
+        const candidate = computeCutlistBubbleCandidate(remembered, anchor);
+        const box = {
+          left: candidate.boxLeft,
+          top: candidate.boxTop,
+          right: candidate.boxLeft + CUTLIST_BUBBLE_WIDTH,
+          bottom: candidate.boxTop + CUTLIST_BUBBLE_HEIGHT_ESTIMATE,
         };
-        let chosen: { boxLeft: number; boxTop: number; tailOffset: number; placement: CutlistBubblePlacement } | null = null;
-        // If this exact cell already settled on a placement before (e.g. it had to dodge another
-        // bubble last time), keep reusing that spot as long as it's still valid — otherwise the
-        // bubble would hop to a different side every time the same issue re-triggers.
-        const remembered = cutlistBubblePlacementMemoryRef.current[key];
-        if (remembered) {
-          const candidate = computeCutlistBubbleCandidate(remembered, anchor);
-          const box = {
-            left: candidate.boxLeft,
-            top: candidate.boxTop,
-            right: candidate.boxLeft + CUTLIST_BUBBLE_WIDTH,
-            bottom: candidate.boxTop + CUTLIST_BUBBLE_HEIGHT_ESTIMATE,
-          };
-          if (isCutlistBubbleOnScreen(candidate.boxLeft, candidate.boxTop) && !obstacles.some((o) => cutlistBubbleRectsOverlap(o, box))) {
-            chosen = { ...candidate, placement: remembered };
-          }
+        if (isCutlistBubbleOnScreen(candidate.boxLeft, candidate.boxTop) && !obstacles.some((o) => cutlistBubbleRectsOverlap(o, box))) {
+          chosen = { ...candidate, placement: remembered };
         }
-        for (const placement of chosen ? [] : PLACEMENT_ORDER) {
-          const candidate = computeCutlistBubbleCandidate(placement, anchor);
-          if (!isCutlistBubbleOnScreen(candidate.boxLeft, candidate.boxTop)) continue;
-          const box = {
-            left: candidate.boxLeft,
-            top: candidate.boxTop,
-            right: candidate.boxLeft + CUTLIST_BUBBLE_WIDTH,
-            bottom: candidate.boxTop + CUTLIST_BUBBLE_HEIGHT_ESTIMATE,
-          };
-          if (obstacles.some((o) => cutlistBubbleRectsOverlap(o, box))) continue;
-          chosen = { ...candidate, placement };
-          break;
-        }
-        if (!chosen) {
-          // Nothing avoided both overlap and going off-screen — prefer staying on screen even if
-          // that means a slight overlap (only happens when a viewport is crowded with many
-          // simultaneous errors).
-          for (const placement of PLACEMENT_ORDER) {
-            const candidate = computeCutlistBubbleCandidate(placement, anchor);
-            if (isCutlistBubbleOnScreen(candidate.boxLeft, candidate.boxTop)) {
-              chosen = { ...candidate, placement };
-              break;
-            }
-          }
-        }
-        if (!chosen) {
-          // Extremely rare (viewport too small for any placement to fully clear the edges) —
-          // fall back to "above" as-is rather than a raw pixel clamp, which would fight the
-          // anchor+transform rendering below and could detach the tail from the box again.
-          chosen = { ...computeCutlistBubbleCandidate("above", anchor), placement: "above" };
-        }
-        cutlistBubblePlacementMemoryRef.current[key] = chosen.placement;
-        obstacles.push({
-          left: chosen.boxLeft,
-          top: chosen.boxTop,
-          right: chosen.boxLeft + CUTLIST_BUBBLE_WIDTH,
-          bottom: chosen.boxTop + CUTLIST_BUBBLE_HEIGHT_ESTIMATE,
-        });
-        additions.push({
-          id: `${key}:${Date.now()}:${Math.random().toString(36).slice(2, 6)}`,
-          key,
-          message: stripCutlistBubbleRowLabel(message),
-          anchor,
-          tailOffset: chosen.tailOffset,
-          placement: chosen.placement,
-          removing: false,
-        });
       }
+      for (const placement of chosen ? [] : PLACEMENT_ORDER) {
+        const candidate = computeCutlistBubbleCandidate(placement, anchor);
+        if (!isCutlistBubbleOnScreen(candidate.boxLeft, candidate.boxTop)) continue;
+        const box = {
+          left: candidate.boxLeft,
+          top: candidate.boxTop,
+          right: candidate.boxLeft + CUTLIST_BUBBLE_WIDTH,
+          bottom: candidate.boxTop + CUTLIST_BUBBLE_HEIGHT_ESTIMATE,
+        };
+        if (obstacles.some((o) => cutlistBubbleRectsOverlap(o, box))) continue;
+        chosen = { ...candidate, placement };
+        break;
+      }
+      if (!chosen) {
+        // Nothing avoided both overlap and going off-screen — prefer staying on screen even if
+        // that means a slight overlap (only happens when a viewport is crowded with many
+        // simultaneous errors).
+        for (const placement of PLACEMENT_ORDER) {
+          const candidate = computeCutlistBubbleCandidate(placement, anchor);
+          if (isCutlistBubbleOnScreen(candidate.boxLeft, candidate.boxTop)) {
+            chosen = { ...candidate, placement };
+            break;
+          }
+        }
+      }
+      if (!chosen) {
+        // Extremely rare (viewport too small for any placement to fully clear the edges) —
+        // fall back to "above" as-is rather than a raw pixel clamp, which would fight the
+        // anchor+transform rendering below and could detach the tail from the box again.
+        chosen = { ...computeCutlistBubbleCandidate("above", anchor), placement: "above" };
+      }
+      cutlistBubblePlacementMemoryRef.current[key] = chosen.placement;
+      obstacles.push({
+        left: chosen.boxLeft,
+        top: chosen.boxTop,
+        right: chosen.boxLeft + CUTLIST_BUBBLE_WIDTH,
+        bottom: chosen.boxTop + CUTLIST_BUBBLE_HEIGHT_ESTIMATE,
+      });
+      additions.push({
+        id: `${key}:${Date.now()}:${Math.random().toString(36).slice(2, 6)}`,
+        key,
+        fieldKeys,
+        messages,
+        anchor,
+        tailOffset: chosen.tailOffset,
+        placement: chosen.placement,
+        removing: false,
+      });
     }
     if (!additions.length) return;
     const keys = new Set(additions.map((b) => b.key));
@@ -27916,27 +28313,38 @@ export default function ProjectDetailsPage() {
         const issue = drawerDepthHardwareIssue(row.room, saved);
         const editingThis = editingDrawerDepth?.rowId === row.id && editingDrawerDepth.key === key;
         if (editingThis) {
+          // (Its height's letter staying where it was, small inside the box's left — as the Cutlist Entry's depth boxes.)
           return (
-            <input
-              key={key}
-              autoFocus
-              inputMode="decimal"
-              title={`Depth for this ${drawerDepthLabel(key)} drawer`}
-              value={editingDrawerDepth.value}
-              onChange={(e) => setEditingDrawerDepth({ rowId: row.id, key, value: numericDimensionText(e.target.value) })}
-              onBlur={() => {
-                setEditingDrawerDepth(null);
-                void commitDrawerDepth(row.id, key, editingDrawerDepth.value);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  e.currentTarget.blur();
-                }
-                if (e.key === "Escape") setEditingDrawerDepth(null);
-              }}
-              className={`${compact ? "h-8 text-[12px]" : "h-6 text-[11px]"} w-full max-w-[96px] rounded-[6px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-1 text-center text-[var(--text-main)]`}
-            />
+            <div key={key} className="relative w-full max-w-[96px]">
+              <span
+                className="pointer-events-none absolute left-1 top-1/2 inline-flex h-[15px] min-w-[15px] -translate-y-1/2 items-center justify-center rounded-full px-[3px] text-[9px] font-normal leading-none text-[var(--text-main)]"
+                style={{
+                  backgroundColor: "color-mix(in srgb, currentColor 12%, transparent)",
+                  border: "1px solid color-mix(in srgb, currentColor 35%, transparent)",
+                }}
+              >
+                {drawerDepthLabel(key)}
+              </span>
+              <input
+                autoFocus
+                inputMode="decimal"
+                title={`Depth for this ${drawerDepthLabel(key)} drawer`}
+                value={editingDrawerDepth.value}
+                onChange={(e) => setEditingDrawerDepth({ rowId: row.id, key, value: numericDimensionText(e.target.value) })}
+                onBlur={() => {
+                  setEditingDrawerDepth(null);
+                  void commitDrawerDepth(row.id, key, editingDrawerDepth.value);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    e.currentTarget.blur();
+                  }
+                  if (e.key === "Escape") setEditingDrawerDepth(null);
+                }}
+                className={`${compact ? "h-8 text-[12px]" : "h-6 text-[11px]"} w-full rounded-[6px] border border-[var(--glass-border)] bg-[var(--panel-bg)] pl-6 pr-1 text-center text-[var(--text-main)]`}
+              />
+            </div>
           );
         }
         const open = () => setEditingDrawerDepth({ rowId: row.id, key, value: saved });
@@ -27967,6 +28375,27 @@ export default function ProjectDetailsPage() {
       })}
     </div>
   );
+  // ...its heights the same way, a line each, each level with its own drawer's depth (the lines the same height as the
+  // depths' — their letter pills' — whatever the font). Its height in mm on hover.
+  const renderDrawerHeightLines = (row: CutlistRow) => {
+    const keys = drawerDepthKeys(row);
+    if (!keys.length) return String(row.height ?? "");
+    const mmByLetter = drawerBreakdownForRoom(row.room).letterValueMap;
+    return (
+      <span className="flex w-full flex-col items-center gap-[2px]">
+        {keys.map((key) => {
+          const label = drawerDepthLabel(key);
+          const mm = mmByLetter[label.toLowerCase()];
+          return (
+            <span key={key} className="inline-flex items-center whitespace-nowrap px-1" title={mm && mm !== label ? `${label}: ${mm}` : undefined}>
+              <span aria-hidden="true" className="inline-block h-[15px] w-0" />
+              {label}
+            </span>
+          );
+        })}
+      </span>
+    );
+  };
   // ...and in the Cutlist Entry: a depth box for each drawer, its height's letter small inside the box's left (red, saying
   // why, as the list's).
   const renderDrawerDepthBoxes = (draft: CutlistDraftRow, keys: string[], className: string, style: React.CSSProperties) => (
@@ -28760,6 +29189,9 @@ export default function ProjectDetailsPage() {
     hideGroupLabel = false,
     hingeSide,
     onHingeSideChange,
+    inline = false,
+    doorHeight,
+    doorWidth,
   }: {
     upValues: string[];
     downValues: string[];
@@ -28777,113 +29209,158 @@ export default function ProjectDetailsPage() {
     hideGroupLabel?: boolean;
     hingeSide?: "" | "LH" | "RH" | "Mirror" | "Top";
     onHingeSideChange?: (value: "" | "LH" | "RH" | "Mirror" | "Top") => void;
-  }) => (
-    <div className={`grid w-full min-w-0 content-center gap-[2px] text-left ${tall ? "min-h-[72px] text-[10px]" : "min-h-[40px] text-[9px]"}`}>
-      {!hideGroupLabel || onHingeSideChange ? (
-        <div className="flex items-center gap-[6px] whitespace-nowrap">
-          {!hideGroupLabel ? (
-            <span className={`inline-flex shrink-0 items-center justify-end font-bold leading-none ${tall ? "w-[54px] text-[12px]" : "w-[42px] text-[11px]"}`} style={{ color: text }}>
-              Hinges
-            </span>
-          ) : null}
-          {onHingeSideChange ? (
-            <GlassSelectDropdown
-              value={hingeSide ?? ""}
-              options={["", "LH", "RH", "Mirror", "Top"]}
-              disabled={disabled}
-              onChange={(v) => onHingeSideChange(v as "" | "LH" | "RH" | "Mirror" | "Top")}
-              className={`${tall ? "h-6 text-[11px]" : "h-[18px] text-[9px]"} shrink-0 rounded-[5px] border px-1 font-bold`}
-              style={{ backgroundColor: bg, borderColor: border, color: text }}
-            />
-          ) : null}
-        </div>
-      ) : null}
-      {(["up", "down"] as const).map((direction) => {
-        const values = direction === "up" ? doorHingeInputValues(upValues) : doorHingeInputValues(downValues);
+    // On one line (the Production Cutlist Entry's manual door): the door's drawing with its hinges (to scale, from
+    // doorHeight × doorWidth), the side switch, then Up and Down.
+    inline?: boolean;
+    doorHeight?: string;
+    doorWidth?: string;
+  }) => {
+    const directionLabel = (direction: "up" | "down") =>
+      hingeSide === "Top" ? (direction === "up" ? "LH" : "RH") : direction === "up" ? "Up" : "Down";
+    const renderHingeInputs = (direction: "up" | "down", sizeClassName: string) => {
+      const values = direction === "up" ? doorHingeInputValues(upValues) : doorHingeInputValues(downValues);
+      return values.map((value, index) => {
+        const fieldKey = `hinges_${direction}_${index}`;
         return (
+          <input
+            key={`hinge_${direction}_${index}`}
+            disabled={disabled}
+            value={value}
+            inputMode="numeric"
+            pattern="[0-9]*"
+            title={warningForCell(rowKey, fieldKey) || undefined}
+            onChange={(e) => {
+              const raw = numericOnlyText(e.target.value);
+              if (raw && Number.isFinite(maxValue) && maxValue != null) {
+                const numericValue = Number.parseInt(raw, 10) || 0;
+                if (numericValue > maxValue) {
+                  showDoorHingeLimitWarning(rowKey, fieldKey, rowLabel, maxValue);
+                  return;
+                }
+              }
+              clearWarningForCell(rowKey, fieldKey);
+              onChange(direction, index, raw);
+            }}
+            onBlur={onBlur}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                onCommit?.();
+              }
+            }}
+            className={`${sizeClassName} shrink-0 border bg-transparent px-0 text-center ${warningClassForCell(rowKey, fieldKey)}`}
+            style={warningStyleForCell(rowKey, fieldKey, { backgroundColor: bg, borderColor: border, color: text })}
+          />
+        );
+      });
+    };
+    if (inline) {
+      return (
+        <div className="flex items-center gap-[10px] whitespace-nowrap pt-[6px] text-[12px]" style={{ color: text }}>
+          <DoorHingeDiagram
+            height={doorHeight}
+            width={doorWidth}
+            up={upValues}
+            down={downValues}
+            side={hingeSide ?? ""}
+            color={text}
+            maxWidth={64}
+            maxGrowWidth={180}
+            maxHeight={34}
+          />
+          <span className="font-bold">Hinges</span>
+          {onHingeSideChange ? <HingeSideToggle value={hingeSide ?? ""} onChange={onHingeSideChange} disabled={disabled} /> : null}
+          {(["up", "down"] as const).map((direction) => (
+            <Fragment key={`hinge_inline_${direction}`}>
+              <span aria-hidden="true" className="h-6 w-px shrink-0" style={{ backgroundColor: border }} />
+              <span className="font-bold">{directionLabel(direction)}</span>
+              <div className="flex flex-nowrap items-center gap-[4px]">
+                {renderHingeInputs(direction, "h-8 w-[52px] rounded-[8px] text-[12px]")}
+              </div>
+            </Fragment>
+          ))}
+        </div>
+      );
+    }
+    return (
+      <div className={`grid w-full min-w-0 content-center gap-[2px] text-left ${tall ? "min-h-[72px] text-[10px]" : "min-h-[40px] text-[9px]"}`}>
+        {!hideGroupLabel || onHingeSideChange ? (
+          <div className="flex items-center gap-[6px] whitespace-nowrap">
+            {!hideGroupLabel ? (
+              <span className={`inline-flex shrink-0 items-center justify-end font-bold leading-none ${tall ? "w-[54px] text-[12px]" : "w-[42px] text-[11px]"}`} style={{ color: text }}>
+                Hinges
+              </span>
+            ) : null}
+            {onHingeSideChange ? (
+              <GlassSelectDropdown
+                value={hingeSide ?? ""}
+                options={["", "LH", "RH", "Mirror", "Top"]}
+                disabled={disabled}
+                onChange={(v) => onHingeSideChange(v as "" | "LH" | "RH" | "Mirror" | "Top")}
+                className={`${tall ? "h-6 text-[11px]" : "h-[18px] text-[9px]"} shrink-0 rounded-[5px] border px-1 font-bold`}
+                style={{ backgroundColor: bg, borderColor: border, color: text }}
+              />
+            ) : null}
+          </div>
+        ) : null}
+        {(["up", "down"] as const).map((direction) => (
           <div key={`hinge_${direction}`} className="flex items-center gap-[3px] whitespace-nowrap">
             <span className={`inline-flex shrink-0 items-center justify-end font-bold leading-none ${tall ? "w-[54px] text-[11px]" : "w-[42px]"}`} style={{ color: "#111111" }}>
-              {hingeSide === "Top" ? (direction === "up" ? "LH" : "RH") : (direction === "up" ? "Up" : "Down")}
+              {directionLabel(direction)}
             </span>
             <div className="flex min-w-0 flex-1 flex-nowrap gap-[4px] overflow-visible">
-              {values.map((value, index) => {
-                const fieldKey = `hinges_${direction}_${index}`;
-                return (
-                  <input
-                    key={`hinge_${direction}_${index}`}
-                    disabled={disabled}
-                    value={value}
-                    inputMode="numeric"
-                    pattern="[0-9]*"
-                    title={warningForCell(rowKey, fieldKey) || undefined}
-                    onChange={(e) => {
-                      const raw = numericOnlyText(e.target.value);
-                      if (raw && Number.isFinite(maxValue) && maxValue != null) {
-                        const numericValue = Number.parseInt(raw, 10) || 0;
-                        if (numericValue > maxValue) {
-                          showDoorHingeLimitWarning(rowKey, fieldKey, rowLabel, maxValue);
-                          return;
-                        }
-                      }
-                      clearWarningForCell(rowKey, fieldKey);
-                      onChange(direction, index, raw);
-                    }}
-                    onBlur={onBlur}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        onCommit?.();
-                      }
-                    }}
-                    className={`${tall ? "h-8 w-[52px] rounded-[8px] text-[12px]" : "h-[18px] w-[44px] rounded-[5px] text-[9px]"} shrink-0 border bg-transparent px-0 text-center ${warningClassForCell(rowKey, fieldKey)}`}
-                    style={warningStyleForCell(rowKey, fieldKey, { backgroundColor: bg, borderColor: border, color: text })}
-                  />
-                );
-              })}
+              {renderHingeInputs(direction, tall ? "h-8 w-[52px] rounded-[8px] text-[12px]" : "h-[18px] w-[44px] rounded-[5px] text-[9px]")}
             </div>
           </div>
-        );
-      })}
+        ))}
+      </div>
+    );
+  };
+
+  // A door's hinges in the Production Cutlist list (its row opened): the door's drawing with them on it, the side switch,
+  // then Up over Down — each position a little box — in from the row's start by its first columns, which the drawing of
+  // a wide piece grows left into. (Read only: the switch just shows the side.)
+  const doorHingeValueChipClass =
+    "inline-flex h-[24px] min-w-[46px] shrink-0 items-center justify-center rounded-[7px] border px-2 text-[12.5px] font-semibold";
+  const doorHingeValueChipStyle: React.CSSProperties = {
+    backgroundColor: "rgba(255, 255, 255, 0.82)",
+    borderColor: "rgba(15, 23, 42, 0.14)",
+    color: "#111111",
+  };
+  const renderDoorHingeDisplay = (
+    upValues: string[],
+    downValues: string[],
+    hingeSide?: "" | "LH" | "RH" | "Mirror" | "Top",
+    doorHeight?: string,
+    doorWidth?: string,
+  ) => (
+    <div className="flex min-h-[52px] w-full min-w-0 flex-wrap items-center gap-x-4 gap-y-2 pl-[120px] text-left text-[12px]">
+      <DoorHingeDiagram height={doorHeight} width={doorWidth} up={upValues} down={downValues} side={hingeSide ?? ""} maxWidth={72} maxGrowWidth={190} maxHeight={50} />
+      <div className="flex items-center gap-2">
+        <span className="font-bold">Hinges</span>
+        <HingeSideToggle value={hingeSide ?? ""} />
+      </div>
+      <span aria-hidden="true" className="h-10 w-px shrink-0 bg-current opacity-20" />
+      <div className="grid gap-[4px]">
+        {(["up", "down"] as const).map((direction) => (
+          <div key={`hinge_${direction}_view`} className="flex items-center gap-[6px] whitespace-nowrap">
+            <span className="w-[38px] shrink-0 text-right font-bold">
+              {hingeSide === "Top" ? (direction === "up" ? "LH" : "RH") : direction === "up" ? "Up" : "Down"}
+            </span>
+            {normalizeDoorHingeValues(direction === "up" ? upValues : downValues).map((value, index) => (
+              <span key={`hinge_${direction}_view_${index}`} className={doorHingeValueChipClass} style={doorHingeValueChipStyle}>
+                {value}
+              </span>
+            ))}
+          </div>
+        ))}
+      </div>
     </div>
   );
 
-  const renderDoorHingeDisplay = (upValues: string[], downValues: string[], hingeSide?: "" | "LH" | "RH" | "Mirror" | "Top") => (
-    <div className="grid min-h-[52px] w-full min-w-0 content-center gap-[3px] text-left text-[12px]">
-      <div className="flex items-center gap-[4px] whitespace-nowrap">
-        <span className="inline-flex w-[50px] shrink-0 items-center justify-end text-[12px] font-bold leading-none text-[#000000]">
-          Hinges
-        </span>
-        <span className="inline-flex w-[50px] shrink-0 items-center justify-end font-bold leading-none">{hingeSide === "Top" ? "LH" : "Up"}</span>
-        <div className="flex min-w-0 flex-1 flex-nowrap gap-[6px] overflow-visible">
-          {normalizeDoorHingeValues(upValues).length > 0
-            ? normalizeDoorHingeValues(upValues).map((value, index) => (
-                <span key={`hinge_up_view_${index}`} className="inline-flex w-[52px] shrink-0 items-center justify-center text-[12.5px] font-medium">
-                  {value}
-                </span>
-              ))
-            : <span></span>}
-        </div>
-      </div>
-      <div className="flex items-center gap-[4px] whitespace-nowrap">
-        <span className="inline-flex w-[50px] shrink-0 items-center justify-end text-[12px] font-bold leading-none"></span>
-        <span className="inline-flex w-[50px] shrink-0 items-center justify-end font-bold leading-none">{hingeSide === "Top" ? "RH" : "Down"}</span>
-        <div className="flex min-w-0 flex-1 flex-nowrap gap-[6px] overflow-visible">
-          {normalizeDoorHingeValues(downValues).length > 0
-            ? normalizeDoorHingeValues(downValues).map((value, index) => (
-                <span key={`hinge_down_view_${index}`} className="inline-flex w-[52px] shrink-0 items-center justify-center text-[12.5px] font-medium">
-                  {value}
-                </span>
-              ))
-            : <span></span>}
-        </div>
-      </div>
-    </div>
-  );
-
-  // Shows hinge positions as plain text (matching the rest of the row) until a specific number is
-  // double-clicked — only that one value becomes an editable textbox, then commits straight to the
-  // row via commitDoorHingeValue on blur/Enter (or discards on Escape) rather than requiring the
-  // whole Up/Down group to be in edit mode at once.
+  // As renderDoorHingeDisplay, but changeable: the side switch, and each position double-clicked becomes a box to type
+  // it in (only that one), committed straight to the row via commitDoorHingeValue on blur/Enter (or dropped on
+  // Escape); + adds another.
   const renderDoorHingeInteractive = (row: CutlistRow) => {
     const renderInput = (direction: "up" | "down", index: number) => (
       <input
@@ -28908,7 +29385,7 @@ export default function ProjectDetailsPage() {
             setEditingHingeCell(null);
           }
         }}
-        className="h-[24px] w-[52px] shrink-0 rounded-[6px] border border-[#94A3B8] bg-white px-0 text-center text-[12.5px] font-medium text-[#0F172A]"
+        className="h-[24px] w-[52px] shrink-0 rounded-[7px] border border-[#94A3B8] bg-white px-0 text-center text-[12.5px] font-semibold text-[#0F172A]"
       />
     );
     const renderGroup = (direction: "up" | "down", values: string[]) => {
@@ -28917,7 +29394,7 @@ export default function ProjectDetailsPage() {
       const isAddingNew =
         editingHingeCell?.rowId === row.id && editingHingeCell.direction === direction && editingHingeCell.index === addIndex;
       return (
-        <div className="flex min-w-0 flex-1 flex-nowrap items-center gap-[6px] overflow-visible">
+        <div className="flex flex-nowrap items-center gap-[6px]">
           {realValues.map((value, index) => {
             const isEditingThis =
               editingHingeCell?.rowId === row.id &&
@@ -28931,7 +29408,9 @@ export default function ProjectDetailsPage() {
                   setEditingHingeCellDraft(value);
                   setEditingHingeCell({ rowId: row.id, direction, index });
                 }}
-                className="inline-flex w-[52px] shrink-0 cursor-text items-center justify-center text-[12.5px] font-medium text-[#000000]"
+                title="Double-click to change"
+                className={`${doorHingeValueChipClass} cursor-text`}
+                style={doorHingeValueChipStyle}
               >
                 {value}
               </span>
@@ -28947,6 +29426,7 @@ export default function ProjectDetailsPage() {
                 setEditingHingeCell({ rowId: row.id, direction, index: addIndex });
               }}
               title="Add a hinge position"
+              aria-label={`Add a hinge position (${direction === "up" ? "up from the bottom" : "down from the top"})`}
               className="glass-shine inline-flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full border hover:brightness-95"
               style={glassShineStyle("#16A34A")}
             >
@@ -28957,23 +29437,31 @@ export default function ProjectDetailsPage() {
       );
     };
     return (
-      <div className="grid min-h-[52px] w-full min-w-0 content-center gap-[3px] text-left text-[12px]">
-        <div className="flex items-center gap-[6px]">
-          <span className="inline-flex w-[50px] shrink-0 items-center justify-end text-[12px] font-bold leading-none text-[#000000]">Hinges</span>
-          <GlassSelectDropdown
-            value={row.hingeSide ?? ""}
-            options={["", "LH", "RH", "Mirror", "Top"]}
-            onChange={(v) => void commitDoorHingeSideValue(row.id, v as "" | "LH" | "RH" | "Mirror" | "Top")}
-            className="h-[22px] rounded-[6px] border border-[#94A3B8] bg-white px-1.5 text-[11.5px] font-bold text-[var(--text-main)]"
-          />
+      <div className="flex min-h-[52px] w-full min-w-0 flex-wrap items-center gap-x-4 gap-y-2 pl-[120px] text-left text-[12px]">
+        <DoorHingeDiagram
+          height={row.height}
+          width={row.width}
+          up={normalizeDoorHingeValues(row.hingesUp)}
+          down={normalizeDoorHingeValues(row.hingesDown)}
+          side={row.hingeSide ?? ""}
+          maxWidth={72}
+          maxGrowWidth={190}
+          maxHeight={50}
+        />
+        <div className="flex items-center gap-2">
+          <span className="font-bold">Hinges</span>
+          <HingeSideToggle value={row.hingeSide ?? ""} onChange={(v) => void commitDoorHingeSideValue(row.id, v)} />
         </div>
-        <div className="flex items-center gap-[4px] whitespace-nowrap">
-          <span className="inline-flex w-[50px] shrink-0 items-center justify-end font-bold leading-none text-[#000000]">{row.hingeSide === "Top" ? "LH" : "Up"}</span>
-          {renderGroup("up", row.hingesUp ?? [])}
-        </div>
-        <div className="flex items-center gap-[4px] whitespace-nowrap">
-          <span className="inline-flex w-[50px] shrink-0 items-center justify-end font-bold leading-none text-[#000000]">{row.hingeSide === "Top" ? "RH" : "Down"}</span>
-          {renderGroup("down", row.hingesDown ?? [])}
+        <span aria-hidden="true" className="h-10 w-px shrink-0 bg-current opacity-20" />
+        <div className="grid gap-[4px]">
+          <div className="flex items-center gap-[6px] whitespace-nowrap">
+            <span className="w-[38px] shrink-0 text-right font-bold">{row.hingeSide === "Top" ? "LH" : "Up"}</span>
+            {renderGroup("up", row.hingesUp ?? [])}
+          </div>
+          <div className="flex items-center gap-[6px] whitespace-nowrap">
+            <span className="w-[38px] shrink-0 text-right font-bold">{row.hingeSide === "Top" ? "RH" : "Down"}</span>
+            {renderGroup("down", row.hingesDown ?? [])}
+          </div>
         </div>
       </div>
     );
@@ -31728,8 +32216,75 @@ export default function ProjectDetailsPage() {
   const toggleCutlistGroup = (groupKey: string) => {
     setCollapsedCutlistGroups((prev) => ({ ...prev, [groupKey]: !prev[groupKey] }));
   };
+  // Searching, or picking a part type, in the Cutlist List: any group folded away with what's being looked for in it
+  // opened (the rows it'll show — as visibleCutlistRows picks them).
+  const openCutlistGroupsWith = (search: string, partTypeFilter: string) => {
+    const query = search.trim().toLowerCase();
+    if (!query && partTypeFilter === "All Part Types") return;
+    const groupKeys = new Set(
+      cutlistRows
+        .filter((row) => {
+          const roomOk = cutlistRoomFilter === "Project Cutlist" ? true : row.room === cutlistRoomFilter;
+          const typeOk = partTypeFilter === "All Part Types" || row.partType === partTypeFilter;
+          const searchOk =
+            !query || [row.name, row.board, row.partType, row.information].some((v) => String(v || "").toLowerCase().includes(query));
+          return roomOk && typeOk && searchOk;
+        })
+        .map((row) => String(row.partType || "Unassigned")),
+    );
+    setCollapsedCutlistGroups((prev) => {
+      const opening = Object.keys(prev).filter((key) => prev[key] && groupKeys.has(key));
+      if (!opening.length) return prev;
+      const next = { ...prev };
+      opening.forEach((key) => {
+        next[key] = false;
+      });
+      return next;
+    });
+  };
+  const onCutlistSearchChange = (value: string) => {
+    setCutlistSearch(value);
+    openCutlistGroupsWith(value, cutlistPartTypeFilter);
+  };
+  const onCutlistPartTypeFilterChange = (value: string) => {
+    setCutlistPartTypeFilter(value);
+    openCutlistGroupsWith(cutlistSearch, value);
+  };
   const toggleInitialCutlistGroup = (groupKey: string) => {
     setInitialCollapsedCutlistGroups((prev) => ({ ...prev, [groupKey]: !prev[groupKey] }));
+  };
+  // ...and Initial Measure's (the rows it'll show — as visibleInitialCutlistRows picks them).
+  const openInitialCutlistGroupsWith = (search: string, partTypeFilter: string) => {
+    const query = search.trim().toLowerCase();
+    if (!query && partTypeFilter === "All Part Types") return;
+    const groupKeys = new Set(
+      initialCutlistRows
+        .filter((row) => {
+          const roomOk = initialCutlistRoomFilter === "Project Cutlist" ? true : row.room === initialCutlistRoomFilter;
+          const typeOk = partTypeFilter === "All Part Types" || row.partType === partTypeFilter;
+          const searchOk =
+            !query || [row.name, row.board, row.partType, row.information].some((v) => String(v || "").toLowerCase().includes(query));
+          return roomOk && typeOk && searchOk;
+        })
+        .map((row) => String(row.partType || "Unassigned")),
+    );
+    setInitialCollapsedCutlistGroups((prev) => {
+      const opening = Object.keys(prev).filter((key) => prev[key] && groupKeys.has(key));
+      if (!opening.length) return prev;
+      const next = { ...prev };
+      opening.forEach((key) => {
+        next[key] = false;
+      });
+      return next;
+    });
+  };
+  const onInitialCutlistSearchChange = (value: string) => {
+    setInitialCutlistSearch(value);
+    openInitialCutlistGroupsWith(value, initialCutlistPartTypeFilter);
+  };
+  const onInitialCutlistPartTypeFilterChange = (value: string) => {
+    setInitialCutlistPartTypeFilter(value);
+    openInitialCutlistGroupsWith(initialCutlistSearch, value);
   };
 
   const cutlistColumnDefs = useMemo(
@@ -32501,6 +33056,22 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   const isOrderFullscreen = resolvedTab === "production" && productionAccess.view && productionNav === "order";
   const isLabelsFullscreen = resolvedTab === "production" && productionAccess.view && productionNav === "labels";
   const isSalesInitialFullscreen = resolvedTab === "sales" && salesAccess.view && salesNav === "initial";
+  // The Initial Measure Cutlist Entry's top, as the production cutlist's (its own scrolling area — reaching up under the
+  // top bar and the feed's band — held 8px under them).
+  const initialEntryStickMarkerRef = useRef<HTMLDivElement | null>(null);
+  const initialEntryStickyRef = useRef<HTMLDivElement | null>(null);
+  const initialEntryRowsRef = useRef<HTMLDivElement | null>(null);
+  const initialEntryAddButtonRef = useRef<HTMLButtonElement | null>(null);
+  const initialEntryClipRefs = useMemo(() => [initialEntryRowsRef, initialEntryAddButtonRef], []);
+  const isInitialEntryHeaderStuck = useFloatingStickyHeader({
+    scrollEl: initialMeasureDesktopScrollEl,
+    markerRef: initialEntryStickMarkerRef,
+    headerRef: initialEntryStickyRef,
+    clipRefs: initialEntryClipRefs,
+    holdOffset: initialCutlistActivityFeed.length ? CUTLIST_FEED_BAND_BOTTOM + 8 : 64,
+    inset: isCutlistRoomsPanelShown ? 12 : 4,
+    remountKey: `${isSalesInitialFullscreen}:${isCompactProjectViewport}:${initialCutlistRoomFilter}`,
+  });
   const isSalesItemsFullscreen = resolvedTab === "sales" && salesAccess.view && salesNav === "items";
   const isSalesQuoteFullscreen = resolvedTab === "sales" && salesAccess.view && salesNav === "quote";
   // Plays the Quote sheet's own two bubbles' entrance animation exactly when this view is FRESHLY
@@ -32698,21 +33269,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             />
             <div ref={addRoomPilotPanelRef} className="glass-modal-panel relative w-[min(720px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
               {/* Its X in the top right corner, as the other pop-ups' (no Back button). */}
-              <div className="glass-modal-header flex items-center justify-between gap-3 px-5 py-4">
-                <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Add Room</p>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsAddRoomModalOpen(false);
-                    setAddRoomName("");
-                    setAddRoomError("");
-                  }}
-                  className={modalCloseButtonClass}
-                  aria-label="Close"
-                >
-                  <X size={16} />
-                </button>
-              </div>
+              <GlassModalHeader
+                title="Add Room"
+                onClose={() => {
+                  setIsAddRoomModalOpen(false);
+                  setAddRoomName("");
+                  setAddRoomError("");
+                }}
+              />
               <div className="space-y-4 px-5 py-4">
                 <div className="space-y-2">
                   <p className="text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>Room Name</p>
@@ -32767,9 +33331,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               className="glass-modal-backdrop absolute inset-0"
             />
             <div ref={unlockEditModalPanelRef} className="glass-modal-panel relative w-[min(720px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
-              <div className="glass-modal-header px-5 py-4">
-                <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Unlock Edit</p>
-              </div>
+              <GlassModalHeader title="Unlock Edit" onClose={closeUnlockEditModal} />
               <div className="space-y-4 px-5 py-4">
                 <div className="space-y-1">
                   <p className="text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>Enter unlock password</p>
@@ -32919,7 +33481,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               {/* Its header as the other pop-ups' — its title (and icon), its X — and under it the editor's toolbar, slim and
                   flat as the production cutlist's notes drawers' (drawer-toolbar-slim — globals.css). */}
               <div
-                className="drawer-toolbar-slim glass-modal-header relative z-[2] shrink-0 px-5 pb-2 pt-4"
+                className={`drawer-toolbar-slim glass-modal-header relative z-[2] shrink-0 px-5 ${productionReadOnly ? "" : "pb-2"}`}
                 style={{
                   backgroundColor: "color-mix(in srgb, var(--panel-muted) 35%, transparent)",
                   backdropFilter: "blur(6px)",
@@ -32927,16 +33489,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   borderBottomColor: "var(--panel-border)",
                 }}
               >
-                <div className="flex items-center justify-between gap-3">
-                  <p className="flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                    <Wrench size={15} className="shrink-0" style={{ color: "var(--text-muted)" }} />
+                <div className="flex h-[56px] items-center justify-between gap-3">
+                  <p className="flex min-w-0 items-center gap-2 text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                    <Wrench size={16} className="shrink-0" />
                     <span className="min-w-0 truncate">Remedials</span>
                   </p>
                   <button type="button" onClick={() => void closeRemedialsPanel()} className={modalCloseButtonClass} aria-label="Close">
                     <X size={16} />
                   </button>
                 </div>
-                {!productionReadOnly ? <div ref={setRemedialsToolbarHost} className="-mx-2 mt-1 min-w-0" /> : null}
+                {!productionReadOnly ? <div ref={setRemedialsToolbarHost} className="-mx-2 min-w-0" /> : null}
               </div>
               {/* No box round the notes: the pop-up's whole body is where they're typed (drawer-notes-editor — globals.css),
                   as in the notes drawers. */}
@@ -32984,55 +33546,40 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 right: "left center",
                 left: "right center",
               };
-              // A genuine triangle cut from a real, normal-sized box via clip-path (NOT the classic
-              // 0×0 border-triangle hack — backdrop-filter doesn't reliably apply to a border-only
-              // shape). Same exact fill + blur as the bubble body, no separate border color, so it
-              // reads as one continuous piece of glass. Sunk in by exactly the box's own border
-              // width (1px) — just enough to paint over that sliver of the box's border line so it
-              // doesn't cross the base of the triangle, without any larger overlap that would stack
-              // two translucent blurred layers into a visibly darker patch.
-              const TAIL_LEN = 10;
-              const TAIL_HALF = 9;
-              const TAIL_OVERLAP = 1;
-              const pointDownClip = "polygon(0% 0%, 100% 0%, 50% 100%)";
-              const pointUpClip = "polygon(0% 100%, 100% 100%, 50% 0%)";
-              const pointLeftClip = "polygon(100% 0%, 100% 100%, 0% 50%)";
-              const pointRightClip = "polygon(0% 0%, 0% 100%, 100% 50%)";
-              const buildTailStyle = (len: number, half: number): Record<CutlistBubblePlacement, React.CSSProperties> => ({
+              // Its pointer: a small square turned on its corner, half out of the card toward the cell — the card's own fill,
+              // with its border on just its two outer sides, so the card's edge runs on round the point.
+              const TAIL_SIZE = 11;
+              const tailBorder = "1px solid var(--danger-border)";
+              const tailStyleByPlacement: Record<CutlistBubblePlacement, React.CSSProperties> = {
                 above: {
                   left: `calc(50% + ${bubble.tailOffset}px)`,
-                  bottom: -(len - TAIL_OVERLAP),
-                  transform: "translateX(-50%)",
-                  width: half * 2,
-                  height: len,
-                  clipPath: pointDownClip,
+                  bottom: -TAIL_SIZE / 2,
+                  transform: "translateX(-50%) rotate(45deg)",
+                  borderRight: tailBorder,
+                  borderBottom: tailBorder,
                 },
                 below: {
                   left: `calc(50% + ${bubble.tailOffset}px)`,
-                  top: -(len - TAIL_OVERLAP),
-                  transform: "translateX(-50%)",
-                  width: half * 2,
-                  height: len,
-                  clipPath: pointUpClip,
+                  top: -TAIL_SIZE / 2,
+                  transform: "translateX(-50%) rotate(45deg)",
+                  borderLeft: tailBorder,
+                  borderTop: tailBorder,
                 },
                 right: {
                   top: `calc(50% + ${bubble.tailOffset}px)`,
-                  left: -(len - TAIL_OVERLAP),
-                  transform: "translateY(-50%)",
-                  width: len,
-                  height: half * 2,
-                  clipPath: pointLeftClip,
+                  left: -TAIL_SIZE / 2,
+                  transform: "translateY(-50%) rotate(45deg)",
+                  borderLeft: tailBorder,
+                  borderBottom: tailBorder,
                 },
                 left: {
                   top: `calc(50% + ${bubble.tailOffset}px)`,
-                  right: -(len - TAIL_OVERLAP),
-                  transform: "translateY(-50%)",
-                  width: len,
-                  height: half * 2,
-                  clipPath: pointRightClip,
+                  right: -TAIL_SIZE / 2,
+                  transform: "translateY(-50%) rotate(45deg)",
+                  borderRight: tailBorder,
+                  borderTop: tailBorder,
                 },
-              });
-              const tailStyleByPlacement = buildTailStyle(TAIL_LEN, TAIL_HALF);
+              };
               // The wrapper is positioned exactly on the anchor's own edge (its true rendered
               // top/bottom/left/right, not an estimate), then shifted back by the bubble's own
               // *real* rendered size via a CSS transform percentage — so the tail always touches
@@ -33069,36 +33616,63 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     pointerEvents: "none",
                   }}
                 >
+                  {/* A soft red card (solid, so nothing muddies it), a warning mark and the message beside it, its pointer at
+                      the cell. Clicked: gone. */}
                   <div
                     onClick={() => dismissCutlistFieldBubble(bubble.id)}
-                    className={bubble.removing ? "cutlist-warning-bubble-out" : "glass-bubble-pop"}
+                    className={`${bubble.removing ? "cutlist-warning-bubble-out" : "glass-bubble-pop"} flex items-start gap-2`}
+                    role="alert"
                     style={{
                       position: "relative",
-                      width: CUTLIST_BUBBLE_WIDTH,
-                      padding: "8px 12px",
-                      borderRadius: 12,
-                      border: "1px solid var(--danger-glass-border)",
-                      background: "var(--danger-glass-bg)",
-                      backdropFilter: "blur(16px) saturate(180%)",
-                      WebkitBackdropFilter: "blur(16px) saturate(180%)",
-                      boxShadow: "var(--shadow-glass)",
-                      color: "#FFFFFF",
-                      fontSize: 12,
-                      fontWeight: 700,
-                      lineHeight: 1.3,
-                      textAlign: "center",
+                      width: "max-content",
+                      maxWidth: CUTLIST_BUBBLE_WIDTH,
+                      padding: "8px 12px 8px 8px",
+                      borderRadius: 14,
+                      border: "1px solid var(--danger-border)",
+                      background: "var(--danger-soft)",
+                      boxShadow: "0 10px 28px rgba(15, 23, 42, 0.18), 0 2px 6px rgba(15, 23, 42, 0.08)",
+                      color: "var(--danger-strong)",
+                      fontSize: 12.5,
+                      fontWeight: 500,
+                      lineHeight: 1.35,
+                      textAlign: "left",
                       transformOrigin: transformOriginByPlacement[bubble.placement],
                       pointerEvents: "auto",
                       cursor: "pointer",
                     }}
                   >
-                    {bubble.message}
+                    <span
+                      className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full"
+                      style={{ backgroundColor: "var(--danger-tint)", color: "var(--danger)" }}
+                    >
+                      <AlertTriangle size={12} strokeWidth={2.4} aria-hidden="true" />
+                    </span>
+                    {(() => {
+                      const unique = Array.from(new Set(bubble.messages));
+                      const missing = unique.map(cutlistBubbleMissingName).filter(Boolean);
+                      const others = unique.filter((message) => !cutlistBubbleMissingName(message));
+                      return (
+                        <span className="min-w-0 space-y-0.5 pt-px">
+                          {missing.length ? (
+                            <span className="block">
+                              <span className="font-semibold">Missing:</span> {missing.join(", ")}
+                            </span>
+                          ) : null}
+                          {others.map((message) => (
+                            <span key={message} className="block">
+                              {message}
+                            </span>
+                          ))}
+                        </span>
+                      );
+                    })()}
                     <div
+                      aria-hidden="true"
                       style={{
                         position: "absolute",
-                        background: "var(--danger-glass-bg)",
-                        backdropFilter: "blur(16px) saturate(180%)",
-                        WebkitBackdropFilter: "blur(16px) saturate(180%)",
+                        width: TAIL_SIZE,
+                        height: TAIL_SIZE,
+                        background: "var(--danger-soft)",
                         ...tailStyleByPlacement[bubble.placement],
                       }}
                     />
@@ -35855,9 +36429,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               className="glass-modal-backdrop absolute inset-0"
             />
             <div ref={deleteQuoteSnapshotModalPanelRef} className="glass-modal-panel relative z-[2147483647] w-[min(420px,96vw)] overflow-hidden">
-              <div className="glass-modal-header px-5 py-4">
-                <p className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>Delete this quote version?</p>
-              </div>
+              <GlassModalHeader title="Delete this quote version?" onClose={() => setPendingDeleteQuoteSnapshotId("")} />
               <div className="px-5 py-4">
                 <p className="text-[13px]" style={{ color: "var(--text-main)" }}>
                   This permanently removes <b>Version {pendingDeleteQuoteSnapshot?.version ?? ""}</b> from the quote history. This can&apos;t be undone.
@@ -35907,11 +36479,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               className="absolute inset-0 glass-modal-backdrop"
             />
             <div ref={itemsAddRoomPanelRef} className="glass-modal-panel relative z-[2147483647] w-[min(520px,96vw)] overflow-hidden">
-              <div className="glass-modal-header px-5 py-4">
-                <p className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>Add Room</p>
-                <p className="mt-1 text-[12px]" style={{ color: "var(--text-main)" }}>Create a room to start assigning items.</p>
-              </div>
+              <GlassModalHeader
+                title="Add Room"
+                onClose={() => {
+                  setIsItemsAddRoomModalOpen(false);
+                  setItemsAddRoomName("");
+                }}
+              />
               <div className="space-y-4 px-5 py-5">
+                <p className="text-[12px] font-medium" style={{ color: "var(--text-main)" }}>Create a room to start assigning items.</p>
                 <RoomNameCombobox
                   autoFocus
                   value={itemsAddRoomName}
@@ -35984,12 +36560,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     return (
       <>
         <div
-          className={`flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b px-4 py-3 ${touch ? "pt-4 max-md:pt-[max(16px,env(safe-area-inset-top))]" : ""}`}
-          style={{ borderColor: "var(--glass-border)" }}
+          className={`glass-modal-header flex shrink-0 flex-wrap items-center gap-x-3 px-5 ${touch ? "gap-y-1 pb-3" : "h-[56px]"}`}
         >
-          <div className="min-w-0 flex-1">
-            <p className={`font-semibold leading-tight ${touch ? "text-[17px]" : "text-[15px]"}`} style={{ color: "var(--text-main)" }}>Add Item</p>
-            <p className="truncate text-[12px] font-medium" style={{ color: "var(--text-main)" }}>
+          {/* (Its title row the standard 56px — on a phone the search wraps under it.) */}
+          <div className="flex h-[56px] min-w-0 flex-1 items-center gap-2">
+            <p className="shrink-0 text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Add Item</p>
+            <span className="text-[14px] font-medium" style={{ color: "var(--text-muted)" }}>|</span>
+            <p className="min-w-0 truncate text-[14px] font-medium" style={{ color: "var(--text-main)" }}>
               {activeSalesItemsRoom ? activeSalesItemsRoom.name : "Select a room first"}
             </p>
           </div>
@@ -36010,7 +36587,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             <X size={16} />
           </button>
         </div>
-        <OverlayScrollArea className="min-h-0 flex-1" contentClassName={touch ? "px-3 pt-1 pb-3 max-md:pb-[max(12px,env(safe-area-inset-bottom))]" : "px-3 pb-3 pt-1"}>
+        <OverlayScrollArea className="min-h-0 flex-1" contentClassName="px-3 pb-3 pt-1">
           {groups.length === 0 ? (
             <p className="py-10 text-center text-[12.5px]" style={{ color: "var(--text-muted)" }}>No items match your search.</p>
           ) : null}
@@ -36180,9 +36757,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               className="glass-modal-backdrop absolute inset-0"
             />
             <div ref={itemsRoomDeleteModalPanelRef} className="glass-modal-panel relative z-[2147483647] w-[min(420px,96vw)] overflow-hidden">
-              <div className="glass-modal-header px-5 py-4">
-                <p className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>Delete this room?</p>
-              </div>
+              <GlassModalHeader title="Delete this room?" onClose={() => setItemsRoomPendingDeleteId("")} />
               <div className="px-5 py-4">
                 <p className="text-[13px]" style={{ color: "var(--text-main)" }}>
                   This removes &quot;{salesItemsRoomPendingDelete?.name || "this room"}&quot; and all{" "}
@@ -36227,11 +36802,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               className="glass-modal-backdrop absolute inset-0"
             />
             <div ref={clearSalesItemsConfirmPanelRef} className="glass-modal-panel relative z-[2147483647] w-[min(420px,96vw)] overflow-hidden">
-              <div className="glass-modal-header px-5 py-4">
-                <p className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>
-                  {clearSalesItemsConfirmKind === "all" ? "Clear all rooms?" : "Clear this room?"}
-                </p>
-              </div>
+              <GlassModalHeader title={<>{clearSalesItemsConfirmKind === "all" ? "Clear all rooms?" : "Clear this room?"}</>} onClose={() => setClearSalesItemsConfirmKind("")} />
               <div className="px-5 py-4">
                 <p className="text-[13px]" style={{ color: "var(--text-main)" }}>
                   {clearSalesItemsConfirmKind === "all"
@@ -36281,9 +36852,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               className="glass-modal-backdrop absolute inset-0"
             />
             <div ref={itemsRemoveConfirmPanelRef} className="glass-modal-panel relative z-[2147483647] w-[min(420px,96vw)] overflow-hidden">
-              <div className="glass-modal-header px-5 py-4">
-                <p className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>Remove item?</p>
-              </div>
+              <GlassModalHeader title="Remove item?" onClose={() => setItemsRemovePendingItem(null)} />
               <div className="px-5 py-4">
                 <p className="text-[13px]" style={{ color: "var(--text-main)" }}>
                   This removes <b>{displayItemsRemovePendingItem.quantity}</b> of <b>{displayItemsRemovePendingItem.name}</b> from <b>{displayItemsRemovePendingItem.roomName}</b>
@@ -36337,15 +36906,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 confirmSalesItemsCustomPrice();
               }}
             >
-              <div className="glass-modal-header px-5 py-4">
-                <p className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>Custom price</p>
-                <p className="mt-0.5 truncate text-[12.5px] font-medium" style={{ color: "var(--text-main)" }}>
+              <GlassModalHeader title="Custom price" onClose={() => setSalesItemsCustomPricePending(null)} />
+              <div className="px-5 py-4">
+                <p className="mb-3 truncate text-[12.5px] font-medium" style={{ color: "var(--text-main)" }}>
                   {displaySalesItemsCustomPricePending.name}
                   {displaySalesItemsCustomPricePending.quantity > 1 ? ` × ${displaySalesItemsCustomPricePending.quantity}` : ""}
                   {displaySalesItemsCustomPricePending.roomName ? ` · ${displaySalesItemsCustomPricePending.roomName}` : ""}
                 </p>
-              </div>
-              <div className="px-5 py-4">
                 <label className="block text-[12px] font-medium" style={{ color: "var(--text-main)" }}>
                   Price{displaySalesItemsCustomPricePending.quantity > 1 ? " (each)" : ""}
                   <input
@@ -36878,17 +37445,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               ref={partTypeBreakdownModalPanelRef}
               className="glass-modal-panel relative z-[2147483647] flex max-h-[80vh] w-[min(480px,96vw)] flex-col overflow-hidden"
             >
-              <div className="glass-modal-header flex items-center justify-between px-5 py-4">
-                <p className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>Parts Breakdown</p>
-                <button
-                  type="button"
-                  aria-label="Close"
-                  onClick={() => setIsPartTypeBreakdownModalOpen(false)}
-                  className={modalCloseButtonClass}
-                >
-                  <X size={16} />
-                </button>
-              </div>
+              <GlassModalHeader title="Parts Breakdown" onClose={() => setIsPartTypeBreakdownModalOpen(false)} />
               <div className="glass-scroll min-h-0 flex-1 overflow-y-auto px-5 py-4">
                 {salesSummaryPartTypeBreakdown.entries.length === 0 ? (
                   <p className="text-[13px]" style={{ color: "var(--text-main)" }}>No cutlist rows recorded.</p>
@@ -36936,17 +37493,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               ref={sheetCountModalPanelRef}
               className="glass-modal-panel relative z-[2147483647] flex max-h-[80vh] w-[min(620px,96vw)] flex-col overflow-hidden"
             >
-              <div className="glass-modal-header flex items-center justify-between px-5 py-4">
-                <p className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>Sheet Count by Product Type</p>
-                <button
-                  type="button"
-                  aria-label="Close"
-                  onClick={() => setIsSheetCountModalOpen(false)}
-                  className={modalCloseButtonClass}
-                >
-                  <X size={16} />
-                </button>
-              </div>
+              <GlassModalHeader title="Sheet Count by Product Type" onClose={() => setIsSheetCountModalOpen(false)} />
               <div className="glass-scroll min-h-0 flex-1 overflow-y-auto px-5 py-4">
                 {salesRoomSheetAnalysis.sheetCountsByProduct.length === 0 ? (
                   <p className="text-[13px]" style={{ color: "var(--text-main)" }}>No sheet usage recorded.</p>
@@ -37168,17 +37715,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               ref={costByRoomModalPanelRef}
               className="glass-modal-panel relative z-[2147483647] flex max-h-[80vh] w-[min(560px,96vw)] flex-col overflow-hidden"
             >
-              <div className="glass-modal-header flex items-center justify-between px-5 py-4">
-                <p className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>Cost by Room</p>
-                <button
-                  type="button"
-                  aria-label="Close"
-                  onClick={() => setIsCostByRoomModalOpen(false)}
-                  className={modalCloseButtonClass}
-                >
-                  <X size={16} />
-                </button>
-              </div>
+              <GlassModalHeader title="Cost by Room" onClose={() => setIsCostByRoomModalOpen(false)} />
               <div className="glass-scroll min-h-0 flex-1 overflow-y-auto px-5 py-4">
                 {displayedSalesRoomRows.length === 0 ? (
                   <p className="text-[13px]" style={{ color: "var(--text-main)" }}>No rooms added.</p>
@@ -37234,8 +37771,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               ref={roomCostBreakdownModalPanelRef}
               className="glass-modal-panel relative z-[2147483647] flex max-h-[80vh] w-[min(560px,96vw)] flex-col overflow-hidden"
             >
-              <div className="glass-modal-header flex items-center justify-between gap-2 px-5 py-4">
-                <p className="min-w-0 truncate text-[15px] font-bold" style={{ color: "var(--text-main)" }}>
+              <div className="glass-modal-header flex h-[56px] shrink-0 items-center justify-between gap-3 px-5">
+                <p className="min-w-0 truncate text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
                   {roomCostBreakdownModalRoomName || "Room"} — Cost Breakdown
                 </p>
                 <div className="flex shrink-0 items-center gap-2">
@@ -37292,8 +37829,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               ref={projectCostBreakdownModalPanelRef}
               className="glass-modal-panel relative z-[2147483647] flex max-h-[85vh] w-[min(680px,96vw)] flex-col overflow-hidden"
             >
-              <div className="glass-modal-header flex items-center justify-between gap-2 px-5 py-4">
-                <p className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>Project Cost Breakdown</p>
+              <div className="glass-modal-header flex h-[56px] shrink-0 items-center justify-between gap-3 px-5">
+                <p className="min-w-0 truncate text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Project Cost Breakdown</p>
                 <div className="flex shrink-0 items-center gap-2">
                   <button
                     type="button"
@@ -37481,10 +38018,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               ref={projectManagementModalPanelRef}
               className="glass-modal-panel relative z-[2147483647] flex max-h-[85vh] w-[min(760px,96vw)] flex-col overflow-hidden"
             >
-              <div className="glass-modal-header flex items-center justify-between px-5 py-4">
-                <div className="flex items-center gap-2">
-                  <HardHat size={16} style={{ color: "var(--text-main)" }} strokeWidth={2.1} />
-                  <p className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>Project Management</p>
+              <div className="glass-modal-header flex h-[56px] shrink-0 items-center justify-between gap-3 px-5">
+                <div className="flex min-w-0 items-center gap-2">
+                  <HardHat size={16} className="shrink-0" style={{ color: "var(--text-main)" }} strokeWidth={2.1} />
+                  <p className="min-w-0 truncate text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Project Management</p>
                 </div>
                 {/* Add Checklist (its saved checklists' menu under it), then the X. */}
                 <div className="flex items-center gap-2">
@@ -42076,12 +42613,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               style={{ zIndex: 2147483647 }}
             >
               {/* Its X in the top right corner, as the other pop-ups' (no Cancel). */}
-              <div className="glass-modal-header flex items-center justify-between gap-3 px-5 py-4">
-                <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Print</p>
-                <button type="button" onClick={closeProductionPrintModal} className={modalCloseButtonClass} aria-label="Close">
-                  <X size={16} />
-                </button>
-              </div>
+              <GlassModalHeader title="Print" onClose={closeProductionPrintModal} />
               <div className="glass-scroll min-h-0 flex-1 overflow-auto px-5 py-4">
                 <div className="space-y-2">
                   {productionPrintOptions.map((option) => {
@@ -43238,8 +43770,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   type="button"
                                   disabled={salesReadOnly}
                                   onClick={() => removeInitialDraftCutlistRow(draft.id)}
-                                  className="h-8 w-8 shrink-0 rounded-[8px] border text-[11px] font-bold text-white hover:brightness-95 disabled:opacity-55"
-                                  style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
+                                  // (Round, with the glass shine — red — as the desktop entry's.)
+                                  className="glass-shine h-8 w-8 shrink-0 rounded-full border text-[11px] font-bold text-white hover:brightness-95 disabled:opacity-55"
+                                  style={glassShineStyle("var(--danger)")}
                                 >
                                   <X size={15} className="mx-auto" strokeWidth={2.8} />
                                 </button>
@@ -43423,16 +43956,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         type="button"
                                         disabled={salesReadOnly}
                                         onClick={() => (idx === 0 ? onInitialDraftAddInformationLine(draft.id) : onInitialDraftRemoveInformationLine(draft.id, idx))}
-                                        className={
-                                          idx === 0
-                                            ? "inline-flex h-8 w-8 items-center justify-center rounded-[8px] border text-[20px] font-bold leading-none text-white hover:brightness-95 disabled:opacity-55"
-                                            : "inline-flex h-8 w-8 items-center justify-center rounded-[8px] border text-[11px] font-bold text-white hover:brightness-95 disabled:opacity-55"
-                                        }
-                                        style={
-                                          idx === 0
-                                            ? { backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }
-                                            : { backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }
-                                        }
+                                        className="glass-shine inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border font-bold text-white hover:brightness-95 disabled:opacity-55"
+                                        style={glassShineStyle(idx === 0 ? "#16A34A" : "var(--danger)")}
                                       >
                                         {idx === 0 ? <Plus size={16} className="mx-auto" strokeWidth={2.8} /> : <X size={15} className="mx-auto" strokeWidth={2.8} />}
                                       </button>
@@ -43468,7 +43993,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 <div className="mt-3">
                   <input
                     value={initialCutlistSearch}
-                    onChange={(e) => setInitialCutlistSearch(e.target.value)}
+                    onChange={(e) => onInitialCutlistSearchChange(e.target.value)}
                     placeholder="Search cutlist..."
                     className="mb-3 h-9 w-full rounded-[10px] border px-3 text-[12px] outline-none"
                     style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
@@ -43598,25 +44123,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         onClick={(e) => e.stopPropagation()}
                       >
                         <div className="flex min-h-0 flex-1 flex-col">
-                          <div className="glass-modal-header relative flex min-h-[58px] items-center justify-between gap-3 px-4" style={{ backgroundColor: hexToRgba(detailPalette.titleBarBg, 0.6) }}>
+                          <div className="glass-modal-header relative flex h-[56px] shrink-0 items-center justify-between gap-3 px-5" style={{ backgroundColor: hexToRgba(detailPalette.titleBarBg, 0.6) }}>
                             <div className="min-w-0">
-                              <p className="whitespace-nowrap text-[19px] font-medium" style={{ color: detailPalette.text }}>{row.name || "Part"}</p>
-                              <p className="whitespace-nowrap text-[13px]" style={{ color: detailPalette.text }}>{group.partType}</p>
+                              <p className="truncate text-[14px] font-bold uppercase tracking-[1px]" style={{ color: detailPalette.text }}>{row.name || "Part"}</p>
+                              <p className="truncate text-[12px] font-medium" style={{ color: detailPalette.text }}>{group.partType}</p>
                             </div>
-                            <button
-                              type="button"
-                              onClick={closeInitialMobileRowDetail}
-                              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px] border hover:brightness-95"
-                              style={{
-                                borderColor: "var(--danger-glass-border)",
-                                backgroundColor: "var(--danger-glass-bg)",
-                                backdropFilter: "blur(10px) saturate(180%)",
-                                WebkitBackdropFilter: "blur(10px) saturate(180%)",
-                                color: "#FFFFFF",
-                              }}
-                              title="Close"
-                            >
-                              <X size={18} strokeWidth={2.4} />
+                            <button type="button" onClick={closeInitialMobileRowDetail} className={modalCloseButtonClass} style={{ color: detailPalette.text }} aria-label="Close">
+                              <X size={16} />
                             </button>
                           </div>
                           <div className="min-h-0 flex-1 overflow-auto p-4 text-[15px]" style={{ color: detailPalette.text }}>
@@ -43951,11 +44464,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         <div className="flex h-[100svh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
           {/* Split into a fixed backdrop + content pair — see the mobile branch's own identical
               comment above for the full reasoning. */}
+          {/* (One sheet of glass behind the top bar and — while there's a change in it — the feed of changes' band under it,
+              as the CNC Cutlist's top bar and Visibility band: the cutlist scrolling under them both.) */}
           <div
             data-app-top-bar="true"
             className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
             style={{
-              height: 56,
+              height: initialCutlistActivityFeed.length ? CUTLIST_FEED_BAND_BOTTOM : 56,
+              transition: "height 320ms cubic-bezier(0.22, 1, 0.36, 1)",
               backgroundColor: "var(--glass-bg-strong)",
               backdropFilter: "blur(14px) saturate(220%)",
               WebkitBackdropFilter: "blur(14px) saturate(220%)",
@@ -43964,7 +44480,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               willChange: "transform",
             }}
           />
-          <div data-app-top-bar-content="true" className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center justify-between border-b px-4 md:px-5" style={{ borderColor: "var(--glass-border)" }}>
+          <div data-app-top-bar-content="true" className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center justify-between border-b px-4 md:px-5" style={{ borderColor: initialCutlistActivityFeed.length ? "transparent" : "var(--glass-border)" }}>
             <div className="pointer-events-none absolute inset-x-0 flex justify-center px-24">
               <div className="inline-flex min-w-0 items-center justify-center gap-2 text-[20px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
                 <span className="truncate" style={{ color: "var(--text-main)" }}>{String(initialCutlistRoomFilter || "Project Cutlist").trim() || "Project Cutlist"}</span>
@@ -43984,7 +44500,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             {renderSaveAndBackButton(() => void saveAndBackFromInitialMeasure(), isCompactProjectViewport)}
             </div>
           </div>
-          <div className="h-[56px] shrink-0" />
           {/* The Rooms column (190px) beside the cutlist — or, put away, none: Nesting's Visibility's way, as the production
               cutlist's (it shares its toggle's state — open or put away on both). Its toggle at its top (the toggle's row,
               58px, with the feed of changes beside it), then its rooms; the cutlist below the toggle's row either way, so
@@ -43994,42 +44509,47 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             className="grid min-h-0 flex-1 gap-0"
             style={{
               gridTemplateColumns: `${isCutlistRoomsPanelShown ? 190 : 0}px minmax(0, 1fr)`,
-              gridTemplateRows: "58px minmax(0, 1fr)",
+              // (The screen's whole height: its cutlist scrolling up under the top bar and the feed's band.)
+              gridTemplateRows: "minmax(0, 1fr)",
               transition: isCutlistRoomsPanelShown ? "grid-template-columns 180ms ease" : "grid-template-columns 200ms ease 280ms",
             }}
           >
             <aside
               // (Put away, it's still the screen's full height, over the start of the cutlist beside it — presses go through
               // it to the cutlist then, but its toggle.)
-              className={`relative z-[20] col-start-1 row-span-2 row-start-1 flex min-h-0 w-[190px] flex-col ${
+              className={`relative z-[20] col-start-1 row-start-1 flex min-h-0 w-[190px] flex-col ${
                 isCutlistRoomsPanelOpen ? "" : "pointer-events-none"
               }`}
-              // (Scrolling a long list of rooms — not while they slide in or out: it'd clip their buttons' shadows.)
-              style={{ overflowY: isCutlistRoomsPanelShown && !isCutlistRoomsPanelJustOpened ? "auto" : "visible" }}
+              // (Scrolling a long list of rooms — not while they slide in or out: it'd clip their buttons' shadows. Right
+              // under the top bar while there's no feed of changes along the top; slid down out of its way once there is,
+              // as far below its bubbles as they are below the top bar — as the production cutlist's.)
+              style={{
+                overflowY: isCutlistRoomsPanelShown && !isCutlistRoomsPanelJustOpened ? "auto" : "visible",
+                marginTop: initialCutlistActivityFeed.length ? CUTLIST_FEED_BAND_BOTTOM : 56,
+                transition: "margin-top 320ms cubic-bezier(0.22, 1, 0.36, 1)",
+              }}
             >
-              <div className="pointer-events-auto flex shrink-0 items-center p-2">
-                <button
-                  type="button"
-                  onClick={toggleCutlistRoomsPanel}
-                  aria-expanded={isCutlistRoomsPanelShown}
-                  className={`glass-shine ${CUTLIST_SIDEBAR_BUTTON_CLASS} ${isCutlistRoomsPanelShown ? "" : "glass-shine-soft"}`}
-                  style={glassShineStyle("var(--brand)", isCutlistRoomsPanelShown ? undefined : { color: "var(--brand-strong)" })}
-                >
-                  Rooms
-                  <ChevronDown
-                    size={14}
-                    className="shrink-0"
-                    style={{ transform: isCutlistRoomsPanelShown ? "rotate(-90deg)" : "rotate(90deg)", transition: "transform 140ms ease" }}
-                  />
-                </button>
-              </div>
               {isCutlistRoomsPanelOpen && (
-              <div className="flex flex-1 flex-col p-2 pt-0">
+              // In its own container, fixed beside the cutlist: its title, then its rooms.
+              <div
+                className="m-2 mr-0 flex flex-col rounded-[16px] border p-2"
+                // (The top bar's glass.)
+                style={{
+                  borderColor: "var(--glass-border)",
+                  backgroundColor: "var(--glass-bg-strong)",
+                  backdropFilter: "blur(14px) saturate(220%)",
+                  WebkitBackdropFilter: "blur(14px) saturate(220%)",
+                  boxShadow: "inset 0 1px 0 var(--glass-highlight), 0 1px 3px rgba(15, 23, 42, 0.06)",
+                }}
+              >
+                <p className="px-2 pb-2 pt-1 text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>
+                  Rooms
+                </p>
                 <div ref={initialRoomListRef} className="relative space-y-1">
                   {initialRoomHighlightRect && (
                     <div
                       aria-hidden="true"
-                      className="absolute left-0 right-0 rounded-full"
+                      className="absolute left-0 right-0 rounded-[10px]"
                       style={{
                         top: initialRoomHighlightRect.top,
                         height: initialRoomHighlightRect.height,
@@ -44048,12 +44568,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         ref={(el) => { initialRoomButtonRefs.current[roomTab.filter] = el; }}
                         type="button"
                         onClick={() => setInitialCutlistRoomFilter(roomTab.filter)}
-                        className={`relative z-[1] w-full rounded-full px-3 py-2 text-left text-[12px] font-semibold ${
+                        className={`relative z-[1] w-full rounded-[10px] px-3 py-2 text-left text-[12px] font-semibold ${
                           active ? "text-[var(--brand-strong)]" : "text-[var(--text-main)] hover:bg-[var(--panel-muted)]"
                         }`}
                         style={cutlistRoomsBubbleAnimation(`room:${roomTab.filter}`)}
+                        title={cutlistRoomPartMixTitle(roomTab.filter, initialCutlistRoomPartMix)}
                       >
                         {roomTab.label}
+                        {renderCutlistRoomPartMix(roomTab.filter, initialCutlistRoomPartMix)}
                       </button>
                     );
                   })}
@@ -44068,12 +44590,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           ref={(el) => { initialRoomButtonRefs.current[roomTab.filter] = el; }}
                           type="button"
                           onClick={() => setInitialCutlistRoomFilter(roomTab.filter)}
-                          className={`relative z-[1] w-full rounded-full px-3 py-2 text-left text-[12px] font-semibold ${
+                          className={`relative z-[1] w-full rounded-[10px] px-3 py-2 text-left text-[12px] font-semibold ${
                             active ? "text-[var(--brand-strong)]" : "text-[var(--text-main)] hover:bg-[var(--panel-muted)]"
                           }`}
                           style={cutlistRoomsBubbleAnimation(`room:${roomTab.filter}`)}
+                          title={cutlistRoomPartMixTitle(roomTab.filter, initialCutlistRoomPartMix)}
                         >
                           {roomTab.label}
+                          {renderCutlistRoomPartMix(roomTab.filter, initialCutlistRoomPartMix)}
                         </button>
                       );
                     })}
@@ -44130,22 +44654,21 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </div>
               )}
             </aside>
-            {/* Beside the Rooms toggle (the column's out) or clear of it (put away): the feed of changes, floating bubbles
-                with no bar of their own — fading out at the column's edge as they're dragged along. */}
+            {/* The feed of changes: a band under the top bar, the screen's whole width, held there — one bar with it (its
+                line under the band then), as the CNC Cutlist's Visibility band. Only there while there's a change in it. */}
             <div
-              className="col-start-2 row-start-1 flex min-w-0 items-center"
+              className="fixed inset-x-0 z-[95] flex min-w-0 items-start"
               style={{
-                paddingLeft: isCutlistRoomsPanelShown ? 0 : 190,
-                transition: isCutlistRoomsPanelShown ? "padding-left 180ms ease" : "padding-left 200ms ease 280ms",
+                top: 56,
+                height: CUTLIST_FEED_BAND_HEIGHT,
+                // (Its bubbles 13px under the top bar — the 4px round them their own.)
+                paddingTop: 13 - 4,
+                opacity: initialCutlistActivityFeed.length ? 1 : 0,
+                pointerEvents: initialCutlistActivityFeed.length ? "auto" : "none",
+                transition: "opacity 220ms ease",
               }}
             >
-              <div
-                className="min-w-0 flex-1 overflow-hidden py-1 pr-3"
-                style={{
-                  maskImage: "linear-gradient(to right, transparent 0, #000 10px)",
-                  WebkitMaskImage: "linear-gradient(to right, transparent 0, #000 10px)",
-                }}
-              >
+              <div className="min-w-0 flex-1 overflow-hidden py-1 pr-3">
             <div
               ref={cutlistActivityScrollRef}
               className="w-full max-w-full min-w-0 overflow-hidden whitespace-nowrap"
@@ -44168,188 +44691,105 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 onPointerUp={endCutlistActivityPointerDrag}
                 onPointerCancel={endCutlistActivityPointerDrag}
               >
-                {initialCutlistActivityFeed.map((entry, idx) => {
-                  const colors = activityColorsForPart(entry.partType || "", entry.actionKind || "");
-                  const isPartTypeMove = Boolean(entry.partType && entry.partTypeTo);
-                  const isValueMove = Boolean(entry.valueFrom || entry.valueTo);
-                  const isEntering = Boolean(cutlistActivityEnteringIds[entry.id]);
-                  const rawMessage = String(entry.message || "");
-                  const messageLower = rawMessage.toLowerCase();
-                  let messagePrefix = rawMessage;
-                  let actionText = "";
-                  let messageSuffix = "";
-                  if (!isPartTypeMove && !isValueMove) {
-                    const addedToken = " added to ";
-                    const addedIdx = messageLower.indexOf(addedToken);
-                    if (addedIdx > 0) {
-                      messagePrefix = rawMessage.slice(0, addedIdx).trim();
-                      actionText = "added to";
-                      messageSuffix = rawMessage.slice(addedIdx + addedToken.length).trim();
-                    } else if (messageLower.endsWith(" removed")) {
-                      messagePrefix = rawMessage.slice(0, rawMessage.length - " removed".length).trim();
-                      actionText = "removed";
-                      messageSuffix = "";
-                    }
-                  }
-                  return (
-                    <div
-                      key={entry.id}
-                      className="inline-flex items-center gap-[10px] rounded-[9px] border px-2 py-[2px]"
-                      style={{
-                        backgroundColor: colors.chipBg,
-                        borderColor: colors.chipBorder,
-                        marginRight: idx < initialCutlistActivityFeed.length - 1 ? 10 : 0,
-                        opacity: isEntering ? 0 : 1,
-                        transform: isEntering ? "translate3d(12px,0,0)" : "translate3d(0,0,0)",
-                        transition: "opacity 240ms ease, transform 240ms ease",
-                      }}
-                    >
-                      {!!messagePrefix && !!actionText && (
-                        <span
-                          className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[11px] font-bold"
-                          style={{
-                            backgroundColor: colors.pillBg,
-                            borderColor: colors.pillBorder,
-                            color: colors.pillText,
-                          }}
-                        >
-                          {messagePrefix}
-                        </span>
-                      )}
-                      {!!messagePrefix && !actionText && (
-                        <span className="text-[11px] font-bold" style={{ color: colors.chipText, paddingRight: 5 }}>
-                          {messagePrefix}
-                        </span>
-                      )}
-                      {!!actionText && (
-                        <span className="text-[11px] font-bold" style={{ color: colors.chipText }}>
-                          {actionText}
-                        </span>
-                      )}
-                      {!!messageSuffix && (
-                        <span className="text-[11px] font-bold" style={{ color: colors.chipText, paddingLeft: 5 }}>
-                          {messageSuffix}
-                        </span>
-                      )}
-                      {isPartTypeMove && !!entry.partType && (
-                        <>
-                          <span
-                            className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[11px] font-bold"
-                            style={{
-                              backgroundColor: colors.pillBg,
-                              borderColor: colors.pillBorder,
-                              color: colors.pillText,
-                            }}
-                          >
-                            {entry.partType}
-                          </span>
-                          <span className="inline-flex items-center" style={{ paddingLeft: 5, paddingRight: 5 }}>
-                            <img
-                              src="/arrow-right.png"
-                              alt="to"
-                              className="shrink-0 object-contain opacity-90"
-                              style={{ width: 20, height: 20 }}
-                            />
-                          </span>
-                        </>
-                      )}
-                      {isValueMove && !isPartTypeMove && (
-                        <>
-                          <span
-                            className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[11px] font-bold"
-                            style={{
-                              backgroundColor: colors.pillBg,
-                              borderColor: colors.pillBorder,
-                              color: colors.pillText,
-                            }}
-                          >
-                            {entry.valueFrom || "-"}
-                          </span>
-                          <span className="inline-flex items-center" style={{ paddingLeft: 5, paddingRight: 5 }}>
-                            <img
-                              src="/arrow-right.png"
-                              alt="to"
-                              className="shrink-0 object-contain opacity-90"
-                              style={{ width: 20, height: 20 }}
-                            />
-                          </span>
-                        </>
-                      )}
-                      {!!entry.partTypeTo && (
-                        <span
-                          className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[11px] font-bold"
-                          style={{
-                            backgroundColor: activityColorsForPart(entry.partTypeTo || "").pillBg,
-                            borderColor: activityColorsForPart(entry.partTypeTo || "").pillBorder,
-                            color: activityColorsForPart(entry.partTypeTo || "").pillText,
-                          }}
-                        >
-                          {entry.partTypeTo}
-                        </span>
-                      )}
-                      {isValueMove && !isPartTypeMove && (
-                        <span
-                          className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[11px] font-bold"
-                          style={{
-                            backgroundColor: colors.pillBg,
-                            borderColor: colors.pillBorder,
-                            color: colors.pillText,
-                          }}
-                        >
-                          {entry.valueTo || "-"}
-                        </span>
-                      )}
-                      {String(entry.actionKind || "") === "clear" && (
-                        <button
-                          type="button"
-                          onClick={() => removeCutlistActivity(entry.id)}
-                          data-cutlist-activity-control="true"
-                          className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[10px] font-extrabold hover:brightness-95" style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
-                        >
-                          {entry.action || "Clear"}
-                        </button>
-                      )}
-                    </div>
-                  );
-                })}
+                {initialCutlistActivityFeed.map((entry, idx) => renderCutlistActivityChip(entry, idx === initialCutlistActivityFeed.length - 1))}
               </div>
             </div>
               </div>
             </div>
+            <div
+              aria-hidden="true"
+              className="pointer-events-none fixed inset-x-0 z-[95] h-px"
+              style={{ top: CUTLIST_FEED_BAND_BOTTOM, backgroundColor: "var(--glass-border)", opacity: initialCutlistActivityFeed.length ? 1 : 0, transition: "opacity 220ms ease" }}
+            />
 
             <GlassScrollbarThumb scrollRef={initialMeasureDesktopScrollRef} />
+            {/* Needs attention: as the production cutlist's — its parts that wouldn't get past its entry's checks (the
+                larger-sheet ones left to the Rooms column's own "Large sheets used"). */}
+            {renderCutlistAttentionBubble({
+              rows: initialCutlistRows,
+              roomFilter: initialCutlistRoomFilter,
+              visibleRows: visibleInitialCutlistRows,
+              validate: (row, label) =>
+                validateCutlistRowInput(row, row.partType, label, {
+                  boardSheetText: initialMeasureBoardSheetFor(String(row.board || "").trim()),
+                  boardMaxEdge: initialMeasureBoardMaxEdgeFor(String(row.board || "").trim()),
+                }).filter((issue) => !isSheetSizeIssue(issue)),
+              clearFilters: () => {
+                setInitialCutlistSearch("");
+                setInitialCutlistPartTypeFilter("All Part Types");
+              },
+              collapsedGroups: initialCollapsedCutlistGroups,
+              toggleGroup: toggleInitialCutlistGroup,
+              bottom: 24,
+            })}
             {/* (Below the Rooms toggle's row, either way: putting the column away only slides it sideways.) */}
             <div
-              ref={initialMeasureDesktopScrollRef}
-              className="col-start-2 row-start-2 flex min-h-0 flex-col gap-4 overflow-auto p-4 hide-native-scrollbar"
+              ref={initialMeasureDesktopScrollCallbackRef}
+              className="col-start-2 row-start-1 flex min-h-0 flex-col gap-4 overflow-auto p-4 pt-0 hide-native-scrollbar"
             >
+              {/* (Up under the top bar and the feed's band — the cutlist seen through them as it scrolls — starting where
+                  it did, below them both then its 16px: a spacer, not padding, which would push down where its entry's
+                  top is held.) */}
+              <div aria-hidden="true" className="shrink-0" style={{ height: CUTLIST_FEED_BAND_BOTTOM }} />
               {initialCutlistRoomFilter !== "Project Cutlist" && (
-                <section className="relative z-10 -mt-4 -mx-4 w-[calc(100%+2rem)] overflow-visible">
-                  <div className="flex h-[50px] items-center px-1">
-                    <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Cutlist Entry</p>
-                  </div>
+                // (Resting exactly where its top is held — 8px under the feed's band — so it neither starts out held nor
+                // moves before it is: held, floating, from the first scroll.)
+                <section className="relative z-10 -mx-4 -mt-2 w-[calc(100%+2rem)] overflow-visible">
+                  <div ref={initialEntryStickMarkerRef} aria-hidden="true" className="h-px -mb-px" />
                   <div className="space-y-3 px-0 pb-0">
-                    <div className="glass-page-header sticky top-0 z-[500] space-y-2 px-1 py-2">
-                      <div className="flex flex-wrap items-center gap-2">
-                        {initialMeasurePartTypeOptions.map((v) => {
-                          const color = partTypeColors[v] ?? "#CBD5E1";
-                          return (
-                            <button
-                              key={`im_pt_full_${v}`}
-                              type="button"
-                              disabled={salesReadOnly}
-                              onClick={() => addInitialDraftRowForPartType(v)}
-                              style={{
-                                backgroundColor: color,
-                                borderColor: color,
-                                color: isLightHex(color) ? "#1F2937" : "#F8FAFC",
-                              }}
-                              className="relative h-8 rounded-[10px] border px-3.5 text-[13px] font-medium transition-[transform,box-shadow] duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:z-10 hover:scale-110 hover:shadow-lg disabled:opacity-55 disabled:hover:scale-100 disabled:hover:shadow-none"
-                            >
-                              {v}
-                            </button>
-                          );
-                        })}
+                    {/* (As the production cutlist's: the entry's whole top — its title, its part types and its column
+                        headings — held 8px down its scrolling area while its rows scroll, floating there in a glass bubble,
+                        in from the sides as far as the rows are. In its place: no bubble, nothing round it.) */}
+                    <div
+                      ref={initialEntryStickyRef}
+                      className="sticky z-[500] mb-0 space-y-2 px-1 pb-3 pt-2"
+                      // (8px under the top bar — or the feed's band under it, while there's one.)
+                      style={{ top: initialCutlistActivityFeed.length ? CUTLIST_FEED_BAND_BOTTOM + 8 : 64 }}
+                    >
+                      <div
+                        aria-hidden="true"
+                        className="pointer-events-none absolute inset-y-0 mb-0 rounded-[18px] border"
+                        style={{
+                          left: isCutlistRoomsPanelShown ? 12 : 4,
+                          right: isCutlistRoomsPanelShown ? 12 : 4,
+                          zIndex: -1,
+                          opacity: isInitialEntryHeaderStuck ? 1 : 0,
+                          transform: isInitialEntryHeaderStuck ? "scale(1)" : "scale(0.985)",
+                          transition: "opacity 180ms ease, transform 220ms cubic-bezier(0.22, 1, 0.36, 1)",
+                          borderColor: "var(--glass-border)",
+                          backgroundColor: "var(--glass-modal-bg)",
+                          backdropFilter: "blur(24px) saturate(180%)",
+                          WebkitBackdropFilter: "blur(24px) saturate(180%)",
+                          boxShadow: "inset 0 1px 0 var(--glass-highlight), var(--shadow-glass), 0 12px 30px rgba(15, 23, 42, 0.16)",
+                        }}
+                      />
+                      <div
+                        className="flex min-h-[40px] flex-wrap items-center gap-x-4 gap-y-2"
+                        style={{ paddingLeft: isCutlistRoomsPanelShown ? 20 : 8, paddingRight: isCutlistRoomsPanelShown ? 20 : 8 }}
+                      >
+                        <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Cutlist Entry</p>
+                        {/* Its part types beside it (round-ended): one adds a row of it below. */}
+                        <div className="flex flex-wrap items-center gap-2">
+                          {initialMeasurePartTypeOptions.map((v) => {
+                            const color = partTypeColors[v] ?? "#CBD5E1";
+                            return (
+                              <button
+                                key={`im_pt_full_${v}`}
+                                type="button"
+                                disabled={salesReadOnly}
+                                onClick={() => addInitialDraftRowForPartType(v)}
+                                style={{
+                                  backgroundColor: color,
+                                  borderColor: color,
+                                  color: isLightHex(color) ? "#1F2937" : "#F8FAFC",
+                                }}
+                                className="relative h-8 rounded-full border px-3.5 text-[13px] font-medium transition-[transform,box-shadow] duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:z-10 hover:scale-110 hover:shadow-lg disabled:opacity-55 disabled:hover:scale-100 disabled:hover:shadow-none"
+                              >
+                                {v}
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
                       <div
                         className="grid gap-2 text-[11px] font-bold"
@@ -44375,12 +44815,19 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         ))}
                       </div>
                     </div>
-                    <div className="space-y-1">
+                    <div
+                      ref={initialEntryRowsRef}
+                      // (The gap under the entry's top on the rows — as the production cutlist's.)
+                      className="mt-3 space-y-1"
+                    >
                       {initialCutlistDraftRows.map((draft) => {
                         const color = partTypeColors[draft.partType] ?? "#CBD5E1";
-                        const draftTextColor = isLightHex(color) ? "#1F2937" : "#F8FAFC";
-                        const draftFieldBg = lightenHex(color, 0.12);
-                        const draftFieldBorder = darkenHex(color, 0.2);
+                        // (A pale wash of its part type, white fields edged in it, words in a dark shade of it — as the
+                        // production cutlist's.)
+                        const draftPalette = cutlistTablePalette(color);
+                        const draftTextColor = draftPalette.text;
+                        const draftFieldBg = "#FFFFFF";
+                        const draftFieldBorder = draftPalette.fieldBorder;
                         const draftIsCabinetry = isCabinetryPartType(draft.partType);
                         const draftBoardAllowsGrain = initialMeasureBoardGrainFor(String(draft.board ?? "").trim());
                         return (
@@ -44391,9 +44838,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             className="relative grid items-center gap-2 overflow-visible border-y px-1 py-1"
                             style={{
                               gridTemplateColumns: initialCutlistEntryGridTemplate,
-                              backgroundColor: color,
+                              backgroundColor: draftPalette.rowBg,
                               color: draftTextColor,
-                              borderColor: draftFieldBorder,
+                              borderColor: draftPalette.border,
                               // Beside the Rooms column: round-ended, 12px clear of both sides, its X as near its end as
                               // it is to its top and bottom — as the production cutlist's.
                               ...(isCutlistRoomsPanelShown
@@ -44659,6 +45106,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       changing as the column comes and goes. */}
                   {initialCutlistDraftRows.length > 0 ? (
                     <button
+                      ref={initialEntryAddButtonRef}
                       type="button"
                       disabled={salesReadOnly}
                       onClick={() => void addInitialDraftRowsToCutlist()}
@@ -44691,14 +45139,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   <div className="ml-auto flex flex-wrap items-center justify-end gap-2 pr-1">
                     <div className="relative">
                       <Search size={13} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }} />
-                      <input value={initialCutlistSearch} onChange={(e) => setInitialCutlistSearch(e.target.value)} placeholder="Search part name or board" className="h-8 w-[180px] rounded-full border pl-8 pr-3 text-[12px] sm:w-[240px] md:w-[280px]" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }} />
+                      <input value={initialCutlistSearch} onChange={(e) => onInitialCutlistSearchChange(e.target.value)} placeholder="Search part name or board" className="h-8 w-[180px] rounded-full border pl-8 pr-3 text-[12px] sm:w-[240px] md:w-[280px]" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }} />
                     </div>
-                    <select value={initialCutlistPartTypeFilter} onChange={(e) => setInitialCutlistPartTypeFilter(e.target.value)} className="h-8 rounded-full border px-3 text-[12px]" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}>
-                      <option>All Part Types</option>
-                      {initialMeasurePartTypeOptions.map((v) => (
-                        <option key={`im_full_filter_${v}`} value={v}>{v}</option>
-                      ))}
-                    </select>
+                    <GlassSelectDropdown
+                      value={initialCutlistPartTypeFilter}
+                      onChange={onInitialCutlistPartTypeFilterChange}
+                      options={["All Part Types", ...initialMeasurePartTypeOptions]}
+                      getOptionColor={(opt) => partTypeColors[opt]}
+                      className="h-8 rounded-full border border-[var(--glass-border)] bg-[var(--panel-bg)] pl-3 pr-2.5 text-[12px] text-[var(--text-main)]"
+                    />
                   </div>
                 </div>
                 <div className="flex flex-col space-y-2 px-0 pb-0">
@@ -44708,7 +45157,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     )}
                     {groupedInitialCutlistRows.map((group) => {
                       const color = partTypeColors[group.partType] ?? "#CBD5E1";
-                      const palette = groupColorPalette(color);
+                      const palette = cutlistTablePalette(color);
                       const groupTextColor = palette.text;
                       const collapsed = Boolean(initialCollapsedCutlistGroups[group.partType]);
                       const groupPartCount = group.rows.reduce((sum, row) => {
@@ -44758,7 +45207,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           className="mb-2 last:mb-0"
                           style={{
                             borderStyle: "solid",
-                            borderColor: color,
+                            borderColor: palette.border,
                             borderWidth: isCutlistRoomsPanelShown ? 1 : "1px 0",
                             borderRadius: isCutlistRoomsPanelShown ? 18 : 0,
                             overflow: "clip",
@@ -44770,24 +45219,22 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         >
                           <div
                             onClick={() => toggleInitialCutlistGroup(group.partType)}
-                            className="flex h-[50px] cursor-pointer items-center justify-between border-b pl-0"
+                            className="flex h-[50px] cursor-pointer items-center justify-between pl-0"
                             style={{
                               backgroundColor: palette.titleBarBg,
-                              color: groupTextColor,
-                              borderBottomColor: color,
+                              color: palette.titleText,
                             }}
                           >
                             <div className="flex h-full items-center gap-3">
-                              <span
-                                className="inline-flex h-full items-center px-3 text-[24px] font-medium leading-none"
-                                style={{
-                                  backgroundColor: palette.titleChipBg,
-                                  color: groupTextColor,
-                                }}
-                              >
+                              <span className="inline-flex h-full items-center pl-4 text-[21px] font-semibold leading-none">
                                 {group.partType}
                               </span>
-                              <span className="text-[12px] font-bold">{formatPartCount(groupPartCount)}</span>
+                              <span
+                                className="inline-flex items-center rounded-full px-2.5 py-[4px] text-[12px] font-semibold leading-none"
+                                style={{ backgroundColor: palette.countChipBg }}
+                              >
+                                {formatPartCount(groupPartCount)}
+                              </span>
                               {pendingGroupCount > 0 && (
                                 <button
                                   type="button"
@@ -44803,20 +45250,24 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 </button>
                               )}
                             </div>
-                            <div className="flex h-full items-center">
+                            <div className="flex h-full items-center pr-3">
                               <button
                                 type="button"
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   toggleInitialCutlistGroup(group.partType);
                                 }}
-                                className="flex h-[50px] min-w-[52px] items-center justify-center border-l text-current"
-                                style={{
-                                  borderLeftColor: palette.divider,
-                                  backgroundColor: palette.titleBarBg,
-                                }}
+                                aria-expanded={!collapsed}
+                                aria-label={collapsed ? `Show ${group.partType}` : `Hide ${group.partType}`}
+                                // (Round, a wash of white over the title bar: V to open the group, ^ to fold it away.)
+                                className="flex h-8 w-8 items-center justify-center rounded-full text-current transition hover:brightness-95"
+                                style={{ backgroundColor: palette.countChipBg }}
                               >
-                                {collapsed ? <Plus size={24} strokeWidth={2.6} /> : <Minus size={24} strokeWidth={2.6} />}
+                                <ChevronDown
+                                  size={18}
+                                  strokeWidth={2.6}
+                                  style={{ transform: collapsed ? "rotate(0deg)" : "rotate(180deg)", transition: "transform 180ms ease" }}
+                                />
                               </button>
                             </div>
                           </div>
@@ -44828,17 +45279,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           {/* Its columns in proportion to their usual widths (Information its share of what's left): the
                               table always just its box's width, moving with it — as the production cutlist's. */}
                           <table className="w-full table-fixed text-left text-[12px]">
-                            <thead style={{ backgroundColor: palette.headerBg, color: groupTextColor }}>
+                            <thead style={{ backgroundColor: palette.headerBg, color: palette.headerText }}>
                               <tr>
                                 <th className="px-2 py-2" style={{ width: initialListColumnWidth(78) }}></th>
-                                {showRoomColumnInInitialList && <th className="px-2 py-2" style={{ color: groupTextColor, width: initialListColumnWidth(initialCutlistRoomColumnWidthPx) }}>Room</th>}
+                                {showRoomColumnInInitialList && <th className="px-2 py-2" style={{ color: palette.headerText, width: initialListColumnWidth(initialCutlistRoomColumnWidthPx) }}>Room</th>}
                                 {initialCutlistListColumnDefs.map((col) => (
                                   <th
                                     key={`im_full_list_h_${group.partType}_${col.key}`}
                                     className={`px-2 py-2 ${cutlistHeaderAlignClass(col.key as CutlistEditableField)}`}
                                     style={{
                                       width: col.key === "information" ? undefined : initialListColumnWidth(initialListColumnPx(col.key as CutlistEditableField)),
-                                      color: groupTextColor,
+                                      color: palette.headerText,
                                     }}
                                   >
                                     {col.key === "clashing" && isCabinetryPartType(group.partType) ? "Shelves" : col.label}
@@ -44853,8 +45304,18 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 return (
                                   <tr
                                     key={`im_full_row_${group.partType}_${row.id}_${idx}`}
+                                    data-cutlist-row-id={row.id}
                                     className="border-t"
-                                    style={{ backgroundColor: palette.rowBg, color: groupTextColor, borderTopColor: palette.divider }}
+                                    style={{
+                                      backgroundColor: palette.rowBg,
+                                      color: groupTextColor,
+                                      borderTopColor: palette.divider,
+                                      // (The part Needs attention just took you to: washed amber a moment, then fading back.)
+                                      transition: "background-color 600ms ease",
+                                      ...(cutlistAttentionFocusRowId === row.id
+                                        ? { backgroundColor: "#FCE3B0", outline: "2px solid #D97706", outlineOffset: -2 }
+                                        : {}),
+                                    }}
                                   >
                                 <td className="px-2 py-[3px] align-middle" style={{ width: 78, minWidth: 78, maxWidth: 78 }}>
                                       {(() => {
@@ -44950,7 +45411,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                 type="button"
                                                 disabled={salesReadOnly}
                                                 onClick={() => startInitialCellEdit(row, key)}
-                                                className="inline-flex rounded-[8px] border px-2 py-[2px] text-[11px] font-medium disabled:opacity-60"
+                                                className="inline-flex rounded-full border px-2.5 py-[2px] text-[11px] font-medium disabled:opacity-60"
                                                 style={{
                                                   borderColor: rowPartColor,
                                                   backgroundColor: rowPartColor,
@@ -44999,7 +45460,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                 {boardSizeFor(row.board) && (
                                                   <span
                                                     className="inline-flex h-5 min-w-[28px] shrink-0 items-center justify-center rounded-[999px] px-2 text-[10px] font-bold"
-                                                    style={{ backgroundColor: darkenHex(rowPartColor, 0.15), color: rowPartTextColor }}
+                                                    // (A wash of the rows' words over their pale part-type colour — dark on light whatever the part type.)
+                                                    style={{ backgroundColor: hexToRgba(palette.text, 0.12), color: palette.text }}
                                                   >
                                                     {boardSizeFor(row.board)}
                                                   </span>
@@ -45553,8 +46015,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         e.stopPropagation();
                                         removeDraftCutlistRow(draft.id);
                                       }}
-                                      className="h-8 w-8 shrink-0 rounded-[8px] border text-[11px] font-bold text-white hover:brightness-95 disabled:opacity-55"
-                                      style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
+                                      // (Round, with the glass shine — red — as the desktop entry's.)
+                                      className="glass-shine h-8 w-8 shrink-0 rounded-full border text-[11px] font-bold text-white hover:brightness-95 disabled:opacity-55"
+                                      style={glassShineStyle("var(--danger)")}
                                     >
                                       <X size={15} className="mx-auto" strokeWidth={2.8} />
                                     </button>
@@ -45864,16 +46327,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                     type="button"
                                                     disabled={productionReadOnly}
                                                     onClick={() => (idx === 0 ? onDraftAddInformationLine(draft.id) : onDraftRemoveInformationLine(draft.id, idx))}
-                                                    className={
-                                                      idx === 0
-                                                        ? "inline-flex h-8 w-8 items-center justify-center rounded-[8px] border text-[20px] font-bold leading-none text-white hover:brightness-95 disabled:opacity-55"
-                                                        : "inline-flex h-8 w-8 items-center justify-center rounded-[8px] border text-[11px] font-bold text-white hover:brightness-95 disabled:opacity-55"
-                                                    }
-                                                    style={
-                                                      idx === 0
-                                                        ? { backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }
-                                                        : { backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }
-                                                    }
+                                                    className="glass-shine inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border font-bold text-white hover:brightness-95 disabled:opacity-55"
+                                                    style={glassShineStyle(idx === 0 ? "#16A34A" : "var(--danger)")}
                                                   >
                                                     {idx === 0 ? <Plus size={16} className="mx-auto" strokeWidth={2.8} /> : <X size={15} className="mx-auto" strokeWidth={2.8} />}
                                                   </button>
@@ -46335,16 +46790,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       type="button"
                                       disabled={productionReadOnly}
                                       onClick={() => (idx === 0 ? onDraftAddInformationLine(draft.id) : onDraftRemoveInformationLine(draft.id, idx))}
-                                      className={
-                                        idx === 0
-                                          ? "inline-flex h-8 w-8 items-center justify-center rounded-[8px] border text-[20px] font-bold leading-none text-white hover:brightness-95 disabled:opacity-55"
-                                          : "inline-flex h-8 w-8 items-center justify-center rounded-[8px] border text-[11px] font-bold text-white hover:brightness-95 disabled:opacity-55"
-                                      }
-                                      style={
-                                        idx === 0
-                                          ? { backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }
-                                          : { backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }
-                                      }
+                                      className="glass-shine inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border font-bold text-white hover:brightness-95 disabled:opacity-55"
+                                      style={glassShineStyle(idx === 0 ? "#16A34A" : "var(--danger)")}
                                     >
                                       {idx === 0 ? <Plus size={16} className="mx-auto" strokeWidth={2.8} /> : <X size={15} className="mx-auto" strokeWidth={2.8} />}
                                     </button>
@@ -46385,7 +46832,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 <div className="mt-3">
                   <input
                     value={cutlistSearch}
-                    onChange={(e) => setCutlistSearch(e.target.value)}
+                    onChange={(e) => onCutlistSearchChange(e.target.value)}
                     placeholder="Search cutlist..."
                     className="mb-3 h-9 w-full rounded-[10px] border px-3 text-[12px] outline-none"
                     style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
@@ -46527,25 +46974,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         onClick={(e) => e.stopPropagation()}
                       >
                         <div className="flex min-h-0 flex-1 flex-col">
-                          <div className="glass-modal-header relative flex min-h-[58px] items-center justify-between gap-3 px-4" style={{ backgroundColor: hexToRgba(detailPalette.titleBarBg, 0.6) }}>
+                          <div className="glass-modal-header relative flex h-[56px] shrink-0 items-center justify-between gap-3 px-5" style={{ backgroundColor: hexToRgba(detailPalette.titleBarBg, 0.6) }}>
                             <div className="min-w-0">
-                              <p className="whitespace-nowrap text-[19px] font-medium" style={{ color: detailPalette.text }}>{row.name || "Part"}</p>
-                              <p className="whitespace-nowrap text-[13px]" style={{ color: detailPalette.text }}>{group.partType}</p>
+                              <p className="truncate text-[14px] font-bold uppercase tracking-[1px]" style={{ color: detailPalette.text }}>{row.name || "Part"}</p>
+                              <p className="truncate text-[12px] font-medium" style={{ color: detailPalette.text }}>{group.partType}</p>
                             </div>
-                            <button
-                              type="button"
-                              onClick={closeProductionMobileRowDetail}
-                              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px] border hover:brightness-95"
-                              style={{
-                                borderColor: "var(--danger-glass-border)",
-                                backgroundColor: "var(--danger-glass-bg)",
-                                backdropFilter: "blur(10px) saturate(180%)",
-                                WebkitBackdropFilter: "blur(10px) saturate(180%)",
-                                color: "#FFFFFF",
-                              }}
-                              title="Close"
-                            >
-                              <X size={18} strokeWidth={2.4} />
+                            <button type="button" onClick={closeProductionMobileRowDetail} className={modalCloseButtonClass} style={{ color: detailPalette.text }} aria-label="Close">
+                              <X size={16} />
                             </button>
                           </div>
                           <div className="min-h-0 flex-1 overflow-auto p-4 text-[15px]" style={{ color: detailPalette.text }}>
@@ -46699,10 +47134,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         type="button"
                                         disabled={productionReadOnly}
                                         onClick={() => startCellEdit(row, "height")}
-                                        className="min-w-0 rounded-[6px] px-1 py-[2px] disabled:opacity-100"
+                                        className={`min-w-0 rounded-[6px] px-1 disabled:opacity-100 ${isDrawerPartType(row.partType) ? "" : "py-[2px]"}`}
                                         style={{ color: detailPalette.text, ...(matchesGrainDimension(rowGrainValue, row.height, "height") ? { fontWeight: 700, textDecoration: "underline" } : undefined) }}
                                       >
-                                        {isDrawerPartType(row.partType) ? (summarizeDrawerHeightTokens(String(row.height ?? "")) || String(row.height ?? "")) : (row.height || "-")}
+                                        {isDrawerPartType(row.partType) ? renderDrawerHeightLines(row) : (row.height || "-")}
                                       </button>
                                     )}
                                   </div>
@@ -47184,8 +47619,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   type="button"
                                   disabled={productionReadOnly}
                                   onClick={() => startCellEdit(row, "information")}
-                                  className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border text-white hover:brightness-95 disabled:opacity-55"
-                                  style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
+                                  // (Round, with the glass shine — green — as the entry's.)
+                                  className="glass-shine inline-flex h-7 w-7 items-center justify-center rounded-full border text-white hover:brightness-95 disabled:opacity-55"
+                                  style={glassShineStyle("#16A34A")}
                                 >
                                   <Plus size={16} className="mx-auto" strokeWidth={2.8} />
                                 </button>
@@ -47200,25 +47636,28 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     <div key={`${row.id}_edit_info_mobile_${idx}`} className="flex items-center gap-[6px]">
                                       <button
                                         type="button"
+                                        data-cutlist-info-edit-row={row.id}
+                                        // (The box being typed in keeps the focus: a tap here doesn't blur it — which would save and
+                                        // close these lines before the tap landed. A phone doesn't focus a tapped button either.)
+                                        onMouseDown={(e) => e.preventDefault()}
                                         onClick={() => (idx === 0 ? onEditingAddInformationLine() : onEditingRemoveInformationLine(idx))}
-                                        className={
-                                          idx === 0
-                                            ? "inline-flex h-8 w-8 items-center justify-center rounded-[8px] border text-white hover:brightness-95"
-                                            : "inline-flex h-8 w-8 items-center justify-center rounded-[8px] border text-white hover:brightness-95"
-                                        }
-                                        style={
-                                          idx === 0
-                                            ? { backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }
-                                            : { backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }
-                                        }
+                                        className="glass-shine inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-white hover:brightness-95"
+                                        style={glassShineStyle(idx === 0 ? "#16A34A" : "var(--danger)")}
                                       >
                                         {idx === 0 ? <Plus size={16} className="mx-auto" strokeWidth={2.8} /> : <X size={15} className="mx-auto" strokeWidth={2.8} />}
                                       </button>
                                       <input
                                         autoFocus={idx === 0}
+                                        data-cutlist-info-edit-row={row.id}
                                         value={line}
-                                        onChange={(e) => onEditingInformationLineChange(idx, e.target.value)}
-                                        onBlur={() => void commitCellEdit()}
+                                        // (Shown from the state, so it's set too — onEditingInformationLineChange alone only keeps the ref, for the
+                                        // desktop list's uncontrolled boxes: without it what's typed never appears.)
+                                        onChange={(e) => {
+                                          onEditingInformationLineChange(idx, e.target.value);
+                                          setEditingCellValue(editingCellValueRef.current);
+                                        }}
+                                        // (Saved once the focus leaves its lines — not on moving to another of them.)
+                                        onBlur={onInformationInputBlur}
                                         onKeyDown={(e) => {
                                           if (e.key === "Enter") {
                                             e.preventDefault();
@@ -47505,13 +47944,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     // The feed of changes: floating bubbles with no bar of their own, beside the Rooms toggle above the cutlist — from the
     // Rooms column's edge, fading out there as they're dragged along (and starting clear of the fade).
     const cutlistActivityFeedBubbles = (
-            <div
-              className="min-w-0 flex-1 overflow-hidden py-1 pr-3"
-              style={{
-                maskImage: "linear-gradient(to right, transparent 0, #000 10px)",
-                WebkitMaskImage: "linear-gradient(to right, transparent 0, #000 10px)",
-              }}
-            >
+            <div className="min-w-0 flex-1 overflow-hidden py-1 pr-3">
             <div
               ref={cutlistActivityScrollRef}
               className="w-full max-w-full min-w-0 overflow-hidden whitespace-nowrap"
@@ -47534,150 +47967,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 onPointerUp={endCutlistActivityPointerDrag}
                 onPointerCancel={endCutlistActivityPointerDrag}
               >
-                {productionCutlistActivityFeed.map((entry, idx) => {
-                  const colors = activityColorsForPart(entry.partType || "", entry.actionKind || "");
-                  const isPartTypeMove = Boolean(entry.partType && entry.partTypeTo);
-                  const isValueMove = Boolean(entry.valueFrom || entry.valueTo);
-                  const isEntering = Boolean(cutlistActivityEnteringIds[entry.id]);
-                  const rawMessage = String(entry.message || "");
-                  const messageLower = rawMessage.toLowerCase();
-                  let messagePrefix = rawMessage;
-                  let actionText = "";
-                  let messageSuffix = "";
-                  if (!isPartTypeMove && !isValueMove) {
-                    const addedToken = " added to ";
-                    const addedIdx = messageLower.indexOf(addedToken);
-                    if (addedIdx > 0) {
-                      messagePrefix = rawMessage.slice(0, addedIdx).trim();
-                      actionText = "added to";
-                      messageSuffix = rawMessage.slice(addedIdx + addedToken.length).trim();
-                    } else if (messageLower.endsWith(" removed")) {
-                      messagePrefix = rawMessage.slice(0, rawMessage.length - " removed".length).trim();
-                      actionText = "removed";
-                      messageSuffix = "";
-                    }
-                  }
-                  return (
-                    <div
-                      key={entry.id}
-                      className="inline-flex items-center gap-[10px] rounded-[9px] border px-2 py-[2px]"
-                      style={{
-                        backgroundColor: colors.chipBg,
-                        borderColor: colors.chipBorder,
-                        marginRight: idx < productionCutlistActivityFeed.length - 1 ? 10 : 0,
-                        opacity: isEntering ? 0 : 1,
-                        transform: isEntering ? "translate3d(12px,0,0)" : "translate3d(0,0,0)",
-                        transition: "opacity 240ms ease, transform 240ms ease",
-                      }}
-                    >
-                      {!!messagePrefix && !!actionText && (
-                        <span
-                          className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[11px] font-bold"
-                          style={{
-                            backgroundColor: colors.pillBg,
-                            borderColor: colors.pillBorder,
-                            color: colors.pillText,
-                          }}
-                        >
-                          {messagePrefix}
-                        </span>
-                      )}
-                      {!!messagePrefix && !actionText && (
-                        <span className="text-[11px] font-bold" style={{ color: colors.chipText, paddingRight: 5 }}>
-                          {messagePrefix}
-                        </span>
-                      )}
-                      {!!actionText && (
-                        <span className="text-[11px] font-bold" style={{ color: colors.chipText }}>
-                          {actionText}
-                        </span>
-                      )}
-                      {!!messageSuffix && (
-                        <span className="text-[11px] font-bold" style={{ color: colors.chipText, paddingLeft: 5 }}>
-                          {messageSuffix}
-                        </span>
-                      )}
-                      {isPartTypeMove && !!entry.partType && (
-                        <>
-                          <span
-                            className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[11px] font-bold"
-                            style={{
-                              backgroundColor: colors.pillBg,
-                              borderColor: colors.pillBorder,
-                              color: colors.pillText,
-                            }}
-                          >
-                            {entry.partType}
-                          </span>
-                          <span className="inline-flex items-center" style={{ paddingLeft: 5, paddingRight: 5 }}>
-                            <img
-                              src="/arrow-right.png"
-                              alt="to"
-                              className="shrink-0 object-contain opacity-90"
-                              style={{ width: 20, height: 20 }}
-                            />
-                          </span>
-                        </>
-                      )}
-                      {isValueMove && !isPartTypeMove && (
-                        <>
-                          <span
-                            className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[11px] font-bold"
-                            style={{
-                              backgroundColor: colors.pillBg,
-                              borderColor: colors.pillBorder,
-                              color: colors.pillText,
-                            }}
-                          >
-                            {entry.valueFrom || "-"}
-                          </span>
-                          <span className="inline-flex items-center" style={{ paddingLeft: 5, paddingRight: 5 }}>
-                            <img
-                              src="/arrow-right.png"
-                              alt="to"
-                              className="shrink-0 object-contain opacity-90"
-                              style={{ width: 20, height: 20 }}
-                            />
-                          </span>
-                        </>
-                      )}
-                      {!!entry.partTypeTo && (
-                        <span
-                          className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[11px] font-bold"
-                          style={{
-                            backgroundColor: activityColorsForPart(entry.partTypeTo || "").pillBg,
-                            borderColor: activityColorsForPart(entry.partTypeTo || "").pillBorder,
-                            color: activityColorsForPart(entry.partTypeTo || "").pillText,
-                          }}
-                        >
-                          {entry.partTypeTo}
-                        </span>
-                      )}
-                      {isValueMove && !isPartTypeMove && (
-                        <span
-                          className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[11px] font-bold"
-                          style={{
-                            backgroundColor: colors.pillBg,
-                            borderColor: colors.pillBorder,
-                            color: colors.pillText,
-                          }}
-                        >
-                          {entry.valueTo || "-"}
-                        </span>
-                      )}
-                      {String(entry.actionKind || "") === "clear" && (
-                        <button
-                          type="button"
-                          onClick={() => removeCutlistActivity(entry.id)}
-                          data-cutlist-activity-control="true"
-                          className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[10px] font-extrabold hover:brightness-95" style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
-                        >
-                          {entry.action || "Clear"}
-                        </button>
-                      )}
-                    </div>
-                  );
-                })}
+                {productionCutlistActivityFeed.map((entry, idx) => renderCutlistActivityChip(entry, idx === productionCutlistActivityFeed.length - 1))}
               </div>
             </div>
             </div>
@@ -47691,11 +47981,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               view's own overflow-y-auto scroll wrapper — position:fixed always anchors to the
               viewport regardless of an ancestor's own scrolling, ignoring this wrapper's scroll
               entirely, same as it already does for the mobile branch's own equivalent pair above. */}
+          {/* (One sheet of glass behind the top bar and — while there's a change in it — the feed of changes' band under it,
+              as the CNC Cutlist's top bar and Visibility band: the cutlist scrolling under them both.) */}
           <div
             data-app-top-bar="true"
             className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
             style={{
-              height: 56,
+              height: productionCutlistActivityFeed.length ? CUTLIST_FEED_BAND_BOTTOM : 56,
+              transition: "height 320ms cubic-bezier(0.22, 1, 0.36, 1)",
               backgroundColor: "var(--glass-bg-strong)",
               backdropFilter: "blur(14px) saturate(220%)",
               WebkitBackdropFilter: "blur(14px) saturate(220%)",
@@ -47704,7 +47997,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               willChange: "transform",
             }}
           />
-          <div data-app-top-bar-content="true" className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center justify-between border-b px-4 md:px-5" style={{ borderColor: "var(--glass-border)" }}>
+          <div data-app-top-bar-content="true" className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center justify-between border-b px-4 md:px-5" style={{ borderColor: productionCutlistActivityFeed.length ? "transparent" : "var(--glass-border)" }}>
             <div className="pointer-events-none absolute inset-x-0 flex justify-center px-24">
               <div className="inline-flex min-w-0 items-center justify-center gap-2 text-[20px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
                 <span className="truncate" style={{ color: "var(--text-main)" }}>
@@ -47739,50 +48032,48 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               gridTemplateColumns: `${isCutlistRoomsPanelShown ? 190 : 0}px minmax(0, 1fr)`,
               // (The toggle's row, then the cutlist's. Not stretched to fill the screen — a short cutlist used to push
               // the toggle's row down with the room left over.)
-              gridTemplateRows: "58px auto",
+              gridTemplateRows: `${CUTLIST_FEED_BAND_HEIGHT}px auto`,
               alignContent: "start",
               transition: isCutlistRoomsPanelShown ? "grid-template-columns 180ms ease" : "grid-template-columns 200ms ease 280ms",
             }}
           >
             <aside
-              className={`${isCutlistRoomsPanelOpen ? "sticky top-[56px]" : "pointer-events-none relative"} z-[20] col-start-1 row-span-2 row-start-1 w-[190px] self-start`}
+              className={`${isCutlistRoomsPanelOpen ? "sticky" : "pointer-events-none relative"} z-[20] col-start-1 row-span-2 row-start-1 w-[190px] self-start`}
               // Scrolling its rooms (a long list) while it's out — but not while they slide in or out: its scrolling clips
               // at its edges, cutting off the buttons' shadows as they bounce past them.
               style={{
-                maxHeight: "calc(100svh - 56px)",
+                // (Right under the top bar while there's no feed of changes; slid down under the feed's band once there is,
+                // and back up when it's cleared — held there as the page scrolls, as close under them as it is to the
+                // screen's side. A margin, not a transform, so it's held there.)
+                top: productionCutlistActivityFeed.length ? CUTLIST_FEED_BAND_BOTTOM : 56,
+                maxHeight: productionCutlistActivityFeed.length ? `calc(100svh - ${CUTLIST_FEED_BAND_BOTTOM}px)` : "calc(100svh - 56px)",
+                marginTop: productionCutlistActivityFeed.length ? CUTLIST_FEED_BAND_HEIGHT : 0,
+                transition: "margin-top 320ms cubic-bezier(0.22, 1, 0.36, 1), top 320ms cubic-bezier(0.22, 1, 0.36, 1)",
                 overflowY: isCutlistRoomsPanelShown && !isCutlistRoomsPanelJustOpened ? "auto" : "visible",
               }}
             >
-              {/* The toggle: a bubble with the glass shine the size of Add Room — the brand blue while the column's out, a
-                  light wash of it while it's put away. */}
-              {/* (Room above and below it: the column's own — the cutlist beside it still starts 44px down, under the feed.) */}
-              <div className="pointer-events-auto flex items-center p-2">
-                <button
-                  type="button"
-                  onClick={toggleCutlistRoomsPanel}
-                  aria-expanded={isCutlistRoomsPanelShown}
-                  className={`glass-shine ${CUTLIST_SIDEBAR_BUTTON_CLASS} ${isCutlistRoomsPanelShown ? "" : "glass-shine-soft"}`}
-                  style={glassShineStyle("var(--brand)", isCutlistRoomsPanelShown ? undefined : { color: "var(--brand-strong)" })}
-                >
-                  Rooms
-                  {/* Pointing to its own edge (where it slides out from) while it's closed, back toward the middle open —
-                      as Nesting's. */}
-                  <ChevronDown
-                    size={14}
-                    className="shrink-0"
-                    style={{ transform: isCutlistRoomsPanelShown ? "rotate(-90deg)" : "rotate(90deg)", transition: "transform 140ms ease" }}
-                  />
-                </button>
-              </div>
             {isCutlistRoomsPanelOpen && (
-              // Floating bubbles over the page (no box round them), as Nesting's Visibility — its title is the toggle above.
-              <div className="flex flex-col p-2 pt-0">
+              // In its own container, fixed beside the cutlist: its title, then its rooms.
+              <div
+                className="m-2 mr-0 flex flex-col rounded-[16px] border p-2"
+                // (The top bar's glass.)
+                style={{
+                  borderColor: "var(--glass-border)",
+                  backgroundColor: "var(--glass-bg-strong)",
+                  backdropFilter: "blur(14px) saturate(220%)",
+                  WebkitBackdropFilter: "blur(14px) saturate(220%)",
+                  boxShadow: "inset 0 1px 0 var(--glass-highlight), 0 1px 3px rgba(15, 23, 42, 0.06)",
+                }}
+              >
+                <p className="px-2 pb-2 pt-1 text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>
+                  Rooms
+                </p>
                 <div className="flex flex-1 flex-col">
                 <div ref={cutlistRoomListRef} className="relative space-y-1">
                   {cutlistRoomHighlightRect && (
                     <div
                       aria-hidden="true"
-                      className="absolute left-0 right-0 rounded-full"
+                      className="absolute left-0 right-0 rounded-[10px]"
                       style={{
                         top: cutlistRoomHighlightRect.top,
                         height: cutlistRoomHighlightRect.height,
@@ -47802,12 +48093,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         ref={(el) => { cutlistRoomButtonRefs.current[roomTab.filter] = el; }}
                         type="button"
                         onClick={() => setCutlistRoomFilter(roomTab.filter)}
-                        className={`relative z-[1] w-full rounded-full px-3 py-2 text-left text-[12px] font-semibold ${
+                        className={`relative z-[1] w-full rounded-[10px] px-3 py-2 text-left text-[12px] font-semibold ${
                           active ? "text-[var(--brand-strong)]" : "text-[var(--text-main)] hover:bg-[var(--panel-muted)]"
                         }`}
                         style={cutlistRoomsBubbleAnimation(`room:${roomTab.filter}`)}
+                        title={cutlistRoomPartMixTitle(roomTab.filter)}
                       >
                         {roomTab.label}
+                        {renderCutlistRoomPartMix(roomTab.filter)}
                       </button>
                     );
                   })}
@@ -47822,12 +48115,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           ref={(el) => { cutlistRoomButtonRefs.current[roomTab.filter] = el; }}
                           type="button"
                           onClick={() => setCutlistRoomFilter(roomTab.filter)}
-                          className={`relative z-[1] w-full rounded-full px-3 py-2 text-left text-[12px] font-semibold ${
+                          className={`relative z-[1] w-full rounded-[10px] px-3 py-2 text-left text-[12px] font-semibold ${
                             active ? "text-[var(--brand-strong)]" : "text-[var(--text-main)] hover:bg-[var(--panel-muted)]"
                           }`}
                           style={cutlistRoomsBubbleAnimation(`room:${roomTab.filter}`)}
+                          title={cutlistRoomPartMixTitle(roomTab.filter)}
                         >
                           {roomTab.label}
+                          {renderCutlistRoomPartMix(roomTab.filter)}
                         </button>
                       );
                     })}
@@ -47848,60 +48143,105 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </div>
             )}
             </aside>
-            {/* Beside the Rooms toggle (the column's out) or clear of it (put away): the feed of changes. */}
+            {/* The feed of changes: a band under the top bar, the screen's whole width, held there — one bar with it (its
+                line under the band then), as the CNC Cutlist's Visibility band. Only there while there's a change in it. */}
             <div
-              className="col-start-2 row-start-1 flex min-w-0 items-center"
+              className="fixed inset-x-0 z-[95] flex min-w-0 items-start"
               style={{
-                paddingLeft: isCutlistRoomsPanelShown ? 0 : 190,
-                transition: isCutlistRoomsPanelShown ? "padding-left 180ms ease" : "padding-left 200ms ease 280ms",
+                top: 56,
+                height: CUTLIST_FEED_BAND_HEIGHT,
+                // (Its bubbles 13px under the top bar — the 4px round them their own.)
+                paddingTop: 13 - 4,
+                opacity: productionCutlistActivityFeed.length ? 1 : 0,
+                pointerEvents: productionCutlistActivityFeed.length ? "auto" : "none",
+                transition: "opacity 220ms ease",
               }}
             >
               {cutlistActivityFeedBubbles}
             </div>
+            <div
+              aria-hidden="true"
+              className="pointer-events-none fixed inset-x-0 z-[95] h-px"
+              style={{ top: CUTLIST_FEED_BAND_BOTTOM, backgroundColor: "var(--glass-border)", opacity: productionCutlistActivityFeed.length ? 1 : 0, transition: "opacity 220ms ease" }}
+            />
             {/* Below the Rooms toggle's row, either way: putting the column away only slides it sideways. */}
             <div ref={productionCutlistContentRef} className="col-start-2 row-start-2 flex flex-col gap-4 p-4">
               {cutlistRoomFilter !== "Project Cutlist" && (
-              <section className="relative z-10 -mt-4 -mx-4 w-[calc(100%+2rem)] overflow-visible">
-                <div className="flex min-h-[50px] flex-wrap items-center gap-3 px-1">
-                  <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Cutlist Entry</p>
-                  {null}
-                </div>
+              // (Resting exactly where its top is held — 8px under the feed's band — so it neither starts out held nor moves
+              // before it is: held, floating, from the first scroll. As Initial Measure's.)
+              <section className="relative z-10 -mx-4 -mt-2 w-[calc(100%+2rem)] overflow-visible">
+                <div ref={cutlistEntryStickMarkerRef} aria-hidden="true" className="h-px -mb-px" />
                 <div className="space-y-3 px-0 pb-0">
                   {(
-                    <div className="glass-page-header sticky top-[56px] z-[500] space-y-2 px-1 py-2">
-                      <div className="flex flex-wrap items-center gap-2">
-                        {partTypeOptions.map((v) => {
-                          const color = partTypeColors[v] ?? "#CBD5E1";
-                          return (
-                            <button
-                              key={v}
-                              type="button"
-                              disabled={productionReadOnly}
-                              onClick={(e) => {
-                                doorDrawerPickerModalOriginElRef.current = e.currentTarget;
-                                if (isDoorPartType(v)) {
-                                  setDrawerBankCountDraft("3");
-                                  setDoorDrawerPickerStep("choose");
-                                  setDoorDrawerPickerSuggestedMode("");
-                                  setDoorDrawerPickerMainRowId("");
-                                  setDoorDrawerPickerOrigin(captureGlassModalOrigin(e));
-                                  setDoorDrawerPickerPartType(v);
-                                  return;
-                                }
-                                addDraftRowForPartType(v);
-                              }}
-                              style={{
-                                backgroundColor: color,
-                                borderColor: color,
-                                color: isLightHex(color) ? "#1F2937" : "#F8FAFC",
-                              }}
-                              // (Bigger than they were — 32px tall, 13px words.)
-                              className="relative h-8 rounded-[10px] border px-3.5 text-[13px] font-medium transition-[transform,box-shadow] duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:z-10 hover:scale-110 hover:shadow-lg disabled:opacity-55 disabled:hover:scale-100 disabled:hover:shadow-none"
-                            >
-                              {v}
-                            </button>
-                          );
-                        })}
+                    // (The entry's whole top — its title, its part types and its column headings — held 8px under the top
+                    // bar while its rows scroll, floating there in a glass bubble: in from the sides as far as the rows
+                    // are, round-cornered, with a shadow. In its place on the page: no bubble, nothing round it.)
+                    <div
+                      ref={cutlistEntryStickyRef}
+                      className="sticky z-[500] mb-0 space-y-2 px-1 pb-3 pt-2"
+                      // (8px under the top bar — or the feed's band under it, while there's one.)
+                      style={{ top: productionCutlistActivityFeed.length ? CUTLIST_FEED_BAND_BOTTOM + 8 : 64 }}
+                    >
+                      <div
+                        aria-hidden="true"
+                        className="pointer-events-none absolute inset-y-0 mb-0 rounded-[18px] border"
+                        style={{
+                          left: isCutlistRoomsPanelShown ? 12 : 4,
+                          right: isCutlistRoomsPanelShown ? 12 : 4,
+                          zIndex: -1,
+                          opacity: isCutlistEntryHeaderStuck ? 1 : 0,
+                          transform: isCutlistEntryHeaderStuck ? "scale(1)" : "scale(0.985)",
+                          transition: "opacity 180ms ease, transform 220ms cubic-bezier(0.22, 1, 0.36, 1)",
+                          borderColor: "var(--glass-border)",
+                          // (The app's glass, as the bottom bar's — the rows passing under it seen through it, frosted
+                          // enough that their coloured buttons blur away rather than show sharp.)
+                          backgroundColor: "var(--glass-modal-bg)",
+                          backdropFilter: "blur(24px) saturate(180%)",
+                          WebkitBackdropFilter: "blur(24px) saturate(180%)",
+                          boxShadow: "inset 0 1px 0 var(--glass-highlight), var(--shadow-glass), 0 12px 30px rgba(15, 23, 42, 0.16)",
+                        }}
+                      />
+                      <div
+                        className="flex min-h-[40px] flex-wrap items-center gap-x-4 gap-y-2"
+                        // (Inside the bubble: 12px in from its edge — the bubble 12px in from the side beside the Rooms column.)
+                        style={{ paddingLeft: isCutlistRoomsPanelShown ? 20 : 8, paddingRight: isCutlistRoomsPanelShown ? 20 : 8 }}
+                      >
+                        <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Cutlist Entry</p>
+                        {/* Its part types beside it (round-ended): one adds a row of it below. */}
+                        <div className="flex flex-wrap items-center gap-2">
+                          {partTypeOptions.map((v) => {
+                            const color = partTypeColors[v] ?? "#CBD5E1";
+                            return (
+                              <button
+                                key={v}
+                                type="button"
+                                disabled={productionReadOnly}
+                                onClick={(e) => {
+                                  doorDrawerPickerModalOriginElRef.current = e.currentTarget;
+                                  if (isDoorPartType(v)) {
+                                    setDrawerBankCountDraft("3");
+                                    setDoorDrawerPickerStep("choose");
+                                    setDoorDrawerPickerSuggestedMode("");
+                                    setDoorDrawerPickerMainRowId("");
+                                    setDoorDrawerPickerOrigin(captureGlassModalOrigin(e));
+                                    setDoorDrawerPickerPartType(v);
+                                    return;
+                                  }
+                                  addDraftRowForPartType(v);
+                                }}
+                                style={{
+                                  backgroundColor: color,
+                                  borderColor: color,
+                                  color: isLightHex(color) ? "#1F2937" : "#F8FAFC",
+                                }}
+                                // (Bigger than they were — 32px tall, 13px words.)
+                                className="relative h-8 rounded-full border px-3.5 text-[13px] font-medium transition-[transform,box-shadow] duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:z-10 hover:scale-110 hover:shadow-lg disabled:opacity-55 disabled:hover:scale-100 disabled:hover:shadow-none"
+                              >
+                                {v}
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
                       <div
                         className="grid gap-2 text-[11px] font-bold"
@@ -47930,7 +48270,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     </div>
                   )}
                   {(
-                  <div className="space-y-1">
+                  <div
+                    ref={cutlistEntryRowsRef}
+                    // (The gap under the entry's top on the rows, not under it — its own would let it go 12px before Add to
+                    // Cutlist's bottom reaches it.)
+                    className="mt-3 space-y-1"
+                  >
                       {visibleCutlistDraftRowGroups.map((rowGroup) => {
                         const groupRows = rowGroup.subs.length > 0 ? [rowGroup.main, ...rowGroup.subs] : [rowGroup.main];
                         const groupInner = groupRows.map((draft) => {
@@ -47942,12 +48287,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         const inGroupWrapper = rowGroup.subs.length > 0;
                         const roundedRowStyle: React.CSSProperties = {
                           ...(isCutlistRoomsPanelShown
-                            ? {
-                                borderLeftWidth: 1,
-                                borderRightWidth: 1,
-                                borderStyle: "solid",
-                                ...(inGroupWrapper ? {} : { marginLeft: 12, marginRight: 12, borderRadius: 22 }),
-                              }
+                            ? inGroupWrapper
+                              ? // (In its group's box, which has the border round them all: just a line under it.)
+                                { borderStyle: "solid", borderTopWidth: 0, borderLeftWidth: 0, borderRightWidth: 0 }
+                              : {
+                                  borderLeftWidth: 1,
+                                  borderRightWidth: 1,
+                                  borderStyle: "solid",
+                                  marginLeft: 12,
+                                  marginRight: 12,
+                                  borderRadius: 22,
+                                }
                             : {}),
                           transition: cutlistRoomsShapeTransition(["margin", "padding", "border-radius", "border-width"]),
                         };
@@ -47978,9 +48328,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           ? { display: "flex", alignItems: "center", marginLeft: -4, width: "100%" }
                           : undefined;
                         const color = partTypeColors[draft.partType] ?? "#CBD5E1";
-                        const draftTextColor = isLightHex(color) ? "#000000" : "#F8FAFC";
-                        const draftFieldBg = lightenHex(color, 0.12);
-                        const draftFieldBorder = darkenHex(color, 0.2);
+                        const draftPalette = cutlistTablePalette(color);
+                        const draftTextColor = draftPalette.text;
+                        const draftFieldBg = "#FFFFFF";
+                        const draftFieldBorder = draftPalette.fieldBorder;
                         const draftIsCabinetry = isCabinetryPartType(draft.partType);
                             const draftIsDoor = isDoorPartType(draft.partType);
                             const draftDoorMode = selectedDoorModeValue(draft.doorMode);
@@ -48007,7 +48358,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           <div
                             key={draft.id}
                             className="relative overflow-visible border-y px-3 py-3"
-                            style={{ backgroundColor: color, color: draftTextColor, borderColor: draftFieldBorder, ...roundedRowStyle }}
+                            style={{ backgroundColor: draftPalette.rowBg, color: draftTextColor, borderColor: draftPalette.border, ...roundedRowStyle }}
                           >
                             <div className="grid grid-cols-[32px_minmax(0,360px)] items-start gap-4">
                               <button
@@ -48042,7 +48393,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           <div
                             key={draft.id}
                             className="relative overflow-visible border-y px-3 py-3"
-                            style={{ backgroundColor: color, color: draftTextColor, borderColor: draftFieldBorder, ...roundedRowStyle }}
+                            style={{ backgroundColor: draftPalette.rowBg, color: draftTextColor, borderColor: draftPalette.border, ...roundedRowStyle }}
                           >
                             <div className="grid grid-cols-[32px_minmax(0,360px)_minmax(0,1fr)] items-start gap-4">
                               <button
@@ -48254,12 +48605,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           <div
                             data-cutlist-entry-grid="production-draft"
                             data-cutlist-entry-row={draft.id}
-                            className={`relative grid gap-2 overflow-visible ${(draftIsDoor || draftIsCabinetry || isDrawerPartType(draft.partType)) && !isSubPartDraft ? "items-start" : "items-center"} ${isSubPartDraft ? "pl-[2px] pr-[2px] rounded-[8px] border" : "py-1 px-1 border-y"}`}
+                            className={`relative grid gap-2 overflow-visible ${(draftIsDoor || draftIsCabinetry || isDrawerPartType(draft.partType)) && !isSubPartDraft ? "items-start" : "items-center"} ${isSubPartDraft ? "pl-[2px] pr-[8px] rounded-[16px] border" : "py-1 px-1 border-y"}`}
                             style={{
                               gridTemplateColumns: cutlistEntryGridTemplate,
-                              backgroundColor: color,
+                              backgroundColor: draftPalette.rowBg,
                               color: draftTextColor,
-                              borderColor: draftFieldBorder,
+                              borderColor: draftPalette.border,
                               marginTop: isSubPartDraft ? 0 : undefined,
                               alignItems: isSubPartDraft ? "center" : undefined,
                               paddingTop: isSubPartDraft ? 2 : undefined,
@@ -48542,9 +48893,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               )
                               : null}
                                 {draftIsDoor && draftDoorMode !== "drawer" && !isSubPartDraft ? (
-                                <div className="relative h-[64px] w-0 overflow-visible">
+                                <div className="relative h-[42px] w-0 overflow-visible">
                                 <div className="pointer-events-auto absolute left-0 top-0">
                                   {renderDoorHingeEditor({
+                                  inline: true,
+                                  doorHeight: String(draft.height ?? ""),
+                                  doorWidth: String(draft.width ?? ""),
                                     upValues: normalizeDoorHingeValues(draft.hingesUp),
                                     downValues: normalizeDoorHingeValues(draft.hingesDown),
                                   onChange: (direction, index, value) => onDraftCutlistHingeChange(draft.id, direction, index, value),
@@ -48865,7 +49219,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             key={rowGroup.main.id}
                             className="overflow-hidden"
                             style={{
-                              backgroundColor: mainColor,
+                              // (Its sub-parts in a deeper wash of the main row's part type, round them; its border round the
+                              // lot, following its round corners.)
+                              backgroundColor: cutlistTablePalette(mainColor).subRowBg,
+                              borderStyle: "solid",
+                              borderColor: cutlistTablePalette(mainColor).border,
+                              borderWidth: isCutlistRoomsPanelShown ? 1 : "1px 0",
                               marginLeft: isCutlistRoomsPanelShown ? 12 : 0,
                               marginRight: isCutlistRoomsPanelShown ? 12 : 0,
                               borderRadius: isCutlistRoomsPanelShown ? 22 : 0,
@@ -48908,6 +49267,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       changing as the column comes and goes. */}
                   {visibleCutlistDraftRows.length > 0 ? (
                     <button
+                      ref={cutlistEntryAddButtonRef}
                       type="button"
                       disabled={productionReadOnly}
                       onClick={() => void addDraftRowsToCutlist()}
@@ -48942,7 +49302,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       <Search size={13} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }} />
                       <input
                         value={cutlistSearch}
-                        onChange={(e) => setCutlistSearch(e.target.value)}
+                        onChange={(e) => onCutlistSearchChange(e.target.value)}
                         placeholder="Search part name or board"
                         className="h-8 w-[280px] rounded-full border pl-8 pr-3 text-[12px]"
                         style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
@@ -48950,7 +49310,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     </div>
                     <GlassSelectDropdown
                       value={cutlistPartTypeFilter}
-                      onChange={setCutlistPartTypeFilter}
+                      onChange={onCutlistPartTypeFilterChange}
                       options={["All Part Types", ...partTypeOptions]}
                       getOptionColor={(opt) => partTypeColors[opt]}
                       className="h-8 rounded-full border border-[var(--glass-border)] bg-[var(--panel-bg)] pl-3 pr-2.5 text-[12px] text-[var(--text-main)]"
@@ -48964,7 +49324,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     )}
                     {groupedCutlistRows.map((group) => {
                       const color = partTypeColors[group.partType] ?? "#CBD5E1";
-                      const palette = groupColorPalette(color);
+                      const palette = cutlistTablePalette(color);
                       const groupTextColor = palette.text;
                       const collapsed = Boolean(collapsedCutlistGroups[group.partType]);
                       const groupPartCount = group.rows.reduce((sum, row) => {
@@ -49007,7 +49367,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           className="mb-2 last:mb-0"
                           style={{
                             borderStyle: "solid",
-                            borderColor: color,
+                            borderColor: palette.border,
                             borderWidth: isCutlistRoomsPanelShown ? 1 : "1px 0",
                             borderRadius: isCutlistRoomsPanelShown ? 18 : 0,
                             overflow: "clip",
@@ -49020,24 +49380,22 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         >
                           <div
                             onClick={() => toggleCutlistGroup(group.partType)}
-                            className="flex h-[50px] cursor-pointer items-center justify-between border-b pl-0"
+                            className="flex h-[50px] cursor-pointer items-center justify-between pl-0"
                             style={{
                               backgroundColor: palette.titleBarBg,
-                              color: groupTextColor,
-                              borderBottomColor: color,
+                              color: palette.titleText,
                             }}
                           >
                             <div className="flex h-full items-center gap-3">
-                              <span
-                                className="inline-flex h-full items-center px-3 text-[24px] font-medium leading-none"
-                                style={{
-                                  backgroundColor: palette.titleChipBg,
-                                  color: groupTextColor,
-                                }}
-                              >
+                              <span className="inline-flex h-full items-center pl-4 text-[21px] font-semibold leading-none">
                                 {group.partType}
                               </span>
-                              <span className="inline-flex items-center text-[12px] font-bold leading-none">{formatPartCount(groupPartCount)}</span>
+                              <span
+                                className="inline-flex items-center rounded-full px-2.5 py-[4px] text-[12px] font-semibold leading-none"
+                                style={{ backgroundColor: palette.countChipBg }}
+                              >
+                                {formatPartCount(groupPartCount)}
+                              </span>
                               {pendingGroupCount > 0 && (
                                 <button
                                   type="button"
@@ -49054,20 +49412,24 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 </button>
                               )}
                             </div>
-                            <div className="flex h-full items-center">
+                            <div className="flex h-full items-center pr-3">
                               <button
                                 type="button"
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   toggleCutlistGroup(group.partType);
                                 }}
-                                className="flex h-[50px] min-w-[52px] items-center justify-center border-l text-current"
-                                style={{
-                                  borderLeftColor: palette.divider,
-                                  backgroundColor: palette.titleBarBg,
-                                }}
+                                aria-expanded={!collapsed}
+                                aria-label={collapsed ? `Show ${group.partType}` : `Hide ${group.partType}`}
+                                // (Round, a wash of white over the title bar: V to open the group, ^ to fold it away.)
+                                className="flex h-8 w-8 items-center justify-center rounded-full text-current transition hover:brightness-95"
+                                style={{ backgroundColor: palette.countChipBg }}
                               >
-                                {collapsed ? <Plus size={24} strokeWidth={2.6} /> : <Minus size={24} strokeWidth={2.6} />}
+                                <ChevronDown
+                                  size={18}
+                                  strokeWidth={2.6}
+                                  style={{ transform: collapsed ? "rotate(0deg)" : "rotate(180deg)", transition: "transform 180ms ease" }}
+                                />
                               </button>
                             </div>
                           </div>
@@ -49081,11 +49443,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               shrinks beside the Rooms column, rather than the edge sliding over the end of it. (Fixed
                               layout: the header cells set the columns.) */}
                           <table className="w-full text-left text-[12px]" style={{ tableLayout: "fixed" }}>
-                            <thead style={{ backgroundColor: palette.headerBg, color: groupTextColor }}>
+                            <thead style={{ backgroundColor: palette.headerBg, color: palette.headerText }}>
                               <tr>
                                 <th className="px-2 py-2" style={{ width: listColumnWidth(78) }}></th>
                                 {showRoomColumnInList && (
-                                  <th className="px-2 py-2" style={{ color: groupTextColor, width: listColumnWidth(cutlistRoomColumnWidthPx) }}>Room</th>
+                                  <th className="px-2 py-2" style={{ color: palette.headerText, width: listColumnWidth(cutlistRoomColumnWidthPx) }}>Room</th>
                                 )}
                                 {groupColumnDefs.map((col) => (
                                   (() => {
@@ -49096,7 +49458,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     key={col.label}
                                     className={`px-2 py-2 ${cutlistHeaderAlignClass(col.key as CutlistEditableField)}`}
                                     style={{
-                                      color: groupTextColor,
+                                      color: palette.headerText,
                                       // (Information: whatever's left.)
                                       width: col.key === "information" ? undefined : listColumnWidth(columnPx),
                                     }}
@@ -49150,7 +49512,19 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 <tr
                                   data-cutlist-row-id={row.id}
                                   className="border-t"
-                                  style={{ backgroundColor: palette.rowBg, color: groupTextColor, borderTopColor: palette.divider }}
+                                  style={{
+                                    // (Opened — its hinges or parts below it: a deeper wash, with them.)
+                                    backgroundColor: (rowIsCabinetry ? cabinetryOpen : rowIsDrawer ? drawerOpen : rowIsDoor ? expandedDoorHingeRowId === row.id || doorOpen : false)
+                                      ? palette.rowOpenBg
+                                      : palette.rowBg,
+                                    color: groupTextColor,
+                                    borderTopColor: palette.divider,
+                                    // (The part Needs attention just took you to: washed amber a moment, then fading back.)
+                                    transition: "background-color 600ms ease",
+                                    ...(cutlistAttentionFocusRowId === row.id
+                                      ? { backgroundColor: "#FCE3B0", outline: "2px solid #D97706", outlineOffset: -2 }
+                                      : {}),
+                                  }}
                                 >
                                   <td
                                     className="relative px-2 py-[3px] align-middle"
@@ -49213,7 +49587,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         ) : (
                                           <ChevronDown
                                             size={13}
-                                            color={groupTextColor}
+                                            color={isLightHex(color) ? palette.text : "#FFFFFF"}
                                             style={{
                                               transform: (rowIsCabinetry ? cabinetryOpen : rowIsDrawer ? drawerOpen : rowIsDoor ? expandedDoorHingeRowId === row.id : false) ? "rotate(180deg)" : "rotate(0deg)",
                                               transition: "transform 120ms ease",
@@ -49282,7 +49656,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                 type="button"
                                                 disabled={productionReadOnly}
                                                 onClick={() => startCellEdit(row, "partType")}
-                                                className="inline-flex rounded-[8px] border px-2 py-[2px] text-[11px] font-medium disabled:opacity-60"
+                                                className="inline-flex rounded-full border px-2.5 py-[2px] text-[11px] font-medium disabled:opacity-60"
                                                 style={{
                                                   borderColor: rowPartColor,
                                                   backgroundColor: rowPartColor,
@@ -49326,7 +49700,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                               {boardSizeFor(row.board) && (
                                                 <span
                                                   className="inline-flex h-5 min-w-[28px] shrink-0 items-center justify-center rounded-[999px] px-2 text-[10px] font-bold"
-                                                  style={{ backgroundColor: darkenHex(color, 0.15), color: groupTextColor }}
+                                                  // (A wash of the rows' words over their pale part-type colour — dark on light whatever the part type.)
+                                                  style={{ backgroundColor: hexToRgba(palette.text, 0.12), color: palette.text }}
                                                 >
                                                   {boardSizeFor(row.board)}
                                                 </span>
@@ -49454,9 +49829,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                             )
                                           ) : (
                                             rowIsDrawer ? (
-                                              <span className="block truncate whitespace-nowrap" title={String(row.height ?? "")}>
-                                                {summarizeDrawerHeightTokens(String(row.height ?? "")) || String(row.height ?? "")}
-                                              </span>
+                                              renderDrawerHeightLines(row)
                                             ) : (
                                               String(row.height ?? "")
                                             )
@@ -49671,7 +50044,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   })}
                                 </tr>
                                 {rowIsCabinetry && (
-                                  <tr style={{ backgroundColor: palette.rowBg }}>
+                                  <tr style={{ backgroundColor: cabinetryOpen ? palette.rowOpenBg : palette.rowBg }}>
                                     {showRoomColumnInList && <td style={{ width: cutlistRoomColumnWidthPx, minWidth: cutlistRoomColumnWidthPx }} />}
                                     {groupColumnDefs.map((col) => {
                                       // Part Type, Information (and the control column, handled
@@ -49871,7 +50244,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     data-cutlist-subrow-parent={row.id}
                                     data-cutlist-subrow-key="hinges"
                                     className="border-t"
-                                    style={{ backgroundColor: palette.headerBg, color: groupTextColor, borderTopColor: palette.divider }}
+                                    style={{ backgroundColor: palette.subRowBg, color: groupTextColor, borderTopColor: palette.divider }}
                                   >
                                     <td
                                       colSpan={1 + (showRoomColumnInList ? 1 : 0) + groupColumnDefs.length}
@@ -49881,7 +50254,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         ? renderDoorHingeDisplay(
                                             normalizeDoorHingeValues(row.hingesUp),
                                             normalizeDoorHingeValues(row.hingesDown),
-                                            row.hingeSide,
+                                            row.hingeSide, row.height, row.width,
                                           )
                                         : renderDoorHingeInteractive(row)}
                                     </td>
@@ -49893,7 +50266,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     data-cutlist-subrow-parent={row.id}
                                     data-cutlist-subrow-key={piece.key}
                                     className="border-t"
-                                    style={{ backgroundColor: palette.headerBg, color: groupTextColor, borderTopColor: palette.divider }}
+                                    style={{ backgroundColor: palette.subRowBg, color: groupTextColor, borderTopColor: palette.divider }}
                                   >
                                     <td className="px-2 py-[3px] align-middle text-center text-[10px] font-bold" style={{ width: 78, minWidth: 78, maxWidth: 78 }}>
                                       
@@ -49954,7 +50327,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     data-cutlist-subrow-parent={row.id}
                                     data-cutlist-subrow-key={piece.key}
                                     className="border-t"
-                                    style={{ backgroundColor: palette.headerBg, color: groupTextColor, borderTopColor: palette.divider }}
+                                    style={{ backgroundColor: palette.subRowBg, color: groupTextColor, borderTopColor: palette.divider }}
                                   >
                                     <td className="px-2 py-[3px] align-middle text-center text-[10px] font-bold" style={{ width: 78, minWidth: 78, maxWidth: 78 }}></td>
                                     {showRoomColumnInList && (
@@ -50004,7 +50377,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     data-cutlist-subrow-parent={row.id}
                                     data-cutlist-subrow-key={piece.key}
                                     className="border-t"
-                                    style={{ backgroundColor: palette.headerBg, color: groupTextColor, borderTopColor: palette.divider }}
+                                    style={{ backgroundColor: palette.subRowBg, color: groupTextColor, borderTopColor: palette.divider }}
                                   >
                                     <td className="px-2 py-[3px] align-middle text-center text-[10px] font-bold" style={{ width: 78, minWidth: 78, maxWidth: 78 }}></td>
                                     {showRoomColumnInList && (
@@ -50077,6 +50450,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               it's scrolled up again); stays when there's nothing to scroll. Centred on the cutlist (the rooms column's
               190px off its left on a wide screen). Popping in with a little bounce, and away with a pop
               (glass-bar-pop / -pop-away — globals.css). */}
+          {renderCutlistAttentionBubble()}
           {productionCutlistBarShown ? (
             <div
               className="cutlist-floating-bar pointer-events-none fixed bottom-6 right-0 z-[96] flex justify-center px-4"
@@ -52406,25 +52780,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 style={{ maxHeight: "calc(100svh - 32px)" }}
                 onClick={(e) => e.stopPropagation()}
               >
-                <div className="glass-modal-header relative flex min-h-[58px] items-center justify-between gap-3 px-4">
+                <div className="glass-modal-header relative flex h-[56px] shrink-0 items-center justify-between gap-3 px-5">
                   <div className="min-w-0">
-                    <p className="whitespace-nowrap text-[19px] font-medium" style={{ color: "var(--text-main)" }}>{detail.partName || "Part"}</p>
-                    <p className="whitespace-nowrap text-[13px]" style={{ color: "var(--text-main)" }}>{detail.boardLabel}</p>
+                    <p className="truncate text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>{detail.partName || "Part"}</p>
+                    <p className="truncate text-[12px] font-medium" style={{ color: "var(--text-main)" }}>{detail.boardLabel}</p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setIsCncMobileRowDetailOpen(false)}
-                    className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px] border hover:brightness-95"
-                    style={{
-                      borderColor: "var(--danger-glass-border)",
-                      backgroundColor: "var(--danger-glass-bg)",
-                      backdropFilter: "blur(10px) saturate(180%)",
-                      WebkitBackdropFilter: "blur(10px) saturate(180%)",
-                      color: "#FFFFFF",
-                    }}
-                    title="Close"
-                  >
-                    <X size={18} strokeWidth={2.4} />
+                  <button type="button" onClick={() => setIsCncMobileRowDetailOpen(false)} className={modalCloseButtonClass} aria-label="Close">
+                    <X size={16} />
                   </button>
                 </div>
                 <div className="min-h-0 flex-1 overflow-auto p-4 text-[15px]" style={{ color: "var(--text-main)" }}>
@@ -53044,12 +53406,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             style={{ color: "var(--text-main)" }}
           >
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px" style={{ backgroundColor: "var(--glass-border)" }} />
-            <div className="inline-flex items-center gap-3">
-              <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+            {/* (Its name cut short with "…" — all of it on hover / a long press — when it's long: never pushing the buttons
+                beside it off the screen.) */}
+            <div className="inline-flex min-w-0 items-center gap-3">
+              <div className="inline-flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
                 <DollarSign size={14} className="shrink-0" />
-                <span>Quote</span>
-                <span style={{ color: "var(--text-muted)" }}>|</span>
-                <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
+                <span className="shrink-0">Quote</span>
+                <span className="shrink-0" style={{ color: "var(--text-muted)" }}>|</span>
+                <span className="min-w-0 truncate" title={project?.name || undefined} style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
               </div>
               {quoteGridSaveError ? (
                 <span className="rounded-[8px] border px-2 py-1 text-[11px] font-bold" style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}>
@@ -53577,9 +53941,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     className="glass-modal-backdrop absolute inset-0"
                   />
                   <div ref={quoteCustomPriceModalPanelRef} className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
-                    <div className="glass-modal-header px-5 py-4">
-                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Custom Prices</p>
-                    </div>
+                    <GlassModalHeader title="Custom Prices" onClose={() => setIsQuoteCustomPriceModalOpen(false)} />
                     <div className="max-h-[70vh] space-y-3 overflow-y-auto px-5 py-4">
                       <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
                         Adds each row&apos;s price to the quote&apos;s total only — the name and these rows never appear on the printed quote itself.
@@ -53953,9 +54315,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     className="glass-modal-backdrop absolute inset-0"
                   />
                   <div ref={quoteGridSaveVersionModalPanelRef} className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
-                    <div className="glass-modal-header px-5 py-4">
-                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Save Version</p>
-                    </div>
+                    <GlassModalHeader title="Save Version" onClose={() => setIsQuoteGridSaveVersionModalOpen(false)} />
                     <form
                       className="space-y-4 px-5 py-4"
                       onSubmit={(e) => {
@@ -54010,9 +54370,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     className="glass-modal-backdrop absolute inset-0"
                   />
                   <div ref={quoteGridResetConfirmPanelRef} className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
-                    <div className="glass-modal-header px-5 py-4">
-                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Reset to Template</p>
-                    </div>
+                    <GlassModalHeader title="Reset to Template" onClose={() => setIsQuoteGridResetConfirmOpen(false)} />
                     <div className="space-y-4 px-5 py-4">
                       <p className="text-[12px]" style={{ color: "var(--text-main)" }}>
                         This will discard everything currently on this project&apos;s quote and replace it with a fresh copy of the current company template. This can&apos;t be undone.
@@ -54066,9 +54424,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     className="glass-modal-backdrop absolute inset-0"
                   />
                   <div ref={quoteVersionDeleteModalPanelRef} className="glass-modal-panel relative z-[2147483647] w-[min(420px,96vw)] overflow-hidden">
-                    <div className="glass-modal-header px-5 py-4">
-                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Delete Version?</p>
-                    </div>
+                    <GlassModalHeader title="Delete Version?" onClose={() => setQuoteVersionPendingDeleteId("")} />
                     <div className="space-y-4 px-5 py-4">
                       <p className="text-[12px]" style={{ color: "var(--text-main)" }}>
                         {(() => {
@@ -54127,9 +54483,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     className="glass-modal-backdrop absolute inset-0"
                   />
                   <div ref={reopenQuoteConfirmModalPanelRef} className="glass-modal-panel relative z-[2147483647] w-[min(420px,96vw)] overflow-hidden">
-                    <div className="glass-modal-header px-5 py-4">
-                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Reopen for Editing?</p>
-                    </div>
+                    <GlassModalHeader title="Reopen for Editing?" onClose={() => setIsReopenQuoteConfirmOpen(false)} />
                     <div className="space-y-4 px-5 py-4">
                       <p className="text-[12px]" style={{ color: "var(--text-main)" }}>
                         This retracts the sent quote entirely — it stops being available on the client&apos;s link
@@ -54174,11 +54528,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     className="glass-modal-backdrop absolute inset-0"
                   />
                   <div ref={sendQuoteToClientPanelRef} className={`glass-modal-panel relative overflow-hidden ${sendQuoteToClientPreview ? "w-[min(520px,96vw)]" : "w-[min(420px,96vw)]"}`} style={{ zIndex: 2147483647 }}>
-                    <div className="glass-modal-header px-5 py-4">
-                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                        {sendQuoteToClientPreview ? "Copy This to Your Email" : "Send Quote to Client"}
-                      </p>
-                    </div>
+                    <GlassModalHeader title={<>{sendQuoteToClientPreview ? "Copy This to Your Email" : "Send Quote to Client"}</>} onClose={() => setIsSendQuoteToClientModalOpen(false)} />
                     {sendQuoteToClientPreview ? (
                       <div className="space-y-4 px-5 py-4">
                         <p className="text-[12px]" style={{ color: "var(--text-main)" }}>
@@ -54670,12 +55020,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             style={{ color: "var(--text-main)" }}
           >
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px" style={{ backgroundColor: "var(--glass-border)" }} />
-            <div className="inline-flex items-center gap-3">
-              <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                <ClipboardList size={14} />
-                <span>Specifications</span>
-                <span style={{ color: "var(--text-muted)" }}>|</span>
-                <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
+            {/* (Its name cut short with "…" — all of it on hover / a long press — when it's long: never pushing the buttons
+                beside it off the screen.) */}
+            <div className="inline-flex min-w-0 items-center gap-3">
+              <div className="inline-flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                <ClipboardList size={14} className="shrink-0" />
+                <span className="shrink-0">Specifications</span>
+                <span className="shrink-0" style={{ color: "var(--text-muted)" }}>|</span>
+                <span className="min-w-0 truncate" title={project?.name || undefined} style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
               </div>
               {specsSheetSaveError ? (
                 <span className="rounded-[8px] border px-2 py-1 text-[11px] font-bold" style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}>
@@ -55303,9 +55655,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     className="glass-modal-backdrop absolute inset-0"
                   />
                   <div ref={specsSaveVersionModalPanelRef} className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
-                    <div className="glass-modal-header px-5 py-4">
-                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Save Version</p>
-                    </div>
+                    <GlassModalHeader title="Save Version" onClose={() => setIsSpecsSaveVersionModalOpen(false)} />
                     <form
                       className="space-y-4 px-5 py-4"
                       onSubmit={(e) => {
@@ -55372,11 +55722,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     className="glass-modal-backdrop absolute inset-0"
                   />
                   <div ref={sendSpecsToClientPanelRef} className={`glass-modal-panel relative overflow-hidden ${sendSpecsToClientPreview ? "w-[min(520px,96vw)]" : "w-[min(420px,96vw)]"}`} style={{ zIndex: 2147483647 }}>
-                    <div className="glass-modal-header px-5 py-4">
-                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                        {sendSpecsToClientPreview ? "Copy This to Your Email" : "Send to Client"}
-                      </p>
-                    </div>
+                    <GlassModalHeader title={<>{sendSpecsToClientPreview ? "Copy This to Your Email" : "Send to Client"}</>} onClose={() => setIsSendSpecsToClientModalOpen(false)} />
                     {sendSpecsToClientPreview ? (
                       <div className="space-y-4 px-5 py-4">
                         <p className="text-[12px]" style={{ color: "var(--text-main)" }}>
@@ -55478,9 +55824,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     className="glass-modal-backdrop absolute inset-0"
                   />
                   <div ref={specsSheetResetConfirmPanelRef} className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
-                    <div className="glass-modal-header px-5 py-4">
-                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Reset to Template</p>
-                    </div>
+                    <GlassModalHeader title="Reset to Template" onClose={() => setIsSpecsSheetResetConfirmOpen(false)} />
                     <div className="space-y-4 px-5 py-4">
                       <p className="text-[12px]" style={{ color: "var(--text-main)" }}>
                         This will discard everything currently on this project&apos;s specifications sheet and replace it with a fresh copy of the current company template. This can&apos;t be undone.
@@ -55528,9 +55872,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     className="glass-modal-backdrop absolute inset-0"
                   />
                   <div ref={specsVersionDeleteModalPanelRef} className="glass-modal-panel relative z-[2147483647] w-[min(420px,96vw)] overflow-hidden">
-                    <div className="glass-modal-header px-5 py-4">
-                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Delete Version?</p>
-                    </div>
+                    <GlassModalHeader title="Delete Version?" onClose={() => setSpecsVersionPendingDeleteId("")} />
                     <div className="space-y-4 px-5 py-4">
                       <p className="text-[12px]" style={{ color: "var(--text-main)" }}>
                         {(() => {
@@ -55589,9 +55931,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     className="glass-modal-backdrop absolute inset-0"
                   />
                   <div ref={reopenSpecsConfirmModalPanelRef} className="glass-modal-panel relative z-[2147483647] w-[min(420px,96vw)] overflow-hidden">
-                    <div className="glass-modal-header px-5 py-4">
-                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Reopen for Editing?</p>
-                    </div>
+                    <GlassModalHeader title="Reopen for Editing?" onClose={() => setIsReopenSpecsConfirmOpen(false)} />
                     <div className="space-y-4 px-5 py-4">
                       <p className="text-[12px]" style={{ color: "var(--text-main)" }}>
                         This clears the client&apos;s submission so they can answer again — the sheet itself stays exactly as it is, and it&apos;s still available on the same link.
@@ -56372,9 +56712,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     className="glass-modal-backdrop absolute inset-0"
                   />
                   <div ref={newComparisonConfirmPanelRef} className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
-                    <div className="glass-modal-header px-5 py-4">
-                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Save Before Starting a New One?</p>
-                    </div>
+                    <GlassModalHeader title="Save Before Starting a New One?" onClose={() => setIsNewComparisonConfirmOpen(false)} />
                     <div className="space-y-4 px-5 py-4">
                       <p className="text-[12px]" style={{ color: "var(--text-main)" }}>
                         {comparisonNameDraft.trim()
@@ -56424,9 +56762,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     className="glass-modal-backdrop absolute inset-0"
                   />
                   <div ref={comparisonDeleteModalPanelRef} className="glass-modal-panel relative z-[2147483647] w-[min(420px,96vw)] overflow-hidden">
-                    <div className="glass-modal-header px-5 py-4">
-                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Delete Upgrade?</p>
-                    </div>
+                    <GlassModalHeader title="Delete Upgrade?" onClose={() => setComparisonPendingDeleteId("")} />
                     <div className="space-y-4 px-5 py-4">
                       <p className="text-[12px]" style={{ color: "var(--text-main)" }}>
                         {(() => {
@@ -56471,9 +56807,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     className="glass-modal-backdrop absolute inset-0"
                   />
                   <div ref={comparisonApplyModalPanelRef} className="glass-modal-panel relative z-[2147483647] w-[min(480px,96vw)] overflow-hidden">
-                    <div className="glass-modal-header px-5 py-4">
-                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Apply to Cutlist?</p>
-                    </div>
+                    <GlassModalHeader title="Apply to Cutlist?" onClose={() => setComparisonApplyModal(null)} />
                     <div className="space-y-4 px-5 py-4">
                       {comparisonApplyModal ? (
                         comparisonApplyModal.changes.length === 0 ? (
@@ -57454,17 +57788,19 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 onClick={(e) => e.stopPropagation()}
               >
                 <div
-                  className={`glass-modal-header relative flex items-center justify-between px-3 ${isCompactProjectViewport ? "min-h-[50px]" : "h-[46px]"}`}
+                  className="glass-modal-header relative flex h-[56px] shrink-0 items-center justify-between gap-3 px-5"
                 >
                   {/* Mobile: the board label moves below the sheet preview instead (left-aligned,
                       see its own comment there) — "Sheet N" stays exactly where it was, centered. */}
                   {!isCompactProjectViewport && (
-                    <div className="min-w-0">
-                      <p className="truncate text-[17px] font-medium" style={{ color: "var(--text-main)" }}>{selectedNestingSheet.group.boardLabel}</p>
+                    <div className="min-w-0 max-w-[calc(50%-64px)]">
+                      <p className="truncate text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                        {selectedNestingSheet.group.boardLabel}
+                      </p>
                     </div>
                   )}
                   <p
-                    className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap text-[15px] font-semibold"
+                    className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap text-[14px] font-bold uppercase tracking-[1px]"
                     style={{ color: "var(--text-main)" }}
                   >
                     Sheet {selectedNestingSheet.sheet.index}
@@ -57480,17 +57816,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     // below the preview), leaving this as justify-between's only flex child —
                     // with just one item, justify-between collapses it to the start (left)
                     // instead of the end, so it needs its own explicit push to the right.
-                    className="ml-auto inline-flex h-8 w-8 items-center justify-center rounded-[8px] border hover:brightness-95"
-                    style={{
-                      borderColor: "var(--danger-glass-border)",
-                      backgroundColor: "var(--danger-glass-bg)",
-                      backdropFilter: "blur(10px) saturate(180%)",
-                      WebkitBackdropFilter: "blur(10px) saturate(180%)",
-                      color: "#FFFFFF",
-                    }}
-                    title="Close preview"
+                    className={`ml-auto ${modalCloseButtonClass}`}
+                    aria-label="Close preview"
                   >
-                    <X size={16} strokeWidth={2.4} />
+                    <X size={16} />
                   </button>
                 </div>
                 <div className={isCompactProjectViewport ? "relative min-h-0 flex-1" : `min-h-0 overflow-auto ${isCompactProjectViewport ? "flex-1 p-2" : "overflow-hidden p-3"}`}>
@@ -57654,10 +57983,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     className="glass-modal-panel relative flex max-h-[min(760px,92vh)] w-[min(520px,96vw)] flex-col overflow-hidden"
                     style={{ zIndex: 2147483647 }}
                   >
-                    <div className="glass-modal-header flex shrink-0 items-center gap-2 px-5 py-4">
-                      <FileSpreadsheet size={16} style={{ color: "var(--text-main)" }} />
-                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Import</p>
-                    </div>
+                    <GlassModalHeader
+                      title="Import"
+                      icon={<FileSpreadsheet size={16} />}
+                      onClose={() => setIsCutlistImportOpen(false)}
+                      closeDisabled={isApplyingCutlistImport}
+                    />
                     {/* The parts (scrolling, when there's a lot), then the buttons, always in view. */}
                     <div className="glass-scroll min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4 text-[12.5px]" style={{ color: "var(--text-main)" }}>
                       {cutlistImport.error ? (
@@ -58610,14 +58941,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             className="glass-modal-panel w-full max-w-[420px] overflow-hidden"
                             onClick={(e) => e.stopPropagation()}
                           >
-                            <div className="glass-modal-header flex items-center gap-2 px-5 py-4">
-                              <p className="min-w-0 flex-1 text-[15px] font-medium" style={{ color: "var(--text-main)" }}>
-                                Convert to a project?
-                              </p>
-                              <button type="button" onClick={() => setIsConvertSmallJobConfirmOpen(false)} className={modalCloseButtonClass} aria-label="Close">
-                                <X size={15} />
-                              </button>
-                            </div>
+                            <GlassModalHeader title="Convert to a project?" onClose={() => setIsConvertSmallJobConfirmOpen(false)} />
                             <div className="space-y-4 px-5 py-4">
                               <p className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
                                 &ldquo;{project.name || "This small job"}&rdquo; becomes a full project on the Dashboard — its client details, notes and images come
@@ -58668,9 +58992,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         className="glass-modal-backdrop absolute inset-0"
                       />
                       <div ref={deleteProjectModalPanelRef} className="glass-modal-panel relative z-[2147483647] w-[min(440px,96vw)] overflow-hidden">
-                        <div className="glass-modal-header px-5 py-4">
-                          <p className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>Archive this project?</p>
-                        </div>
+                        <GlassModalHeader title="Archive this project?" onClose={closeDeleteProjectModal} />
                         <div className="px-5 py-4">
                           <p className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
                             This moves <b>{project.name}</b> to the Archive and takes it off the Dashboard straight away. You can restore it or delete it permanently from there.
@@ -59059,20 +59381,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         className="glass-modal-backdrop absolute inset-0"
                       />
                       <div ref={hardwareRoomPopupPanelRef} className="glass-modal-panel relative w-[min(400px,96vw)] overflow-hidden" style={{ zIndex: 2147483000 }}>
-                        <div className="glass-modal-header flex items-center justify-between gap-2 px-5 py-4">
-                          <p className="min-w-0 truncate text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                            Hardware · {room || "Global"}
-                          </p>
-                          <button
-                            type="button"
-                            onClick={() => setIsHardwareRoomPopupOpen(false)}
-                            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition hover:bg-[var(--panel-muted)]"
-                            style={{ color: "var(--text-muted)" }}
-                            aria-label="Close"
-                          >
-                            <X size={16} />
-                          </button>
-                        </div>
+                        <GlassModalHeader title={<>Hardware · {room || "Global"}</>} onClose={() => setIsHardwareRoomPopupOpen(false)} />
                         <div className="space-y-3 px-5 pb-5 pt-3 text-[12px]">
                           {!room ? (
                             <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>Used by every room that doesn&apos;t have its own hardware.</p>
@@ -59143,14 +59452,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         className="glass-modal-panel relative flex max-h-[calc(100svh-32px)] w-[min(560px,96vw)] flex-col overflow-hidden"
                         style={{ zIndex: 2147483647 }}
                       >
-                        <div className="glass-modal-header px-5 py-4">
-                          <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Update Drawers</p>
-                          <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>
+                        <GlassModalHeader
+                          title="Update Drawers"
+                          onClose={() => setIsPendingHardwareChangeOpen(false)}
+                          closeDisabled={isSavingPendingHardwareChange}
+                        />
+                        <div className="glass-scroll min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4 text-[12px]" style={{ color: "var(--text-main)" }}>
+                          <div className="flex flex-wrap items-center gap-2 text-[12px] font-medium" style={{ color: "var(--text-main)" }}>
                             <span>{pending.scope || "Global"}:</span>
                             {nextCategory || nextDrawer ? renderHardwarePills(pending.next, "start") : <span>No hardware</span>}
                           </div>
-                        </div>
-                        <div className="glass-scroll min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4 text-[12px]" style={{ color: "var(--text-main)" }}>
                           <div
                             className="rounded-[10px] border px-3 py-2 font-medium"
                             style={{ borderColor: "#F2D06B", backgroundColor: "#FFF4BF", color: "#7A5600" }}
@@ -59267,9 +59578,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       kept or changed. */}
                   <div aria-hidden className="glass-modal-backdrop absolute inset-0" />
                   <div ref={boardChangePromptPanelRef} role="alertdialog" aria-modal="true" className="glass-modal-panel relative w-[min(440px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
-                    <div className="glass-modal-header px-5 py-4">
-                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Update the Cutlist?</p>
-                    </div>
+                    <GlassModalHeader title="Update the Cutlist?" />
                     <div className="space-y-4 px-5 py-4 text-[12.5px]" style={{ color: "var(--text-main)" }}>
                       <p>
                         {`${boardChangePrompt.rowCount} ${boardChangePrompt.rowCount === 1 ? "row" : "rows"} in the cutlist ${
@@ -59483,11 +59792,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     className="glass-modal-backdrop absolute inset-0"
                                   />
                                   <div ref={contactCardPromptPanelRef} className="glass-modal-panel relative z-[1701] w-full max-w-[460px] overflow-hidden">
-                                    <div className="glass-modal-header px-4 py-3">
-                                      <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
-                                        Update Contact Card?
-                                      </p>
-                                    </div>
+                                    <GlassModalHeader title="Update Contact Card?" onClose={() => (isUpdatingContactCard ? null : setContactCardPrompt(null))} />
                                     <div className="space-y-3 px-4 py-4">
                                       <p className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
                                         Do you want to update the contact card for{" "}
@@ -59581,20 +59886,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         } as React.CSSProperties
                                       }
                                     />
-                                    <div className="glass-modal-header flex items-center justify-between gap-3 px-5 py-4">
-                                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                                        Create Contact
-                                      </p>
-                                      <button
-                                        type="button"
-                                        onClick={() => setIsCreateContactModalOpen(false)}
-                                        disabled={isCreatingProjectContact}
-                                        aria-label="Close"
-                                        className={modalCloseButtonClass}
-                                      >
-                                        <X size={16} />
-                                      </button>
-                                    </div>
+                                    <GlassModalHeader title="Create Contact" onClose={() => setIsCreateContactModalOpen(false)} closeDisabled={isCreatingProjectContact} />
                                     <form
                                       className="flex min-h-0 flex-1 flex-col"
                                       onSubmit={(e) => {
@@ -60723,7 +61015,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   {initialDeleteAllArmed ? `Confirm (${initialPendingDeleteRowsSet.size})` : `Delete (${initialPendingDeleteRowsSet.size})`}
                                 </button>
                               )}
-                              <input value={initialCutlistSearch} onChange={(e) => setInitialCutlistSearch(e.target.value)} placeholder="Search part name or board" className="h-8 w-[240px] rounded-[8px] border px-2 text-[12px]" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }} />
+                              <input value={initialCutlistSearch} onChange={(e) => onInitialCutlistSearchChange(e.target.value)} placeholder="Search part name or board" className="h-8 w-[240px] rounded-[8px] border px-2 text-[12px]" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }} />
                               <select value={initialCutlistPartTypeFilter} onChange={(e) => setInitialCutlistPartTypeFilter(e.target.value)} className="h-8 rounded-[8px] border px-2 text-[12px]" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}>
                                 <option>All Part Types</option>
                                 {initialMeasurePartTypeOptions.map((v) => (
@@ -61036,14 +61328,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           <div className={`grid gap-2 ${isMobileProjectViewport ? "" : "sm:grid-cols-[minmax(0,1fr)_180px]"}`}>
                             <input
                               value={cutlistSearch}
-                              onChange={(e) => setCutlistSearch(e.target.value)}
+                              onChange={(e) => onCutlistSearchChange(e.target.value)}
                               placeholder="Search cutlist..."
                               className="h-9 rounded-[10px] border px-3 text-[12px] outline-none"
                               style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
                             />
                             <GlassSelectDropdown
                               value={cutlistPartTypeFilter}
-                              onChange={setCutlistPartTypeFilter}
+                              onChange={onCutlistPartTypeFilterChange}
                               options={["All Part Types", ...partTypeOptions]}
                               getOptionColor={(opt) => partTypeColors[opt]}
                               className="h-9 rounded-[10px] border px-3 text-[12px] outline-none"
@@ -61876,13 +62168,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           <div className="ml-auto flex flex-wrap items-center justify-end gap-2 pr-1">
                             <input
                               value={cutlistSearch}
-                              onChange={(e) => setCutlistSearch(e.target.value)}
+                              onChange={(e) => onCutlistSearchChange(e.target.value)}
                               placeholder="Search part name or board"
                               className="h-8 w-[180px] rounded-[8px] border border-[#D8DEE8] bg-[#EEF1F5] px-2 text-[12px] sm:w-[240px] md:w-[280px]"
                             />
                             <GlassSelectDropdown
                               value={cutlistPartTypeFilter}
-                              onChange={setCutlistPartTypeFilter}
+                              onChange={onCutlistPartTypeFilterChange}
                               options={["All Part Types", ...partTypeOptions]}
                               getOptionColor={(opt) => partTypeColors[opt]}
                               className="h-8 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
@@ -62023,7 +62315,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                 type="button"
                                                 disabled={productionReadOnly}
                                                 onClick={() => startCellEdit(row, "partType")}
-                                                className="inline-flex rounded-[8px] border px-2 py-[2px] text-[11px] font-medium disabled:opacity-60"
+                                                className="inline-flex rounded-full border px-2.5 py-[2px] text-[11px] font-medium disabled:opacity-60"
                                                 style={{
                                                   borderColor: rowPartColor,
                                                   backgroundColor: rowPartColor,
@@ -62358,7 +62650,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                     <input
                                                       autoFocus={idx === 0}
                                                       value={line}
-                                                      onChange={(e) => onEditingInformationLineChange(idx, e.target.value)}
+                                                      // (Shown from the state, so it's set too — onEditingInformationLineChange alone only keeps the ref, for the
+                                                      // desktop list's uncontrolled boxes: without it what's typed never appears.)
+                                                      onChange={(e) => {
+                                                        onEditingInformationLineChange(idx, e.target.value);
+                                                        setEditingCellValue(editingCellValueRef.current);
+                                                      }}
                                                       onKeyDown={(e) => {
                                                         if (e.key === "Enter") {
                                                           e.preventDefault();
@@ -62467,7 +62764,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                           ? renderDoorHingeDisplay(
                                               normalizeDoorHingeValues(row.hingesUp),
                                               normalizeDoorHingeValues(row.hingesDown),
-                                              row.hingeSide,
+                                              row.hingeSide, row.height, row.width,
                                             )
                                           : renderDoorHingeInteractive(row)}
                                       </td>
@@ -63367,11 +63664,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       className="absolute inset-0 glass-modal-backdrop"
                     />
                     <div ref={boardRowDeleteBlockedPanelRef} className="glass-modal-panel relative z-[1701] w-[min(720px,96vw)] overflow-hidden">
-                      <div className="glass-modal-header px-5 py-4">
-                        <p className="text-[14px] font-bold" style={{ color: "var(--text-main)" }}>
-                          {displayBoardRowDeleteBlocked.colour} is in use on this cutlist, it cannot be deleted.
-                        </p>
-                      </div>
+                      <GlassModalHeader title="Colour in use" onClose={() => setBoardRowDeleteBlocked(null)} />
+                      <p className="px-5 pt-4 text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
+                        {displayBoardRowDeleteBlocked.colour} is in use on this cutlist, it cannot be deleted.
+                      </p>
                       <div className="flex items-center justify-end gap-2 px-5 py-4">
                         <button
                           type="button"
@@ -63414,8 +63710,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         onClick={(e) => e.stopPropagation()}
                       >
                         <div className="flex min-h-0 flex-1 flex-col">
-                          <div className="glass-modal-header relative flex min-h-[58px] items-center justify-between gap-3 px-4">
-                            <p className="whitespace-nowrap text-[19px] font-medium" style={{ color: "var(--text-main)" }}>Board {rowIndex + 1}</p>
+                          <div className="glass-modal-header relative flex h-[56px] shrink-0 items-center justify-between gap-3 px-5">
+                            <p className="min-w-0 truncate text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Board {rowIndex + 1}</p>
                             <div className="flex items-center gap-2">
                               <button
                                 type="button"
@@ -63423,26 +63719,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 onClick={(e) => { boardRowDeleteBlockedOriginElRef.current = e.currentTarget; setBoardRowModalOrigin(captureGlassModalOrigin(e)); void onRemoveBoardRow(row.id); }}
                                 onMouseEnter={() => setHoveredBoardRemoveRowId(row.id)}
                                 onMouseLeave={() => setHoveredBoardRemoveRowId((prev) => (prev === row.id ? "" : prev))}
-                                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px] border text-white hover:brightness-95 disabled:opacity-55"
+                                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-white hover:brightness-95 disabled:opacity-55 max-md:h-10 max-md:w-10"
                                 style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
                                 title="Remove board"
                               >
-                                <Trash2 size={16} strokeWidth={2.4} />
+                                <Trash2 size={15} strokeWidth={2.2} />
                               </button>
-                              <button
-                                type="button"
-                                onClick={closeBoardRowDetail}
-                                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px] border hover:brightness-95"
-                                style={{
-                                  borderColor: "var(--danger-glass-border)",
-                                  backgroundColor: "var(--danger-glass-bg)",
-                                  backdropFilter: "blur(10px) saturate(180%)",
-                                  WebkitBackdropFilter: "blur(10px) saturate(180%)",
-                                  color: "#FFFFFF",
-                                }}
-                                title="Close"
-                              >
-                                <X size={18} strokeWidth={2.4} />
+                              <button type="button" onClick={closeBoardRowDetail} className={modalCloseButtonClass} aria-label="Close">
+                                <X size={16} />
                               </button>
                             </div>
                           </div>
@@ -64242,20 +64526,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 type="button"
                 aria-label="Close file preview backdrop"
                 onClick={() => setOpenProjectFilePreviewId("")}
-                className="absolute inset-0 bg-[rgba(15,23,42,0.45)] backdrop-blur-[2px]"
+                className="glass-modal-backdrop absolute inset-0"
               />
-              <div className="relative z-[1601] flex h-[min(88vh,760px)] w-[min(1100px,96vw)] flex-col overflow-hidden rounded-[14px] border border-[#D6DEE9] bg-white shadow-[0_28px_70px_rgba(2,6,23,0.28)]">
-                <div className="flex items-center justify-between border-b border-[#D7DEE8] px-4 py-3">
-                  <p className="truncate pr-4 text-[13px] font-bold text-[#1F2937]">{openProjectFilePreview.name}</p>
-                  <button
-                    type="button"
-                    onClick={() => setOpenProjectFilePreviewId("")}
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[#D8DEE8] text-[#64748B] hover:bg-[var(--panel-muted)]"
-                    aria-label="Close file preview"
-                  >
-                    <X size={15} />
-                  </button>
-                </div>
+              <div className="glass-modal-panel relative z-[1601] flex h-[min(88vh,760px)] w-[min(1100px,96vw)] flex-col overflow-hidden">
+                <GlassModalHeader title={openProjectFilePreview.name} onClose={() => setOpenProjectFilePreviewId("")} closeLabel="Close file preview" />
                 <div className="min-h-0 flex-1 bg-white">
                   {openProjectFilePreview.url || openProjectFilePreview.path ? (
                     <iframe
@@ -64282,13 +64556,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 className="absolute inset-0 glass-modal-backdrop"
               />
               <div ref={roomDeleteBlockedPanelRef} className="glass-modal-panel relative z-[1701] w-fit max-w-[min(480px,92vw)] overflow-hidden">
-                <div className="glass-modal-header px-5 py-4">
-                  <p className="text-[14px] font-bold" style={{ color: "var(--text-main)" }}>
-                    {displaySalesRoomDeleteBlocked.reason === "parts"
-                      ? `${displaySalesRoomDeleteBlocked.roomName} has cutlist parts assigned to it, it cannot be deleted.`
-                      : `${displaySalesRoomDeleteBlocked.roomName} contains a value, it cannot be deleted.`}
-                  </p>
-                </div>
+                <GlassModalHeader title="Room in use" onClose={() => setSalesRoomDeleteBlocked(null)} />
+                <p className="px-5 pt-4 text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
+                  {displaySalesRoomDeleteBlocked.reason === "parts"
+                    ? `${displaySalesRoomDeleteBlocked.roomName} has cutlist parts assigned to it, it cannot be deleted.`
+                    : `${displaySalesRoomDeleteBlocked.roomName} contains a value, it cannot be deleted.`}
+                </p>
                 <div className="flex items-center justify-end gap-2 px-5 py-4">
                   {displaySalesRoomDeleteBlocked.reason === "value" && (
                     <button
@@ -64331,21 +64604,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               />
               <div ref={addRoomFullscreenPanelRef} className="glass-modal-panel relative z-[1701] w-[min(720px,96vw)] overflow-hidden">
                 {/* Its X in the top right corner, as the other pop-ups' (no Back button). */}
-                <div className="glass-modal-header flex items-center justify-between gap-3 px-5 py-4">
-                  <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Add Room</p>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsAddRoomModalOpen(false);
-                      setAddRoomName("");
-                      setAddRoomError("");
-                    }}
-                    className={modalCloseButtonClass}
-                    aria-label="Close"
-                  >
-                    <X size={16} />
-                  </button>
-                </div>
+                <GlassModalHeader
+                  title="Add Room"
+                  onClose={() => {
+                    setIsAddRoomModalOpen(false);
+                    setAddRoomName("");
+                    setAddRoomError("");
+                  }}
+                />
                 <div className="space-y-4 px-5 py-4">
                   <div className="space-y-2">
                     <p className="text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>Room Name</p>

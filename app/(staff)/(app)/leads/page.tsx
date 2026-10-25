@@ -1,6 +1,7 @@
 "use client";
 
 import { activeDateTime, useCompanyFormats } from "@/lib/company-formats";
+import { GlassModalHeader } from "@/components/glass-modal-header";
 import { glassShineStyle } from "@/lib/glass-shine";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type TouchEvent as ReactTouchEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { createPortal } from "react-dom";
@@ -5583,7 +5584,7 @@ export default function LeadsPage() {
               >
                 <div className="glass-modal-header flex h-[56px] items-center justify-between gap-3 px-5">
                   <div className="flex min-w-0 items-center gap-2">
-                    <p className="truncate text-[14px] font-bold" style={{ color: "var(--text-main)" }}>
+                    <p className="shrink-0 text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
                       Assign Lead
                     </p>
                     <span className="text-[14px] font-medium" style={{ color: "var(--text-muted)" }}>
@@ -5611,11 +5612,10 @@ export default function LeadsPage() {
                       type="button"
                       onClick={closeAssignLeadModal}
                       disabled={Boolean(assigningLeadId)}
-                      className="inline-flex h-9 w-9 items-center justify-center rounded-full border hover:brightness-95"
-                      style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+                      className={modalCloseButtonClass}
                       aria-label="Close assign lead"
                     >
-                      <X size={18} />
+                      <X size={16} />
                     </button>
                   </div>
                 </div>
@@ -5708,7 +5708,7 @@ export default function LeadsPage() {
               >
                 <div className="glass-modal-header flex h-[56px] items-center justify-between gap-3 px-5">
                   <div className="flex min-w-0 items-center gap-2">
-                    <p className="truncate text-[14px] font-bold" style={{ color: "var(--text-main)" }}>
+                    <p className="shrink-0 text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
                       Lead Photos
                     </p>
                     <span className="text-[14px] font-medium" style={{ color: "var(--text-muted)" }}>
@@ -5722,11 +5722,10 @@ export default function LeadsPage() {
                     type="button"
                     onClick={closeLeadImagesModal}
                     disabled={leadImagesUploading}
-                    className="inline-flex h-9 w-9 items-center justify-center rounded-full border hover:brightness-95"
-                    style={{ borderColor: "var(--glass-border)", color: "var(--text-main)" }}
+                    className={modalCloseButtonClass}
                     aria-label="Close lead photos"
                   >
-                    <X size={18} />
+                    <X size={16} />
                   </button>
                 </div>
                 <div className="glass-scroll overflow-y-auto px-5 py-5">
@@ -7013,9 +7012,7 @@ export default function LeadsPage() {
               className="glass-modal-backdrop absolute inset-0"
             />
             <div ref={deleteConfirmModalPanelRef} className="glass-modal-panel relative w-full max-w-[420px] overflow-hidden">
-              <div className="glass-modal-header px-5 py-4">
-                <h3 className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>Archive this lead?</h3>
-              </div>
+              <GlassModalHeader title="Archive this lead?" onClose={() => setConfirmDeleteLeadId("")} />
               <div className="px-5 py-4">
                 <p className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
                   Moves it to the Archive — you can restore it or delete it permanently from there.

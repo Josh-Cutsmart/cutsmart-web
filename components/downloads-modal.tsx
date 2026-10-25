@@ -1,9 +1,9 @@
 "use client";
 
 import { useRef, useState, type RefObject } from "react";
+import { GlassModalHeader } from "@/components/glass-modal-header";
 import { createPortal } from "react-dom";
-import { Download, FileSpreadsheet, X } from "lucide-react";
-import { modalCloseButtonClass } from "@/components/settings-ui";
+import { Download, FileSpreadsheet } from "lucide-react";
 import { useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { downloadProductionCutlistTemplate } from "@/lib/production-cutlist-download";
 
@@ -44,17 +44,7 @@ export function DownloadsModal({
     <div className="fixed inset-0 z-[9100] flex items-center justify-center px-4 py-4">
       <button type="button" aria-label="Close downloads" onClick={onClose} className="glass-modal-backdrop absolute inset-0" />
       <div ref={panelRef} className="glass-modal-panel relative flex w-[min(520px,96vw)] max-h-[min(640px,92vh)] flex-col overflow-hidden">
-        <div className="glass-modal-header flex h-[56px] shrink-0 items-center justify-between gap-2 px-5">
-          <div className="flex items-center gap-2">
-            <Download size={16} style={{ color: "var(--text-main)" }} />
-            <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-              Downloads
-            </p>
-          </div>
-          <button type="button" onClick={onClose} className={modalCloseButtonClass} aria-label="Close">
-            <X size={16} />
-          </button>
-        </div>
+        <GlassModalHeader title="Downloads" icon={<Download size={16} />} onClose={onClose} />
         <div className="glass-scroll min-h-0 flex-1 space-y-2 overflow-auto px-5 py-4">
           <div className="flex items-start gap-3 rounded-[12px] border px-4 py-3" style={{ borderColor: "var(--glass-border)" }}>
             <FileSpreadsheet size={20} className="mt-0.5 shrink-0" style={{ color: "var(--success-strong)" }} />

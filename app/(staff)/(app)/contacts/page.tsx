@@ -1,6 +1,7 @@
 "use client";
 
 import { activeDate, useCompanyFormats } from "@/lib/company-formats";
+import { GlassModalHeader } from "@/components/glass-modal-header";
 import {
   Fragment,
   Suspense,
@@ -2076,20 +2077,7 @@ function ClientsPageInner() {
             ref={addContactPanelRef}
             className="glass-modal-panel relative z-[1701] flex h-[min(600px,calc(100svh-32px))] w-full max-w-[520px] flex-col overflow-hidden"
           >
-            <div className="glass-modal-header flex items-center justify-between px-4 py-3">
-              <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
-                Add Contact
-              </p>
-              <button
-                type="button"
-                onClick={() => setIsAddContactOpen(false)}
-                disabled={isSavingContact}
-                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] border transition hover:brightness-95 disabled:opacity-60"
-                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
-              >
-                <X size={16} />
-              </button>
-            </div>
+            <GlassModalHeader title="Add Contact" onClose={() => setIsAddContactOpen(false)} closeDisabled={isSavingContact} />
             <div className="flex-1 space-y-2.5 overflow-y-auto px-4 py-4">
               <label className="block text-[11px] font-bold" style={{ color: "var(--text-muted)" }}>
                 Name

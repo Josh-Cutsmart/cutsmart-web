@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { Check, Copy, Eye, EyeOff, KeyRound, Plus, Trash2, X } from "lucide-react";
-import { glassFieldClass, modalCloseButtonClass, primaryButtonClass, primaryButtonStyle, smallButtonClass } from "@/components/settings-ui";
+import { GlassModalHeader } from "@/components/glass-modal-header";
+import { Check, Copy, Eye, EyeOff, KeyRound, Plus, Trash2 } from "lucide-react";
+import { glassFieldClass, primaryButtonClass, primaryButtonStyle, smallButtonClass } from "@/components/settings-ui";
 import { activeDateTime } from "@/lib/company-formats";
 import {
   changeMasterJoinCode,
@@ -153,14 +154,7 @@ export function CompanyJoinCodesModal({
     <div className="fixed inset-0 z-[1650] flex items-center justify-center px-4 py-4">
       <button type="button" aria-label="Close join codes" onClick={onClose} className="glass-modal-backdrop absolute inset-0" />
       <div role="dialog" aria-label="Join codes" className="glass-modal-panel relative z-[1651] flex max-h-[calc(100svh-32px)] w-full max-w-[600px] flex-col overflow-hidden">
-        <div className="glass-modal-header flex items-center justify-between px-4 py-3">
-          <p className="inline-flex items-center gap-2 text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
-            <KeyRound size={15} /> Join codes
-          </p>
-          <button type="button" onClick={onClose} className={modalCloseButtonClass} aria-label="Close">
-            <X size={16} />
-          </button>
-        </div>
+        <GlassModalHeader title="Join codes" icon={<KeyRound size={16} />} onClose={onClose} />
 
         <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-4">
           {loading && !data ? (

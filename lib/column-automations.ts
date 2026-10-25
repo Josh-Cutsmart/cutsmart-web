@@ -332,6 +332,8 @@ export type ScheduledColumnMove = {
   toSubStage: string;
   dueAtIso: string;
   setAtIso: string;
+  // Whoever's move set its timer off — told when it moves (not before).
+  byUid?: string;
 };
 export const SCHEDULED_COLUMN_MOVE_FIELD = "scheduledColumnMove";
 export const SCHEDULED_COLUMN_MOVE_DUE_FIELD = "scheduledColumnMoveDueAtIso";
@@ -340,7 +342,13 @@ export const SCHEDULED_COLUMN_MOVE_DUE_FIELD = "scheduledColumnMoveDueAtIso";
 export const COLUMN_MOVE_CHAIN_LIMIT = 4;
 
 // `startedMs`: when its time in the column began (a move that waited on its conditions: when it entered) — now if not given.
-export function scheduledColumnMoveFor(automation: ColumnAutomation, from: BoardSpot, nowMs: number, startedMs = nowMs): ScheduledColumnMove {
+export function scheduledColumnMoveFor(
+  automation: ColumnAutomation,
+  from: BoardSpot,
+  nowMs: number,
+  startedMs = nowMs,
+  byUid = "",
+): ScheduledColumnMove {
   return {
     automationId: automation.id,
     fromStatus: from.status,
@@ -349,6 +357,7 @@ export function scheduledColumnMoveFor(automation: ColumnAutomation, from: Board
     toSubStage: automation.moveToSubStage,
     dueAtIso: new Date(startedMs + columnAutomationStayMs(automation)).toISOString(),
     setAtIso: new Date(nowMs).toISOString(),
+    ...(byUid ? { byUid } : {}),
   };
 }
 
@@ -466,24 +475,17 @@ export function stayStartedAtIso(
 }
 
 // The notification's words: "Moved into Production" — "Smith Kitchen" moved into Production.
-// Whoever moved something, told of the move automation their move set off: that it's moved on (straight away — just
-// where it is now, in a notify rule's own words: "Moved into Site Measure"), or will (on a timer — `after`: how long).
+// Whoever moved something, told of the move automation their move set off once it's moved on — straight away, or when
+// its timer's up (never ahead of it) — just where it is now, in a notify rule's own words: "Moved into Site Measure".
 // A lead moved on to the Dashboard (`converts`) becomes a project as it goes.
 export function columnAutomationMoveNoticeText(input: {
   board: ColumnAutomationBoard;
   itemName: string;
   column: string;
   movedTo: string;
-  after?: string;
   converts?: boolean;
 }): { title: string; message: string } {
   const thing = input.board === "leads" ? `The lead "${input.itemName}"` : `"${input.itemName}"`;
-  if (input.after) {
-    return {
-      title: `Moving on to ${input.movedTo}`,
-      message: `${thing} will move on from ${input.column} to ${input.movedTo}${input.converts ? " as a project" : ""} in ${input.after} — ${input.column}'s automation.`,
-    };
-  }
   return {
     title: `Moved into ${input.movedTo}`,
     message: input.converts ? `${thing} moved into ${input.movedTo} and became a project.` : `${thing} moved into ${input.movedTo}.`,

@@ -6,6 +6,7 @@
 // details and questions on the left, a working preview of the form on the right.
 
 import { useEffect, useRef, useState, type DragEvent as ReactDragEvent, type Dispatch, type MouseEvent as ReactMouseEvent, type SetStateAction } from "react";
+import { GlassModalHeader } from "@/components/glass-modal-header";
 import { createPortal } from "react-dom";
 import {
   AlignLeft,
@@ -822,11 +823,9 @@ export function LeadFormsPanel({
             <div className="fixed inset-0 z-[1760] flex items-center justify-center px-4">
               <button type="button" aria-label="Cancel" onClick={() => setDeleteFormId("")} className="glass-modal-backdrop absolute inset-0" />
               <div ref={deletePanelRef} className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden">
-                <div className="px-5 pb-4 pt-5">
-                  <p className="text-[16px] font-semibold" style={{ color: "var(--text-main)" }}>
-                    Delete “{deletingForm.name || "Untitled form"}”?
-                  </p>
-                  <p className="mt-2 text-[13px] leading-[1.5]" style={{ color: "var(--text-main)" }}>
+                <GlassModalHeader title={`Delete “${deletingForm.name || "Untitled form"}”?`} onClose={() => setDeleteFormId("")} />
+                <div className="px-5 py-4">
+                  <p className="text-[13px] leading-[1.5]" style={{ color: "var(--text-main)" }}>
                     Leads that came in through it stay in Leads. The form itself can&apos;t be brought back.
                   </p>
                   <div className="mt-4 flex justify-end gap-2">

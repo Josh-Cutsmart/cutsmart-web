@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { GlassModalHeader } from "@/components/glass-modal-header";
 import { ChevronDown, Clock, DollarSign, Inbox, ListChecks, Minus, Plus, RefreshCw, RotateCcw, Search, Trophy, X, type LucideIcon } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useDevModeOn } from "@/lib/dev-mode";
@@ -495,20 +496,7 @@ export default function ReportsPage() {
             className="glass-modal-panel w-full max-w-[420px] overflow-hidden"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="glass-modal-header flex items-center gap-2 px-5 py-4">
-              <p className="min-w-0 flex-1 text-[15px] font-medium" style={MAIN}>
-                Reset your stats?
-              </p>
-              <button
-                type="button"
-                onClick={() => setIsResetConfirmOpen(false)}
-                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border hover:brightness-95"
-                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                aria-label="Close"
-              >
-                <X size={15} />
-              </button>
-            </div>
+            <GlassModalHeader title="Reset your stats?" onClose={() => setIsResetConfirmOpen(false)} />
             <div className="space-y-4 px-5 py-4">
               <p className="text-[13px] font-medium" style={MAIN}>
                 Your stats are worked out again from the company as it is now — projects deleted from the Archive stop counting.

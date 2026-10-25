@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { GlassModalHeader } from "@/components/glass-modal-header";
 import { createPortal } from "react-dom";
-import { CheckCircle2, ClipboardCheck, X } from "lucide-react";
+import { CheckCircle2, ClipboardCheck } from "lucide-react";
 import { authorizedFetch } from "@/lib/api-fetch";
 import SpecsGridClientView from "@/components/specs-grid-client-view";
 import ClientSpecsQuestionList from "@/components/client-specs-question-list";
@@ -118,11 +119,7 @@ export function AcceptQuoteOnBehalfModal({
   };
   return (
     <Modal onClose={() => !busy && onClose()}>
-      <div className="glass-modal-header px-5 py-4">
-        <p className="text-[15px] font-medium" style={{ color: "var(--text-main)" }}>
-          {`Accept on behalf of ${client}?`}
-        </p>
-      </div>
+      <GlassModalHeader title={<>{`Accept on behalf of ${client}?`}</>} onClose={onClose} />
       <div className="space-y-3 px-5 py-4">
         <p className="text-[13px] font-medium leading-[1.5]" style={{ color: "var(--text-main)" }}>
           {`${sentToClient ? "The quote sent to them" : "This quote"}${quoteTotal ? ` (${quoteTotal})` : ""} is accepted now, as if ${client} had accepted it in their portal — it's noted as “Accepted on behalf of ${client} by ${staffName || "you"}”.${sentToClient ? "" : " It's saved as a version, and nothing is sent to the client."}`}
@@ -300,29 +297,11 @@ export function SubmitSpecsOnBehalfModal({
 
   return (
     <Modal wide onClose={() => !busy && onClose()}>
-      <div className="glass-modal-header flex items-start gap-3 px-5 py-4">
-        <span className="glass-shine inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-white" style={{ backgroundImage: "var(--brand-gradient)" }}>
-          <ClipboardCheck size={15} />
-        </span>
-        <div className="min-w-0 flex-1">
-          <p className="text-[15px] font-medium" style={{ color: "var(--text-main)" }}>
-            {`Submit on behalf of ${client}`}
-          </p>
-          <p className="mt-0.5 text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>
-            {`Answer Yes or No as ${client} told you — it's the client's own view of the specifications. Submitting notes it as “Submitted on behalf of ${client} by ${staffName || "you"}”.${local ? " It's saved as a version with these answers, and nothing is sent to the client." : ""}`}
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={onClose}
-          disabled={busy}
-          aria-label="Close"
-          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition hover:bg-[color-mix(in_srgb,var(--text-main)_8%,transparent)]"
-          style={{ color: "var(--text-main)" }}
-        >
-          <X size={16} />
-        </button>
-      </div>
+      <GlassModalHeader title={`Submit on behalf of ${client}`} icon={<ClipboardCheck size={16} />} onClose={onClose} closeDisabled={busy} />
+      {/* (What it's for, under the header — the header just its title, as every pop-up's.) */}
+      <p className="shrink-0 border-b px-5 py-3 text-[12px] font-medium" style={{ color: "var(--text-muted)", borderBottomColor: "var(--glass-border)" }}>
+        {`Answer Yes or No as ${client} told you — it's the client's own view of the specifications. Submitting notes it as “Submitted on behalf of ${client} by ${staffName || "you"}”.${local ? " It's saved as a version with these answers, and nothing is sent to the client." : ""}`}
+      </p>
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4" style={{ backgroundColor: "#F1F5F9" }}>
         {loadError ? (
           <p className="py-10 text-center text-[13px] font-medium" style={{ color: "#0F172A" }}>

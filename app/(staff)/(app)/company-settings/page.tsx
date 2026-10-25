@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { GlassModalHeader } from "@/components/glass-modal-header";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, Building2, CheckCircle2, ChevronDown, CircleDollarSign, CircleHelp, ClipboardList, Clock3, DatabaseBackup, Download, GripVertical, HardHat, Layers3, LayoutDashboard, Link2, Loader2, Package2, Plus, RotateCcw, Search, Settings, Trophy, Upload, Users, Wrench, X } from "lucide-react";
@@ -5262,12 +5263,7 @@ export default function CompanySettingsPage() {
                     <div className="fixed inset-0 z-[1700] flex items-center justify-center px-4 py-4">
                       <button type="button" aria-label="Cancel" onClick={() => setNewMachineTypePickerOpen(false)} className="glass-modal-backdrop absolute inset-0" />
                       <div ref={addMachinePanelRef} className="glass-modal-panel relative z-[1701] w-full max-w-[520px] overflow-hidden">
-                        <div className="glass-modal-header flex items-center justify-between px-4 py-3">
-                          <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>Add machine</p>
-                          <button type="button" onClick={() => setNewMachineTypePickerOpen(false)} className={dangerIconButtonClass} aria-label="Close">
-                            <X size={16} />
-                          </button>
-                        </div>
+                        <GlassModalHeader title="Add machine" onClose={() => setNewMachineTypePickerOpen(false)} />
                         <div className="grid grid-cols-2 gap-2.5 p-4">
                           {([
                             ["cnc", "CNC"],
@@ -5330,14 +5326,10 @@ export default function CompanySettingsPage() {
                         ref={machineModalPanelRef}
                         className="glass-modal-panel relative z-[1701] flex h-[min(760px,calc(100svh-32px))] w-full max-w-[880px] flex-col overflow-hidden"
                       >
-                        <div className="glass-modal-header flex items-center justify-between px-4 py-3">
-                          <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
-                            {activeMachine ? machineTypeLabel(activeMachine) : "Machine"} Settings
-                          </p>
-                          <button type="button" onClick={() => setActiveMachineModalId(null)} className={dangerIconButtonClass} aria-label="Close">
-                            <X size={16} />
-                          </button>
-                        </div>
+                        <GlassModalHeader
+                          title={<>{activeMachine ? machineTypeLabel(activeMachine) : "Machine"} Settings</>}
+                          onClose={() => setActiveMachineModalId(null)}
+                        />
                         <div className="flex-1 space-y-6 overflow-y-auto px-5 py-5">
                           {activeMachine ? (
                             <>
@@ -6180,12 +6172,7 @@ export default function CompanySettingsPage() {
                     <div className="fixed inset-0 z-[1600] flex items-center justify-center px-4 py-4">
                       <button type="button" aria-label="Close role permissions" onClick={() => setActiveRoleModalIndex(null)} className="glass-modal-backdrop absolute inset-0" />
                       <div ref={roleModalPanelRef} className="glass-modal-panel relative z-[1601] flex max-h-[calc(100svh-32px)] w-full max-w-[820px] flex-col overflow-hidden">
-                        <div className="glass-modal-header flex items-center justify-between px-4 py-3">
-                          <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>Role permissions</p>
-                          <button type="button" onClick={() => setActiveRoleModalIndex(null)} className={dangerIconButtonClass} aria-label="Close">
-                            <X size={16} />
-                          </button>
-                        </div>
+                        <GlassModalHeader title="Role permissions" onClose={() => setActiveRoleModalIndex(null)} />
                         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
                           <div className="flex items-end gap-3">
                             <StackField label="Role name" className="flex-1">
@@ -6279,22 +6266,13 @@ export default function CompanySettingsPage() {
                         className="glass-modal-backdrop absolute inset-0"
                       />
                       <div ref={ownerTransferPanelRef} className="glass-modal-panel relative z-[1701] flex w-full max-w-[520px] flex-col overflow-hidden">
-                        <div className="glass-modal-header flex items-center justify-between px-4 py-3">
-                          <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
-                            Transfer Owner Role
-                          </p>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setPendingOwnerTransfer(null);
-                              setPendingOwnerTransferTargetUid("");
-                            }}
-                            className={dangerIconButtonClass}
-                            aria-label="Close"
-                          >
-                            <X size={16} />
-                          </button>
-                        </div>
+                        <GlassModalHeader
+                          title="Transfer Owner Role"
+                          onClose={() => {
+                            setPendingOwnerTransfer(null);
+                            setPendingOwnerTransferTargetUid("");
+                          }}
+                        />
                         <div className="space-y-4 px-4 py-4">
                           <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
                             <span className="font-bold" style={{ color: "var(--text-main)" }}>{pendingOwnerTransfer?.currentOwnerName}</span>
@@ -6359,23 +6337,14 @@ export default function CompanySettingsPage() {
                         role="dialog"
                         className="glass-modal-panel relative z-[1726] flex max-h-[calc(100svh-32px)] w-full max-w-[560px] flex-col overflow-hidden"
                       >
-                        <div className="glass-modal-header flex items-center justify-between px-4 py-3">
-                          <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
-                            Remove Staff Member
-                          </p>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (removingStaffUid) return;
-                              setPendingStaffRemoval(null);
-                              setStaffRemovalError("");
-                            }}
-                            className={dangerIconButtonClass}
-                            aria-label="Close"
-                          >
-                            <X size={16} />
-                          </button>
-                        </div>
+                        <GlassModalHeader
+                          title="Remove Staff Member"
+                          onClose={() => {
+                            if (removingStaffUid) return;
+                            setPendingStaffRemoval(null);
+                            setStaffRemovalError("");
+                          }}
+                        />
                         {(() => {
                           const removalName = toStr(pendingStaffRemoval?.displayName, "this staff member");
                           const recipient = staffRemovalTransferCandidates.find(
@@ -6966,14 +6935,7 @@ export default function CompanySettingsPage() {
                         className="glass-modal-backdrop absolute inset-0"
                       />
                       <div ref={tagDeletePanelRef} className="glass-modal-panel relative z-[1701] flex w-full max-w-[440px] flex-col overflow-hidden">
-                        <div className="glass-modal-header flex items-center justify-between px-4 py-3">
-                          <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
-                            Delete tag?
-                          </p>
-                          <button type="button" onClick={() => setPendingTagDelete(null)} className={dangerIconButtonClass} aria-label="Close">
-                            <X size={16} />
-                          </button>
-                        </div>
+                        <GlassModalHeader title="Delete tag?" onClose={() => setPendingTagDelete(null)} />
                         <div className="space-y-2 px-4 py-4">
                           <p className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
                             {pendingTagDelete.count > 0
@@ -7209,15 +7171,11 @@ export default function CompanySettingsPage() {
                     <div className="fixed inset-0 z-[1750] flex items-center justify-center px-4 py-4">
                       <button type="button" aria-label="Close category access" onClick={() => setCalendarAccessIndex(null)} className="glass-modal-backdrop absolute inset-0" />
                       <div ref={calendarAccessPanelRef} role="dialog" className="glass-modal-panel relative z-[1751] flex max-h-[calc(100svh-32px)] w-full max-w-[560px] flex-col overflow-hidden">
-                        <div className="glass-modal-header flex items-center gap-2.5 px-4 py-3">
-                          <span className="h-3.5 w-3.5 shrink-0 rounded-full" style={{ backgroundColor: activeCalendarCategory.color || "#7D99B3" }} />
-                          <p className="min-w-0 flex-1 truncate text-[15px] font-semibold" style={{ color: "var(--text-main)" }}>
-                            {activeCalendarCategory.name || "Untitled category"} access
-                          </p>
-                          <button type="button" onClick={() => setCalendarAccessIndex(null)} className={dangerIconButtonClass} aria-label="Close">
-                            <X size={16} />
-                          </button>
-                        </div>
+                        <GlassModalHeader
+                          title={<>{activeCalendarCategory.name || "Untitled category"} access</>}
+                          icon={<span className="block h-3.5 w-3.5 rounded-full" style={{ backgroundColor: activeCalendarCategory.color || "#7D99B3" }} />}
+                          onClose={() => setCalendarAccessIndex(null)}
+                        />
                         <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto px-4 py-3">
                           <p className="pb-1 text-[12.5px]" style={{ color: "var(--text-muted)" }}>
                             <b className="font-medium" style={{ color: "var(--text-main)" }}>Edit</b> can add, move and delete events in this category.{" "}
@@ -7515,14 +7473,10 @@ export default function CompanySettingsPage() {
                         className="glass-modal-backdrop absolute inset-0"
                       />
                       <div ref={itemCategoryDeletePanelRef} className="glass-modal-panel relative z-[1801] flex w-full max-w-[440px] flex-col overflow-hidden">
-                        <div className="glass-modal-header flex items-center justify-between px-4 py-3">
-                          <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
-                            {pendingItemCategoryDelete.itemIndex === undefined ? "Delete item category?" : "Delete item?"}
-                          </p>
-                          <button type="button" onClick={() => setPendingItemCategoryDelete(null)} className={dangerIconButtonClass} aria-label="Close">
-                            <X size={16} />
-                          </button>
-                        </div>
+                        <GlassModalHeader
+                          title={pendingItemCategoryDelete.itemIndex === undefined ? "Delete item category?" : "Delete item?"}
+                          onClose={() => setPendingItemCategoryDelete(null)}
+                        />
                         <div className="space-y-2 px-4 py-4">
                           <p className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
                             {pendingItemCategoryDelete.itemIndex === undefined
@@ -8034,9 +7988,7 @@ export default function CompanySettingsPage() {
                         className="glass-modal-backdrop absolute inset-0"
                       />
                       <div ref={specsTemplateResetConfirmPanelRef} className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden">
-                        <div className="glass-modal-header px-5 py-4">
-                          <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Reset Template</p>
-                        </div>
+                        <GlassModalHeader title="Reset Template" onClose={() => setIsSpecsTemplateResetConfirmOpen(false)} />
                         <div className="space-y-4 px-5 py-4">
                           <p className="text-[12px]" style={{ color: "var(--text-main)" }}>
                             This will permanently clear the entire specs template — every cell, row, column, and formatting choice. This can&apos;t be undone.
@@ -8191,9 +8143,7 @@ export default function CompanySettingsPage() {
                         className="glass-modal-backdrop absolute inset-0"
                       />
                       <div ref={quoteTemplateResetConfirmPanelRef} className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden">
-                        <div className="glass-modal-header px-5 py-4">
-                          <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Reset Template</p>
-                        </div>
+                        <GlassModalHeader title="Reset Template" onClose={() => setIsQuoteTemplateResetConfirmOpen(false)} />
                         <div className="space-y-4 px-5 py-4">
                           <p className="text-[12px]" style={{ color: "var(--text-main)" }}>
                             This will permanently clear the entire quote template — every cell, row, column, and formatting choice. This can&apos;t be undone.
@@ -9649,15 +9599,15 @@ export default function CompanySettingsPage() {
           <div className="fixed inset-0 z-[1750] flex items-center justify-center px-4 py-4">
             <button type="button" aria-label="Close" onClick={() => setShowZapierHelp(false)} className="glass-modal-backdrop absolute inset-0" />
             <div ref={zapierHelpPanelRef} className="glass-modal-panel relative z-[1751] flex max-h-[calc(100svh-32px)] w-full max-w-[640px] flex-col overflow-hidden">
-              <div className="glass-modal-header flex items-center gap-3 px-4 py-3">
-                <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[11px] bg-[#FF5A1F]">
-                  <img src="/logos/Zapier-logo.png" alt="Zapier" className="h-5 w-5 object-contain" />
-                </span>
-                <p className="flex-1 text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>Connect Zapier leads</p>
-                <button type="button" onClick={() => setShowZapierHelp(false)} className={dangerIconButtonClass} aria-label="Close">
-                  <X size={16} />
-                </button>
-              </div>
+              <GlassModalHeader
+                title="Connect Zapier leads"
+                icon={
+                  <span className="inline-flex h-6 w-6 items-center justify-center rounded-[7px] bg-[#FF5A1F]">
+                    <img src="/logos/Zapier-logo.png" alt="Zapier" className="h-3.5 w-3.5 object-contain" />
+                  </span>
+                }
+                onClose={() => setShowZapierHelp(false)}
+              />
               <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4 text-[13px]" style={{ color: "var(--text-main)" }}>
                 {[
                   <>Create a Zap with <strong>Zapier Forms → New Submission</strong> as the trigger.</>,
@@ -9719,12 +9669,7 @@ export default function CompanySettingsPage() {
           <div className="fixed inset-0 z-[1750] flex items-center justify-center px-4 py-4">
             <button type="button" aria-label="Close" onClick={() => setShowLeadFieldsCustomize(false)} className="glass-modal-backdrop absolute inset-0" />
             <div ref={leadFieldsPanelRef} className="glass-modal-panel relative z-[1751] flex h-[min(760px,calc(100svh-32px))] w-full max-w-[860px] flex-col overflow-hidden">
-              <div className="glass-modal-header flex items-center justify-between px-4 py-3">
-                <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>Customise lead fields</p>
-                <button type="button" onClick={() => setShowLeadFieldsCustomize(false)} className={dangerIconButtonClass} aria-label="Close">
-                  <X size={16} />
-                </button>
-              </div>
+              <GlassModalHeader title="Customise lead fields" onClose={() => setShowLeadFieldsCustomize(false)} />
               <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4">
                 <div className="flex gap-2.5 rounded-[12px] px-3 py-2.5 text-[12px] leading-[1.5]" style={{ backgroundColor: "color-mix(in srgb, var(--text-main) 4%, transparent)", color: "var(--text-muted)" }}>
                   <Lightbulb size={15} className="mt-0.5 shrink-0" style={{ color: "var(--brand)" }} />
