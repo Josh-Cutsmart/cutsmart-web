@@ -8,6 +8,7 @@
 // category is set per role on the category (Company Settings > Calendar).
 
 import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { WheelDatePicker } from "@/components/wheel-date-picker";
 import { GlassModalHeader } from "@/components/glass-modal-header";
 import { createPortal } from "react-dom";
 import Link from "next/link";
@@ -1093,8 +1094,9 @@ function CalendarPageContent() {
   const isLeftOutDay = (day: Date) => !weekCols.includes((day.getDay() + 6) % 7);
 
   // ---------------------------------------------------------------- navigation
-  // Desktop: Previous / Next slide the view — month up/down, week/day/list left/right. The outgoing view
-  // is a static copy of the current DOM that slides out while the new one slides in (see the effect below).
+  // Previous / Next slide the view sideways — the next day, week, month, list or year in from the right, the previous
+  // from the left — on phones and computers alike. The outgoing view is a static copy of the current DOM that slides
+  // out while the new one slides in (see the effect below). (Scrolling a month or year view still moves up and down.)
   const viewWrapRef = useRef<HTMLDivElement | null>(null);
   const pendingSlideRef = useRef<{ ghost: HTMLElement; axis: "x" | "y"; dir: -1 | 1 } | null>(null);
   // A static copy of the current view, laid over it in viewWrapRef: the outgoing side of a slide.
@@ -1119,13 +1121,13 @@ function CalendarPageContent() {
     ghost.querySelectorAll<HTMLElement>("[data-cal-scroll-top]").forEach((el) => (el.scrollTop = Number(el.dataset.calScrollTop)));
     return ghost;
   };
-  // onPhone: a swipe on a phone (day and week views) slides too — Previous / Next there don't.
-  const beginSlide = (dir: -1 | 1, onPhone = false) => {
+  // (Not with reduced motion: then the view just changes.)
+  const beginSlide = (dir: -1 | 1) => {
     const wrap = viewWrapRef.current;
-    if (!wrap || window.matchMedia(onPhone ? "(prefers-reduced-motion: reduce)" : "(max-width: 767px), (prefers-reduced-motion: reduce)").matches) return;
+    if (!wrap || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     const ghost = makeSlideGhost();
     if (!ghost) return;
-    pendingSlideRef.current = { ghost, axis: view === "month" || view === "year" ? "y" : "x", dir };
+    pendingSlideRef.current = { ghost, axis: "x", dir };
   };
   useLayoutEffect(() => {
     const slide = pendingSlideRef.current;
@@ -1149,27 +1151,14 @@ function CalendarPageContent() {
     };
   }, [cursor]);
 
-  const step = (dir: -1 | 1, swiped = false) => {
-    if (view === "month") {
-      const el = monthScrollerRef.current;
-      if (el && el.clientHeight) {
-        const row = mobileMonthWeeks(cursor).starts[dir === 1 ? 2 : 0];
-        animateMonthScroll(el, (row * el.clientHeight) / 6);
-        return;
-      }
+  const step = (dir: -1 | 1) => {
+    // A month view's wheel glide still going: stopped where it is (the month it's on is re-centred with the step).
+    if (monthAnimRef.current) {
+      cancelAnimationFrame(monthAnimRef.current);
+      monthAnimRef.current = null;
+      if (monthScrollerRef.current) monthScrollerRef.current.style.scrollSnapType = "";
     }
-    if (view === "year") {
-      const el = yearScrollerRef.current;
-      const targetMonth = startOfMonth(cursor);
-      targetMonth.setMonth(targetMonth.getMonth() + 12 * dir);
-      const target = el?.querySelector<HTMLElement>(`[data-month-ms="${targetMonth.getTime()}"]`);
-      if (el && target) {
-        const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-        el.scrollTo({ top: el.scrollTop + target.getBoundingClientRect().top - el.getBoundingClientRect().top - yearHeaderHeight(el), behavior: reduceMotion ? "auto" : "smooth" });
-        return;
-      }
-    }
-    beginSlide(dir, swiped);
+    beginSlide(dir);
     setCursor((prev) => shiftCursor(prev, dir));
   };
   // The date one step on (dir 1) or back (-1) in the current view.
@@ -1836,7 +1825,7 @@ function CalendarPageContent() {
       // Reduced motion: a plain swipe, changing on letting go.
       const dx = e.clientX - swipe.x;
       const dy = e.clientY - swipe.y;
-      if (e.type === "pointerup" && Math.abs(dx) >= 50 && Math.abs(dx) >= Math.abs(dy) * 1.5) step(dx < 0 ? 1 : -1, true);
+      if (e.type === "pointerup" && Math.abs(dx) >= 50 && Math.abs(dx) >= Math.abs(dy) * 1.5) step(dx < 0 ? 1 : -1);
       return;
     }
     const wrap = viewWrapRef.current;
@@ -3095,6 +3084,72 @@ function CalendarPageContent() {
                         </div>
                       ) : null}
                     </div>
+                    {/* When — straight under the title: a row each, its name on the left and its switch / boxes to the
+                        right of it. */}
+                    <div className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-4 gap-y-2.5 text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
+                      <span>All day</span>
+                      <div className="flex h-9 items-center">
+                        <GlassSwitch
+                          checked={d.allDay}
+                          disabled={readOnly}
+                          onChange={(on) => setDraft((prev) => (prev ? { ...prev, allDay: on } : prev))}
+                          ariaLabel="All day"
+                        />
+                      </div>
+                      {([
+                        ["Starts", "startDate", "startTime"],
+                        ["Ends", "endDate", "endTime"],
+                      ] as const).map(([label, dateKey, timeKey]) => [
+                        <span key={`${label}-name`}>{label}</span>,
+                        <div key={label} className="flex min-w-0 gap-2">
+                          {(() => {
+                            const setDate = (value: string) =>
+                              setDraft((prev) => {
+                                if (!prev) return prev;
+                                const next = { ...prev, [dateKey]: value };
+                                // Keep the end on/after the start when the start date moves.
+                                if (dateKey === "startDate" && next.endDate < value) next.endDate = value;
+                                return next;
+                              });
+                            // A phone: its date on three wheels — day, month, year (WheelDatePicker). A computer: the
+                            // usual date field.
+                            return isMobile ? (
+                              <WheelDatePicker
+                                value={d[dateKey]}
+                                disabled={readOnly}
+                                ariaLabel={`${label} date`}
+                                onChange={setDate}
+                                // Just wide enough for the date (can still shrink on a narrow phone); not faded when it can't be changed.
+                                className={`${glassFieldClass} min-w-0 disabled:opacity-100`}
+                                style={{ width: 148 }}
+                              />
+                            ) : (
+                              <input
+                                type="date"
+                                readOnly={readOnly}
+                                value={d[dateKey]}
+                                onChange={(e) => setDate(e.target.value)}
+                                // Just wide enough for the date.
+                                className={`${glassFieldClass} min-w-0`}
+                                style={{ width: 148 }}
+                              />
+                            );
+                          })()}
+                          {!d.allDay ? (
+                            <input
+                              type="time"
+                              step={SNAP_MIN * 60}
+                              readOnly={readOnly}
+                              value={d[timeKey]}
+                              onChange={(e) => setDraft((prev) => (prev ? { ...prev, [timeKey]: e.target.value } : prev))}
+                              // Inline width: glassFieldClass carries w-full, which beat a w-[…] class.
+                              className={`${glassFieldClass} shrink-0`}
+                              style={{ width: 112 }}
+                            />
+                          ) : null}
+                        </div>,
+                      ])}
+                    </div>
                     <div className="grid gap-3">
                       <label className="grid gap-1.5 text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
                         Category
@@ -3116,6 +3171,8 @@ function CalendarPageContent() {
                           placeholder={editableCategories.length ? "Choose a category" : "No categories"}
                           disabled={readOnly}
                           triggerClassName={`${glassFieldClass} justify-between`}
+                          // Its menu: always down from the field, as far as the bottom of the screen when it has the categories to fill it.
+                          menuFillBelow
                         />
                       </label>
                     </div>
@@ -3247,61 +3304,6 @@ function CalendarPageContent() {
                         />
                       ) : null}
                     </div>
-                    <div className="grid grid-cols-[auto_minmax(0,1fr)] items-end gap-3">
-                      <div className="grid gap-1.5 text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
-                        All day
-                        <div className="flex h-9 items-center">
-                          <GlassSwitch
-                            checked={d.allDay}
-                            disabled={readOnly}
-                            onChange={(on) => setDraft((prev) => (prev ? { ...prev, allDay: on } : prev))}
-                            ariaLabel="All day"
-                          />
-                        </div>
-                      </div>
-                      {([
-                        ["Starts", "startDate", "startTime"],
-                        ["Ends", "endDate", "endTime"],
-                      ] as const).map(([label, dateKey, timeKey]) => [
-                        // Ends sits under Starts, with nothing under the All day switch.
-                        label === "Ends" ? <span key="ends-spacer" aria-hidden="true" /> : null,
-                        <div key={label} className="grid min-w-0 gap-1.5 text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
-                          {label}
-                          <div className="flex gap-2">
-                            <input
-                              type="date"
-                              readOnly={readOnly}
-                              value={d[dateKey]}
-                              onChange={(e) => {
-                                const value = e.target.value;
-                                setDraft((prev) => {
-                                  if (!prev) return prev;
-                                  const next = { ...prev, [dateKey]: value };
-                                  // Keep the end on/after the start when the start date moves.
-                                  if (dateKey === "startDate" && next.endDate < value) next.endDate = value;
-                                  return next;
-                                });
-                              }}
-                              // Just wide enough for the date (can still shrink on a narrow phone).
-                              className={`${glassFieldClass} min-w-0`}
-                              style={{ width: 148 }}
-                            />
-                            {!d.allDay ? (
-                              <input
-                                type="time"
-                                step={SNAP_MIN * 60}
-                                readOnly={readOnly}
-                                value={d[timeKey]}
-                                onChange={(e) => setDraft((prev) => (prev ? { ...prev, [timeKey]: e.target.value } : prev))}
-                                // Inline width: glassFieldClass carries w-full, which beat a w-[…] class.
-                                className={`${glassFieldClass} shrink-0`}
-                                style={{ width: 112 }}
-                              />
-                            ) : null}
-                          </div>
-                        </div>,
-                      ])}
-                    </div>
                     <label className="grid gap-1.5 text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
                       Location
                       <span className="relative flex items-center">
@@ -3343,13 +3345,24 @@ function CalendarPageContent() {
                       </button>
                     ) : null}
                     <span className="flex-1" />
+                    {/* Round-ended, with the glass shine: Cancel plain, Add event / Save in the category's colour (the brand
+                        blue until one's chosen), its words dark on a light one. */}
                     {!readOnly ? (
-                      <button type="button" onClick={closeModal} className={secondaryButtonClass}>
+                      <button
+                        type="button"
+                        onClick={closeModal}
+                        className="glass-shine glass-shine-neutral inline-flex h-9 shrink-0 items-center justify-center rounded-full px-4 text-[12.5px] font-semibold text-[var(--text-main)] transition hover:brightness-95"
+                      >
                         Cancel
                       </button>
                     ) : null}
                     {!readOnly ? (
-                      <button type="submit" disabled={saving} className={primaryButtonClass} style={themeColor ? categoryButtonStyle(themeColor) : primaryButtonStyle}>
+                      <button
+                        type="submit"
+                        disabled={saving}
+                        className="glass-shine inline-flex h-9 shrink-0 items-center justify-center rounded-full px-4 text-[12.5px] font-semibold transition hover:brightness-105 disabled:opacity-60"
+                        style={glassShineStyle(themeColor || "var(--brand)", { color: themeColor ? textOn(themeColor) : "#FFFFFF" })}
+                      >
                         {saving ? "Saving..." : d.isNew ? "Add event" : "Save"}
                       </button>
                     ) : null}

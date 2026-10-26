@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { GlassModalHeader } from "@/components/glass-modal-header";
 import { Check, Copy, Eye, EyeOff, KeyRound, Plus, Trash2 } from "lucide-react";
 import { glassFieldClass, primaryButtonClass, primaryButtonStyle, smallButtonClass } from "@/components/settings-ui";
@@ -150,7 +151,7 @@ export function CompanyJoinCodesModal({
     onReload();
   };
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-[1650] flex items-center justify-center px-4 py-4">
       <button type="button" aria-label="Close join codes" onClick={onClose} className="glass-modal-backdrop absolute inset-0" />
       <div role="dialog" aria-label="Join codes" className="glass-modal-panel relative z-[1651] flex max-h-[calc(100svh-32px)] w-full max-w-[600px] flex-col overflow-hidden">
@@ -333,5 +334,5 @@ export function CompanyJoinCodesModal({
         </div>
       </div>
     </div>
-  );
+  , document.body);
 }

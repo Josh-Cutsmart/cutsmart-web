@@ -1,6 +1,7 @@
 "use client";
 
 import { activeDate, activeDateRange, useCompanyFormats } from "@/lib/company-formats";
+import { createPortal } from "react-dom";
 import { GlassModalHeader } from "@/components/glass-modal-header";
 import { Suspense, useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -2152,7 +2153,7 @@ function ArchivedPageInner() {
         </div>
       ) : null}
 
-      {shouldRenderDeleteModal && pendingDelete ? (
+      {shouldRenderDeleteModal && pendingDelete ? createPortal(
         <div className="fixed inset-0 z-[2000] flex items-center justify-center px-4 py-4">
           <button type="button" aria-label="Cancel" onClick={() => !copySending && setPendingDelete(null)} className="glass-modal-backdrop absolute inset-0" />
           <div
@@ -2379,7 +2380,7 @@ function ArchivedPageInner() {
             </div>
           </div>
         </div>
-      ) : null}
+      , document.body) : null}
       {restoreTarget
         ? (() => {
             const project = restoreTarget.kind === "projects" ? projects.rows.find((row) => row.id === restoreTarget.id) : undefined;

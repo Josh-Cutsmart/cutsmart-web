@@ -25,10 +25,16 @@ export function SidebarUserSettingsPanel({
   isOpen,
   onRequestClose,
   onRequestLogout,
+  largeActions = false,
+  actionColor = "var(--text-muted)",
 }: {
   isOpen: boolean;
   onRequestClose: () => void;
   onRequestLogout: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  // The phone menu's: its collapse (V, top middle), Settings and Log out (top right) as that menu's own Settings on the
+  // user's bar — 44px, a 20px icon — in actionColor (the menu's text colour there).
+  largeActions?: boolean;
+  actionColor?: string;
 }) {
   const router = useRouter();
   const { user, setUserColorLocal, setUserProfileLocal } = useAuth();
@@ -296,33 +302,33 @@ export function SidebarUserSettingsPanel({
         <button
           type="button"
           onClick={onRequestClose}
-          className="inline-flex h-7 w-7 shrink-0 items-center justify-center justify-self-center rounded-[8px] transition hover:bg-[var(--panel-muted)]"
-          style={{ color: "var(--text-muted)" }}
+          className={`inline-flex shrink-0 items-center justify-center justify-self-center transition hover:bg-[var(--panel-muted)] ${largeActions ? "h-11 w-11 rounded-[12px]" : "h-7 w-7 rounded-[8px]"}`}
+          style={{ color: actionColor }}
           aria-label="Back"
           title="Collapse"
         >
-          <ChevronDown size={16} />
+          <ChevronDown size={largeActions ? 20 : 16} />
         </button>
         <div className="mr-2 flex items-center justify-self-end gap-1">
           <button
             type="button"
             onClick={() => router.push("/user-settings")}
-            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] transition hover:bg-[var(--panel-muted)]"
-            style={{ color: "var(--text-muted)" }}
+            className={`inline-flex shrink-0 items-center justify-center transition hover:bg-[var(--panel-muted)] ${largeActions ? "h-11 w-11 rounded-[12px]" : "h-7 w-7 rounded-[8px]"}`}
+            style={{ color: actionColor }}
             aria-label="User Settings"
             title="User Settings"
           >
-            <Settings size={16} />
+            <Settings size={largeActions ? 20 : 16} />
           </button>
           <button
             type="button"
             onClick={onRequestLogout}
-            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] transition hover:bg-[var(--panel-muted)]"
-            style={{ color: "var(--text-muted)" }}
+            className={`inline-flex shrink-0 items-center justify-center transition hover:bg-[var(--panel-muted)] ${largeActions ? "h-11 w-11 rounded-[12px]" : "h-7 w-7 rounded-[8px]"}`}
+            style={{ color: actionColor }}
             aria-label="Log out"
             title="Log out"
           >
-            <LogOut size={14} />
+            <LogOut size={largeActions ? 20 : 14} />
           </button>
         </div>
       </div>

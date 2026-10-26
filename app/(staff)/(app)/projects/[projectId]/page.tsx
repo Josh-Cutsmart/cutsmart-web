@@ -13177,32 +13177,9 @@ export default function ProjectDetailsPage() {
       large,
     });
   };
-  const activityColorsForPart = (partType: string, kind?: string) => {
-    if (String(kind || "").toLowerCase() === "clear") {
-      return {
-        chipBg: "#FFDCDC",
-        chipBorder: "#F2A7A7",
-        chipText: "#7F1D1D",
-        pillBg: "#FFECEC",
-        pillBorder: "#F7B8B8",
-        pillText: "#991B1B",
-      };
-    }
-    const base = normalizeHexColor(partTypeColors[String(partType || "").trim()]) ?? "#C8D6E6";
-    const textDark = "#0F172A";
-    const textLight = "#F8FAFC";
-    const useDark = isLightHex(base);
-    return {
-      chipBg: lightenHex(base, 0.38),
-      chipBorder: darkenHex(base, 0.12),
-      chipText: useDark ? textDark : textLight,
-      pillBg: lightenHex(base, 0.18),
-      pillBorder: darkenHex(base, 0.18),
-      pillText: useDark ? textDark : textLight,
-    };
-  };
-  // A cutlist's feed of changes (the production cutlist's or Initial Measure's): one change's bubble.
-  const renderCutlistActivityChip = (entry: CutlistActivityEntry, isLast: boolean) => {
+  // A cutlist's feed of changes (the production cutlist's or Initial Measure's): one change's bubble. compact: a
+  // phone's — the same, smaller (24px tall).
+  const renderCutlistActivityChip = (entry: CutlistActivityEntry, isLast: boolean, compact = false) => {
     // Each change a round-ended glass bubble in a pale wash of its part type, words in a dark shade of it — as
     // the cutlist's tables — the part in a pill of the part type's own colour, values in white ones, a drawn
     // arrow between. A clearing: red.
@@ -13224,10 +13201,10 @@ export default function ProjectDetailsPage() {
       backgroundColor: "rgba(255, 255, 255, 0.88)",
       boxShadow: `inset 0 0 0 1px ${isClear ? "#F7B8B8" : chipPalette.divider}`,
     };
-    const pillClass = "inline-flex h-6 shrink-0 items-center rounded-full px-2.5";
+    const pillClass = compact ? "inline-flex h-[18px] shrink-0 items-center rounded-full px-2" : "inline-flex h-6 shrink-0 items-center rounded-full px-2.5";
     const arrow = (
       <>
-        <ArrowRight size={13} strokeWidth={2.4} className="shrink-0 opacity-70" aria-hidden="true" />
+        <ArrowRight size={compact ? 11 : 13} strokeWidth={2.4} className="shrink-0 opacity-70" aria-hidden="true" />
         <span className="sr-only">to</span>
       </>
     );
@@ -13265,7 +13242,11 @@ export default function ProjectDetailsPage() {
     return (
       <div
         key={entry.id}
-        className={`inline-flex h-8 items-center gap-1.5 rounded-full border pl-1 text-[11.5px] font-semibold ${endsWithWords ? "pr-3.5" : "pr-1"}`}
+        className={
+          compact
+            ? `inline-flex h-6 items-center gap-1 rounded-full border pl-[3px] text-[10.5px] font-semibold ${endsWithWords ? "pr-2.5" : "pr-[3px]"}`
+            : `inline-flex h-8 items-center gap-1.5 rounded-full border pl-1 text-[11.5px] font-semibold ${endsWithWords ? "pr-3.5" : "pr-1"}`
+        }
         style={{
           ...chipStyle,
           boxShadow: "0 1px 3px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.6)",
@@ -13314,7 +13295,7 @@ export default function ProjectDetailsPage() {
             type="button"
             onClick={() => removeCutlistActivity(entry.id)}
             data-cutlist-activity-control="true"
-            className="inline-flex h-6 items-center rounded-full border px-2.5 text-[11px] font-semibold hover:brightness-95"
+            className={`inline-flex items-center rounded-full border font-semibold hover:brightness-95 ${compact ? "h-[18px] px-2 text-[10px]" : "h-6 px-2.5 text-[11px]"}`}
             style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
           >
             {entry.action || "Clear"}
@@ -43496,7 +43477,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 transparent before, one of a handful of secondary bars left out when the rest of
                 the app got this treatment. */}
             <div
-              className="shrink-0 overflow-hidden border-b px-3 py-1"
+              className="shrink-0 overflow-hidden border-b px-3 py-1.5"
               style={{
                 borderColor: "var(--glass-border)",
                 backgroundColor: "var(--glass-bg-strong)",
@@ -43526,124 +43507,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   onPointerUp={endCutlistActivityPointerDrag}
                   onPointerCancel={endCutlistActivityPointerDrag}
                 >
-                  {initialCutlistActivityFeed.map((entry, idx) => {
-                    const colors = activityColorsForPart(entry.partType || "", entry.actionKind || "");
-                    const isPartTypeMove = Boolean(entry.partType && entry.partTypeTo);
-                    const isValueMove = Boolean(entry.valueFrom || entry.valueTo);
-                    const isEntering = Boolean(cutlistActivityEnteringIds[entry.id]);
-                    const rawMessage = String(entry.message || "");
-                    const messageLower = rawMessage.toLowerCase();
-                    let messagePrefix = rawMessage;
-                    let actionText = "";
-                    let messageSuffix = "";
-                    if (!isPartTypeMove && !isValueMove) {
-                      const addedToken = " added to ";
-                      const addedIdx = messageLower.indexOf(addedToken);
-                      if (addedIdx > 0) {
-                        messagePrefix = rawMessage.slice(0, addedIdx).trim();
-                        actionText = "added to";
-                        messageSuffix = rawMessage.slice(addedIdx + addedToken.length).trim();
-                      } else if (messageLower.endsWith(" removed")) {
-                        messagePrefix = rawMessage.slice(0, rawMessage.length - " removed".length).trim();
-                        actionText = "removed";
-                        messageSuffix = "";
-                      }
-                    }
-                    return (
-                      <div
-                        key={entry.id}
-                        className="inline-flex items-center gap-[10px] rounded-[9px] border px-2 py-[2px]"
-                        style={{
-                          backgroundColor: colors.chipBg,
-                          borderColor: colors.chipBorder,
-                          marginRight: idx < initialCutlistActivityFeed.length - 1 ? 10 : 0,
-                          opacity: isEntering ? 0 : 1,
-                          transform: isEntering ? "translate3d(12px,0,0)" : "translate3d(0,0,0)",
-                          transition: "opacity 240ms ease, transform 240ms ease",
-                        }}
-                      >
-                        {!!messagePrefix && !!actionText && (
-                          <span
-                            className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[11px] font-bold"
-                            style={{ backgroundColor: colors.pillBg, borderColor: colors.pillBorder, color: colors.pillText }}
-                          >
-                            {messagePrefix}
-                          </span>
-                        )}
-                        {!!messagePrefix && !actionText && (
-                          <span className="text-[11px] font-bold" style={{ color: colors.chipText, paddingRight: 5 }}>
-                            {messagePrefix}
-                          </span>
-                        )}
-                        {!!actionText && (
-                          <span className="text-[11px] font-bold" style={{ color: colors.chipText }}>
-                            {actionText}
-                          </span>
-                        )}
-                        {!!messageSuffix && (
-                          <span className="text-[11px] font-bold" style={{ color: colors.chipText, paddingLeft: 5 }}>
-                            {messageSuffix}
-                          </span>
-                        )}
-                        {isPartTypeMove && !!entry.partType && (
-                          <>
-                            <span
-                              className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[11px] font-bold"
-                              style={{ backgroundColor: colors.pillBg, borderColor: colors.pillBorder, color: colors.pillText }}
-                            >
-                              {entry.partType}
-                            </span>
-                            <span className="inline-flex items-center" style={{ paddingLeft: 5, paddingRight: 5 }}>
-                              <img src="/arrow-right.png" alt="to" className="shrink-0 object-contain opacity-90" style={{ width: 20, height: 20 }} />
-                            </span>
-                          </>
-                        )}
-                        {isValueMove && !isPartTypeMove && (
-                          <>
-                            <span
-                              className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[11px] font-bold"
-                              style={{ backgroundColor: colors.pillBg, borderColor: colors.pillBorder, color: colors.pillText }}
-                            >
-                              {entry.valueFrom || "-"}
-                            </span>
-                            <span className="inline-flex items-center" style={{ paddingLeft: 5, paddingRight: 5 }}>
-                              <img src="/arrow-right.png" alt="to" className="shrink-0 object-contain opacity-90" style={{ width: 20, height: 20 }} />
-                            </span>
-                          </>
-                        )}
-                        {!!entry.partTypeTo && (
-                          <span
-                            className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[11px] font-bold"
-                            style={{
-                              backgroundColor: activityColorsForPart(entry.partTypeTo || "").pillBg,
-                              borderColor: activityColorsForPart(entry.partTypeTo || "").pillBorder,
-                              color: activityColorsForPart(entry.partTypeTo || "").pillText,
-                            }}
-                          >
-                            {entry.partTypeTo}
-                          </span>
-                        )}
-                        {isValueMove && !isPartTypeMove && (
-                          <span
-                            className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[11px] font-bold"
-                            style={{ backgroundColor: colors.pillBg, borderColor: colors.pillBorder, color: colors.pillText }}
-                          >
-                            {entry.valueTo || "-"}
-                          </span>
-                        )}
-                        {String(entry.actionKind || "") === "clear" && (
-                          <button
-                            type="button"
-                            onClick={() => removeCutlistActivity(entry.id)}
-                            data-cutlist-activity-control="true"
-                            className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[10px] font-extrabold hover:brightness-95" style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
-                          >
-                            {entry.action || "Clear"}
-                          </button>
-                        )}
-                      </div>
-                    );
-                  })}
+                  {/* (The computer's bubbles, compact.) */}
+                  {initialCutlistActivityFeed.map((entry, idx) => renderCutlistActivityChip(entry, idx === initialCutlistActivityFeed.length - 1, true))}
                 </div>
               </div>
             </div>
@@ -43724,12 +43589,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               type="button"
                               disabled={salesReadOnly}
                               onClick={() => addInitialDraftRowForPartType(v)}
-                              style={{
-                                backgroundColor: color,
-                                borderColor: color,
-                                color: isLightHex(color) ? "#1F2937" : "#F8FAFC",
-                              }}
-                              className="relative rounded-[8px] border px-2 py-1 text-[11px] font-medium transition-[transform,box-shadow] duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:z-10 hover:scale-110 hover:shadow-lg disabled:opacity-55 disabled:hover:scale-100 disabled:hover:shadow-none"
+                              // (Round-ended, with the glass shine in its colour.)
+                              style={glassShineStyle(color, { color: isLightHex(color) ? "#1F2937" : "#F8FAFC" })}
+                              className="glass-shine relative rounded-full border px-3 py-1 text-[11px] font-medium transition-[transform,box-shadow] duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:z-10 hover:scale-110 hover:shadow-lg disabled:opacity-55 disabled:hover:scale-100 disabled:hover:shadow-none"
                             >
                               {v}
                             </button>
@@ -43981,8 +43843,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       <button
                         disabled={salesReadOnly}
                         onClick={() => void addInitialDraftRowsToCutlist()}
-                        className="inline-flex h-[44px] w-full items-center justify-center rounded-[10px] border text-[18px] font-normal text-white hover:brightness-95 disabled:opacity-55"
-                        style={{ borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)" }}
+                        // (Round-ended, with the glass shine — the brand blue; as wide as the search under it — out past the entry's own
+                        // 12px either side.)
+                        className="glass-shine -mx-3 inline-flex h-[44px] w-[calc(100%+24px)] items-center justify-center rounded-full border text-[18px] font-normal text-white hover:brightness-95 disabled:opacity-55"
+                        style={glassShineStyle("var(--brand)")}
                       >
                         Add to Cutlist
                       </button>
@@ -43995,7 +43859,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     value={initialCutlistSearch}
                     onChange={(e) => onInitialCutlistSearchChange(e.target.value)}
                     placeholder="Search cutlist..."
-                    className="mb-3 h-9 w-full rounded-[10px] border px-3 text-[12px] outline-none"
+                    className="mb-3 h-9 w-full rounded-full border px-4 text-[12px] outline-none"
                     style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                   />
                   {groupedInitialCutlistRows.length === 0 && (
@@ -44110,7 +43974,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   // Same reference size/weight as CNC's own popup (see its own "label" comment) —
                   // just without the uppercase transform, per feedback that title-case reads better.
                   const detailLabel = "text-[13px] font-bold tracking-[0.6px]";
-                  return (
+                  return createPortal(
                     <div
                       className="glass-modal-backdrop fixed inset-0 z-[200] flex items-center justify-center p-4"
                       style={{ color: "var(--text-main)" }}
@@ -44451,7 +44315,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         </div>
                       </div>
                     </div>
-                  );
+                  , document.body);
                 })()}
               </div>
             </div>
@@ -45644,7 +45508,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 transparent before, one of a handful of secondary bars left out when the rest of
                 the app got this treatment. */}
             <div
-              className="shrink-0 overflow-hidden border-b px-3 py-1"
+              className="shrink-0 overflow-hidden border-b px-3 py-1.5"
               style={{
                 borderColor: "var(--glass-border)",
                 backgroundColor: "var(--glass-bg-strong)",
@@ -45674,124 +45538,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   onPointerUp={endCutlistActivityPointerDrag}
                   onPointerCancel={endCutlistActivityPointerDrag}
                 >
-                  {productionCutlistActivityFeed.map((entry, idx) => {
-                    const colors = activityColorsForPart(entry.partType || "", entry.actionKind || "");
-                    const isPartTypeMove = Boolean(entry.partType && entry.partTypeTo);
-                    const isValueMove = Boolean(entry.valueFrom || entry.valueTo);
-                    const isEntering = Boolean(cutlistActivityEnteringIds[entry.id]);
-                    const rawMessage = String(entry.message || "");
-                    const messageLower = rawMessage.toLowerCase();
-                    let messagePrefix = rawMessage;
-                    let actionText = "";
-                    let messageSuffix = "";
-                    if (!isPartTypeMove && !isValueMove) {
-                      const addedToken = " added to ";
-                      const addedIdx = messageLower.indexOf(addedToken);
-                      if (addedIdx > 0) {
-                        messagePrefix = rawMessage.slice(0, addedIdx).trim();
-                        actionText = "added to";
-                        messageSuffix = rawMessage.slice(addedIdx + addedToken.length).trim();
-                      } else if (messageLower.endsWith(" removed")) {
-                        messagePrefix = rawMessage.slice(0, rawMessage.length - " removed".length).trim();
-                        actionText = "removed";
-                        messageSuffix = "";
-                      }
-                    }
-                    return (
-                      <div
-                        key={entry.id}
-                        className="inline-flex items-center gap-[10px] rounded-[9px] border px-2 py-[2px]"
-                        style={{
-                          backgroundColor: colors.chipBg,
-                          borderColor: colors.chipBorder,
-                          marginRight: idx < productionCutlistActivityFeed.length - 1 ? 10 : 0,
-                          opacity: isEntering ? 0 : 1,
-                          transform: isEntering ? "translate3d(12px,0,0)" : "translate3d(0,0,0)",
-                          transition: "opacity 240ms ease, transform 240ms ease",
-                        }}
-                      >
-                        {!!messagePrefix && !!actionText && (
-                          <span
-                            className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[11px] font-bold"
-                            style={{ backgroundColor: colors.pillBg, borderColor: colors.pillBorder, color: colors.pillText }}
-                          >
-                            {messagePrefix}
-                          </span>
-                        )}
-                        {!!messagePrefix && !actionText && (
-                          <span className="text-[11px] font-bold" style={{ color: colors.chipText, paddingRight: 5 }}>
-                            {messagePrefix}
-                          </span>
-                        )}
-                        {!!actionText && (
-                          <span className="text-[11px] font-bold" style={{ color: colors.chipText }}>
-                            {actionText}
-                          </span>
-                        )}
-                        {!!messageSuffix && (
-                          <span className="text-[11px] font-bold" style={{ color: colors.chipText, paddingLeft: 5 }}>
-                            {messageSuffix}
-                          </span>
-                        )}
-                        {isPartTypeMove && !!entry.partType && (
-                          <>
-                            <span
-                              className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[11px] font-bold"
-                              style={{ backgroundColor: colors.pillBg, borderColor: colors.pillBorder, color: colors.pillText }}
-                            >
-                              {entry.partType}
-                            </span>
-                            <span className="inline-flex items-center" style={{ paddingLeft: 5, paddingRight: 5 }}>
-                              <img src="/arrow-right.png" alt="to" className="shrink-0 object-contain opacity-90" style={{ width: 20, height: 20 }} />
-                            </span>
-                          </>
-                        )}
-                        {isValueMove && !isPartTypeMove && (
-                          <>
-                            <span
-                              className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[11px] font-bold"
-                              style={{ backgroundColor: colors.pillBg, borderColor: colors.pillBorder, color: colors.pillText }}
-                            >
-                              {entry.valueFrom || "-"}
-                            </span>
-                            <span className="inline-flex items-center" style={{ paddingLeft: 5, paddingRight: 5 }}>
-                              <img src="/arrow-right.png" alt="to" className="shrink-0 object-contain opacity-90" style={{ width: 20, height: 20 }} />
-                            </span>
-                          </>
-                        )}
-                        {!!entry.partTypeTo && (
-                          <span
-                            className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[11px] font-bold"
-                            style={{
-                              backgroundColor: activityColorsForPart(entry.partTypeTo || "").pillBg,
-                              borderColor: activityColorsForPart(entry.partTypeTo || "").pillBorder,
-                              color: activityColorsForPart(entry.partTypeTo || "").pillText,
-                            }}
-                          >
-                            {entry.partTypeTo}
-                          </span>
-                        )}
-                        {isValueMove && !isPartTypeMove && (
-                          <span
-                            className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[11px] font-bold"
-                            style={{ backgroundColor: colors.pillBg, borderColor: colors.pillBorder, color: colors.pillText }}
-                          >
-                            {entry.valueTo || "-"}
-                          </span>
-                        )}
-                        {String(entry.actionKind || "") === "clear" && (
-                          <button
-                            type="button"
-                            onClick={() => removeCutlistActivity(entry.id)}
-                            data-cutlist-activity-control="true"
-                            className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[10px] font-extrabold hover:brightness-95" style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
-                          >
-                            {entry.action || "Clear"}
-                          </button>
-                        )}
-                      </div>
-                    );
-                  })}
+                  {/* (The computer's bubbles, compact.) */}
+                  {productionCutlistActivityFeed.map((entry, idx) => renderCutlistActivityChip(entry, idx === productionCutlistActivityFeed.length - 1, true))}
                 </div>
               </div>
             </div>
@@ -45888,12 +45636,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   }
                                   addDraftRowForPartType(v);
                                 }}
-                                style={{
-                                  backgroundColor: color,
-                                  borderColor: color,
-                                  color: isLightHex(color) ? "#1F2937" : "#F8FAFC",
-                                }}
-                                className="relative rounded-[8px] border px-2 py-1 text-[11px] font-medium transition-[transform,box-shadow] duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:z-10 hover:scale-110 hover:shadow-lg disabled:opacity-55 disabled:hover:scale-100 disabled:hover:shadow-none"
+                                // (Round-ended, with the glass shine in its colour.)
+                                style={glassShineStyle(color, { color: isLightHex(color) ? "#1F2937" : "#F8FAFC" })}
+                                className="glass-shine relative rounded-full border px-3 py-1 text-[11px] font-medium transition-[transform,box-shadow] duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:z-10 hover:scale-110 hover:shadow-lg disabled:opacity-55 disabled:hover:scale-100 disabled:hover:shadow-none"
                               >
                                 {v}
                               </button>
@@ -46820,7 +46565,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       <button
                         disabled={productionReadOnly}
                         onClick={() => void addDraftRowsToCutlist()}
-                        className="glass-shine inline-flex h-[44px] w-full items-center justify-center rounded-[10px] border text-[18px] font-normal text-white hover:brightness-95 disabled:opacity-55"
+                        // (Round-ended, with the glass shine — the brand blue; as wide as the search under it — out past the entry's own
+                        // 12px either side.)
+                        className="glass-shine -mx-3 inline-flex h-[44px] w-[calc(100%+24px)] items-center justify-center rounded-full border text-[18px] font-normal text-white hover:brightness-95 disabled:opacity-55"
                         style={glassShineStyle("var(--brand)")}
                       >
                         Add to Cutlist
@@ -46834,7 +46581,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     value={cutlistSearch}
                     onChange={(e) => onCutlistSearchChange(e.target.value)}
                     placeholder="Search cutlist..."
-                    className="mb-3 h-9 w-full rounded-[10px] border px-3 text-[12px] outline-none"
+                    className="mb-3 h-9 w-full rounded-full border px-4 text-[12px] outline-none"
                     style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                   />
                   {groupedCutlistRows.length === 0 && (
@@ -46961,7 +46708,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   // Same reference size/weight as CNC's own popup (see its own "label" comment) —
                   // just without the uppercase transform, per feedback that title-case reads better.
                   const detailLabel = "text-[13px] font-bold tracking-[0.6px]";
-                  return (
+                  return createPortal(
                     <div
                       className="glass-modal-backdrop fixed inset-0 z-[200] flex items-center justify-center p-4"
                       style={{ color: "var(--text-main)" }}
@@ -47688,7 +47435,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         </div>
                       </div>
                     </div>
-                  );
+                  , document.body);
                 })()}
               </div>
             </div>
@@ -52769,7 +52516,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           // shared reference the Production/Initial Measure cutlist popups (see their own JSX)
           // are built to match, so all three read the same size everywhere.
           const label = "text-[13px] font-bold tracking-[0.6px]";
-          return (
+          return createPortal(
             <div
               className="glass-modal-backdrop fixed inset-0 z-[200] flex items-center justify-center p-4"
               onClick={() => setIsCncMobileRowDetailOpen(false)}
@@ -52851,7 +52598,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 </div>
               </div>
             </div>
-          );
+          , document.body);
         })()}
       </ProtectedRoute>
     );
@@ -57771,7 +57518,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </div>
             )}
           </div>
-          {shouldRenderNestingSheetPreview && selectedNestingSheet && (
+          {shouldRenderNestingSheetPreview && selectedNestingSheet && createPortal(
             <div
               data-app-gesture-exempt="true"
               className={`glass-modal-backdrop fixed inset-0 z-[200] ${isCompactProjectViewport ? "p-4" : "p-8"}`}
@@ -57888,7 +57635,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </div>
             </div>
           </div>
-          )}
+          , document.body)}
           {nestingTooltip && (
             <div
               className="pointer-events-none fixed z-[5000] max-w-[320px] rounded-[6px] border px-2 py-1 text-[10px] font-medium shadow-lg"
@@ -64520,7 +64267,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 </div>
           )}
 
-          {openProjectFilePreview && (
+          {openProjectFilePreview && createPortal(
             <div className="fixed inset-0 z-[1600] flex items-center justify-center px-4 py-4">
               <button
                 type="button"
@@ -64545,9 +64292,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 </div>
               </div>
             </div>
-          )}
+          , document.body)}
 
-          {shouldRenderRoomDeleteBlockedModal && displaySalesRoomDeleteBlocked && (
+          {shouldRenderRoomDeleteBlockedModal && displaySalesRoomDeleteBlocked && createPortal(
             <div className="fixed inset-0 z-[1700] flex items-center justify-center px-4 py-4">
               <button
                 type="button"
@@ -64589,7 +64336,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 </div>
               </div>
             </div>
-          )}
+          , document.body)}
           {shouldRenderAddRoomFullscreenModal && typeof document !== "undefined" && createPortal(
             <div className="fixed inset-0 z-[1700] flex items-center justify-center px-4 py-4">
               <button

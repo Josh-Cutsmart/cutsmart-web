@@ -1854,6 +1854,31 @@ body[data-theme="dark"] .glass-shine.glass-shine-neutral {
   box-shadow: var(--shadow-glass), inset 0 1px 0 rgba(255, 255, 255, 0.1);
 }
 
+/* The sidebar's selected page (the computer's sliding highlight, the phone menu's row): see-through glass — a light
+ * wash of the brand blue with what's behind showing through, a fine edge of it, a white top highlight and a soft
+ * shadow; not a flat fill. Its edge an inset shadow, so it takes no room (no shift when a row is picked). */
+.nav-active-glass {
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--brand) 8%, transparent),
+    color-mix(in srgb, var(--brand) 17%, transparent)
+  );
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand) 20%, rgba(255, 255, 255, 0.55)),
+    inset 0 1px 0 rgba(255, 255, 255, 0.65), 0 2px 8px color-mix(in srgb, var(--brand) 12%, transparent);
+  backdrop-filter: blur(12px) saturate(180%);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
+}
+
+body[data-theme="dark"] .nav-active-glass {
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--brand) 14%, transparent),
+    color-mix(in srgb, var(--brand) 24%, transparent)
+  );
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand) 32%, rgba(255, 255, 255, 0.08)),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
 /* The project tabs' side buttons (General, Design, Production) that aren't open: the glass shine without a colour —
  * glossy white, bright across its top half and easing to a soft silver at the bottom right, a crisp white edge, a white
  * highlight along its top inside and a faint line along its bottom, and a small soft shadow (the strip they're in cuts

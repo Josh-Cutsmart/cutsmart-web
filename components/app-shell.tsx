@@ -3756,7 +3756,8 @@ export function AppShell({
             >
               <ChevronLeft size={20} />
             </button>
-            <div className="flex items-center border-b border-[var(--panel-border)] px-4 py-3" style={{ borderColor: shellPalette.border }}>
+            {/* (No line under the logo — straight on to the menu.) */}
+            <div className="flex items-center px-4 py-3">
               <div className="flex min-h-[44px] w-full items-center">
                 {companyLogoPath ? (
                   <img
@@ -3836,7 +3837,8 @@ export function AppShell({
                                 href={item.href}
                                 className={cn(
                                   "flex items-center gap-3 rounded-[12px] px-4 py-3.5 text-[17px] font-medium transition",
-                                  active ? "bg-[var(--brand-soft)]" : "hover:bg-[var(--panel-muted)]",
+                                  // Selected: see-through glass (globals.css .nav-active-glass), as the computer's sidebar.
+                                  active ? "nav-active-glass" : "hover:bg-[var(--panel-muted)]",
                                 )}
                                 style={{
                                   color: active ? "var(--brand)" : shellPalette.text,
@@ -3927,6 +3929,9 @@ export function AppShell({
                       isOpen={isUserSettingsPanelOpen}
                       onRequestClose={closeUserSettingsPanel}
                       onRequestLogout={(e) => { logoutConfirmOriginElRef.current = e.currentTarget; setLogoutConfirmOrigin(captureGlassModalOrigin(e)); setShowLogoutConfirm(true); }}
+                      // Its collapse (V), Settings and Log out as the user's bar's Settings (44px, 20px, the menu's text colour).
+                      largeActions
+                      actionColor={shellPalette.text}
                     />
                   </div>
                 </div>
@@ -4072,11 +4077,11 @@ export function AppShell({
               <div
                 ref={navHighlightRef}
                 aria-hidden="true"
-                className="absolute left-0 right-1 rounded-[10px]"
+                // See-through glass (globals.css .nav-active-glass), as the phone menu's selected row.
+                className="nav-active-glass absolute left-0 right-1 rounded-[10px]"
                 style={{
                   top: navHighlightRect.top,
                   height: navHighlightRect.height,
-                  backgroundColor: "var(--brand-soft)",
                   transition: NAV_HIGHLIGHT_TRANSITION,
                   // Gone while its page's section is folded away.
                   opacity: navHighlightRect.folded ? 0 : 1,
@@ -5440,7 +5445,7 @@ export function AppShell({
         companyId={downloadsCompanyId}
         onClose={() => setShowDownloads(false)}
       />
-      {shouldRenderLogoutConfirmModal && (
+      {shouldRenderLogoutConfirmModal && createPortal(
         <div className="fixed inset-0 z-[9100] flex items-center justify-center px-4">
           <button
             type="button"
@@ -5478,7 +5483,7 @@ export function AppShell({
             </div>
           </div>
         </div>
-      )}
+      , document.body)}
     </div>
   );
 }

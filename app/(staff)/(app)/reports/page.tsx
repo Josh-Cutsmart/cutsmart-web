@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { GlassModalHeader } from "@/components/glass-modal-header";
 import { ChevronDown, Clock, DollarSign, Inbox, ListChecks, Minus, Plus, RefreshCw, RotateCcw, Search, Trophy, X, type LucideIcon } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
@@ -487,7 +488,7 @@ export default function ReportsPage() {
           Reset stats
         </button>
       ) : null}
-      {isResetConfirmOpen ? (
+      {isResetConfirmOpen ? createPortal(
         <div className="glass-modal-backdrop fixed inset-0 z-[200] flex items-center justify-center p-4" onClick={() => setIsResetConfirmOpen(false)}>
           <div
             role="dialog"
@@ -515,7 +516,7 @@ export default function ReportsPage() {
             </div>
           </div>
         </div>
-      ) : null}
+      , document.body) : null}
       {isProjectsPanelOpen && loaded ? (
         <IncludedPanel
           rows={projectRows}

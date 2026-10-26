@@ -2065,7 +2065,7 @@ function ClientsPageInner() {
         : null}
 
       {/* Add Contact — glass modal. */}
-      {shouldRenderAddContactModal ? (
+      {shouldRenderAddContactModal ? createPortal(
         <div className="fixed inset-0 z-[1700] flex items-center justify-center px-4 py-4">
           <button
             type="button"
@@ -2152,7 +2152,7 @@ function ClientsPageInner() {
             </div>
           </div>
         </div>
-      ) : null}
+      , document.body) : null}
     </div>
   );
 }

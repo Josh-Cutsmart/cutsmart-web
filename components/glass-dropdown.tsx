@@ -55,8 +55,11 @@ function useAnchoredGlassMenu(options: {
   align: "left" | "center" | "right";
   matchTriggerWidth: boolean;
   disabled?: boolean;
+  // Always downward, as tall as its rows up to the bottom of the screen (none of the usual cap, nor flipped up) —
+  // reaching the bottom only when it has the rows to fill it.
+  fillBelow?: boolean;
 }) {
-  const { rowCount, minWidth, align, matchTriggerWidth, disabled } = options;
+  const { rowCount, minWidth, align, matchTriggerWidth, disabled, fillBelow = false } = options;
   const [position, setPosition] = useState<MenuPosition | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -142,8 +145,10 @@ function useAnchoredGlassMenu(options: {
     const viewportBottom = viewport ? viewport.offsetTop + viewport.height : window.innerHeight;
     const roomBelow = viewportBottom - rect.bottom - MENU_CLEARANCE_PX - 4;
     const roomAbove = rect.top - viewportTop - MENU_CLEARANCE_PX - 4;
-    const openUp = roomBelow < wantedHeight && roomAbove > roomBelow;
-    const maxHeight = Math.max(rowHeight * 2, Math.min(wantedHeight, openUp ? roomAbove : roomBelow));
+    const openUp = !fillBelow && roomBelow < wantedHeight && roomAbove > roomBelow;
+    const maxHeight = fillBelow
+      ? Math.max(rowHeight * 2, Math.min(contentHeight, roomBelow))
+      : Math.max(rowHeight * 2, Math.min(wantedHeight, openUp ? roomAbove : roomBelow));
     const preferredLeft =
       align === "right" ? rect.right - menuWidth : align === "center" ? rect.left + rect.width / 2 - menuWidth / 2 : rect.left;
     const left = Math.min(Math.max(MENU_CLEARANCE_PX, preferredLeft), window.innerWidth - menuWidth - MENU_CLEARANCE_PX);
@@ -317,6 +322,9 @@ type GlassDropdownProps = {
   // Completed pop-up's bonus period chip: an icon and a short name).
   triggerContent?: ReactNode;
   triggerTitle?: string;
+  // The menu always opens downward, as tall as its options up to the bottom of the screen (the calendar event's
+  // Category).
+  menuFillBelow?: boolean;
 };
 
 // A select-style dropdown: the trigger shows the chosen option (with its colour dot) and a chevron.
@@ -335,6 +343,7 @@ export function GlassDropdown({
   hideTriggerDot = false,
   triggerContent,
   triggerTitle,
+  menuFillBelow = false,
 }: GlassDropdownProps) {
   // (A group's heading where the group changes — a row of the menu too.)
   const headingCount = options.filter((option, index) => option.group && option.group !== options[index - 1]?.group).length;
@@ -344,6 +353,7 @@ export function GlassDropdown({
     align: menuAlign,
     matchTriggerWidth: true,
     disabled,
+    fillBelow: menuFillBelow,
   });
   const selected = options.find((option) => option.value === value) ?? (placeholder === undefined ? options[0] : undefined);
   const reserveDotSpace = options.some((option) => option.color);
