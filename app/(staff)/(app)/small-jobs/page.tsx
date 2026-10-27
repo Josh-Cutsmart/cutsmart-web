@@ -25,6 +25,7 @@ import { captureGlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { readThemeMode, THEME_MODE_UPDATED_EVENT } from "@/lib/theme-mode";
 import type { Project } from "@/lib/types";
 import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
+import { SkeletonCards } from "@/components/skeleton";
 
 // Small Jobs (the sidebar's): quick jobs and small fixes, each without a whole project (lib/small-jobs.ts) — a list,
 // laid out as the Dashboard's list (a flat page — lib/flat-page.ts): each job, its client, who it's assigned to, when it
@@ -356,7 +357,7 @@ export default function SmallJobsPage() {
           </>,
         )
       ) : jobs === null ? (
-        notice("Loading small jobs...")
+        <SkeletonCards count={4} label="Loading small jobs" />
       ) : shown.length === 0 ? (
         <div className="flex flex-col items-center justify-center gap-3 rounded-[18px] border px-4 py-14 text-center" style={MUTED_PANEL}>
           <span className="glass-shine inline-flex h-11 w-11 items-center justify-center rounded-full text-white" style={glassShineStyle(SMALL_JOB_COLOR)}>

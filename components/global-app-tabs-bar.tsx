@@ -1,6 +1,7 @@
 "use client";
 
 import { activeDate, activeDateTime } from "@/lib/company-formats";
+import { haptic } from "@/lib/haptics";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type ReactNode, type RefObject, type TouchEvent as ReactTouchEvent } from "react";
 import { createPortal } from "react-dom";
 import { usePathname, useRouter } from "next/navigation";
@@ -23,6 +24,7 @@ import {
   Minus,
   Plus,
   RefreshCw,
+  Search,
   Shield,
   Sparkles,
   Trash2,
@@ -34,6 +36,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { requestNotificationReminderPush } from "@/lib/push-client";
+import { GLOBAL_SEARCH_OPEN_EVENT } from "@/lib/global-search";
 import { PUSH_NOTIFICATION_CATEGORIES, pushNotificationCategoryOf } from "@/lib/push-notification-types";
 import { glassShineStyle } from "@/lib/glass-shine";
 import { modalCloseButtonClass } from "@/components/settings-ui";
@@ -1455,6 +1458,8 @@ export function GlobalAppTabsBar() {
       const current = mobileTabTouchRef.current;
       if (!current || current.groupKey !== groupKey || !current.eligible || current.dragging) return;
       current.dragging = true;
+      // (A small buzz as it's picked up — and as it lands.)
+      haptic("hold");
       beginMobileTabDrag(groupKey, { clientX: current.lastX, clientY: touch.clientY });
     }, MOBILE_TAB_LONG_PRESS_MS);
     mobileTabTouchRef.current = state;
@@ -1515,6 +1520,7 @@ export function GlobalAppTabsBar() {
     if (state.longPressTimer) clearTimeout(state.longPressTimer);
     if (!state.dragging) return;
     suppressNextTabClickRef.current = state.groupKey;
+    if (commit) haptic("land");
     finishTabDrag(state.groupKey, commit);
   };
 
@@ -2297,6 +2303,20 @@ export function GlobalAppTabsBar() {
               );
             }))}
           </div>
+          {/* Search across everything this person can see (components/global-search.tsx — it drops down from the top). */}
+          {user?.uid ? (
+            <button
+              type="button"
+              onMouseDown={handleAuxButtonMouseDown}
+              onClick={() => window.dispatchEvent(new Event(GLOBAL_SEARCH_OPEN_EVENT))}
+              className="relative ml-1 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] transition-colors"
+              style={{ color: shellPalette.textMuted }}
+              aria-label="Search"
+              title="Search (Ctrl/⌘+K)"
+            >
+              <Search size={16} />
+            </button>
+          ) : null}
           {user?.uid ? (
             <button
               type="button"

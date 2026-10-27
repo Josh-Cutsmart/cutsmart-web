@@ -5429,6 +5429,97 @@ export async function permanentlyDeleteCompanyClients(
   );
 }
 
+// Two contact cards of the same person made one (Contacts › Possible duplicates — never on its own): `keep` keeps its
+// card, taking from `merge` what it hasn't got (an email, phone or address it's missing; both sets of notes, both cards'
+// people); every project of either is linked to `keep` (clientId — so details that match another card can't split one
+// off again); and `merge`'s card is retired, a tombstone of it (as a contact deleted for good — mergedIntoId noting where
+// it went), so it isn't made again from those projects and is listed nowhere. Whether it worked.
+export async function mergeCompanyClients(
+  companyId: string,
+  keep: CompanyClientRow,
+  merge: CompanyClientRow,
+): Promise<{ ok: boolean; row?: CompanyClientRow }> {
+  const cid = String(companyId || "").trim();
+  if (!db || !cid || !keep.id || !merge.id || keep.id === merge.id) return { ok: false };
+  const nowIso = new Date().toISOString();
+  const pick = (a: unknown, b: unknown) => String(a ?? "").trim() || String(b ?? "").trim();
+  const notes = Array.from(new Set([keep.notes, merge.notes].map((note) => String(note || "").trim()).filter(Boolean))).join("\n\n");
+  const history = [...keep.history, ...merge.history.filter((row) => !keep.history.some((own) => own.projectId === row.projectId))];
+  const email = pick(keep.email, merge.email);
+  // The card kept, as it is after (for the list to show straight away).
+  const row: CompanyClientRow = {
+    ...keep,
+    name: pick(keep.name, merge.name),
+    email,
+    emailNormalized: normalizeClientEmail(email),
+    phone: pick(keep.phone, merge.phone),
+    address: pick(keep.address, merge.address),
+    notes,
+    category: pick(keep.category, merge.category),
+    archived: false,
+    createdByUids: Array.from(new Set([...keep.createdByUids, ...merge.createdByUids])),
+    assignedToUids: Array.from(new Set([...keep.assignedToUids, ...merge.assignedToUids])),
+    history,
+    projectCount: history.filter((item) => !item.deleted).length,
+    updatedAtIso: nowIso,
+  };
+  try {
+    await setDoc(
+      doc(db, "companies", cid, "clients", keep.id),
+      {
+        name: pick(keep.name, merge.name),
+        email,
+        emailNormalized: normalizeClientEmail(email),
+        phone: pick(keep.phone, merge.phone),
+        address: pick(keep.address, merge.address),
+        notes,
+        category: pick(keep.category, merge.category),
+        archived: false,
+        createdByUids: Array.from(new Set([...keep.createdByUids, ...merge.createdByUids])),
+        assignedToUids: Array.from(new Set([...keep.assignedToUids, ...merge.assignedToUids])),
+        history,
+        projectCount: history.filter((row) => !row.deleted).length,
+        createdAtIso: keep.createdAtIso || merge.createdAtIso || nowIso,
+        mergedFromIds: Array.from(new Set([...(keep as { mergedFromIds?: string[] }).mergedFromIds ?? [], merge.id])),
+        updatedAt: serverTimestamp(),
+        updatedAtIso: nowIso,
+      },
+      { merge: true },
+    );
+    // Every project of either: linked to the card kept.
+    for (const row of history) {
+      if (!row.projectId || row.deleted) continue;
+      const ref = await resolveProjectDocRef({ id: row.projectId, companyId: cid } as Project);
+      if (ref) await updateDoc(ref, { clientId: keep.id }).catch(() => undefined);
+    }
+    // The other card: retired (its details kept on it, as a deleted contact's are, so it hides nothing of anyone else's).
+    await setDoc(
+      doc(db, "companies", cid, "clients", merge.id),
+      {
+        name: merge.name,
+        email: merge.email,
+        emailNormalized: normalizeClientEmail(merge.email),
+        phone: merge.phone,
+        address: merge.address,
+        deleted: true,
+        deletedAtIso: nowIso,
+        archived: true,
+        mergedIntoId: keep.id,
+        notes: "",
+        category: "",
+        history: [],
+        projectCount: 0,
+        updatedAt: serverTimestamp(),
+        updatedAtIso: nowIso,
+      },
+      { merge: true },
+    );
+    return { ok: true, row };
+  } catch {
+    return { ok: false };
+  }
+}
+
 export async function syncCompanyClientProfileFromProject(
   project: Project,
 ): Promise<{ ok: boolean; clientId?: string }> {

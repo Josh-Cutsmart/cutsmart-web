@@ -1,6 +1,7 @@
 "use client";
 
 import type { jsPDF as JsPdf } from "jspdf";
+import qrcode from "qrcode-generator";
 import type { PrintTitleLogo } from "@/lib/print-title-page";
 
 // Production › Labels: a sticky label for every piece the workshop cuts — one per piece (a part's quantity is that
@@ -10,7 +11,9 @@ import type { PrintTitleLogo } from "@/lib/print-title-page";
 //  - the piece's outline, to scale, with an X on each edge that's clashed and its clashing (1L1S) under it — a door's
 //    hinges drawn on it too, each with where it goes;
 //  - its size, each number with which it is (H, W, D) over it; its board; its information lines;
-//  - along the bottom: the project and who it's for, and which of its copies it is (2 of 4).
+//  - along the bottom: the project and who it's for, and which of its copies it is (2 of 4);
+//  - with qrUrl: a QR code in the bottom right of its body — scanned with a phone's camera, it opens the part in its
+//    project (Production › Labels' "QR codes").
 // Laid out once (layoutPartLabel: plain shapes and text, in mm, from the label's top left) and drawn from that both on
 // screen (components/part-label.tsx) and into the PDF that prints them (one label a page, the page the label's size),
 // so the two are always the same. Black and grey only: label printers are mostly thermal, black on white.
@@ -68,6 +71,8 @@ export type PartLabel = {
   copies: number;
   projectName: string;
   assignedTo: string;
+  // Its QR code's link (none: no QR code) — the part in its project (/projects/<id>?part=<row>).
+  qrUrl?: string;
 };
 
 // The edges a clashing's long / short edges are: a tall piece's long edges its sides, a wide one's its top and bottom —
@@ -215,20 +220,67 @@ export function layoutPartLabel(label: PartLabel, size: LabelSize, logo: { width
   const projectShownW = measureLabelText(projectShown, footSize, true);
   addText(fitText(personText, footW - projectShownW, footSize), m + projectShownW, footBase, footSize, { color: SOFT });
 
-  // ---- The middle: the outline beside (on a tall label: over) its sizes, board and information.
+  // ---- The middle: the outline beside (on a tall label: over) its sizes, board and information — and its QR code
+  // (if it has one) in the bottom right corner, the details beside it narrowed to leave it room.
   const bodyTop = divider + 2 * k;
   const bodyBottom = footRule - 2 * k;
+  const qr = label.qrUrl ? qrModules(label.qrUrl) : null;
   if (portrait) {
     const diagramH = (bodyBottom - bodyTop) * 0.42;
     drawOutline(ops, label, { x: m, y: bodyTop, w: W - 2 * m, h: diagramH }, k);
-    drawDetails(ops, label, { x: m, y: bodyTop + diagramH + 2.5 * k, w: W - 2 * m, bottom: bodyBottom }, k, 17 * k, addText);
+    const detailsY = bodyTop + diagramH + 2.5 * k;
+    const qrSize = qr ? clamp(Math.min(bodyBottom - detailsY, (W - 2 * m) * 0.36), 0, 26) : 0;
+    const qrShown = qr && qrSize >= 11;
+    if (qrShown) drawQr(ops, qr, W - m - qrSize, bodyBottom - qrSize, qrSize);
+    drawDetails(ops, label, { x: m, y: detailsY, w: W - 2 * m - (qrShown ? qrSize + 2.5 * k : 0), bottom: bodyBottom }, k, 17 * k, addText);
   } else {
     const diagramW = (W - 2 * m) * 0.4;
     drawOutline(ops, label, { x: m, y: bodyTop, w: diagramW, h: bodyBottom - bodyTop }, k);
     const detailsX = m + diagramW + 3.5 * k;
-    drawDetails(ops, label, { x: detailsX, y: bodyTop, w: W - m - detailsX, bottom: bodyBottom }, k, 16 * k, addText);
+    const qrSize = qr ? clamp(Math.min(bodyBottom - bodyTop, (W - m - detailsX) * 0.42), 0, 24) : 0;
+    const qrShown = qr && qrSize >= 11;
+    if (qrShown) drawQr(ops, qr, W - m - qrSize, bodyBottom - qrSize, qrSize);
+    drawDetails(ops, label, { x: detailsX, y: bodyTop, w: W - m - detailsX - (qrShown ? qrSize + 2.5 * k : 0), bottom: bodyBottom }, k, 16 * k, addText);
   }
   return ops;
+}
+
+// A link's QR code, as rows of dark (true) and light modules — worked out once a link (every copy of a part has the same).
+const qrCache = new Map<string, boolean[][]>();
+function qrModules(url: string): boolean[][] | null {
+  const cached = qrCache.get(url);
+  if (cached) return cached;
+  try {
+    // Medium error correction: still reads with a corner scuffed or a bit of glue over it.
+    const code = qrcode(0, "M");
+    code.addData(url);
+    code.make();
+    const count = code.getModuleCount();
+    const rows = Array.from({ length: count }, (_, r) => Array.from({ length: count }, (_, c) => code.isDark(r, c)));
+    qrCache.set(url, rows);
+    return rows;
+  } catch {
+    return null;
+  }
+}
+
+// The QR code at (x, y), size mm square: each row's run of dark modules one black rect (a hair taller, so rows meet
+// without a hairline between them). The white round it is the label's own (its edges and the gap to the details).
+function drawQr(ops: LabelOp[], rows: boolean[][], x: number, y: number, size: number) {
+  const count = rows.length;
+  if (!count) return;
+  const cell = size / count;
+  rows.forEach((row, r) => {
+    let start = -1;
+    for (let c = 0; c <= count; c += 1) {
+      const dark = c < count && row[c];
+      if (dark && start < 0) start = c;
+      if (!dark && start >= 0) {
+        ops.push({ kind: "rect", x: x + start * cell, y: y + r * cell, w: (c - start) * cell, h: cell + 0.02, fill: INK });
+        start = -1;
+      }
+    }
+  });
 }
 
 // The piece's outline, to scale, in the middle of its box: its clashed edges' Xs, its grain's arrow, a door's hinges

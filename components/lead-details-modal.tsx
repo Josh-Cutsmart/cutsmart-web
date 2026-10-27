@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { Check, ListChecks, Mail, Phone, X } from "lucide-react";
 import { modalCloseButtonClass } from "@/components/settings-ui";
+import { CopyButton } from "@/components/copy-button";
 import { authorizedFetch } from "@/lib/api-fetch";
 import { activeDateTime } from "@/lib/company-formats";
 import { fetchCompanyDoc, fetchCompanyLeadById, type CompanyLeadRow, type LeadNote } from "@/lib/firestore-data";
@@ -23,6 +24,7 @@ import {
 import type { ProjectChecklist } from "@/lib/types";
 import { useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { contrastTextForFill } from "@/lib/user-profile-format";
+import { Skeleton } from "@/components/skeleton";
 
 // The lead a project was made from (project.sourceLeadId — Leads › Create Project, or a column automation converting
 // it), in its pop-up exactly as the Leads page lays it out — read only, the lead being archived once it became the
@@ -268,7 +270,7 @@ export function LeadDetailsModal({
             </button>
             <div className="flex items-start justify-between gap-3 pr-10">
               <h2 className="min-w-0 flex-1 pt-0.5 text-left text-[22px] font-semibold leading-tight" style={{ color: "var(--text-main)" }}>
-                {data?.displayName ?? (current?.failed ? "Lead not found" : "Loading lead...")}
+                {data?.displayName ?? (current?.failed ? "Lead not found" : <Skeleton className="mt-1 h-6 w-48 rounded-[8px]" />)}
               </h2>
               {data ? (
                 <span
@@ -295,6 +297,8 @@ export function LeadDetailsModal({
             {data && (data.phone || data.email) ? (
               <div className="mt-3 flex flex-wrap gap-2">
                 {data.phone ? (
+                  // (The pill calls them; the copy beside it copies the number.)
+                  <span className="inline-flex min-w-0 max-w-full items-center gap-0.5">
                   <a
                     href={`tel:${data.phone.replace(/[^\d+]/g, "")}`}
                     className="inline-flex h-9 min-w-0 items-center gap-1.5 rounded-full border px-3.5 text-[13px] font-medium transition hover:brightness-95"
@@ -304,8 +308,11 @@ export function LeadDetailsModal({
                     <Phone size={14} className="shrink-0" style={{ color: "var(--brand-strong)" }} />
                     <span className="truncate">{data.phone}</span>
                   </a>
+                  <CopyButton value={data.phone} label="phone number" />
+                  </span>
                 ) : null}
                 {data.email ? (
+                  <span className="inline-flex min-w-0 max-w-full items-center gap-0.5">
                   <a
                     href={`mailto:${data.email}`}
                     className="inline-flex h-9 min-w-0 max-w-full items-center gap-1.5 rounded-full border px-3.5 text-[13px] font-medium transition hover:brightness-95"
@@ -315,6 +322,8 @@ export function LeadDetailsModal({
                     <Mail size={14} className="shrink-0" style={{ color: "var(--brand-strong)" }} />
                     <span className="truncate">{data.email}</span>
                   </a>
+                  <CopyButton value={data.email} label="email" />
+                  </span>
                 ) : null}
               </div>
             ) : null}

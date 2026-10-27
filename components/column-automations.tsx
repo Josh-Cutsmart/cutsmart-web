@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Check, FolderPlus, Plus, Search, Trash2, UserCheck, Users, X, Zap } from "lucide-react";
+import { Check, Clock, FolderPlus, Plus, Search, Trash2, UserCheck, Users, X, Zap } from "lucide-react";
 import { GLASS_MENU_CLASS, GLASS_MENU_STYLE, GlassDropdown } from "@/components/glass-dropdown";
 import { modalCloseButtonClass } from "@/components/settings-ui";
 import { useAuth } from "@/lib/auth-context";
@@ -37,6 +37,7 @@ import { addUserNotification, fetchCompanyDoc, fetchCompanyMembers, saveColumnAu
 import { glassShineStyle } from "@/lib/glass-shine";
 import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
 import { cn } from "@/lib/utils";
+import { SkeletonRows } from "@/components/skeleton";
 
 // A board's column automations (lib/column-automations.ts), for whoever's role has projects.automate: right-click a
 // column (an element marked data-automation-board / -status / -substage / -color — the Dashboard's and Leads' column
@@ -92,6 +93,11 @@ const CONDITION_OP_LABELS: Record<AutomationConditionOp, string> = {
 const TIMING_OPTIONS = [
   { value: "now", label: "straight away" },
   { value: "after", label: "after" },
+];
+// A timed move's time: for what enters from now on, or from when each moved in (what's already there too).
+const COUNT_FROM_OPTIONS = [
+  { value: "now", label: "for ones entering from now" },
+  { value: "movedIn", label: "counting from when each moved in" },
 ];
 // A column as a dropdown value: its status and sub-stage, apart.
 const COLUMN_KEY_SEP = "\u001f";
@@ -366,6 +372,7 @@ function ColumnAutomationModal({
     moveToStatus: "",
     moveToSubStage: "",
     moveAfter: false,
+    moveCountFrom: "now",
     moveToBoard: board,
     notifyAssignee: false,
     assignToUid: "",
@@ -474,6 +481,7 @@ function ColumnAutomationModal({
         row.moveToStatus,
         row.moveToSubStage,
         row.moveAfter,
+        row.moveCountFrom,
         row.moveToBoard,
         row.notifyAssignee,
         row.assignToUid,
@@ -646,7 +654,21 @@ function ColumnAutomationModal({
                           triggerClassName={PILL_CLASS}
                           triggerStyle={PILL_STYLE}
                         />
-                        {row.moveAfter ? duration : null}
+                        {row.moveAfter ? (
+                          <>
+                            {duration}
+                            <GlassDropdown
+                              value={row.moveCountFrom}
+                              options={COUNT_FROM_OPTIONS}
+                              onChange={(value) => update(row.id, { moveCountFrom: value === "movedIn" ? "movedIn" : "now" })}
+                              ariaLabel="Count the time from"
+                              hideTriggerDot
+                              menuMinWidth={260}
+                              triggerClassName={PILL_CLASS}
+                              triggerStyle={PILL_STYLE}
+                            />
+                          </>
+                        ) : null}
                       </>
                     ) : row.action === "assign" ? (
                       <>
@@ -743,6 +765,17 @@ function ColumnAutomationModal({
                         Its client, contact details, address, notes, photos and answers go onto the project, as Create Project
                         fills them in — and the lead&apos;s archived.
                       </span>
+                    </p>
+                  </div>
+                ) : null}
+                {/* A timed move counted from when each moved in: what's already there counts too — said before it's saved. */}
+                {row.action === "move" && row.moveAfter && row.moveCountFrom === "movedIn" ? (
+                  <div className="mt-2.5 flex items-start gap-2 pl-1">
+                    <Clock size={15} className="mt-0.5 shrink-0" style={{ color: "var(--accent-amber)" }} />
+                    <p className="min-w-0 text-[11.5px] font-normal text-[var(--text-muted)]">
+                      {thing === "lead" ? "Leads" : "Projects"} already in {column} count too — any there longer than{" "}
+                      {columnAutomationDurationLabel(row)} move on within a minute or so of saving. Changing the time later
+                      applies to them all.
                     </p>
                   </div>
                 ) : null}
@@ -1082,7 +1115,7 @@ function PeoplePicker({
               </div>
               <div role="listbox" aria-multiselectable="true" className="glass-scroll min-h-0 flex-1 overflow-y-auto p-1">
                 {members === null ? (
-                  <p className="px-2 py-3 text-center text-[12px] text-[var(--text-muted)]">Loading staff...</p>
+                  <SkeletonRows count={4} label="Loading staff" />
                 ) : showAssignee || shownRoles.length || shown.length ? (
                   <>
                     {showAssignee

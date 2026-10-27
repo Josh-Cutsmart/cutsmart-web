@@ -13,6 +13,7 @@ import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin 
 import { usePublishKeyboardInsetVars } from "@/lib/use-keyboard-inset";
 import { swallowNextClick } from "@/lib/swallow-dismiss-click";
 import { actedByLabel } from "@/lib/on-behalf";
+import { Skeleton, SkeletonGroup } from "@/components/skeleton";
 
 type Phase = "loading" | "ready" | "load-error";
 type Tab = "specs" | "quote" | "schedule";
@@ -947,7 +948,14 @@ export default function ClientSpecsSharePage() {
             to fit instead (SpecsGridClientView's fitToWidth). */}
         <div className="mx-auto max-lg:max-w-full" style={pageBoxWidthPx ? { width: pageBoxWidthPx } : undefined}>
             {phase === "loading" ? (
-              <p className="text-[13px]" style={{ color: "#64748B" }}>Loading…</p>
+              <SkeletonGroup label="Loading the specifications" className="space-y-2 py-2">
+                {[0, 1, 2, 3, 4, 5].map((index) => (
+                  <div key={index} className="grid grid-cols-[1fr_2fr] gap-2">
+                    <Skeleton className="h-8 rounded-[8px]" />
+                    <Skeleton className="h-8 rounded-[8px]" />
+                  </div>
+                ))}
+              </SkeletonGroup>
             ) : phase === "load-error" ? (
               <p className="text-[13px] font-bold" style={{ color: "#B42318" }}>{loadError}</p>
             ) : (

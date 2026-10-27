@@ -1,6 +1,9 @@
 "use client";
 
 import { setActiveCompanyFormats } from "@/lib/company-formats";
+import { GlobalSearch } from "@/components/global-search";
+import { ViewAsRoleBanner } from "@/components/view-as-role-banner";
+import { useViewAsRole } from "@/lib/view-as-role";
 import { GlassModalHeader } from "@/components/glass-modal-header";
 import { glassShineStyle } from "@/lib/glass-shine";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type TouchEvent as ReactTouchEvent } from "react";
@@ -1599,12 +1602,17 @@ export function AppShell({
       panel.style.transform = "translateX(0px)";
     }
   };
+  // An owner or admin viewing the app as one of the company's roles (lib/view-as-role.ts): the sidebar, New Project and
+  // the rest here go by that role's permissions instead of theirs — a preview only.
+  const viewAsRole = useViewAsRole();
+  const realRoleForUi = String(effectiveCompanyRole || user?.role || "").trim().toLowerCase();
+  const viewingAsRole = Boolean(viewAsRole) && (realRoleForUi === "owner" || realRoleForUi === "admin");
   const normalizedEffectivePermissions = useMemo(
-    () => effectiveCompanyPermissions.map((item) => String(item || "").trim().toLowerCase()),
-    [effectiveCompanyPermissions],
+    () => (viewingAsRole && viewAsRole ? viewAsRole.permissionKeys : effectiveCompanyPermissions).map((item) => String(item || "").trim().toLowerCase()),
+    [effectiveCompanyPermissions, viewingAsRole, viewAsRole],
   );
 
-  const roleForUi = String(effectiveCompanyRole || user?.role || "").trim().toLowerCase();
+  const roleForUi = viewingAsRole ? "staff" : realRoleForUi;
 
   const canCreateForOthers = useMemo(() => {
     const role = roleForUi;
@@ -4065,9 +4073,13 @@ export function AppShell({
               {!isSidebarIconOnlyContent && <span className="sidebar-label-fade-in min-w-0 truncate">New Project</span>}
             </button>
           )}
+          {/* Its pages' list, when the window's too short for them all: the glass scrollbar (drawn over it), not the
+              browser's own — that took 10px off the list's width (its rows, and the selected one's highlight, stopping
+              short) and showed as a pale strip down the sidebar's edge. */}
+          <GlassScrollbarThumb scrollRef={navListRef} />
           <div
             ref={navListRef}
-            className="relative min-h-0 flex-1 space-y-0.5 overflow-y-auto pr-1"
+            className="hide-native-scrollbar relative min-h-0 flex-1 space-y-0.5 overflow-y-auto pr-1"
             style={{
               marginBottom: navListMarginBottom || undefined,
               transition: "margin-bottom 320ms cubic-bezier(0.22, 1, 0.36, 1)",
@@ -5445,6 +5457,10 @@ export function AppShell({
         companyId={downloadsCompanyId}
         onClose={() => setShowDownloads(false)}
       />
+      {/* Search across everything this person can see — Ctrl/⌘+K, or the top bar's search button (components/global-search.tsx). */}
+      <GlobalSearch pages={visibleTopNav} canOpenSettings={canAccessCompanySettings} />
+      {/* An owner or admin viewing the app as a role: its banner, with Exit. */}
+      <ViewAsRoleBanner />
       {shouldRenderLogoutConfirmModal && createPortal(
         <div className="fixed inset-0 z-[9100] flex items-center justify-center px-4">
           <button

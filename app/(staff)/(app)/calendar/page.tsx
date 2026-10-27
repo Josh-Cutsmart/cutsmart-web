@@ -16,6 +16,7 @@ import { useSearchParams } from "next/navigation";
 import { CalendarDays, ChevronLeft, ChevronRight, Clock, Copy, ExternalLink, Filter, FolderKanban, MapPin, MoreHorizontal, Pencil, Plus, Search, Trash2, Users, X } from "lucide-react";
 import { SubscribeBellIcon } from "@/components/subscribe-bell-icon";
 import { useAuth } from "@/lib/auth-context";
+import { haptic } from "@/lib/haptics";
 import { fetchCompanyDoc, fetchCompanyMembers, fetchProjects } from "@/lib/firestore-data";
 import { isProjectArchived } from "@/lib/project-archive";
 import { glassShineStyle } from "@/lib/glass-shine";
@@ -27,6 +28,7 @@ import { DragGhostLayer, useDragGhost } from "@/lib/use-drag-ghost";
 import { activeDate, activeDateRange, useCompanyFormats } from "@/lib/company-formats";
 import { useAppTabs } from "@/lib/app-tabs-context";
 import { useCalendarAppMode } from "@/lib/calendar-app-mode";
+import { normalizeNzHolidayRegion, nzPublicHolidayName, type NzHolidayRegion } from "@/lib/nz-public-holidays";
 import {
   deleteCalendarEvent,
   fetchCalendarEvent,
@@ -57,7 +59,6 @@ import {
   iconRemoveButtonClass,
   modalCloseButtonClass,
   primaryButtonClass,
-  primaryButtonStyle,
   secondaryButtonClass,
   smallButtonClass,
 } from "@/components/settings-ui";
@@ -316,8 +317,11 @@ function layoutBars(
 }
 // Every day of a Monday-start week, as offsets from the Monday (0 = Monday … 6 = Sunday).
 const ALL_WEEK_COLS = [0, 1, 2, 3, 4, 5, 6];
-// One event "slot" in a month day: an 18px event plus a 2px gap.
+// One event "slot" in the week and day views' all-day row: an 18px event plus a 2px gap.
 const BAR_H = 20;
+// One in a month day — tighter: a 16px event plus a 2px gap.
+const MONTH_SLOT_H = 18;
+const MONTH_SLOT_GAP = 2;
 const PREVIEW_SUFFIX = "__preview";
 
 // The next half-hour mark from now — where "New event" starts.
@@ -352,6 +356,10 @@ function eventWhenText(e: CalendarEvent, fmtDate: (d: Date) => string): { primar
 
 // Today, lightly in the brand blue — lighter than a day's "+2 more" pill (--brand-soft).
 const TODAY_TINT = "color-mix(in srgb, var(--brand) 6%, transparent)";
+// Today's outline: the brand blue, a step heavier than the calendar's 1px lines (inset — the sides of a column as
+// TODAY_SIDES, the top or bottom added where it starts or ends).
+const TODAY_RING = "inset 0 0 0 2px var(--brand)";
+const TODAY_SIDES = "inset 2px 0 0 var(--brand), inset -2px 0 0 var(--brand)";
 
 type Draft = {
   id: string;
@@ -579,6 +587,8 @@ function CalendarPageContent() {
   const [workdays, setWorkdays] = useState<number[]>(DEFAULT_CALENDAR_WORKDAYS);
   // Company Settings > Calendar: when off, the month and week views leave the non-work days out.
   const [showNonWorkdays, setShowNonWorkdays] = useState(true);
+  // Company Settings > Calendar > Public holidays: whose are shown (the region's, the national ones, or none).
+  const [holidayRegion, setHolidayRegion] = useState<NzHolidayRegion>("nz");
   // Their own choice (User Settings > Preferences), over the company's above; null = "Company setting".
   const [myShowNonWorkdays, setMyShowNonWorkdays] = useState<boolean | null>(null);
   useEffect(() => {
@@ -651,6 +661,7 @@ function CalendarPageContent() {
       setCategories(normalizeCalendarCategories((docData as Record<string, unknown> | null)?.calendarCategories));
       setWorkdays(normalizeCalendarWorkdays((docData as Record<string, unknown> | null)?.calendarWorkdays));
       setShowNonWorkdays(normalizeCalendarShowNonWorkdays((docData as Record<string, unknown> | null)?.calendarShowNonWorkdays));
+      setHolidayRegion(normalizeNzHolidayRegion((docData as Record<string, unknown> | null)?.calendarHolidayRegion));
       const cutoff = calendarRetentionCutoffMs(normalizeCalendarRetention((docData as Record<string, unknown> | null)?.calendarEventRetention));
       setArchiveCutoffMs(cutoff);
       setShowToClientDefault((docData as Record<string, unknown> | null)?.calendarShowToClientDefault === true);
@@ -1203,8 +1214,9 @@ function CalendarPageContent() {
   const [monthDragId, setMonthDragId] = useState("");
   const [monthDropDay, setMonthDropDay] = useState<number | null>(null);
   const today = startOfDay(new Date());
-  const isOffDay = (day: Date) => !workdays.includes(day.getDay());
-  // The "crossed out" look for days that aren't workdays.
+  // A day off: not a workday, or a New Zealand public holiday (lib/nz-public-holidays.ts — its name shows on the day).
+  const isOffDay = (day: Date) => !workdays.includes(day.getDay()) || Boolean(nzPublicHolidayName(day, holidayRegion));
+  // The "crossed out" look for days off.
   const offDayHatch = "repeating-linear-gradient(135deg, color-mix(in srgb, var(--text-main) 6%, transparent) 0 2px, transparent 2px 9px)";
 
   // How many days into the event the user grabbed it (so dropping keeps that day under the cursor).
@@ -1309,14 +1321,16 @@ function CalendarPageContent() {
   };
 
   // One continuous bar per event across the days it covers in a row of `cols` days. Square ends mark
-  // where it carries on into the previous / next row. dayCols as for layoutBars.
-  const renderBars = (bars: BarSlot[], rowStart: Date, cols: number, maxLanes: number, dayCols?: number[]) =>
+  // where it carries on into the previous / next row. dayCols as for layoutBars. slotH / gap: each event's
+  // slot, and the gap at its foot (the month view's tighter than the all-day row's).
+  const renderBars = (bars: BarSlot[], rowStart: Date, cols: number, maxLanes: number, dayCols?: number[], slotH = BAR_H, gap = 2) =>
     bars
       .filter((b) => b.lane < maxLanes)
       .map((b) => {
         if (!isBarEvent(b.event)) {
           return renderChip(b.event, addDays(rowStart, dayCols ? dayCols[b.startCol] : b.startCol), {
-            top: b.lane * BAR_H,
+            top: b.lane * slotH,
+            height: slotH - gap,
             left: `calc(${(b.startCol / cols) * 100}% + 2px)`,
             width: `calc(${(1 / cols) * 100}% - 4px)`,
             zIndex: b.event.id.endsWith(PREVIEW_SUFFIX) ? 5 : undefined,
@@ -1348,8 +1362,8 @@ function CalendarPageContent() {
             }}
             className="pointer-events-auto absolute flex items-center gap-1 truncate px-2 text-left text-[11px] font-normal transition hover:brightness-95 max-md:text-clip"
             style={{
-              top: b.lane * BAR_H,
-              height: BAR_H - 2,
+              top: b.lane * slotH,
+              height: slotH - gap,
               left: `calc(${(b.startCol / cols) * 100}% + ${b.contBefore ? 0 : 2}px)`,
               width: `calc(${(span / cols) * 100}% - ${(b.contBefore ? 0 : 2) + (b.contAfter ? 0 : 2)}px)`,
               backgroundColor: cat.color,
@@ -1385,9 +1399,9 @@ function CalendarPageContent() {
     observer.observe(el);
     monthRowsObserverRef.current = observer;
   }, []);
-  // Day number row (4px padding + 24px + 2px) sits above the event slots.
-  const DAY_HEADER_PX = 30;
-  const slotsPerDay = Math.max(1, Math.floor((monthRowsHeight / 6 - DAY_HEADER_PX - 2) / BAR_H));
+  // Day number row (2px padding + 20px + 1px) sits above the event slots.
+  const DAY_HEADER_PX = 23;
+  const slotsPerDay = Math.max(1, Math.floor((monthRowsHeight / 6 - DAY_HEADER_PX - 2) / MONTH_SLOT_H));
 
   // One week of the month view. `month` is the month being shown — days outside it are greyed (they fade
   // as that changes). `place` sizes/snaps the row in the month view's continuous week scroller.
@@ -1414,6 +1428,7 @@ function CalendarPageContent() {
           const isToday = sameDay(dd, today);
           const monthIdx = windowMonths.findIndex((m) => m.getFullYear() === dd.getFullYear() && m.getMonth() === dd.getMonth());
           const more = bars.filter((b) => b.lane >= L && b.startCol <= col && b.endCol >= col).length;
+          const holiday = nzPublicHolidayName(dd, holidayRegion);
           return (
             <div
               key={dayMs}
@@ -1423,15 +1438,15 @@ function CalendarPageContent() {
                 changeView("day");
               }}
               {...dayDropProps(dayMs)}
-              title="Open this day"
-              className={`cal-day group relative flex min-h-0 min-w-0 cursor-pointer flex-col gap-0.5 overflow-hidden p-1 transition-colors duration-300 hover:bg-[color-mix(in_srgb,var(--text-main)_3%,transparent)] ${col === cols - 1 ? "" : "border-r"}`}
+              title={holiday ? `${holiday} — open this day` : "Open this day"}
+              className={`cal-day group relative flex min-h-0 min-w-0 cursor-pointer flex-col gap-0.5 overflow-hidden px-1 pb-1 pt-0.5 transition-colors duration-300 hover:bg-[color-mix(in_srgb,var(--text-main)_3%,transparent)] ${col === cols - 1 ? "" : "border-r"}`}
               style={{
                 borderColor: "var(--glass-border)",
                 backgroundColor: monthDropDay === dayMs ? "var(--brand-soft)" : isToday ? TODAY_TINT : "var(--cal-day-bg, transparent)",
                 backgroundImage: isOffDay(dd) && monthDropDay !== dayMs ? offDayHatch : undefined,
               }}
             >
-              <div className="flex h-6 shrink-0 items-center justify-between px-0.5">
+              <div className="flex h-5 shrink-0 items-center justify-between px-0.5">
                 <button
                   type="button"
                   onClick={(e) => {
@@ -1439,12 +1454,21 @@ function CalendarPageContent() {
                     setCursor(startOfDay(dd));
                     changeView("day");
                   }}
-                  className="inline-flex h-6 min-w-6 items-center justify-center rounded-full px-1 text-[12px] font-semibold transition duration-300 hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)]"
+                  className="inline-flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[12px] font-semibold transition duration-300 hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)]"
                   style={isToday ? { backgroundImage: "var(--brand-gradient)", color: "#fff" } : { color: "var(--cal-day-num, var(--text-main))" }}
                   title="Open this day"
                 >
                   {dd.getDate()}
                 </button>
+                {/* A public holiday: its name, beside the number. */}
+                {holiday ? (
+                  <span
+                    className="ml-1 min-w-0 flex-1 truncate text-[10px] font-medium max-md:text-clip"
+                    style={{ color: "var(--cal-day-num, var(--text-main))" }}
+                  >
+                    {holiday}
+                  </span>
+                ) : null}
                 {more > 0 ? (
                   // Events that don't fit: the count, in a pill at the right of the day's header. Opens the day.
                   <button
@@ -1466,9 +1490,20 @@ function CalendarPageContent() {
           );
         })}
         {/* The week's events (continuous bars and single-day chips), positioned under the day numbers. */}
-        <div className="pointer-events-none absolute inset-x-0" style={{ top: DAY_HEADER_PX, height: L * BAR_H }}>
-          {renderBars(bars, weekStart, cols, L, weekCols)}
+        <div className="pointer-events-none absolute inset-x-0" style={{ top: DAY_HEADER_PX, height: L * MONTH_SLOT_H }}>
+          {renderBars(bars, weekStart, cols, L, weekCols, MONTH_SLOT_H, MONTH_SLOT_GAP)}
         </div>
+        {/* Today, outlined — over its events, so a bar across it doesn't hide the outline. */}
+        {(() => {
+          const todayCol = days.findIndex((dd) => sameDay(dd, today));
+          if (todayCol < 0) return null;
+          return (
+            <div
+              className="pointer-events-none absolute inset-y-0 z-[6]"
+              style={{ left: `${(todayCol / cols) * 100}%`, width: `${(1 / cols) * 100}%`, boxShadow: TODAY_RING }}
+            />
+          );
+        })()}
       </div>
     );
   };
@@ -1731,6 +1766,8 @@ function CalendarPageContent() {
     const preview = dragPreview;
     setDragPreview(null);
     if (preview && (preview.startMs !== drag.event.startMs || preview.endMs !== drag.event.endMs)) {
+      // (A small buzz as it lands — on a phone.)
+      haptic("land");
       void moveEvent(drag.event, preview.startMs, preview.endMs);
     }
   };
@@ -1883,6 +1920,7 @@ function CalendarPageContent() {
                 <div className="grid min-w-0 flex-1" style={gridCols}>
                   {days.map((d) => {
                     const isToday = sameDay(d, today);
+                    const holiday = nzPublicHolidayName(d, holidayRegion);
                     return (
                       <button
                         key={d.getTime()}
@@ -1891,8 +1929,15 @@ function CalendarPageContent() {
                           setCursor(startOfDay(d));
                           changeView("day");
                         }}
-                        className="flex w-full items-center justify-center gap-1.5 border-l py-1.5 text-[12px] font-semibold first:border-l-0"
-                        style={{ color: isToday ? "var(--brand-strong)" : "var(--text-main)", borderColor: "var(--glass-border)", backgroundColor: isToday ? TODAY_TINT : undefined }}
+                        title={holiday || undefined}
+                        className="flex w-full min-w-0 items-center justify-center gap-1.5 border-l px-1 py-1.5 text-[12px] font-semibold first:border-l-0"
+                        style={{
+                          color: isToday ? "var(--brand-strong)" : "var(--text-main)",
+                          borderColor: "var(--glass-border)",
+                          backgroundColor: isToday ? TODAY_TINT : undefined,
+                          // Today, outlined down its column (not in Day view — the whole view's the one day).
+                          boxShadow: isToday && dayCount > 1 ? `${TODAY_SIDES}, inset 0 2px 0 var(--brand)` : undefined,
+                        }}
                       >
                         <span style={{ color: "var(--text-muted)" }}>{weekdayShort(d)}</span>
                         <span
@@ -1901,6 +1946,8 @@ function CalendarPageContent() {
                         >
                           {d.getDate()}
                         </span>
+                        {/* A public holiday: its name, after the date. */}
+                        {holiday ? <span className="min-w-0 truncate text-[11px] font-medium">{holiday}</span> : null}
                       </button>
                     );
                   })}
@@ -1919,6 +1966,7 @@ function CalendarPageContent() {
                         borderColor: "var(--glass-border)",
                         backgroundColor: monthDropDay === d.getTime() ? "var(--brand-soft)" : sameDay(d, today) ? TODAY_TINT : undefined,
                         backgroundImage: isOffDay(d) && monthDropDay !== d.getTime() ? offDayHatch : undefined,
+                        boxShadow: sameDay(d, today) && dayCount > 1 ? TODAY_SIDES : undefined,
                       }}
                       title={canCreate ? "Add an all-day event" : undefined}
                     />
@@ -1973,6 +2021,7 @@ function CalendarPageContent() {
                         `repeating-linear-gradient(to bottom, var(--glass-border) 0, var(--glass-border) 1px, transparent 1px, transparent ${HOUR_PX}px)`,
                         ...(isOffDay(d) ? [offDayHatch] : []),
                       ].join(", "),
+                      boxShadow: isToday && dayCount > 1 ? `${TODAY_SIDES}, inset 0 -2px 0 var(--brand)` : undefined,
                     }}
                     onClick={(e) => {
                       const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -2190,6 +2239,7 @@ function CalendarPageContent() {
                         style={{
                           borderColor: "var(--glass-border)",
                           backgroundColor: isToday ? "color-mix(in srgb, var(--accent-amber) 22%, transparent)" : undefined,
+                          boxShadow: isToday ? TODAY_RING : undefined,
                           // Non-workdays crossed out, the same as the other views.
                           backgroundImage: isOffDay(day) ? offDayHatch : undefined,
                         }}
@@ -2203,7 +2253,7 @@ function CalendarPageContent() {
                           }}
                           className="block w-full px-1 pt-1 text-right text-[11.5px] leading-none hover:text-[var(--brand-strong)]"
                           style={{ color: isToday ? "var(--text-main)" : "var(--text-muted)", fontWeight: isToday ? 600 : 400 }}
-                          title="Open this day"
+                          title={nzPublicHolidayName(day, holidayRegion) ? `${nzPublicHolidayName(day, holidayRegion)} — open this day` : "Open this day"}
                         >
                           {day.getDate()}
                         </button>
@@ -2519,7 +2569,13 @@ function CalendarPageContent() {
             Calendar
           </div>
           {canCreate ? (
-            <button type="button" onClick={(e) => openNew(newEventStartMs(), true, e)} className={primaryButtonClass} style={primaryButtonStyle}>
+            <button
+              type="button"
+              onClick={(e) => openNew(newEventStartMs(), true, e)}
+              // (Round-ended, with the glass shine in the brand blue — as the sidebar's New Project.)
+              className="glass-shine inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full px-4 text-[12.5px] font-semibold text-white transition hover:brightness-105"
+              style={glassShineStyle("var(--brand)")}
+            >
               <Plus size={15} /> New event
             </button>
           ) : null}
@@ -2732,8 +2788,12 @@ function CalendarPageContent() {
             <button
               type="button"
               onClick={(e) => openNew(newEventStartMs(), true, e)}
-              className="fixed right-4 z-[60] inline-flex h-14 w-14 items-center justify-center rounded-full border text-white shadow-[0_10px_28px_rgba(15,23,42,0.28)] transition hover:brightness-105 active:scale-95 lg:hidden"
-              style={{ bottom: "calc(20px + env(safe-area-inset-bottom))", backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+              // (The glass shine in the brand blue — its float shadow kept, with the shine's highlight along its top.)
+              className="glass-shine fixed right-4 z-[60] inline-flex h-14 w-14 items-center justify-center rounded-full text-white transition hover:brightness-105 active:scale-95 lg:hidden"
+              style={glassShineStyle("var(--brand)", {
+                bottom: "calc(20px + env(safe-area-inset-bottom))",
+                boxShadow: "0 10px 28px rgba(15,23,42,0.28), inset 0 1px 0 rgba(255,255,255,0.5)",
+              })}
               aria-label="New event"
               title="New event"
             >
@@ -3211,7 +3271,7 @@ function CalendarPageContent() {
                         <div className="flex items-center justify-between gap-3 rounded-[11px] border px-3 py-2" style={{ borderColor: "var(--glass-border)" }}>
                           <span className="min-w-0">
                             <span className="block text-[13px] font-medium">Show on client portal</span>
-                            <span className="block text-[11.5px] font-normal" style={{ color: "var(--text-muted)" }}>
+                            <span className="block text-[11.5px] font-normal" style={{ color: "var(--text-main)" }}>
                               In the project&apos;s Schedule tab — just the title, time and category.
                             </span>
                           </span>
@@ -3236,7 +3296,7 @@ function CalendarPageContent() {
                           {projectQuery.trim() ? (
                             <div className="grid max-h-[220px] gap-0.5 overflow-y-auto rounded-[12px] border p-1" style={{ borderColor: "var(--glass-border)" }}>
                               {filteredProjects.length === 0 ? (
-                                <p className="px-2 py-1.5 text-[12px] font-normal" style={{ color: "var(--text-muted)" }}>No matching projects.</p>
+                                <p className="px-2 py-1.5 text-[12px] font-normal" style={{ color: "var(--text-main)" }}>No matching projects.</p>
                               ) : (
                                 filteredProjects.map((p) => (
                                   <button
@@ -3246,7 +3306,7 @@ function CalendarPageContent() {
                                     className="flex flex-col items-start rounded-[9px] px-2.5 py-1.5 text-left transition hover:bg-[color-mix(in_srgb,var(--text-main)_5%,transparent)]"
                                   >
                                     <span className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>{p.name}</span>
-                                    <span className="text-[11.5px] font-normal" style={{ color: "var(--text-muted)" }}>{[p.customer, p.clientAddress].filter(Boolean).join(" · ")}</span>
+                                    <span className="text-[11.5px] font-normal" style={{ color: "var(--text-main)" }}>{[p.customer, p.clientAddress].filter(Boolean).join(" · ")}</span>
                                   </button>
                                 ))
                               )}
@@ -3254,7 +3314,7 @@ function CalendarPageContent() {
                           ) : null}
                         </div>
                       ) : (
-                        <p className="text-[12.5px] font-normal" style={{ color: "var(--text-muted)" }}>None</p>
+                        <p className="text-[12.5px] font-normal" style={{ color: "var(--text-main)" }}>None</p>
                       )}
                     </div>
                     {/* Who's on it — each is reminded before it (their Notifications > Upcoming events). A linked

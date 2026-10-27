@@ -25,6 +25,7 @@ import {
   type CompletedProjectRecord,
 } from "@/lib/completed-projects";
 import type { Project } from "@/lib/types";
+import { SkeletonRows } from "@/components/skeleton";
 
 // The Dashboard's Completed pop-up: the completed-projects record (lib/completed-projects.ts) — every project marked
 // complete, on the day and time it was completed, for working out completion bonuses. Counted by period (a month, 2,
@@ -978,9 +979,7 @@ export function CompletedProjectsModal({
     );
     if (load.status === "loading") {
       return (
-        <p className="mt-6 text-center text-[13px] font-medium" style={{ color: "var(--text-muted)" }}>
-          Loading the record...
-        </p>
+        <SkeletonRows count={5} avatar={false} label="Loading the record" className="mt-4" />
       );
     }
     if (isUnsorted) return list("Not sorted", "#64748B", listRows, "Everything's sorted.");
@@ -1236,9 +1235,7 @@ export function CompletedProjectsModal({
           {openBucket && canSortBonus ? (
             openedLists(openBucket)
           ) : load.status === "loading" ? (
-            <p className="mt-6 text-center text-[13px] font-medium" style={{ color: "var(--text-muted)" }}>
-              Loading the record...
-            </p>
+            <SkeletonRows count={5} avatar={false} label="Loading the record" className="mt-4" />
           ) : months.length === 0 ? (
             <div className="mt-4 flex flex-col items-center gap-2 rounded-[22px] border border-dashed px-4 py-10 text-center" style={{ borderColor: "var(--text-main)" }}>
               <CheckCircle2 size={22} style={{ color: "var(--text-main)" }} />

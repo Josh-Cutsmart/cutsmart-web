@@ -8,6 +8,7 @@ import { authorizedFetch } from "@/lib/api-fetch";
 import SpecsGridClientView from "@/components/specs-grid-client-view";
 import ClientSpecsQuestionList from "@/components/client-specs-question-list";
 import { getExpandedRowGroups, type SpecsCell, type SpecsGrid } from "@/lib/specs-grid-types";
+import { Skeleton, SkeletonGroup } from "@/components/skeleton";
 
 // Staff accepting the quote / submitting the specifications for the client — the client told them, rather than doing it
 // in their portal (the project page's Quote and Specifications windows, their bottom bars' Accept / Submit). Recorded
@@ -308,9 +309,14 @@ export function SubmitSpecsOnBehalfModal({
             {loadError}
           </p>
         ) : !grid ? (
-          <p className="py-10 text-center text-[13px] font-medium" style={{ color: "#475569" }}>
-            Loading the specifications…
-          </p>
+          <SkeletonGroup label="Loading the specifications" className="space-y-2 py-2">
+            {[0, 1, 2, 3, 4, 5].map((index) => (
+              <div key={index} className="grid grid-cols-[1fr_2fr] gap-2">
+                <Skeleton className="h-8 rounded-[8px]" />
+                <Skeleton className="h-8 rounded-[8px]" />
+              </div>
+            ))}
+          </SkeletonGroup>
         ) : (
           <>
             {alreadySubmitted ? (

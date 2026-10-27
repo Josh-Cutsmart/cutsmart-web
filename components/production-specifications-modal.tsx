@@ -11,6 +11,7 @@ import { isPreviewMode } from "@/lib/preview-mode";
 import type { SpecsGrid, SpecsGridVersion } from "@/lib/specs-grid-types";
 import type { Project } from "@/lib/types";
 import { useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
+import { Skeleton, SkeletonGroup } from "@/components/skeleton";
 
 // Production › Specifications: the project's Specifications as the pages they read — the client portal's own sheet
 // view, read-only, scaled down to fit the pop-up's width (a phone's too), scrolling down it. Which sheet:
@@ -150,7 +151,14 @@ export function ProductionSpecificationsModal({
         </div>
         <div className="glass-scroll min-h-0 flex-1 overflow-y-auto px-3 py-3 sm:px-5 sm:py-4">
           {phase === "loading" ? (
-            <p className="py-10 text-center text-[13px]" style={{ color: "var(--text-muted)" }}>Loading…</p>
+            <SkeletonGroup label="Loading the specifications" className="space-y-2 py-2">
+              {[0, 1, 2, 3, 4, 5].map((index) => (
+                <div key={index} className="grid grid-cols-[1fr_2fr] gap-2">
+                  <Skeleton className="h-8 rounded-[8px]" />
+                  <Skeleton className="h-8 rounded-[8px]" />
+                </div>
+              ))}
+            </SkeletonGroup>
           ) : phase === "error" ? (
             <p className="py-10 text-center text-[13px] font-medium" style={{ color: "var(--danger-strong)" }}>
               Couldn&apos;t load the specifications — check your connection and try again.

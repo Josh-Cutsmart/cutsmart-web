@@ -6,6 +6,7 @@ import { hedgedAsync } from "@/lib/load-retry";
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
 import { invalidateCompanyCache, invalidateUserCache } from "@/lib/firestore-cache";
 import { clearLastKnown, readLastKnown, saveLastKnown } from "@/lib/last-known";
+import { useViewAsRole } from "@/lib/view-as-role";
 
 // Same key app-shell/dashboard/etc use to resolve "which company is active" (see
 // lib/auth-context.tsx's own copy of this same literal for the full history/reasoning).
@@ -130,6 +131,9 @@ export function useCompanyAccess(...scopedCompanyIdArg: [string | null | undefin
     error: null,
   });
   const [retryTick, setRetryTick] = useState(0);
+  // An owner or admin viewing the app as one of the company's roles (lib/view-as-role.ts): answered with that role's
+  // permissions instead of their own — a preview only.
+  const viewAs = useViewAsRole();
 
   useEffect(() => {
     let cancelled = false;
@@ -270,5 +274,8 @@ export function useCompanyAccess(...scopedCompanyIdArg: [string | null | undefin
     setRetryTick((tick) => tick + 1);
   }, [user, scopedCompanyId]);
 
+  if (state.status === "ready" && viewAs && viewAs.companyId === state.companyId && isOwnerOrAdmin(state.role)) {
+    return { ...state, role: "staff", roleId: viewAs.roleId, permissionKeys: viewAs.permissionKeys, retry };
+  }
   return { ...state, retry };
 }

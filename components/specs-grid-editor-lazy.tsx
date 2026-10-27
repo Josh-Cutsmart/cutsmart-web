@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import { Skeleton, SkeletonGroup } from "@/components/skeleton";
 
 // specs-grid-editor.tsx is one of the biggest client components in the app, and it's only shown on
 // the Specs/Quote sheet views and Company Settings' template builders — so it gets its own chunk,
@@ -8,9 +9,14 @@ import dynamic from "next/dynamic";
 const SpecsGridEditor = dynamic(() => import("@/components/specs-grid-editor"), {
   ssr: false,
   loading: () => (
-    <div className="flex items-center justify-center py-16 text-[12px]" style={{ color: "var(--text-muted)" }}>
-      Loading…
-    </div>
+    <SkeletonGroup label="Loading the editor" className="space-y-2 py-4">
+      {[0, 1, 2, 3, 4].map((index) => (
+        <div key={index} className="grid grid-cols-[1fr_2fr] gap-2">
+          <Skeleton className="h-8 rounded-[8px]" />
+          <Skeleton className="h-8 rounded-[8px]" />
+        </div>
+      ))}
+    </SkeletonGroup>
   ),
 });
 

@@ -1,7 +1,10 @@
 "use client";
 
 import { activeDateTime, useCompanyFormats } from "@/lib/company-formats";
+import { haptic } from "@/lib/haptics";
+import { OPEN_LEAD_EVENT } from "@/lib/global-search";
 import { GlassModalHeader } from "@/components/glass-modal-header";
+import { CopyButton } from "@/components/copy-button";
 import { glassShineStyle } from "@/lib/glass-shine";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type TouchEvent as ReactTouchEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { createPortal } from "react-dom";
@@ -115,6 +118,7 @@ const HOME_SCREEN_APP_PAGE_PADDING = {
 import { readBoardSortPrefs, saveBoardSortPrefs } from "@/lib/board-sort-prefs";
 import { clusterPins, computeSpreadPositions, findClusterContainingPin } from "@/lib/pin-clustering";
 import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
+import { Skeleton, SkeletonBoard, SkeletonGroup, SkeletonRows } from "@/components/skeleton";
 
 const SAMPLE_LEADS_STORAGE_KEY_PREFIX = "cutsmart_sample_leads:";
 // A lead's place in its board column: newest first, except where it's been dragged to a spot of its
@@ -1469,6 +1473,32 @@ export default function LeadsPage() {
       width: menuWidth,
     });
   };
+  // A lead opened from elsewhere — the app's global search (components/global-search.tsx): ?lead=<id> as the page
+  // opens, or its open-lead event with the page already open. Opened once it's among the leads loaded (and only then —
+  // someone who can't see it just gets the page); ?lead= is taken off the address after.
+  const [linkedLeadId, setLinkedLeadId] = useState(() =>
+    typeof window === "undefined" ? "" : new URLSearchParams(window.location.search).get("lead") || "",
+  );
+  useEffect(() => {
+    const onOpenLead = (event: Event) => setLinkedLeadId(String((event as CustomEvent<string>).detail || ""));
+    window.addEventListener(OPEN_LEAD_EVENT, onOpenLead);
+    return () => window.removeEventListener(OPEN_LEAD_EVENT, onOpenLead);
+  }, []);
+  useEffect(() => {
+    if (!linkedLeadId || !leads.some((lead) => lead.id === linkedLeadId)) return;
+    const frame = window.requestAnimationFrame(() => {
+      leadDetailModalOriginElRef.current = null;
+      setLeadDetailModalOrigin(null);
+      setSelectedLeadId(linkedLeadId);
+      setLinkedLeadId("");
+      const url = new URL(window.location.href);
+      if (url.searchParams.has("lead")) {
+        url.searchParams.delete("lead");
+        window.history.replaceState(null, "", url);
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [leads, linkedLeadId]);
   const openLeadFromListRow = (element: HTMLElement, lead: CompanyLeadRow) => {
     leadDetailModalOriginElRef.current = element;
     const rect = element.getBoundingClientRect();
@@ -2491,6 +2521,8 @@ export default function LeadsPage() {
       const current = leadCardTouchRef.current;
       if (!current || current.leadId !== lead.id || !current.eligible || current.dragging) return;
       current.dragging = true;
+      // (A small buzz as it's picked up — and as it lands, below.)
+      haptic("hold");
       setDraggingLeadId(lead.id);
       const displayName =
         leadClientName(getLeadDynamicFields(lead), fieldLayoutForLead(lead)) ||
@@ -2572,7 +2604,10 @@ export default function LeadsPage() {
     suppressNextLeadCardClickRef.current = state.leadId;
     if (commit && state.targetColumn) {
       const lead = getLeadById(state.leadId);
-      if (lead) void moveLeadOnBoard(lead, state.targetColumn, state.targetIndex);
+      if (lead) {
+        haptic("land");
+        void moveLeadOnBoard(lead, state.targetColumn, state.targetIndex);
+      }
     }
   };
 
@@ -4244,6 +4279,8 @@ export default function LeadsPage() {
             {contactPhone || contactEmail ? (
               <div className="mt-3 flex flex-wrap gap-2">
                 {contactPhone ? (
+                  // (The pill calls them; the copy beside it copies the number.)
+                  <span className="inline-flex min-w-0 max-w-full items-center gap-0.5">
                   <a
                     href={`tel:${contactPhone.replace(/[^\d+]/g, "")}`}
                     className="inline-flex h-9 min-w-0 items-center gap-1.5 rounded-full border px-3.5 text-[13px] font-medium transition hover:brightness-95"
@@ -4253,8 +4290,11 @@ export default function LeadsPage() {
                     <Phone size={14} className="shrink-0" style={{ color: "var(--brand-strong)" }} />
                     <span className="truncate">{contactPhone}</span>
                   </a>
+                  <CopyButton value={contactPhone} label="phone number" />
+                  </span>
                 ) : null}
                 {contactEmail ? (
+                  <span className="inline-flex min-w-0 max-w-full items-center gap-0.5">
                   <a
                     href={`mailto:${contactEmail}`}
                     className="inline-flex h-9 min-w-0 max-w-full items-center gap-1.5 rounded-full border px-3.5 text-[13px] font-medium transition hover:brightness-95"
@@ -4264,6 +4304,8 @@ export default function LeadsPage() {
                     <Mail size={14} className="shrink-0" style={{ color: "var(--brand-strong)" }} />
                     <span className="truncate">{contactEmail}</span>
                   </a>
+                  <CopyButton value={contactEmail} label="email" />
+                  </span>
                 ) : null}
               </div>
             ) : null}
@@ -4305,9 +4347,14 @@ export default function LeadsPage() {
           {/* data-keyboard-scroll-pad: room under its fields for the keyboard, so the one being typed in scrolls up above it. */}
           <div data-keyboard-scroll-pad="true" className="glass-scroll min-h-0 flex-1 overflow-y-auto px-5 pb-4">
             {isDetailLoading ? (
-              <div className="mb-2 rounded-[14px] border px-3 py-2.5 text-[13px] font-medium" style={{ ...LEAD_POPUP_BOX_STYLE, color: "var(--text-main)" }}>
-                Loading lead details...
-              </div>
+              <SkeletonGroup label="Loading lead details" className="mb-3 space-y-3">
+                {[0, 1, 2].map((index) => (
+                  <div key={index}>
+                    <Skeleton className="h-2.5 w-24" />
+                    <Skeleton className="mt-2 h-9 w-full rounded-[12px]" />
+                  </div>
+                ))}
+              </SkeletonGroup>
             ) : null}
             {detailFields.length === 0 ? (
               <p className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
@@ -4959,9 +5006,11 @@ export default function LeadsPage() {
             </div>
 
             {isLoading ? (
-              <div className="rounded-[14px] border px-4 py-8 text-[13px] font-semibold" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}>
-                Loading leads...
-              </div>
+              leadsViewMode === "grid" ? (
+                <SkeletonBoard columns={4} label="Loading leads" />
+              ) : (
+                <SkeletonRows count={8} avatar={false} label="Loading leads" />
+              )
             ) : leadsViewMode === "grid" ? (
               filteredLeads.length === 0 ? (
                 <div className="flex flex-col items-center gap-2 rounded-[14px] border border-dashed px-4 py-10 text-center" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>
@@ -5041,10 +5090,7 @@ export default function LeadsPage() {
                       })}
                     </div>
                     {visibleListLeads.length < filteredLeads.length ? (
-                      <div className="flex items-center justify-center gap-2 px-3 py-4 text-center text-[12px] font-semibold" style={{ color: leadsListPalette.textMuted }}>
-                        Loading more leads...
-                        <div className="h-3.5 w-3.5 animate-spin rounded-full border-[2px] border-[var(--glass-border)] border-t-[var(--brand-strong)]" role="status" aria-label="Loading" />
-                      </div>
+                      <SkeletonRows count={1} avatar={false} label="Loading more leads" />
                     ) : null}
                   </div>
                   {/* Desktop: the Dashboard list's table, straight on the page — Date received, Name, Phone, Email, Suburb
@@ -5122,11 +5168,8 @@ export default function LeadsPage() {
                         })}
                         {visibleListLeads.length < filteredLeads.length ? (
                           <tr>
-                            <td className="py-4 text-center" style={{ color: leadsListPalette.textMuted }} colSpan={6}>
-                              <div className="flex items-center justify-center gap-2">
-                                Loading more leads...
-                                <div className="h-3.5 w-3.5 animate-spin rounded-full border-[2px] border-[var(--glass-border)] border-t-[var(--brand-strong)]" role="status" aria-label="Loading" />
-                              </div>
+                            <td colSpan={6}>
+                              <SkeletonRows count={1} avatar={false} label="Loading more leads" />
                             </td>
                           </tr>
                         ) : null}

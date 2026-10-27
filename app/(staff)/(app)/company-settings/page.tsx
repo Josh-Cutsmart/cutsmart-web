@@ -1,10 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { SETTINGS_SEARCH_INDEX, SETTINGS_SECTIONS as sections, type SettingsSection } from "@/lib/company-settings-sections";
+import { glassShineStyle } from "@/lib/glass-shine";
 import { GlassModalHeader } from "@/components/glass-modal-header";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, Building2, CheckCircle2, ChevronDown, CircleDollarSign, CircleHelp, ClipboardList, Clock3, DatabaseBackup, Download, GripVertical, HardHat, Layers3, LayoutDashboard, Link2, Loader2, Package2, Plus, RotateCcw, Search, Settings, Trophy, Upload, Users, Wrench, X } from "lucide-react";
+import { ArrowLeft, Building2, CheckCircle2, ChevronDown, CircleHelp, ClipboardList, Clock3, DatabaseBackup, Download, GripVertical, HardHat, Layers3, Loader2, Package2, Plus, RotateCcw, Search, Settings, Trophy, Upload, Users, X } from "lucide-react";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { useAuth } from "@/lib/auth-context";
 import { authorizedFetch } from "@/lib/api-fetch";
@@ -31,6 +33,9 @@ import { storage } from "@/lib/firebase";
 import { getFirebaseStorageQuotaExceededMessage, isFirebaseStorageQuotaExceeded } from "@/lib/firebase-storage-errors";
 import { retryAsync } from "@/lib/load-retry";
 import { hasPermissionKey, invalidateCompanyAccessCache, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
+import { downloadCompanyExport, type CompanyExportProgress } from "@/lib/company-export";
+import { appendRoleAudit, describeRoleChanges, newRoleAuditEntry, normalizeRoleAuditLog, type RoleAuditEntry } from "@/lib/role-audit";
+import { setViewAsRole } from "@/lib/view-as-role";
 import { ColumnAutomationButton, useColumnAutomations } from "@/components/column-automations";
 import { invalidateCompanyRoleOverridesCache } from "@/lib/membership";
 import { type RoleRow, normalizeRoles, normalizeRoleKey } from "@/lib/company-roles";
@@ -69,8 +74,10 @@ import {
   normalizeMeasurementUnit,
   setActiveCompanyFormats,
   activeLength,
+  activeDate,
   activeDateTime,
 } from "@/lib/company-formats";
+import { NZ_HOLIDAY_REGION_OPTIONS, normalizeNzHolidayRegion, nzPublicHolidays, type NzHolidayRegion } from "@/lib/nz-public-holidays";
 import { CompanyJoinCodesModal } from "@/components/company-join-codes-modal";
 import { BONUS_PAID_OPTIONS, BONUS_PERIOD_MONTH_OPTIONS, completionBonusSettingsFrom } from "@/lib/completion-bonus";
 import { LeadFormsPanel, LeadInboxPanel } from "@/components/lead-forms-settings";
@@ -87,10 +94,11 @@ import {
   type JoinCodesState,
 } from "@/lib/company-join-codes";
 import { FileText, Lightbulb } from "lucide-react";
-import { Box, FolderTree, LayoutTemplate, Lock, Percent, Receipt, Shield, ShieldCheck, UserMinus, UserPlus } from "lucide-react";
+import { Box, FolderTree, History, LayoutTemplate, Lock, Percent, Receipt, Shield, ShieldCheck, UserMinus, UserPlus } from "lucide-react";
 import { isStaffContactCategory, withStaffContactCategory } from "@/lib/staff-contacts";
 import { Archive, Award, CalendarDays, CircleDashed, Cog, Columns3, Contact, Copy, Cpu, DoorClosed, DoorOpen, Eye, Factory, Globe2, Hammer, HardHat as TradeIcon, ImageUp, Inbox, KanbanSquare, KeyRound, Palette, PanelLeft, RefreshCw, Ruler, Shapes, SlidersHorizontal, Star, Tags, Trash2 } from "lucide-react";
 import { normalizeSmallJobStatuses } from "@/lib/small-jobs";
+import { SkeletonRows } from "@/components/skeleton";
 import {
   ColorCircle,
   GlassSwitch,
@@ -115,9 +123,6 @@ import {
   useGlassPrompt,
 } from "@/components/settings-ui";
 
-type SettingsSection =
-  | "company" | "dashboard" | "smalljobs" | "calendar" | "leads" | "sales" | "production" | "nesting" | "materials"
-  | "hardware" | "staff" | "integrations" | "backup";
 
 type SubStageRow = { name: string; color: string; isDefault?: boolean };
 // isComplete: the "Completed" toggle — projects in this status count as finished (stats, client portal
@@ -430,6 +435,13 @@ function groupPermissionKeys(keys: string[]): Array<{ label: string; keys: strin
   return groups.filter((g) => g.keys.length);
 }
 
+// A permission's name as the audit log says it: "View Dashboard" (its label, without its key or note).
+function readablePermission(key: string): string {
+  const label = permissionLabels[key];
+  if (!label) return key;
+  return (label.split(" - ")[1] ?? label).replace(/\s*\(.*\)\s*$/, "").trim() || key;
+}
+
 const permissionLabels: Record<string, string> = {
   "calendar.view": "calendar.view - Access Calendar Tab (who can edit / view each category is set in Company Settings > Calendar)",
   "company.*": "company.* - Full Company Access",
@@ -537,72 +549,7 @@ function mergeLeadFieldLayout(
 }
 const autoClashRightOptions = ["1S", "2S"];
 
-const sections: Array<{
-  key: SettingsSection;
-  label: string;
-  group: string;
-  description: string;
-  icon: React.ComponentType<{ size?: number; strokeWidth?: number }>;
-}> = [
-  { key: "company", label: "Company", group: "General", icon: Building2, description: "Your brand and the formats used everywhere in CutSmart." },
-  // Same icon as the sidebar's Dashboard item (components/app-shell.tsx topNav).
-  { key: "dashboard", label: "Dashboard", group: "General", icon: LayoutDashboard, description: "Statuses, tags, contact categories, how long deleted items are kept and when finished projects are archived." },
-  // Same icon as the sidebar's Small Jobs item.
-  { key: "smalljobs", label: "Small Jobs", group: "General", icon: Hammer, description: "The statuses your small jobs move through." },
-  { key: "calendar", label: "Calendar", group: "General", icon: CalendarDays, description: "The categories events can belong to on the Calendar tab." },
-  { key: "leads", label: "Leads", group: "Sales", icon: Inbox, description: "Your lead forms, your leads email inbox and the statuses on your Leads board." },
-  { key: "sales", label: "Sales", group: "Sales", icon: CircleDollarSign, description: "Quote & specs layouts, products, helpers and discounts." },
-  { key: "production", label: "Production", group: "Workshop", icon: Wrench, description: "Cutlists, part types, gap allowances and production access." },
-  { key: "nesting", label: "Machining", group: "Workshop", icon: Layers3, description: "Your machines, their settings, servicing and nesting rules." },
-  { key: "materials", label: "Materials & Boards", group: "Workshop", icon: Package2, description: "Sheet thicknesses, finishes, sizes and remembered board colours." },
-  { key: "hardware", label: "Hardware", group: "Workshop", icon: HardHat, description: "Hardware brands with their drawers, hinges and other parts." },
-  { key: "staff", label: "Staff & Permissions", group: "Team & Data", icon: Users, description: "Who's in your company, their roles and what each role can do." },
-  { key: "integrations", label: "Integrations", group: "Team & Data", icon: Link2, description: "Connect outside tools to CutSmart." },
-  { key: "backup", label: "Backup & Output", group: "Team & Data", icon: DatabaseBackup, description: "Quote output templates and a snapshot of your settings." },
-];
 // What the sidebar search can find: every card (plus key individual settings) and the tab it's on.
-const SETTINGS_SEARCH_INDEX: Array<{ section: SettingsSection; label: string; card: string; keywords?: string }> = [
-  { section: "company", card: "Brand", label: "Company name" },
-  { section: "company", card: "Brand", label: "Company logo" },
-  { section: "company", card: "Brand", label: "Theme colour", keywords: "color brand" },
-  { section: "company", card: "Regional formats", label: "Currency", keywords: "money price dollar" },
-  { section: "company", card: "Regional formats", label: "Measurement unit", keywords: "mm inches millimetres" },
-  { section: "company", card: "Regional formats", label: "Date format" },
-  { section: "dashboard", card: "Project statuses", label: "Project statuses", keywords: "sub-stages board columns" },
-  { section: "dashboard", card: "Contact categories", label: "Contact categories" },
-  { section: "dashboard", card: "Completion bonus", label: "Completion bonus", keywords: "bonus period quarter paid non qualified minimum quote" },
-  { section: "dashboard", card: "Tags", label: "Tags" },
-  { section: "dashboard", card: "Finished projects", label: "Archive completed projects", keywords: "archived client portal link completed instantly recently deleted trash" },
-  { section: "smalljobs", card: "Small job statuses", label: "Small job statuses", keywords: "small jobs fixes open closed" },
-  { section: "calendar", card: "Calendar categories", label: "Calendar categories", keywords: "events sub-calendars colours teamup" },
-  { section: "calendar", card: "Workdays", label: "Workdays", keywords: "business days weekends" },
-  { section: "calendar", card: "Workdays", label: "Show non-workdays", keywords: "hide weekends month week view" },
-  { section: "leads", card: "Lead forms", label: "Lead forms", keywords: "enquiry website embed questions create lead" },
-  { section: "leads", card: "Leads email inbox", label: "Leads email inbox", keywords: "email address forward" },
-  { section: "leads", card: "Lead statuses", label: "Lead statuses" },
-  { section: "sales", card: "Layout builders", label: "Specs & quote layouts", keywords: "template builder" },
-  { section: "sales", card: "Client confirmation", label: "Reopen for editing" },
-  { section: "sales", card: "Layout builders", label: "Item categories", keywords: "items picker" },
-  { section: "sales", card: "Products", label: "Products", keywords: "job types sheet prices" },
-  { section: "sales", card: "Quote helpers", label: "Quote helpers", keywords: "snippets" },
-  { section: "sales", card: "Quote discount", label: "Quote discount", keywords: "tiers" },
-  { section: "production", card: "Cutlist columns", label: "Cutlist columns" },
-  { section: "production", card: "Production access", label: "Production access", keywords: "unlock code" },
-  { section: "production", card: "Contractors", label: "Contractors", keywords: "trades" },
-  { section: "production", card: "Gap allowances", label: "Gap allowances" },
-  { section: "production", card: "Part types", label: "Part types", keywords: "autoclash" },
-  { section: "nesting", card: "Machines", label: "Machines", keywords: "cnc table saw edge bander kerf" },
-  { section: "materials", card: "Sheet thicknesses", label: "Sheet thicknesses" },
-  { section: "materials", card: "Board finishes", label: "Board finishes" },
-  { section: "materials", card: "Sheet sizes", label: "Sheet sizes" },
-  { section: "materials", card: "Board colour memory", label: "Board colour memory", keywords: "edging" },
-  { section: "hardware", card: "Hardware brands", label: "Hardware brands", keywords: "drawers hinges" },
-  { section: "staff", card: "Staff", label: "Staff", keywords: "invite members" },
-  { section: "staff", card: "Roles", label: "Roles & permissions" },
-  { section: "integrations", card: "Zapier Forms", label: "Zapier", keywords: "webhook leads" },
-  { section: "backup", card: "Quote output template", label: "Quote output template", keywords: "header footer page size margin" },
-  { section: "backup", card: "Backup snapshot", label: "Backup snapshot", keywords: "export json" },
-];
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const ACTIVE_COMPANY_THEME_COLOR_STORAGE_KEY = "cutsmart_active_company_theme_color";
 
@@ -1558,11 +1505,18 @@ function parseJsonObjects(value: string): Array<Record<string, unknown>> {
 // Hardware item names are kept exactly as typed while editing (so spaces can be typed), and tidied
 // when saved.
 function trimHardwareItemNames(items: unknown[]): unknown[] {
-  return items.map((item) =>
-    item && typeof item === "object" && typeof (item as Record<string, unknown>).name === "string"
-      ? { ...(item as Record<string, unknown>), name: String((item as Record<string, unknown>).name).trim() }
-      : item,
-  );
+  return items.map((item) => {
+    if (!item || typeof item !== "object") return item;
+    const row = { ...(item as Record<string, unknown>) };
+    if (typeof row.name === "string") row.name = row.name.trim();
+    // (Its item number, too — none: left off.)
+    if (typeof row.itemNumber === "string") {
+      const itemNumber = row.itemNumber.trim();
+      if (itemNumber) row.itemNumber = itemNumber;
+      else delete row.itemNumber;
+    }
+    return row;
+  });
 }
 
 function stringifyJsonObjects(items: Array<Record<string, unknown>>): string {
@@ -1731,6 +1685,32 @@ export default function CompanySettingsPage() {
     else url.searchParams.set("section", active);
     if (url.href !== window.location.href) window.history.replaceState(null, "", url);
   }, [active]);
+  // A link to a section, and to a card in it (?card= — e.g. from the app's global search, components/global-search.tsx):
+  // that section, then the card scrolled into view and flashed, as the rail's own search does. Also when it's followed
+  // with this page already open. The card is taken off the address once it's been shown.
+  const linkedSection = searchParams.get("section") || "";
+  const linkedCard = searchParams.get("card") || "";
+  useEffect(() => {
+    if (!linkedSection || !sections.some((item) => item.key === linkedSection)) return;
+    setActive(linkedSection as SettingsSection);
+    if (!linkedCard) return;
+    const timer = window.setTimeout(() => {
+      const card = Array.from(document.querySelectorAll<HTMLElement>("[data-settings-card]")).find(
+        (el) => el.dataset.settingsCard?.toLowerCase() === linkedCard.toLowerCase(),
+      );
+      if (card) {
+        card.scrollIntoView({ behavior: "smooth", block: "center" });
+        card.animate(
+          [{ boxShadow: "0 0 0 3px var(--brand), var(--shadow-glass)" }, { boxShadow: "0 0 0 0 transparent, var(--shadow-glass)" }],
+          { duration: 1600, easing: "ease-out" },
+        );
+      }
+      const url = new URL(window.location.href);
+      url.searchParams.delete("card");
+      window.history.replaceState(null, "", url);
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [linkedSection, linkedCard]);
   const [search, setSearch] = useState("");
   // The search results list under the rail's search box — hidden by a press anywhere else (the
   // query stays, and focusing the box shows the results again).
@@ -1839,6 +1819,9 @@ export default function CompanySettingsPage() {
   // Calendar > Workdays > "Show non-workdays". Off = the calendar's Month and Week views leave the
   // non-workdays out (the Year view always shows every day). Saved as calendarShowNonWorkdays; on by default.
   const [calendarShowNonWorkdays, setCalendarShowNonWorkdays] = useState(true);
+  // Calendar > Public holidays: New Zealand's, with this region's anniversary day (or none at all — lib/nz-public-holidays).
+  // Saved as calendarHolidayRegion; the national ones only by default.
+  const [calendarHolidayRegion, setCalendarHolidayRegion] = useState<NzHolidayRegion>("nz");
   const [contractors, setContractors] = useState<string[]>([]);
   // Room names (roomNames): one list, shown in both Sales and Production — offered when adding a room to a project, and
   // in the offline cutlist template.
@@ -1846,6 +1829,11 @@ export default function CompanySettingsPage() {
   // The room row being dragged (its order is the dropdown's).
   const [roomNameDragIndex, setRoomNameDragIndex] = useState<number | null>(null);
   const [roles, setRoles] = useState<RoleRow[]>([]);
+  // Staff & Permissions › Audit log (lib/role-audit.ts): its entries, newest first; and the roles as last saved — what a
+  // save's changes are found against.
+  const [roleAuditLog, setRoleAuditLog] = useState<RoleAuditEntry[]>([]);
+  const [roleAuditShown, setRoleAuditShown] = useState(15);
+  const savedRolesRef = useRef<RoleRow[] | null>(null);
   // Fed to both the Specs and Quote grid builders' group-editor modal ("Allow Editable By") — the
   // actual enforcement of it only happens in a project's own live window (see that page's own
   // canEditSpecsGroup), not here, so this is purely so a company's own role names are pickable when
@@ -2198,9 +2186,12 @@ export default function CompanySettingsPage() {
         setProjectArchiveAfter(normalizeProjectArchiveDelay((doc as Record<string, unknown>).projectArchiveAfter));
         setCalendarShowToClientDefault((doc as Record<string, unknown>).calendarShowToClientDefault === true);
         setCalendarShowNonWorkdays((doc as Record<string, unknown>).calendarShowNonWorkdays !== false);
+        setCalendarHolidayRegion(normalizeNzHolidayRegion((doc as Record<string, unknown>).calendarHolidayRegion));
         setContractors(normalizeStringList(doc.contractors, []));
         setRoomNames(normalizeStringList((doc as Record<string, unknown>).roomNames, []));
         setRoles(normalizeRoles(doc.roles));
+        savedRolesRef.current = normalizeRoles(doc.roles);
+        setRoleAuditLog(normalizeRoleAuditLog(doc.roleAuditLog));
         setItemCategories(normalizeItemCategories(doc.itemCategories));
         setSpecsTemplateGrid(normalizeSpecsGrid(doc.specsTemplateGrid));
         setQuoteGridTemplate(normalizeSpecsGrid(doc.quoteGridTemplate));
@@ -2782,6 +2773,16 @@ export default function CompanySettingsPage() {
       ),
     );
     invalidateCompanyAccessCache({ companyId: activeCompanyId });
+    // (In the audit log: who, whose, from what to what.)
+    const roleName = (id: string) => staffRoleOptions.find((role) => normalizeRoleKey(role.id || role.name) === id)?.name || id;
+    void appendRoleAudit(activeCompanyId, [
+      newRoleAuditEntry(`changed ${toStr(row.displayName, "a staff member")}'s role from ${roleName(currentRoleId) || "none"} to ${roleName(nextRoleId)}`, {
+        uid: toStr(user?.uid),
+        name: toStr(user?.displayName || user?.email, "Someone"),
+      }),
+    ]).then((next) => {
+      if (next) setRoleAuditLog(next);
+    });
     setSaveLabel("Saved");
     const previousRole = staffRoleOptions.find((role) => normalizeRoleKey(role.id || role.name) === currentRoleId);
     void addUserNotification(uid, {
@@ -3404,6 +3405,22 @@ export default function CompanySettingsPage() {
     bonusMinimumQuote: Number.parseFloat(bonusMinimumQuote.replace(/[^\d.]/g, "")) > 0 ? Number.parseFloat(bonusMinimumQuote.replace(/[^\d.]/g, "")) : null,
   };
 
+  // Backup & Output › Full data export (lib/company-export.ts): as it goes, and what it saved (or that it failed).
+  const [companyExportProgress, setCompanyExportProgress] = useState<CompanyExportProgress | null>(null);
+  const [companyExportResult, setCompanyExportResult] = useState<{ ok: boolean; counts?: Record<string, number> } | null>(null);
+  const runCompanyExport = async () => {
+    if (!activeCompanyId || companyExportProgress) return;
+    setCompanyExportResult(null);
+    setCompanyExportProgress({ step: "Starting", done: 0, total: 0 });
+    try {
+      const counts = await downloadCompanyExport(activeCompanyId, toStr(form.name), setCompanyExportProgress);
+      setCompanyExportResult({ ok: true, counts });
+    } catch {
+      setCompanyExportResult({ ok: false });
+    }
+    setCompanyExportProgress(null);
+  };
+
   const downloadBackupSnapshot = () => {
     const snapshot = {
       companyId: activeCompanyId,
@@ -3716,6 +3733,7 @@ export default function CompanySettingsPage() {
       projectArchiveAfter,
       calendarShowToClientDefault,
       calendarShowNonWorkdays,
+      calendarHolidayRegion,
       calendarCategories: calendarCategories
         .map((row) => ({
           id: toStr(row.id) || newCalendarId("cat"),
@@ -3912,6 +3930,18 @@ export default function CompanySettingsPage() {
       setSaveLabel(`Save failed (${result.error})`);
     }
     if (ok) {
+        // Roles changed since they were last saved: noted in the audit log, by whoever saved them.
+        const rolesBefore = savedRolesRef.current;
+        savedRolesRef.current = roles;
+        if (rolesBefore) {
+          const by = { uid: toStr(user?.uid), name: toStr(user?.displayName || user?.email, "Someone") };
+          const entries = describeRoleChanges(rolesBefore, roles, readablePermission).map((text) => newRoleAuditEntry(text, by));
+          if (entries.length) {
+            void appendRoleAudit(activeCompanyId, entries).then((next) => {
+              if (next) setRoleAuditLog(next);
+            });
+          }
+        }
         // This save includes `roles` (permission definitions) — anyone whose effective
         // permissions come from a role affected by this change needs a fresh lookup, not a
         // stale cached one from before the save.
@@ -4353,6 +4383,7 @@ export default function CompanySettingsPage() {
     projectArchiveAfter,
     calendarShowToClientDefault,
     calendarShowNonWorkdays,
+    calendarHolidayRegion,
     projectTagUsage,
     boardThicknesses,
     boardFinishes,
@@ -6167,6 +6198,42 @@ export default function CompanySettingsPage() {
                       </button>
                     </div>
                   </Panel>
+                  {/* Who changed roles and permissions, and when (lib/role-audit.ts) — owners and admins. */}
+                  {isOwnerOrAdmin(currentMemberRole) ? (
+                    <Panel title="Audit log" icon={History} description="Every change to roles and permissions — who made it and when. Newest first.">
+                      {roleAuditLog.length === 0 ? (
+                        <p className="text-[12.5px] font-medium" style={{ color: "var(--text-muted)" }}>
+                          No changes yet. Changing someone&apos;s role, or what a role can do, is noted here.
+                        </p>
+                      ) : (
+                        <div>
+                          {roleAuditLog.slice(0, roleAuditShown).map((entry) => (
+                            <div key={entry.id} className="flex items-start gap-3 border-b border-[var(--glass-border)] py-2.5 last:border-b-0">
+                              <span className="mt-[5px] h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: "var(--brand)" }} />
+                              <div className="min-w-0 flex-1">
+                                <p className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
+                                  <span className="font-semibold">{entry.byName}</span> {entry.text}
+                                </p>
+                                <p className="mt-0.5 text-[11.5px] font-medium" style={{ color: "var(--text-muted)" }}>
+                                  {activeDateTime(entry.atIso)}
+                                </p>
+                              </div>
+                            </div>
+                          ))}
+                          {roleAuditLog.length > roleAuditShown ? (
+                            <button
+                              type="button"
+                              onClick={() => setRoleAuditShown((count) => count + 30)}
+                              className="mt-2 inline-flex h-8 items-center rounded-full px-3 text-[12px] font-semibold transition hover:bg-[color-mix(in_srgb,var(--text-main)_6%,transparent)]"
+                              style={{ color: "var(--brand-strong)" }}
+                            >
+                              Show more ({roleAuditLog.length - roleAuditShown})
+                            </button>
+                          ) : null}
+                        </div>
+                      )}
+                    </Panel>
+                  ) : null}
                   {shouldRenderRoleModal ? (
                     <ModalPortal>
                     <div className="fixed inset-0 z-[1600] flex items-center justify-center px-4 py-4">
@@ -6245,9 +6312,33 @@ export default function CompanySettingsPage() {
                               </>
                             )}
                           </button>
-                          <button type="button" onClick={() => setActiveRoleModalIndex(null)} className={primaryButtonClass} style={primaryButtonStyle}>
-                            Done
-                          </button>
+                          <div className="flex items-center gap-2">
+                            {/* See the app as this role would (lib/view-as-role.ts) — an owner's or admin's preview, not for the
+                                owner and admin roles themselves (they see everything). */}
+                            {isOwnerOrAdmin(currentMemberRole) && activeRoleModal && !isOwnerOrAdmin(normalizeRoleKey(activeRoleModal.id || activeRoleModal.name)) ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setViewAsRole({
+                                    companyId: activeCompanyId,
+                                    roleId: normalizeRoleKey(activeRoleModal.id || activeRoleModal.name),
+                                    roleName: toStr(activeRoleModal.name, "this role"),
+                                    roleColor: toStr(activeRoleModal.color, "#7D99B3"),
+                                    permissionKeys: activeRoleModal.permissions,
+                                  });
+                                  setActiveRoleModalIndex(null);
+                                  router.push("/dashboard");
+                                }}
+                                className={smallButtonClass}
+                                title="See the app as someone with this role would — until you press Exit"
+                              >
+                                <Eye size={14} /> View as this role
+                              </button>
+                            ) : null}
+                            <button type="button" onClick={() => setActiveRoleModalIndex(null)} className={primaryButtonClass} style={primaryButtonStyle}>
+                              Done
+                            </button>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -7075,6 +7166,54 @@ export default function CompanySettingsPage() {
                           />
                         </FieldRow>
                       </div>
+                    </Panel>
+                    <Panel
+                      title="Public holidays"
+                      icon={Globe2}
+                      description="New Zealand's public holidays show on the calendar with their name, crossed out like a non-workday — worked out for every year automatically. Pick your region to add its anniversary day."
+                      allowOverflow
+                    >
+                      <FieldRow label="Region" hint="Not listed? Pick the region whose anniversary day your area takes.">
+                        <GlassDropdown
+                          value={calendarHolidayRegion}
+                          options={NZ_HOLIDAY_REGION_OPTIONS}
+                          onChange={(next) => setCalendarHolidayRegion(normalizeNzHolidayRegion(next))}
+                          ariaLabel="Public holidays region"
+                          disabled={!canEditCompanySettings}
+                          triggerClassName={`${fieldInputClass} max-w-[260px] justify-between`}
+                        />
+                      </FieldRow>
+                      {/* The next few, for the region picked — to see what it'll show. */}
+                      {(() => {
+                        const today = new Date();
+                        today.setHours(0, 0, 0, 0);
+                        const upcoming = [
+                          ...nzPublicHolidays(today.getFullYear(), calendarHolidayRegion),
+                          ...nzPublicHolidays(today.getFullYear() + 1, calendarHolidayRegion),
+                        ]
+                          .filter((h) => h.date.getTime() >= today.getTime())
+                          .slice(0, 5);
+                        if (!upcoming.length) return null;
+                        return (
+                          <div className="mt-3 border-t border-[var(--glass-border)] pt-3">
+                            <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
+                              Coming up
+                            </p>
+                            {upcoming.map((h) => (
+                              <div
+                                key={`${h.date.getTime()}_${h.name}`}
+                                className="flex items-center justify-between gap-3 py-1 text-[13px] font-medium"
+                                style={{ color: "var(--text-main)" }}
+                              >
+                                <span className="min-w-0 truncate">{h.name}</span>
+                                <span className="shrink-0" style={{ color: "var(--text-muted)" }}>
+                                  {new Intl.DateTimeFormat(undefined, { weekday: "short" }).format(h.date)} {activeDate(h.date)}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })()}
                     </Panel>
                   </div>
                   <Panel
@@ -9038,6 +9177,18 @@ export default function CompanySettingsPage() {
                                         placeholder="Drawer name"
                                         className={`${gridCellInputClass} min-w-0 flex-1 font-semibold`}
                                       />
+                                      {/* Its supplier's item number (optional) — a copy button beside it on a project's order. */}
+                                      <input
+                                        value={String(drawer.itemNumber ?? "")}
+                                        onChange={(e) =>
+                                          updateHardwareJsonList(idx, "drawersJson", (items) =>
+                                            items.map((v, i) => (i === drawerIdx ? { ...v, itemNumber: e.target.value } : v)),
+                                          )
+                                        }
+                                        placeholder="Item number"
+                                        aria-label="Item number"
+                                        className={`${gridCellInputClass} w-[130px] shrink-0 max-sm:w-[96px]`}
+                                      />
                                       <button
                                         type="button"
                                         onClick={() =>
@@ -9384,6 +9535,7 @@ export default function CompanySettingsPage() {
                                   >
                                     <X size={15} />
                                   </button>
+                                  <div className="min-w-0 flex-1">
                                   <input
                                     value={String(hinge.name ?? "")}
                                     onChange={(e) =>
@@ -9394,6 +9546,20 @@ export default function CompanySettingsPage() {
                                     placeholder="Hinge name"
                                     className={gridCellInputClass}
                                   />
+                                  {/* Its supplier's item number (optional) — a copy button beside it on a project's order, to find
+                                      it in their cart. */}
+                                  <input
+                                    value={String(hinge.itemNumber ?? "")}
+                                    onChange={(e) =>
+                                      updateHardwareJsonList(idx, "hingesJson", (items) =>
+                                        items.map((v, i) => (i === hingeIdx ? { ...v, itemNumber: e.target.value } : v)),
+                                      )
+                                    }
+                                    placeholder="Item number"
+                                    aria-label="Item number"
+                                    className={`${gridCellInputClass} h-7 text-[12px]`}
+                                  />
+                                  </div>
                                 </div>
                               ))}
                             </div>
@@ -9470,6 +9636,7 @@ export default function CompanySettingsPage() {
                                   >
                                     <X size={15} />
                                   </button>
+                                  <div className="min-w-0 flex-1">
                                   <input
                                     value={String(other.name ?? "")}
                                     onChange={(e) =>
@@ -9480,6 +9647,20 @@ export default function CompanySettingsPage() {
                                     placeholder="Other name"
                                     className={gridCellInputClass}
                                   />
+                                  {/* Its supplier's item number (optional) — a copy button beside it on a project's order, to find
+                                      it in their cart. */}
+                                  <input
+                                    value={String(other.itemNumber ?? "")}
+                                    onChange={(e) =>
+                                      updateHardwareJsonList(idx, "otherJson", (items) =>
+                                        items.map((v, i) => (i === otherIdx ? { ...v, itemNumber: e.target.value } : v)),
+                                      )
+                                    }
+                                    placeholder="Item number"
+                                    aria-label="Item number"
+                                    className={`${gridCellInputClass} h-7 text-[12px]`}
+                                  />
+                                  </div>
                                 </div>
                               ))}
                             </div>
@@ -9557,6 +9738,67 @@ export default function CompanySettingsPage() {
                       </FieldRow>
                     </div>
                   </Panel>
+                  {/* Everything, in one file to keep — its owner's or an admin's (lib/company-export.ts). */}
+                  {isOwnerOrAdmin(currentMemberRole) ? (
+                    <Panel
+                      title="Full data export"
+                      icon={DatabaseBackup}
+                      description="Everything your company has in CutSmart, in one file to keep somewhere safe: settings, staff, contacts, leads, calendar events and every project with its quotes, specifications, cutlists and checklists. Photos and files are listed by their links."
+                      headerRight={
+                        <button
+                          type="button"
+                          onClick={() => void runCompanyExport()}
+                          disabled={Boolean(companyExportProgress)}
+                          className="glass-shine inline-flex h-9 items-center gap-1.5 rounded-full border px-4 text-[12.5px] font-semibold text-white transition hover:brightness-105 disabled:opacity-70"
+                          style={glassShineStyle("var(--brand)")}
+                        >
+                          {companyExportProgress ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
+                          {companyExportProgress ? "Exporting…" : "Export everything"}
+                        </button>
+                      }
+                    >
+                      {companyExportProgress ? (
+                        <div>
+                          <p className="text-[12.5px] font-medium" style={{ color: "var(--text-main)" }}>
+                            {companyExportProgress.total
+                              ? `${companyExportProgress.step} — ${companyExportProgress.done} of ${companyExportProgress.total}`
+                              : `Reading ${companyExportProgress.step}…`}
+                          </p>
+                          <div className="mt-2 h-1.5 overflow-hidden rounded-full" style={{ backgroundColor: "color-mix(in srgb, var(--text-main) 8%, transparent)" }}>
+                            <div
+                              className="h-full rounded-full transition-[width] duration-300"
+                              style={{
+                                width: companyExportProgress.total ? `${Math.round((companyExportProgress.done / companyExportProgress.total) * 100)}%` : "8%",
+                                backgroundImage: "var(--brand-gradient)",
+                              }}
+                            />
+                          </div>
+                        </div>
+                      ) : companyExportResult?.ok && companyExportResult.counts ? (
+                        <p className="text-[12.5px] font-medium" style={{ color: "var(--text-main)" }}>
+                          Saved —{" "}
+                          {[
+                            ["jobs", "projects"],
+                            ["clients", "contacts"],
+                            ["leads", "leads"],
+                            ["calendarEvents", "calendar events"],
+                            ["memberships", "staff"],
+                          ]
+                            .map(([key, label]) => `${companyExportResult.counts?.[key] ?? 0} ${label}`)
+                            .join(", ")}
+                          .
+                        </p>
+                      ) : companyExportResult && !companyExportResult.ok ? (
+                        <p className="text-[12.5px] font-medium" style={{ color: "var(--danger-strong)" }}>
+                          Couldn&apos;t export — check your connection and try again.
+                        </p>
+                      ) : (
+                        <p className="text-[12.5px] font-medium" style={{ color: "var(--text-muted)" }}>
+                          A JSON file — it can take a minute for a company with lots of projects.
+                        </p>
+                      )}
+                    </Panel>
+                  ) : null}
                   <Panel
                     title="Backup snapshot"
                     icon={DatabaseBackup}
@@ -9679,7 +9921,7 @@ export default function CompanySettingsPage() {
                   </p>
                 </div>
                 {leadFieldsLoading ? (
-                  <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>Loading fields...</p>
+                  <SkeletonRows count={3} avatar={false} label="Loading fields" />
                 ) : mergedLeadFieldLayout.length === 0 ? (
                   <p className="rounded-[12px] border border-dashed px-3 py-4 text-[12.5px]" style={{ borderColor: "color-mix(in srgb, var(--text-main) 16%, transparent)", color: "var(--text-muted)" }}>
                     No lead fields yet. Submit at least one Zapier lead and its fields will appear here.

@@ -15,18 +15,19 @@ import {
   columnAutomationStayMs,
   columnMoveSetOffByMove,
   columnMoveTarget,
+  COLUMN_AUTOMATION_BACKFILLS_FIELD,
   COLUMN_AUTOMATION_NOTIFICATION_TYPE,
   COLUMN_MOVE_CHAIN_LIMIT,
   hasColumnAutomationRecipients,
   HAS_WAITING_COLUMN_AUTOMATIONS_FIELD,
   isInAutomationColumn,
+  itemStayStartedAtIso,
   normalizeColumnAutomations,
   normalizeWaitingColumnAutomations,
   readyWaitingColumnAutomations,
   SCHEDULED_COLUMN_MOVE_DUE_FIELD,
   SCHEDULED_COLUMN_MOVE_FIELD,
   scheduledColumnMoveFor,
-  stayStartedAtIso,
   WAITING_COLUMN_AUTOMATIONS_FIELD,
   waitingAfterMove,
   type AutomationItemFacts,
@@ -49,7 +50,8 @@ import { addNotificationAndPush, isCompanyMemberUid } from "@/lib/push-server";
 //   when that stay began), so a later stay in the same column is told again;
 // - a move on a timer (a project's started by the app as it's moved — lib/firestore-data.ts): carried out by the same
 //   job once it's due, if the project or lead is still in the column it was started from — told, and moved on again,
-//   as any move;
+//   as any move; one counted from when each moved in (moveCountFrom "movedIn"), new or changed: its column gone through
+//   first (backfillCountFromMoveIn), everything there given its timer from its real move-in;
 // - a lead moved on to one of the Dashboard's columns: converted to a project there (lib/lead-convert-server.ts) — the
 //   project's own column automations then, as any project new into a column;
 // - assign and tag automations: done as something enters their column, before it's told (so "the person it's
@@ -621,11 +623,7 @@ export async function runColumnAutomationStays(options: { siteOrigin: string; no
         if (!isLeads && (data.isSmallJob === true || (automation.subStage && !same(data.dashboardSubStageId, automation.subStage)))) continue;
         // When this stay began: a project's from its status history, a lead's from when its status last changed. None
         // known — from when the automation was set (it can't be told how long it's really been).
-        const started =
-          (isLeads
-            ? str(data.statusChangedAtIso) || str(data.createdAtIso)
-            : stayStartedAtIso(automation, Array.isArray(data.statusHistory) ? (data.statusHistory as Array<Record<string, unknown>>) : [])) ||
-          automation.updatedAtIso;
+        const started = itemStayStartedAtIso(automation, data) || automation.updatedAtIso;
         const startedMs = Date.parse(started);
         if (!Number.isFinite(startedMs) || now - startedMs < columnAutomationStayMs(automation)) continue;
         const sentMap = (data.columnAutomationsSent ?? {}) as Record<string, unknown>;
@@ -671,7 +669,43 @@ export async function runColumnAutomationStays(options: { siteOrigin: string; no
   return result;
 }
 
-export type ScheduledColumnMovesResult = { companies: number; moved: number; rechecked: number };
+export type ScheduledColumnMovesResult = { companies: number; moved: number; rechecked: number; timersSet: number };
+
+// A timed move counted from when each moved in, new or changed (its time, column, conditions …): everything in its column
+// now — each project (on the Dashboard: not archived, deleted or a small job) or lead (not archived) its conditions hold
+// for — given its timer from when it really moved in (its stay's start; none known: from when the automation was set),
+// replacing one it had from this automation (a changed time applies to them all). What's already past its time is due
+// at once (the run carries on to the due moves straight after). How many timers it set.
+async function backfillCountFromMoveIn(ctx: Ctx, companyRef: DocumentReference, automation: ColumnAutomation, nowMs: number): Promise<number> {
+  const isLeads = automation.board === "leads";
+  const items = await companyRef
+    .collection(isLeads ? "leads" : "jobs")
+    .where("status", "==", automation.status)
+    .get()
+    .catch(() => null);
+  let set = 0;
+  for (const itemSnap of items?.docs ?? []) {
+    const data = (itemSnap.data() ?? {}) as Record<string, unknown>;
+    if (data.isDeleted === true || data.isArchived === true || data.isPurged === true) continue;
+    if (!isLeads && (data.isSmallJob === true || (automation.subStage && !same(data.dashboardSubStageId, automation.subStage)))) continue;
+    // A timer from something else (another column's move, still waiting to be cleared): left be.
+    const existing = (data[SCHEDULED_COLUMN_MOVE_FIELD] ?? null) as Record<string, unknown> | null;
+    if (existing && str(existing.automationId) && str(existing.automationId) !== automation.id) continue;
+    const itemName = isLeads ? await leadNameForNotification(ctx.companyId, data, "A lead") : str(data.name) || "A project";
+    if (!automationConditionsMet(automation, automationItemFacts(data, itemName), null)) continue;
+    const startedMs = Date.parse(itemStayStartedAtIso(automation, data) || automation.updatedAtIso);
+    if (!Number.isFinite(startedMs)) continue;
+    const here: BoardSpot = { status: str(data.status), subStage: isLeads ? "" : str(data.dashboardSubStageId) };
+    const scheduled = scheduledColumnMoveFor(automation, here, nowMs, startedMs);
+    if (str(data[SCHEDULED_COLUMN_MOVE_DUE_FIELD]) === scheduled.dueAtIso) continue;
+    const ok = await itemSnap.ref
+      .update({ [SCHEDULED_COLUMN_MOVE_FIELD]: scheduled, [SCHEDULED_COLUMN_MOVE_DUE_FIELD]: scheduled.dueAtIso })
+      .then(() => true)
+      .catch(() => false);
+    if (ok) set += 1;
+  }
+  return set;
+}
 
 // Moves on a timer that are due — every call of the scheduled job (a minute's the smallest timer), for the companies with
 // any timed move: each project or lead whose due time has come, moved if it's still in the column its timer started in
@@ -679,10 +713,15 @@ export type ScheduledColumnMovesResult = { companies: number; moved: number; rec
 // every project or lead with automations waiting on theirs, looked at again (a change made somewhere that doesn't look
 // itself: recheckWaitingColumnAutomations).
 export async function runScheduledColumnMoves(options: { siteOrigin: string; now?: number }): Promise<ScheduledColumnMovesResult> {
-  const result: ScheduledColumnMovesResult = { companies: 0, moved: 0, rechecked: 0 };
+  const result: ScheduledColumnMovesResult = { companies: 0, moved: 0, rechecked: 0, timersSet: 0 };
   if (!adminDb) return result;
-  const nowIso = new Date(options.now ?? Date.now()).toISOString();
-  const companies = await adminDb.collection("companies").select("columnAutomations", "projectStatuses", "projectArchiveAfter", "staffRoleIdsByUid").get();
+  const db = adminDb;
+  const nowMs = options.now ?? Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  const companies = await db
+    .collection("companies")
+    .select("columnAutomations", "projectStatuses", "projectArchiveAfter", "staffRoleIdsByUid", COLUMN_AUTOMATION_BACKFILLS_FIELD)
+    .get();
   for (const companySnap of companies.docs) {
     const companyData = (companySnap.data() ?? {}) as Record<string, unknown>;
     const ctx = await contextFor(companySnap.id, options.siteOrigin, companyData);
@@ -690,6 +729,23 @@ export async function runScheduledColumnMoves(options: { siteOrigin: string; now
     const hasConditions = Boolean(ctx?.automations.some((automation) => automation.conditions.length > 0));
     if (!ctx || (!hasTimed && !hasConditions)) continue;
     result.companies += 1;
+    // Timed moves counted from when each moved in, new or changed since their column was last gone through: gone
+    // through now — each claimed first (its updatedAtIso noted on the company), so two runs at once can't both.
+    const backfilled = (companyData[COLUMN_AUTOMATION_BACKFILLS_FIELD] ?? {}) as Record<string, unknown>;
+    for (const automation of ctx.automations) {
+      if (automation.action !== "move" || !automation.moveAfter || automation.moveCountFrom !== "movedIn") continue;
+      if (str(backfilled[automation.id]) === automation.updatedAtIso) continue;
+      const claimed = await db
+        .runTransaction(async (tx) => {
+          const fresh = ((await tx.get(companySnap.ref)).data() ?? {}) as Record<string, unknown>;
+          const noted = (fresh[COLUMN_AUTOMATION_BACKFILLS_FIELD] ?? {}) as Record<string, unknown>;
+          if (str(noted[automation.id]) === automation.updatedAtIso) return false;
+          tx.update(companySnap.ref, new FieldPath(COLUMN_AUTOMATION_BACKFILLS_FIELD, automation.id), automation.updatedAtIso);
+          return true;
+        })
+        .catch(() => false);
+      if (claimed) result.timersSet += await backfillCountFromMoveIn(ctx, companySnap.ref, automation, nowMs);
+    }
     for (const board of hasConditions ? (["projects", "leads"] as const) : []) {
       const waiting = await companySnap.ref
         .collection(board === "leads" ? "leads" : "jobs")

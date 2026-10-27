@@ -8,6 +8,7 @@ import { modalCloseButtonClass } from "@/components/settings-ui";
 import { useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { activeDate } from "@/lib/company-formats";
 import { ProjectEventsTimeline } from "@/components/project-timeline";
+import { SkeletonRows } from "@/components/skeleton";
 import {
   calendarCategoryLevel,
   normalizeCalendarCategories,
@@ -182,7 +183,7 @@ export function ProjectScheduleModal({
           {loadError ? (
             <p className="text-[12.5px] font-medium" style={{ color: "var(--danger-strong)" }}>{loadError}</p>
           ) : !loaded ? (
-            <p className="py-8 text-center text-[13px]" style={{ color: "var(--text-main)" }}>Loading…</p>
+            <SkeletonRows count={4} label="Loading the schedule" />
           ) : visibleEvents.length === 0 ? (
             <div className="rounded-[14px] border border-dashed px-4 py-10 text-center" style={{ borderColor: "var(--glass-border)" }}>
               <p className="text-[14px] font-medium" style={{ color: "var(--text-main)" }}>Nothing scheduled for this project.</p>

@@ -34,6 +34,7 @@ import {
   type WaitingPublish,
 } from "@/components/whats-new-sheet";
 import { useKeepMenuInView } from "@/lib/use-keep-menu-in-view";
+import { SkeletonRows } from "@/components/skeleton";
 type ReportDeviceType = "desktop" | "tablet" | "mobile";
 const HEADER_HEIGHT = 56;
 const DESKTOP_TAB_BAR_HEIGHT = 48;
@@ -1260,7 +1261,7 @@ export default function ChangelogPage() {
                         </div>
                       </div>
                       {reportsLoading ? (
-                        <p className="text-[13px] font-semibold" style={{ color: "var(--text-muted)" }}>Loading reports...</p>
+                        <SkeletonRows count={4} avatar={false} label="Loading reports" />
                       ) : !visibleDevReports.length ? (
                         <p className="text-[13px] font-semibold" style={{ color: "var(--text-muted)" }}>No reports yet.</p>
                       ) : (

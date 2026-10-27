@@ -23,8 +23,20 @@ export type HardwareDrawerType = {
   backsWidthMinus: number | null;
   hardwareLengths: number[];
   spaceRequirement: number | null;
+  // Its supplier's item number (Company Settings › Hardware) — copied from the order, to find it in their cart. "" — none.
+  itemNumber: string;
 };
-export type HardwareTypeRow = { name: string; color: string; isDefault: boolean; drawers: HardwareDrawerType[]; hinges: string[]; other: string[] };
+export type HardwareTypeRow = {
+  name: string;
+  color: string;
+  isDefault: boolean;
+  drawers: HardwareDrawerType[];
+  hinges: string[];
+  other: string[];
+  // Each hinge's and other item's supplier item number, by its name (lower case) — those that have one.
+  hingeItemNumbers: Record<string, string>;
+  otherItemNumbers: Record<string, string>;
+};
 export type SheetSizeOption = { h: string; w: string; isDefault: boolean };
 
 export function normalizeMmOptions(raw: unknown): string[] {
@@ -106,6 +118,7 @@ export function normalizeDrawerTypes(raw: unknown): HardwareDrawerType[] {
           backsWidthMinus: null,
           hardwareLengths: [],
           spaceRequirement: null,
+          itemNumber: "",
         });
       }
       continue;
@@ -154,6 +167,7 @@ export function normalizeDrawerTypes(raw: unknown): HardwareDrawerType[] {
       backsWidthMinus: backsWidthMinus > 0 ? backsWidthMinus : null,
       hardwareLengths,
       spaceRequirement,
+      itemNumber: toStr(item.itemNumber),
     });
   }
   return out;
@@ -193,7 +207,31 @@ export function normalizeHardwareRows(raw: unknown): HardwareTypeRow[] {
         drawers: normalizeDrawerTypes(item.drawers),
         hinges,
         other,
+        hingeItemNumbers: itemNumbersByName(hingesRaw),
+        otherItemNumbers: itemNumbersByName(otherRaw),
       };
     })
     .filter((row) => row.name);
+}
+
+// Hinges' or other items' supplier item numbers, by name (lower case) — those saved with one.
+function itemNumbersByName(raw: unknown[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const row = entry as Record<string, unknown>;
+    const name = toStr(row.name ?? row.label).toLowerCase();
+    const itemNumber = toStr(row.itemNumber);
+    if (name && itemNumber) out[name] = itemNumber;
+  }
+  return out;
+}
+
+// A hardware brand's item's supplier item number, by its kind and name ("" — none, or not found).
+export function hardwareItemNumber(row: HardwareTypeRow | null | undefined, kind: "drawer" | "hinge" | "other", name: string): string {
+  if (!row) return "";
+  const key = String(name || "").trim().toLowerCase();
+  if (!key) return "";
+  if (kind === "drawer") return row.drawers.find((drawer) => drawer.name.trim().toLowerCase() === key)?.itemNumber ?? "";
+  return (kind === "hinge" ? row.hingeItemNumbers : row.otherItemNumbers)[key] ?? "";
 }

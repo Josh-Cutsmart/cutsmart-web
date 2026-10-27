@@ -1,0 +1,127 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" width="640" height="360" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title>A project's Schedule pop-up: its calendar events along a line, as far apart as they are in time, with today among them — the next one opens out with its time and category</title>
+  <style>
+    .p1 { transform-box: fill-box; transform-origin: center; animation: p1 8s cubic-bezier(.34, 1.56, .64, 1) infinite both; }
+    .p2 { transform-box: fill-box; transform-origin: center; animation: p2 8s cubic-bezier(.34, 1.56, .64, 1) infinite both; }
+    .p3 { transform-box: fill-box; transform-origin: center; animation: p3 8s cubic-bezier(.34, 1.56, .64, 1) infinite both; }
+    .p4 { transform-box: fill-box; transform-origin: center; animation: p4 8s cubic-bezier(.34, 1.56, .64, 1) infinite both; }
+    .p5 { transform-box: fill-box; transform-origin: center; animation: p5 8s cubic-bezier(.34, 1.56, .64, 1) infinite both; }
+    .today { transform-box: fill-box; transform-origin: center; animation: today 8s cubic-bezier(.34, 1.56, .64, 1) infinite both; }
+    @keyframes p1 { 0%, 6% { opacity: 0; transform: scale(.6); } 10%, 93% { opacity: 1; transform: scale(1); } 98%, 100% { opacity: 0; } }
+    @keyframes p2 { 0%, 9% { opacity: 0; transform: scale(.6); } 13%, 93% { opacity: 1; transform: scale(1); } 98%, 100% { opacity: 0; } }
+    @keyframes p3 { 0%, 12% { opacity: 0; transform: scale(.6); } 16%, 93% { opacity: 1; transform: scale(1); } 98%, 100% { opacity: 0; } }
+    @keyframes p4 { 0%, 15% { opacity: 0; transform: scale(.6); } 19%, 93% { opacity: 1; transform: scale(1); } 98%, 100% { opacity: 0; } }
+    @keyframes p5 { 0%, 18% { opacity: 0; transform: scale(.6); } 22%, 93% { opacity: 1; transform: scale(1); } 98%, 100% { opacity: 0; } }
+    @keyframes today { 0%, 3% { opacity: 0; transform: scale(.6); } 7%, 93% { opacity: 1; transform: scale(1); } 98%, 100% { opacity: 0; } }
+    .open { animation: open 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes open { 0%, 40% { opacity: 0; transform: translateY(-6px); } 46%, 82% { opacity: 1; transform: translateY(0); } 87%, 100% { opacity: 0; transform: translateY(-6px); } }
+    .small { animation: small 8s ease-out infinite both; }
+    @keyframes small { 0%, 18% { opacity: 0; } 22%, 40% { opacity: 1; } 44%, 84% { opacity: 0; } 88%, 93% { opacity: 1; } 98%, 100% { opacity: 0; } }
+    .cursor { animation: cursor 8s ease-in-out infinite both; }
+    @keyframes cursor { 0%, 26% { transform: translate(560px, 330px); opacity: 0; } 30% { opacity: 1; } 40%, 82% { transform: translate(466px, 128px); opacity: 1; } 88%, 100% { transform: translate(560px, 330px); opacity: 0; } }
+  </style>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#EEF3FB"/>
+      <stop offset="1" stop-color="#E1E9F7"/>
+    </linearGradient>
+    <filter id="pop" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#0F172A" flood-opacity=".16"/>
+    </filter>
+    <filter id="soft" x="-20%" y="-30%" width="140%" height="180%">
+      <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#0F172A" flood-opacity=".10"/>
+    </filter>
+  </defs>
+  <rect width="640" height="360" fill="url(#bg)"/>
+
+  <!-- the Schedule pop-up -->
+  <rect x="20" y="22" width="600" height="316" rx="22" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+  <rect x="38" y="38" width="22" height="22" rx="6" fill="#DBEAFE"/>
+  <rect x="43" y="43" width="12" height="12" rx="2" fill="none" stroke="#2563EB" stroke-width="1.6"/>
+  <path d="M43 47 H55" stroke="#2563EB" stroke-width="1.6"/>
+  <text x="70" y="54" font-size="13" font-weight="700" letter-spacing="1" fill="#0F172A">SCHEDULE</text>
+  <text x="168" y="54" font-size="12" font-weight="500" fill="#64748B">Patel Kitchen &amp; Scullery</text>
+  <path d="M20 72 H620" stroke="#E2E8F0"/>
+  <text x="40" y="96" font-size="10" font-weight="700" letter-spacing=".8" fill="#0F172A">TIMELINE ⌄</text>
+
+  <!-- the line: solid up to today, dashed after -->
+  <path d="M52 196 H300" stroke="#CBD5E1" stroke-width="3" stroke-linecap="round"/>
+  <path d="M300 196 H596" stroke="#CBD5E1" stroke-width="3" stroke-dasharray="7 6"/>
+
+  <!-- past: site measure -->
+  <g class="p1">
+    <path d="M70 196 V170" stroke="#EA580C" stroke-opacity=".5" stroke-width="2"/>
+    <circle cx="70" cy="196" r="6.5" fill="#FFFFFF" stroke="#EA580C" stroke-width="2.4"/>
+    <rect x="34" y="122" width="112" height="48" rx="11" fill="#FFF7ED" stroke="#E2E8F0" filter="url(#soft)"/>
+    <rect x="34" y="122" width="112" height="3" rx="1.5" fill="#EA580C"/>
+    <text x="44" y="142" font-size="10.5" font-weight="600" fill="#0F172A">Site measure</text>
+    <text x="44" y="158" font-size="9.5" font-weight="500" fill="#334155">Fri 2 Oct</text>
+  </g>
+  <!-- past: benchtop template -->
+  <g class="p2">
+    <path d="M196 196 V222" stroke="#C2410C" stroke-opacity=".5" stroke-width="2"/>
+    <circle cx="196" cy="196" r="6.5" fill="#FFFFFF" stroke="#C2410C" stroke-width="2.4"/>
+    <rect x="140" y="222" width="112" height="48" rx="11" fill="#FFF7ED" stroke="#E2E8F0" filter="url(#soft)"/>
+    <rect x="140" y="222" width="112" height="3" rx="1.5" fill="#C2410C"/>
+    <text x="150" y="242" font-size="10.5" font-weight="600" fill="#0F172A">Benchtop template</text>
+    <text x="150" y="258" font-size="9.5" font-weight="500" fill="#334155">Thu 15 Oct</text>
+  </g>
+
+  <!-- today -->
+  <g class="today">
+    <rect x="276" y="184" width="52" height="24" rx="12" fill="#2563EB"/>
+    <text x="302" y="200" text-anchor="middle" font-size="10.5" font-weight="600" fill="#FFFFFF">Today</text>
+  </g>
+
+  <!-- next: install -->
+  <g class="p3">
+    <path d="M378 196 V170" stroke="#EAB308" stroke-opacity=".6" stroke-width="2"/>
+    <circle cx="378" cy="196" r="7" fill="#EAB308" stroke="#FFFFFF" stroke-width="2"/>
+    <circle cx="378" cy="196" r="11" fill="none" stroke="#EAB308" stroke-opacity=".3" stroke-width="3"/>
+  </g>
+  <g class="small">
+    <rect x="322" y="122" width="112" height="48" rx="11" fill="#FEFCE8" stroke="#EAB308" filter="url(#soft)"/>
+    <rect x="322" y="122" width="112" height="3" rx="1.5" fill="#EAB308"/>
+    <text x="332" y="142" font-size="10.5" font-weight="600" fill="#0F172A">Install</text>
+    <text x="332" y="158" font-size="9.5" font-weight="500" fill="#334155">Wed 28 Oct</text>
+  </g>
+  <g class="open">
+    <rect x="300" y="86" width="196" height="84" rx="12" fill="#FEFCE8" stroke="#EAB308" filter="url(#pop)"/>
+    <rect x="300" y="86" width="196" height="3" rx="1.5" fill="#EAB308"/>
+    <text x="312" y="106" font-size="11.5" font-weight="700" fill="#0F172A">Install — Patel Kitchen</text>
+    <rect x="452" y="96" width="34" height="16" rx="8" fill="#EAB308"/>
+    <text x="469" y="107.5" text-anchor="middle" font-size="9" font-weight="600" fill="#FFFFFF">Next</text>
+    <text x="312" y="124" font-size="10" font-weight="500" fill="#334155">Wed 28 Oct · All day</text>
+    <rect x="312" y="134" width="64" height="18" rx="9" fill="#FEF9C3"/>
+    <circle cx="322" cy="143" r="3.5" fill="#EAB308"/>
+    <text x="330" y="147" font-size="9.5" font-weight="500" fill="#0F172A">Installs</text>
+    <text x="312" y="164" font-size="9" font-weight="500" fill="#94A3B8">Click to open it in the Calendar</text>
+  </g>
+
+  <!-- to come: sign-off, clean -->
+  <g class="p4">
+    <path d="M470 196 V222" stroke="#7D99B3" stroke-opacity=".6" stroke-width="2"/>
+    <circle cx="470" cy="196" r="7" fill="#7D99B3" stroke="#FFFFFF" stroke-width="2"/>
+    <rect x="414" y="222" width="112" height="48" rx="11" fill="#F1F5F9" stroke="#E2E8F0" filter="url(#soft)"/>
+    <rect x="414" y="222" width="112" height="3" rx="1.5" fill="#7D99B3"/>
+    <text x="424" y="242" font-size="10.5" font-weight="600" fill="#0F172A">Sign-off visit</text>
+    <text x="424" y="258" font-size="9.5" font-weight="500" fill="#334155">Tue 3 Nov</text>
+  </g>
+  <g class="p5">
+    <path d="M560 196 V170" stroke="#0D9488" stroke-opacity=".6" stroke-width="2"/>
+    <circle cx="560" cy="196" r="7" fill="#0D9488" stroke="#FFFFFF" stroke-width="2"/>
+    <rect x="496" y="122" width="112" height="48" rx="11" fill="#F0FDFA" stroke="#E2E8F0" filter="url(#soft)"/>
+    <rect x="496" y="122" width="112" height="3" rx="1.5" fill="#0D9488"/>
+    <text x="506" y="142" font-size="10.5" font-weight="600" fill="#0F172A">Remedials</text>
+    <text x="506" y="158" font-size="9.5" font-weight="500" fill="#334155">Mon 9 Nov</text>
+  </g>
+
+  <!-- the list of events under it -->
+  <path d="M40 292 H600" stroke="#E2E8F0"/>
+  <rect x="40" y="304" width="200" height="10" rx="5" fill="#E2E8F0"/>
+  <rect x="40" y="320" width="140" height="8" rx="4" fill="#F1F5F9"/>
+
+  <g class="cursor">
+    <path d="M0 0 l0 20 l5 -5 l4 9 l3.4 -1.5 l-4 -9 l7 0 z" fill="#0F172A" stroke="#FFFFFF" stroke-width="1.4" stroke-linejoin="round"/>
+  </g>
+</svg>

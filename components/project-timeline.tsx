@@ -21,6 +21,10 @@ import { glassShineStyle } from "@/lib/glass-shine";
 // next one coming up says so. It opens at today. They pop up in turn as it opens. Its "Timeline" heading puts it away
 // (it slides shut) and brings it back — kept as that person's choice for every project (on their account —
 // lib/calendar-data.ts — and on this device, so it opens as they left it straight away).
+//
+// Anything with a date can go along it (TimelineItem — a Calendar event is one): a contact's projects, quotes and leads
+// (components/contact-timeline.tsx) — there with no heading to put it away (`collapsible` off), each card's own line
+// under its date instead of its time (`detailOf`), and its own words for what a click does (`openTitle`).
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 // A day's length along the line, at least; and how close two dots can be (two of them — the next card on the same side
@@ -73,10 +77,13 @@ function timeText(ms: number) {
 }
 const weekday = (ms: number) => new Intl.DateTimeFormat(undefined, { weekday: "short" }).format(new Date(ms));
 const sameDay = (a: number, b: number) => new Date(a).toDateString() === new Date(b).toDateString();
+// What goes along the line: when it starts and ends (an all-day one's end is the start of the day after) — a Calendar
+// event is one.
+export type TimelineItem = { id: string; title: string; startMs: number; endMs: number; allDay: boolean };
 // An all-day event's last day (its end is the start of the day after); a timed one's end.
-const lastMsOf = (e: CalendarEvent) => (e.allDay ? e.endMs - DAY_MS : e.endMs - 1);
+const lastMsOf = (e: TimelineItem) => (e.allDay ? e.endMs - DAY_MS : e.endMs - 1);
 // When it is: its day (or days), and its time — or all day, and for how many.
-function whenOf(e: CalendarEvent): { date: string; time: string } {
+function whenOf(e: TimelineItem): { date: string; time: string } {
   const lastMs = lastMsOf(e);
   if (sameDay(e.startMs, lastMs)) {
     return { date: `${weekday(e.startMs)} ${activeDate(e.startMs)}`, time: e.allDay ? "All day" : `${timeText(e.startMs)} – ${timeText(e.endMs)}` };
@@ -89,15 +96,27 @@ function whenOf(e: CalendarEvent): { date: string; time: string } {
   return { date: range, time: `${timeText(e.startMs)} – ${timeText(e.endMs)}` };
 }
 
-export function ProjectEventsTimeline({
+export function ProjectEventsTimeline<T extends TimelineItem = CalendarEvent>({
   events,
   categoryOf,
   onOpenEvent,
+  collapsible = true,
+  detailOf,
+  openTitle = "Open in the Calendar",
+  untitled = "Untitled event",
 }: {
-  // Its events the person can see (the Calendar's rule).
-  events: CalendarEvent[];
-  categoryOf: (event: CalendarEvent) => { name: string; color: string };
+  // Its events the person can see (the Calendar's rule) — or anything else with dates.
+  events: T[];
+  categoryOf: (event: T) => { name: string; color: string };
   onOpenEvent: (eventId: string) => void;
+  // Its "Timeline" heading, to put it away and bring it back (a project's Schedule) — off: just the line.
+  collapsible?: boolean;
+  // An opened-out card's line under its date — its time, unless given.
+  detailOf?: (event: T) => string;
+  // What clicking a card does, as its tooltip says it.
+  openTitle?: string;
+  // A card with no title.
+  untitled?: string;
 }) {
   // What it slides in: how wide that is (the line at least as long), and its grab-and-drag.
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -117,9 +136,11 @@ export function ProjectEventsTimeline({
   // account has it.
   const { user } = useAuth();
   const uid = String(user?.uid || "");
-  const [collapsed, setCollapsed] = useState(() => readCollapsedHere(uid));
+  const [collapsedChoice, setCollapsed] = useState(() => readCollapsedHere(uid));
+  // (Not collapsible: always open.)
+  const collapsed = collapsible && collapsedChoice;
   useEffect(() => {
-    if (!uid) return;
+    if (!uid || !collapsible) return;
     let cancelled = false;
     void fetchUserScheduleTimelineCollapsed(uid).then((value) => {
       if (cancelled) return;
@@ -129,7 +150,7 @@ export function ProjectEventsTimeline({
     return () => {
       cancelled = true;
     };
-  }, [uid]);
+  }, [uid, collapsible]);
   const toggleCollapsed = () => {
     const next = !collapsed;
     setCollapsed(next);
@@ -190,7 +211,7 @@ export function ProjectEventsTimeline({
   const clampLeft = (x: number, w: number, min: number, max: number) => Math.min(Math.max(min, x - w / 2), Math.max(min, max - w));
   const rowEnds = new Map<string, number>();
   let lastSide: "over" | "under" = "under";
-  const placed: Array<{ event: CalendarEvent; x: number; left: number; side: "over" | "under"; row: number }> = [];
+  const placed: Array<{ event: T; x: number; left: number; side: "over" | "under"; row: number }> = [];
   sorted.forEach((event, index) => {
     const x = xs[index];
     const left = clampLeft(x, cardPx, 0, width);
@@ -235,6 +256,7 @@ export function ProjectEventsTimeline({
 
   return (
     <section className="mb-4">
+      {collapsible ? (
       <button
         type="button"
         onClick={toggleCollapsed}
@@ -246,6 +268,7 @@ export function ProjectEventsTimeline({
         Timeline
         <ChevronDown size={13} strokeWidth={2.6} style={{ transform: collapsed ? "rotate(-90deg)" : "none", transition: "transform 200ms ease" }} />
       </button>
+      ) : null}
       {/* Sliding shut and open. Out to the pop-up's edges, with room over and under it for the cards' shadows (taken back
           by its margins while it's open) — its edge cuts off what's outside it. */}
       <div
@@ -299,6 +322,7 @@ export function ProjectEventsTimeline({
                   {placed.map(({ event: e, x, left, side, row }, index) => {
                     const category = categoryOf(e);
                     const when = whenOf(e);
+                    const detail = detailOf ? detailOf(e) : when.time;
                     const past = e.endMs <= now;
                     const isNext = e.id === nextId;
                     const isOpen = open?.id === e.id;
@@ -346,8 +370,8 @@ export function ProjectEventsTimeline({
                           }}
                           onFocus={() => openCard(e.id)}
                           onBlur={() => setOpen((prev) => (prev?.id === e.id ? null : prev))}
-                          title="Open in the Calendar"
-                          aria-label={`${e.title || "Untitled event"} — ${when.date}, ${when.time} — ${category.name}`}
+                          title={openTitle}
+                          aria-label={`${e.title || untitled} — ${when.date}${detail ? `, ${detail}` : ""} — ${category.name}`}
                           className={`absolute flex flex-col overflow-hidden rounded-[12px] border text-left ${isOpen ? "z-[5]" : "z-[2]"}`}
                           style={{
                             left: cardLeft,
@@ -373,7 +397,7 @@ export function ProjectEventsTimeline({
                                 className={`min-w-0 text-[12px] font-semibold leading-snug ${isOpen ? "line-clamp-3" : "truncate"}`}
                                 style={{ color: "var(--text-main)" }}
                               >
-                                {e.title || "Untitled event"}
+                                {e.title || untitled}
                               </span>
                               {isNext && isOpen ? (
                                 <span
@@ -390,9 +414,11 @@ export function ProjectEventsTimeline({
                             {/* Opened out: its time, and its category. */}
                             {isOpen ? (
                               <span className="glass-panel-pop block" style={{ transformOrigin: "0% 0%" }}>
-                                <span className="mt-0.5 block truncate text-[11.5px] font-medium" style={{ color: "var(--text-main)" }}>
-                                  {when.time}
-                                </span>
+                                {detail ? (
+                                  <span className="mt-0.5 block truncate text-[11.5px] font-medium" style={{ color: "var(--text-main)" }}>
+                                    {detail}
+                                  </span>
+                                ) : null}
                                 <span
                                   className="mt-1 inline-flex max-w-full items-center gap-1.5 rounded-full px-2 py-[1px] text-[11px] font-medium"
                                   style={{ backgroundColor: `color-mix(in srgb, ${category.color} 18%, transparent)`, color: "var(--text-main)" }}

@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" width="640" height="360" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title>Ctrl+K drops the search down from the top of the app; typing "patel" finds a project, its client's contact card and a calendar event, grouped</title>
+  <style>
+    .drop { animation: drop 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes drop { 0%, 8% { transform: translateY(-260px); } 16%, 92% { transform: translateY(0); } 98%, 100% { transform: translateY(-260px); } }
+    .keys { transform-box: fill-box; transform-origin: center; animation: keys 8s ease-in-out infinite both; }
+    @keyframes keys { 0%, 3% { opacity: 0; transform: scale(.9); } 5%, 9% { opacity: 1; transform: scale(1); } 7% { transform: scale(.94); } 13%, 100% { opacity: 0; } }
+    .t1 { animation: t1 8s step-end infinite both; } .t2 { animation: t2 8s step-end infinite both; }
+    .t3 { animation: t3 8s step-end infinite both; } .t4 { animation: t4 8s step-end infinite both; }
+    .t5 { animation: t5 8s step-end infinite both; } .ph { animation: ph 8s step-end infinite both; }
+    @keyframes ph { 0% { opacity: 1; } 22% { opacity: 0; } 98% { opacity: 1; } }
+    @keyframes t1 { 0% { opacity: 0; } 22% { opacity: 1; } 25% { opacity: 0; } }
+    @keyframes t2 { 0% { opacity: 0; } 25% { opacity: 1; } 28% { opacity: 0; } }
+    @keyframes t3 { 0% { opacity: 0; } 28% { opacity: 1; } 31% { opacity: 0; } }
+    @keyframes t4 { 0% { opacity: 0; } 31% { opacity: 1; } 34% { opacity: 0; } }
+    @keyframes t5 { 0% { opacity: 0; } 34% { opacity: 1; } 96% { opacity: 1; } 98% { opacity: 0; } }
+    .g1 { animation: g1 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    .g2 { animation: g2 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    .g3 { animation: g3 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes g1 { 0%, 36% { opacity: 0; transform: translateY(8px); } 41%, 92% { opacity: 1; transform: translateY(0); } 96%, 100% { opacity: 0; } }
+    @keyframes g2 { 0%, 41% { opacity: 0; transform: translateY(8px); } 46%, 92% { opacity: 1; transform: translateY(0); } 96%, 100% { opacity: 0; } }
+    @keyframes g3 { 0%, 46% { opacity: 0; transform: translateY(8px); } 51%, 92% { opacity: 1; transform: translateY(0); } 96%, 100% { opacity: 0; } }
+    .hl { animation: hl 8s ease-in-out infinite both; }
+    @keyframes hl { 0%, 60% { opacity: 0; } 64%, 80% { opacity: 1; } 84%, 100% { opacity: 0; } }
+    .caret { animation: caret 1s step-end infinite; }
+    @keyframes caret { 0% { opacity: 1; } 50% { opacity: 0; } }
+  </style>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#EEF3FB"/>
+      <stop offset="1" stop-color="#E1E9F7"/>
+    </linearGradient>
+    <filter id="pop" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#0F172A" flood-opacity=".16"/>
+    </filter>
+    <clipPath id="screen"><rect width="640" height="360"/></clipPath>
+  </defs>
+  <rect width="640" height="360" fill="url(#bg)"/>
+
+  <!-- the app behind: sidebar and a board, faded -->
+  <g opacity=".55">
+    <rect x="0" y="0" width="120" height="360" fill="#F8FAFC"/>
+    <rect x="16" y="20" width="88" height="22" rx="11" fill="#2563EB"/>
+    <rect x="18" y="62" width="64" height="8" rx="4" fill="#CBD5E1"/>
+    <rect x="18" y="84" width="72" height="8" rx="4" fill="#CBD5E1"/>
+    <rect x="18" y="106" width="56" height="8" rx="4" fill="#CBD5E1"/>
+    <rect x="18" y="128" width="68" height="8" rx="4" fill="#CBD5E1"/>
+    <rect x="140" y="70" width="150" height="270" rx="16" fill="#FDE7C7"/>
+    <rect x="304" y="70" width="150" height="270" rx="16" fill="#EBD3F7"/>
+    <rect x="468" y="70" width="150" height="270" rx="16" fill="#D4E2FB"/>
+  </g>
+
+  <!-- Ctrl + K -->
+  <g class="keys">
+    <rect x="262" y="150" width="58" height="40" rx="10" fill="#FFFFFF" stroke="#CBD5E1" filter="url(#pop)"/>
+    <text x="291" y="175" text-anchor="middle" font-size="14" font-weight="700" fill="#0F172A">Ctrl</text>
+    <text x="330" y="176" text-anchor="middle" font-size="16" font-weight="700" fill="#64748B">+</text>
+    <rect x="340" y="150" width="40" height="40" rx="10" fill="#FFFFFF" stroke="#CBD5E1" filter="url(#pop)"/>
+    <text x="360" y="176" text-anchor="middle" font-size="16" font-weight="700" fill="#0F172A">K</text>
+  </g>
+
+  <!-- the search, dropping down from the top -->
+  <g clip-path="url(#screen)">
+    <g class="drop">
+      <path d="M140 0 H600 V286 Q600 300 586 300 H154 Q140 300 140 286 Z" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+      <rect x="160" y="16" width="420" height="36" rx="18" fill="#F1F5F9" stroke="#CBD5E1"/>
+      <circle cx="182" cy="33" r="6" fill="none" stroke="#475569" stroke-width="2"/>
+      <path d="M186.5 37.5 L191 42" stroke="#475569" stroke-width="2" stroke-linecap="round"/>
+      <text class="ph" x="200" y="38.5" font-size="12.5" font-weight="500" fill="#94A3B8">Search projects, contacts, leads…</text>
+      <text class="t1" x="200" y="38.5" font-size="12.5" font-weight="500" fill="#0F172A">p</text>
+      <text class="t2" x="200" y="38.5" font-size="12.5" font-weight="500" fill="#0F172A">pa</text>
+      <text class="t3" x="200" y="38.5" font-size="12.5" font-weight="500" fill="#0F172A">pat</text>
+      <text class="t4" x="200" y="38.5" font-size="12.5" font-weight="500" fill="#0F172A">pate</text>
+      <text class="t5" x="200" y="38.5" font-size="12.5" font-weight="500" fill="#0F172A">patel</text>
+
+      <g class="g1">
+        <text x="162" y="78" font-size="10" font-weight="700" letter-spacing=".8" fill="#0F172A">PROJECTS</text>
+        <text x="222" y="78" font-size="10" font-weight="700" fill="#64748B">1</text>
+        <path d="M234 74.5 H580" stroke="#E2E8F0"/>
+        <rect class="hl" x="156" y="86" width="428" height="40" rx="12" fill="#EFF6FF" stroke="#BFDBFE"/>
+        <rect x="166" y="94" width="24" height="24" rx="7" fill="#DBEAFE"/>
+        <rect x="172" y="101" width="12" height="10" rx="2" fill="none" stroke="#2563EB" stroke-width="1.8"/>
+        <text x="202" y="104" font-size="12" font-weight="600" fill="#0F172A">Patel Kitchen &amp; Scullery</text>
+        <text x="202" y="119" font-size="10" font-weight="500" fill="#64748B">Anil Patel · Production</text>
+        <rect x="508" y="98" width="62" height="18" rx="9" fill="#2563EB"/>
+        <text x="539" y="110.5" text-anchor="middle" font-size="9" font-weight="600" fill="#FFFFFF">Production</text>
+      </g>
+      <g class="g2">
+        <text x="162" y="148" font-size="10" font-weight="700" letter-spacing=".8" fill="#0F172A">CONTACTS</text>
+        <text x="224" y="148" font-size="10" font-weight="700" fill="#64748B">1</text>
+        <path d="M236 144.5 H580" stroke="#E2E8F0"/>
+        <circle cx="178" cy="172" r="12" fill="#C026D3"/>
+        <text x="178" y="176" text-anchor="middle" font-size="9" font-weight="700" fill="#FFFFFF">AP</text>
+        <text x="202" y="169" font-size="12" font-weight="600" fill="#0F172A">Anil Patel</text>
+        <text x="202" y="184" font-size="10" font-weight="500" fill="#64748B">anil.patel@example.com · 021 555 0117</text>
+      </g>
+      <g class="g3">
+        <text x="162" y="214" font-size="10" font-weight="700" letter-spacing=".8" fill="#0F172A">EVENTS</text>
+        <text x="212" y="214" font-size="10" font-weight="700" fill="#64748B">1</text>
+        <path d="M224 210.5 H580" stroke="#E2E8F0"/>
+        <rect x="166" y="226" width="24" height="24" rx="7" fill="#FEF3C7"/>
+        <rect x="171" y="232" width="14" height="13" rx="2" fill="none" stroke="#D97706" stroke-width="1.6"/>
+        <path d="M171 236 H185" stroke="#D97706" stroke-width="1.6"/>
+        <text x="202" y="236" font-size="12" font-weight="600" fill="#0F172A">Install — Patel Kitchen</text>
+        <text x="202" y="251" font-size="10" font-weight="500" fill="#64748B">Wed 28 Oct · All day</text>
+        <text x="162" y="282" font-size="9.5" font-weight="500" fill="#94A3B8">Only what you're allowed to see · Esc to close</text>
+      </g>
+    </g>
+  </g>
+</svg>

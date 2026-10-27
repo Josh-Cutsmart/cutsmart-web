@@ -2,6 +2,10 @@
 
 import { activeDate, useCompanyFormats } from "@/lib/company-formats";
 import { GlassModalHeader } from "@/components/glass-modal-header";
+import { CopyButton } from "@/components/copy-button";
+import { ContactTimelineModal } from "@/components/contact-timeline";
+import { ContactDuplicatesModal } from "@/components/contact-duplicates-modal";
+import { findDuplicateContacts, readDismissedDuplicateKeys, saveDismissedDuplicateKeys } from "@/lib/contact-duplicates";
 import {
   Fragment,
   Suspense,
@@ -19,7 +23,7 @@ import {
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Archive, Check, ChevronLeft, Mail, MapPin, MessageSquare, Pencil, Phone, Plus, Search, Share, Users, X } from "lucide-react";
+import { AlertTriangle, Archive, Check, ChevronLeft, History, Mail, MapPin, MessageSquare, Pencil, Phone, Plus, Search, Share, Users, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { authorizedFetch } from "@/lib/api-fetch";
 import {
@@ -54,6 +58,7 @@ const HOME_SCREEN_APP_PAGE_PADDING = {
 import { GlassActionMenu, GlassDropdown, type GlassActionMenuItem, type GlassDropdownOption } from "@/components/glass-dropdown";
 import { contactInitials, readableTextOn, collectContactReach, openAddressInMaps } from "@/lib/contact-card";
 import { glassShineStyle } from "@/lib/glass-shine";
+import { Skeleton, SkeletonGroup, SkeletonRows } from "@/components/skeleton";
 
 type ContactCategoryOption = { name: string; color: string };
 
@@ -712,6 +717,8 @@ function ClientsPageInner() {
       if (detailPaneRef.current?.contains(target)) return;
       if (rowMenuRef.current?.contains(target)) return;
       if (target.closest("[data-contact-row-id]")) return;
+      // (Its timeline is part of it — a press in the timeline isn't off the contact; its backdrop is.)
+      if (target.closest('[data-contact-timeline="true"]')) return;
       if (target.closest('[data-glass-dropdown-menu="true"]') || document.querySelector('[data-glass-dropdown-menu="true"]')) return;
       closeContact();
     };
@@ -912,6 +919,25 @@ function ClientsPageInner() {
   // Archiving removes a contact from the main list without deleting their data — a second,
   // explicit tap is required (isConfirmingArchive) so a stray click can't hide someone by accident.
   const [isConfirmingArchive, setIsConfirmingArchive] = useState(false);
+  // Their timeline (every project, quote and lead — components/contact-timeline.tsx): open or not, and where it grows from.
+  const [isTimelineOpen, setIsTimelineOpen] = useState(false);
+  // Whose it is — open only while that contact is (clicking off the contact, or another, puts it away too).
+  const [timelineContactId, setTimelineContactId] = useState("");
+  const [timelineOrigin, setTimelineOrigin] = useState<GlassModalOrigin>(null);
+  // Possible duplicates (lib/contact-duplicates.ts): the notice at the top of the list and its Review pop-up — for those
+  // who see every contact (a merge moves projects between cards). Never merged on their own. Groups said to be "Not
+  // duplicates" are left out (remembered on this device).
+  const canMergeContacts = access.status === "ready" && (isOwnerOrAdmin(access.role) || canViewAllClients);
+  const [isDuplicatesOpen, setIsDuplicatesOpen] = useState(false);
+  const [duplicatesOrigin, setDuplicatesOrigin] = useState<GlassModalOrigin>(null);
+  const [dismissedDuplicates, setDismissedDuplicates] = useState<{ companyId: string; keys: string[] } | null>(null);
+  const dismissedDuplicateKeys =
+    dismissedDuplicates?.companyId === activeCompanyId ? dismissedDuplicates.keys : readDismissedDuplicateKeys(activeCompanyId);
+  const duplicateGroups = useMemo(
+    () => (canMergeContacts ? findDuplicateContacts(clients).filter((group) => !dismissedDuplicateKeys.includes(group.key)) : []),
+    [canMergeContacts, clients, dismissedDuplicateKeys],
+  );
+  const duplicateContactCount = duplicateGroups.reduce((sum, group) => sum + group.contacts.length, 0);
   const [isArchiving, setIsArchiving] = useState(false);
   const [archiveError, setArchiveError] = useState("");
   // The profile fields read as plain text until Edit is pressed (then Done); each field still saves
@@ -1422,13 +1448,35 @@ function ClientsPageInner() {
               }}
             >
               <div className="min-w-full">
-                {loading ? (
+                {/* Possible duplicates: said, not merged — Review shows them side by side to merge or leave. */}
+                {!loading && duplicateGroups.length ? (
                   <div
-                    className="flex min-h-[50vh] min-w-full items-center justify-center px-4 py-4 text-[13px] md:px-5"
-                    style={{ color: textSoft }}
+                    className="mx-3 mb-1 mt-3 flex items-center gap-3 rounded-[14px] border px-3.5 py-2.5 md:mx-5"
+                    style={{
+                      borderColor: "color-mix(in srgb, var(--accent-amber) 45%, transparent)",
+                      backgroundColor: "color-mix(in srgb, var(--accent-amber) 12%, var(--panel-bg))",
+                    }}
                   >
-                    Loading contacts...
+                    <AlertTriangle size={16} className="shrink-0" style={{ color: "var(--accent-amber)" }} />
+                    <p className="min-w-0 flex-1 text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
+                      {duplicateContactCount} contacts look like duplicates
+                      <span className="max-sm:hidden"> — the same email, phone, or name and address.</span>
+                    </p>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        setDuplicatesOrigin(captureGlassModalOrigin(e));
+                        setIsDuplicatesOpen(true);
+                      }}
+                      className="glass-shine inline-flex h-8 shrink-0 items-center rounded-full border px-3.5 text-[12.5px] font-semibold text-white transition hover:brightness-105"
+                      style={glassShineStyle("#D97706")}
+                    >
+                      Review
+                    </button>
                   </div>
+                ) : null}
+                {loading ? (
+                  <SkeletonRows count={9} label="Loading contacts" className="min-w-full px-1 md:px-2" />
                 ) : filteredClients.length === 0 ? (
                   <div
                     className="flex min-h-[50vh] min-w-full items-center justify-center px-4 py-5 text-[13px] md:px-5"
@@ -1706,7 +1754,7 @@ function ClientsPageInner() {
                     }}
                   >
                     <p className="truncate text-[22px] font-medium leading-tight" style={{ color: "var(--text-main)" }}>
-                      {activeDetail?.name || (activeDetailLoading ? "Loading..." : "Contact")}
+                      {activeDetail?.name || (activeDetailLoading ? <Skeleton className="mx-auto h-6 w-44 rounded-[8px]" /> : "Contact")}
                     </p>
                     <div className="pointer-events-auto mt-1.5 flex justify-center [[data-fade='1']_&]:pointer-events-none">{categoryPill()}</div>
                     <div className="pointer-events-auto mt-3 flex items-center justify-center gap-3 [[data-fade='1']_&]:pointer-events-none">
@@ -1741,7 +1789,7 @@ function ClientsPageInner() {
                     }}
                   >
                     <p className="truncate text-[17px] font-medium" style={{ color: "var(--text-main)" }}>
-                      {activeDetail?.name || (activeDetailLoading ? "Loading..." : "Contact")}
+                      {activeDetail?.name || (activeDetailLoading ? <Skeleton className="mx-auto h-4 w-32 rounded-[6px]" /> : "Contact")}
                     </p>
                   </div>
                 </div>
@@ -1755,9 +1803,14 @@ function ClientsPageInner() {
                   onScroll={onDetailScroll}
                 >
                   {activeDetailLoading ? (
-                    <div className="rounded-[14px] border p-4 text-[13px]" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}>
-                      Loading contact details...
-                    </div>
+                    <SkeletonGroup label="Loading contact details" className="mx-auto w-full max-w-[1100px] space-y-3">
+                      {[0, 1, 2, 3].map((index) => (
+                        <div key={index} className="rounded-[14px] border border-[var(--glass-border)] bg-[color-mix(in_srgb,var(--panel-bg)_70%,transparent)] p-3">
+                          <Skeleton className="h-2.5 w-16" />
+                          <Skeleton className="mt-2 h-3.5" style={{ width: `${[52, 64, 44, 70][index]}%` }} />
+                        </div>
+                      ))}
+                    </SkeletonGroup>
                   ) : activeDetail ? (
                     // No minimum height: the page ends where its content ends, with no dead space under the last
                     // card / Archive button. (With only a little content the mobile header simply collapses as far
@@ -1798,6 +1851,8 @@ function ClientsPageInner() {
                                   className={`${isEditingProfile ? fieldInputEditClass : `${fieldReadonlyClass} ${mobileReadonlyLineClass}`} mt-1`}
                                 />
                               </label>
+                              {/* Copy it (not while editing). */}
+                              {!isEditingProfile ? <CopyButton value={activeDetail.email} label="email" /> : null}
                               {/* Mobile only, and not while editing: email this contact (several addresses -> pick which). */}
                               {!isEditingProfile ? (
                                 <div className="shrink-0">
@@ -1820,6 +1875,7 @@ function ClientsPageInner() {
                                   className={`${isEditingProfile ? fieldInputEditClass : `${fieldReadonlyClass} ${mobileReadonlyLineClass}`} mt-1`}
                                 />
                               </label>
+                              {!isEditingProfile ? <CopyButton value={activeDetail.phone} label="phone number" /> : null}
                               {/* Mobile only, and not while editing: text or call this contact (several numbers -> pick
                                   which, same glass menu as the header's). */}
                               {!isEditingProfile ? (
@@ -1846,6 +1902,7 @@ function ClientsPageInner() {
                                   className={`${isEditingProfile ? fieldInputEditClass : `${fieldReadonlyClass} ${mobileReadonlyLineClass}`} mt-1`}
                                 />
                               </label>
+                              {!isEditingProfile ? <CopyButton value={activeDetail.address} label="address" /> : null}
                               {/* Mobile only, and not while editing: open the address in the phone's default maps app. */}
                               {!isEditingProfile ? (
                                 <div className="shrink-0">
@@ -1972,6 +2029,26 @@ function ClientsPageInner() {
                         ))}
                       </div>
                     </div>
+                    {/* Their timeline — every project, quote and lead along one line: a quiet button at the foot, not one of
+                        the card's main things. (Not while editing — Archive's there then.) */}
+                    {!isEditingProfile ? (
+                      <div className="flex justify-center pb-2 pt-5">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            setTimelineOrigin(captureGlassModalOrigin(e));
+                            setTimelineContactId(activeClientId);
+                            setIsTimelineOpen(true);
+                          }}
+                          className="inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-[12px] font-medium transition hover:bg-[color-mix(in_srgb,var(--text-main)_6%,transparent)]"
+                          style={{ color: "var(--text-muted)" }}
+                          title="Every project, quote and lead they've had, along one line"
+                        >
+                          <History size={13} />
+                          Timeline
+                        </button>
+                      </div>
+                    ) : null}
                     {/* Archive: one big button at the very bottom of the page, only shown while editing (inline
                         display, so there's no utility-class tie to break). The first tap asks for confirmation
                         (the label becomes "Confirm Archive"), the second archives — it moves to the Archive.
@@ -2014,6 +2091,40 @@ function ClientsPageInner() {
           </div>
         </div>
       )}
+
+      <ContactDuplicatesModal
+        open={isDuplicatesOpen}
+        onClose={() => setIsDuplicatesOpen(false)}
+        origin={duplicatesOrigin}
+        groups={duplicateGroups}
+        companyId={activeCompanyId}
+        onMerged={(kept, mergedIds) => {
+          // The cards made into it: gone from the list; the one kept, as it is now. (Open on one of them: the kept one.)
+          setClients((prev) => prev.filter((row) => !mergedIds.includes(row.id)).map((row) => (row.id === kept.id ? kept : row)));
+          setClientDetailsById((prev) => {
+            const next = { ...prev, [kept.id]: kept };
+            for (const id of mergedIds) delete next[id];
+            return next;
+          });
+          if (mergedIds.includes(activeClientId)) setActiveClientId(kept.id);
+        }}
+        onDismiss={(groupKey) => {
+          const keys = [...dismissedDuplicateKeys, groupKey];
+          saveDismissedDuplicateKeys(activeCompanyId, keys);
+          setDismissedDuplicates({ companyId: activeCompanyId, keys });
+        }}
+      />
+
+      <ContactTimelineModal
+        open={isTimelineOpen && isDetailOpen && timelineContactId === activeClientId}
+        onClose={() => setIsTimelineOpen(false)}
+        origin={timelineOrigin}
+        contact={activeDetail}
+        companyId={activeCompanyId}
+        viewerUid={String(user?.uid || "")}
+        canSeeLeads={access.status === "ready" && (isOwnerOrAdmin(access.role) || hasPermissionKey(access.permissionKeys, "leads.view"))}
+        canViewOtherLeads={access.status === "ready" && (isOwnerOrAdmin(access.role) || hasPermissionKey(access.permissionKeys, "leads.view.others"))}
+      />
 
       {/* Long-press menu for a contact row (see rowLongPress). Same small glass pop-up as the Specifications
           long-press menu; portaled to <body> so the list's scroller can't clip it. */}

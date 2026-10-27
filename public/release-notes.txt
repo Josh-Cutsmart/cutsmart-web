@@ -1,120 +1,113 @@
-Version: v0.5.8
+Version: v0.5.9
 
 highlights: [
-Lead forms and your leads inbox | Build your own lead forms, put them on your website, and forward emails to your company's leads address — they all land in Leads | /whats-new/v0.5.8/lead-forms.svg
-Accept for your client | Client said yes on the phone? Accept their quote or answer their specifications for them — marked as done on their behalf, by you | /whats-new/v0.5.8/accept-for-client.svg
-The Archive, as a filing cabinet | Old projects, leads, contacts and events filed month by month — and delete a project with a copy emailed to your team first | /whats-new/v0.5.8/archive.svg
-Notes that pop out | Drag a contractor's notes out of the Production cutlist into a floating bubble — move it, resize it, keep several open | /whats-new/v0.5.8/notes-bubbles.svg
-Working together on a cutlist | See each other's changes as they're made, saves that never undo someone else's, and who else is in there | /whats-new/v0.5.8/cutlist-together.svg
+Global company search | Press Ctrl+K (⌘K on a Mac), or the magnifying glass up top, to find any project, small job, lead, contact, calendar event or setting — grouped, and only what you're allowed to see | /whats-new/v0.5.9/global-search.svg
+Column automations | Right-click a column and choose Automate: let people know when something comes in, move it on — straight away or after a while — assign it or tag it, only when your conditions are met | /whats-new/v0.5.9/column-automations.svg
+Lead to Project | Create Project on a lead fills the new project in for you — the client's details, notes, photos and answers — and the project keeps a link back to the lead | /whats-new/v0.5.9/lead-to-project.svg
+Schedule timeline | A project's Schedule shows its calendar events along a line, spaced as they are in time, with today among them and what's coming up next | /whats-new/v0.5.9/schedule-timeline.svg
+The Order, redesigned | Everything to order at a glance, Drawers, Hinges and Other side by side, and a Hardware Library to drag hinges and parts in from | /whats-new/v0.5.9/order-window.svg
 ]
 
 whatsNew: [
-<u><b>Leads</b></u>
-<ul>
-<li>A simpler page like the Dashboard: one bar on top with the same search, a status filter and sort menus, and rounded buttons</li>
-<li>Stat cards for <b>Active</b>, <b>New</b>, <b>Converted</b> and <b>Unassigned</b></li>
-<li>A list view laid out like the Dashboard's — and both pages stay in the view you picked</li>
-<li>Build lead forms in Company Settings › <b>Leads</b> — as many as you like, with your own questions — and put them on your website</li>
-<li>Your company has its own leads email address: forward an email to it and it comes in as a lead, photos and all</li>
-<li>New leads come in as <b>New Lead · From Email</b> or <b>New Lead · From Form</b>, in your first status</li>
-<li>Click a lead to edit any field, change its status, see its photos, and add notes and checklists beside it</li>
-<li><b>+ Create Lead</b> floats in the bottom corner and opens a pop-up</li>
-<li>Leads load faster</li>
-</ul>
-
 <u><b>Dashboard</b></u>
 <ul>
-<li><b>Completed</b> is rebuilt: every job moved into a completed status is stamped with its day and time, and stays — even if it's archived or deleted</li>
-<li>See how many were completed by month, quarter, half year or year, with a chart of the periods before it to drag through</li>
-<li>Bonus quarters (with the bonus permission): drag a job onto a quarter — its left half for the bonus, its right half for small jobs — and its status locks</li>
-<li><b>Copy quarter</b> copies its jobs as tables, ready for an email or spreadsheet</li>
-<li>Jobs with an accepted quote under your bonus minimum show <b>Below $…</b></li>
-<li>Change a job's completed date from a small calendar, or drag it to the bin to take it off the list</li>
-<li>A floating bar on desktop for opening sub-status boards</li>
-<li>The status filter is a dropdown, and the Kanban gets a sort button</li>
-<li>Empty columns no longer say "No Projects"</li>
+<li>Right-click a column and choose <b>Automate</b>: <b>Notify</b> people or roles when a project enters it, leaves it or has been in it a while — or <b>Move</b> it on, <b>Assign</b> it or <b>Tag</b> it</li>
+<li>Add <b>Only if…</b> to an automation — who it's assigned to, where it came from, its tags or its name — and it waits until that's true</li>
+<li>A timed move can count from when each project moved in, so the ones already there count too</li>
+<li>Whoever moves a card is told what their move set off</li>
+<li>A status with sub-statuses shows the sub-status in a pill of its own — each half opens its own menu</li>
+<li>The list's status menu slides through to a status's sub-statuses</li>
+<li>Each board has its name over it, with a back arrow inside a sub-board</li>
 </ul>
 
-<u><b>Archive</b></u>
+<u><b>Small Jobs</b></u>
 <ul>
-<li>Redesigned as a filing cabinet: projects, leads, contacts and calendar events, filed by year and month</li>
-<li>Filter by type, search, and fold away the years and months — it opens the way you left it</li>
-<li>Deleting a project for good can email a copy to your team first: its client details, quote, specifications, cutlists and images</li>
-<li>A deleted project's files and images are cleared away too</li>
+<li>A new page for quick jobs and small fixes — "Replace toekick", "Change hinges" — without a whole project</li>
+<li>Each has its client, notes and images, and its own statuses: Open and Closed to start with, yours in Company Settings › <b>Small Jobs</b></li>
+<li>Search and filter them, and turn one into a full project when it grows</li>
+<li>Kept off the Dashboard and out of Reports</li>
+</ul>
+
+<u><b>Reports</b></u>
+<ul>
+<li>A new page: leads converted, quote win rate, average job value and days to complete — each against the stretch before</li>
+<li>Quotes sent against won by week or month, the days spent in each stage, the pipeline now, each salesperson's figures and where your leads came from</li>
+<li>Choose which staff and projects your reports count, and <b>Reset stats</b> to start counting afresh</li>
+</ul>
+
+<u><b>Leads</b></u>
+<ul>
+<li><b>Create Project</b> fills the new project in from the lead — its name, the client's details, notes, photos, who it's assigned to and their other answers — and files the lead as converted</li>
+<li>Automations work here too — including moving a lead onto a Dashboard column, which makes it into a project there</li>
+<li>Copy buttons beside a lead's phone number and email</li>
 </ul>
 
 <u><b>Projects</b></u>
 <ul>
-<li>Client Details and their contact card stay the same — change one and the other (and their other projects) follow</li>
-<li>Click the client's badge to open their contact card right there</li>
-<li>Design: <b>Extra Charges</b> to switch on for each project, with a quantity</li>
-<li>Design: prices show <b>incl GST</b> or <b>excl GST</b></li>
-<li>Design: <b>Nesting</b> on each product in Sheets shows how the parts fit on the sheets</li>
-<li>Design: a simpler Project Cost Breakdown, and room breakdowns use your item category pills</li>
-<li>Quote window: <b>Accept</b> for the client, and Specifications: <b>Submit</b> for the client — marked "on behalf of" the client, with who did it</li>
-<li>Images and Files: drag in to add, delete shows when something's selected, and their buttons show on hover</li>
-<li>Locked jobs say why in a bar at the bottom when you try to change their status</li>
-<li>The bell now fills in when you're subscribed</li>
-<li>The scrollbar no longer jumps under the sticky bars</li>
+<li><b>Schedule</b>: the project's calendar events along a timeline, spaced by date, with today and what's next — click one to open it in the Calendar</li>
+<li>A project made from a lead has a <b>Lead</b> button on its General tab, to see the lead it came from</li>
+<li>Copy buttons beside the client's phone, email and address</li>
+<li>Every pop-up has the same header, and fills the screen on a phone</li>
 </ul>
 
 <u><b>Production</b></u>
 <ul>
-<li>Pop a contractor's notes out into a floating bubble: drag it anywhere, resize it, shrink it to a pill, and drag it back onto its button to put it away</li>
-<li>Notes open where you left them for that project</li>
-<li>Up to 5 contractors get their own buttons</li>
-<li>Two people in the same cutlist (Production or Initial Measure) see each other's changes as they're made, and saves never undo someone else's</li>
-<li>A cutlist shows who else is editing it</li>
-<li>A cutlist with one room opens on that room</li>
-<li>The Cutlist Entry sits beside the Rooms button, with <b>Add to Cutlist</b> at its bottom</li>
-<li>The part type menu takes the part type's colour</li>
-<li>The Excel cutlist: working dropdowns, tickboxes for yes/no, boards that link up, and rows coloured by part type</li>
-<li>Specifications just say <b>Confirmed</b> or <b>Unconfirmed</b></li>
+<li><b>Order</b> redesigned: the order at a glance up top, Drawers, Hinges and Other side by side, then Boards and Misc</li>
+<li>Drag hinges and other parts in from the <b>Hardware Library</b>, or click one to add it</li>
+<li>Two people in the Order see each other's changes as they're made</li>
+<li>Empty Hinges and Other show a dashed box to add the first one</li>
+<li>Copy a hinge's or part's item number straight from the Order, ready for your supplier's cart</li>
+<li><b>Labels</b>: a label for every piece, with a QR code — scan it with a phone to see the part, its room and its project</li>
+<li><b>Print</b>: the cutlist laid out like the old spreadsheet, a title sheet, and several prints together as one Project Folder</li>
+<li>Cutlist: <b>Select</b> parts to change their board or edging all at once, or delete them</li>
+<li>Cutlist: <b>Save &amp; Back</b> checks for a missing board, a zero quantity or a grain clash first</li>
+<li>Doors show a drawing of the door with its hinges — left, right, a mirrored pair or along the top</li>
+<li>Drawer heights stack in the list, beside their depths</li>
 </ul>
 
 <u><b>Contacts</b></u>
 <ul>
-<li>A <b>Share</b> button to send a contact's details through another app</li>
-<li>The same search as the Dashboard, and rounded buttons</li>
-<li>Desktop: a contact opens over the top bar</li>
-<li>All your contacts show every time you open the page</li>
+<li>A quiet <b>Timeline</b> button on a contact: every project, quote and lead they've had, along one line</li>
+<li>Contacts that look like the same person are flagged at the top — review them side by side and merge, or mark them as not duplicates</li>
+<li>Copy buttons beside phone, email and address</li>
 </ul>
 
 <u><b>Calendar</b></u>
 <ul>
-<li>Ring the bell on an event to get its reminders — you don't need to be on it</li>
-<li>A project's creator is only added to its events when no one's assigned</li>
-<li>Reminders only come at the times you set — turning one on no longer sends ones already gone</li>
+<li>NZ public holidays, worked out for every year — pick your region in Company Settings › <b>Calendar</b> for its anniversary day</li>
+<li>Today is outlined in blue</li>
+<li>Previous and Next slide the view along</li>
+<li>Typing an event's title suggests the project it's about</li>
+<li>The event pop-up: the times sit under the title, a date wheel on phones, and the category list opens downwards</li>
+<li>The month view fits more events in each day</li>
 </ul>
 
 <u><b>Company Settings</b></u>
 <ul>
-<li>New <b>Leads</b> tab: your lead forms and your leads email address</li>
-<li>Sales: Products is a table — sheet sizes with their own prices and margins, edge tape and lacquer, and row colours</li>
-<li>Sales: <b>Extra Charges</b>, each one on every quote by default or not</li>
-<li>Sales: include GST on quotes, at your rate</li>
-<li>Dashboard: your bonus period, when it's paid, and the minimum quote for it</li>
-<li>Statuses are numbered — the first is where new projects and leads start</li>
-<li>Comes back to the tab you were on after a refresh</li>
+<li>Staff &amp; Permissions: an <b>Audit log</b> of every role and permission change — who made it and when</li>
+<li><b>View as this role</b>: see the app as someone with that role would, until you press Exit</li>
+<li>Backup &amp; Output: <b>Full data export</b> — everything your company has, in one file to keep</li>
+<li>Hardware: an item number on each drawer, hinge and part</li>
+<li>Calendar: your <b>Public holidays</b> region</li>
+<li>Small Jobs: their own statuses</li>
+<li>Search finds every card</li>
 </ul>
 
 <u><b>App-Wide</b></u>
 <ul>
-<li><b>Forgot password?</b> on the log in screen emails you a link to set a new one</li>
-<li>A glassier look for buttons, pills, stat cards and rows</li>
-<li>Status dropdowns are simpler, with just a coloured dot</li>
-<li>Pop-ups all share the same clear X</li>
-<li>A project's creator only gets its notifications when they've rung its bell</li>
-<li>Notifications that came in while your phone or computer was off arrive as one group</li>
-<li>What's New no longer shows on every visit after an update</li>
+<li>Search everything with <b>Ctrl+K</b> (⌘K on a Mac)</li>
+<li>Soft placeholders while things load, instead of "Loading…"</li>
+<li>Dropdowns squeeze open from the button you pressed</li>
+<li>The page you're on glows in see-through glass in the sidebar</li>
+<li>Buttons like New event have the glass shine and rounded ends</li>
 </ul>
 
 <u><b>Phones</b></u>
 <ul>
-<li>Notes stay in view above the keyboard</li>
-<li>Number fields bring up the number pad</li>
-<li>The top tabs fade out at the edges</li>
-<li>Sort menus open centred under their button</li>
-<li>A lead opens full screen</li>
+<li>A small buzz as you pick up a card or event and as it lands (Android)</li>
+<li>Cutlist: one glass bar along the top, with arrows to step between rooms</li>
+<li>Cutlist entry: rows show in full, edge to edge in their part type's colour — tap a row's top bar to fold it away</li>
+<li>Cutlist: rounded, glassy part type buttons, Add to Cutlist and search</li>
+<li>Full-screen pop-ups stay below the title bar</li>
 </ul>
 ]

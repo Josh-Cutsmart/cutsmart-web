@@ -21,6 +21,11 @@ export type ColumnAutomationBoard = "projects" | "leads";
 export type ColumnAutomationAction = "notify" | "move" | "assign" | "tag";
 export type ColumnAutomationTrigger = "enters" | "leaves" | "stays";
 export type ColumnAutomationUnit = "minutes" | "hours" | "days" | "weeks" | "months";
+// A move on a timer: its time counted only for what enters from now on ("now" — what's in the column when it's set gets no
+// timer, and a time changed later leaves the timers already going), or from when each moved in ("movedIn" — what's
+// already there too, its timer from its real move-in, and a changed time applied to them all: see the scheduled job's
+// COLUMN_AUTOMATION_BACKFILLS_FIELD).
+export type ColumnAutomationCountFrom = "now" | "movedIn";
 
 // "But only if": what a condition looks at, and how —
 //   assignee  is / isn't  <person> | anyone (someone's assigned) | nobody (no one is)
@@ -76,6 +81,8 @@ export type ColumnAutomation = {
   moveToStatus: string;
   moveToSubStage: string;
   moveAfter: boolean;
+  // Its timer counted from now on, or from when each moved in (ColumnAutomationCountFrom).
+  moveCountFrom: ColumnAutomationCountFrom;
   // Which board that column's on: its own — or, a lead's, the Dashboard's (the lead converted to a project as it goes).
   moveToBoard: ColumnAutomationBoard;
   // A notify one tells the person it's assigned to as well (whoever that is when it's sent).
@@ -146,6 +153,7 @@ export function normalizeColumnAutomations(raw: unknown): ColumnAutomation[] {
         moveToStatus: str(row.moveToStatus),
         moveToSubStage: str(row.moveToSubStage),
         moveAfter: row.moveAfter === true,
+        moveCountFrom: (str(row.moveCountFrom) === "movedIn" ? "movedIn" : "now") as ColumnAutomationCountFrom,
         moveToBoard: (board === "leads" && str(row.moveToBoard) === "projects" ? "projects" : board) as ColumnAutomationBoard,
         notifyAssignee: row.notifyAssignee === true,
         assignToUid: str(row.assignToUid),
@@ -453,6 +461,18 @@ export function columnAutomationDurationLabel(automation: Pick<ColumnAutomation,
 // A column's name as the notification says it: "Production › Assembly" for a sub-column.
 export function columnAutomationColumnLabel(spot: { status: string; subStage?: string }): string {
   return spot.subStage ? `${spot.status} › ${spot.subStage}` : spot.status;
+}
+
+// The timed moves counted from when each moved in that have had their column gone through for the time they have now —
+// on the company, by the automation's id: its updatedAtIso when it was (a new or changed one: not yet — the scheduled
+// job goes through its column, giving everything there its timer from its real move-in, then notes it here).
+export const COLUMN_AUTOMATION_BACKFILLS_FIELD = "columnAutomationBackfills";
+
+// When a project or lead's stay in an automation's column began: a project's from its status history, a lead's from when
+// its status last changed (or it was added). "" — it can't be told.
+export function itemStayStartedAtIso(automation: ColumnAutomation, data: Record<string, unknown>): string {
+  if (automation.board === "leads") return str(data.statusChangedAtIso) || str(data.createdAtIso);
+  return stayStartedAtIso(automation, Array.isArray(data.statusHistory) ? (data.statusHistory as Array<Record<string, unknown>>) : []);
 }
 
 // When something went into the column it's in now (the start of its stay there), from its status history (oldest

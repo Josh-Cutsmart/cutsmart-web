@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" width="640" height="360" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title>A Production column automation — move a project to Dryfit two days after it enters — moves the Smith Kitchen card across, and the team is notified</title>
+  <style>
+    .rule { animation: rule 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes rule { 0%, 4% { opacity: 0; transform: translateY(-10px); } 10%, 92% { opacity: 1; transform: translateY(0); } 97%, 100% { opacity: 0; } }
+    .card { animation: card 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes card {
+      0%, 16% { opacity: 0; transform: translate(-150px, 0); }
+      24%, 46% { opacity: 1; transform: translate(0, 0); }
+      58%, 92% { opacity: 1; transform: translate(196px, 0); }
+      97%, 100% { opacity: 0; transform: translate(196px, 0); }
+    }
+    .clock { transform-box: fill-box; transform-origin: center; animation: clock 8s linear infinite both; }
+    @keyframes clock { 0%, 26% { opacity: 0; transform: rotate(0deg); } 28% { opacity: 1; } 46% { opacity: 1; transform: rotate(360deg); } 50%, 100% { opacity: 0; transform: rotate(360deg); } }
+    .bolt { transform-box: fill-box; transform-origin: center; animation: bolt 8s ease-in-out infinite both; }
+    @keyframes bolt { 0%, 46% { transform: scale(1); } 49% { transform: scale(1.35); } 53%, 100% { transform: scale(1); } }
+    .note { animation: note 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes note { 0%, 60% { opacity: 0; transform: translateY(14px); } 66%, 92% { opacity: 1; transform: translateY(0); } 97%, 100% { opacity: 0; } }
+    .count1 { animation: count1 8s step-end infinite both; } .count2 { animation: count2 8s step-end infinite both; }
+    .dcount1 { animation: dcount1 8s step-end infinite both; } .dcount2 { animation: dcount2 8s step-end infinite both; }
+    @keyframes count1 { 0% { opacity: 1; } 24% { opacity: 0; } 56% { opacity: 1; } }
+    @keyframes count2 { 0% { opacity: 0; } 24% { opacity: 1; } 56% { opacity: 0; } }
+    @keyframes dcount1 { 0% { opacity: 1; } 56% { opacity: 0; } 98% { opacity: 1; } }
+    @keyframes dcount2 { 0% { opacity: 0; } 56% { opacity: 1; } 98% { opacity: 0; } }
+  </style>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#EEF3FB"/>
+      <stop offset="1" stop-color="#E1E9F7"/>
+    </linearGradient>
+    <filter id="pop" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#0F172A" flood-opacity=".16"/>
+    </filter>
+  </defs>
+  <rect width="640" height="360" fill="url(#bg)"/>
+
+  <!-- the automation, as its sentence -->
+  <g class="rule">
+    <rect x="28" y="20" width="584" height="58" rx="16" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+    <g class="bolt">
+      <circle cx="56" cy="49" r="13" fill="#FEF3C7"/>
+      <path d="M58 39 L50 51 H56 L54 59 L62 47 H56 Z" fill="#D97706"/>
+    </g>
+    <rect x="80" y="36" width="56" height="26" rx="13" fill="#F1F5F9" stroke="#CBD5E1"/>
+    <text x="108" y="53" text-anchor="middle" font-size="11.5" font-weight="600" fill="#0F172A">Move</text>
+    <text x="144" y="53" font-size="11.5" font-weight="500" fill="#334155">a project to</text>
+    <rect x="214" y="36" width="76" height="26" rx="13" fill="#F1F5F9" stroke="#CBD5E1"/>
+    <circle cx="228" cy="49" r="4.5" fill="#0D9488"/>
+    <text x="238" y="53" font-size="11.5" font-weight="600" fill="#0F172A">Dryfit</text>
+    <text x="298" y="53" font-size="11.5" font-weight="500" fill="#334155">when it enters</text>
+    <rect x="384" y="36" width="92" height="26" rx="13" fill="#EEF2FF"/>
+    <circle cx="398" cy="49" r="4.5" fill="#2563EB"/>
+    <text x="408" y="53" font-size="11.5" font-weight="600" fill="#0F172A">Production</text>
+    <rect x="484" y="36" width="44" height="26" rx="13" fill="#F1F5F9" stroke="#CBD5E1"/>
+    <text x="506" y="53" text-anchor="middle" font-size="11.5" font-weight="600" fill="#0F172A">after</text>
+    <rect x="534" y="36" width="62" height="26" rx="13" fill="#F1F5F9" stroke="#CBD5E1"/>
+    <text x="565" y="53" text-anchor="middle" font-size="11.5" font-weight="600" fill="#0F172A">2 days</text>
+  </g>
+
+  <!-- the board -->
+  <rect x="40" y="98" width="180" height="236" rx="18" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+  <rect x="40" y="98" width="180" height="40" rx="18" fill="#FDE7C7"/>
+  <rect x="40" y="120" width="180" height="18" fill="#FDE7C7"/>
+  <circle cx="60" cy="118" r="5" fill="#EA8A1A"/>
+  <text x="72" y="123" font-size="13" font-weight="700" fill="#0F172A">Design</text>
+  <rect x="236" y="98" width="180" height="236" rx="18" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+  <rect x="236" y="98" width="180" height="40" rx="18" fill="#DBEAFE"/>
+  <rect x="236" y="120" width="180" height="18" fill="#DBEAFE"/>
+  <circle cx="256" cy="118" r="5" fill="#2563EB"/>
+  <text x="268" y="123" font-size="13" font-weight="700" fill="#0F172A">Production</text>
+  <path d="M362 110 L356 119 H361 L359 126 L366 116 H361 Z" fill="#D97706"/>
+  <rect x="378" y="108" width="26" height="20" rx="10" fill="#FFFFFF"/>
+  <text class="count1" x="391" y="122" text-anchor="middle" font-size="10.5" font-weight="700" fill="#0F172A">1</text>
+  <text class="count2" x="391" y="122" text-anchor="middle" font-size="10.5" font-weight="700" fill="#0F172A">2</text>
+  <rect x="432" y="98" width="180" height="236" rx="18" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+  <rect x="432" y="98" width="180" height="40" rx="18" fill="#CCFBF1"/>
+  <rect x="432" y="120" width="180" height="18" fill="#CCFBF1"/>
+  <circle cx="452" cy="118" r="5" fill="#0D9488"/>
+  <text x="464" y="123" font-size="13" font-weight="700" fill="#0F172A">Dryfit</text>
+  <rect x="574" y="108" width="26" height="20" rx="10" fill="#FFFFFF"/>
+  <text class="dcount1" x="587" y="122" text-anchor="middle" font-size="10.5" font-weight="700" fill="#0F172A">0</text>
+  <text class="dcount2" x="587" y="122" text-anchor="middle" font-size="10.5" font-weight="700" fill="#0F172A">1</text>
+
+  <!-- cards already there -->
+  <rect x="52" y="150" width="156" height="54" rx="12" fill="#F8FAFC" stroke="#E2E8F0"/>
+  <text x="64" y="171" font-size="11.5" font-weight="700" fill="#0F172A">Cooper Pantry</text>
+  <text x="64" y="188" font-size="9.5" font-weight="500" fill="#64748B">Ben Cooper</text>
+  <rect x="248" y="214" width="156" height="54" rx="12" fill="#F8FAFC" stroke="#E2E8F0"/>
+  <text x="260" y="235" font-size="11.5" font-weight="700" fill="#0F172A">Lee Office Fit-out</text>
+  <text x="260" y="252" font-size="9.5" font-weight="500" fill="#64748B">Sophie Walker</text>
+
+  <!-- the card that's moved in, and on -->
+  <g class="card">
+    <rect x="248" y="150" width="156" height="54" rx="12" fill="#FFFFFF" stroke="#93C5FD" stroke-width="1.5"/>
+    <text x="260" y="171" font-size="11.5" font-weight="700" fill="#0F172A">Smith Kitchen</text>
+    <text x="260" y="188" font-size="9.5" font-weight="500" fill="#64748B">Liam Chen</text>
+    <g class="clock">
+      <circle cx="388" cy="166" r="8" fill="#FEF3C7" stroke="#D97706" stroke-width="1.4"/>
+      <path d="M388 161 V166 L391 168" fill="none" stroke="#D97706" stroke-width="1.4" stroke-linecap="round"/>
+    </g>
+  </g>
+
+  <!-- told -->
+  <g class="note">
+    <rect x="300" y="282" width="300" height="48" rx="14" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+    <circle cx="324" cy="306" r="11" fill="#DBEAFE"/>
+    <path d="M319 309 Q319 299 324 299 Q329 299 329 309 Z M322 311 H326" fill="none" stroke="#2563EB" stroke-width="1.6" stroke-linejoin="round"/>
+    <text x="344" y="302" font-size="11.5" font-weight="700" fill="#0F172A">Moved on to Dryfit</text>
+    <text x="344" y="318" font-size="10" font-weight="500" fill="#64748B">"Smith Kitchen" by Production's automation</text>
+  </g>
+</svg>

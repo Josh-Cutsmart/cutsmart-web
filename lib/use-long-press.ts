@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, type MouseEvent as ReactMouseEvent, type TouchEvent as ReactTouchEvent } from "react";
+import { haptic } from "@/lib/haptics";
 
 const LONG_PRESS_DELAY_MS = 500;
 const LONG_PRESS_MOVE_THRESHOLD_PX = 10;
@@ -50,6 +51,8 @@ export function useLongPress() {
       clearTimer();
       timerRef.current = setTimeout(() => {
         firedRef.current = true;
+        // (A small buzz as the hold takes — on phones that can.)
+        haptic("hold");
         const rect = el.getBoundingClientRect();
         onLongPress({ left: rect.left, top: rect.top, width: rect.width, height: rect.height }, el);
       }, LONG_PRESS_DELAY_MS);

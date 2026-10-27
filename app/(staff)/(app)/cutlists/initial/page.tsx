@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAuth } from "@/lib/auth-context";
 import { fetchCutlists, fetchProjects } from "@/lib/firestore-data";
 import type { Cutlist, Project } from "@/lib/types";
+import { SkeletonLines } from "@/components/skeleton";
 
 export default function InitialCutlistPage() {
   const { user } = useAuth();
@@ -40,7 +41,7 @@ export default function InitialCutlistPage() {
           <CardTitle>{project?.name ?? "No project found"}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          {isLoading && <p className="text-sm text-[var(--text-muted)]">Loading cutlist...</p>}
+          {isLoading && <SkeletonLines lines={3} />}
           <p className="text-sm text-[var(--text-muted)]">
             Revision {cutlist?.revision ?? "-"} generated {cutlist?.generatedAt ?? "-"}
           </p>

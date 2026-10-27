@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
 import { keepPinUnlocked, usePinLocked } from "@/lib/device-pin";
+import { Skeleton, SkeletonGroup, SkeletonLines } from "@/components/skeleton";
 
 // Where a signed-out visitor was headed, so signing in takes them back there (read by the login page).
 // e.g. a home-screen "Calendar" icon opening /calendar in a fresh, signed-out web app.
@@ -44,14 +45,17 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
   // case, so keep showing the spinner instead of a blank page for that frame.
   if (isLoading || !user || pinLocked) {
     return (
-      <div className="flex h-[60vh] w-full flex-col items-center justify-center gap-4">
-        <p className="text-sm font-semibold text-[var(--text-muted)]">Loading...</p>
-        <div
-          className="h-9 w-9 animate-spin rounded-full border-[3px] border-[var(--glass-border)] border-t-[var(--brand-strong)]"
-          role="status"
-          aria-label="Loading"
-        />
-      </div>
+      <SkeletonGroup label="Loading" className="w-full px-1 pt-2">
+        <Skeleton className="h-8 w-[min(320px,60%)] rounded-[10px]" />
+        <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {[0, 1, 2].map((index) => (
+            <div key={index} className="rounded-[18px] border border-[var(--glass-border)] bg-[color-mix(in_srgb,var(--panel-bg)_70%,transparent)] p-4">
+              <Skeleton className="h-3.5 w-32" />
+              <SkeletonLines lines={3} className="mt-4" />
+            </div>
+          ))}
+        </div>
+      </SkeletonGroup>
     );
   }
 

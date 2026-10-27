@@ -6,6 +6,7 @@ import { GlassModalHeader } from "@/components/glass-modal-header";
 import { Check, Copy, Eye, EyeOff, KeyRound, Plus, Trash2 } from "lucide-react";
 import { glassFieldClass, primaryButtonClass, primaryButtonStyle, smallButtonClass } from "@/components/settings-ui";
 import { activeDateTime } from "@/lib/company-formats";
+import { Skeleton, SkeletonGroup } from "@/components/skeleton";
 import {
   changeMasterJoinCode,
   createTemporaryJoinCode,
@@ -159,7 +160,11 @@ export function CompanyJoinCodesModal({
 
         <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-4">
           {loading && !data ? (
-            <p className="text-[13px]" style={{ color: "var(--text-muted)" }}>Loading…</p>
+            <SkeletonGroup label="Loading join codes" className="space-y-3">
+              <Skeleton className="h-3 w-40" />
+              <Skeleton className="h-12 w-full rounded-[14px]" />
+              <Skeleton className="h-12 w-full rounded-[14px]" />
+            </SkeletonGroup>
           ) : loadError && !data ? (
             <p className="text-[13px] font-medium" style={{ color: "var(--danger)" }}>{loadError}</p>
           ) : (

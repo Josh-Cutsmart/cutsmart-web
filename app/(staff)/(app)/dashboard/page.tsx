@@ -64,6 +64,7 @@ import { completionBonusSettingsFrom, type CompletionBonusSettings } from "@/lib
 import { useFloatingNotice } from "@/components/floating-notice";
 import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
 import { completedStatusMatcher, isProjectArchived, PROJECTS_ARCHIVED_EVENT, type ProjectsArchivedDetail } from "@/lib/project-archive";
+import { SkeletonBoard, SkeletonCards, SkeletonRows } from "@/components/skeleton";
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 type SubStageRow = { name: string; color: string; isDefault?: boolean };
 // isComplete: Company Settings' "Completed" toggle — left undefined when the company hasn't set it, so
@@ -2262,14 +2263,7 @@ export default function DashboardPage() {
   const renderMainBoardColumnsContent = () => (
     <>
       {(showProjectsLoadingState || !statusRowsLoaded) && (
-        <div className="flex h-full w-full items-center justify-center gap-2 text-[13px] font-semibold" style={{ color: dashboardPalette.textMuted }}>
-          Loading projects...
-          <div
-            className="h-4 w-4 animate-spin rounded-full border-[2px] border-[var(--glass-border)] border-t-[var(--brand-strong)]"
-            role="status"
-            aria-label="Loading"
-          />
-        </div>
+        <SkeletonBoard columns={4} label="Loading projects" className="p-1" />
       )}
       {!showProjectsLoadingState && statusRowsLoaded && filtered.length === 0 && (
         <div className="flex flex-col items-center gap-3 px-4 py-10">
@@ -3173,14 +3167,7 @@ export default function DashboardPage() {
           // bigger than the gap-2 between cards instead of matching it.
           <div className="-mx-3 md:-mx-4 lg:hidden">
                 {showProjectsLoadingState && (
-                  <div className="flex min-h-[60vh] items-center justify-center gap-2 text-[13px] font-semibold" style={{ color: dashboardPalette.textMuted }}>
-                    Loading projects...
-                    <div
-                      className="h-4 w-4 animate-spin rounded-full border-[2px] border-[var(--glass-border)] border-t-[var(--brand-strong)]"
-                      role="status"
-                      aria-label="Loading"
-                    />
-                  </div>
+                  <SkeletonCards count={4} label="Loading projects" className="px-2 pt-2" />
                 )}
                 {!showProjectsLoadingState && filtered.length === 0 && (
                   <div className="px-3 py-10">
@@ -3331,14 +3318,7 @@ export default function DashboardPage() {
                   </div>
                 )}
                 {!isLoading && visibleProjects.length < filtered.length && (
-                  <div className="flex items-center justify-center gap-2 px-3 py-4 text-center text-[12px] font-semibold" style={{ color: dashboardPalette.textMuted }}>
-                    Loading more projects...
-                    <div
-                      className="h-3.5 w-3.5 animate-spin rounded-full border-[2px] border-[var(--glass-border)] border-t-[var(--brand-strong)]"
-                      role="status"
-                      aria-label="Loading"
-                    />
-                  </div>
+                  <SkeletonCards count={1} label="Loading more projects" className="px-2 py-2" />
                 )}
               </div>
           )}
@@ -3527,14 +3507,7 @@ export default function DashboardPage() {
                   {showProjectsLoadingState && (
                     <tr>
                       <td className="py-3" style={{ color: dashboardPalette.textMuted }} colSpan={hideTagsColumnInList ? 5 : 6}>
-                        <div className="flex min-h-[60vh] items-center justify-center gap-2">
-                          Loading projects...
-                          <div
-                            className="h-4 w-4 animate-spin rounded-full border-[2px] border-[var(--glass-border)] border-t-[var(--brand-strong)]"
-                            role="status"
-                            aria-label="Loading"
-                          />
-                        </div>
+                        <SkeletonRows count={8} avatar={false} label="Loading projects" />
                       </td>
                     </tr>
                   )}
@@ -3656,14 +3629,7 @@ export default function DashboardPage() {
                   {!isLoading && visibleProjects.length < filtered.length && (
                     <tr>
                       <td className="py-4 text-center" style={{ color: dashboardPalette.textMuted, backgroundColor: dashboardPalette.panelBg }} colSpan={hideTagsColumnInList ? 5 : 6}>
-                        <div className="flex items-center justify-center gap-2">
-                          Loading more projects...
-                          <div
-                            className="h-3.5 w-3.5 animate-spin rounded-full border-[2px] border-[var(--glass-border)] border-t-[var(--brand-strong)]"
-                            role="status"
-                            aria-label="Loading"
-                          />
-                        </div>
+                        <SkeletonRows count={1} avatar={false} label="Loading more projects" />
                       </td>
                     </tr>
                   )}

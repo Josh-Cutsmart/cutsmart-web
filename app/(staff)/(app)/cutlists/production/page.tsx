@@ -7,6 +7,7 @@ import { useAuth } from "@/lib/auth-context";
 import { fetchCutlists, fetchProjects } from "@/lib/firestore-data";
 import { canAccess } from "@/lib/permissions";
 import type { Cutlist, Project } from "@/lib/types";
+import { SkeletonLines } from "@/components/skeleton";
 
 export default function ProductionCutlistPage() {
   const { user } = useAuth();
@@ -51,7 +52,7 @@ export default function ProductionCutlistPage() {
               <CardTitle>Current revision</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2 text-sm text-[var(--text-main)]">
-              {isLoading && <p>Loading production cutlist...</p>}
+              {isLoading && <SkeletonLines lines={3} />}
               {project && <p>Project: {project.name}</p>}
               <p>Revision: {production?.revision ?? "-"}</p>
               <p>Generated: {production?.generatedAt ?? "-"}</p>

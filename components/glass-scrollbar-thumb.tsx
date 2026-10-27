@@ -231,7 +231,27 @@ export function GlassScrollbarThumb({
       const length = next ? next.length : null;
       setThumbLength((prev) => (prev === length ? prev : length));
     };
+    // Something it's in sliding (an animation moving it — the calendar's Previous / Next): its box is mid-move, so it's
+    // measured once that's done instead — measured now, the track would be left wherever the slide had got to.
+    let disposed = false;
+    let awaitingSlide = false;
+    const slidingAnimations = () =>
+      document.getAnimations().filter((a) => {
+        const target = a.playState === "running" && a.effect instanceof KeyframeEffect ? a.effect.target : null;
+        return target instanceof Element && target.contains(anchorEl);
+      });
     const update = () => {
+      const sliding = el === document.documentElement ? [] : slidingAnimations();
+      if (sliding.length) {
+        if (!awaitingSlide) {
+          awaitingSlide = true;
+          void Promise.allSettled(sliding.map((a) => a.finished)).then(() => {
+            awaitingSlide = false;
+            if (!disposed) scheduleUpdate();
+          });
+        }
+        return;
+      }
       // The document scrolls against the viewport, not its own (scrolled, page-tall) box.
       const anchorBox =
         el === document.documentElement
@@ -328,6 +348,7 @@ export function GlassScrollbarThumb({
     // anchor 1:1 via ResizeObserver/scroll-on-el alone, so the extra page-scroll listener above is
     // only actually needed for horizontal, but harmless (just a redundant recompute) either way.
     return () => {
+      disposed = true;
       el.removeEventListener("scroll", scheduleUpdate);
       window.removeEventListener("scroll", scheduleUpdate);
       window.removeEventListener("resize", scheduleRelayout);
