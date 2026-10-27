@@ -1590,13 +1590,15 @@ body[data-theme="dark"] .row-glow--brand {
    (lg:flex) — below it, neither should apply, same as the fixed 240px values they replace. */
 @media (min-width: 1024px) {
   .app-content-sidebar-margin {
-    margin-left: var(--sidebar-width-px, 240px);
     /* Nothing of the page under the sidebar (it's see-through glass): a card's shadow reaching left under it showed
        through as a faint strip down the sidebar's edge, coming and going as the browser redrew the glass. Cut off at
-       the sidebar's edge — the 12px is <main>'s own left padding, so shadows still show in the gap beside it. (clip,
-       not hidden: it isn't a scroller, so sticky bars inside still stick; fixed pop-ups aren't cut.) */
+       the sidebar's edge: this box starts there (<main>'s 12px left padding taken back off the margin and put inside
+       as padding instead), so the gap beside the sidebar is inside the cut and shadows and anything pulled a few px
+       left still show in it. Not overflow-clip-margin — Chrome ignores it unless both axes clip. (clip, not hidden:
+       it isn't a scroller, so sticky bars inside still stick; fixed pop-ups aren't cut.) */
+    margin-left: calc(var(--sidebar-width-px, 240px) - 12px);
+    padding-left: 12px;
     overflow-x: clip;
-    overflow-clip-margin: 12px;
   }
   .app-top-bar-sidebar-offset {
     left: var(--sidebar-width-px, 240px);
