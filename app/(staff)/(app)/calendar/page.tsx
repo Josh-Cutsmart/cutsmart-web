@@ -1489,21 +1489,21 @@ function CalendarPageContent() {
             </div>
           );
         })}
-        {/* The week's events (continuous bars and single-day chips), positioned under the day numbers. */}
-        <div className="pointer-events-none absolute inset-x-0" style={{ top: DAY_HEADER_PX, height: L * MONTH_SLOT_H }}>
-          {renderBars(bars, weekStart, cols, L, weekCols, MONTH_SLOT_H, MONTH_SLOT_GAP)}
-        </div>
-        {/* Today, outlined — over its events, so a bar across it doesn't hide the outline. */}
+        {/* Today, outlined — over the day cells but under the events (they come after it), so a bar across it sits on top. */}
         {(() => {
           const todayCol = days.findIndex((dd) => sameDay(dd, today));
           if (todayCol < 0) return null;
           return (
             <div
-              className="pointer-events-none absolute inset-y-0 z-[6]"
+              className="pointer-events-none absolute inset-y-0"
               style={{ left: `${(todayCol / cols) * 100}%`, width: `${(1 / cols) * 100}%`, boxShadow: TODAY_RING }}
             />
           );
         })()}
+        {/* The week's events (continuous bars and single-day chips), positioned under the day numbers. */}
+        <div className="pointer-events-none absolute inset-x-0" style={{ top: DAY_HEADER_PX, height: L * MONTH_SLOT_H }}>
+          {renderBars(bars, weekStart, cols, L, weekCols, MONTH_SLOT_H, MONTH_SLOT_GAP)}
+        </div>
       </div>
     );
   };
