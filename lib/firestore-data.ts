@@ -1968,6 +1968,12 @@ export async function restoreArchivedProject(project: Project): Promise<boolean>
   });
 }
 
+// archiveProject undone straight away (the Undo bar, after the project page's Archive button): back just as it was —
+// not restored from the archive, so its archive delay isn't restarted (archiveRestoredAtIso is left as it was).
+export async function unarchiveProject(project: Project): Promise<boolean> {
+  return updateProjectPatch(project, { isArchived: false, archivedAtIso: "" });
+}
+
 // Archives the company's projects that have sat in a completed status for longer than Company
 // Settings' "Archive completed projects after" (see isPastArchiveDelay). Under "Instantly" a project is
 // archived by updateProjectStatus the moment it's completed; this still catches any that weren't (e.g.
@@ -2882,6 +2888,19 @@ export async function deleteGridVersion(project: Project, kind: GridVersionKind,
   }
 }
 
+// A deleted version put back (the Undo bar's undo, on the project page): its document again, at its own id, as it was.
+export async function restoreGridVersion(project: Project, kind: GridVersionKind, version: SpecsGridVersion): Promise<boolean> {
+  const ref = await resolveProjectDocRef(project);
+  if (!ref || !version.id) return false;
+  try {
+    await setDoc(doc(ref, kind, version.id), JSON.parse(JSON.stringify(version)));
+    return true;
+  } catch (error) {
+    console.warn(`[restoreGridVersion] ${kind}/${version.id} write failed:`, error);
+    return false;
+  }
+}
+
 // Cutlist rows — same reasoning and pattern as the grid-version subcollections above, applied to
 // the project's own cutlist (previously the top-level `cutlist`/`cutlistJson` fields on the job
 // doc, re-serialized in full on every single row edit). "production" is the real Production
@@ -3700,6 +3719,19 @@ export async function deleteProductComparison(project: Project, comparisonId: st
     return true;
   } catch (error) {
     console.warn(`[deleteProductComparison] ${comparisonId} write failed:`, error);
+    return false;
+  }
+}
+
+// A deleted comparison put back (the Undo bar's undo): its document again, at its own id, as it was.
+export async function restoreProductComparison(project: Project, comparison: ProductComparison): Promise<boolean> {
+  const ref = await resolveProjectDocRef(project);
+  if (!ref || !comparison.id) return false;
+  try {
+    await setDoc(doc(ref, "productComparisons", comparison.id), JSON.parse(JSON.stringify(comparison)));
+    return true;
+  } catch (error) {
+    console.warn(`[restoreProductComparison] ${comparison.id} write failed:`, error);
     return false;
   }
 }

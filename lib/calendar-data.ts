@@ -262,6 +262,32 @@ export function subscribeProjectCalendarEvents(
   );
 }
 
+// Live-updating events linked to any project (archived ones left out) — the Calendar's Schedule panel, telling the
+// projects with something booked from those with nothing yet. Returns an unsubscribe function.
+export function subscribeProjectLinkedCalendarEvents(
+  companyId: string,
+  onEvents: (events: CalendarEvent[]) => void,
+  onError?: (error: unknown) => void,
+): () => void {
+  const cid = String(companyId || "").trim();
+  if (!db || !cid) {
+    onEvents([]);
+    return () => {};
+  }
+  // (Every linked event has a project id; unlinked ones have "".)
+  const q = query(collection(db, "companies", cid, "calendarEvents"), where("projectId", ">", ""));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const events = snap.docs
+        .map((d) => toEvent(d.id, (d.data() ?? {}) as Record<string, unknown>))
+        .filter((e): e is CalendarEvent => Boolean(e));
+      onEvents(events);
+    },
+    (error) => onError?.(error),
+  );
+}
+
 // One event (null if it's gone or archived) — e.g. to open it from a calendar reminder notification.
 export async function fetchCalendarEvent(companyId: string, eventId: string): Promise<CalendarEvent | null> {
   if (!db || !companyId || !eventId) return null;

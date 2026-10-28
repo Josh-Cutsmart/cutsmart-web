@@ -2,7 +2,7 @@
 
 import { createContext, Fragment, startTransition, useCallback, useContext, useDeferredValue, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type FocusEvent as ReactFocusEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type TouchEvent as ReactTouchEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { GlassModalHeader } from "@/components/glass-modal-header";
-import { CopyButton } from "@/components/copy-button";
+import { CopyButton, CopyListButton } from "@/components/copy-button";
 import { glassShineStyle } from "@/lib/glass-shine";
 import { haptic } from "@/lib/haptics";
 import { createPortal } from "react-dom";
@@ -50,7 +50,7 @@ import { useKeepAnchoredPopoverAboveKeyboard } from "@/lib/use-keep-anchored-pop
 import { useKeepMenuInView } from "@/lib/use-keep-menu-in-view";
 import { RoomNameCombobox } from "@/components/room-name-combobox";
 import { contrastTextForFill } from "@/lib/user-profile-format";
-import { hardwareItemNumber, normalizeBoardFinishes, normalizeHardwareRows, normalizeMmOptions, normalizeSheetSizes, type HardwareTypeRow } from "@/lib/production-hardware";
+import { DEFAULT_CART_COPY_FORMAT, drawerHeightItemNumber, formatCartCopyLine, hardwareItemNumber, normalizeBoardFinishes, normalizeHardwareRows, normalizeMmOptions, normalizeSheetSizes, type HardwareTypeRow } from "@/lib/production-hardware";
 import { GlassSwitch, modalCloseButtonClass } from "@/components/settings-ui";
 import { normalizeSmallJobStatuses } from "@/lib/small-jobs";
 import { ContactCardPopup } from "@/components/contact-card-popup";
@@ -84,7 +84,9 @@ import {
   addProjectChange,
   addUserNotification,
   deleteGridVersion,
+  restoreGridVersion,
   deleteProductComparison,
+  restoreProductComparison,
   fetchChanges,
   fetchCutlists,
   fetchGridVersion,
@@ -106,6 +108,7 @@ import {
   createOrAttachManualCompanyClient,
   findCompanyClientForProject,
   archiveProject,
+  unarchiveProject,
   saveCutlistDataMerged,
   saveSalesItemsRoomsMerged,
   saveProjectListMerged,
@@ -129,11 +132,13 @@ import {
   updateProjectTags,
 } from "@/lib/firestore-data";
 import type { CompanyClientRow, CompanyMemberOption } from "@/lib/firestore-data";
+import { isStaffContactCategory } from "@/lib/staff-contacts";
 import { bumpCompanyStatCounter, bumpCompanyStatLeaderboard } from "@/lib/company-stats";
 import { getProductionUnlockRemainingSeconds, projectTabAccess } from "@/lib/permissions";
 import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
 import { SubscribeBellIcon } from "@/components/subscribe-bell-icon";
 import { useFloatingNotice } from "@/components/floating-notice";
+import { useUndo } from "@/components/undo-bar";
 import { AcceptQuoteOnBehalfModal, SubmitSpecsOnBehalfModal, type OnBehalfPrepared, type OnBehalfResult } from "@/components/client-on-behalf-modals";
 import { actedByLabel } from "@/lib/on-behalf";
 import { bonusLockMessage, fetchBonusLock } from "@/lib/completed-projects";
@@ -4967,11 +4972,16 @@ function drawerBreakdownForDrawer(hardwareRows: HardwareTypeRow[], category: str
     drawerOptions.find((row) => row.isDefault) ??
     drawerOptions[0];
   const letterValueMap: Record<string, string> = {};
+  // (Each height's own runner lengths — some don't come in every length — and the weights each of those comes in.)
+  const lengthsByHeight: Record<string, number[]> = {};
+  const weightsByHeight: Record<string, Record<number, number[]>> = {};
   for (const opt of drawerRow?.heightOptions ?? []) {
     const token = String(opt.token || "").trim();
     if (!token) continue;
     const key = token.toLowerCase();
     letterValueMap[key] = sanitizeDerivedValue(opt.value) || token;
+    lengthsByHeight[key] = opt.lengths.slice().sort((a, b) => a - b);
+    weightsByHeight[key] = Object.fromEntries(opt.byLength.map((entry) => [entry.length, entry.weights]));
   }
   return {
     bottomsWidthMinus: drawerRow?.bottomsWidthMinus ?? null,
@@ -4980,9 +4990,206 @@ function drawerBreakdownForDrawer(hardwareRows: HardwareTypeRow[], category: str
     hardwareLengths: (drawerRow?.hardwareLengths ?? []).slice().sort((a, b) => a - b),
     spaceRequirement: drawerRow?.spaceRequirement ?? null,
     letterValueMap,
+    lengthsByHeight,
+    hardwareWeights: drawerRow?.hardwareWeights ?? [],
+    defaultWeight: drawerRow?.defaultWeight ?? null,
+    weightsByHeight,
   };
 }
 type DrawerBreakdown = ReturnType<typeof drawerBreakdownForDrawer>;
+
+// The runner lengths a drawer of this height comes in: its drawer type's, less any switched off for the height (Company
+// Settings › Hardware) — all of them for a height the drawer type doesn't have ("" — any).
+function runnerLengthsForHeight(breakdown: DrawerBreakdown, height: string): number[] {
+  const key = drawerHeightKey(height);
+  return (key && breakdown.lengthsByHeight[key]) || breakdown.hardwareLengths;
+}
+// (A height as the breakdown keeps it: lower case, without a "(x2)".)
+function drawerHeightKey(height: string): string {
+  return String(height || "")
+    .replace(/\s*\(\s*x\s*\d+\s*\)\s*$/i, "")
+    .trim()
+    .toLowerCase();
+}
+// A drawer's runner length: the longest its height comes in that fits its depth, less the space its drawer type needs
+// behind it — 0 when none fits (or none are set up).
+function drawerRunnerLength(breakdown: DrawerBreakdown, depth: number, height: string): number {
+  if (!(depth > 0)) return 0;
+  const room = Math.max(0, depth - Number(breakdown.spaceRequirement ?? 0));
+  const fits = runnerLengthsForHeight(breakdown, height).filter((length) => length <= room);
+  return fits.length ? Math.max(...fits) : 0;
+}
+// The weights a drawer comes in at its height and runner length (Company Settings › Hardware) — all its drawer type's for
+// a height it doesn't have; none for a drawer type with no weights. No runner fitting (no depth yet, or one being typed):
+// just its drawer type's default (or its lightest) — so none can be picked that its height and length may not come in.
+function drawerWeightOptions(breakdown: DrawerBreakdown, height: string, runner: number): number[] {
+  const all = breakdown.hardwareWeights.slice().sort((a, b) => a - b);
+  if (!all.length) return [];
+  if (!(runner > 0)) return [breakdown.defaultWeight != null && all.includes(breakdown.defaultWeight) ? breakdown.defaultWeight : all[0]];
+  const byLength = breakdown.weightsByHeight[drawerHeightKey(height)];
+  if (byLength && byLength[runner]) return byLength[runner].slice().sort((a, b) => a - b);
+  return all;
+}
+// How much wider the Cutlist Entry's Depth column goes with a drawer box opened out (cutlistEntryGridTemplateFor) — room for
+// its letter, the depth with a little room, and its weight.
+const DRAWER_BOX_OPEN_EXTRA = 64;
+// A drawer's runner weight pill (drawerWeightPill): its weight — faint when it's Auto, solid when it's its own — pressed
+// for the next it comes in. `wheel` (the Cutlist Entry's open drawer box): hovered, the pill itself stretches up and down
+// (.drawer-weight-wheel, globals.css) to every weight its drawer type has, in their Company Settings order — its own
+// staying where it was, the rest above and below as a wheel's rows, those it doesn't come in at its height and runner
+// length struck through (still shown) — one clicked to pick it. Pressing in it keeps the cursor where it was (the box
+// stays open); scrolling, or leaving it, shrinks it back.
+function DrawerWeightPill({
+  weights,
+  options,
+  weight,
+  autoWeight,
+  height,
+  runner,
+  editable,
+  size,
+  wheel,
+  onSet,
+}: {
+  // Its drawer type's weights, in their Company Settings order — and those it comes in at its height and runner length.
+  weights: number[];
+  options: number[];
+  weight: number;
+  autoWeight: number;
+  height: string;
+  runner: number;
+  editable: boolean;
+  size: "small" | "large";
+  wheel: boolean;
+  onSet: (weight: number) => void;
+}) {
+  // (Where the stretched pill goes: over the pill, its own row level with it — the pill's size and text colour.)
+  const [wheelAt, setWheelAt] = useState<{ left: number; top: number; width: number; rowH: number; color: string } | null>(null);
+  useEffect(() => {
+    if (!wheelAt) return;
+    const close = () => setWheelAt(null);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    return () => {
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+    };
+  }, [wheelAt]);
+  const own = weight !== autoWeight;
+  const canPick = editable && options.length > 1;
+  const next = options[(options.indexOf(weight) + 1) % options.length];
+  const at = Math.max(0, weights.indexOf(weight));
+  const showWheel = wheel && weights.length > 1;
+  return (
+    <>
+      <button
+        type="button"
+        // (Not disabled when there's nothing else to pick — a disabled button isn't hovered, and its wheel still shows the
+        // weights it doesn't come in, struck through.)
+        disabled={!canPick && !showWheel}
+        aria-disabled={!canPick}
+        onClick={(e) => {
+          e.stopPropagation();
+          if (canPick) onSet(next);
+        }}
+        onDoubleClick={(e) => e.stopPropagation()}
+        onMouseEnter={(e) => {
+          if (!showWheel || wheelAt) return;
+          const rect = e.currentTarget.getBoundingClientRect();
+          setWheelAt({
+            left: rect.left,
+            top: rect.top - at * rect.height,
+            width: rect.width,
+            rowH: rect.height,
+            color: getComputedStyle(e.currentTarget).color,
+          });
+        }}
+        title={
+          showWheel
+            ? `${weight}kg${own ? "" : " (Auto)"}`
+            : `${weight}kg${own ? "" : " (Auto)"}${
+                canPick ? ` — click for ${next}kg${next === autoWeight ? " (Auto)" : ""}` : ` — the only weight this ${height}${runner ? ` at ${runner}mm` : ""} comes in`
+              }`
+        }
+        className={`inline-flex shrink-0 items-center justify-center rounded-full border leading-none transition disabled:cursor-default ${
+          size === "large" ? "h-6 min-w-6 px-1.5 text-[11px]" : "h-[15px] min-w-[15px] px-[3px] text-[9px]"
+        } ${own ? "font-semibold" : "font-normal"} ${canPick ? "hover:brightness-95" : "cursor-default"}`}
+        style={{
+          backgroundColor: `color-mix(in srgb, currentColor ${own ? 22 : 8}%, transparent)`,
+          borderColor: `color-mix(in srgb, currentColor ${own ? 55 : 30}%, transparent)`,
+        }}
+      >
+        {/* (Opened out — the entry's open box: with its kg. Small — the list: just the number, kg in its title.) */}
+        {size === "large" ? `${weight}kg` : weight}
+      </button>
+      {wheelAt && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              role="listbox"
+              aria-label={`${height} drawer weight`}
+              className="drawer-weight-wheel fixed overflow-hidden rounded-[12px] border leading-none"
+              style={{
+                zIndex: 2147483000,
+                left: wheelAt.left,
+                top: wheelAt.top,
+                width: wheelAt.width,
+                color: wheelAt.color,
+                // (The pill's own look, made solid over what's behind it.)
+                backgroundColor: "var(--panel-bg)",
+                backgroundImage: `linear-gradient(color-mix(in srgb, ${wheelAt.color} ${own ? 22 : 8}%, transparent), color-mix(in srgb, ${wheelAt.color} ${own ? 22 : 8}%, transparent))`,
+                borderColor: `color-mix(in srgb, ${wheelAt.color} ${own ? 55 : 30}%, transparent)`,
+                // (Opening out from its own row — .drawer-weight-wheel.)
+                ["--wheel-top" as string]: `${at * wheelAt.rowH}px`,
+                ["--wheel-bottom" as string]: `${(weights.length - at - 1) * wheelAt.rowH}px`,
+              }}
+              onMouseLeave={() => setWheelAt(null)}
+              onMouseDown={(e) => e.preventDefault()}
+            >
+              {weights.map((item) => {
+                const ok = options.includes(item);
+                const current = item === weight;
+                return (
+                  <button
+                    key={item}
+                    type="button"
+                    role="option"
+                    aria-selected={current}
+                    disabled={!ok || !editable}
+                    onClick={() => {
+                      if (ok && !current) onSet(item);
+                      setWheelAt(null);
+                    }}
+                    title={
+                      ok
+                        ? `${item}kg${item === autoWeight ? " (Auto)" : ""}`
+                        : `Doesn't come in ${item}kg — ${height}${runner ? ` at ${runner}mm` : ""}`
+                    }
+                    className={`flex w-full items-center justify-center text-[11px] transition-colors disabled:cursor-default ${
+                      current ? (own ? "font-semibold" : "font-normal") : "font-normal"
+                    } ${ok ? "" : "line-through"} ${ok && !current && editable ? "hover:bg-[color-mix(in_srgb,currentColor_10%,transparent)]" : ""}`}
+                    style={{ height: wheelAt.rowH, opacity: current ? 1 : ok ? 0.7 : 0.4 }}
+                  >
+                    {item}kg
+                  </button>
+                );
+              })}
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
+  );
+}
+// A drawer's runner weight: its own (CutlistRow.drawerWeights) when it comes in it, else its drawer type's default when it
+// does, else the lightest it comes in — 0 for a drawer type with no weights.
+function drawerWeightFor(breakdown: DrawerBreakdown, height: string, runner: number, own: string): number {
+  const options = drawerWeightOptions(breakdown, height, runner);
+  if (!options.length) return 0;
+  const ownWeight = toNum(own);
+  if (ownWeight > 0 && options.includes(ownWeight)) return ownWeight;
+  if (breakdown.defaultWeight != null && options.includes(breakdown.defaultWeight)) return breakdown.defaultWeight;
+  return options[0];
+}
 
 // The height letters a drawer type offers (its drawer rows' Height picker).
 function drawerHeightLettersForDrawer(hardwareRows: HardwareTypeRow[], category: string, drawerType: string): string[] {
@@ -5657,6 +5864,18 @@ function withDrawerDepth<T extends { height?: string; depth?: string; drawerDept
   if (value.trim() && value.trim() !== String(row.depth ?? "").trim()) drawerDepths[key] = value.trim();
   else delete drawerDepths[key];
   return { ...row, drawerDepths };
+}
+// Kept weights as stored — only drawers with a weight of their own ("B#2"; a height on its own, its first).
+function normalizeDrawerWeights(raw: unknown): Record<string, string> | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [token, value] of Object.entries(raw as Record<string, unknown>)) {
+    const name = String(token ?? "").trim().toUpperCase();
+    const key = name && !name.includes("#") ? `${name}#1` : name;
+    const weight = String(value ?? "").trim();
+    if (key && toNum(weight) > 0) out[key] = weight;
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 // Kept depths as stored — only drawers with a depth ("B#2"; a height on its own, its first).
 function normalizeDrawerDepths(raw: unknown): Record<string, string> | undefined {
@@ -7411,6 +7630,7 @@ function serializeCutlistRowsForStorage(
       Width: row.width,
       Depth: row.depth,
       ...(normalizeDrawerDepths(row.drawerDepths) ? { DrawerDepths: normalizeDrawerDepths(row.drawerDepths) } : {}),
+      ...(normalizeDrawerWeights(row.drawerWeights) ? { DrawerWeights: normalizeDrawerWeights(row.drawerWeights) } : {}),
       Quantity: row.quantity,
         Clashing: isCabinetry
           ? ""
@@ -7458,6 +7678,7 @@ function serializeCutlistRowsSnapshot(rows: CutlistRow[]) {
       width: String(row.width ?? ""),
       depth: String(row.depth ?? ""),
       drawerDepths: normalizeDrawerDepths(row.drawerDepths) ?? null,
+      drawerWeights: normalizeDrawerWeights(row.drawerWeights) ?? null,
       quantity: String(row.quantity ?? ""),
       clashing: String(row.clashing ?? ""),
       clashLeft: String(row.clashLeft ?? ""),
@@ -7551,11 +7772,55 @@ function placeProjectHeaderGlass(glass: HTMLElement | null, titleBar: HTMLElemen
   if (titleBar.dataset.glassOn !== glassOn) titleBar.dataset.glassOn = glassOn;
 }
 
+// What a delete takes out of a list, each with the place it was at — kept for its Undo (putBackAt).
+type TakenOut<T> = { index: number; item: T };
+function takenOutOf<T>(list: T[], isTaken: (item: T) => boolean): TakenOut<T>[] {
+  return list.flatMap((item, index) => (isTaken(item) ? [{ index, item }] : []));
+}
+// ...and put back: each at the place it was (the lowest first, so each one going back leaves the next one's place as it
+// was), or at the end when the list has grown shorter since. One that's back already (the same key) isn't put in twice.
+function putBackAt<T>(list: T[], taken: TakenOut<T>[], keyOf: (item: T) => string): T[] {
+  const present = new Set(list.map(keyOf));
+  const next = [...list];
+  for (const { index, item } of [...taken].sort((a, b) => a.index - b.index)) {
+    if (present.has(keyOf(item))) continue;
+    next.splice(Math.min(index, next.length), 0, item);
+  }
+  return next;
+}
+// A drawer height taken off a row put back (its Undo): where it was among the row's heights, and the row's quantity (how
+// many heights it lists) with it — as the draft rows' own height-token updates set it.
+function withDrawerHeightTokenBack<T extends { height: string; quantity: string }>(row: T, token: string, index: number): T {
+  const tokens = parseDrawerHeightTokens(String(row.height ?? ""));
+  tokens.splice(Math.min(index, tokens.length), 0, token);
+  const formatted = formatDrawerHeightTokens(tokens);
+  const count = parseDrawerHeightTokens(formatted).length;
+  return { ...row, height: formatted, quantity: count ? String(count) : "" };
+}
+// What an undo on this page saves through, from the page's latest render (undoLatestRef in ProjectDetailsPage).
+type UndoLatest = {
+  productionCutlistRows: (taken: TakenOut<CutlistRow>[]) => Promise<unknown>;
+  initialCutlistRows: (taken: TakenOut<CutlistRow>[]) => Promise<unknown>;
+  boardRow: (taken: TakenOut<ProductionBoardRow>) => Promise<unknown>;
+  projectTag: (tag: string, index: number) => Promise<unknown>;
+  salesRoom: (taken: TakenOut<SalesItemsRoomBoardRow>) => Promise<unknown>;
+  checklist: (taken: TakenOut<ProjectChecklist>) => Promise<unknown>;
+  orderLine: (kind: "hinges" | "other", category: string, taken: TakenOut<OrderHingeRow>) => Promise<unknown>;
+  orderMiscRow: (category: string, lineKey: string, row: OrderMiscDraftRow) => Promise<unknown>;
+};
+
 export default function ProjectDetailsPage() {
   const params = useParams<{ projectId: string }>();
   const router = useRouter();
   const searchParams = useSearchParams();
   const { user, membershipStatus } = useAuth();
+  // The Undo bar (components/undo-bar.tsx): every delete and remove on this page offers it, putting back what went.
+  const offerUndo = useUndo();
+  // An undo runs seconds after its delete, the page having rendered again since (each save sets new state) — so the
+  // ones that save settings back go through the latest render's savers (set below, just before the loading screens),
+  // not the delete's own: those still hold the project as it was then, and saving its settings again would lose
+  // whatever has been saved since.
+  const undoLatestRef = useRef<UndoLatest | null>(null);
   const {
     registerScopeTabs,
     suppressScope,
@@ -8198,7 +8463,8 @@ export default function ProjectDetailsPage() {
     // own comment in lib/specs-grid-types.ts). The disabled/hidden delete icon already blocks this
     // in the normal UI path; this is the same guarantee for the confirm modal itself.
     const target = quoteGridVersions.find((v) => v.id === versionId);
-    if (target?.acceptedAtIso || target?.sentToClient) return;
+    if (!target || target.acceptedAtIso || target.sentToClient) return;
+    const index = quoteGridVersions.indexOf(target);
     setIsDeletingQuoteVersion(true);
     try {
       const ok = await deleteGridVersion(project, "quoteGridVersions", versionId);
@@ -8213,6 +8479,11 @@ export default function ProjectDetailsPage() {
       // animation's own landing target) out from under the still-playing shrink.
       window.setTimeout(() => {
         setQuoteGridVersions((prev) => prev.filter((v) => v.id !== versionId));
+        // Undo (offered as the row goes, so it can't be put back before then): its document again, the same id and grid.
+        offerUndo(`${target.name || "Version"} deleted`, async () => {
+          if (!(await restoreGridVersion(project, "quoteGridVersions", target))) return;
+          setQuoteGridVersions((prev) => putBackAt(prev, [{ index, item: target }], (v) => v.id));
+        });
       }, DEFAULT_GLASS_MODAL_ORIGIN_CLOSE_HOLD_MS);
     } finally {
       setIsDeletingQuoteVersion(false);
@@ -10258,6 +10529,12 @@ export default function ProjectDetailsPage() {
   const [editingHingeCell, setEditingHingeCell] = useState<{ rowId: string; direction: "up" | "down"; index: number } | null>(null);
   // A list Drawer row's depth for one of its drawers being changed (renderDrawerDepthLines).
   const [editingDrawerDepth, setEditingDrawerDepth] = useState<{ rowId: string; key: string; value: string } | null>(null);
+  // The Cutlist Entry's drawer box opened out (renderDrawerDepthBoxes) — its row and drawer, and the depth as it's being
+  // typed: kept as typed, even empty (a drawer after the first with no depth of its own is the row's — its box filling
+  // straight back in with that as the last digit went). Closed, it shows the one it's at. And the one sliding back closed,
+  // for a moment — at the same time as another sliding open, when one's clicked straight from another.
+  const [openDrawerDepthBox, setOpenDrawerDepthBox] = useState<{ rowId: string; key: string; value: string } | null>(null);
+  const [closingDrawerDepthBox, setClosingDrawerDepthBox] = useState<{ rowId: string; key: string } | null>(null);
   const [editingHingeCellDraft, setEditingHingeCellDraft] = useState("");
   const editingFixedShelfRef = useRef("");
   const editingAdjustableShelfRef = useRef("");
@@ -11265,6 +11542,7 @@ export default function ProjectDetailsPage() {
             hingesUp: normalizeDoorHingeValues(item.hingesUp ?? item.HingesUp ?? item.hingeUp ?? item.HingeUp),
             hingesDown: normalizeDoorHingeValues(item.hingesDown ?? item.HingesDown ?? item.hingeDown ?? item.HingeDown),
             drawerDepths: normalizeDrawerDepths(item.DrawerDepths ?? item.drawerDepths),
+            drawerWeights: normalizeDrawerWeights(item.DrawerWeights ?? item.drawerWeights),
             information: String(item.Information ?? item.information ?? ""),
             grain: grainParsed.grain,
             grainValue: grainParsed.grainValue,
@@ -14188,9 +14466,39 @@ export default function ProjectDetailsPage() {
     });
   };
 
+  // The Items board's rooms are only saved by Save & back — so each of these Undos just puts the board back as it was
+  // (the room, or its items, where they were).
   const deleteItemsRoom = (roomId: string) => {
+    const taken = takenOutOf(salesItemsBoardRooms, (room) => room.id === roomId);
     setSalesItemsBoardRooms((prev) => prev.filter((room) => room.id !== roomId));
     setEditingItemsRoomId((prev) => (prev === roomId ? "" : prev));
+    if (!taken[0]) return;
+    offerUndo(`${taken[0].item.name || "Room"} deleted`, () =>
+      setSalesItemsBoardRooms((prev) => syncSalesItemsRoomTotals(putBackAt(prev, taken, (room) => room.id))),
+    );
+  };
+
+  // Items taken out of rooms put back (Clear Room / Clear All's Undo): each room's as they were, with any added since.
+  const putSalesItemsBack = (itemsByRoomId: Map<string, SalesItemsRoomBoardRow["items"]>) =>
+    setSalesItemsBoardRooms((prev) =>
+      syncSalesItemsRoomTotals(
+        prev.map((room) => {
+          const items = itemsByRoomId.get(room.id);
+          return items ? { ...room, items: putBackAt(room.items, takenOutOf(items, () => true), (item) => item.itemId) } : room;
+        }),
+      ),
+    );
+
+  const removeSalesItemsRoomItem = (roomId: string, itemId: string) => {
+    const room = salesItemsBoardRooms.find((row) => row.id === roomId);
+    const taken = room ? takenOutOf(room.items, (item) => item.itemId === itemId) : [];
+    setSalesItemsBoardRooms((prev) => removeItemFromSalesItemsRoom(prev, roomId, itemId));
+    if (!taken[0]) return;
+    offerUndo(`${taken[0].item.name || "Item"} removed`, () =>
+      setSalesItemsBoardRooms((prev) =>
+        syncSalesItemsRoomTotals(prev.map((row) => (row.id === roomId ? { ...row, items: putBackAt(row.items, taken, (item) => item.itemId) } : row))),
+      ),
+    );
   };
 
   const confirmAddItemsRoom = () => {
@@ -14216,17 +14524,23 @@ export default function ProjectDetailsPage() {
 
   const clearActiveSalesItemsRoom = () => {
     if (!activeSalesItemsRoomId) return;
+    const clearedRoom = salesItemsBoardRooms.find((row) => row.id === activeSalesItemsRoomId);
     setSalesItemsBoardRooms((prev) =>
       syncSalesItemsRoomTotals(
         prev.map((room) => (room.id === activeSalesItemsRoomId ? { ...room, items: [] } : room)),
       ),
     );
+    if (!clearedRoom?.items.length) return;
+    offerUndo(`${clearedRoom.name || "Room"} cleared`, () => putSalesItemsBack(new Map([[clearedRoom.id, clearedRoom.items]])));
   };
 
   const clearAllSalesItemsRooms = () => {
+    const cleared = new Map(salesItemsBoardRooms.filter((room) => room.items.length).map((room) => [room.id, room.items]));
     setSalesItemsBoardRooms((prev) =>
       syncSalesItemsRoomTotals(prev.map((room) => ({ ...room, items: [] }))),
     );
+    if (!cleared.size) return;
+    offerUndo("All rooms cleared", () => putSalesItemsBack(cleared));
   };
 
   const saveAndBackFromSalesItems = async () => {
@@ -15625,15 +15939,17 @@ export default function ProjectDetailsPage() {
 
     // Its bottoms: one piece for each depth its drawers are at (each drawer's own — drawerDepthFor), named by their
     // drawers' heights ("A", "B ×2") when there's more than one.
-    const bottomDepthFor = (depthValue: number): number | null => {
+    // (The runner lengths its height comes in.)
+    const bottomDepthFor = (depthValue: number, height: string): number | null => {
       if (!(depthValue > 0)) return null;
       let depthForHardware = depthValue;
       if (drawerBreakdown.spaceRequirement != null) {
         depthForHardware = Math.max(0, depthForHardware - drawerBreakdown.spaceRequirement);
       }
       let roundedHardwareDepth = depthForHardware;
-      if (drawerBreakdown.hardwareLengths.length) {
-        const candidates = drawerBreakdown.hardwareLengths.filter((v) => v <= depthForHardware);
+      const runnerLengths = runnerLengthsForHeight(drawerBreakdown, height);
+      if (runnerLengths.length) {
+        const candidates = runnerLengths.filter((v) => v <= depthForHardware);
         if (candidates.length) roundedHardwareDepth = Math.max(...candidates);
       }
       return drawerBreakdown.bottomsDepthMinus != null ? roundedHardwareDepth - drawerBreakdown.bottomsDepthMinus : roundedHardwareDepth;
@@ -15655,10 +15971,10 @@ export default function ProjectDetailsPage() {
     const pieces: DrawerDerivedPiece[] = [];
     const bottomsByDepth = new Map<string, { depth: number | null; count: number; heights: string[] }>();
     const drawerKeys = drawerDepthKeys(row);
-    tokens.forEach((_token, index) => {
+    tokens.forEach((token, index) => {
       const drawerKey = drawerKeys[index] ?? "";
       const ownDepth = drawerKey ? toNum(drawerDepthFor(row, drawerKey)) : depthVal;
-      const bottomD = bottomDepthFor(ownDepth > 0 ? ownDepth : depthVal);
+      const bottomD = bottomDepthFor(ownDepth > 0 ? ownDepth : depthVal, token);
       const groupKey = bottomD == null ? "" : String(bottomD);
       const bottom = bottomsByDepth.get(groupKey) ?? { depth: bottomD, count: 0, heights: [] };
       bottom.count += 1;
@@ -16983,12 +17299,20 @@ export default function ProjectDetailsPage() {
   // opening it first. Only clears/resets the builder if the deleted comparison WAS the active one.
   const deleteProductComparisonById = async (comparisonId: string) => {
     if (!project || !comparisonId || !salesAccess.edit || isDeletingComparison) return;
+    const taken = takenOutOf(productComparisons, (c) => c.id === comparisonId);
     setIsDeletingComparison(true);
     const ok = await deleteProductComparison(project, comparisonId);
     setIsDeletingComparison(false);
     if (ok) {
       setProductComparisons((prev) => prev.filter((c) => c.id !== comparisonId));
       if (comparisonId === activeComparisonId) startNewProductComparison();
+      // Undo: its document again (the same id, rows and products), back in the list where it was.
+      if (taken[0]) {
+        offerUndo(`${taken[0].item.name || "Comparison"} deleted`, async () => {
+          if (!(await restoreProductComparison(project, taken[0].item))) return;
+          setProductComparisons((prev) => putBackAt(prev, taken, (c) => c.id));
+        });
+      }
     }
     setComparisonPendingDeleteId("");
   };
@@ -18173,8 +18497,11 @@ export default function ProjectDetailsPage() {
 
   const removeProjectChecklist = (checklistId: string) => {
     if (!project) return;
+    const taken = takenOutOf(projectChecklists, (cl) => cl.id === checklistId);
     checklistsState.setChecklistsOptimistic(projectChecklists.filter((cl) => cl.id !== checklistId));
     void deleteProjectChecklist(project, checklistId);
+    // Undo: its document again (the same id, ticks and all), and back in the list where it was.
+    if (taken[0]) offerUndo(`${taken[0].item.name || "Checklist"} removed`, () => undoLatestRef.current?.checklist(taken[0]));
   };
 
   useEffect(() => {
@@ -18324,19 +18651,7 @@ export default function ProjectDetailsPage() {
     if (!target) return;
     setIsDeletingQuoteSnapshot(true);
     try {
-      const storageClient = storage;
-      if (storageClient) {
-        const pathsToDelete = [target.pageHtmlPath, target.pdfPath, ...target.pageImagePaths].filter(Boolean);
-        await Promise.all(
-          pathsToDelete.map(async (path) => {
-            try {
-              await deleteObject(storageRef(storageClient, path));
-            } catch {
-              // Best-effort cleanup — legacy/missing refs shouldn't block removing the history entry.
-            }
-          }),
-        );
-      }
+      const index = salesQuoteSnapshots.findIndex((snapshot) => snapshot.id === snapshotId);
       const nextSnapshots = salesQuoteSnapshots.filter((snapshot) => snapshot.id !== snapshotId);
       const nextSales = {
         ...salesPayload,
@@ -18356,6 +18671,37 @@ export default function ProjectDetailsPage() {
       if (activeQuoteSnapshotId === snapshotId) {
         showLatestQuoteVersion();
       }
+      // Off the history now; its stored pages and PDF are deleted only as the Undo bar goes — Undo puts the entry back
+      // where it was (onto the sales data as it is by then), its files still there.
+      offerUndo(
+        `Version ${target.version} deleted`,
+        async () => {
+          const latestSales = extractSalesPayloadFromProject(projectRef.current);
+          const latestSnapshots = Array.isArray(latestSales.quoteSnapshots) ? (latestSales.quoteSnapshots as unknown[]) : [];
+          const snapshotIdOf = (snapshot: unknown) => String((snapshot as { id?: unknown } | null)?.id ?? "");
+          if (latestSnapshots.some((snapshot) => snapshotIdOf(snapshot) === target.id)) return;
+          await persistSalesPatch({
+            ...latestSales,
+            quoteSnapshots: putBackAt<unknown>(latestSnapshots, [{ index, item: target }], snapshotIdOf),
+          });
+        },
+        {
+          commit: async () => {
+            const storageClient = storage;
+            if (!storageClient) return;
+            const pathsToDelete = [target.pageHtmlPath, target.pdfPath, ...target.pageImagePaths].filter(Boolean);
+            await Promise.all(
+              pathsToDelete.map(async (path) => {
+                try {
+                  await deleteObject(storageRef(storageClient, path));
+                } catch {
+                  // Best-effort cleanup — legacy/missing refs shouldn't matter, the history entry is already gone.
+                }
+              }),
+            );
+          },
+        },
+      );
     } finally {
       setIsDeletingQuoteSnapshot(false);
     }
@@ -18439,6 +18785,7 @@ export default function ProjectDetailsPage() {
         width: String(seed?.width ?? ""),
       depth: String(seed?.depth ?? ""),
       drawerDepths: normalizeDrawerDepths(seed?.drawerDepths),
+      drawerWeights: normalizeDrawerWeights(seed?.drawerWeights),
       quantity: String(seed?.quantity ?? ""),
       clashing: joinClashing(left, right),
       clashLeft: left,
@@ -19702,15 +20049,8 @@ export default function ProjectDetailsPage() {
         return;
       }
 
-      const sourceToDelete = String(existingItems[removeIdx]?.url || "").trim();
-      if (storage && sourceToDelete) {
-        try {
-          const normalized = /^https?:\/\//i.test(sourceToDelete) ? sourceToDelete : sourceToDelete.replace(/^\/+/, "");
-          await deleteObject(storageRef(storage, normalized));
-        } catch {
-          // Deleting the storage object can fail for legacy/URL-only refs; continue removing reference.
-        }
-      }
+      const removedItem = existingItems[removeIdx];
+      const sourceToDelete = String(removedItem?.url || "").trim();
 
       const nextItems = existingItems.filter((_, i) => i !== removeIdx);
       const nextRefs = nextItems.map((item) => item.url).filter(Boolean);
@@ -19740,6 +20080,37 @@ export default function ProjectDetailsPage() {
         return Math.max(0, Math.min(prev, nextResolved.length - 1));
       });
       setLockMessage("");
+      // It's off the project now (saved, so nothing's lost if the page closes), but its stored file is only deleted as
+      // the Undo bar goes — so Undo can put it back (where it was, notes and all) without uploading it again.
+      offerUndo(
+        `${removedItem.name || "Image"} deleted`,
+        async () => {
+          const latest = projectRef.current;
+          if (!latest) return;
+          const items = normalizeProjectImageItemsForViewer(latest);
+          const restoredItems = putBackAt(items, [{ index: removeIdx, item: removedItem }], (item) => item.url);
+          if (restoredItems.length === items.length) return;
+          const restoredRefs = restoredItems.map((item) => item.url).filter(Boolean);
+          if (!(await saveProjectImagesData(latest, restoredRefs, restoredItems))) {
+            setLockMessage("Could not put the image back.");
+            return;
+          }
+          // (Its link is looked up again by the images effect, as the project's images change.)
+          setProject((prev) => (prev ? { ...prev, projectImages: restoredRefs, projectImageItems: restoredItems } : prev));
+          setSelectedProjectImageIndex(Math.min(removeIdx, restoredItems.length - 1));
+        },
+        {
+          commit: async () => {
+            if (!storage || !sourceToDelete) return;
+            try {
+              const normalized = /^https?:\/\//i.test(sourceToDelete) ? sourceToDelete : sourceToDelete.replace(/^\/+/, "");
+              await deleteObject(storageRef(storage, normalized));
+            } catch {
+              // Deleting the storage object can fail for legacy/URL-only refs; the reference is already gone.
+            }
+          },
+        },
+      );
     } catch {
       setLockMessage("Could not delete selected image.");
     } finally {
@@ -19785,22 +20156,7 @@ export default function ProjectDetailsPage() {
         return;
       }
 
-      const storageClient = storage;
-      if (storageClient) {
-        await Promise.all(
-          filesToDelete.map(async (row) => {
-            const sourceToDelete = String(row.path || row.url || "").trim();
-            if (!sourceToDelete) return;
-            try {
-              const normalized = /^https?:\/\//i.test(sourceToDelete) ? sourceToDelete : sourceToDelete.replace(/^\/+/, "");
-              await deleteObject(storageRef(storageClient, normalized));
-            } catch {
-              // ignore storage delete failures and still remove reference
-            }
-          }),
-        );
-      }
-
+      const taken = takenOutOf(existing, matchesSelected);
       const nextFiles = existing.filter((row) => !matchesSelected(row));
       const ok = await saveProjectFilesData(
         project,
@@ -19842,6 +20198,54 @@ export default function ProjectDetailsPage() {
         return Math.max(0, Math.min(prev, nextFiles.length - 1));
       });
       setLockMessage("");
+      // As an image's (above): off the project now, the stored files deleted only as the Undo bar goes.
+      offerUndo(
+        taken.length === 1 ? `${taken[0].item.name || "File"} deleted` : `${taken.length} files deleted`,
+        async () => {
+          const latest = projectRef.current;
+          if (!latest) return;
+          const files = normalizeProjectFileEntries(latest).filter((row) => !isProjectFileImageLike({
+            name: row.name,
+            path: row.path,
+            url: row.url,
+            contentType: row.contentType,
+          }));
+          const restoredFiles = putBackAt(files, taken, (row) => row.id).map((row) => ({
+            id: row.id,
+            name: row.name,
+            path: row.path,
+            url: row.url,
+            size: row.size,
+            contentType: row.contentType,
+            uploadedAtIso: row.uploadedAtIso,
+          }));
+          if (restoredFiles.length === files.length) return;
+          if (!(await saveProjectFilesData(latest, restoredFiles))) {
+            setLockMessage("Could not put the file back.");
+            return;
+          }
+          // (The files effect looks their links up again, as the project's files change.)
+          setProject((prev) => (prev ? { ...prev, projectFiles: restoredFiles } : prev));
+        },
+        {
+          commit: async () => {
+            const storageClient = storage;
+            if (!storageClient) return;
+            await Promise.all(
+              taken.map(async ({ item: row }) => {
+                const sourceToDelete = String(row.path || row.url || "").trim();
+                if (!sourceToDelete) return;
+                try {
+                  const normalized = /^https?:\/\//i.test(sourceToDelete) ? sourceToDelete : sourceToDelete.replace(/^\/+/, "");
+                  await deleteObject(storageRef(storageClient, normalized));
+                } catch {
+                  // ignore storage delete failures — the reference is already gone
+                }
+              }),
+            );
+          },
+        },
+      );
     } catch {
       setLockMessage("Could not delete selected file.");
     } finally {
@@ -20060,6 +20464,8 @@ export default function ProjectDetailsPage() {
 
   const handleDeleteProjectImageAnnotation = async (annotationId: string) => {
     const existing = normalizeProjectImageItemsForViewer(project);
+    const image = existing[selectedProjectImageIndex];
+    const taken = image ? takenOutOf(image.annotations ?? [], (annotation) => annotation.id === annotationId) : [];
     const nextItems = existing.map((item, idx) =>
       idx === selectedProjectImageIndex
         ? {
@@ -20083,6 +20489,22 @@ export default function ProjectDetailsPage() {
     }
     if (projectImageViewerListEditingAnnotation?.id === annotationId) {
       setProjectImageViewerListEditingAnnotation(null);
+    }
+    // Undo: the comment back on its image (the one it was on, whichever is showing by then), where it was in its list.
+    if (image && taken[0]) {
+      offerUndo("Comment deleted", async () => {
+        const latest = projectRef.current;
+        if (!latest) return;
+        const items = normalizeProjectImageItemsForViewer(latest);
+        const at = items.findIndex((item) => item.url === image.url);
+        const annotations = at >= 0 ? items[at].annotations ?? [] : [];
+        const restoredAnnotations = putBackAt(annotations, taken, (annotation) => annotation.id);
+        if (at < 0 || restoredAnnotations.length === annotations.length) return;
+        const restoredItems = items.map((item, idx) => (idx === at ? { ...item, annotations: restoredAnnotations } : item));
+        const restoredRefs = restoredItems.map((item) => item.url).filter(Boolean);
+        if (!(await saveProjectImagesData(latest, restoredRefs, restoredItems))) return;
+        setProject((prev) => (prev ? { ...prev, projectImages: restoredRefs, projectImageItems: restoredItems } : prev));
+      });
     }
     await persistProjectImageItems(nextItems);
   };
@@ -20545,6 +20967,7 @@ export default function ProjectDetailsPage() {
             hingesDown: normalizeDoorHingeValues(item.hingesDown ?? item.HingesDown ?? item.hingeDown ?? item.HingeDown),
             hingeSide: normalizeHingeSideValue(item.hingeSide ?? item.HingeSide),
             drawerDepths: normalizeDrawerDepths(item.DrawerDepths ?? item.drawerDepths),
+            drawerWeights: normalizeDrawerWeights(item.DrawerWeights ?? item.drawerWeights),
               information: String(item.Information ?? item.information ?? item.info ?? ""),
               grain: grainParsed.grain,
               grainValue: grainParsed.grainValue,
@@ -21430,6 +21853,23 @@ export default function ProjectDetailsPage() {
         if (row.field === "phone") return row.card.replace(/\s+/g, "") !== row.next.replace(/\s+/g, "");
         return row.card !== row.next;
       });
+  };
+  // The client's contact category, changed from the Client Details card's pill: saved to their contact card (and any
+  // twins of it — updateCompanyClientProfile), so it's the same everywhere — the Contacts page, their other projects.
+  // Shown straight away (the card's colour with it); put back if it doesn't save.
+  const changeProjectContactCategory = async (category: string) => {
+    const contact = projectContact;
+    if (!contact || !projectContactPersisted || !projectContactCompanyId) return;
+    setProjectContact({ ...contact, category });
+    const result = await updateCompanyClientProfile(
+      projectContactCompanyId,
+      contact.id,
+      { category },
+      { viewerUid: String(user?.uid || "").trim(), includeAll: canViewAllContacts },
+      contact,
+      String(user?.displayName || user?.email || "Staff").trim() || "Staff",
+    );
+    if (!result.ok) setProjectContact((prev) => (prev && prev.id === contact.id ? { ...prev, category: contact.category } : prev));
   };
   const offerContactCardUpdate = (values: Partial<Record<ContactCardField, string>>) => {
     if (!projectContact || !projectContactPersisted) return;
@@ -22829,8 +23269,12 @@ export default function ProjectDetailsPage() {
     if (!project || isSavingTags || !canEditTags) {
       return;
     }
+    const index = projectTags.findIndex((tag) => tag.toLowerCase() === tagToDelete.toLowerCase());
+    const removedTag = projectTags[index];
     const nextTags = projectTags.filter((tag) => tag.toLowerCase() !== tagToDelete.toLowerCase());
     await saveTags(nextTags);
+    // (Offered once the save's done, so its Undo can't land before the delete has.)
+    if (removedTag) offerUndo(`${removedTag} removed`, () => undoLatestRef.current?.projectTag(removedTag, index));
   };
 
   const onAddCutlistRoom = async () => {
@@ -23042,6 +23486,7 @@ export default function ProjectDetailsPage() {
       return;
     }
 
+    const taken = takenOutOf(persistedSalesItemsRooms, (row) => String(row.name || "").trim().toLowerCase() === lower);
     const nextRooms = persistedSalesItemsRooms.filter((row) => String(row.name || "").trim().toLowerCase() !== lower);
     const nextSales = {
       ...salesPayload,
@@ -23055,6 +23500,7 @@ export default function ProjectDetailsPage() {
       if (cutlistEntryRoom.toLowerCase() === lower) setCutlistEntryRoom(defaultCutlistRoom);
       if (initialCutlistRoomFilter.toLowerCase() === lower) setInitialCutlistRoomFilter("Project Cutlist");
       if (initialCutlistEntryRoom.toLowerCase() === lower) setInitialCutlistEntryRoom(defaultInitialCutlistRoom);
+      if (taken[0]) offerUndo(`${normalized} removed`, () => undoLatestRef.current?.salesRoom(taken[0]));
     }
     setIsSavingSalesRooms(false);
   };
@@ -23076,6 +23522,13 @@ export default function ProjectDetailsPage() {
       // again from the Archived page lets it register a tab again).
       suppressScope(`project:${project.id}`);
       router.push("/dashboard");
+      // Undo (the bar stays over the Dashboard): out of the archive just as it was, and back on its page.
+      const archived = project;
+      offerUndo(`${archived.name.trim() || "Project"} archived`, async () => {
+        if (!(await unarchiveProject(archived))) return;
+        restoreScope(`project:${archived.id}`);
+        router.push(`/projects/${archived.id}`);
+      });
       return;
     }
     setIsDeleting(false);
@@ -23207,7 +23660,7 @@ export default function ProjectDetailsPage() {
     }
   };
 
-  const onRemoveProductionTempUnlock = async (targetUid: string) => {
+  const onRemoveProductionTempUnlock = async (targetUid: string, displayName = "") => {
     const normalizedTargetUid = String(targetUid || "").trim();
     if (!project || !normalizedTargetUid || !canManageProductionTempUnlocks) {
       return;
@@ -23217,6 +23670,7 @@ export default function ProjectDetailsPage() {
     if (!(normalizedTargetUid in currentMap)) {
       return;
     }
+    const removedExpiry = currentMap[normalizedTargetUid];
     delete currentMap[normalizedTargetUid];
     const nextSettings: Record<string, unknown> = {
       ...settings,
@@ -23233,6 +23687,23 @@ export default function ProjectDetailsPage() {
     setProject({
       ...project,
       projectSettings: nextSettings,
+    });
+    // Undo: their access back, to the time it was to run out — onto the project's settings as they are by then.
+    offerUndo(`${displayName.trim() ? `${displayName.trim()}'s` : "Temporary"} edit access removed`, async () => {
+      const latest = projectRef.current;
+      if (!latest) return;
+      const latestSettings = (latest.projectSettings ?? {}) as Record<string, unknown>;
+      const latestMap = (latestSettings.productionTempEdit ?? {}) as Record<string, unknown>;
+      if (normalizedTargetUid in latestMap) return;
+      const restoredSettings: Record<string, unknown> = {
+        ...latestSettings,
+        productionTempEdit: { ...latestMap, [normalizedTargetUid]: removedExpiry },
+      };
+      const restored = await updateProjectPatch(latest, {
+        projectSettings: restoredSettings,
+        projectSettingsJson: JSON.stringify(restoredSettings),
+      });
+      if (restored) setProject((prev) => (prev ? { ...prev, projectSettings: restoredSettings } : prev));
     });
   };
 
@@ -23867,12 +24338,17 @@ export default function ProjectDetailsPage() {
       return;
     }
     const prevRows = productionForm.boardTypes;
+    const taken = takenOutOf(prevRows, (row) => row.id === id);
     const nextRows = productionForm.boardTypes.filter((row) => row.id !== id);
     const next = {
       ...productionForm,
       boardTypes: nextRows,
     };
     setProductionForm(next);
+    // Undo: the row back where it was, saved (and its colour counted again) as the remove was.
+    if (taken[0]) {
+      offerUndo(`${taken[0].item.colour?.trim() || "Board"} removed`, () => undoLatestRef.current?.boardRow(taken[0]));
+    }
     const ok = await persistProductionForm(next);
     if (ok) {
       await syncBoardColourMemoryDelta(prevRows, next.boardTypes);
@@ -24778,6 +25254,15 @@ export default function ProjectDetailsPage() {
     const next = persistInitialCutlistRowsChainRef.current.catch(() => false).then(run);
     persistInitialCutlistRowsChainRef.current = next;
     return next;
+  };
+  // Rows deleted from a cutlist's list (one, or several at once — one bar for them all): Undo puts them back where they
+  // were, saved as the delete was (undoLatestRef's productionCutlistRows / initialCutlistRows).
+  const offerCutlistRowsUndo = (kind: "production" | "initialMeasure", taken: TakenOut<CutlistRow>[]) => {
+    if (!taken.length) return;
+    const message = taken.length === 1 ? `${String(taken[0].item.name || "").trim() || "Row"} deleted` : `${taken.length} rows deleted`;
+    offerUndo(message, () =>
+      kind === "production" ? undoLatestRef.current?.productionCutlistRows(taken) : undoLatestRef.current?.initialCutlistRows(taken),
+    );
   };
 
   const addCutlistRow = async () => {
@@ -27918,8 +28403,11 @@ export default function ProjectDetailsPage() {
     const current = parseDrawerHeightTokens(String(row.height ?? ""));
     const idx = current.findIndex((item) => item.toLowerCase() === String(token || "").trim().toLowerCase());
     if (idx < 0) return;
-    current.splice(idx, 1);
+    const [removed] = current.splice(idx, 1);
     updateDraftDrawerHeightTokens(id, current);
+    offerUndo(`${removed} removed`, () =>
+      setCutlistDraftRows((prev) => prev.map((r) => (r.id === id ? withDrawerHeightTokenBack(r, removed, idx) : r))),
+    );
   };
 
   const setCutlistEntryDrawerHeightTokens = (tokens: string[]) => {
@@ -27941,8 +28429,9 @@ export default function ProjectDetailsPage() {
     const current = parseDrawerHeightTokens(String(cutlistEntry.height ?? ""));
     const idx = current.findIndex((item) => item.toLowerCase() === String(token || "").trim().toLowerCase());
     if (idx < 0) return;
-    current.splice(idx, 1);
+    const [removed] = current.splice(idx, 1);
     setCutlistEntryDrawerHeightTokens(current);
+    offerUndo(`${removed} removed`, () => setCutlistEntry((prev) => withDrawerHeightTokenBack(prev, removed, idx)));
   };
 
   const addEditingDrawerHeightToken = (token: string) => {
@@ -28044,6 +28533,8 @@ export default function ProjectDetailsPage() {
       }
     }
 
+    const index = cutlistDraftRows.findIndex((r) => r.id === id);
+    const wasSubPart = subPartDraftRowIds.has(id);
     setCutlistDraftRows((prev) => prev.filter((r) => r.id !== id));
     setSubPartDraftRowIds((prev) => {
       if (!prev.has(id)) return prev;
@@ -28052,6 +28543,11 @@ export default function ProjectDetailsPage() {
       return next;
     });
     dismissAllWarningsForRow(id);
+    // Undo: back in the Cutlist Entry where it was (a sub part still one).
+    offerUndo(`${String(row.name || "").trim() || "Row"} deleted`, () => {
+      setCutlistDraftRows((prev) => putBackAt(prev, [{ index, item: row }], (r) => r.id));
+      if (wasSubPart) setSubPartDraftRowIds((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
+    });
   };
 
   // A Drawer-submode front bank ("Doors" part type, "Drawers" sub-mode) is one draft row holding
@@ -28268,12 +28764,14 @@ export default function ProjectDetailsPage() {
         return;
       }
     }
+    const taken = takenOutOf(cutlistRows, (row) => String(row.id || "").trim() === String(id || "").trim());
     const next = cutlistRows.filter((row) => String(row.id || "").trim() !== String(id || "").trim());
     setCutlistRows(next);
     dismissAllWarningsForRow(id);
     logCutlistActivity(`${removed.name || "Part"} removed`, {
       partType: removed.partType,
     });
+    offerCutlistRowsUndo("production", taken);
     await persistCutlistRows(next);
   };
   // Commits a single hinge position value directly onto the row's own hingesUp/hingesDown array —
@@ -28308,6 +28806,60 @@ export default function ProjectDetailsPage() {
   // Same direct-persist pattern as commitDoorHingeValue, for the door's hinge-side (LH/RH) picker
   // that sits alongside the hinge position textboxes — independent of the shared editingCell
   // machinery since it's a single standalone field, not a whole cell's worth.
+  // A list row's drawers' own weights (drawerWeightPill): saved straight away, as a depth is.
+  const commitDrawerWeights = async (rowId: string, weights: Record<string, string> | undefined) => {
+    const nextRows = cutlistRows.map((r) => (r.id === rowId ? { ...r, drawerWeights: weights } : r));
+    setCutlistRows(nextRows);
+    await persistCutlistRows(nextRows);
+  };
+  // A drawer's runner weight in kg (drawerWeightFor at its height and runner length) — 0 when its drawer type has none.
+  const drawerWeightOf = (row: CutlistRow, key: string): number => {
+    const breakdown = drawerBreakdownForRoom(row.room);
+    if (!breakdown.hardwareWeights.length) return 0;
+    const height = drawerDepthLabel(key);
+    const runner = drawerRunnerLength(breakdown, toNum(drawerDepthFor(row, key)), height);
+    return drawerWeightFor(breakdown, height, runner, String(row.drawerWeights?.[key] ?? ""));
+  };
+  // A drawer's runner weight, beside its depth (when its drawer type has weights) — DrawerWeightPill: faint when it's Auto
+  // (its drawer type's default, or the one its height and length come in), solid when it's its own; pressed, the next its
+  // height and length come in (back at the Auto one, Auto again). Coming in just the one: shown, not pressed.
+  const drawerWeightPill = (
+    row: CutlistRow,
+    key: string,
+    onPick: (weights: Record<string, string> | undefined) => void,
+    size: "small" | "large",
+    // (The hover wheel — the Cutlist Entry's open drawer box.)
+    wheel = false,
+  ) => {
+    const breakdown = drawerBreakdownForRoom(row.room);
+    if (!breakdown.hardwareWeights.length) return null;
+    const height = drawerDepthLabel(key);
+    const runner = drawerRunnerLength(breakdown, toNum(drawerDepthFor(row, key)), height);
+    const options = drawerWeightOptions(breakdown, height, runner);
+    if (!options.length) return null;
+    const weight = drawerWeightFor(breakdown, height, runner, String(row.drawerWeights?.[key] ?? ""));
+    const autoWeight = drawerWeightFor(breakdown, height, runner, "");
+    return (
+      <DrawerWeightPill
+        weights={breakdown.hardwareWeights}
+        options={options}
+        weight={weight}
+        autoWeight={autoWeight}
+        height={height}
+        runner={runner}
+        editable={!productionReadOnly}
+        size={size}
+        wheel={wheel}
+        onSet={(next) => {
+          // (Back at its Auto weight: Auto again.)
+          const weights = { ...(row.drawerWeights ?? {}) };
+          if (next === autoWeight) delete weights[key];
+          else weights[key] = String(next);
+          onPick(Object.keys(weights).length ? weights : undefined);
+        }}
+      />
+    );
+  };
   // A list row's drawer at a depth of its own (withDrawerDepth): saved straight away, as a hinge is.
   const commitDrawerDepth = async (rowId: string, key: string, value: string) => {
     const row = cutlistRows.find((r) => r.id === rowId);
@@ -28364,8 +28916,8 @@ export default function ProjectDetailsPage() {
         }
         const open = () => setEditingDrawerDepth({ rowId: row.id, key, value: saved });
         return (
+          <span key={key} className="inline-flex items-center gap-1" style={{ color: issue ? "var(--danger-strong)" : textColor }}>
           <button
-            key={key}
             type="button"
             disabled={productionReadOnly}
             onDoubleClick={compact ? undefined : open}
@@ -28386,6 +28938,8 @@ export default function ProjectDetailsPage() {
             </span>
             <span>{saved || "-"}</span>
           </button>
+          {drawerWeightPill(row, key, (weights) => void commitDrawerWeights(row.id, weights), compact ? "large" : "small")}
+          </span>
         );
       })}
     </div>
@@ -28411,42 +28965,172 @@ export default function ProjectDetailsPage() {
       </span>
     );
   };
-  // ...and in the Cutlist Entry: a depth box for each drawer, its height's letter small inside the box's left (red, saying
-  // why, as the list's).
-  const renderDrawerDepthBoxes = (draft: CutlistDraftRow, keys: string[], className: string, style: React.CSSProperties) => (
+  // ...and in the Cutlist Entry: a box for each drawer, in short — its height's letter in its bubble, its depth, and its
+  // weight (kg) in a bubble the same. Clicked, it slides open wider both ways, the cursor in its depth: the letter, the
+  // depth to type and the weight (drawerWeightPill — hovered, the others it comes in) along one line, the depth staying
+  // dead centre. The row's top drawer's box widens its column, squeezing those either side of it (squeezedDrawerRowId);
+  // those under it open out over the room beside them. Clicked away from (or Enter / Escape), it slides back closed to the
+  // short form — at the same time as another sliding open, when one's clicked straight from it. Red, saying why, at a depth
+  // no runner of its room's drawer hardware fits — as the list's.
+  const openDrawerBox = (rowId: string, key: string, value: string) => {
+    setOpenDrawerDepthBox({ rowId, key, value });
+    setClosingDrawerDepthBox((prev) => (prev && prev.rowId === rowId && prev.key === key ? null : prev));
+  };
+  // Slides it back closed (.drawer-box-close / -shrink, globals.css), then shows its short form — at once, with reduced
+  // motion.
+  const closeDrawerDepthBox = () => {
+    const box = openDrawerDepthBox;
+    if (!box) return;
+    setOpenDrawerDepthBox(null);
+    if (typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    setClosingDrawerDepthBox({ rowId: box.rowId, key: box.key });
+    window.setTimeout(() => {
+      setClosingDrawerDepthBox((prev) => (prev && prev.rowId === box.rowId && prev.key === box.key ? null : prev));
+    }, 200);
+  };
+  // (`closedWidth`: the column's own width (desktop) — its drawers' short forms staying that width, centred, while its top
+  // one widens it; those under it opening out from it to it and DRAWER_BOX_OPEN_EXTRA more.)
+  const renderDrawerDepthBoxes = (draft: CutlistDraftRow, keys: string[], className: string, style: React.CSSProperties, closedWidth?: number) => (
     <div className="flex w-full flex-col gap-1">
-      {keys.map((key) => {
-        const issue = drawerDepthHardwareIssue(draft.room, drawerDepthFor(draft, key));
-        return (
-        <div key={key} className="relative">
+      {keys.map((key, keyIndex) => {
+        const depth = drawerDepthFor(draft, key);
+        const issue = drawerDepthHardwareIssue(draft.room, depth);
+        const boxStyle: React.CSSProperties = issue
+          ? { ...style, borderColor: "var(--danger)", color: "var(--danger-strong)", boxShadow: "0 0 0 2px var(--danger-ring)" }
+          : style;
+        const weight = drawerWeightOf(draft, key);
+        const isOpen = openDrawerDepthBox?.rowId === draft.id && openDrawerDepthBox.key === key;
+        const isClosing = !isOpen && closingDrawerDepthBox?.rowId === draft.id && closingDrawerDepthBox.key === key;
+        // (In short, its weight's number — kg in its title — in a bubble as its letter's.)
+        const weightBubble = (
           <span
-            className="pointer-events-none absolute left-1 top-1/2 inline-flex h-[15px] min-w-[15px] -translate-y-1/2 items-center justify-center rounded-full px-[3px] text-[9px] font-normal leading-none"
+            className="inline-flex h-[15px] min-w-[15px] shrink-0 items-center justify-center rounded-full px-[3px] text-[9px] font-normal leading-none"
             style={{
-              color: style.color,
+              backgroundColor: "color-mix(in srgb, currentColor 12%, transparent)",
+              border: "1px solid color-mix(in srgb, currentColor 35%, transparent)",
+            }}
+            title={`${weight}kg`}
+          >
+            {weight}
+          </span>
+        );
+        // (Its height's letter in its circle — small in short, and opened out, round at its weight's height: growing to it as
+        // the box opens and shrinking back as it closes — .drawer-box-letter, globals.css.)
+        const letterBubble = (big: boolean) => (
+          <span
+            className={`inline-flex shrink-0 items-center justify-center rounded-full font-normal leading-none ${
+              big ? "drawer-box-letter h-6 w-6 text-[11px]" : "h-[15px] min-w-[15px] px-[3px] text-[9px]"
+            }`}
+            style={{
               backgroundColor: "color-mix(in srgb, currentColor 12%, transparent)",
               border: "1px solid color-mix(in srgb, currentColor 35%, transparent)",
             }}
           >
             {drawerDepthLabel(key)}
           </span>
-          <input
+        );
+        const shortForm = (
+          <button
+            type="button"
             disabled={productionReadOnly}
-            inputMode="decimal"
-            title={issue || `Depth for this ${drawerDepthLabel(key)} drawer`}
-            aria-invalid={issue ? true : undefined}
-            value={drawerDepthFor(draft, key)}
-            onChange={(e) => {
-              const next = withDrawerDepth(draft, key, numericDimensionText(e.target.value));
-              updateDraftCutlistRow(draft.id, { depth: next.depth, drawerDepths: next.drawerDepths });
+            tabIndex={isOpen || isClosing ? -1 : undefined}
+            aria-hidden={isOpen || isClosing ? true : undefined}
+            onClick={() => openDrawerBox(draft.id, key, depth)}
+            onFocus={() => openDrawerBox(draft.id, key, depth)}
+            title={issue || `This ${drawerDepthLabel(key)} drawer's depth${weight ? " and weight" : ""} — click to change`}
+            className={`${className} relative flex items-center justify-center disabled:cursor-default ${isOpen || isClosing ? "invisible" : ""}`}
+            // (The same room either side, so its depth sits dead centre — where it stays as the box opens.)
+            style={{
+              ...boxStyle,
+              paddingLeft: weight ? 24 : 20,
+              paddingRight: weight ? 24 : 20,
+              ...(closedWidth ? { maxWidth: closedWidth, marginInline: "auto" } : {}),
             }}
-            className={`${className} pl-6`}
-            style={
-              issue
-                ? { ...style, borderColor: "var(--danger)", color: "var(--danger-strong)", boxShadow: "0 0 0 2px var(--danger-ring)" }
-                : style
-            }
-          />
-        </div>
+          >
+            <span className="absolute left-1 top-1/2 flex -translate-y-1/2">{letterBubble(false)}</span>
+            <span className="min-w-0 truncate">{depth || "-"}</span>
+            {/* (Its weight at the right, in a bubble as its letter's — just its number, so all three fit inside the box.) */}
+            {weight ? <span className="absolute right-1 top-1/2 flex -translate-y-1/2">{weightBubble}</span> : null}
+          </button>
+        );
+        if (!isOpen && !isClosing) {
+          return (
+            <div key={key} className="relative">
+              {shortForm}
+            </div>
+          );
+        }
+        const weightPill = drawerWeightPill(draft, key, (weights) => updateDraftCutlistRow(draft.id, { drawerWeights: weights }), "large", isOpen);
+        // (The top one: its column's width, the column itself sliding wider. Those under it: sliding out from the column's
+        // own width over the room beside them — .drawer-box-grow / -shrink.)
+        const ownsWidth = Boolean(closedWidth) && keyIndex > 0;
+        return (
+          <div key={key} className="relative">
+            {/* (The short form, hidden, keeps its place in the column.) */}
+            {shortForm}
+            <div
+              // (Over the entry's other fields — their dropdowns sit at z-[60]. Opening out from its middle, both ways, so its
+              // depth stays under the Depth heading.)
+              className={`${isClosing ? "drawer-box-close" : "drawer-box-open"} ${ownsWidth ? (isClosing ? "drawer-box-shrink" : "drawer-box-grow") : ""} ${
+                isClosing ? "pointer-events-none" : ""
+              } absolute inset-y-0 left-1/2 z-[70] -translate-x-1/2 overflow-hidden rounded-[8px] border text-[12px]`}
+              style={{
+                ...boxStyle,
+                ...(ownsWidth
+                  ? {
+                      ["--drawer-box-from" as string]: `${closedWidth}px`,
+                      ["--drawer-box-to" as string]: `${(closedWidth ?? 0) + DRAWER_BOX_OPEN_EXTRA}px`,
+                      width: isClosing ? closedWidth : (closedWidth ?? 0) + DRAWER_BOX_OPEN_EXTRA,
+                    }
+                  : { width: "100%" }),
+                // (Solid, over what's beside it — the field's own wash on top.)
+                backgroundColor: "var(--panel-bg)",
+                backgroundImage: `linear-gradient(${String(boxStyle.backgroundColor ?? "transparent")}, ${String(boxStyle.backgroundColor ?? "transparent")})`,
+              }}
+              // (Pressing its weight keeps the cursor in the depth — so it stays open.)
+              onMouseDown={(e) => {
+                if (!(e.target instanceof HTMLInputElement)) e.preventDefault();
+              }}
+              onBlur={(e) => {
+                if (isOpen && !e.currentTarget.contains(e.relatedTarget as Node | null)) closeDrawerDepthBox();
+              }}
+              onKeyDown={(e) => {
+                if (isOpen && (e.key === "Enter" || e.key === "Escape")) {
+                  e.preventDefault();
+                  closeDrawerDepthBox();
+                }
+              }}
+            >
+              {/* (The letter and weight against its sides — sliding out with them and back in to their short form's places,
+                  growing and shrinking as they go.) */}
+              <span className="absolute left-1 top-1/2 flex -translate-y-1/2">{letterBubble(true)}</span>
+              <input
+                autoFocus={isOpen}
+                readOnly={isClosing}
+                tabIndex={isClosing ? -1 : undefined}
+                disabled={productionReadOnly}
+                inputMode="decimal"
+                title={issue || `Depth for this ${drawerDepthLabel(key)} drawer`}
+                aria-label={isOpen ? `Depth for this ${drawerDepthLabel(key)} drawer` : undefined}
+                aria-hidden={isClosing ? true : undefined}
+                aria-invalid={issue ? true : undefined}
+                value={isOpen ? (openDrawerDepthBox?.value ?? depth) : depth}
+                onChange={(e) => {
+                  if (!isOpen) return;
+                  const typed = numericDimensionText(e.target.value);
+                  setOpenDrawerDepthBox((prev) => (prev ? { ...prev, value: typed } : prev));
+                  const next = withDrawerDepth(draft, key, typed);
+                  updateDraftCutlistRow(draft.id, { depth: next.depth, drawerDepths: next.drawerDepths });
+                }}
+                className="absolute left-1/2 top-0 h-full w-[44px] -translate-x-1/2 bg-transparent text-center outline-none"
+                style={{ color: "inherit" }}
+              />
+              {/* (Growing from its short form's bubble — and back — .drawer-box-weight.) */}
+              {weightPill ? (
+                <span className="drawer-box-weight absolute right-1 top-1/2 flex -translate-y-1/2">{weightPill}</span>
+              ) : null}
+            </div>
+          </div>
         );
       })}
     </div>
@@ -28746,6 +29430,7 @@ export default function ProjectDetailsPage() {
 
     const pendingSet = new Set(pending);
     const removedRows = initialCutlistRows.filter((row) => pendingSet.has(row.id));
+    const taken = takenOutOf(initialCutlistRows, (row) => pendingSet.has(row.id));
     const next = initialCutlistRows.filter((row) => !pendingSet.has(row.id));
     setInitialCutlistRows(next);
     for (const removed of removedRows) {
@@ -28757,6 +29442,7 @@ export default function ProjectDetailsPage() {
       return rest;
     });
     setInitialDeleteConfirmArmedGroups((prev) => ({ ...prev, [groupKey]: false }));
+    offerCutlistRowsUndo("initialMeasure", taken);
     await persistInitialCutlistRows(next);
   };
 
@@ -28776,6 +29462,7 @@ export default function ProjectDetailsPage() {
     if (!salesAccess.edit) return;
     const pendingSet = new Set(allPendingRows);
     const removedRows = initialCutlistRows.filter((row) => pendingSet.has(row.id));
+    const taken = takenOutOf(initialCutlistRows, (row) => pendingSet.has(row.id));
     const next = initialCutlistRows.filter((row) => !pendingSet.has(row.id));
     setInitialCutlistRows(next);
     for (const removed of removedRows) {
@@ -28784,6 +29471,7 @@ export default function ProjectDetailsPage() {
     setInitialPendingDeleteRowsByGroup({});
     setInitialDeleteAllArmed(false);
     setInitialDeleteConfirmArmedGroups({});
+    offerCutlistRowsUndo("initialMeasure", taken);
     await persistInitialCutlistRows(next);
   };
 
@@ -28897,6 +29585,7 @@ export default function ProjectDetailsPage() {
 
     const pendingSet = new Set(pending.map((rowId) => String(rowId || "").trim()));
     const removedRows = cutlistRows.filter((row) => pendingSet.has(String(row.id || "").trim()));
+    const taken = takenOutOf(cutlistRows, (row) => pendingSet.has(String(row.id || "").trim()));
     const nextRows = cutlistRows.filter((row) => !pendingSet.has(String(row.id || "").trim()));
     setCutlistRows(nextRows);
     for (const removed of removedRows) {
@@ -28908,6 +29597,7 @@ export default function ProjectDetailsPage() {
       return rest;
     });
     setDeleteConfirmArmedGroups((prev) => ({ ...prev, [groupKey]: false }));
+    offerCutlistRowsUndo("production", taken);
     await persistCutlistRows(nextRows);
   };
 
@@ -29015,8 +29705,11 @@ export default function ProjectDetailsPage() {
     const current = parseDrawerHeightTokens(String(row.height ?? ""));
     const idx = current.findIndex((item) => item.toLowerCase() === String(token || "").trim().toLowerCase());
     if (idx < 0) return;
-    current.splice(idx, 1);
+    const [removed] = current.splice(idx, 1);
     updateInitialDraftDrawerHeightTokens(id, current);
+    offerUndo(`${removed} removed`, () =>
+      setInitialCutlistDraftRows((prev) => prev.map((r) => (r.id === id ? withDrawerHeightTokenBack(r, removed, idx) : r))),
+    );
   };
 
   const setInitialDraftInformationLines = (id: string, lines: string[]) => {
@@ -29051,7 +29744,14 @@ export default function ProjectDetailsPage() {
   };
 
   const removeInitialDraftCutlistRow = (id: string) => {
+    const index = initialCutlistDraftRows.findIndex((row) => row.id === id);
+    const removed = initialCutlistDraftRows[index];
     setInitialCutlistDraftRows((prev) => prev.filter((row) => row.id !== id));
+    if (!removed) return;
+    // Undo: back in the entry where it was.
+    offerUndo(`${String(removed.name || "").trim() || "Row"} deleted`, () =>
+      setInitialCutlistDraftRows((prev) => putBackAt(prev, [{ index, item: removed }], (row) => row.id)),
+    );
   };
 
   const revealInitialCutlistRowsInList = useCallback((rows: CutlistRow[]) => {
@@ -29673,6 +30373,7 @@ export default function ProjectDetailsPage() {
       width: effectiveConfiguredDoorWidth,
       depth: String(source.depth ?? ""),
       drawerDepths: normalizeDrawerDepths(source.drawerDepths),
+      drawerWeights: normalizeDrawerWeights(source.drawerWeights),
       quantity: isClassicDrawerMode
         ? String(Math.max(1, drawerTokens.length))
         : isConfiguredDoorMode && !String(source.quantity ?? "").trim()
@@ -32403,23 +33104,76 @@ export default function ProjectDetailsPage() {
     initialCutlistEntryColumnDefs.forEach((col, idx) => map.set(col.key, idx + 1));
     return map;
   }, [initialCutlistEntryColumnDefs]);
-  const cutlistEntryGridTemplate = useMemo(() => {
-    const cols = ["28px"];
-    cutlistEntryColumnDefs.forEach((col) => {
-      if (col.key === "board" || col.key === "name") {
-        cols.push("230px");
-      } else if (col.key === "height" || col.key === "width" || col.key === "depth" || col.key === "quantity") {
-        cols.push("70px");
-      } else if (col.key === "clashing") {
-        cols.push("84px", "84px");
-      } else if (col.key === "information") {
-        cols.push("minmax(216px,1fr)");
-      } else if (col.key === "grain") {
-        cols.push("96px");
+  // (`extra`: a row with its top drawer's box opened out — renderDrawerDepthBoxes: its Depth column wider by it (up to
+  // DRAWER_BOX_OPEN_EXTRA, as it slides), the columns either side of it each giving up half — so it squeezes them, rather
+  // than covering them, and its depth stays where it was, dead centre.)
+  const cutlistEntryGridTemplateFor = useCallback(
+    (extra: number) => {
+      const cols: Array<{ key: string; width: string }> = [{ key: "", width: "28px" }];
+      cutlistEntryColumnDefs.forEach((col) => {
+        if (col.key === "board" || col.key === "name") {
+          cols.push({ key: col.key, width: "230px" });
+        } else if (col.key === "height" || col.key === "width" || col.key === "depth" || col.key === "quantity") {
+          cols.push({ key: col.key, width: "70px" });
+        } else if (col.key === "clashing") {
+          cols.push({ key: col.key, width: "84px" }, { key: col.key, width: "84px" });
+        } else if (col.key === "information") {
+          cols.push({ key: col.key, width: "minmax(216px,1fr)" });
+        } else if (col.key === "grain") {
+          cols.push({ key: col.key, width: "96px" });
+        }
+      });
+      const depthAt = cols.findIndex((col) => col.key === "depth");
+      if (extra > 0 && depthAt > 0) {
+        const half = extra / 2;
+        const px = (col: { width: string } | undefined) => (col && /^\d+px$/.test(col.width) ? Number.parseInt(col.width, 10) : 0);
+        cols[depthAt] = { key: "depth", width: `${px(cols[depthAt]) + extra}px` };
+        if (px(cols[depthAt - 1])) cols[depthAt - 1] = { ...cols[depthAt - 1], width: `${px(cols[depthAt - 1]) - half}px` };
+        if (px(cols[depthAt + 1])) cols[depthAt + 1] = { ...cols[depthAt + 1], width: `${px(cols[depthAt + 1]) - half}px` };
       }
-    });
-    return cols.join(" ");
-  }, [cutlistEntryColumnDefs]);
+      return cols.map((col) => col.width).join(" ");
+    },
+    [cutlistEntryColumnDefs],
+  );
+  const cutlistEntryGridTemplate = useMemo(() => cutlistEntryGridTemplateFor(0), [cutlistEntryGridTemplateFor]);
+  // The Entry row whose top drawer's box is opened out — the only one squeezing the columns either side of it (they're level
+  // with it; its drawers under it open out over the room beside them).
+  const squeezedDrawerRowId = useMemo(() => {
+    const box = openDrawerDepthBox;
+    if (!box) return null;
+    const draft = cutlistDraftRows.find((row) => row.id === box.rowId);
+    return draft && drawerDepthKeys(draft)[0] === box.key ? box.rowId : null;
+  }, [openDrawerDepthBox, cutlistDraftRows]);
+  // Its columns sliding open (and the last one's back closed), frame by frame — each frame's columns straight onto the row
+  // (its columns won't take a CSS transition); React has the end ones on it already.
+  const squeezedDrawerRowRef = useRef<string | null>(null);
+  const squeezeFramesRef = useRef<Map<string, number>>(new Map());
+  useLayoutEffect(() => {
+    const was = squeezedDrawerRowRef.current;
+    squeezedDrawerRowRef.current = squeezedDrawerRowId;
+    if (was === squeezedDrawerRowId) return;
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const frames = squeezeFramesRef.current;
+    const slide = (rowId: string, from: number, to: number, duration: number) => {
+      const running = frames.get(rowId);
+      if (running) cancelAnimationFrame(running);
+      frames.delete(rowId);
+      const el = document.querySelector<HTMLElement>(`[data-cutlist-entry-row="${CSS.escape(rowId)}"]`);
+      if (!el || reduceMotion) return;
+      const startedAt = performance.now();
+      const step = (now: number) => {
+        const progress = Math.min(1, (now - startedAt) / duration);
+        const eased = 1 - Math.pow(1 - progress, 3);
+        el.style.gridTemplateColumns = cutlistEntryGridTemplateFor(from + (to - from) * eased);
+        if (progress < 1) frames.set(rowId, requestAnimationFrame(step));
+        else frames.delete(rowId);
+      };
+      el.style.gridTemplateColumns = cutlistEntryGridTemplateFor(from);
+      frames.set(rowId, requestAnimationFrame(step));
+    };
+    if (was) slide(was, DRAWER_BOX_OPEN_EXTRA, 0, 200);
+    if (squeezedDrawerRowId) slide(squeezedDrawerRowId, 0, DRAWER_BOX_OPEN_EXTRA, 240);
+  }, [squeezedDrawerRowId, cutlistEntryGridTemplateFor]);
   const initialCutlistEntryGridTemplate = useMemo(() => {
     const cols = ["28px"];
     // Sized for however many grain-toggle segments the widest row currently needs (2 or 3) — the
@@ -34630,7 +35384,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   const [isDeletingSpecsVersion, setIsDeletingSpecsVersion] = useState(false);
   const deleteSpecsVersionById = async (versionId: string) => {
     if (!project || !versionId || isDeletingSpecsVersion) return;
-    if (specsSheetVersions.find((v) => v.id === versionId)?.sentToClient) return;
+    const target = specsSheetVersions.find((v) => v.id === versionId);
+    if (!target || target.sentToClient) return;
+    const index = specsSheetVersions.indexOf(target);
     setIsDeletingSpecsVersion(true);
     try {
       const ok = await deleteGridVersion(project, "specificationsVersions", versionId);
@@ -34642,6 +35398,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       // landing target.
       window.setTimeout(() => {
         setSpecsSheetVersions((prev) => prev.filter((v) => v.id !== versionId));
+        // (As a Quote version's Undo.)
+        offerUndo(`${target.name || "Version"} deleted`, async () => {
+          if (!(await restoreGridVersion(project, "specificationsVersions", target))) return;
+          setSpecsSheetVersions((prev) => putBackAt(prev, [{ index, item: target }], (v) => v.id));
+        });
       }, DEFAULT_GLASS_MODAL_ORIGIN_CLOSE_HOLD_MS);
     } finally {
       setIsDeletingSpecsVersion(false);
@@ -35359,6 +36120,75 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     projectLoadingAppShellTabRegistrationJson,
     registerScopeTabs,
   ]);
+  // This render's undos, for undoLatestRef (declared with offerUndo, at the top): each puts back what its delete took out
+  // — onto the page as it is now, where it was — and saves it the way the delete saved its going.
+  const undoLatest: UndoLatest = {
+    productionCutlistRows: async (taken) => {
+      const back = taken.filter(({ item }) => !cutlistRows.some((row) => row.id === item.id));
+      if (!back.length) return;
+      const restored = putBackAt(cutlistRows, back, (row) => row.id);
+      setCutlistRows(restored);
+      for (const { item } of back) logCutlistActivity(`${item.name || "Part"} put back`, { partType: item.partType });
+      await persistCutlistRows(restored);
+    },
+    initialCutlistRows: async (taken) => {
+      const back = taken.filter(({ item }) => !initialCutlistRows.some((row) => row.id === item.id));
+      if (!back.length) return;
+      const restored = putBackAt(initialCutlistRows, back, (row) => row.id);
+      setInitialCutlistRows(restored);
+      for (const { item } of back) logCutlistActivity(`${item.name || "Part"} put back`, { partType: item.partType, scope: "initial" });
+      await persistInitialCutlistRows(restored);
+    },
+    boardRow: async (taken) => {
+      const prevRows = productionForm.boardTypes;
+      const nextRows = putBackAt(prevRows, [taken], (row) => row.id);
+      if (nextRows.length === prevRows.length) return;
+      const next = { ...productionForm, boardTypes: nextRows };
+      setProductionForm(next);
+      if (await persistProductionForm(next)) await syncBoardColourMemoryDelta(prevRows, nextRows);
+    },
+    projectTag: async (tag, index) => {
+      // (Not past the five a project can have, should one have been added since.)
+      if (projectTags.length >= 5 || projectTags.some((row) => row.toLowerCase() === tag.toLowerCase())) return;
+      await saveTags(putBackAt(projectTags, [{ index, item: tag }], (row) => row.toLowerCase()));
+    },
+    salesRoom: async (taken) => {
+      const nameOf = (row: SalesItemsRoomBoardRow) => String(row.name || "").trim().toLowerCase();
+      const nextRooms = putBackAt(persistedSalesItemsRooms, [taken], nameOf);
+      if (nextRooms.length === persistedSalesItemsRooms.length) return;
+      await persistSalesPatch({ ...salesPayload, rooms: nextRooms } as Record<string, unknown>);
+    },
+    checklist: async (taken) => {
+      if (!project || projectChecklists.some((cl) => cl.id === taken.item.id)) return;
+      checklistsState.setChecklistsOptimistic(putBackAt(projectChecklists, [taken], (cl) => cl.id));
+      await saveProjectChecklist(project, taken.item);
+    },
+    orderLine: async (kind, category, taken) => {
+      const ref = kind === "hinges" ? orderHingeRowsByCategoryRef : orderOtherRowsByCategoryRef;
+      const rows = ref.current[category] ?? [];
+      const restored = putBackAt(rows, [taken], (row) => row.id);
+      if (restored.length === rows.length) return;
+      const next = { ...ref.current, [category]: restored };
+      ref.current = next;
+      if (kind === "hinges") {
+        setOrderHingeRowsByCategory(next);
+        await persistOrderHingeDraft(next);
+      } else {
+        setOrderOtherRowsByCategory(next);
+        await persistOrderOtherDraft(next);
+      }
+    },
+    orderMiscRow: async (category, lineKey, row) => {
+      const prev = orderMiscDraftByCategoryRef.current;
+      const next = { ...prev, [category]: { ...(prev[category] ?? {}), [lineKey]: row } };
+      orderMiscDraftByCategoryRef.current = next;
+      setOrderMiscDraftByCategory(next);
+      await persistOrderMiscDraft(next);
+    },
+  };
+  useEffect(() => {
+    undoLatestRef.current = undoLatest;
+  });
   if (isLoading) {
     return (
       <SkeletonGroup label="Loading project" className="mx-auto w-full max-w-[1400px] px-1 pt-2">
@@ -36508,7 +37338,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <GlassModalHeader title="Delete this quote version?" onClose={() => setPendingDeleteQuoteSnapshotId("")} />
               <div className="px-5 py-4">
                 <p className="text-[13px]" style={{ color: "var(--text-main)" }}>
-                  This permanently removes <b>Version {pendingDeleteQuoteSnapshot?.version ?? ""}</b> from the quote history. This can&apos;t be undone.
+                  This removes <b>Version {pendingDeleteQuoteSnapshot?.version ?? ""}</b> from the quote history.
                 </p>
                 <div className="mt-4 flex justify-end gap-2">
                   <button
@@ -36837,7 +37667,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <div className="px-5 py-4">
                 <p className="text-[13px]" style={{ color: "var(--text-main)" }}>
                   This removes &quot;{salesItemsRoomPendingDelete?.name || "this room"}&quot; and all{" "}
-                  {salesItemsRoomPendingDelete?.items.reduce((sum, item) => sum + item.quantity, 0) ?? 0} item(s) assigned to it. This can&apos;t be undone.
+                  {salesItemsRoomPendingDelete?.items.reduce((sum, item) => sum + item.quantity, 0) ?? 0} item(s) assigned to it.
                 </p>
                 <div className="mt-4 flex justify-end gap-2">
                   <button
@@ -36882,8 +37712,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <div className="px-5 py-4">
                 <p className="text-[13px]" style={{ color: "var(--text-main)" }}>
                   {clearSalesItemsConfirmKind === "all"
-                    ? "This removes every item from all rooms. The rooms themselves won't be deleted. This can't be undone."
-                    : `This removes all items from "${activeSalesItemsRoom?.name || "this room"}". The room itself won't be deleted. This can't be undone.`}
+                    ? "This removes every item from all rooms. The rooms themselves won't be deleted."
+                    : `This removes all items from "${activeSalesItemsRoom?.name || "this room"}". The room itself won't be deleted.`}
                 </p>
                 <div className="mt-4 flex justify-end gap-2">
                   <button
@@ -36932,8 +37762,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <div className="px-5 py-4">
                 <p className="text-[13px]" style={{ color: "var(--text-main)" }}>
                   This removes <b>{displayItemsRemovePendingItem.quantity}</b> of <b>{displayItemsRemovePendingItem.name}</b> from <b>{displayItemsRemovePendingItem.roomName}</b>
-                  <br />
-                  This can&apos;t be undone.
                 </p>
                 <div className="mt-4 flex justify-end gap-2">
                   <button
@@ -36947,7 +37775,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   <button
                     type="button"
                     onClick={() => {
-                      setSalesItemsBoardRooms((prev) => removeItemFromSalesItemsRoom(prev, displayItemsRemovePendingItem.roomId, displayItemsRemovePendingItem.itemId));
+                      removeSalesItemsRoomItem(displayItemsRemovePendingItem.roomId, displayItemsRemovePendingItem.itemId);
                       setItemsRemovePendingItem(null);
                     }}
                     className="h-9 rounded-[8px] border px-4 text-[12px] font-bold text-white hover:brightness-95"
@@ -38309,6 +39137,18 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     ...(productionAccess.view || salesAccess.view ? [{ label: "Specifications", icon: ClipboardList, key: "specifications" as const }] : []),
     ...(projectScheduleViewer.canViewCalendar ? [{ label: "Schedule", icon: CalendarDays, key: "schedule" as const }] : []),
   ];
+  // A heading over a group of a tab's side buttons (Design's, Production's): its name and a line on from it. On a computer,
+  // and across a phone's two columns of them — not in the strip of them across a tablet. (Room above it, but the first.)
+  const projectSubtabHeading = (title: string, first: boolean) => (
+    <div
+      key={`heading_${title}`}
+      className={`col-span-2 flex items-center gap-2 px-1 text-[11px] font-medium uppercase tracking-[0.8px] sm:hidden xl:flex ${first ? "" : "pt-3"}`}
+      style={{ color: "var(--text-main)" }}
+    >
+      <span className="shrink-0">{title}</span>
+      <span aria-hidden="true" className="h-px min-w-0 flex-1" style={{ backgroundColor: "var(--glass-border)" }} />
+    </div>
+  );
   const tabContainerStyle: React.CSSProperties = {
     backdropFilter: "blur(20px) saturate(180%)",
     WebkitBackdropFilter: "blur(20px) saturate(180%)",
@@ -39097,6 +39937,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       hardware: string;
       drawerType: string;
       hardwareLength: string;
+      // (The runner length, in mm — 0: none fits.)
+      runnerLength: number;
+      // (Its runner weight, kg — 0: its drawer type has none.)
+      weight: number;
       backHeight: string;
       total: number;
     };
@@ -39108,20 +39952,26 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       const selectedCategory = categoryOfHardware(rowHardware) || "Unassigned";
       const selectedDrawerType = String(rowHardware.newDrawerType || "").trim() || "Unassigned";
       const selectedDrawerBreakdown = drawerBreakdownForRoom(row.room);
-      // Each drawer's runners at its own depth (a bank's drawers can each have their own — drawerDepthFor).
-      const hardwareDepthLabelFor = (drawerKey: string) => {
+      // Each drawer's runners at its own depth (a bank's drawers can each have their own — drawerDepthFor), from the
+      // lengths its height comes in.
+      const hardwareDepthFor = (drawerKey: string, height: string): { label: string; runner: number } => {
         const depthVal = toNum(drawerKey ? drawerDepthFor(row, drawerKey) : row.depth);
-        if (!(depthVal > 0)) return "-";
+        if (!(depthVal > 0)) return { label: "-", runner: 0 };
         let depthForHardware = depthVal;
         if (selectedDrawerBreakdown.spaceRequirement != null) {
           depthForHardware = Math.max(0, depthForHardware - selectedDrawerBreakdown.spaceRequirement);
         }
         let roundedHardwareDepth = depthForHardware;
-        if (selectedDrawerBreakdown.hardwareLengths.length) {
-          const candidates = selectedDrawerBreakdown.hardwareLengths.filter((v) => v <= depthForHardware);
-          if (candidates.length) roundedHardwareDepth = Math.max(...candidates);
+        let runner = 0;
+        const runnerLengths = runnerLengthsForHeight(selectedDrawerBreakdown, height);
+        if (runnerLengths.length) {
+          const candidates = runnerLengths.filter((v) => v <= depthForHardware);
+          if (candidates.length) {
+            runner = Math.max(...candidates);
+            roundedHardwareDepth = runner;
+          }
         }
-        return formatMm(roundedHardwareDepth);
+        return { label: formatMm(roundedHardwareDepth), runner };
       };
 
       const rawHeight = String(row.height || "").trim();
@@ -39130,7 +39980,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       if (!tokens.length) tokens = ["-"];
       // (By height and runner length: a bank's drawers of one height can be at different depths.)
       const drawerKeys = drawerDepthKeys(row);
-      const groupedHeights: Record<string, { height: string; hardwareDepthLabel: string; count: number }> = {};
+      const groupedHeights: Record<string, { height: string; hardwareDepthLabel: string; runnerLength: number; weight: number; count: number }> = {};
       tokens.forEach((token, index) => {
         const tokenClean = sanitizeDerivedValue(token);
         const tokenWithCountMatch = tokenClean.match(/^(.*?)(?:\s*\(\s*x\s*(\d+)\s*\))$/i);
@@ -39140,20 +39990,33 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           Number.parseInt(String(tokenWithCountMatch?.[2] ?? "1"), 10) || 1,
         );
         const displayHeight = tokenBase || "-";
-        const drawerDepthLabelHere = hardwareDepthLabelFor(displayHeight === "-" ? "" : (drawerKeys[index] ?? ""));
-        const groupedKey = `${displayHeight}|${drawerDepthLabelHere}`;
-        const grouped = groupedHeights[groupedKey] ?? { height: displayHeight, hardwareDepthLabel: drawerDepthLabelHere, count: 0 };
+        const drawerDepthHere = hardwareDepthFor(displayHeight === "-" ? "" : (drawerKeys[index] ?? ""), tokenBase);
+        // (By weight too: each its own ID number.)
+        const drawerWeightHere =
+          displayHeight === "-"
+            ? 0
+            : drawerWeightFor(selectedDrawerBreakdown, tokenBase, drawerDepthHere.runner, String(row.drawerWeights?.[drawerKeys[index] ?? ""] ?? ""));
+        const groupedKey = `${displayHeight}|${drawerDepthHere.label}|${drawerWeightHere}`;
+        const grouped = groupedHeights[groupedKey] ?? {
+          height: displayHeight,
+          hardwareDepthLabel: drawerDepthHere.label,
+          runnerLength: drawerDepthHere.runner,
+          weight: drawerWeightHere,
+          count: 0,
+        };
         grouped.count += tokenCount;
         groupedHeights[groupedKey] = grouped;
       });
-      for (const { height, hardwareDepthLabel, count: perDrawerQty } of Object.values(groupedHeights)) {
-        const groupKey = `${selectedCategory}|${selectedDrawerType}|${hardwareDepthLabel}|${height}`;
+      for (const { height, hardwareDepthLabel, runnerLength, weight, count: perDrawerQty } of Object.values(groupedHeights)) {
+        const groupKey = `${selectedCategory}|${selectedDrawerType}|${hardwareDepthLabel}|${height}|${weight}`;
         if (!groups[groupKey]) {
           groups[groupKey] = {
             key: groupKey,
             hardware: selectedCategory,
             drawerType: selectedDrawerType,
             hardwareLength: hardwareDepthLabel,
+            runnerLength,
+            weight,
             backHeight: height || "-",
             total: 0,
           };
@@ -39175,7 +40038,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         if (byType) return byType;
         const byLength = a.hardwareLength.localeCompare(b.hardwareLength);
         if (byLength) return byLength;
-        return a.backHeight.localeCompare(b.backHeight);
+        const byHeight = a.backHeight.localeCompare(b.backHeight);
+        if (byHeight) return byHeight;
+        return a.weight - b.weight;
       });
   })();
   const orderDrawerQtyTotal = orderDrawerGroupedRows.reduce((sum, group) => sum + group.total, 0);
@@ -39199,6 +40064,56 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   const orderOtherRows = orderOtherRowsByCategory[orderSelectedHardwareCategoryKey] ?? [];
   const orderHingeQtyTotal = orderHingeRows.reduce((sum, row) => sum + (Number(row.qty) || 0), 0);
   const orderOtherQtyTotal = orderOtherRows.reduce((sum, row) => sum + (Number(row.qty) || 0), 0);
+  // A drawer line's supplier ID number (Company Settings › Hardware: its height's, at its runner length and weight).
+  const orderDrawerItemNumber = (group: (typeof orderDrawerGroupedRows)[number]) =>
+    drawerHeightItemNumber(
+      hardwareRows.find((row) => row.name.trim().toLowerCase() === group.hardware.trim().toLowerCase()),
+      group.drawerType,
+      group.backHeight,
+      group.runnerLength,
+      group.weight || undefined,
+    );
+  // "Copy for cart": the hinges, other items and the brand's drawers on the order, a line each in the brand's Copy format
+  // (Company Settings › Hardware › Ordering) — to paste into its supplier's quick order. One ID number twice: its
+  // quantities added together. Those with no ID number can't go on it (named in its title).
+  const orderCartItems = new Map<string, { id: string; quantity: number; name: string }>();
+  const orderCartMissing: string[] = [];
+  for (const [kind, rows] of [["hinge", orderHingeRows], ["other", orderOtherRows]] as const) {
+    for (const line of rows) {
+      const qty = Number(line.qty) || 0;
+      if (!line.name || qty <= 0) continue;
+      const id = hardwareItemNumber(orderSelectedHardwareRow, kind, line.name).trim();
+      if (!id) {
+        orderCartMissing.push(line.name);
+        continue;
+      }
+      const existing = orderCartItems.get(id);
+      if (existing) existing.quantity += qty;
+      else orderCartItems.set(id, { id, quantity: qty, name: line.name });
+    }
+  }
+  for (const group of orderDrawerGroupedRows) {
+    if (group.total <= 0 || group.hardware.trim().toLowerCase() !== orderHardwareName.trim().toLowerCase()) continue;
+    const name = `${group.drawerType} ${group.backHeight} ${group.hardwareLength}${group.weight ? ` ${group.weight}kg` : ""}`;
+    const id = orderDrawerItemNumber(group).trim();
+    if (!id) {
+      orderCartMissing.push(name);
+      continue;
+    }
+    const existing = orderCartItems.get(id);
+    if (existing) existing.quantity += group.total;
+    else orderCartItems.set(id, { id, quantity: group.total, name });
+  }
+  const orderCartFormat = orderSelectedHardwareRow?.cartCopyFormat || DEFAULT_CART_COPY_FORMAT;
+  const orderCartText = Array.from(orderCartItems.values(), (item) => formatCartCopyLine(orderCartFormat, item)).join("\n");
+  // (Only for a brand with ID numbers set up — on its hinges, other items or drawer heights.)
+  const orderHasCartNumbers = Boolean(
+    Object.keys(orderSelectedHardwareRow?.hingeItemNumbers ?? {}).length ||
+      Object.keys(orderSelectedHardwareRow?.otherItemNumbers ?? {}).length ||
+      orderSelectedHardwareRow?.drawers.some((drawer) =>
+        drawer.heightOptions.some((height) => height.byLength.some((entry) => entry.itemNumber || entry.weightItemNumbers.some((item) => item.itemNumber))),
+      ),
+  );
   const orderMiscDraftForCategory = orderMiscDraftByCategory[orderSelectedHardwareCategoryKey] ?? {};
   // Misc is typed in by hand. (It used to list the hardware's Other items automatically too — those
   // have their own list now; any an older project actually filled in still show here, named.)
@@ -39586,8 +40501,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     updateOrderLineRows(kind, (rows) => rows.map((row) => (row.id === rowId ? { ...row, qty: value } : row)), save);
   };
   const onDeleteOrderLineRow = (kind: OrderLineKind, rowId: string) => {
+    const category = orderSelectedHardwareCategoryKey;
+    const rows = (kind === "hinges" ? orderHingeRowsByCategoryRef : orderOtherRowsByCategoryRef).current[category] ?? [];
+    const taken = takenOutOf(rows, (row) => row.id === rowId);
     setHoveredOrderDeleteRowId((prev) => (prev === rowId ? "" : prev));
     updateOrderLineRows(kind, (rows) => rows.filter((row) => row.id !== rowId), true);
+    // Undo: back where it was in its list — in the hardware category it was taken from, whichever is showing by then.
+    if (taken[0]) offerUndo(`${taken[0].item.name.trim() || "Line"} removed`, () => undoLatestRef.current?.orderLine(kind, category, taken[0]));
   };
   const onOrderMiscDraftChange = (lineKey: string, patch: Partial<OrderMiscDraftRow>) => {
     const categoryKey = orderSelectedHardwareCategoryKey;
@@ -39643,6 +40563,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     };
     orderMiscDraftByCategoryRef.current = next;
     setOrderMiscDraftByCategory(next);
+    // Undo: the line as it was before (not marked deleted), in the category it was in.
+    offerUndo(`${String(current.name || "").trim() || "Line"} removed`, () => undoLatestRef.current?.orderMiscRow(categoryKey, lineKey, current));
     await persistOrderMiscDraft(next);
   };
   // Bulk edit (the cutlist list's Select). The rows picked (still in the cutlist), picking one on or off, a group's all
@@ -39673,11 +40595,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     }
     const picked = new Set(pickedCutlistRowIds);
     const removedRows = cutlistRows.filter((row) => picked.has(row.id));
+    const taken = takenOutOf(cutlistRows, (row) => picked.has(row.id));
     const nextRows = cutlistRows.filter((row) => !picked.has(row.id));
     setCutlistRows(nextRows);
     for (const removed of removedRows) logCutlistActivity(`${removed.name || "Part"} removed`, { partType: removed.partType });
     setSelectedCutlistRowIds([]);
     setCutlistBulkDeleteArmedFor("");
+    offerCutlistRowsUndo("production", taken);
     await persistCutlistRows(nextRows);
   };
   // The board or the edging changed on every picked row at once — each as its own edit there would be (a board without
@@ -43389,8 +44313,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         )
       ) : (
         <div>
-          {rows.map((line) => {
+          {rows.map((line, lineIndex) => {
             const lineOptions = line.name && !options.includes(line.name) ? [line.name, ...options] : options;
+            // (Its X hovered — its red glow on it, or on the line above: its line between them gone.)
+            const glowTouches = Boolean(hoveredOrderDeleteRowId) && (line.id === hoveredOrderDeleteRowId || rows[lineIndex - 1]?.id === hoveredOrderDeleteRowId);
             // Its supplier's item number (Company Settings › Hardware), when its kind has any: a copy button beside it — to
             // find it in their cart.
             const kindNumbers = kind === "hinges" ? orderSelectedHardwareRow?.hingeItemNumbers : orderSelectedHardwareRow?.otherItemNumbers;
@@ -43399,10 +44325,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             return (
               <div
                 key={line.id}
-                className="group/orderline row-glow-anchor grid min-h-11 items-center gap-2 border-t py-1.5 first:border-t-0"
-                style={{ borderColor: orderRuleColor, gridTemplateColumns: hasItemNumbers ? "minmax(0,1fr) 28px 60px 24px" : orderLineGrid }}
+                className="group/orderline row-glow-anchor grid min-h-11 items-center gap-2 border-t py-1.5 transition-[border-color] duration-150 first:border-t-0"
+                style={{
+                  borderColor: glowTouches ? "transparent" : orderRuleColor,
+                  gridTemplateColumns: hasItemNumbers ? "minmax(0,1fr) 28px 60px 24px" : orderLineGrid,
+                }}
               >
-                <div className="row-glow" data-active={hoveredOrderDeleteRowId === line.id} />
+                {/* (Just the line — not over those either side; its lines above and below hidden while it shows.) */}
+                <div className="row-glow" data-active={hoveredOrderDeleteRowId === line.id} style={{ top: 0, bottom: 0, left: -4, right: -4 }} />
                 <GlassSelectDropdown
                   fullWidth
                   disabled={productionReadOnly || !lineOptions.length}
@@ -43415,7 +44345,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 />
                 {hasItemNumbers ? (
                   <span className="flex justify-center">
-                    <CopyButton value={itemNumber} label={`item number ${itemNumber}`} />
+                    <CopyButton value={itemNumber} label={`ID number ${itemNumber}`} />
                   </span>
                 ) : null}
                 <input
@@ -43766,7 +44696,28 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   setIsOrderLibraryDropOver(false);
                 }}
               >
-                {orderSectionHeading({ title: "Hardware", accent: orderHardwareColor, detail: orderHardwareName || undefined })}
+                {orderSectionHeading({
+                  title: "Hardware",
+                  accent: orderHardwareColor,
+                  detail: orderHardwareName || undefined,
+                  action: orderHasCartNumbers ? (
+                    <CopyListButton
+                      text={orderCartText}
+                      label="Copy for cart"
+                      copiedLabel={`Copied ${orderCartItems.size} ${orderCartItems.size === 1 ? "line" : "lines"}${
+                        orderCartMissing.length ? ` · ${orderCartMissing.length} without an ID no.` : ""
+                      }`}
+                      title={
+                        orderCartItems.size
+                          ? `Copy the hinges, drawers and other items (${orderCartItems.size} ${orderCartItems.size === 1 ? "line" : "lines"}, as ${orderCartFormat}) to paste into ${orderHardwareName || "the supplier"}'s quick order${
+                              orderCartMissing.length ? ` — not on it, no ID number: ${orderCartMissing.join(", ")}` : ""
+                            }`
+                          : "Nothing on the order has an ID number yet — add them in Company Settings › Hardware"
+                      }
+                      style={glassShineStyle(orderHardwareColor, { color: orderHwOnColor })}
+                    />
+                  ) : undefined,
+                })}
                 {/* (Its parts' own edges just past the heading's, so their lines line up with it.) */}
                 <div className={orderColumns ? "-mx-3 grid grid-cols-3" : "-mx-3"}>
                   {orderHardwarePart({
@@ -43783,43 +44734,49 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       orderDrawerGroupedRows.length === 0 ? (
                         orderEmptyNote("No drawers in the cutlist yet.")
                       ) : (
+                        (() => {
+                          // Each line's runner weight (when its drawer type has weights), and its supplier ID number
+                          // (orderDrawerItemNumber): a copy button beside it — a column of them when any line has one.
+                          const drawerWeightColumn = orderDrawerGroupedRows.some((group) => group.weight > 0);
+                          const drawerIdColumn = orderDrawerGroupedRows.some((group) => orderDrawerItemNumber(group));
+                          const drawerGrid = [
+                            "minmax(0,1fr)",
+                            "minmax(0,1fr)",
+                            drawerWeightColumn ? "minmax(0,0.8fr)" : "",
+                            drawerIdColumn ? "28px" : "",
+                            "28px",
+                          ]
+                            .filter(Boolean)
+                            .join(" ");
+                          return (
                         <div>
                           <div
                             className={`grid items-center gap-3 pb-1 ${orderColumnLabelClass}`}
-                            style={{ color: "var(--text-main)", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr) 28px" }}
+                            style={{ color: "var(--text-main)", gridTemplateColumns: drawerGrid }}
                           >
                             <p>Length</p>
                             <p>Back height</p>
+                            {drawerWeightColumn ? <p>Weight</p> : null}
+                            {drawerIdColumn ? <p /> : null}
                             <p className="text-center">Qty</p>
                           </div>
-                          {orderDrawerHardwareKinds.map((kind) => {
-                            // Its drawer type's supplier item number (Company Settings › Hardware), and its copy button.
-                            const kindGroup = orderDrawerGroupedRows.find((group) => `${group.hardware} · ${group.drawerType}` === kind);
-                            const kindBrand = hardwareRows.find((row) => row.name.trim().toLowerCase() === String(kindGroup?.hardware ?? "").trim().toLowerCase());
-                            const kindItemNumber = hardwareItemNumber(kindBrand, "drawer", String(kindGroup?.drawerType ?? ""));
-                            return (
+                          {orderDrawerHardwareKinds.map((kind) => (
                             <Fragment key={`order_drawer_kind_${kind}`}>
-                              {orderDrawerHardwareKinds.length > 1 || kindItemNumber ? (
+                              {orderDrawerHardwareKinds.length > 1 ? (
                                 <div className="flex min-w-0 items-center gap-1.5 pb-0.5 pt-3 text-[12px] font-medium" style={{ color: "var(--text-main)" }}>
-                                  {orderDrawerHardwareKinds.length > 1 ? <p className="min-w-0 truncate">{kind}</p> : null}
-                                  {kindItemNumber ? (
-                                    <>
-                                      <span className="shrink-0" style={{ color: projectPalette.textMuted }}>
-                                        {orderDrawerHardwareKinds.length > 1 ? "· " : ""}Item no. {kindItemNumber}
-                                      </span>
-                                      <CopyButton value={kindItemNumber} label={`item number ${kindItemNumber}`} className="-my-1" />
-                                    </>
-                                  ) : null}
+                                  <p className="min-w-0 truncate">{kind}</p>
                                 </div>
                               ) : null}
                               <div>
                                 {orderDrawerGroupedRows
                                   .filter((group) => `${group.hardware} · ${group.drawerType}` === kind)
-                                  .map((group) => (
+                                  .map((group) => {
+                                    const drawerId = orderDrawerItemNumber(group);
+                                    return (
                                     <div
                                       key={`order_drawer_row_${group.key}`}
                                       className="grid min-h-11 items-center gap-3 border-t py-1.5 text-[12.5px] first:border-t-0"
-                                      style={{ borderColor: orderRuleColor, gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr) 28px" }}
+                                      style={{ borderColor: orderRuleColor, gridTemplateColumns: drawerGrid }}
                                     >
                                       <p className="truncate font-medium" style={{ color: "var(--text-main)" }}>
                                         {group.hardwareLength || "-"}
@@ -43827,14 +44784,26 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       <p className="truncate" style={{ color: "var(--text-main)" }}>
                                         {group.backHeight || "-"}
                                       </p>
+                                      {drawerWeightColumn ? (
+                                        <p className="truncate" style={{ color: "var(--text-main)" }}>
+                                          {group.weight ? `${group.weight}kg` : "-"}
+                                        </p>
+                                      ) : null}
+                                      {drawerIdColumn ? (
+                                        <span className="flex justify-center">
+                                          <CopyButton value={drawerId} label={`ID number ${drawerId}`} />
+                                        </span>
+                                      ) : null}
                                       <span className="flex justify-center">{orderCountBubble(group.total, orderHardwareColor, orderHwOnColor)}</span>
                                     </div>
-                                  ))}
+                                    );
+                                  })}
                               </div>
                             </Fragment>
-                            );
-                          })}
+                          ))}
                         </div>
+                          );
+                        })()
                       ),
                   })}
 
@@ -43911,13 +44880,22 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       <p />
                     </div>
                     <div>
-                      {orderMiscLines.map((line) => (
+                      {orderMiscLines.map((line, lineIndex) => (
                         <div
                           key={`order_misc_${line.key}`}
-                          className="group/orderline row-glow-anchor grid min-h-11 items-center gap-2 border-t py-1.5 first:border-t-0"
-                          style={{ borderColor: orderRuleColor, gridTemplateColumns: orderMiscGrid }}
+                          className="group/orderline row-glow-anchor grid min-h-11 items-center gap-2 border-t py-1.5 transition-[border-color] duration-150 first:border-t-0"
+                          style={{
+                            // (Its X hovered — its red glow on it, or on the line above: its line between them gone.)
+                            borderColor:
+                              hoveredOrderDeleteRowId &&
+                              (line.key === hoveredOrderDeleteRowId || orderMiscLines[lineIndex - 1]?.key === hoveredOrderDeleteRowId)
+                                ? "transparent"
+                                : orderRuleColor,
+                            gridTemplateColumns: orderMiscGrid,
+                          }}
                         >
-                          <div className="row-glow" data-active={hoveredOrderDeleteRowId === line.key} />
+                          {/* (Just the line — not over those either side.) */}
+                          <div className="row-glow" data-active={hoveredOrderDeleteRowId === line.key} style={{ top: 0, bottom: 0, left: -4, right: -4 }} />
                           <input
                             type="text"
                             disabled={productionReadOnly}
@@ -45626,7 +46604,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
               {/* (First, for Project Cutlist — no entry above it: at the top of the cutlist, as Cutlist Entry is.) */}
               <section className={`relative z-10 -mx-4 w-[calc(100%+2rem)] overflow-visible ${initialCutlistRoomFilter === "Project Cutlist" ? "-mt-4" : ""}`}>
-                <div className="flex h-[50px] items-center justify-between px-1">
+                {/* In from the sides as far as Cutlist Entry's title is (its row's padding, from 4px further out). */}
+                <div
+                  className="flex h-[50px] items-center justify-between"
+                  style={{ paddingLeft: (isCutlistRoomsPanelShown ? 20 : 8) + 4, paddingRight: (isCutlistRoomsPanelShown ? 20 : 8) + 4 }}
+                >
                   <div className="inline-flex items-center gap-2">
                     <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Cutlist List</p>
                     <p className="rounded-[999px] border px-3 py-1 text-[11px] font-bold" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}>
@@ -48212,7 +49194,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             {/* The Notes bar along the bottom (the Quote's Actions bar), its sheet Notes and the trades — the company's
                 contractors, and Other — as bubbles (the Actions sheet's); each opens in its drawer (CutlistSideDrawer —
                 the whole screen on a phone). */}
-            <div className="fixed inset-x-0 bottom-0 z-[95] flex h-[56px] border-t" style={{ borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)" }}>
+            <div data-bottom-bar="" className="fixed inset-x-0 bottom-0 z-[95] flex h-[56px] border-t" style={{ borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)" }}>
               {/* (Split half and half: the Cabinetry drawer on the left, Notes on the right.) */}
               <button
                 type="button"
@@ -48973,7 +49955,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             data-cutlist-entry-row={draft.id}
                             className={`relative grid gap-2 overflow-visible ${(draftIsDoor || draftIsCabinetry || isDrawerPartType(draft.partType)) && !isSubPartDraft ? "items-start" : "items-center"} ${isSubPartDraft ? "pl-[2px] pr-[8px] rounded-[16px] border" : "py-1 px-1 border-y"}`}
                             style={{
-                              gridTemplateColumns: cutlistEntryGridTemplate,
+                              gridTemplateColumns: cutlistEntryGridTemplateFor(squeezedDrawerRowId === draft.id ? DRAWER_BOX_OPEN_EXTRA : 0),
                               backgroundColor: draftPalette.rowBg,
                               color: draftTextColor,
                               borderColor: draftPalette.border,
@@ -49447,6 +50429,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 drawerDepthKeys(draft),
                                 `${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} w-full rounded-[8px] border bg-transparent px-2 text-center ${warningClassForCell(draft.id, "depth")}`,
                                 { ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) },
+                                // (Its column's own width — cutlistEntryGridTemplateFor.)
+                                70,
                               )
                             ) : (
                               <input disabled={productionReadOnly} inputMode="decimal" title={depthWarn || undefined} value={draft.depth} onChange={(e) => updateDraftCutlistRow(draft.id, { depth: numericDimensionText(e.target.value) })} className={`${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} w-full rounded-[8px] border bg-transparent px-2 text-center ${warningClassForCell(draft.id, "depth")}`} style={{ ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
@@ -49656,7 +50640,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
               {/* (First, for Project Cutlist — no entry above it: at the top of the cutlist, as Cutlist Entry is.) */}
               <section className={`relative z-10 -mx-4 w-[calc(100%+2rem)] overflow-visible ${cutlistRoomFilter === "Project Cutlist" ? "-mt-4" : ""}`}>
-                <div className="flex h-[50px] items-center justify-between gap-3 px-1">
+                {/* In from the sides as far as Cutlist Entry's title is (its row's padding, from 4px further out). */}
+                <div
+                  className="flex h-[50px] items-center justify-between gap-3"
+                  style={{ paddingLeft: (isCutlistRoomsPanelShown ? 20 : 8) + 4, paddingRight: (isCutlistRoomsPanelShown ? 20 : 8) + 4 }}
+                >
                   <div className="inline-flex shrink-0 items-center gap-2">
                     <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Cutlist List</p>
                     <p className="rounded-[999px] border px-3 py-1 text-[11px] font-bold" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}>
@@ -50874,7 +51862,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               (glass-bar-pop / -pop-away — globals.css). */}
           {isCutlistSelectMode ? renderCutlistBulkBar() : renderCutlistAttentionBubble()}
           {productionCutlistBarShown && !isCutlistSelectMode ? (
-            <div
+            <div data-bottom-bar=""
               className="cutlist-floating-bar pointer-events-none fixed bottom-6 right-0 z-[96] flex justify-center px-4"
               // (Moving with the Rooms column: at once as it opens, once its rooms have slid out as it closes.)
               style={{
@@ -51657,7 +52645,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             </aside>
           ) : null}
           {!large && !isLabelsMobilePanelOpen ? (
-            <div
+            <div data-bottom-bar=""
               data-horizontal-swipe-scroll="true"
               className="fixed inset-x-0 bottom-0 z-[95] h-[56px] border-t"
               style={{ borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)" }}
@@ -53163,7 +54151,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               across that transition. Tap-only — see the touch handlers' own comment on why there's
               no drag-to-open here. */}
           {isCompactProjectViewport && !isCncMobileVisibilityOpen && (
-            <div
+            <div data-bottom-bar=""
               data-horizontal-swipe-scroll="true"
               className="fixed inset-x-0 bottom-0 z-[95] h-[56px] border-t"
               style={{ borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)" }}
@@ -53909,7 +54897,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               (not gated on isOpen) — this trigger stays fixed in place regardless of the floating
               panel's own open/closed state; only the panel itself (below, portalled) animates. */}
           {isCompactProjectViewport && (
-            <div
+            <div data-bottom-bar=""
               {...{ [SPECS_QUOTE_SWIPE_EXCLUDE_ATTR]: "true" }}
               className="fixed inset-x-0 bottom-0 z-[95] h-[56px] border-t"
               // Matches the header's own Back button exactly (same brand-gradient + brand-strong
@@ -54008,7 +54996,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               pill floats over its grey canvas background rather than a separate section of the host
               page's own background, which would show through the pill's blur as a mismatched seam. */}
           {!isCompactProjectViewport && (
-            <div
+            <div data-bottom-bar=""
               className="fixed bottom-6 left-1/2 z-[95] flex -translate-x-1/2 items-center gap-1.5 rounded-full border p-1.5"
               style={{
                 borderColor: "var(--glass-border)",
@@ -54411,7 +55399,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               />
                               <button
                                 type="button"
-                                onClick={() => setQuoteCustomPriceDraftRows((rows) => rows.filter((_, i) => i !== idx))}
+                                onClick={() => {
+                                  setQuoteCustomPriceDraftRows((rows) => rows.filter((_, i) => i !== idx));
+                                  offerUndo(`${row.name.trim() || "Row"} removed`, () =>
+                                    setQuoteCustomPriceDraftRows((rows) => putBackAt(rows, [{ index: idx, item: row }], (r) => r.id)),
+                                  );
+                                }}
                                 className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[7px] transition hover:bg-[var(--danger-soft)]"
                                 style={{ color: "var(--danger-strong)" }}
                                 aria-label="Remove row"
@@ -54868,8 +55861,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         {(() => {
                           const target = quoteGridVersions.find((v) => v.id === quoteVersionPendingDeleteId);
                           return target
-                            ? <>Delete &quot;{target.name}&quot;? This can&apos;t be undone.</>
-                            : "Delete this version? This can't be undone.";
+                            ? <>Delete &quot;{target.name}&quot;?</>
+                            : "Delete this version?";
                         })()}
                       </p>
                       <div className="flex items-center justify-end gap-2">
@@ -55515,7 +56508,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               gated on isOpen) — this trigger stays fixed in place regardless of the floating
               panel's own open/closed state; only the panel itself (below, portalled) animates. */}
           {isCompactProjectViewport && (
-            <div
+            <div data-bottom-bar=""
               {...{ [SPECS_QUOTE_SWIPE_EXCLUDE_ATTR]: "true" }}
               className="fixed inset-x-0 bottom-0 z-[95] h-[56px] border-t"
               // Same reasoning as the Quote tab's own identical trigger — see its comment.
@@ -55569,7 +56562,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               pill floats over its grey canvas background rather than a separate section of the host
               page's own background, which would show through the pill's blur as a mismatched seam. */}
           {!isCompactProjectViewport && (
-            <div
+            <div data-bottom-bar=""
               className="fixed bottom-6 left-1/2 z-[95] flex -translate-x-1/2 items-center gap-1.5 rounded-full border p-1.5"
               style={{
                 borderColor: "var(--glass-border)",
@@ -56316,8 +57309,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         {(() => {
                           const target = specsSheetVersions.find((v) => v.id === specsVersionPendingDeleteId);
                           return target
-                            ? <>Delete &quot;{target.name}&quot;? This can&apos;t be undone.</>
-                            : "Delete this version? This can't be undone.";
+                            ? <>Delete &quot;{target.name}&quot;?</>
+                            : "Delete this version?";
                         })()}
                       </p>
                       <div className="flex items-center justify-end gap-2">
@@ -57114,7 +58107,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           {/* A phone / tablet: the difference and the words for the client in a floating glass bar at the bottom, in
               sight however far the pieces are scrolled (a computer has the summary beside them). */}
           {isCompactProjectViewport && salesAccess.view && initialCutlistRows.length > 0 ? (
-            <div
+            <div data-bottom-bar=""
               className="fixed bottom-6 left-1/2 z-[95] flex w-max max-w-[calc(100vw-24px)] -translate-x-1/2 items-center gap-3 rounded-full border py-1.5 pl-4 pr-1.5"
               style={{
                 borderColor: "var(--glass-border)",
@@ -57206,8 +58199,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         {(() => {
                           const target = productComparisons.find((c) => c.id === comparisonPendingDeleteId);
                           return target
-                            ? <>Delete &quot;{target.name}&quot;? This can&apos;t be undone.</>
-                            : "Delete this upgrade? This can't be undone.";
+                            ? <>Delete &quot;{target.name}&quot;?</>
+                            : "Delete this upgrade?";
                         })()}
                       </p>
                       <div className="flex items-center justify-end gap-2">
@@ -58349,7 +59342,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               this bar sits right where the OS's own "swipe up from the bottom edge" leave-the-app
               gesture lives, and a drag-up here kept getting eaten by iOS instead. */}
           {isCompactProjectViewport && !isNestingMobileVisibilityOpen && (
-            <div
+            <div data-bottom-bar=""
               data-horizontal-swipe-scroll="true"
               className="fixed inset-x-0 bottom-0 z-[95] h-[56px] border-t"
               style={{ borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)" }}
@@ -60160,7 +61153,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 setIsProjectScheduleModalOpen(true);
                               }
                             }}
-                            className="project-subtab-button glass-shine glass-shine-neutral relative inline-flex w-full min-w-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 py-2.5 text-left text-[13px] font-semibold transition hover:z-10 hover:scale-[1.04] hover:brightness-95 sm:w-auto sm:min-w-[120px] xl:w-full xl:min-w-0 xl:whitespace-normal"
+                            className="project-subtab-button glass-shine glass-shine-neutral relative inline-flex w-full min-w-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 py-1.5 text-left text-[13px] font-semibold transition hover:z-10 hover:scale-[1.04] hover:brightness-95 sm:w-auto sm:min-w-[120px] xl:w-full xl:min-w-0 xl:whitespace-normal"
                             style={glassShineStyle("var(--brand)", {
                               color: isDarkMode ? "#cbd5e1" : "#243B58",
                               boxShadow: `0 1px 4px rgba(15, 23, 42, ${isDarkMode ? "0.3" : "0.08"}), inset 0 1px 0 rgba(255, 255, 255, ${isDarkMode ? "0.1" : "0.7"})`,
@@ -60487,6 +61480,34 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 />
                               ) : null}
                             </div>
+                            {/* Their contact category, at the right of their name: a pill in its colour (as on the Contacts
+                                page), which is also its picker — a change saves to their contact card straight away, so
+                                it's changed company-wide (changeProjectContactCategory). With a saved card only; a staff
+                                contact stays under Staff. */}
+                            {projectContact && projectContactPersisted ? (
+                              <GlassDropdown
+                                value={projectContact.category || ""}
+                                options={[
+                                  { value: "", label: "Uncategorized" },
+                                  ...contactCategories
+                                    .filter((c) => !isStaffContactCategory(c.name) || isStaffContactCategory(projectContact.category))
+                                    .map((c) => ({ value: c.name, label: c.name, color: c.color })),
+                                  // (One since renamed or removed in Company Settings still shows, rather than "Uncategorized".)
+                                  ...(projectContact.category && !contactCategories.some((c) => c.name === projectContact.category)
+                                    ? [{ value: projectContact.category, label: projectContact.category }]
+                                    : []),
+                                ]}
+                                onChange={(next) => void changeProjectContactCategory(next)}
+                                disabled={isStaffContactCategory(projectContact.category)}
+                                ariaLabel="Contact category"
+                                triggerTitle="Change their contact category (company-wide)"
+                                menuMinWidth={190}
+                                menuAlign="right"
+                                hideChevron
+                                triggerClassName="max-w-[45%] shrink-0 rounded-full border px-2.5 py-[3px] text-[12px] font-medium"
+                                triggerStyle={{ borderColor: ambientMix(45), backgroundColor: ambientMix(16), color: "var(--text-main)" }}
+                              />
+                            ) : null}
                             {/* No contact card for this client on this user's Contacts page -> offer to make one from the
                                 project's client details (attaches to an existing record if one matches). Green, like
                                 Production's add (+) buttons. */}
@@ -61154,22 +62175,25 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   them, which mirror this same top-matches-side spacing (see below). */}
               <aside className="h-full overflow-hidden px-3 pb-3 pt-3 sm:overflow-x-auto xl:overflow-hidden xl:pb-4 xl:pl-5 xl:pr-2 xl:pt-5">
                 <div className="grid grid-cols-2 gap-1.5 sm:flex sm:min-w-max sm:flex-row xl:block xl:min-w-0 xl:space-y-1.5">
+                {/* In groups, each under its heading and a line (projectSubtabHeading): the sale itself, then the tools. */}
                 {[
-                  { label: "Initial Measure", icon: Ruler, key: "initial" as const },
-                  { label: "Items", icon: ListChecks, key: "items" as const },
-                  { label: "Quote", icon: DollarSign, key: "quote" as const },
-                  { label: "Specifications", icon: ClipboardList, key: "specifications" as const },
-                  { label: "Upgrades", icon: ArrowLeftRight, key: "compare" as const },
-                  { label: "Project Management", icon: HardHat, key: "projectManagement" as const },
+                  { label: "Initial Measure", icon: Ruler, key: "initial" as const, group: "Sales" },
+                  { label: "Items", icon: ListChecks, key: "items" as const, group: "Sales" },
+                  { label: "Quote", icon: DollarSign, key: "quote" as const, group: "Sales" },
+                  { label: "Specifications", icon: ClipboardList, key: "specifications" as const, group: "Sales" },
                   // The Calendar's events linked to this project (for those who can see the Calendar).
-                  ...(projectScheduleViewer.canViewCalendar ? [{ label: "Schedule", icon: CalendarDays, key: "schedule" as const }] : []),
+                  ...(projectScheduleViewer.canViewCalendar ? [{ label: "Schedule", icon: CalendarDays, key: "schedule" as const, group: "Utilities" }] : []),
+                  { label: "Upgrades", icon: ArrowLeftRight, key: "compare" as const, group: "Utilities" },
+                  { label: "Project Management", icon: HardHat, key: "projectManagement" as const, group: "Utilities" },
                   // Once something's been shared with the client — same as the Quote/Specifications windows' button.
-                  ...(specsShareStatus && project?.id ? [{ label: "Client Portal", icon: ExternalLink, key: "clientPortal" as const }] : []),
-                ].map((item) => {
+                  ...(specsShareStatus && project?.id ? [{ label: "Client Portal", icon: ExternalLink, key: "clientPortal" as const, group: "Utilities" }] : []),
+                ].map((item, index, all) => {
                   const Icon = item.icon;
                   const active = (salesNav as string) === item.key;
                   return (
-                    <div key={item.label} className="w-full sm:w-auto xl:w-full">
+                    <Fragment key={item.label}>
+                    {item.group !== all[index - 1]?.group ? projectSubtabHeading(item.group, index === 0) : null}
+                    <div className="w-full sm:w-auto xl:w-full">
                     <button
                       type="button"
                       ref={item.key === "initial" ? initialMeasureTabButtonRef : undefined}
@@ -61196,7 +62220,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       }}
                       // The glass shine (lib/glass-shine.ts): its neutral version, frosted white (app/globals.css) — the open one
                       // the full brand blue, with white text.
-                      className={`project-subtab-button glass-shine ${active ? "" : "glass-shine-neutral"} relative inline-flex w-full min-w-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 py-2.5 text-left text-[13px] font-semibold transition hover:z-10 hover:scale-[1.04] hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-55 disabled:hover:scale-100 sm:w-auto sm:min-w-[120px] xl:w-full xl:min-w-0 xl:whitespace-normal`}
+                      className={`project-subtab-button glass-shine ${active ? "" : "glass-shine-neutral"} relative inline-flex w-full min-w-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 py-1.5 text-left text-[13px] font-semibold transition hover:z-10 hover:scale-[1.04] hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-55 disabled:hover:scale-100 sm:w-auto sm:min-w-[120px] xl:w-full xl:min-w-0 xl:whitespace-normal`}
                       style={glassShineStyle("var(--brand)", {
                         color: active ? "#FFFFFF" : isDarkMode ? "#cbd5e1" : "#243B58",
                         // A button-sized shadow (not the containers' big one) — the strip they sit in cuts off anything
@@ -61210,6 +62234,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       {item.label}
                     </button>
                     </div>
+                    </Fragment>
                   );
                 })}
                 </div>
@@ -61568,25 +62593,51 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   them, which mirror this same top-matches-side spacing (see below). */}
               <aside className="h-full overflow-hidden px-3 pb-3 pt-3 sm:overflow-x-auto xl:overflow-hidden xl:pb-4 xl:pl-5 xl:pr-2 xl:pt-5">
                 <div className="grid grid-cols-2 gap-1.5 sm:flex sm:min-w-max sm:flex-row xl:block xl:min-w-0 xl:space-y-1.5">
-                {[
-                  { label: "Cutlist", icon: Scissors, key: "cutlist" as const },
-                  { label: "Nesting", icon: GitBranch, key: "nesting" as const },
-                  { label: "CNC Cutlist", icon: Cpu, key: "cnc" as const },
-                  { label: "Order", icon: ShoppingCart, key: "order" as const },
-                  // A label for every piece, to print on a label printer.
-                  { label: "Labels", icon: Tag, key: "labels" as const },
-                  // The Specifications the client confirmed, in a pop-up.
-                  { label: "Specifications", icon: ClipboardList, key: "specifications" as const },
-                  { label: "Remedials", icon: Wrench, key: "remedials" as const },
-                  { label: "Print", icon: Printer, key: "print" as const },
-                  { label: "Import", icon: ImportIcon, key: "import" as const },
-                  ...(canRequestProductionUnlock
-                    ? [{ label: "Unlock Edit", icon: Lock, key: "unlock" as const }]
-                    : []),
-                ].map((item) => {
+                {(
+                  // In groups, each under its heading and a line: the job itself, what it's going by, and the tools. (The
+                  // headings: on a computer, and a phone's two columns — not the strip of them across a tablet.)
+                  [
+                    {
+                      heading: "Project",
+                      items: [
+                        { label: "Cutlist", icon: Scissors, key: "cutlist" },
+                        { label: "Order", icon: ShoppingCart, key: "order" },
+                        { label: "CNC Cutlist", icon: Cpu, key: "cnc" },
+                        { label: "Nesting", icon: GitBranch, key: "nesting" },
+                        { label: "Remedials", icon: Wrench, key: "remedials" },
+                      ],
+                    },
+                    {
+                      heading: "Planning",
+                      items: [
+                        // The Specifications the client confirmed, in a pop-up.
+                        { label: "Specifications", icon: ClipboardList, key: "specifications" },
+                        // The Calendar's events for the project (as Design's — for those who can see the Calendar).
+                        ...(projectScheduleViewer.canViewCalendar ? [{ label: "Schedule", icon: CalendarDays, key: "schedule" }] : []),
+                      ],
+                    },
+                    {
+                      heading: "Utilities",
+                      items: [
+                        { label: "Print", icon: Printer, key: "print" },
+                        // A label for every piece, to print on a label printer.
+                        { label: "Labels", icon: Tag, key: "labels" },
+                        { label: "Import", icon: ImportIcon, key: "import" },
+                      ],
+                    },
+                    { heading: "", items: canRequestProductionUnlock ? [{ label: "Unlock Edit", icon: Lock, key: "unlock" }] : [] },
+                  ] as Array<{ heading: string; items: Array<{ label: string; icon: typeof Scissors; key: string }> }>
+                ).flatMap((group, groupIndex) => [
+                  group.heading && group.items.length ? projectSubtabHeading(group.heading, groupIndex === 0) : null,
+                  ...group.items.map((item) => {
                   const Icon = item.icon;
                   const active =
-                    item.key === "unlock" || item.key === "print" || item.key === "remedials" || item.key === "import" || item.key === "specifications"
+                    item.key === "unlock" ||
+                    item.key === "print" ||
+                    item.key === "remedials" ||
+                    item.key === "import" ||
+                    item.key === "specifications" ||
+                    item.key === "schedule"
                       ? false
                       : productionNav === item.key;
                   return (
@@ -61605,6 +62656,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             productionSpecsModalOriginElRef.current = e.currentTarget;
                             setProductionSpecsModalOrigin(captureGlassModalOrigin(e));
                             setIsProductionSpecsModalOpen(true);
+                            return;
+                          }
+                          if (item.key === "schedule") {
+                            projectScheduleModalOriginElRef.current = e.currentTarget;
+                            setProjectScheduleModalOrigin(captureGlassModalOrigin(e));
+                            setIsProjectScheduleModalOpen(true);
                             return;
                           }
                           if (item.key === "print") {
@@ -61643,7 +62700,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         // As the Design tab's side buttons: the glass shine's neutral version, frosted white (lib/glass-shine.ts,
                         // app/globals.css) — the open one the full brand blue, with white text — and a button-sized shadow (its strip
                         // cuts off more).
-                        className={`project-subtab-button glass-shine ${active ? "" : "glass-shine-neutral"} relative inline-flex w-full min-w-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 py-2.5 text-left text-[13px] font-semibold transition hover:z-10 hover:scale-[1.04] hover:brightness-95 sm:w-auto sm:min-w-[120px] xl:w-full xl:min-w-0 xl:whitespace-normal`}
+                        className={`project-subtab-button glass-shine ${active ? "" : "glass-shine-neutral"} relative inline-flex w-full min-w-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 py-1.5 text-left text-[13px] font-semibold transition hover:z-10 hover:scale-[1.04] hover:brightness-95 sm:w-auto sm:min-w-[120px] xl:w-full xl:min-w-0 xl:whitespace-normal`}
                         style={glassShineStyle("var(--brand)", {
                           color: active ? "#FFFFFF" : isDarkMode ? "#cbd5e1" : "#243B58",
                           boxShadow: active
@@ -61656,7 +62713,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       </button>
                     </div>
                   );
-                })}
+                  }),
+                ])}
                 </div>
               </aside>
 
@@ -64486,7 +65544,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             onClose={() => setIsProductionSpecsModalOpen(false)}
             project={project}
           />
-          {/* The Calendar's events for this project — from the Design tab's Schedule, or the General tab's. */}
+          {/* The Calendar's events for this project — from the Design tab's Schedule, Production's, or the General tab's. */}
           <ProjectScheduleModal
             open={isProjectScheduleModalOpen}
             origin={projectScheduleModalOrigin}
@@ -64785,7 +65843,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                 {canManageProductionTempUnlocks && (
                                                   <button
                                                     type="button"
-                                                    onClick={() => void onRemoveProductionTempUnlock(row.uid)}
+                                                    onClick={() => void onRemoveProductionTempUnlock(row.uid, row.displayName)}
                                                     className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-[#F1B8B8] bg-[#FCEAEA] text-[#B42318] hover:bg-[#F9DCDC]"
                                                     title="Remove temporary production edit access"
                                                     aria-label={`Remove temporary production edit access for ${row.displayName}`}

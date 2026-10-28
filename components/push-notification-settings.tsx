@@ -18,6 +18,7 @@ import { db } from "@/lib/firebase";
 import { GlassDropdown } from "@/components/glass-dropdown";
 import { DevTestButton } from "@/components/dev-mode";
 import { GlassSwitch, iconRemoveButtonClass, modalCloseButtonClass } from "@/components/settings-ui";
+import { useUndo } from "@/components/undo-bar";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import {
   CALENDAR_REMINDER_UNITS,
@@ -88,9 +89,9 @@ const SLIDE_TRANSITION = "transform 260ms cubic-bezier(0.32, 0.72, 0, 1)";
 type ToggleProps = { checked: boolean; onChange: (checked: boolean) => void; disabled?: boolean };
 
 // A list of reminder times (e.g. "1 day before", "1 hour before"): one dropdown per row, X to remove a
-// row (there's always at least one), and + to add another (a choice not already in the list). With
-// `repeating` (the times set to repeat), each row has a Repeat switch too: "after 2 days", repeating,
-// goes again every 2 days.
+// row (there's always at least one — and the Undo bar after, putting it back), and + to add another (a
+// choice not already in the list). With `repeating` (the times set to repeat), each row has a Repeat
+// switch too: "after 2 days", repeating, goes again every 2 days.
 function ReminderTimesList({
   label,
   values,
@@ -109,6 +110,26 @@ function ReminderTimesList({
   // A row's time changing or going takes its Repeat with it.
   const change = (next: number[], nextRepeating = repeating) =>
     onChange(next, nextRepeating?.filter((value) => next.includes(value)));
+  // Undone, a row's back where it was, repeating again if it was (unless its time's been picked again since). Done with
+  // the latest list and change — Undo's pressed seconds later, by when both may well be newer.
+  const offerUndo = useUndo();
+  const latestRef = useRef({ values, repeating, change });
+  useEffect(() => {
+    latestRef.current = { values, repeating, change };
+  });
+  const remove = (index: number) => {
+    const value = values[index];
+    const wasRepeating = Boolean(repeating?.includes(value));
+    change(values.filter((_, i) => i !== index));
+    offerUndo("Reminder removed", () => {
+      const latest = latestRef.current;
+      if (latest.values.includes(value)) return;
+      latest.change(
+        [...latest.values.slice(0, index), value, ...latest.values.slice(index)],
+        wasRepeating && latest.repeating ? [...latest.repeating, value] : latest.repeating,
+      );
+    });
+  };
   return (
     <div className="block text-[11px] font-semibold" style={{ color: SUB_TEXT_COLOR }}>
       {label}
@@ -147,7 +168,7 @@ function ReminderTimesList({
             <button
               type="button"
               disabled={values.length <= 1}
-              onClick={() => change(values.filter((_, i) => i !== index))}
+              onClick={() => remove(index)}
               className={iconRemoveButtonClass}
               aria-label={`Remove this ${label.toLowerCase()} reminder`}
               title="Remove"
@@ -182,11 +203,25 @@ const REMINDER_AM_PM_OPTIONS = [
 ];
 
 // Calendar reminders (lib/push-notification-types.ts): each row "<number> <minutes / hours / days / weeks / months>
-// before", and for days, weeks and months "at <time> <am / pm>" too; X to remove a row (there's always one), + to add
-// another. The number is typed (only digits), kept within its unit's range.
+// before", and for days, weeks and months "at <time> <am / pm>" too; X to remove a row (there's always one — and the Undo
+// bar after, as ReminderTimesList's), + to add another. The number is typed (only digits), kept within its unit's range.
 function CalendarRemindersList({ rows, onChange }: { rows: CalendarReminderRow[]; onChange: (next: CalendarReminderRow[]) => void }) {
   const update = (index: number, patch: Partial<CalendarReminderRow>) =>
     onChange(rows.map((row, i) => (i === index ? clampCalendarReminder({ ...row, ...patch }) : row)));
+  const offerUndo = useUndo();
+  const latestRef = useRef({ rows, onChange });
+  useEffect(() => {
+    latestRef.current = { rows, onChange };
+  });
+  const remove = (index: number) => {
+    const removed = rows[index];
+    onChange(rows.filter((_, i) => i !== index));
+    offerUndo("Reminder removed", () => {
+      const latest = latestRef.current;
+      if (latest.rows.some((row) => row.amount === removed.amount && row.unit === removed.unit && row.at === removed.at)) return;
+      latest.onChange([...latest.rows.slice(0, index), removed, ...latest.rows.slice(index)]);
+    });
+  };
   // A new row: the first of these not already there.
   const nextRow = (
     [
@@ -273,7 +308,7 @@ function CalendarRemindersList({ rows, onChange }: { rows: CalendarReminderRow[]
           <button
             type="button"
             disabled={rows.length <= 1}
-            onClick={() => onChange(rows.filter((_, i) => i !== index))}
+            onClick={() => remove(index)}
             className={`${iconRemoveButtonClass} mt-1`}
             aria-label="Remove this reminder"
             title="Remove"

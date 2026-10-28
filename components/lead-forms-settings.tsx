@@ -54,6 +54,7 @@ import {
   secondaryButtonClass,
   smallButtonClass,
 } from "@/components/settings-ui";
+import { useUndo } from "@/components/undo-bar";
 import { authorizedFetch } from "@/lib/api-fetch";
 import { isPreviewMode } from "@/lib/preview-mode";
 import { PUBLIC_SITE_ORIGIN } from "@/lib/site-origin";
@@ -94,6 +95,12 @@ const iconQuietButtonClass =
   "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] text-[var(--text-muted)] transition hover:bg-[color-mix(in_srgb,var(--text-main)_6%,transparent)] hover:text-[var(--text-main)]";
 const textAreaClass = `${glassFieldClass} h-auto min-h-[72px] resize-y py-2 leading-[1.45]`;
 
+// Something taken off, put back where it was (the Undo bar).
+function insertAt<T>(list: T[], index: number, item: T): T[] {
+  const at = Math.min(Math.max(index, 0), list.length);
+  return [...list.slice(0, at), item, ...list.slice(at)];
+}
+
 function moveItem<T>(list: T[], from: number, to: number): T[] {
   if (from === to || from < 0 || to < 0 || from >= list.length || to >= list.length) return list;
   const next = [...list];
@@ -119,6 +126,7 @@ function QuestionEditor({
   onChange,
   onMove,
   onRemove,
+  onRemoveChoice,
   onDragStart,
   onDragEnter,
   onDragEnd,
@@ -132,6 +140,7 @@ function QuestionEditor({
   onChange: (patch: Partial<LeadFormQuestion>) => void;
   onMove: (to: number) => void;
   onRemove: () => void;
+  onRemoveChoice: (optionIndex: number) => void;
   onDragStart: (e: ReactDragEvent<HTMLButtonElement>) => void;
   onDragEnter: () => void;
   onDragEnd: () => void;
@@ -265,7 +274,7 @@ function QuestionEditor({
                     />
                     <button
                       type="button"
-                      onClick={() => onChange({ options: question.options.filter((_, i) => i !== optionIndex) })}
+                      onClick={() => onRemoveChoice(optionIndex)}
                       className={iconRemoveButtonClass}
                       title="Remove choice"
                       aria-label="Remove choice"
@@ -500,6 +509,8 @@ export function LeadFormsPanel({
   setForms: Dispatch<SetStateAction<LeadForm[]>>;
 }) {
   const { copy: copyText } = useCopied();
+  // The Undo bar along the bottom, after a form, question or choice is taken off (components/undo-bar.tsx).
+  const offerUndo = useUndo();
   const [editingFormId, setEditingFormId] = useState("");
   const [editorOrigin, setEditorOrigin] = useState<GlassModalOrigin>(null);
   const editorPanelRef = useRef<HTMLDivElement | null>(null);
@@ -542,6 +553,39 @@ export function LeadFormsPanel({
       ...form,
       questions: form.questions.map((question) => (question.id === questionId ? { ...question, ...patch } : question)),
     }));
+  };
+
+  // A form, question or choice taken off — and the Undo bar, putting it back where it was (saved with the rest of the
+  // page, as the delete was). Already back, or its form gone by then: nothing more to do.
+  const deleteForm = (formId: string) => {
+    const index = forms.findIndex((form) => form.id === formId);
+    const removed = forms[index];
+    if (!removed) return;
+    setForms((prev) => prev.filter((form) => form.id !== formId));
+    offerUndo(`${removed.name || "Untitled form"} deleted`, () =>
+      setForms((prev) => (prev.some((form) => form.id === formId) ? prev : insertAt(prev, index, removed))),
+    );
+  };
+  const removeQuestion = (formId: string, question: LeadFormQuestion) => {
+    const index = forms.find((form) => form.id === formId)?.questions.findIndex((item) => item.id === question.id) ?? -1;
+    if (index < 0) return;
+    updateForm(formId, (form) => ({ ...form, questions: form.questions.filter((item) => item.id !== question.id) }));
+    offerUndo(`${question.label.trim() || "Question"} removed`, () =>
+      updateForm(formId, (form) =>
+        form.questions.some((item) => item.id === question.id) ? form : { ...form, questions: insertAt(form.questions, index, question) },
+      ),
+    );
+  };
+  const removeChoice = (formId: string, questionId: string, optionIndex: number) => {
+    const option = forms.find((form) => form.id === formId)?.questions.find((item) => item.id === questionId)?.options[optionIndex];
+    if (option === undefined) return;
+    const changeOptions = (change: (options: string[]) => string[]) =>
+      updateForm(formId, (form) => ({
+        ...form,
+        questions: form.questions.map((item) => (item.id === questionId ? { ...item, options: change(item.options) } : item)),
+      }));
+    changeOptions((options) => options.filter((_, i) => i !== optionIndex));
+    offerUndo(`${option.trim() || "Choice"} removed`, () => changeOptions((options) => insertAt(options, optionIndex, option)));
   };
 
   const addForm = (event: ReactMouseEvent<HTMLElement>) => {
@@ -778,7 +822,8 @@ export function LeadFormsPanel({
                               onToggle={() => setExpandedQuestionId((prev) => (prev === question.id ? "" : question.id))}
                               onChange={(patch) => updateQuestion(editingForm.id, question.id, patch)}
                               onMove={(to) => updateForm(editingForm.id, (form) => ({ ...form, questions: moveItem(form.questions, index, to) }))}
-                              onRemove={() => updateForm(editingForm.id, (form) => ({ ...form, questions: form.questions.filter((item) => item.id !== question.id) }))}
+                              onRemove={() => removeQuestion(editingForm.id, question)}
+                              onRemoveChoice={(optionIndex) => removeChoice(editingForm.id, question.id, optionIndex)}
                               onDragStart={(e) => {
                                 setDragIndex(index);
                                 e.dataTransfer.effectAllowed = "move";
@@ -837,7 +882,7 @@ export function LeadFormsPanel({
                       onClick={() => {
                         const id = deleteFormId;
                         setDeleteFormId("");
-                        setForms((prev) => prev.filter((form) => form.id !== id));
+                        deleteForm(id);
                       }}
                       className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-[11px] px-4 text-[12.5px] font-semibold text-white transition hover:brightness-105"
                       style={{ backgroundColor: "var(--danger)" }}

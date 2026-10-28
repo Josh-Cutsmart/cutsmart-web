@@ -106,6 +106,7 @@ import {
 } from "@/lib/specs-grid-types";
 import { SpecsCellColorPopover, type SpecsColorPopoverAnchorRect } from "@/components/specs-cell-color-popover";
 import { swallowNextClick } from "@/lib/swallow-dismiss-click";
+import { useUndo } from "@/components/undo-bar";
 
 export type SpecsGridEditorProps = {
   value: SpecsGrid;
@@ -1028,6 +1029,9 @@ export default function SpecsGridEditor({
   // inside a setState updater function is not allowed and throws in React).
   const liveGridRef = useRef(value);
   const isDraggingRef = useRef(false);
+  // The Undo bar along the bottom of the screen, offered after every delete on the sheet (see
+  // applyDeleteWithUndo below) and in the group modal's own lists (rules, zones, links).
+  const offerUndo = useUndo();
   const [selection, setSelection] = useState<SpecsGridSelection | null>(null);
   // Mirrors `selection`, so the Ctrl/Cmd+C/V keyboard listener (mounted once, see below) can always
   // read the truly-latest selection without needing to re-subscribe on every render to pick up a
@@ -1195,7 +1199,7 @@ export default function SpecsGridEditor({
   // it's filed into deletedGroups first — meaning even a whole group emptied one row at a time via
   // this exact button stays fully recoverable afterward (see the "Sections" bar's own restore chips).
   const removeRowAt = (index: number) => {
-    applyChange(removeRowWithArchive(liveGrid, index), true);
+    applyDeleteWithUndo(removeRowWithArchive(liveGrid, index), "Row deleted");
   };
 
   const dragRef = useRef<{ axis: "col" | "row"; index: number; startPos: number; startSize: number } | null>(null);
@@ -1272,6 +1276,25 @@ export default function SpecsGridEditor({
   };
   const canUndo = historyCounts.undo > 0;
   const canRedo = historyCounts.redo > 0;
+
+  // Every delete on the sheet itself (a row, a column, a group, an image, the split line) goes
+  // through here, so the Undo bar shows after it. Pressed while the sheet's still exactly as the
+  // delete left it, that's just this editor's own Undo (so Redo still brings the delete back again);
+  // with something else edited since, it puts the sheet back as it stood right before the delete, as
+  // a fresh edit of its own — one Ctrl+Z away from those later edits, so they aren't lost either.
+  // Goes through the refs (not this render's undo/applyChange) since it can be pressed seconds later,
+  // by when the onChange prop may well be a newer one. A delete that changed nothing (the last row or
+  // column, which removeRow/removeColumn won't take) offers nothing.
+  const applyDeleteWithUndo = (next: SpecsGrid, message: string) => {
+    if (isSentToClient || next === liveGrid) return;
+    const before = liveGridRef.current;
+    applyChange(next, true);
+    offerUndo(message, () => {
+      const stack = undoStackRef.current;
+      if (liveGridRef.current === next && stack[stack.length - 1] === before) undoRef.current();
+      else applyChangeRef.current(before, true);
+    });
+  };
 
   const activeCell = (() => {
     if (!selection) return null;
@@ -1548,11 +1571,13 @@ export default function SpecsGridEditor({
   const pasteAtSelectionRef = useRef(pasteAtSelection);
   const undoRef = useRef(undo);
   const redoRef = useRef(redo);
+  const applyChangeRef = useRef(applyChange);
   useEffect(() => {
     copySelectionRef.current = copySelection;
     pasteAtSelectionRef.current = pasteAtSelection;
     undoRef.current = undo;
     redoRef.current = redo;
+    applyChangeRef.current = applyChange;
   });
 
   // Ctrl/Cmd+C / Ctrl/Cmd+V / Ctrl/Cmd+Z / Ctrl/Cmd+Shift+Z (or +Y) at the grid level — skipped while
@@ -1616,7 +1641,10 @@ export default function SpecsGridEditor({
       });
       return { ...r, cells };
     });
-    applyChange({ pageSize: liveGrid.pageSize, columnWidths: liveGrid.columnWidths, groups: liveGrid.groups, deletedGroups: liveGrid.deletedGroups, rows }, true);
+    const next = { pageSize: liveGrid.pageSize, columnWidths: liveGrid.columnWidths, groups: liveGrid.groups, deletedGroups: liveGrid.deletedGroups, rows };
+    // Taking an image out is a delete like any other — the Undo bar puts it back.
+    if (imageUrl) applyChange(next, true);
+    else applyDeleteWithUndo(next, "Image removed");
   };
 
   // Shared bulk setter for either of SpecsCell's two confirmation-related boolean fields — applies
@@ -1872,7 +1900,18 @@ export default function SpecsGridEditor({
   // Which quote group ROWS are currently expanded in the picker to reveal their own editable zone as
   // a selectable sub-item — keyed by quote group name, reset whenever the picker itself closes.
   const [expandedQuoteGroupNamesInPicker, setExpandedQuoteGroupNamesInPicker] = useState<Set<string>>(new Set());
+  // A rule, zone or link taken out in the modal is out of the draft only (saved with the modal), and its
+  // Undo puts it back into that same draft — each opening of the modal is counted, so an Undo pressed once
+  // it's been opened afresh (maybe for another group) leaves the new draft be.
+  const groupDraftRunRef = useRef(0);
+  const offerDraftUndo = (message: string, putBack: (d: SpecsRowGroupEditableFields) => SpecsRowGroupEditableFields) => {
+    const run = groupDraftRunRef.current;
+    offerUndo(message, () => {
+      if (groupDraftRunRef.current === run) setGroupDraft(putBack);
+    });
+  };
   const openGroupModal = (groupId: string | null, startRow: number, endRow: number, existingGroup: SpecsRowGroup | undefined) => {
+    groupDraftRunRef.current += 1;
     setGroupDraft({
       name: existingGroup?.name ?? "",
       price: existingGroup?.price ?? "",
@@ -1996,7 +2035,8 @@ export default function SpecsGridEditor({
   };
 
   const unlinkGroup = (groupId: string) => {
-    applyChange(removeRowGroup(liveGrid, groupId), true);
+    const name = liveGrid.groups.find((g) => g.id === groupId)?.name?.trim();
+    applyDeleteWithUndo(removeRowGroup(liveGrid, groupId), `${name || "Group"} removed`);
   };
 
   // Extends an already-existing group to also cover the highlighted row range, instead of creating
@@ -3146,7 +3186,7 @@ export default function SpecsGridEditor({
             </button>
             <button
               type="button"
-              onClick={() => activeCell && applyChange(removeRow(liveGrid, activeCell.row), true)}
+              onClick={() => activeCell && applyDeleteWithUndo(removeRow(liveGrid, activeCell.row), `Row ${activeCell.row + 1} deleted`)}
               className="inline-flex h-8 items-center gap-1 rounded-[8px] border px-2 text-[11px] font-bold"
               style={toolbarDangerStyle}
             >
@@ -3162,7 +3202,7 @@ export default function SpecsGridEditor({
             </button>
             <button
               type="button"
-              onClick={() => activeCell && applyChange(removeColumn(liveGrid, activeCell.col), true)}
+              onClick={() => activeCell && applyDeleteWithUndo(removeColumn(liveGrid, activeCell.col), `Column ${getColumnLetter(activeCell.col)} deleted`)}
               className="inline-flex h-8 items-center gap-1 rounded-[8px] border px-2 text-[11px] font-bold"
               style={toolbarDangerStyle}
             >
@@ -3174,7 +3214,7 @@ export default function SpecsGridEditor({
               disabled={!splitAnchorGroup && expandedGroups.length === 0}
               onClick={() => {
                 if (splitAnchorGroup) {
-                  applyChange(setAnchorSplitGroup(liveGrid, null), true);
+                  applyDeleteWithUndo(setAnchorSplitGroup(liveGrid, null), "Split line removed");
                   return;
                 }
                 const lastGroup = expandedGroups.reduce<SpecsRowGroup | null>(
@@ -4897,8 +4937,8 @@ export default function SpecsGridEditor({
               <button
                 type="button"
                 onClick={() => {
-                  if (headerContextMenu.axis === "row") applyChange(removeRow(liveGrid, headerContextMenu.index), true);
-                  else applyChange(removeColumn(liveGrid, headerContextMenu.index), true);
+                  if (headerContextMenu.axis === "row") applyDeleteWithUndo(removeRow(liveGrid, headerContextMenu.index), `Row ${headerContextMenu.index + 1} deleted`);
+                  else applyDeleteWithUndo(removeColumn(liveGrid, headerContextMenu.index), `Column ${getColumnLetter(headerContextMenu.index)} deleted`);
                   setHeaderContextMenu(null);
                 }}
                 className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left text-[12px] hover:brightness-95"
@@ -5069,7 +5109,12 @@ export default function SpecsGridEditor({
                               </select>
                               <button
                                 type="button"
-                                onClick={() => setGroupDraft((d) => ({ ...d, rules: d.rules.filter((_, i) => i !== idx) }))}
+                                onClick={() => {
+                                  setGroupDraft((d) => ({ ...d, rules: d.rules.filter((_, i) => i !== idx) }));
+                                  offerDraftUndo("Rule removed", (d) =>
+                                    d.rules.some((r) => r.id === rule.id) ? d : { ...d, rules: [...d.rules.slice(0, idx), rule, ...d.rules.slice(idx)] },
+                                  );
+                                }}
                                 className="ml-auto inline-flex h-7 w-7 items-center justify-center rounded-[7px] transition hover:bg-[var(--danger-soft)]"
                                 style={{ color: "var(--danger-strong)" }}
                                 aria-label="Remove rule"
@@ -5207,7 +5252,13 @@ export default function SpecsGridEditor({
                               </span>
                               <button
                                 type="button"
-                                onClick={() => setGroupDraft((d) => ({ ...d, zones: d.zones.filter((z) => z.id !== zone.id) }))}
+                                onClick={() => {
+                                  const at = groupDraft.zones.findIndex((z) => z.id === zone.id);
+                                  setGroupDraft((d) => ({ ...d, zones: d.zones.filter((z) => z.id !== zone.id) }));
+                                  offerDraftUndo("Zone removed", (d) =>
+                                    d.zones.some((z) => z.id === zone.id) ? d : { ...d, zones: [...d.zones.slice(0, at), zone, ...d.zones.slice(at)] },
+                                  );
+                                }}
                                 className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] transition hover:bg-[var(--danger-soft)]"
                                 style={{ color: "var(--danger-strong)" }}
                                 aria-label="Remove zone"
@@ -5329,7 +5380,19 @@ export default function SpecsGridEditor({
                             </span>
                             <button
                               type="button"
-                              onClick={() => toggleZoneLinkRef(ref.quoteGroupName, ref.source)}
+                              onClick={() => {
+                                // Undone, it's linked again, back in the same place in the order.
+                                const zoneId = zoneContextMenu.zoneId;
+                                toggleZoneLinkRef(ref.quoteGroupName, ref.source);
+                                offerDraftUndo(`${ref.quoteGroupName} unlinked`, (d) => ({
+                                  ...d,
+                                  zones: d.zones.map((z) => {
+                                    const links = z.linkedQuoteGroups ?? [];
+                                    if (z.id !== zoneId || links.some((r) => r.quoteGroupName === ref.quoteGroupName && r.source === ref.source)) return z;
+                                    return { ...z, linkedQuoteGroups: [...links.slice(0, idx), ref, ...links.slice(idx)] };
+                                  }),
+                                }));
+                              }}
                               className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] transition hover:bg-[var(--danger-soft)]"
                               style={{ color: "var(--danger-strong)" }}
                               aria-label="Remove link"

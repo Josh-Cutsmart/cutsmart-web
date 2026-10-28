@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { Check, Copy } from "lucide-react";
+import { Check, Copy, ShoppingCart } from "lucide-react";
 import { haptic } from "@/lib/haptics";
 
 // Text onto the clipboard — the Clipboard API, or (an older browser, or a page not on https) a hidden text box and the
@@ -75,6 +75,55 @@ export function CopyButton({
       title={copied ? "Copied" : `Copy ${label}`}
     >
       {copied ? <Check size={size} strokeWidth={2.6} /> : <Copy size={size} />}
+    </button>
+  );
+}
+
+// A round-ended pill that copies a whole list — an order's lines, ready to paste into a supplier's quick order: a cart and
+// its label, then a tick and copiedLabel for a moment once it's copied (and a light tap on a phone). Nothing on the list:
+// greyed, its title saying why.
+export function CopyListButton({
+  text,
+  label,
+  copiedLabel,
+  title,
+  className = "",
+  style,
+}: {
+  text: string;
+  label: string;
+  copiedLabel: string;
+  title: string;
+  className?: string;
+  style?: CSSProperties;
+}) {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (timerRef.current) window.clearTimeout(timerRef.current);
+    },
+    [],
+  );
+  const empty = !text.trim();
+  return (
+    <button
+      type="button"
+      disabled={empty}
+      onClick={async () => {
+        if (!(await copyToClipboard(text))) return;
+        haptic("tap");
+        setCopied(true);
+        if (timerRef.current) window.clearTimeout(timerRef.current);
+        timerRef.current = window.setTimeout(() => setCopied(false), 2400);
+      }}
+      className={`glass-shine inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 text-[12px] font-medium transition hover:brightness-95 disabled:cursor-default disabled:opacity-55 disabled:hover:brightness-100 ${className}`}
+      style={style}
+      title={title}
+      aria-label={copied ? copiedLabel : title}
+    >
+      {copied ? <Check size={13} strokeWidth={2.6} /> : <ShoppingCart size={13} strokeWidth={2.2} />}
+      {copied ? copiedLabel : label}
     </button>
   );
 }

@@ -811,6 +811,120 @@ body .drawer-toolbar-slim .cutsmart-quote-document-toolbar > .ck.ck-toolbar > .c
   margin-bottom: 0 !important;
 }
 
+/* The Cutlist Entry's drawer box (a drawer's depth and weight) opening out — its column widening (the grid sliding):
+   .drawer-box-open / .drawer-box-close, the box as it opens and as it closes...
+   ...its height's letter growing from its short form's small circle to the open box's round one (and back), and its
+   weight's bubble growing from its short form's small one the same way. */
+/* (A drawer under its row's top one: sliding out from its column's own width — --drawer-box-from — to --drawer-box-to,
+   and back.) */
+@keyframes drawer-box-grow {
+  from {
+    width: var(--drawer-box-from);
+  }
+  to {
+    width: var(--drawer-box-to);
+  }
+}
+@keyframes drawer-box-shrink {
+  from {
+    width: var(--drawer-box-to);
+  }
+  to {
+    width: var(--drawer-box-from);
+  }
+}
+.drawer-box-grow {
+  animation: drawer-box-grow 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.drawer-box-shrink {
+  animation: drawer-box-shrink 200ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+@keyframes drawer-box-letter-grow {
+  from {
+    width: 15px;
+    height: 15px;
+    font-size: 9px;
+  }
+}
+@keyframes drawer-box-letter-shrink {
+  to {
+    width: 15px;
+    height: 15px;
+    font-size: 9px;
+  }
+}
+@keyframes drawer-box-weight-in {
+  from {
+    height: 15px;
+    min-width: 15px;
+    padding-left: 3px;
+    padding-right: 3px;
+    font-size: 9px;
+  }
+}
+@keyframes drawer-box-weight-out {
+  to {
+    height: 15px;
+    min-width: 15px;
+    padding-left: 3px;
+    padding-right: 3px;
+    font-size: 9px;
+  }
+}
+.drawer-box-open .drawer-box-letter {
+  animation: drawer-box-letter-grow 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.drawer-box-close .drawer-box-letter {
+  animation: drawer-box-letter-shrink 200ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+.drawer-box-open .drawer-box-weight > button {
+  animation: drawer-box-weight-in 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.drawer-box-close .drawer-box-weight > button {
+  animation: drawer-box-weight-out 200ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .drawer-box-grow,
+  .drawer-box-shrink,
+  .drawer-box-open .drawer-box-letter,
+  .drawer-box-close .drawer-box-letter,
+  .drawer-box-open .drawer-box-weight > button,
+  .drawer-box-close .drawer-box-weight > button {
+    animation: none;
+  }
+}
+
+/* The Cutlist Entry's drawer weight pill stretching up and down to its other weights (DrawerWeightPill): drawn open
+   from its own row (--wheel-top / --wheel-bottom: how far above and below it the rest go). */
+@keyframes drawer-weight-wheel-open {
+  from {
+    clip-path: inset(var(--wheel-top) 0 var(--wheel-bottom) 0 round 12px);
+  }
+  to {
+    clip-path: inset(0 0 0 0 round 12px);
+  }
+}
+.drawer-weight-wheel {
+  animation: drawer-weight-wheel-open 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .drawer-weight-wheel {
+    animation: none;
+  }
+}
+
+/* The Undo bar (components/undo-bar.tsx) takes the bottom of the screen while it shows: the other bars along it — the
+ * pages' floating bars and buttons, their bottom bars, the Preview's, other notices (data-bottom-bar) — fade away for
+ * it, and back as it goes. (!important: some fade in with their own animations.) */
+[data-bottom-bar] {
+  transition: opacity 180ms ease, visibility 0s linear 0s;
+}
+body[data-undo-bar] [data-bottom-bar] {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  transition: opacity 180ms ease, visibility 0s linear 180ms;
+}
+
 .glass-menu-squeeze {
   transform-origin: 50% 0%;
   animation: glass-menu-squeeze 260ms cubic-bezier(0.22, 1.25, 0.36, 1) backwards;
@@ -1908,6 +2022,19 @@ body[data-theme="dark"] .project-subtab-button.glass-shine.glass-shine-neutral {
     0 2px 6px rgba(0, 0, 0, 0.3),
     inset 0 1px 0 rgba(255, 255, 255, 0.14),
     inset 0 -1px 0 rgba(0, 0, 0, 0.25) !important;
+}
+
+/* A tab's side button hovered (not the open one, which is already blue): a light wash of the brand blue, its edge and
+ * words in it too (its words' colour is set inline — hence !important). */
+.project-subtab-button.glass-shine.glass-shine-neutral:hover:not(:disabled) {
+  background: linear-gradient(160deg, color-mix(in srgb, var(--brand) 8%, #ffffff) 0%, color-mix(in srgb, var(--brand) 16%, #ffffff) 100%);
+  border-color: color-mix(in srgb, var(--brand) 40%, transparent);
+  color: var(--brand-strong) !important;
+}
+body[data-theme="dark"] .project-subtab-button.glass-shine.glass-shine-neutral:hover:not(:disabled) {
+  background: linear-gradient(160deg, color-mix(in srgb, var(--brand) 30%, transparent) 0%, color-mix(in srgb, var(--brand) 18%, transparent) 100%);
+  border-color: color-mix(in srgb, var(--brand) 50%, transparent);
+  color: #ffffff !important;
 }
 
 /* The tint: between the tab's own background (set inline) and its label, so it works over whatever

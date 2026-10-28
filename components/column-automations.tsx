@@ -38,6 +38,7 @@ import { glassShineStyle } from "@/lib/glass-shine";
 import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
 import { cn } from "@/lib/utils";
 import { SkeletonRows } from "@/components/skeleton";
+import { useUndo } from "@/components/undo-bar";
 
 // A board's column automations (lib/column-automations.ts), for whoever's role has projects.automate: right-click a
 // column (an element marked data-automation-board / -status / -substage / -color — the Dashboard's and Leads' column
@@ -356,6 +357,8 @@ function ColumnAutomationModal({
 }) {
   const { user } = useAuth();
   const devModeOn = useDevModeOn();
+  // The Undo bar, after an automation or a condition's taken out of the draft (removeRow, removeCondition).
+  const offerUndo = useUndo();
   const column = columnAutomationColumnLabel(target);
   const thing = board === "leads" ? "lead" : "project";
   const newRow = (): DraftRow => ({
@@ -406,6 +409,14 @@ function ColumnAutomationModal({
   }, [companyId]);
 
   const update = (id: string, patch: Partial<DraftRow>) => setRows((prev) => prev.map((row) => (row.id === id ? { ...row, ...patch } : row)));
+  // One taken out — of the draft only (it's gone once Save's pressed); undone, it's back in its place.
+  const removeRow = (row: DraftRow) => {
+    const at = rows.findIndex((item) => item.id === row.id);
+    setRows((prev) => prev.filter((item) => item.id !== row.id));
+    offerUndo("Automation removed", () =>
+      setRows((prev) => (prev.some((item) => item.id === row.id) ? prev : [...prev.slice(0, at), row, ...prev.slice(at)])),
+    );
+  };
   // What's still to fill in on one (shown under it once Save's been tried).
   const rowProblem = (row: DraftRow): string => {
     if (row.action === "notify" && !row.notifyUids.length && !row.notifyRoleIds.length && !row.notifyAssignee) {
@@ -452,7 +463,7 @@ function ColumnAutomationModal({
     });
   };
   // Its conditions: one added (who it's assigned to — anyone), changed (a new field starts from its first choice), or
-  // taken off.
+  // taken off (and, as an automation's, back in its place if that's undone).
   const conditionStartValue = (field: AutomationConditionField) =>
     field === "assignee" ? CONDITION_ANYONE : field === "from" ? fromOptions[0]?.value ?? "" : field === "source" ? LEAD_SOURCE_OPTIONS[0].value : "";
   const addCondition = (row: DraftRow) =>
@@ -461,7 +472,21 @@ function ColumnAutomationModal({
     });
   const changeCondition = (row: DraftRow, id: string, patch: Partial<AutomationCondition>) =>
     update(row.id, { conditions: row.conditions.map((condition) => (condition.id === id ? { ...condition, ...patch } : condition)) });
-  const removeCondition = (row: DraftRow, id: string) => update(row.id, { conditions: row.conditions.filter((condition) => condition.id !== id) });
+  const removeCondition = (row: DraftRow, id: string) => {
+    const at = row.conditions.findIndex((condition) => condition.id === id);
+    const removed = row.conditions[at];
+    update(row.id, { conditions: row.conditions.filter((condition) => condition.id !== id) });
+    if (!removed) return;
+    offerUndo("Condition removed", () =>
+      setRows((prev) =>
+        prev.map((item) =>
+          item.id !== row.id || item.conditions.some((condition) => condition.id === id)
+            ? item
+            : { ...item, conditions: [...item.conditions.slice(0, at), removed, ...item.conditions.slice(at)] },
+        ),
+      ),
+    );
+  };
 
   const save = async () => {
     setTriedSave(true);
@@ -746,7 +771,7 @@ function ColumnAutomationModal({
                     ) : null}
                     <button
                       type="button"
-                      onClick={() => setRows((prev) => prev.filter((item) => item.id !== row.id))}
+                      onClick={() => removeRow(row)}
                       className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[var(--text-muted)] transition hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
                       aria-label="Remove automation"
                       title="Remove automation"

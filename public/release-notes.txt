@@ -47,6 +47,7 @@ whatsNew: [
 <li><b>Schedule</b>: the project's calendar events along a timeline, spaced by date, with today and what's next — click one to open it in the Calendar</li>
 <li>A project made from a lead has a <b>Lead</b> button on its General tab, to see the lead it came from</li>
 <li>Copy buttons beside the client's phone, email and address</li>
+<li>The client's contact category in a pill beside their name — change it there and it's changed everywhere</li>
 <li>Every pop-up has the same header, and fills the screen on a phone</li>
 </ul>
 
@@ -56,7 +57,9 @@ whatsNew: [
 <li>Drag hinges and other parts in from the <b>Hardware Library</b>, or click one to add it</li>
 <li>Two people in the Order see each other's changes as they're made</li>
 <li>Empty Hinges and Other show a dashed box to add the first one</li>
-<li>Copy a hinge's or part's item number straight from the Order, ready for your supplier's cart</li>
+<li><b>Copy for cart</b>: the Order's hinges and other parts, a line each, ready to paste into your supplier's quick order — Blum's <b>Add items in bulk</b></li>
+<li>Copy a drawer's, hinge's or part's ID number straight from the Order</li>
+<li>A drawer's runner length is picked from the lengths its height comes in</li>
 <li><b>Labels</b>: a label for every piece, with a QR code — scan it with a phone to see the part, its room and its project</li>
 <li><b>Print</b>: the cutlist laid out like the old spreadsheet, a title sheet, and several prints together as one Project Folder</li>
 <li>Cutlist: <b>Select</b> parts to change their board or edging all at once, or delete them</li>
@@ -77,8 +80,13 @@ whatsNew: [
 <li>NZ public holidays, worked out for every year — pick your region in Company Settings › <b>Calendar</b> for its anniversary day</li>
 <li>Today is outlined in blue</li>
 <li>Previous and Next slide the view along</li>
-<li>Typing an event's title suggests the project it's about</li>
-<li>The event pop-up: the times sit under the title, a date wheel on phones, and the category list opens downwards</li>
+<li><b>Schedule a project</b>: a panel of your projects and small jobs — the ones with nothing booked yet first — to drag onto a day, or an hour, to book it in — or onto an event to link it to that one (unlinked events that sound like it lift and glow while you drag)</li>
+<li>Typing a new event's title suggests the project it's about (just while you first type it), and clicking <b>Project</b> shows the closest straight away, with <b>Show all</b> for the rest</li>
+<li>The event pop-up: the times sit under the title, date and time wheels on phones, and the category list opens downwards</li>
+<li>The time wheel goes round and round, to any minute</li>
+<li>The event pop-up takes on more of its category's colour</li>
+<li>The date wheel shows the weekday, and its days and months scroll on into the month (and year) either side</li>
+<li>Add staff shows each person's coloured initials</li>
 <li>The month view fits more events in each day</li>
 </ul>
 
@@ -87,7 +95,9 @@ whatsNew: [
 <li>Staff &amp; Permissions: an <b>Audit log</b> of every role and permission change — who made it and when</li>
 <li><b>View as this role</b>: see the app as someone with that role would, until you press Exit</li>
 <li>Backup &amp; Output: <b>Full data export</b> — everything your company has, in one file to keep</li>
-<li>Hardware: an item number on each drawer, hinge and part</li>
+<li>Hardware drawers, laid out afresh: hardware lengths and weights, how bottoms and backs are cut, then each height's own lengths and weights — click a height to tick just the ones it comes in</li>
+<li>Hardware: an ID number for each drawer height at each length and weight, and on each hinge and part — and an <b>Ordering</b> tab for how the Order copies them for your supplier's cart</li>
+<li>Hardware: removing a brand asks first</li>
 <li>Calendar: your <b>Public holidays</b> region</li>
 <li>Small Jobs: their own statuses</li>
 <li>Search finds every card</li>
@@ -96,6 +106,7 @@ whatsNew: [
 <u><b>App-Wide</b></u>
 <ul>
 <li>Search everything with <b>Ctrl+K</b> (⌘K on a Mac)</li>
+<li>Delete anything — a cutlist row, a board, a tag, an image, an event, a lead's note — and the yellow bar at the bottom offers <b>Undo</b> for a few seconds — and stays while your mouse is over it</li>
 <li>Soft placeholders while things load, instead of "Loading…"</li>
 <li>Dropdowns squeeze open from the button you pressed</li>
 <li>The page you're on glows in see-through glass in the sidebar</li>

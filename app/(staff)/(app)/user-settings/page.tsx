@@ -69,6 +69,7 @@ import { PUSH_CATEGORY_ICONS, PushNotificationSettings } from "@/components/push
 import { iconRemoveButtonClass } from "@/components/settings-ui";
 import { PUSH_NOTIFICATION_CATEGORIES } from "@/lib/push-notification-types";
 import { SlideOverPane, useIsPhone, useSlideOverPage } from "@/components/slide-over-page";
+import { useUndo } from "@/components/undo-bar";
 
 function newChecklistLocalId(prefix: string) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -252,6 +253,16 @@ export default function UserSettingsPage() {
   const [isMobileEditing, setIsMobileEditing] = useState(false);
   const [mobileDraft, setMobileDraft] = useState("");
   const [checklistTemplates, setChecklistTemplates] = useState<ChecklistTemplate[]>([]);
+  // The Undo bar, after a checklist's deleted or one of its rows taken out (removeChecklistTemplate,
+  // removeChecklistItem, the editor's rows). With the latest checklists, for an Undo pressed seconds on; and
+  // each opening of the checklist editor counted (checklistDraftRunRef) — its rows are that opening's, so an
+  // Undo pressed once it's been opened afresh leaves the new one be.
+  const offerUndo = useUndo();
+  const checklistTemplatesRef = useRef(checklistTemplates);
+  useEffect(() => {
+    checklistTemplatesRef.current = checklistTemplates;
+  });
+  const checklistDraftRunRef = useRef(0);
   const [isChecklistEditorOpen, setIsChecklistEditorOpen] = useState(false);
   const [checklistEditorId, setChecklistEditorId] = useState("");
   const [checklistNameDraft, setChecklistNameDraft] = useState("");
@@ -560,6 +571,7 @@ export default function UserSettingsPage() {
   }, [user?.uid]);
 
   const openNewChecklistEditor = () => {
+    checklistDraftRunRef.current += 1;
     setConfirmRemoveRowKey("");
     setChecklistEditorId("");
     setChecklistNameDraft("");
@@ -568,6 +580,7 @@ export default function UserSettingsPage() {
   };
 
   const openExistingChecklistEditor = (template: ChecklistTemplate) => {
+    checklistDraftRunRef.current += 1;
     setConfirmRemoveRowKey("");
     setChecklistEditorId(template.id);
     setChecklistNameDraft(template.name);
@@ -612,12 +625,26 @@ export default function UserSettingsPage() {
     void removeChecklistTemplate(template.id);
   };
 
+  // Undone, it's saved again under the same id, with its name and items (the ones with text — what was saved), and
+  // is back in the list.
   const removeChecklistTemplate = async (templateId: string) => {
     const uid = String(user?.uid || "").trim();
     if (!uid) return;
+    const removed = checklistTemplates.find((t) => t.id === templateId);
     const ok = await deleteChecklistTemplate(uid, templateId);
     if (ok) {
       setChecklistTemplates((prev) => prev.filter((t) => t.id !== templateId));
+      if (!removed) return;
+      const restored: ChecklistTemplate = {
+        ...removed,
+        items: removed.items.map((item) => ({ ...item, text: item.text.trim() })).filter((item) => item.text),
+      };
+      offerUndo(`${removed.name} deleted`, async () => {
+        if (!(await saveChecklistTemplate(uid, restored))) return;
+        setChecklistTemplates((prev) =>
+          prev.some((t) => t.id === restored.id) ? prev : [...prev, restored].sort((a, b) => a.name.localeCompare(b.name)),
+        );
+      });
     }
   };
 
@@ -1153,6 +1180,10 @@ export default function UserSettingsPage() {
               onClick={() => {
                 if (confirmRowRemoval(`draft:${idx}`, Boolean(rowText.trim()))) {
                   setChecklistRowsDraft((prev) => prev.filter((_, i) => i !== idx));
+                  const run = checklistDraftRunRef.current;
+                  offerUndo("Row removed", () => {
+                    if (checklistDraftRunRef.current === run) setChecklistRowsDraft((prev) => [...prev.slice(0, idx), rowText, ...prev.slice(idx)]);
+                  });
                 }
               }}
               className="inline-flex h-8 min-w-8 shrink-0 items-center justify-center gap-1 rounded-[8px] px-2 transition hover:bg-[var(--panel-bg)] disabled:opacity-30"
@@ -1509,10 +1540,19 @@ export default function UserSettingsPage() {
         : template.items;
     saveChecklistChange({ ...template, items });
   };
+  // Undone, it's back in its place in the checklist as it is by then (unless that checklist's gone since).
   const removeChecklistItem = (template: ChecklistTemplate, itemId: string) => {
     if (template.items.length <= 1) return;
     if (editingChecklistItemId === itemId) setEditingChecklistItemId("");
+    const at = template.items.findIndex((item) => item.id === itemId);
+    const removed = template.items[at];
     saveChecklistChange({ ...template, items: template.items.filter((item) => item.id !== itemId) });
+    if (!removed) return;
+    offerUndo(`${removed.text.trim() || "Item"} removed`, () => {
+      const current = checklistTemplatesRef.current.find((t) => t.id === template.id);
+      if (!current || current.items.some((item) => item.id === itemId)) return;
+      saveChecklistChange({ ...current, items: [...current.items.slice(0, at), removed, ...current.items.slice(at)] });
+    });
   };
   // A new, empty item at the bottom, ready to type in (saved once it has text).
   const addChecklistRow = (templateId: string) => {

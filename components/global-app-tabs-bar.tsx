@@ -51,6 +51,8 @@ import { useAppTabs, type AppWorkspaceTab } from "@/lib/app-tabs-context";
 import { applyThemeMode, readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
 import { useAuth } from "@/lib/auth-context";
 import { prefetchProjectById, projectViewableByUser } from "@/lib/firestore-data";
+import { readUserNotificationDoc, restoreUserNotificationDoc } from "@/lib/undo-restore-misc";
+import { useUndo } from "@/components/undo-bar";
 import {
   addUserNotification,
   deleteUserNotification,
@@ -430,6 +432,8 @@ export function GlobalAppTabsBar() {
   const seenNotifIdsRef = useRef<Set<string> | null>(null);
   // Checks for new notifications straight away (set by the polling below) — e.g. when a push arrives.
   const loadNotifsNowRef = useRef<(() => void) | null>(null);
+  // The Undo bar, after a notification's cleared from its menu (clearNotif).
+  const offerUndo = useUndo();
   // The list loads two weeks at a time (lib/firestore-data.ts): the last two weeks — from notifSinceMsRef, two weeks
   // before it first loaded, on — kept current by the polling; then each "Load more" at the bottom of the list adds
   // the two weeks before notifOldestMsRef (where what's loaded reaches back to).
@@ -1734,11 +1738,28 @@ export function GlobalAppTabsBar() {
     setNotifRows((prev) => prev.map((item) => (item.id === row.id ? { ...item, read } : item)));
     void setUserNotificationRead(user.uid, row.id, read);
   }
+  // Cleared, with the Undo bar after: its doc's read just before it's deleted, so Undo writes it back exactly (same id,
+  // everything as it was) and it's back in its place in the list — counted as already seen, so it doesn't pop up in the
+  // corner again as if it were new.
   function clearNotif(row: UserNotificationRow) {
     setNotifMenu(null);
-    if (!user?.uid) return;
+    const uid = user?.uid;
+    if (!uid) return;
+    const at = notifRows.findIndex((item) => item.id === row.id);
     setNotifRows((prev) => prev.filter((item) => item.id !== row.id));
-    void deleteUserNotification(user.uid, row.id);
+    const saved = readUserNotificationDoc(uid, row.id).then(async (data) => {
+      await deleteUserNotification(uid, row.id);
+      return data;
+    });
+    offerUndo("Notification cleared", async () => {
+      const data = await saved;
+      if (!data) return;
+      seenNotifIdsRef.current?.add(row.id);
+      if (!(await restoreUserNotificationDoc(uid, row.id, data))) return;
+      setNotifRows((prev) =>
+        prev.some((item) => item.id === row.id) ? prev : [...prev.slice(0, Math.max(0, at)), row, ...prev.slice(Math.max(0, at))],
+      );
+    });
   }
   // Remind me in…: gone from the list until then, then back as new and unread — and sent to their
   // phone/desktop again then (the scheduled job).

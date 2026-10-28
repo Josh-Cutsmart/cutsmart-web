@@ -475,7 +475,7 @@ export default function ReportsPage() {
       </div>
       {/* Reset stats (dev mode only): floating at the bottom right — beside Included while it's open on a computer. */}
       {devModeOn && loaded ? (
-        <button
+        <button data-bottom-bar=""
           type="button"
           onClick={() => setIsResetConfirmOpen(true)}
           title={view.resetAtIso ? `Last reset ${activeDate(view.resetAtIso)}` : "Work your stats out again from the company as it is now"}

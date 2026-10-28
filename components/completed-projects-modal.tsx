@@ -26,6 +26,8 @@ import {
 } from "@/lib/completed-projects";
 import type { Project } from "@/lib/types";
 import { SkeletonRows } from "@/components/skeleton";
+import { useUndo } from "@/components/undo-bar";
+import { restoreCompletedProjectRecord } from "@/lib/undo-restore-misc";
 
 // The Dashboard's Completed pop-up: the completed-projects record (lib/completed-projects.ts) — every project marked
 // complete, on the day and time it was completed, for working out completion bonuses. Counted by period (a month, 2,
@@ -541,9 +543,11 @@ export function CompletedProjectsModal({
     else setLoad((prev) => (prev.status === "ready" ? { ...prev, records: [...prev.records, { ...row.record, ...patch }] } : prev));
     setSaving("");
   };
-  // Taking one off the list: dragged onto the bin in the header (owners and admins), then confirmed.
+  // Taking one off the list: dragged onto the bin in the header (owners and admins), then confirmed — and then the
+  // Undo bar, putting it back on the list.
   const canRemove = isAdmin;
   const [removeTarget, setRemoveTarget] = useState<CompletionRow | null>(null);
+  const offerUndo = useUndo();
   const [overBin, setOverBin] = useState(false);
   // Dropped on the bin: its copy fades out there (not back onto its row, over the confirmation) — the drag's own end
   // that follows leaves it be.
@@ -572,6 +576,13 @@ export function CompletedProjectsModal({
     else if (row.saved) patchRecord(row.record.projectId, patch);
     else setLoad((prev) => (prev.status === "ready" ? { ...prev, records: [...prev.records, { ...row.record, ...patch }] } : prev));
     setSaving("");
+    if (!patch) return;
+    // Undone: its record's removed stamp cleared again (the record's never deleted — one written just now, for a project
+    // the record didn't have yet, stays written, now as an ordinary one).
+    const projectId = row.record.projectId;
+    offerUndo(`${row.record.projectName || "Project"} removed`, async () => {
+      if (await restoreCompletedProjectRecord(companyId, projectId)) patchRecord(projectId, { removedAtIso: "", removedByName: "" });
+    });
   };
   const dropOnBin = (event: React.DragEvent) => {
     event.preventDefault();

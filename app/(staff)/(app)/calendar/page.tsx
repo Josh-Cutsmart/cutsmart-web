@@ -7,20 +7,20 @@
 // be shown/hidden here per person. Opening the tab needs calendar.view; who can edit / view / not see each
 // category is set per role on the category (Company Settings > Calendar).
 
-import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
-import { WheelDatePicker } from "@/components/wheel-date-picker";
+import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { WheelDatePicker, WheelTimePicker } from "@/components/wheel-date-picker";
 import { GlassModalHeader } from "@/components/glass-modal-header";
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { CalendarDays, ChevronLeft, ChevronRight, Clock, Copy, ExternalLink, Filter, FolderKanban, MapPin, MoreHorizontal, Pencil, Plus, Search, Trash2, Users, X } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, Clock, Copy, ExternalLink, Filter, FolderKanban, GripVertical, Hammer, MapPin, MoreHorizontal, Pencil, Plus, Search, Trash2, Users, X } from "lucide-react";
 import { SubscribeBellIcon } from "@/components/subscribe-bell-icon";
 import { useAuth } from "@/lib/auth-context";
 import { haptic } from "@/lib/haptics";
 import { fetchCompanyDoc, fetchCompanyMembers, fetchProjects } from "@/lib/firestore-data";
 import { isProjectArchived } from "@/lib/project-archive";
 import { glassShineStyle } from "@/lib/glass-shine";
-import { matchProjectsToText } from "@/lib/project-match";
+import { matchProjectsToText, titleNamesProject } from "@/lib/project-match";
 import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
 import { normalizeRoleKey } from "@/lib/company-roles";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
@@ -29,8 +29,9 @@ import { activeDate, activeDateRange, useCompanyFormats } from "@/lib/company-fo
 import { useAppTabs } from "@/lib/app-tabs-context";
 import { useCalendarAppMode } from "@/lib/calendar-app-mode";
 import { normalizeNzHolidayRegion, nzPublicHolidayName, type NzHolidayRegion } from "@/lib/nz-public-holidays";
+import { useUndo } from "@/components/undo-bar";
+import { deleteCalendarEventKeepingCopy, restoreCalendarEventDoc } from "@/lib/undo-restore-leads-calendar";
 import {
-  deleteCalendarEvent,
   fetchCalendarEvent,
   newCalendarId,
   archiveOldCalendarEvents,
@@ -45,6 +46,7 @@ import {
   saveCalendarEvent,
   setCalendarEventSubscribed,
   subscribeCalendarEvents,
+  subscribeProjectLinkedCalendarEvents,
   calendarCategoryLevel,
   type CalendarAccessLevel,
   type CalendarCategory,
@@ -63,6 +65,7 @@ import {
   smallButtonClass,
 } from "@/components/settings-ui";
 import type { Project } from "@/lib/types";
+import { SMALL_JOB_COLOR } from "@/lib/small-jobs";
 
 // The toolbar's Today and Categories: fully rounded, and the view switcher's height beside them — 34px, or 40px
 // with bigger text on a phone (Segmented sm / lg).
@@ -457,6 +460,12 @@ function eventFromDraft(d: Draft): CalendarEvent | null {
   };
 }
 
+// Something taken off, put back where it was (the Undo bar).
+function insertAt<T>(list: T[], index: number, item: T): T[] {
+  const at = Math.min(Math.max(index, 0), list.length);
+  return [...list.slice(0, at), item, ...list.slice(at)];
+}
+
 // A name's initials for a staff emblem ("?" without one).
 function nameInitials(name: string): string {
   return name.trim().split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]?.toUpperCase() ?? "").join("") || "?";
@@ -514,17 +523,21 @@ function registerPopupTint() {
     // already registered (e.g. after a hot reload)
   }
 }
-// color "" = no category yet: no wash.
+// color "" = no category yet: no wash. The glass shine's look (lib/glass-shine.ts), well coloured: the whole pop-up a
+// wash of it (lighter top left, deeper bottom right), a glow of it in each of those corners, a fine edge of it and the
+// white top highlight.
 function popupTintStyle(color: string): CSSProperties {
   const tint = `var(${POPUP_TINT_VAR})`;
   return {
     [POPUP_TINT_VAR]: color || "transparent",
     transition: `${POPUP_TINT_VAR} 360ms ease`,
+    borderRadius: "inherit",
     backgroundImage: [
-      `radial-gradient(120% 70% at 0% 0%, color-mix(in srgb, ${tint} 30%, transparent), transparent 70%)`,
-      `radial-gradient(90% 60% at 100% 100%, color-mix(in srgb, ${tint} 14%, transparent), transparent 70%)`,
-      `linear-gradient(to bottom, color-mix(in srgb, ${tint} 10%, transparent), color-mix(in srgb, ${tint} 5%, transparent))`,
+      `radial-gradient(120% 70% at 0% 0%, color-mix(in srgb, ${tint} 34%, transparent), transparent 70%)`,
+      `radial-gradient(90% 60% at 100% 100%, color-mix(in srgb, ${tint} 24%, transparent), transparent 70%)`,
+      `linear-gradient(145deg, color-mix(in srgb, ${tint} 14%, transparent), color-mix(in srgb, ${tint} 28%, transparent))`,
     ].join(", "),
+    boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${tint} 30%, transparent), inset 0 1px 0 rgba(255, 255, 255, 0.6)`,
   } as CSSProperties;
 }
 // The pop-up's main button (Edit / Save / Add event) in the category's colour.
@@ -533,6 +546,205 @@ function categoryButtonStyle(color: string): CSSProperties {
 }
 
 // useSearchParams (for /calendar?event=<id>, opened from a calendar reminder) needs a Suspense boundary.
+// A dropdown under a field in the event pop-up (the title's suggestions, the Project field's), floating over the top of
+// the pop-up — on the page, fixed under the field — not inside it: never cut off by it, nor making it scroll as it pops
+// out. It follows the field every frame while it's open (the pop-up growing in, scrolling, the window changing size), and
+// opens upwards when there's more room above the field than the little below it. (Placed straight onto it, before it's
+// drawn — nothing to render.)
+const FLOAT_GAP = 6;
+function FloatingUnderField({
+  anchorRef,
+  children,
+  className,
+  style,
+  role,
+  ariaLabel,
+}: {
+  anchorRef: { current: HTMLElement | null };
+  children: ReactNode;
+  className?: string;
+  style?: CSSProperties;
+  role?: string;
+  ariaLabel?: string;
+}) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const place = () => {
+      const anchor = anchorRef.current;
+      const el = ref.current;
+      if (!anchor || !el) return;
+      const r = anchor.getBoundingClientRect();
+      const below = window.innerHeight - r.bottom - FLOAT_GAP - 12;
+      const above = r.top - FLOAT_GAP - 12;
+      const up = below < 180 && above > below;
+      el.style.left = `${r.left}px`;
+      el.style.width = `${r.width}px`;
+      el.style.top = up ? "" : `${r.bottom + FLOAT_GAP}px`;
+      el.style.bottom = up ? `${window.innerHeight - r.top + FLOAT_GAP}px` : "";
+      el.style.maxHeight = `${Math.max(120, up ? above : below)}px`;
+      el.style.transformOrigin = up ? "50% 100%" : "50% 0%";
+    };
+    let frame = 0;
+    const follow = () => {
+      place();
+      frame = window.requestAnimationFrame(follow);
+    };
+    place();
+    frame = window.requestAnimationFrame(follow);
+    return () => window.cancelAnimationFrame(frame);
+  }, [anchorRef]);
+  if (typeof document === "undefined") return null;
+  return createPortal(
+    <div ref={ref} role={role} aria-label={ariaLabel} className={`glass-bubble-pop fixed z-[1750] overflow-y-auto ${className ?? ""}`} style={style}>
+      {children}
+    </div>,
+    document.body,
+  );
+}
+
+// The Schedule panel's width (with the 12px gap before it, its padding).
+const SCHEDULE_PANEL_W = 292;
+
+// The Calendar's Schedule panel (beside the calendar, on a computer — the sidebar's Schedule a project): the company's
+// projects and small jobs, to drag onto a day. Those with nothing on the calendar yet at the top, then those booked (with
+// what's on now, their next date, or their last). Dropped, a new event opens on that day (at that time, in the Week and
+// Day views' hours) linked to it, as if it was linked in the event's pop-up — to change from there, then add. Clicked: the
+// same, on the day being looked at.
+function ProjectSchedulePanel({
+  projects,
+  linkedEvents,
+  loaded,
+  onClose,
+  onDragStart,
+  onDragEnd,
+  onPick,
+}: {
+  projects: Project[];
+  linkedEvents: CalendarEvent[];
+  loaded: boolean;
+  onClose: () => void;
+  onDragStart: (project: Project, e: ReactDragEvent<HTMLElement>) => void;
+  onDragEnd: () => void;
+  onPick: (project: Project, e: ReactMouseEvent<HTMLElement>) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const { unscheduled, scheduled } = useMemo(() => {
+    const at = nowMs();
+    // Each project's events: one on now, the soonest still to come, the latest gone.
+    const booked = new Map<string, { current: boolean; next: number | null; last: number }>();
+    for (const ev of linkedEvents) {
+      const entry = booked.get(ev.projectId) ?? { current: false, next: null, last: 0 };
+      if (ev.endMs <= at) entry.last = Math.max(entry.last, ev.startMs);
+      else if (ev.startMs <= at) entry.current = true;
+      else entry.next = entry.next == null ? ev.startMs : Math.min(entry.next, ev.startMs);
+      booked.set(ev.projectId, entry);
+    }
+    const q = search.trim().toLowerCase();
+    const shown = projects.filter((p) => !q || [p.name, p.customer, p.clientAddress].join(" ").toLowerCase().includes(q));
+    return {
+      // Newest first.
+      unscheduled: shown.filter((p) => !booked.has(p.id)).sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || ""))),
+      // On now, then what's coming soonest, then what's been longest since.
+      scheduled: shown
+        .flatMap((p) => {
+          const entry = booked.get(p.id);
+          return entry ? [{ project: p, ...entry }] : [];
+        })
+        .sort((a, b) => {
+          const rank = (x: { current: boolean; next: number | null }) => (x.current ? 0 : x.next != null ? 1 : 2);
+          if (rank(a) !== rank(b)) return rank(a) - rank(b);
+          if (a.next != null && b.next != null) return a.next - b.next;
+          return b.last - a.last;
+        }),
+    };
+  }, [linkedEvents, projects, search]);
+
+  const row = (p: Project, note: string) => {
+    const color = p.isSmallJob ? SMALL_JOB_COLOR : "var(--brand)";
+    return (
+      <button
+        key={p.id}
+        // (The drag's pill grows out of it — beginProjectDrag.)
+        id={`cal_schedule_${p.id}`}
+        type="button"
+        draggable
+        onDragStart={(e) => onDragStart(p, e)}
+        onDragEnd={onDragEnd}
+        onClick={(e) => onPick(p, e)}
+        title="Drag onto a day to schedule it"
+        className="flex w-full min-w-0 cursor-grab items-center gap-2.5 rounded-[12px] px-2 py-1.5 text-left transition hover:bg-[color-mix(in_srgb,var(--text-main)_6%,transparent)] active:cursor-grabbing"
+      >
+        <span
+          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full"
+          style={{ backgroundColor: `color-mix(in srgb, ${color} 14%, transparent)`, color }}
+        >
+          {p.isSmallJob ? <Hammer size={14} /> : <FolderKanban size={14} />}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[12.5px] font-medium" style={{ color: "var(--text-main)" }}>{p.name || "Untitled project"}</span>
+          <span className="block truncate text-[11px]" style={{ color: "var(--text-muted)" }}>{note}</span>
+        </span>
+        <GripVertical size={14} className="shrink-0" style={{ color: "var(--text-muted)" }} />
+      </button>
+    );
+  };
+  const sectionHeading = (title: string, count: number) => (
+    <p className="flex items-center gap-1.5 px-2 pb-1 pt-2 text-[10.5px] font-bold uppercase tracking-[0.8px]" style={{ color: "var(--text-muted)" }}>
+      {title}
+      <span className="font-medium">{count}</span>
+    </p>
+  );
+  const kindOf = (p: Project) => (p.isSmallJob ? "Small job" : "");
+  return (
+    <div className="flex h-full min-h-0 flex-col gap-2.5 rounded-[20px] border p-3.5" style={cardStyle}>
+      <div className="flex items-center gap-2 pl-1.5">
+        <FolderKanban size={17} strokeWidth={2.1} style={{ color: "var(--text-main)" }} />
+        <span className="min-w-0 flex-1 truncate text-[15px] font-semibold" style={{ color: "var(--text-main)" }}>Schedule</span>
+        <button type="button" onClick={onClose} className={modalCloseButtonClass} aria-label="Close the Schedule panel">
+          <X size={15} />
+        </button>
+      </div>
+      <p className="px-1.5 text-[11.5px] font-medium" style={{ color: "var(--text-muted)" }}>Drag a project or small job onto a day to book it in.</p>
+      <div className="relative">
+        <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }} />
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search projects"
+          aria-label="Search projects"
+          className={glassFieldClass}
+          // Inline: glassFieldClass's px-3 beat a pl-… class.
+          style={{ paddingLeft: 32 }}
+        />
+      </div>
+      <div className="-mx-1.5 min-h-0 flex-1 overflow-y-auto px-1.5">
+        {!loaded ? (
+          <p className="px-2 py-3 text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>Loading…</p>
+        ) : unscheduled.length === 0 && scheduled.length === 0 ? (
+          <p className="px-2 py-3 text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>{search.trim() ? "No projects match." : "No projects yet."}</p>
+        ) : (
+          <>
+            {unscheduled.length ? (
+              <>
+                {sectionHeading("Not scheduled", unscheduled.length)}
+                {unscheduled.map((p) => row(p, [kindOf(p), p.customer].filter(Boolean).join(" · ") || "Nothing booked yet"))}
+              </>
+            ) : null}
+            {scheduled.length ? (
+              <>
+                {sectionHeading("Scheduled", scheduled.length)}
+                {scheduled.map(({ project: p, current, next, last }) =>
+                  row(p, [current ? "On now" : next != null ? `Next ${activeDate(next)}` : `Last ${activeDate(last)}`, kindOf(p), p.customer].filter(Boolean).join(" · ")),
+                )}
+              </>
+            ) : null}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function CalendarPage() {
   return (
     <Suspense fallback={null}>
@@ -543,6 +755,8 @@ export default function CalendarPage() {
 
 function CalendarPageContent() {
   const { user } = useAuth();
+  // The Undo bar along the bottom, after an event's deleted or someone's taken off one (components/undo-bar.tsx).
+  const offerUndo = useUndo();
   const access = useCompanyAccess();
   useCompanyFormats();
   const companyId = access.companyId;
@@ -727,7 +941,7 @@ function CalendarPageContent() {
   const projectById = useMemo(() => new Map(projects.map((p) => [p.id, p])), [projects]);
   // An event's staff — for one saved before events had staff, its linked project's assignee, or its creator with no
   // one assigned (as the server counts them for its reminders).
-  const draftStaffUids = (d: Draft): string[] => d.staffUids ?? projectEventStaffUids(projectById.get(d.projectId));
+  const draftStaffUids = (d: Pick<Draft, "staffUids" | "projectId">): string[] => d.staffUids ?? projectEventStaffUids(projectById.get(d.projectId));
   const restrictedIds = useMemo(
     () =>
       new Set(
@@ -840,6 +1054,13 @@ function CalendarPageContent() {
   const [saving, setSaving] = useState(false);
   const [modalError, setModalError] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // The pop-up and the events as they are now — for an Undo pressed after they've moved on.
+  const draftRef = useRef(draft);
+  const eventsRef = useRef(events);
+  useEffect(() => {
+    draftRef.current = draft;
+    eventsRef.current = events;
+  });
   const [projectQuery, setProjectQuery] = useState("");
   // The new event whose title has already been focused (so re-renders don't steal focus back).
   const focusedDraftIdRef = useRef("");
@@ -847,6 +1068,19 @@ function CalendarPageContent() {
   // and the event they've been put away for ("Not now").
   const [titleSuggestIndex, setTitleSuggestIndex] = useState(-1);
   const [titleSuggestDismissedFor, setTitleSuggestDismissedFor] = useState("");
+  // The new event whose title has been left once (its suggestions don't come back after), and the one whose Project
+  // field is in use (its dropdown showing).
+  const [titleLeftFor, setTitleLeftFor] = useState("");
+  const [projectFieldFor, setProjectFieldFor] = useState("");
+  // The new event whose title has been typed in (left before that — the pop-up opening — doesn't count), and the one whose
+  // Project dropdown is showing every project (Show all).
+  const [titleTypedFor, setTitleTypedFor] = useState("");
+  const [projectFieldShowAllFor, setProjectFieldShowAllFor] = useState("");
+  // The new event whose title's suggestions are showing every project too (their Show all — until the title changes).
+  const [titleSuggestShowAllFor, setTitleSuggestShowAllFor] = useState("");
+  // The title and the Project field — what their dropdowns float under (FloatingUnderField).
+  const titleInputRef = useRef<HTMLInputElement | null>(null);
+  const projectFieldInputRef = useRef<HTMLInputElement | null>(null);
   // Clicking an event opens it read-only ("view"); Edit switches the same pop-up to the form.
   const [eventMode, setEventMode] = useState<"view" | "edit">("edit");
   // Lets the pop-up's category wash fade between colours (popupTintStyle).
@@ -863,7 +1097,25 @@ function CalendarPageContent() {
     return onDay.getTime();
   };
 
-  const openNew = (startMs: number, allDay: boolean, e?: ReactMouseEvent<HTMLElement> | ReactPointerEvent<HTMLElement>) => {
+  // Linking a project to the event (from its search, from what its title sounds like, or by dropping it from the Schedule
+  // panel): its people go on as staff (its assignee — its creator, with no one assigned), its address as where it is if
+  // there's none yet, and its name as the title only if there's no title — the title typed stays as it is.
+  const withProjectLinked = (prev: Draft, p: Project): Draft => ({
+    ...prev,
+    projectId: p.id,
+    projectName: p.name,
+    showToClient: showToClientDefault,
+    staffUids: Array.from(new Set([...draftStaffUids(prev), ...projectEventStaffUids(p)])),
+    title: prev.title || p.name,
+    location: prev.location || String(p.clientAddress || ""),
+  });
+  // project: a project dropped on the day (or clicked) in the Schedule panel — the new event opens linked to it.
+  const openNew = (
+    startMs: number,
+    allDay: boolean,
+    e?: ReactMouseEvent<HTMLElement> | ReactPointerEvent<HTMLElement> | ReactDragEvent<HTMLElement>,
+    project?: Project,
+  ) => {
     if (!canCreate) return;
     // An all-day event ends the same day; its times (used if All day is switched off) still span an hour.
     const timedEndMs = startMs + 60 * 60 * 1000;
@@ -873,7 +1125,7 @@ function CalendarPageContent() {
     setConfirmDelete(false);
     setProjectQuery("");
     setEventMode("edit");
-    const next: Draft = {
+    const blank: Draft = {
       id: newCalendarId("evt"),
       isNew: true,
       title: "",
@@ -897,6 +1149,7 @@ function CalendarPageContent() {
       updatedByName: "",
       staffUids: [],
     };
+    const next = project ? withProjectLinked(blank, project) : blank;
     setDraft(next);
     setRenderedDraft(next);
     setNewDraftStart(next);
@@ -1013,20 +1266,28 @@ function CalendarPageContent() {
     setNewDraftStart(next);
     setPopupOpenedAtMs(nowMs());
   };
+  // Deleting the event (asks first) — and the Undo bar, bringing it back exactly as it was: its whole doc, kept as it's
+  // deleted (lib/undo-restore-leads-calendar.ts), or what the calendar had of it should that not have been read.
   const removeDraft = async () => {
     if (!draft || !companyId || !canEditEvent(draft)) return;
     if (!confirmDelete) {
       setConfirmDelete(true);
       return;
     }
+    const shown = events.find((e) => e.id === draft.id) ?? null;
     setSaving(true);
-    const result = await deleteCalendarEvent(companyId, draft.id);
+    const result = await deleteCalendarEventKeepingCopy(companyId, draft.id);
     setSaving(false);
     if (!result.ok) {
       setModalError("Couldn't delete — try again.");
       return;
     }
     closeModal();
+    const { saved } = result;
+    offerUndo(`${draft.title.trim() || "Event"} deleted`, async () => {
+      const ok = saved ? await restoreCalendarEventDoc(saved) : shown ? (await saveCalendarEvent(companyId, shown)).ok : false;
+      if (!ok) throw new Error("couldn't restore the event");
+    });
   };
   useEffect(() => {
     if (!draft) return;
@@ -1213,6 +1474,47 @@ function CalendarPageContent() {
   const ghost = useDragGhost();
   const [monthDragId, setMonthDragId] = useState("");
   const [monthDropDay, setMonthDropDay] = useState<number | null>(null);
+  // The Schedule panel (ProjectSchedulePanel): open; the events linked to projects (while it's open — which tells the
+  // projects with something booked from those without); a project being dragged from it, and the time it'd go at in
+  // the Week/Day views' hours.
+  const [schedulePanelOpen, setSchedulePanelOpen] = useState(false);
+  const [linkedEvents, setLinkedEvents] = useState<CalendarEvent[]>([]);
+  const [linkedEventsLoaded, setLinkedEventsLoaded] = useState(false);
+  useEffect(() => {
+    if (!companyId || !canView || !schedulePanelOpen) return;
+    return subscribeProjectLinkedCalendarEvents(companyId, (next) => {
+      setLinkedEvents(next);
+      setLinkedEventsLoaded(true);
+    });
+  }, [canView, companyId, schedulePanelOpen]);
+  const scheduleProjects = useMemo(() => projects.filter((p) => !isProjectArchived(p)), [projects]);
+  const [projectDragId, setProjectDragId] = useState("");
+  const [projectDropSlot, setProjectDropSlot] = useState<{ dayMs: number; minutes: number } | null>(null);
+  // The event it's over (lit up — dropped there, it's linked to that event).
+  const [projectDropEventId, setProjectDropEventId] = useState("");
+  const beginProjectDrag = (project: Project, e: ReactDragEvent<HTMLElement>) => {
+    setProjectDragId(project.id);
+    e.dataTransfer.effectAllowed = "copyLink";
+    e.dataTransfer.setData("text/plain", project.name);
+    // The Items board's drag (lib/use-drag-ghost.tsx): a pill of it hanging from the pointer, swinging as it moves —
+    // grown out of its row — rather than the browser's picture of the row.
+    const img = ghost.transparentImageRef.current;
+    if (img) e.dataTransfer.setDragImage(img, 0, 0);
+    const color = project.isSmallJob ? SMALL_JOB_COLOR : "var(--brand)";
+    ghost.spawn(e, `cal_schedule_${project.id}`, { label: project.name || "Untitled project", color, tint: color });
+  };
+  const endProjectDrag = () => {
+    setProjectDragId("");
+    setMonthDropDay(null);
+    setProjectDropSlot(null);
+    setProjectDropEventId("");
+    ghost.end();
+  };
+  // Where in a Week/Day column of hours the pointer is: on the half hour (as a click there), up to 11pm.
+  const slotMinutesAt = (e: ReactDragEvent<HTMLElement>) => {
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    return Math.min(23 * 60, Math.max(0, Math.floor((((e.clientY - rect.top) / HOUR_PX) * 60) / 30) * 30));
+  };
   const today = startOfDay(new Date());
   // A day off: not a workday, or a New Zealand public holiday (lib/nz-public-holidays.ts — its name shows on the day).
   const isOffDay = (day: Date) => !workdays.includes(day.getDay()) || Boolean(nzPublicHolidayName(day, holidayRegion));
@@ -1254,8 +1556,83 @@ function CalendarPageContent() {
   const dayLayoutEvents = dragPreviewEvent ? [...visibleEvents, dragPreviewEvent] : visibleEvents;
 
   // Drop targets: a day cell (month) or an all-day column (week/day).
+  // A project from the Schedule panel dropped on an event: linked to it, as linking it in its pop-up would — its people on
+  // as staff, its address if it has none, its name as the title if it has none — saved straight away, with Undo putting
+  // the event back as it was. (Events they can edit; dropped on one they can't, it goes to the day under it.)
+  const linkProjectToEvent = async (event: CalendarEvent, project: Project) => {
+    if (!companyId || !canEditEvent(event) || event.projectId === project.id) return;
+    const linked: CalendarEvent = {
+      ...event,
+      projectId: project.id,
+      projectName: project.name,
+      showToClient: event.projectId ? event.showToClient : showToClientDefault,
+      staffUids: Array.from(new Set([...draftStaffUids(event), ...projectEventStaffUids(project)])),
+      title: event.title || project.name,
+      location: event.location || String(project.clientAddress || ""),
+    };
+    const result = await saveCalendarEvent(companyId, editedByMe(linked));
+    if (!result.ok) {
+      setLoadError("Couldn't link the project to that event — try again.");
+      return;
+    }
+    offerUndo(`${project.name} linked to ${event.title || "the event"}`, () => saveCalendarEvent(companyId, editedByMe(event)));
+  };
+  const projectDropOnEventProps = (event: CalendarEvent) => ({
+    // (Over it: it's lit up, not the day under it.)
+    onDragOver: (e: ReactDragEvent<HTMLElement>) => {
+      if (!projectDragId || !canEditEvent(event)) return false;
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = "link";
+      if (projectDropEventId !== event.id) setProjectDropEventId(event.id);
+      if (monthDropDay != null) setMonthDropDay(null);
+      if (projectDropSlot) setProjectDropSlot(null);
+      return true;
+    },
+    onDrop: (e: ReactDragEvent<HTMLElement>) => {
+      if (!projectDragId || !canEditEvent(event)) return false;
+      e.preventDefault();
+      e.stopPropagation();
+      const project = projectById.get(projectDragId);
+      endProjectDrag();
+      if (project) void linkProjectToEvent(event, project);
+      return true;
+    },
+  });
+  // An event lit up with a project over it (projectDropEventId): ringed in the brand blue.
+  const projectDropRing = (event: CalendarEvent): CSSProperties =>
+    projectDragId && projectDropEventId === event.id
+      ? { outline: "2px solid var(--brand)", outlineOffset: 1, boxShadow: "0 0 0 5px color-mix(in srgb, var(--brand) 22%, transparent)", zIndex: 6 }
+      : {};
+  // While a project's being dragged from the Schedule panel: the events with no project linked yet whose title names it — its
+  // name or its client's (titleNamesProject: whole words, stricter than the pop-up's suggestions) — lifted a little and
+  // glowing, so they're easy to find.
+  // (Not on a staff member's first name — "Josh & Rob Meeting" is them, whoever the client is.)
+  const projectDragged = projectDragId ? projectById.get(projectDragId) : undefined;
+  const staffFirstNames = new Set(staffMembers.map((m) => m.name.trim().split(/\s+/)[0].toLowerCase()).filter(Boolean));
+  const projectMatchIds = new Set(
+    projectDragged
+      ? events.filter((ev) => !ev.projectId && titleNamesProject(ev.title, projectDragged, staffFirstNames)).map((ev) => ev.id)
+      : [],
+  );
+  const projectMatchLift = (event: CalendarEvent): CSSProperties =>
+    projectMatchIds.has(event.id)
+      ? {
+          transform: "translateY(-2px) scale(1.04)",
+          boxShadow: "0 8px 18px color-mix(in srgb, var(--brand) 34%, transparent), 0 0 0 2px color-mix(in srgb, var(--brand) 55%, transparent)",
+          zIndex: 5,
+        }
+      : {};
   const dayDropProps = (dayMs: number) => ({
     onDragOver: (e: ReactDragEvent<HTMLElement>) => {
+      // A project from the Schedule panel: a new all-day event for it, on this day.
+      if (projectDragId) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+        if (monthDropDay !== dayMs) setMonthDropDay(dayMs);
+        if (projectDropEventId) setProjectDropEventId("");
+        return;
+      }
       if (!monthDragId) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
@@ -1263,6 +1640,12 @@ function CalendarPageContent() {
     },
     onDrop: (e: ReactDragEvent<HTMLElement>) => {
       e.preventDefault();
+      if (projectDragId) {
+        const project = projectById.get(projectDragId);
+        endProjectDrag();
+        if (project) openNew(dayMs, true, e, project);
+        return;
+      }
       const id = e.dataTransfer.getData("text/plain") || monthDragId;
       const event = events.find((x) => x.id === id);
       if (!event) {
@@ -1297,8 +1680,15 @@ function CalendarPageContent() {
         draggable={canEditEvent(event)}
         onDragStart={(e) => beginDayDrag(e, event, chipId, event.startMs)}
         onDragEnd={endDayDrag}
-        onDragOver={place ? drop.onDragOver : undefined}
-        onDrop={place ? drop.onDrop : undefined}
+        // (A project from the Schedule panel over it: linked to it.)
+        onDragOver={(e) => {
+          if (projectDropOnEventProps(event).onDragOver(e)) return;
+          if (place) drop.onDragOver(e);
+        }}
+        onDrop={(e) => {
+          if (projectDropOnEventProps(event).onDrop(e)) return;
+          if (place) drop.onDrop(e);
+        }}
         onClick={(e) => {
           e.stopPropagation();
           openExisting(event, e);
@@ -1309,7 +1699,9 @@ function CalendarPageContent() {
           color: "var(--text-main)",
           opacity: monthDragId === event.id ? 0.35 : 1,
           pointerEvents: event.id.endsWith(PREVIEW_SUFFIX) ? "none" : undefined,
-          backgroundColor: event.id.endsWith(PREVIEW_SUFFIX) ? "var(--brand-soft)" : undefined,
+          backgroundColor: event.id.endsWith(PREVIEW_SUFFIX) || (projectDragId && projectDropEventId === event.id) ? "var(--brand-soft)" : undefined,
+          ...projectMatchLift(event),
+          ...projectDropRing(event),
         }}
         title={`${event.title}${event.location ? ` · ${event.location}` : ""}`}
       >
@@ -1353,9 +1745,16 @@ function CalendarPageContent() {
               beginDayDrag(e, b.event, barId, addDays(rowStart, dayCols ? dayCols[grabCol] : grabCol).getTime());
             }}
             onDragEnd={endDayDrag}
-            // A bar covers the day cells under it, so it passes drops on to the day under the pointer.
-            onDragOver={(e) => dayDropProps(dayUnderPointer(e, rowStart, cols, dayCols)).onDragOver(e)}
-            onDrop={(e) => dayDropProps(dayUnderPointer(e, rowStart, cols, dayCols)).onDrop(e)}
+            // A bar covers the day cells under it, so it passes drops on to the day under the pointer — but a project from
+            // the Schedule panel, which is linked to it.
+            onDragOver={(e) => {
+              if (projectDropOnEventProps(b.event).onDragOver(e)) return;
+              dayDropProps(dayUnderPointer(e, rowStart, cols, dayCols)).onDragOver(e);
+            }}
+            onDrop={(e) => {
+              if (projectDropOnEventProps(b.event).onDrop(e)) return;
+              dayDropProps(dayUnderPointer(e, rowStart, cols, dayCols)).onDrop(e);
+            }}
             onClick={(e) => {
               e.stopPropagation();
               openExisting(b.event, e);
@@ -1374,6 +1773,8 @@ function CalendarPageContent() {
               pointerEvents: b.event.id.endsWith(PREVIEW_SUFFIX) ? "none" : undefined,
               boxShadow: b.event.id.endsWith(PREVIEW_SUFFIX) ? "0 6px 18px rgba(15,23,42,0.28), 0 0 0 2px var(--panel-bg)" : undefined,
               zIndex: b.event.id.endsWith(PREVIEW_SUFFIX) ? 5 : undefined,
+              ...projectMatchLift(b.event),
+              ...projectDropRing(b.event),
             }}
             title={`${b.event.title}${b.event.location ? ` · ${b.event.location}` : ""}`}
           >
@@ -1444,6 +1845,8 @@ function CalendarPageContent() {
                 borderColor: "var(--glass-border)",
                 backgroundColor: monthDropDay === dayMs ? "var(--brand-soft)" : isToday ? TODAY_TINT : "var(--cal-day-bg, transparent)",
                 backgroundImage: isOffDay(dd) && monthDropDay !== dayMs ? offDayHatch : undefined,
+                // A project from the Schedule panel over it: ringed as well.
+                boxShadow: projectDragId && monthDropDay === dayMs ? "inset 0 0 0 2px var(--brand)" : undefined,
               }}
             >
               <div className="flex h-5 shrink-0 items-center justify-between px-0.5">
@@ -1966,7 +2369,12 @@ function CalendarPageContent() {
                         borderColor: "var(--glass-border)",
                         backgroundColor: monthDropDay === d.getTime() ? "var(--brand-soft)" : sameDay(d, today) ? TODAY_TINT : undefined,
                         backgroundImage: isOffDay(d) && monthDropDay !== d.getTime() ? offDayHatch : undefined,
-                        boxShadow: sameDay(d, today) && dayCount > 1 ? TODAY_SIDES : undefined,
+                        boxShadow:
+                          projectDragId && monthDropDay === d.getTime()
+                            ? "inset 0 0 0 2px var(--brand)"
+                            : sameDay(d, today) && dayCount > 1
+                              ? TODAY_SIDES
+                              : undefined,
                       }}
                       title={canCreate ? "Add an all-day event" : undefined}
                     />
@@ -2028,7 +2436,49 @@ function CalendarPageContent() {
                       const minutes = Math.floor((((e.clientY - rect.top) / HOUR_PX) * 60) / 30) * 30;
                       openNew(dayStart + minutes * 60000, false, e);
                     }}
+                    // A project from the Schedule panel: a new hour-long event for it, at the half hour it's dropped on.
+                    onDragOver={
+                      projectDragId
+                        ? (e) => {
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = "copy";
+                            const minutes = slotMinutesAt(e);
+                            if (projectDropSlot?.dayMs !== dayStart || projectDropSlot.minutes !== minutes) setProjectDropSlot({ dayMs: dayStart, minutes });
+                            if (projectDropEventId) setProjectDropEventId("");
+                          }
+                        : undefined
+                    }
+                    onDrop={
+                      projectDragId
+                        ? (e) => {
+                            e.preventDefault();
+                            const minutes = slotMinutesAt(e);
+                            const project = projectById.get(projectDragId);
+                            endProjectDrag();
+                            if (project) openNew(dayStart + minutes * 60000, false, e, project);
+                          }
+                        : undefined
+                    }
                   >
+                    {/* Where a project being dragged from the Schedule panel would go: its hour, dashed. */}
+                    {projectDragId && projectDropSlot?.dayMs === dayStart ? (
+                      <div
+                        className="pointer-events-none absolute inset-x-[2px] z-[4] overflow-hidden rounded-[8px] px-1.5 py-1 text-[11.5px] leading-tight"
+                        style={{
+                          top: (projectDropSlot.minutes / 60) * HOUR_PX,
+                          height: HOUR_PX - 2,
+                          backgroundColor: "var(--brand-soft)",
+                          outline: "2px dashed var(--brand)",
+                          outlineOffset: -2,
+                          color: "var(--brand-strong)",
+                        }}
+                      >
+                        <p className="truncate font-medium">{projectById.get(projectDragId)?.name || "New event"}</p>
+                        <p className="truncate opacity-85">
+                          {timeText(dayStart + projectDropSlot.minutes * 60000)} – {timeText(dayStart + (projectDropSlot.minutes + 60) * 60000)}
+                        </p>
+                      </div>
+                    ) : null}
                     {isToday && nowTop >= 0 && nowTop <= HOUR_PX * 24 ? (
                       <div className="pointer-events-none absolute inset-x-0 z-[3] h-[2px]" style={{ top: nowTop, backgroundColor: "var(--danger)" }}>
                         <span className="absolute -left-1 -top-[3px] h-2 w-2 rounded-full" style={{ backgroundColor: "var(--danger)" }} />
@@ -2049,6 +2499,9 @@ function CalendarPageContent() {
                           onPointerDown={(e) => onEventPointerDown(e, event, "move")}
                           onPointerMove={onEventPointerMove}
                           onPointerUp={onEventPointerUp}
+                          // A project from the Schedule panel over it: linked to it (not a new event in its hour).
+                          onDragOver={projectDragId ? (e) => void projectDropOnEventProps(event).onDragOver(e) : undefined}
+                          onDrop={projectDragId ? (e) => void projectDropOnEventProps(event).onDrop(e) : undefined}
                           onClick={(e) => {
                             // Editors open the event from pointer-up (so a drag doesn't also open it);
                             // view-only users just click.
@@ -2069,6 +2522,9 @@ function CalendarPageContent() {
                             opacity: dragging ? 0.85 : 1,
                             touchAction: "none",
                             outline: dragging ? "2px solid var(--text-main)" : undefined,
+                            transition: "transform 180ms ease, box-shadow 180ms ease",
+                            ...projectMatchLift(event),
+                            ...projectDropRing(event),
                           }}
                         >
                           <p className="truncate font-normal max-md:text-clip">{event.title || "Untitled event"}</p>
@@ -2424,36 +2880,93 @@ function CalendarPageContent() {
     .slice(0, 8);
   const d = draft ?? renderedDraft;
   const readOnly = !d || (d.isNew ? !canCreate : !canEditEvent(d));
-  // Linking a project to the event (from its search, or from what its title sounds like): its people go on as staff (its
-  // assignee — its creator, with no one assigned), its address as where it is if there's none yet, and its name as the
-  // title only if there's no title — the title typed stays as it is.
+  // Linking a project to the event, in its pop-up (withProjectLinked).
   const linkDraftProject = (p: Project) => {
-    setDraft((prev) =>
-      prev
-        ? {
-            ...prev,
-            projectId: p.id,
-            projectName: p.name,
-            showToClient: showToClientDefault,
-            staffUids: Array.from(new Set([...draftStaffUids(prev), ...projectEventStaffUids(p)])),
-            title: prev.title || p.name,
-            location: prev.location || String(p.clientAddress || ""),
-          }
-        : prev,
-    );
+    setDraft((prev) => (prev ? withProjectLinked(prev, p) : prev));
+    setProjectFieldFor("");
     setProjectQuery("");
     setTitleSuggestIndex(-1);
   };
-  // What its title sounds like: the projects (not archived) it's most likely about, best first — while there's no project
-  // linked and they haven't been put away for it.
+  // Someone taken off the event, or its project unlinked, in the pop-up — and the Undo bar, putting it back: into the
+  // pop-up while it's still open on that event; closed by then (saved without it), onto the saved event — but only if
+  // the saved event had it (closed without saving, nothing changed). putBackOnSaved: null when it's back already.
+  const offerDraftUndo = (
+    message: string,
+    eventId: string,
+    savedHad: boolean,
+    putBackInDraft: (draft: Draft) => Draft,
+    putBackOnSaved: (event: CalendarEvent) => CalendarEvent | null,
+  ) =>
+    offerUndo(message, () => {
+      if (draftRef.current?.id === eventId) {
+        setDraft((prev) => (prev && prev.id === eventId ? putBackInDraft(prev) : prev));
+        return;
+      }
+      const saved = savedHad ? eventsRef.current.find((e) => e.id === eventId) : undefined;
+      const next = saved ? putBackOnSaved(saved) : null;
+      if (next && companyId) return saveCalendarEvent(companyId, editedByMe(next));
+    });
+  const takeDraftStaffOff = (uid: string, name: string) => {
+    if (!draft) return;
+    const eventId = draft.id;
+    const index = draftStaffUids(draft).indexOf(uid);
+    const saved = events.find((e) => e.id === eventId);
+    const putBack = (uids: string[]) => (uids.includes(uid) ? uids : insertAt(uids, index, uid));
+    setDraft((prev) => (prev ? { ...prev, staffUids: draftStaffUids(prev).filter((v) => v !== uid) } : prev));
+    offerDraftUndo(
+      `${name} removed`,
+      eventId,
+      Boolean(saved && draftStaffUids(saved).includes(uid)),
+      (prev) => ({ ...prev, staffUids: putBack(draftStaffUids(prev)) }),
+      (event) => (draftStaffUids(event).includes(uid) ? null : { ...event, staffUids: putBack(draftStaffUids(event)) }),
+    );
+  };
+  // Unlinking its project: its people stay on as staff (each can be taken off on their own).
+  const unlinkDraftProject = () => {
+    if (!draft || !draft.projectId) return;
+    const { id: eventId, projectId, projectName, showToClient } = draft;
+    const saved = events.find((e) => e.id === eventId);
+    setDraft((prev) => (prev ? { ...prev, projectId: "", projectName: "", showToClient: false, staffUids: draftStaffUids(prev) } : prev));
+    offerDraftUndo(
+      `${projectName || "Project"} unlinked`,
+      eventId,
+      saved?.projectId === projectId,
+      (prev) => (prev.projectId ? prev : { ...prev, projectId, projectName, showToClient }),
+      (event) => (event.projectId ? null : { ...event, projectId, projectName, showToClient }),
+    );
+  };
+  // What its title sounds like: the projects (not archived) it's most likely about, best first — only while a new event's
+  // title is first being typed (not an event being edited, nor once the title's been left — passed over, they don't keep
+  // coming back), with no project linked and them not put away ("Not now").
   const titleSuggestions =
-    d && !readOnly && !d.projectId && titleSuggestDismissedFor !== d.id
+    d && !readOnly && d.isNew && !d.projectId && titleSuggestDismissedFor !== d.id && titleLeftFor !== d.id
       ? matchProjectsToText(
           d.title,
           projects.filter((p) => !isProjectArchived(p)),
           3,
         )
       : [];
+  // The Project field's dropdown, while it's in use. Typing: what matches. Nothing typed: the projects the title sounds
+  // like, best first, then Show all for every other project under them — or, with none like it, the first few projects
+  // (Show all for the rest).
+  const projectFieldOpen = Boolean(d && !readOnly && !d.projectId && projectFieldFor === d.id);
+  const projectFieldBrowsing = projectFieldOpen && !projectQuery.trim();
+  const unarchivedProjects = projects.filter((p) => !isProjectArchived(p));
+  const projectFieldTitleMatches = projectFieldBrowsing && d ? matchProjectsToText(d.title, unarchivedProjects, 5).map((m) => m.project) : [];
+  const projectFieldShowsTitleMatches = projectFieldTitleMatches.length > 0;
+  const projectFieldOthers = projectFieldBrowsing ? unarchivedProjects.filter((p) => !projectFieldTitleMatches.includes(p)) : [];
+  const projectFieldOptions = !projectFieldOpen
+    ? []
+    : !projectFieldBrowsing
+      ? filteredProjects
+      : projectFieldShowsTitleMatches
+        ? projectFieldTitleMatches
+        : projectFieldOthers.slice(0, 8);
+  const projectFieldMore = !projectFieldBrowsing ? [] : projectFieldShowsTitleMatches ? projectFieldOthers : projectFieldOthers.slice(8);
+  const projectFieldShowAll = Boolean(d && projectFieldShowAllFor === d.id);
+  // The title's suggestions' Show all: every other project, under them.
+  const titleSuggestOthers = titleSuggestions.length ? unarchivedProjects.filter((p) => !titleSuggestions.some((m) => m.project === p)) : [];
+  const titleSuggestShowAll = Boolean(d && titleSuggestShowAllFor === d.id);
   // The event view's "…" menu: Duplicate (not for an event whose project they can't open — its details are
   // hidden) and Delete Event (asks first, in the bottom bar).
   const eventMenuItems: GlassActionMenuItem[] =
@@ -2483,11 +2996,11 @@ function CalendarPageContent() {
         .map((uid) => ({ uid, name: staffNameByUid.get(uid) || (uid === user?.uid ? String(user?.displayName || "") : "") }))
         .filter((m) => m.name)
     : [];
-  // Add staff: everyone not on it yet.
+  // Add staff: everyone not on it yet — each with their coloured initials (staffEmblem), as on the event.
   const staffOptions = d
     ? staffMembers
         .filter((m) => !draftStaffUids(d).includes(m.uid))
-        .map((m) => ({ value: m.uid, label: m.name, color: (m.uid === user?.uid ? String(user?.userColor || "") : "") || memberColorByUid[m.uid] || "#7D99B3" }))
+        .map((m) => ({ value: m.uid, label: m.name, icon: staffEmblem(m.uid, m.name) }))
     : [];
   // Existing events open read-only first (and always, for people who can't edit).
   const viewingEvent = Boolean(d && !d.isNew && (eventMode === "view" || readOnly));
@@ -2495,6 +3008,40 @@ function CalendarPageContent() {
   // The pop-up is themed by the event's category — viewing or editing it, and a new event by the category
   // chosen for it ("" = it has none: the plain pop-up).
   const themeColor = d ? (d.isNew ? categoryById.get(d.categoryId)?.color ?? "" : draftCategory.color) : "";
+  // A project in the Project field's dropdown: its name ("Best match" by the title's closest), its client and address,
+  // and Link.
+  const projectFieldRow = (p: Project, bestMatch: boolean) => (
+    <button
+      key={p.id}
+      type="button"
+      role="option"
+      aria-selected={false}
+      // (Not taking the focus from the field, which would close the dropdown first.)
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={() => linkDraftProject(p)}
+      className="flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-2 text-left transition-colors hover:bg-[color-mix(in_srgb,var(--brand)_9%,transparent)]"
+    >
+      <FolderKanban size={15} className="shrink-0" style={{ color: themeColor || "var(--brand-strong)" }} />
+      <span className="min-w-0 flex-1">
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span className="truncate text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
+            {p.name}
+          </span>
+          {bestMatch ? (
+            <span className="shrink-0 text-[10.5px] font-semibold uppercase tracking-[0.5px]" style={{ color: "var(--brand-strong)" }}>
+              Best match
+            </span>
+          ) : null}
+        </span>
+        <span className="block truncate text-[11.5px] font-normal" style={{ color: "var(--text-muted)" }}>
+          {[p.customer, p.clientAddress].filter(Boolean).join(" · ")}
+        </span>
+      </span>
+      <span className="glass-shine shrink-0 rounded-full border px-3 py-0.5 text-[11.5px] font-semibold text-white" style={glassShineStyle(themeColor || "var(--brand)")}>
+        Link
+      </span>
+    </button>
+  );
   // Phones, month view: the page is laid out to exactly fill the screen, so the month's six weeks fit
   // under the toolbar with 20px clear at the bottom (where the phone's rounded corners cut in).
   const fillMonth = isMobile && view === "month";
@@ -2558,12 +3105,14 @@ function CalendarPageContent() {
       {/* Desktop: exactly fills the space under the 48px top bar (min 640px on a very short window); the
           calendar app has no top bar. Phones in month view: fills the screen, 20px clear at the bottom. */}
       <div
-        className={`grid w-full gap-3 lg:grid-cols-[240px_minmax(0,1fr)] ${fillMonth ? "min-h-0 flex-1 grid-rows-[minmax(0,1fr)] px-3 pb-5 pt-3" : "p-3"} ${
+        // A computer: the sidebar, the calendar, and the Schedule panel's column (as wide as the panel — none while it's
+        // closed). The gaps are the sidebar's margin and the panel's padding, so a closed panel leaves none.
+        className={`grid w-full gap-3 lg:grid-cols-[252px_minmax(0,1fr)_auto] lg:gap-x-0 ${fillMonth ? "min-h-0 flex-1 grid-rows-[minmax(0,1fr)] px-3 pb-5 pt-3" : "p-3"} ${
           chromeless ? "lg:h-[max(640px,100dvh)]" : "lg:h-[max(640px,calc(100dvh-48px))]"
         }`}
       >
         {/* Sidebar: categories to show/hide (desktop). */}
-        <aside className={`hidden h-fit flex-col gap-3 rounded-[20px] border p-3.5 lg:sticky lg:flex ${chromeless ? "lg:top-3" : "lg:top-[60px]"}`} style={cardStyle}>
+        <aside className={`hidden h-fit flex-col gap-3 rounded-[20px] border p-3.5 lg:sticky lg:mr-3 lg:flex ${chromeless ? "lg:top-3" : "lg:top-[60px]"}`} style={cardStyle}>
           <div className="flex items-center gap-2 px-1.5 text-[18px] font-bold" style={{ color: "var(--text-main)" }}>
             <CalendarDays size={18} strokeWidth={2.1} />
             Calendar
@@ -2579,9 +3128,53 @@ function CalendarPageContent() {
               <Plus size={15} /> New event
             </button>
           ) : null}
+          {canCreate ? (
+            <button
+              type="button"
+              onClick={() => setSchedulePanelOpen((v) => !v)}
+              aria-pressed={schedulePanelOpen}
+              className={`${pillButtonClass} h-9`}
+              style={schedulePanelOpen ? { borderColor: "var(--brand)", color: "var(--brand-strong)" } : undefined}
+            >
+              <FolderKanban size={14} /> Schedule a project
+            </button>
+          ) : null}
           <p className="px-2 pt-1 text-[10.5px] font-bold uppercase tracking-[0.8px]" style={{ color: "var(--text-muted)" }}>Categories</p>
           {categoryFilter}
         </aside>
+
+        {/* The Schedule panel (a computer): the grid's third column, after the calendar — its width slides open from
+            nothing, the calendar giving way as it does. (Its width, not the grid's columns: Chrome doesn't animate those
+            here.) Its 12px padding before it is the gap; out past the grid's top, bottom and right by its padding, so its
+            shadow isn't cut off there. Faded out as it closes. */}
+        <div
+          className="hidden min-h-0 overflow-hidden transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none lg:col-start-3 lg:row-start-1 lg:block"
+          style={{
+            width: schedulePanelOpen ? SCHEDULE_PANEL_W + 12 : 0,
+            marginTop: -12,
+            marginBottom: -12,
+            marginRight: -12,
+            paddingTop: 12,
+            paddingBottom: 12,
+          }}
+          inert={!schedulePanelOpen}
+          aria-hidden={!schedulePanelOpen}
+        >
+          <div
+            className="h-full transition-opacity duration-200 motion-reduce:transition-none"
+            style={{ width: SCHEDULE_PANEL_W + 12, paddingLeft: 12, paddingRight: 12, opacity: schedulePanelOpen ? 1 : 0 }}
+          >
+            <ProjectSchedulePanel
+              projects={scheduleProjects}
+              linkedEvents={linkedEvents}
+              loaded={linkedEventsLoaded && projectsLoaded}
+              onClose={() => setSchedulePanelOpen(false)}
+              onDragStart={beginProjectDrag}
+              onDragEnd={endProjectDrag}
+              onPick={(project, e) => openNew(newEventStartMs(), true, e, project)}
+            />
+          </div>
+        </div>
 
         {/* A <div>, not a <main>: app/globals.css locks every <main> (overflow-y hidden) while a pop-up is
             open on phones, which on this one also made it clip sideways — cutting 12px off each edge of the
@@ -2589,10 +3182,12 @@ function CalendarPageContent() {
             is the page's main. */}
         <div className={`flex min-w-0 flex-col gap-3 lg:min-h-0 ${fillMonth ? "min-h-0" : ""}`}>
           {/* Toolbar */}
-          <div ref={toolbarRef} className="rounded-[20px] border px-3 py-2.5" style={cardStyle}>
+          {/* (On a phone: snug — 6px round it, out into the page's 12px and the gaps above and below it, and less padding in it.) */}
+          <div ref={toolbarRef} className="rounded-[20px] border px-3 py-2.5 max-md:-mx-1.5 max-md:-my-1.5 max-md:p-2" style={cardStyle}>
           {/* A phone wraps the view switcher onto its own row; a computer keeps one row, the search box giving up
               some width (down to 150px) before the title truncates. */}
-          <div className="flex flex-wrap items-center gap-2 md:flex-nowrap">
+          {/* (With the Schedule panel open on a narrow window, it wraps rather than running under the panel.) */}
+          <div className={`flex flex-wrap items-center gap-2 md:flex-nowrap ${schedulePanelOpen ? "lg:flex-wrap" : ""}`}>
             <button type="button" onClick={() => setCursor(startOfDay(new Date()))} className={pillButtonClass}>
               Today
             </button>
@@ -2785,7 +3380,7 @@ function CalendarPageContent() {
           it's fixed to the screen whatever the page around it does). */}
       {canCreate && typeof document !== "undefined"
         ? createPortal(
-            <button
+            <button data-bottom-bar=""
               type="button"
               onClick={(e) => openNew(newEventStartMs(), true, e)}
               // (The glass shine in the brand blue — its float shadow kept, with the shine's highlight along its top.)
@@ -3038,6 +3633,7 @@ function CalendarPageContent() {
                     <div className="relative">
                       <input
                         ref={(el) => {
+                          titleInputRef.current = el;
                           // New event: the cursor goes in the title straight away, without scrolling the page.
                           if (el && d.isNew && focusedDraftIdRef.current !== d.id) {
                             focusedDraftIdRef.current = d.id;
@@ -3050,6 +3646,8 @@ function CalendarPageContent() {
                           setDraft((prev) => (prev ? { ...prev, title: e.target.value } : prev));
                           setModalError("");
                           setTitleSuggestIndex(-1);
+                          setTitleTypedFor(d.id);
+                          setTitleSuggestShowAllFor("");
                         }}
                         // Its suggestions (under it): ↑ / ↓ through them, Enter links the one picked, Esc puts them away.
                         onKeyDown={(e) => {
@@ -3068,16 +3666,20 @@ function CalendarPageContent() {
                             setTitleSuggestDismissedFor(d.id);
                           }
                         }}
+                        onBlur={() => {
+                          if (titleTypedFor === d.id) setTitleLeftFor(d.id);
+                        }}
                         placeholder="Event title"
                         aria-autocomplete="list"
                         className={`${glassFieldClass} h-11 text-[15px]`}
                       />
                       {/* The projects its title sounds like — picking one links it (the title stays as typed) and brings
                           its details: its address, its people. "Not now" puts them away for this event. A dropdown under
-                          the title, over the fields below it. */}
+                          the title, floating over the pop-up (FloatingUnderField). */}
                       {titleSuggestions.length ? (
-                        <div
-                          className="glass-bubble-pop absolute inset-x-0 top-full z-30 mt-1.5 rounded-[14px] border p-1.5"
+                        <FloatingUnderField
+                          anchorRef={titleInputRef}
+                          className="rounded-[14px] border p-1.5"
                           style={{
                             borderColor: "var(--glass-border)",
                             // Nearly solid: the fields it's over don't read through it.
@@ -3085,10 +3687,9 @@ function CalendarPageContent() {
                             backdropFilter: "blur(16px) saturate(200%)",
                             WebkitBackdropFilter: "blur(16px) saturate(200%)",
                             boxShadow: "var(--shadow-md)",
-                            transformOrigin: "50% 0%",
                           }}
                           role="listbox"
-                          aria-label="Projects this event could be for"
+                          ariaLabel="Projects this event could be for"
                         >
                           <div className="flex items-center justify-between gap-2 px-2 pb-1 pt-0.5">
                             <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-main)" }}>
@@ -3141,7 +3742,36 @@ function CalendarPageContent() {
                               </span>
                             </button>
                           ))}
-                        </div>
+                          {/* Every other project too, as the Project field's: under Show all, until it's pressed. */}
+                          {titleSuggestOthers.length ? (
+                            titleSuggestShowAll ? (
+                              <>
+                                <p
+                                  className="flex items-center gap-2 px-2 pb-1 pt-2 text-[11px] font-bold uppercase tracking-[0.6px]"
+                                  style={{ color: "var(--text-muted)" }}
+                                >
+                                  <span className="shrink-0">Other projects</span>
+                                  <span aria-hidden="true" className="h-px min-w-0 flex-1" style={{ backgroundColor: "var(--glass-border)" }} />
+                                </p>
+                                {titleSuggestOthers.map((p) => projectFieldRow(p, false))}
+                              </>
+                            ) : (
+                              <button
+                                type="button"
+                                // (Not taking the focus from the title — typing carries on.)
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() => setTitleSuggestShowAllFor(d.id)}
+                                className="mt-0.5 flex w-full items-center justify-center gap-1.5 rounded-[10px] px-2.5 py-2 text-[12px] font-semibold transition-colors hover:bg-[color-mix(in_srgb,var(--brand)_9%,transparent)]"
+                                style={{ color: "var(--brand-strong)" }}
+                              >
+                                Show all
+                                <span className="font-medium" style={{ color: "var(--text-muted)" }}>
+                                  ({titleSuggestOthers.length} more)
+                                </span>
+                              </button>
+                            )
+                          ) : null}
+                        </FloatingUnderField>
                       ) : null}
                     </div>
                     {/* When — straight under the title: a row each, its name on the left and its switch / boxes to the
@@ -3196,16 +3826,30 @@ function CalendarPageContent() {
                             );
                           })()}
                           {!d.allDay ? (
-                            <input
-                              type="time"
-                              step={SNAP_MIN * 60}
-                              readOnly={readOnly}
-                              value={d[timeKey]}
-                              onChange={(e) => setDraft((prev) => (prev ? { ...prev, [timeKey]: e.target.value } : prev))}
-                              // Inline width: glassFieldClass carries w-full, which beat a w-[…] class.
-                              className={`${glassFieldClass} shrink-0`}
-                              style={{ width: 112 }}
-                            />
+                            // A phone: its time on wheels too — hour, minute, am/pm (WheelTimePicker), as the date. A
+                            // computer: the usual time field.
+                            isMobile ? (
+                              <WheelTimePicker
+                                value={d[timeKey]}
+                                disabled={readOnly}
+                                ariaLabel={`${label} time`}
+                                onChange={(value) => setDraft((prev) => (prev ? { ...prev, [timeKey]: value } : prev))}
+                                className={`${glassFieldClass} shrink-0 disabled:opacity-100`}
+                                style={{ width: 112 }}
+                              />
+                            ) : (
+                              <input
+                                type="time"
+                                // Any minute.
+                                step={60}
+                                readOnly={readOnly}
+                                value={d[timeKey]}
+                                onChange={(e) => setDraft((prev) => (prev ? { ...prev, [timeKey]: e.target.value } : prev))}
+                                // Inline width: glassFieldClass carries w-full, which beat a w-[…] class.
+                                className={`${glassFieldClass} shrink-0`}
+                                style={{ width: 112 }}
+                              />
+                            )
                           ) : null}
                         </div>,
                       ])}
@@ -3256,9 +3900,7 @@ function CalendarPageContent() {
                             <button
                               type="button"
                               // Its people stay on as staff (taken off one by one below).
-                              onClick={() =>
-                                setDraft((prev) => (prev ? { ...prev, projectId: "", projectName: "", showToClient: false, staffUids: draftStaffUids(prev) } : prev))
-                              }
+                              onClick={unlinkDraftProject}
                               className={iconRemoveButtonClass}
                               aria-label="Unlink project"
                             >
@@ -3283,34 +3925,92 @@ function CalendarPageContent() {
                           />
                         </div>
                       ) : !readOnly ? (
-                        <div className="grid gap-1">
+                        // Its dropdown, while it's in use (projectFieldOptions): straight away, the projects the title sounds
+                        // like (best first); typing, what matches. Floating over the pop-up, as the title's.
+                        <div className="relative">
                           <span className="relative flex items-center">
                             <Search size={15} className="pointer-events-none absolute left-3" style={{ color: "var(--text-muted)" }} />
                             <input
+                              ref={projectFieldInputRef}
                               value={projectQuery}
                               onChange={(e) => setProjectQuery(e.target.value)}
+                              onFocus={() => setProjectFieldFor(d.id)}
+                              onBlur={() => {
+                                setProjectFieldFor("");
+                                setProjectFieldShowAllFor("");
+                              }}
+                              // Enter links the top one (rather than adding the event); Esc closes the dropdown.
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" && projectFieldOptions.length) {
+                                  e.preventDefault();
+                                  linkDraftProject(projectFieldOptions[0]);
+                                } else if (e.key === "Escape" && projectFieldFor) {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  e.currentTarget.blur();
+                                }
+                              }}
                               placeholder="Link a project (optional) — search by name, client or address"
                               className={`${glassFieldClass} pl-9`}
                             />
                           </span>
-                          {projectQuery.trim() ? (
-                            <div className="grid max-h-[220px] gap-0.5 overflow-y-auto rounded-[12px] border p-1" style={{ borderColor: "var(--glass-border)" }}>
-                              {filteredProjects.length === 0 ? (
+                          {projectFieldOpen && (projectFieldOptions.length || projectQuery.trim()) ? (
+                            <FloatingUnderField
+                              anchorRef={projectFieldInputRef}
+                              className="rounded-[14px] border p-1.5"
+                              style={{
+                                borderColor: "var(--glass-border)",
+                                // Nearly solid: the fields it's over don't read through it.
+                                backgroundColor: "color-mix(in srgb, var(--panel-bg) 94%, transparent)",
+                                backdropFilter: "blur(16px) saturate(200%)",
+                                WebkitBackdropFilter: "blur(16px) saturate(200%)",
+                                boxShadow: "var(--shadow-md)",
+                              }}
+                              role="listbox"
+                              ariaLabel="Projects to link"
+                            >
+                              {projectFieldShowsTitleMatches ? (
+                                <p className="inline-flex items-center gap-1.5 px-2 pb-1 pt-0.5 text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-main)" }}>
+                                  <FolderKanban size={12} />
+                                  Closest to the title
+                                </p>
+                              ) : null}
+                              {projectFieldOptions.length === 0 ? (
                                 <p className="px-2 py-1.5 text-[12px] font-normal" style={{ color: "var(--text-main)" }}>No matching projects.</p>
                               ) : (
-                                filteredProjects.map((p) => (
-                                  <button
-                                    key={p.id}
-                                    type="button"
-                                    onClick={() => linkDraftProject(p)}
-                                    className="flex flex-col items-start rounded-[9px] px-2.5 py-1.5 text-left transition hover:bg-[color-mix(in_srgb,var(--text-main)_5%,transparent)]"
-                                  >
-                                    <span className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>{p.name}</span>
-                                    <span className="text-[11.5px] font-normal" style={{ color: "var(--text-main)" }}>{[p.customer, p.clientAddress].filter(Boolean).join(" · ")}</span>
-                                  </button>
-                                ))
+                                projectFieldOptions.map((p, index) => projectFieldRow(p, projectFieldShowsTitleMatches && index === 0))
                               )}
-                            </div>
+                              {/* Every other project too: under Show all, until it's pressed. */}
+                              {projectFieldMore.length ? (
+                                projectFieldShowAll ? (
+                                  <>
+                                    {projectFieldShowsTitleMatches ? (
+                                      <p
+                                        className="flex items-center gap-2 px-2 pb-1 pt-2 text-[11px] font-bold uppercase tracking-[0.6px]"
+                                        style={{ color: "var(--text-muted)" }}
+                                      >
+                                        <span className="shrink-0">Other projects</span>
+                                        <span aria-hidden="true" className="h-px min-w-0 flex-1" style={{ backgroundColor: "var(--glass-border)" }} />
+                                      </p>
+                                    ) : null}
+                                    {projectFieldMore.map((p) => projectFieldRow(p, false))}
+                                  </>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onMouseDown={(e) => e.preventDefault()}
+                                    onClick={() => setProjectFieldShowAllFor(d.id)}
+                                    className="mt-0.5 flex w-full items-center justify-center gap-1.5 rounded-[10px] px-2.5 py-2 text-[12px] font-semibold transition-colors hover:bg-[color-mix(in_srgb,var(--brand)_9%,transparent)]"
+                                    style={{ color: "var(--brand-strong)" }}
+                                  >
+                                    Show all
+                                    <span className="font-medium" style={{ color: "var(--text-muted)" }}>
+                                      ({projectFieldMore.length} more)
+                                    </span>
+                                  </button>
+                                )
+                              ) : null}
+                            </FloatingUnderField>
                           ) : null}
                         </div>
                       ) : (
@@ -3335,9 +4035,7 @@ function CalendarPageContent() {
                               {!readOnly ? (
                                 <button
                                   type="button"
-                                  onClick={() =>
-                                    setDraft((prev) => (prev ? { ...prev, staffUids: draftStaffUids(prev).filter((uid) => uid !== m.uid) } : prev))
-                                  }
+                                  onClick={() => takeDraftStaffOff(m.uid, m.name)}
                                   className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full transition hover:bg-[color-mix(in_srgb,var(--text-main)_8%,transparent)]"
                                   aria-label={`Take ${m.name} off this event`}
                                   title="Remove"

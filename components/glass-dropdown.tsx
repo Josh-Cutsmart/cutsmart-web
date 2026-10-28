@@ -46,7 +46,8 @@ export function glassMenuOrigin(
 
 // Shared open/position/dismiss behaviour for the glass menus below: a fixed-position menu measured from
 // its trigger (flips above when there's no room below, clamped to the visible screen), closed by an
-// outside press, Escape, a resize, or a scroll anywhere except inside the menu's own list. Keyboard:
+// outside press, Escape, a resize, or a scroll anywhere except inside the menu's own list — measured again, not
+// closed, when only the screen's height changes (a phone's keyboard going away as it opens). Keyboard:
 // focus moves into the menu on open, Arrow/Home/End move between items, Escape/selecting returns focus
 // to the trigger, Tab leaves.
 function useAnchoredGlassMenu(options: {
@@ -70,66 +71,10 @@ function useAnchoredGlassMenu(options: {
     if (restoreFocus) triggerRef.current?.focus({ preventScroll: true });
   };
 
-  useEffect(() => {
-    if (!isOpen) return;
-    const closeSilently = () => setPosition(null);
-    const onPointerDown = (event: PointerEvent) => {
-      const target = event.target as Node | null;
-      if (!target) return;
-      if (menuRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
-      setPosition(null);
-      // The press that dismisses the menu shouldn't also act on whatever is underneath it (e.g. a modal's
-      // backdrop, which would close the whole modal and lose what was typed).
-      swallowNextClick();
-    };
-    const onScroll = (event: Event) => {
-      // Scrolling the menu's own list shouldn't dismiss it; scrolling anything else would leave
-      // the fixed menu floating away from its trigger, so that does.
-      if (menuRef.current && event.target instanceof Node && menuRef.current.contains(event.target)) return;
-      closeSilently();
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        // Registered in the capture phase and stopped here, so Escape only closes the menu — a page-level
-        // Escape handler underneath (e.g. "close this contact") never sees it while a menu is open.
-        event.stopPropagation();
-        setPosition(null);
-        triggerRef.current?.focus({ preventScroll: true });
-      }
-    };
-    document.addEventListener("pointerdown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown, true);
-    window.addEventListener("resize", closeSilently);
-    window.addEventListener("scroll", onScroll, true);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown, true);
-      window.removeEventListener("resize", closeSilently);
-      window.removeEventListener("scroll", onScroll, true);
-    };
-  }, [isOpen]);
-
-  // Move focus into the menu when it opens: the selected item if there is one, otherwise the first.
-  useEffect(() => {
-    if (!isOpen) return;
-    const frame = requestAnimationFrame(() => {
-      const menu = menuRef.current;
-      if (!menu) return;
-      const target =
-        menu.querySelector<HTMLElement>('[aria-selected="true"]') ?? menu.querySelector<HTMLElement>(MENU_ITEM_SELECTOR);
-      target?.focus({ preventScroll: true });
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [isOpen]);
-
-  const toggle = () => {
-    if (disabled) return;
-    if (isOpen) {
-      setPosition(null);
-      return;
-    }
+  // Where it goes, from its trigger and the screen as they are now.
+  const measure = (): MenuPosition | null => {
     const rect = triggerRef.current?.getBoundingClientRect();
-    if (!rect) return;
+    if (!rect) return null;
     const phone = window.matchMedia(PHONE_QUERY).matches;
     const rowHeight = phone ? MENU_ROW_HEIGHT_PHONE_PX : MENU_ROW_HEIGHT_PX;
     const leastWidth = phone ? Math.max(minWidth, MENU_MIN_WIDTH_PHONE_PX) : minWidth;
@@ -153,11 +98,98 @@ function useAnchoredGlassMenu(options: {
       align === "right" ? rect.right - menuWidth : align === "center" ? rect.left + rect.width / 2 - menuWidth / 2 : rect.left;
     const left = Math.min(Math.max(MENU_CLEARANCE_PX, preferredLeft), window.innerWidth - menuWidth - MENU_CLEARANCE_PX);
     const originX = Math.min(menuWidth, Math.max(0, rect.left + rect.width / 2 - left));
-    setPosition(
-      openUp
-        ? { left, bottom: document.documentElement.clientHeight - rect.top + 4, width: menuWidth, maxHeight, rowHeight, originX }
-        : { left, top: rect.bottom + 4, width: menuWidth, maxHeight, rowHeight, originX },
-    );
+    return openUp
+      ? { left, bottom: document.documentElement.clientHeight - rect.top + 4, width: menuWidth, maxHeight, rowHeight, originX }
+      : { left, top: rect.bottom + 4, width: menuWidth, maxHeight, rowHeight, originX };
+  };
+  // (The latest measure, for the open menu's listeners below.)
+  const measureRef = useRef(measure);
+  useEffect(() => {
+    measureRef.current = measure;
+  });
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const closeSilently = () => setPosition(null);
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (menuRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
+      setPosition(null);
+      // The press that dismisses the menu shouldn't also act on whatever is underneath it (e.g. a modal's
+      // backdrop, which would close the whole modal and lose what was typed).
+      swallowNextClick();
+    };
+    const onScroll = (event: Event) => {
+      // Scrolling the menu's own list shouldn't dismiss it; scrolling what its trigger is in would leave the fixed menu
+      // floating away from it, so that does. Something else scrolling (a scroller beside it or behind its pop-up — the
+      // calendar's months settling as a phone's keyboard goes) leaves its trigger where it was, so that doesn't.
+      if (menuRef.current && event.target instanceof Node && menuRef.current.contains(event.target)) return;
+      const trigger = triggerRef.current;
+      if (trigger && event.target instanceof Element && !event.target.contains(trigger)) return;
+      closeSilently();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        // Registered in the capture phase and stopped here, so Escape only closes the menu — a page-level
+        // Escape handler underneath (e.g. "close this contact") never sees it while a menu is open.
+        event.stopPropagation();
+        setPosition(null);
+        triggerRef.current?.focus({ preventScroll: true });
+      }
+    };
+    // A phone's keyboard going away as it opens (focus moving into the menu): measured again, so it reaches down to the
+    // bottom of the screen — or its options' end — not just to where the keyboard was. On an iPhone that's the visual
+    // viewport changing size (the window doesn't); on Android, the window's height. The window's width changing (turned,
+    // or resized) closes it.
+    const viewport = window.visualViewport;
+    const remeasure = () => {
+      const next = measureRef.current();
+      if (next) setPosition(next);
+    };
+    const openedWidth = window.innerWidth;
+    const onResize = () => {
+      if (window.innerWidth !== openedWidth) closeSilently();
+      else remeasure();
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("resize", onResize);
+    window.addEventListener("scroll", onScroll, true);
+    viewport?.addEventListener("resize", remeasure);
+    viewport?.addEventListener("scroll", remeasure);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("scroll", onScroll, true);
+      viewport?.removeEventListener("resize", remeasure);
+      viewport?.removeEventListener("scroll", remeasure);
+    };
+  }, [isOpen]);
+
+  // Move focus into the menu when it opens: the selected item if there is one, otherwise the first.
+  useEffect(() => {
+    if (!isOpen) return;
+    const frame = requestAnimationFrame(() => {
+      const menu = menuRef.current;
+      if (!menu) return;
+      const target =
+        menu.querySelector<HTMLElement>('[aria-selected="true"]') ?? menu.querySelector<HTMLElement>(MENU_ITEM_SELECTOR);
+      target?.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [isOpen]);
+
+
+  const toggle = () => {
+    if (disabled) return;
+    if (isOpen) {
+      setPosition(null);
+      return;
+    }
+    const next = measure();
+    if (next) setPosition(next);
   };
 
   return { position, isOpen, triggerRef, menuRef, toggle, close };
@@ -293,6 +325,8 @@ export type GlassDropdownOption = {
   label: string;
   // Optional colour dot shown to the left of the label (e.g. a contact category's colour).
   color?: string;
+  // Or something of its own there instead — e.g. a staff member's coloured initials (the calendar event's Add staff).
+  icon?: ReactNode;
   // Options in groups: each group's name heads its options in the menu ("Leads ———"), where the group changes.
   group?: string;
   // What the trigger shows once it's chosen, instead of its label — e.g. its group too ("Dashboard › Design").
@@ -356,7 +390,7 @@ export function GlassDropdown({
     fillBelow: menuFillBelow,
   });
   const selected = options.find((option) => option.value === value) ?? (placeholder === undefined ? options[0] : undefined);
-  const reserveDotSpace = options.some((option) => option.color);
+  const reserveDotSpace = options.some((option) => option.color && !option.icon);
 
   return (
     <>
@@ -373,7 +407,9 @@ export function GlassDropdown({
         style={triggerStyle}
         title={triggerTitle}
       >
-        {triggerContent !== undefined ? triggerContent : selected?.color && !hideTriggerDot ? (
+        {triggerContent !== undefined ? triggerContent : selected?.icon && !hideTriggerDot ? (
+          <span className="flex shrink-0">{selected.icon}</span>
+        ) : selected?.color && !hideTriggerDot ? (
           <span
             className="h-2.5 w-2.5 shrink-0 rounded-full transition-colors duration-700 ease-in-out motion-reduce:transition-none"
             style={{ backgroundColor: selected.color }}
@@ -424,7 +460,9 @@ export function GlassDropdown({
                   color: isSelected ? "#FFFFFF" : "var(--text-main)",
                 }}
               >
-                {option.color ? (
+                {option.icon ? (
+                  <span className="flex shrink-0">{option.icon}</span>
+                ) : option.color ? (
                   <span
                     className="h-2.5 w-2.5 shrink-0 rounded-full"
                     style={{ backgroundColor: option.color, boxShadow: isSelected ? "0 0 0 1.5px rgba(255,255,255,0.85)" : undefined }}

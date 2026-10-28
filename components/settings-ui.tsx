@@ -11,6 +11,7 @@ import { createPortal } from "react-dom";
 import { Check } from "lucide-react";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { swallowNextClick } from "@/lib/swallow-dismiss-click";
+import { glassShineStyle } from "@/lib/glass-shine";
 
 // Glass text field. cs-glass-field (globals.css) supplies the frosted fill + border, including the
 // dark-mode overrides that out-rank the blanket dark input rules.
@@ -610,6 +611,83 @@ export function useGlassPrompt() {
       : null;
 
   return { prompt, element };
+}
+
+// A glass replacement for window.confirm(), for taking something away: `const confirmRemove = useGlassConfirm();` then
+// `if (await confirmRemove.ask({ title, message, confirmLabel }, event)) …` and render `{confirmRemove.element}`. Rounded
+// glass buttons — Cancel, and the confirm in red.
+export function useGlassConfirm() {
+  const [request, setRequest] = useState<{
+    title: string;
+    message: ReactNode;
+    confirmLabel?: string;
+    resolve: (ok: boolean) => void;
+  } | null>(null);
+  const [isOpen, setIsOpen] = useState(false);
+  const [origin, setOrigin] = useState<GlassModalOrigin>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const originElRef = useRef<HTMLElement | null>(null);
+  const shouldRender = useGlassModalPopOrigin(isOpen, origin, panelRef, undefined, originElRef);
+
+  const ask = useCallback(
+    (options: { title: string; message: ReactNode; confirmLabel?: string }, event?: React.MouseEvent<HTMLElement>) =>
+      new Promise<boolean>((resolve) => {
+        if (event) {
+          originElRef.current = event.currentTarget;
+          setOrigin(captureGlassModalOrigin(event));
+        } else {
+          originElRef.current = null;
+          setOrigin(null);
+        }
+        setRequest({ ...options, resolve });
+        setIsOpen(true);
+      }),
+    [],
+  );
+
+  const finish = (ok: boolean) => {
+    request?.resolve(ok);
+    setIsOpen(false);
+  };
+
+  const element =
+    shouldRender && request && typeof document !== "undefined"
+      ? createPortal(
+          <div className="fixed inset-0 z-[2400] flex items-center justify-center px-4 py-4">
+            <button type="button" aria-label="Cancel" onClick={() => finish(false)} className="glass-modal-backdrop absolute inset-0" />
+            <div ref={panelRef} className="glass-modal-panel relative z-[2401] w-full max-w-[420px] overflow-hidden">
+              <GlassModalHeader title={<>{request.title}</>} onClose={() => finish(false)} />
+              <div className="space-y-4 px-5 py-4">
+                <p className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
+                  {request.message}
+                </p>
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => finish(false)}
+                    className="glass-shine glass-shine-neutral h-9 rounded-full border px-5 text-[12.5px] font-medium"
+                    style={{ color: "var(--text-main)" }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    autoFocus
+                    onClick={() => finish(true)}
+                    className="glass-shine h-9 rounded-full border px-5 text-[12.5px] font-medium text-white transition hover:brightness-105"
+                    style={glassShineStyle("var(--danger)")}
+                  >
+                    {request.confirmLabel || "Remove"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )
+      : null;
+
+  return { ask, element };
 }
 
 // A length entry that shows the value in the company's unit (mm or inches) but always reads/writes

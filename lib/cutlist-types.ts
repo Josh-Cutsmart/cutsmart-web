@@ -31,6 +31,9 @@ export type CutlistRow = {
   // A Drawer row's drawers at depths of their own: by drawer — its height and which of that height it is ("B#2", the
   // second B). The first drawer's depth is the row's depth, and any drawer not here is that too.
   drawerDepths?: Record<string, string>;
+  // ...and at a runner weight of their own (kg — Company Settings › Hardware: its drawer type's weights), by drawer the same
+  // way. Any drawer not here is Auto: its drawer type's default weight, or the one its height and length come in.
+  drawerWeights?: Record<string, string>;
   quantity: string;
   clashing: string;
   clashLeft?: string;

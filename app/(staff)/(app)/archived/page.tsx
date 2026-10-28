@@ -31,6 +31,7 @@ import {
   X,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
+import { useUndo } from "@/components/undo-bar";
 import { useAppTabs } from "@/lib/app-tabs-context";
 import { authorizedFetch } from "@/lib/api-fetch";
 import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
@@ -245,6 +246,13 @@ function kindCounts(rows: ArchiveRow[]): Array<{ kind: ArchiveKind; count: numbe
   return ARCHIVE_KINDS.map((kind) => ({ kind, count: rows.filter((r) => r.kind === kind).length })).filter((k) => k.count > 0);
 }
 
+// "2 projects, 1 lead" — for the selection bar, the delete pop-up and the Undo bar.
+function breakdownText(rows: ArchiveRow[]): string {
+  return kindCounts(rows)
+    .map(({ kind, count }) => countOf(count, KIND_META[kind].one, KIND_META[kind].many))
+    .join(", ");
+}
+
 // White text on darker status colours, dark on very light ones (same cut-off as the dashboard).
 function pillTextColor(fill: string): string {
   const clean = String(fill || "").trim().replace("#", "");
@@ -414,6 +422,8 @@ function ArchivedPageInner() {
   const { user } = useAuth();
   const access = useCompanyAccess();
   const { restoreScope, setReduceMainTopPadding } = useAppTabs();
+  // The Undo bar along the bottom, after anything's deleted for good here (components/undo-bar.tsx).
+  const offerUndo = useUndo();
   // This page's sticky header sits flush under the top bar instead of <main>'s usual top padding.
   useEffect(() => {
     setReduceMainTopPadding(true);
@@ -865,7 +875,10 @@ function ArchivedPageInner() {
     events: noCompany ? emptyReady : events,
   };
   const rowsByKind: Record<ArchiveKind, ArchiveRow[]> = { projects: projectRows, leads: leadRows, contacts: contactRows, events: eventRows };
-  const allRows = allowedKinds.flatMap((kind) => rowsByKind[kind]);
+  // Files deleted a moment ago, still waiting on the Undo bar (see deleteWithUndo): out of the cabinet already, though
+  // they're only deleted for good as the bar goes.
+  const [deletingKeys, setDeletingKeys] = useState<Set<string>>(() => new Set());
+  const allRows = allowedKinds.flatMap((kind) => rowsByKind[kind]).filter((row) => !deletingKeys.has(row.key));
 
   // --- Filters -----------------------------------------------------------------------------------------------------
   const [search, setSearch] = useState("");
@@ -1179,12 +1192,8 @@ function ArchivedPageInner() {
     return runEach(ids, async (id) => (await deleteCalendarEvent(companyId, id)).ok);
   };
 
-  // Each kind in turn (they're stored in different places); anything that didn't work stays, with a note.
-  const actOnRows = async (action: "restore" | "delete", rows: ArchiveRow[]) => {
-    const chosen = rows.filter((row) => (action === "restore" ? row.canRestore : row.canDelete));
-    if (!chosen.length || busy) return;
-    setBusy({ action, keys: chosen.map((row) => row.key) });
-    setNotice("");
+  // Each kind in turn (they're stored in different places); what worked leaves the cabinet. Returns how many didn't.
+  const runOnKinds = async (action: "restore" | "delete", chosen: ArchiveRow[]): Promise<number> => {
     let failed = 0;
     for (const kind of ARCHIVE_KINDS) {
       const ids = chosen.filter((row) => row.kind === kind).map((row) => row.id);
@@ -1193,8 +1202,47 @@ function ArchivedPageInner() {
       dropRows(kind, done);
       failed += ids.length - done.length;
     }
+    return failed;
+  };
+
+  // Anything that didn't work stays, with a note.
+  const actOnRows = async (action: "restore" | "delete", rows: ArchiveRow[]) => {
+    const chosen = rows.filter((row) => (action === "restore" ? row.canRestore : row.canDelete));
+    if (!chosen.length || busy) return;
+    setBusy({ action, keys: chosen.map((row) => row.key) });
+    setNotice("");
+    const failed = await runOnKinds(action, chosen);
     if (failed) setNotice(`Couldn't ${action} ${itemCount(failed)} — please try again.`);
     setBusy(null);
+  };
+
+  // Deleting for good (once its pop-up's said yes): out of the cabinet straight away, with the Undo bar — but only
+  // deleted as the bar goes without Undo pressed (a project's images and files go with it, so nothing could be put back
+  // afterwards); Undo just puts the files back in the cabinet. Any that can't be deleted then come back, with a note.
+  const deleteWithUndo = (rows: ArchiveRow[]) => {
+    const chosen = rows.filter((row) => row.canDelete);
+    if (!chosen.length) return;
+    const keys = chosen.map((row) => row.key);
+    const putBack = () =>
+      setDeletingKeys((prev) => {
+        const next = new Set(prev);
+        keys.forEach((key) => next.delete(key));
+        return next;
+      });
+    setNotice("");
+    setDeletingKeys((prev) => new Set([...prev, ...keys]));
+    setSelected((prev) => {
+      const next = new Set(prev);
+      keys.forEach((key) => next.delete(key));
+      return next;
+    });
+    offerUndo(`${chosen.length === 1 ? chosen[0].title || "Item" : breakdownText(chosen)} deleted`, putBack, {
+      commit: async () => {
+        const failed = await runOnKinds("delete", chosen);
+        putBack();
+        if (failed) setNotice(`Couldn't delete ${itemCount(failed)} — please try again.`);
+      },
+    });
   };
 
   // A project's new status (if one was picked) is written first, then it comes out of the Archive.
@@ -1288,7 +1336,7 @@ function ArchivedPageInner() {
       if (preview) setNotice("Preview — the email copy was made but not sent (nothing leaves the Preview).");
     }
     setPendingDelete(null);
-    void actOnRows("delete", rows);
+    deleteWithUndo(rows);
   };
 
   const openProject = (id: string) => {
@@ -1318,10 +1366,6 @@ function ArchivedPageInner() {
   const errorKinds = shownKinds.filter((kind) => loadStateFor[kind].status === "error");
   const isLoadingAny = shownKinds.some((kind) => loadStateFor[kind].status === "loading");
   const anyFilterOrSearch = Boolean(query) || activeFilterCount > 0 || pickedKinds.length > 0;
-  const breakdownText = (rows: ArchiveRow[]) =>
-    kindCounts(rows)
-      .map(({ kind, count }) => countOf(count, KIND_META[kind].one, KIND_META[kind].many))
-      .join(", ");
 
   const renderKindDots = (rows: ArchiveRow[], withLabels: boolean) => (
     <span className="inline-flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
@@ -2097,7 +2141,7 @@ function ArchivedPageInner() {
 
       {/* Bulk actions for what's ticked. */}
       {selectedRows.length > 0 ? (
-        <div className="pointer-events-none fixed inset-x-0 bottom-0 z-[96] flex justify-center px-3" style={{ paddingBottom: "max(12px, env(safe-area-inset-bottom))" }}>
+        <div data-bottom-bar="" className="pointer-events-none fixed inset-x-0 bottom-0 z-[96] flex justify-center px-3" style={{ paddingBottom: "max(12px, env(safe-area-inset-bottom))" }}>
           <div
             className="glass-bubble-pop pointer-events-auto flex w-full max-w-[640px] flex-wrap items-center gap-2 rounded-[28px] border py-2 pl-4 pr-2"
             style={{

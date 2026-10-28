@@ -1514,7 +1514,7 @@ export default function ChangelogPage() {
               button filling the full height and half the width of it, split 50/50 with no outer
               padding/gap so they actually touch the bar's own edges (and each other). */}
           {isCompactChangelogViewport && (
-            <div
+            <div data-bottom-bar=""
               className="fixed inset-x-0 bottom-0 z-[95] flex h-[56px] items-stretch border-t"
               style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-modal-bg)", backdropFilter: "blur(12px) saturate(220%)", WebkitBackdropFilter: "blur(12px) saturate(220%)" }}
             >

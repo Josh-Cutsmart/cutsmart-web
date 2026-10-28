@@ -110,6 +110,7 @@ import { VerifyAccountModal } from "@/components/verify-account-modal";
 import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
 import { isPreviewMode } from "@/lib/preview-mode";
 import { flatPageBg, isFlatPage, startsUnderTopBar } from "@/lib/flat-page";
+import { useUndo } from "@/components/undo-bar";
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 // The sidebar's Downloads button and the gap below it, above the account row.
 const SIDEBAR_DOWNLOADS_ROW_HEIGHT = 46;
@@ -622,6 +623,11 @@ export function AppShell({
   const [showTagSuggestions, setShowTagSuggestions] = useState(false);
   const [photos, setPhotos] = useState<LocalPhoto[]>([]);
   const [prefilledProjectImages, setPrefilledProjectImages] = useState<PrefilledProjectImage[]>([]);
+  // The Undo bar, after a tag or photo's taken out of New Project (removeTag, removePhoto…). Each filling-in of the form
+  // is counted (projectFormRunRef — up one each time it's cleared or filled afresh): Undo pressed once that form's gone
+  // has nothing to put it back into, so it leaves the next one be.
+  const offerUndo = useUndo();
+  const projectFormRunRef = useRef(0);
   const [editingProjectPhotoNameKey, setEditingProjectPhotoNameKey] = useState("");
   const [projectPhotoNameDraft, setProjectPhotoNameDraft] = useState("");
   const [sourceLeadId, setSourceLeadId] = useState("");
@@ -1886,6 +1892,7 @@ export function AppShell({
       );
       setProjectFormError("");
       setTagInput("");
+      projectFormRunRef.current += 1;
       setTags([]);
       setIsTagInputOpen(false);
       setShowTagSuggestions(false);
@@ -2747,6 +2754,7 @@ export function AppShell({
     );
 
   const resetProjectForm = () => {
+    projectFormRunRef.current += 1;
     for (const photo of photos) {
       try {
         URL.revokeObjectURL(photo.previewUrl);
@@ -2805,8 +2813,16 @@ export function AppShell({
     return added;
   };
 
+  // Undone, it's back where it was (unless it's been typed in again since).
   const removeTag = (tag: string) => {
+    const at = tags.indexOf(tag);
     setTags((prev) => prev.filter((t) => t !== tag));
+    if (at < 0) return;
+    const run = projectFormRunRef.current;
+    offerUndo(`${tag} tag removed`, () => {
+      if (projectFormRunRef.current !== run) return;
+      setTags((prev) => (prev.some((t) => t.toLowerCase() === tag.toLowerCase()) ? prev : [...prev.slice(0, at), tag, ...prev.slice(at)].slice(0, 5)));
+    });
   };
 
   const imageAspectRatioFromFile = async (file: File): Promise<number> => {
@@ -2861,23 +2877,41 @@ export function AppShell({
   };
 
   const removePrefilledProjectImage = (id: string) => {
+    const at = prefilledProjectImages.findIndex((image) => image.id === id);
+    const removed = prefilledProjectImages[at];
     setPrefilledProjectImages((prev) => prev.filter((image) => image.id !== id));
+    if (!removed) return;
+    const run = projectFormRunRef.current;
+    offerUndo(`${removed.name || "Photo"} removed`, () => {
+      if (projectFormRunRef.current !== run) return;
+      setPrefilledProjectImages((prev) => (prev.some((image) => image.id === id) ? prev : [...prev.slice(0, at), removed, ...prev.slice(at)]));
+    });
   };
 
+  // Its preview's let go only once the Undo bar's gone without Undo (its commit) — until then, it's what Undo puts back.
   const removePhoto = (id: string) => {
-    setPhotos((prev) => {
-      const found = prev.find((p) => p.id === id);
-      if (found) {
-        try {
-          URL.revokeObjectURL(found.previewUrl);
-        } catch {
-          // ignore
-        }
-      }
-      return prev.filter((p) => p.id !== id);
-    });
+    const at = photos.findIndex((p) => p.id === id);
+    const found = photos[at];
+    setPhotos((prev) => prev.filter((p) => p.id !== id));
     setPreviewPhotoId((prev) => (prev === id ? "" : prev));
     setPreviewAnim((prev) => (prev?.id === id ? null : prev));
+    if (!found) return;
+    const run = projectFormRunRef.current;
+    const letGo = () => {
+      try {
+        URL.revokeObjectURL(found.previewUrl);
+      } catch {
+        // ignore
+      }
+    };
+    offerUndo(
+      `${found.name || "Photo"} removed`,
+      () => {
+        if (projectFormRunRef.current !== run) return letGo();
+        setPhotos((prev) => (prev.some((p) => p.id === id) ? prev : [...prev.slice(0, at), found, ...prev.slice(at)]));
+      },
+      { commit: letGo },
+    );
   };
 
   const beginEditProjectPhotoName = (key: string, currentName: string) => {
@@ -4592,7 +4626,7 @@ export function AppShell({
       ) : null}
       {/* Dev users: a deployed version that isn't published yet — preview it and publish it. */}
       {isDevUser && previewDraft && !showUpdateNotice ? (
-        <button
+        <button data-bottom-bar=""
           type="button"
           onClick={() => window.dispatchEvent(new Event(OPEN_WHATS_NEW_DRAFT_EVENT))}
           className="fixed left-4 z-[60] inline-flex h-9 items-center gap-1.5 rounded-full border px-3.5 text-[12px] font-semibold text-white shadow-[0_8px_22px_rgba(15,23,42,0.22)] transition hover:brightness-105"

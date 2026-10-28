@@ -12,7 +12,17 @@ function toNum(value: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-export type DrawerHeightOption = { token: string; value: string };
+// A drawer type's height: its letter, its back height, the runner lengths it comes in (the drawer type's, less any
+// switched off for it in Company Settings) — each with the weights it comes in (Blum's M: 350–450 in 30 kg only, 500 and
+// 550 in 30 or 65) and its supplier's ID numbers: one for the length (a drawer type with no weights), and one for each
+// weight ("" — none) — and every weight it comes in at all.
+export type DrawerHeightOption = {
+  token: string;
+  value: string;
+  lengths: number[];
+  byLength: Array<{ length: number; weights: number[]; itemNumber: string; weightItemNumbers: Array<{ weight: number; itemNumber: string }> }>;
+  weights: number[];
+};
 export type HardwareDrawerType = {
   name: string;
   isDefault: boolean;
@@ -22,9 +32,11 @@ export type HardwareDrawerType = {
   bottomsDepthMinus: number | null;
   backsWidthMinus: number | null;
   hardwareLengths: number[];
+  // The runner weights it comes in, in kg (Blum's 30 and 65) — its heights may each come in only some — and the one its
+  // drawers are, unless one's set its own (null — none chosen: the lightest each comes in).
+  hardwareWeights: number[];
+  defaultWeight: number | null;
   spaceRequirement: number | null;
-  // Its supplier's item number (Company Settings › Hardware) — copied from the order, to find it in their cart. "" — none.
-  itemNumber: string;
 };
 export type HardwareTypeRow = {
   name: string;
@@ -36,6 +48,9 @@ export type HardwareTypeRow = {
   // Each hinge's and other item's supplier item number, by its name (lower case) — those that have one.
   hingeItemNumbers: Record<string, string>;
   otherItemNumbers: Record<string, string>;
+  // How the order's "Copy for cart" writes each item (Company Settings › Hardware › Ordering) — see formatCartCopyLine.
+  // "" — DEFAULT_CART_COPY_FORMAT.
+  cartCopyFormat: string;
 };
 export type SheetSizeOption = { h: string; w: string; isDefault: boolean };
 
@@ -117,8 +132,9 @@ export function normalizeDrawerTypes(raw: unknown): HardwareDrawerType[] {
           bottomsDepthMinus: null,
           backsWidthMinus: null,
           hardwareLengths: [],
+          hardwareWeights: [],
+          defaultWeight: null,
           spaceRequirement: null,
-          itemNumber: "",
         });
       }
       continue;
@@ -134,6 +150,13 @@ export function normalizeDrawerTypes(raw: unknown): HardwareDrawerType[] {
       : Array.isArray(backs.letters)
         ? backs.letters
         : [];
+    const positiveNumbers = (raw: unknown): number[] =>
+      Array.isArray(raw) ? (raw as unknown[]).map((v) => toNum(v)).filter((v) => Number.isFinite(v) && v > 0) : [];
+    const hardwareLengths = positiveNumbers(item.hardwareLengths);
+    const hardwareWeights = positiveNumbers(item.hardwareWeights);
+    // Each height's lengths switched off, its lengths' weights switched off ("500|65"), and its ID numbers — by length
+    // ("500"), or length and weight ("500|65") — by its letter (lower case).
+    const details = item.heightDetails && typeof item.heightDetails === "object" ? (item.heightDetails as Record<string, unknown>) : {};
     const heightLetters: string[] = [];
     const heightOptions: DrawerHeightOption[] = [];
     const seen = new Set<string>();
@@ -145,16 +168,41 @@ export function normalizeDrawerTypes(raw: unknown): HardwareDrawerType[] {
       seen.add(key);
       heightLetters.push(label);
       const value = extractDrawerHeightValue(rawHeight, label);
-      heightOptions.push({ token: label, value });
+      const own = details[key] && typeof details[key] === "object" ? (details[key] as Record<string, unknown>) : {};
+      const lengthsOff = positiveNumbers(own.lengthsOff);
+      const combosOff = (Array.isArray(own.combosOff) ? (own.combosOff as unknown[]) : []).map((combo) => {
+        const [length, weight] = toStr(combo).split("|");
+        return { length: toNum(length), weight: toNum(weight) };
+      });
+      const itemNumbers = own.itemNumbers && typeof own.itemNumbers === "object" ? (own.itemNumbers as Record<string, unknown>) : {};
+      const itemNumberFor = (length: number, weight: number | null) =>
+        toStr(
+          Object.entries(itemNumbers).find(([key]) => {
+            const [keyLength, keyWeight] = key.split("|");
+            return toNum(keyLength) === length && (weight == null ? keyWeight == null : toNum(keyWeight) === weight);
+          })?.[1],
+        );
+      const lengths = hardwareLengths.filter((length) => !lengthsOff.includes(length));
+      const byLength = lengths.map((length) => {
+        const weights = hardwareWeights.filter((weight) => !combosOff.some((combo) => combo.length === length && combo.weight === weight));
+        return {
+          length,
+          weights,
+          itemNumber: itemNumberFor(length, null),
+          weightItemNumbers: weights.map((weight) => ({ weight, itemNumber: itemNumberFor(length, weight) })),
+        };
+      });
+      heightOptions.push({
+        token: label,
+        value,
+        lengths,
+        byLength,
+        weights: hardwareWeights.filter((weight) => byLength.some((entry) => entry.weights.includes(weight))),
+      });
     }
     const bottomsWidthMinus = toNum(bottoms.widthMinus ?? item.widthMinus);
     const bottomsDepthMinus = toNum(bottoms.depthMinus ?? item.depthMinus);
     const backsWidthMinus = toNum(backs.widthMinus);
-    const hardwareLengths = Array.isArray(item.hardwareLengths)
-      ? (item.hardwareLengths as unknown[])
-          .map((v) => toNum(v))
-          .filter((v) => Number.isFinite(v) && v > 0)
-      : [];
     const spaceParsed = toNum(item.spaceRequirement ?? item.clearance);
     const spaceRequirement = Number.isFinite(spaceParsed) && spaceParsed > 0 ? spaceParsed : null;
     out.push({
@@ -166,8 +214,9 @@ export function normalizeDrawerTypes(raw: unknown): HardwareDrawerType[] {
       bottomsDepthMinus: bottomsDepthMinus > 0 ? bottomsDepthMinus : null,
       backsWidthMinus: backsWidthMinus > 0 ? backsWidthMinus : null,
       hardwareLengths,
+      hardwareWeights,
+      defaultWeight: hardwareWeights.includes(toNum(item.defaultWeight)) ? toNum(item.defaultWeight) : null,
       spaceRequirement,
-      itemNumber: toStr(item.itemNumber),
     });
   }
   return out;
@@ -209,6 +258,7 @@ export function normalizeHardwareRows(raw: unknown): HardwareTypeRow[] {
         other,
         hingeItemNumbers: itemNumbersByName(hingesRaw),
         otherItemNumbers: itemNumbersByName(otherRaw),
+        cartCopyFormat: toStr(item.cartCopyFormat),
       };
     })
     .filter((row) => row.name);
@@ -227,11 +277,52 @@ function itemNumbersByName(raw: unknown[]): Record<string, string> {
   return out;
 }
 
-// A hardware brand's item's supplier item number, by its kind and name ("" — none, or not found).
-export function hardwareItemNumber(row: HardwareTypeRow | null | undefined, kind: "drawer" | "hinge" | "other", name: string): string {
+// A hardware brand's hinge's or other item's supplier ID number, by its name ("" — none, or not found).
+export function hardwareItemNumber(row: HardwareTypeRow | null | undefined, kind: "hinge" | "other", name: string): string {
   if (!row) return "";
   const key = String(name || "").trim().toLowerCase();
   if (!key) return "";
-  if (kind === "drawer") return row.drawers.find((drawer) => drawer.name.trim().toLowerCase() === key)?.itemNumber ?? "";
   return (kind === "hinge" ? row.hingeItemNumbers : row.otherItemNumbers)[key] ?? "";
+}
+
+// A drawer's supplier ID number: its drawer type's height's, at its runner length — and weight, each having its own.
+// No weight given (drawers don't have one chosen yet): the length's own, or its one weight's when it comes in just one;
+// "" when there's more than one to choose from, none, or it's not found.
+export function drawerHeightItemNumber(
+  row: HardwareTypeRow | null | undefined,
+  drawerType: string,
+  height: string,
+  length: number,
+  weight?: number,
+): string {
+  const drawerKey = String(drawerType || "").trim().toLowerCase();
+  const heightKey = String(height || "").trim().toLowerCase();
+  if (!row || !drawerKey || !heightKey || !(length > 0)) return "";
+  const drawer = row.drawers.find((item) => item.name.trim().toLowerCase() === drawerKey);
+  const option = drawer?.heightOptions.find((item) => item.token.toLowerCase() === heightKey);
+  const entry = option?.byLength.find((item) => item.length === length);
+  if (!entry) return "";
+  if (weight != null) return entry.weightItemNumbers.find((item) => item.weight === weight)?.itemNumber || entry.itemNumber;
+  if (entry.itemNumber) return entry.itemNumber;
+  return entry.weightItemNumbers.length === 1 ? entry.weightItemNumbers[0].itemNumber : "";
+}
+
+// The order's "Copy for cart": a line for each item on it, written the way the brand's supplier's quick order takes them —
+// the brand's Copy format, set in Company Settings, its placeholders filled in ({id}: the item's ID number). Left blank,
+// this: the item number, then how many, a space between (Blum's Quick order › Add items in bulk).
+export const DEFAULT_CART_COPY_FORMAT = "{id} {quantity}";
+export const CART_COPY_PLACEHOLDERS = [
+  { token: "{id}", label: "ID number" },
+  { token: "{quantity}", label: "Quantity" },
+  { token: "{name}", label: "Item name" },
+  { token: "{tab}", label: "Tab" },
+] as const;
+export function formatCartCopyLine(format: string, item: { id: string; quantity: number; name: string }): string {
+  return (format.trim() || DEFAULT_CART_COPY_FORMAT).replace(/\{(id|quantity|name|tab)\}/gi, (_, key: string) => {
+    const placeholder = key.toLowerCase();
+    if (placeholder === "id") return item.id;
+    if (placeholder === "quantity") return String(item.quantity);
+    if (placeholder === "name") return item.name;
+    return "\t";
+  });
 }

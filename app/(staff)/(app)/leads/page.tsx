@@ -5,6 +5,7 @@ import { haptic } from "@/lib/haptics";
 import { OPEN_LEAD_EVENT } from "@/lib/global-search";
 import { GlassModalHeader } from "@/components/glass-modal-header";
 import { CopyButton } from "@/components/copy-button";
+import { useUndo } from "@/components/undo-bar";
 import { glassShineStyle } from "@/lib/glass-shine";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type TouchEvent as ReactTouchEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { createPortal } from "react-dom";
@@ -274,6 +275,13 @@ function isTemporarySampleLead(lead: CompanyLeadRow) {
   return String(lead.id || "").startsWith("temporary-sample-lead-") || String(lead.source || "").trim() === "local-sample";
 }
 
+// Something deleted, put back where it was in its list (the Undo bar) — unless it's there again already.
+function putBackAt<T extends { id: string }>(list: T[], item: T, index: number): T[] {
+  if (list.some((row) => row.id === item.id)) return list;
+  const at = index < 0 ? list.length : Math.min(index, list.length);
+  return [...list.slice(0, at), item, ...list.slice(at)];
+}
+
 async function readFileAsDataUrl(file: File): Promise<string> {
   return await new Promise((resolve) => {
     const reader = new FileReader();
@@ -376,6 +384,8 @@ export default function LeadsPage() {
   // Re-render when the company's date format changes.
   useCompanyFormats();
   const { user } = useAuth();
+  // The Undo bar along the bottom, after anything's archived, deleted or removed here (components/undo-bar.tsx).
+  const offerUndo = useUndo();
   const currentUserUid = String(user?.uid || "").trim();
   // An unverified account can view leads but not edit/move/delete/assign them — see the same gate
   // in app/(app)/projects/[projectId]/page.tsx's own comment for the fuller reasoning.
@@ -437,6 +447,9 @@ export default function LeadsPage() {
   const [leadDropPreview, setLeadDropPreview] = useState<{ column: string; index: number } | null>(null);
   // Drops still saving, by lead: the 10-second refresh keeps them where they were dropped meanwhile.
   const pendingLeadMovesRef = useRef(new Map<string, Partial<CompanyLeadRow>>());
+  // A note or checklist taken off a lead a moment ago, by what it is (note:<id> / checklist:<id>): it's only deleted as
+  // its Undo bar goes, so the live list still has it meanwhile — this takes it back off each lead the list brings.
+  const pendingLeadRemovalsRef = useRef(new Map<string, (lead: CompanyLeadRow) => CompanyLeadRow>());
   const [collapsedStatusColumns, setCollapsedStatusColumns] = useState<Record<string, boolean>>({});
   // This user's own sort choices: per column (the sort button on the column), and for the whole board
   // (the toolbar's Sort — overrides every column while it's set). "custom" = the dragged order.
@@ -884,12 +897,14 @@ export default function LeadsPage() {
         ? currentSampleLeads
         : currentSampleLeads.filter((lead) => String(lead.assignedToUid || "").trim() === currentUserUid);
       const fetchedLeads2 = [...visibleSampleLeads, ...visibleLeads];
-      // A lead dropped on the board a moment ago stays where it was dropped while that save is on its way.
+      // A lead dropped on the board a moment ago stays where it was dropped while that save is on its way — and a note or
+      // checklist taken off one stays off while its Undo bar shows.
       const pendingMoves = pendingLeadMovesRef.current;
-      const nextLeads = pendingMoves.size
+      const pendingRemovals = Array.from(pendingLeadRemovalsRef.current.values());
+      const nextLeads = pendingMoves.size || pendingRemovals.length
         ? fetchedLeads2.map((lead) => {
             const move = pendingMoves.get(lead.id);
-            return move ? { ...lead, ...move } : lead;
+            return pendingRemovals.reduce((row, takeOff) => takeOff(row), move ? { ...lead, ...move } : lead);
           })
         : fetchedLeads2;
       if (JSON.stringify(nextLeads) === JSON.stringify(shownLeadsRef.current)) return;
@@ -2078,6 +2093,9 @@ export default function LeadsPage() {
       didArchive = Boolean(response?.ok);
     }
     if (didArchive) {
+      // Where it was (on the page, and among the sample leads), for the Undo bar to put it back there.
+      const listIndex = leadsRef.current.findIndex((item) => item.id === leadId);
+      const sampleIndex = (sampleLeadsRef.current[lead.companyId] || []).findIndex((item) => item.id === leadId);
       if (isTemporarySampleLead(lead)) {
         sampleLeadsRef.current[lead.companyId] = (sampleLeadsRef.current[lead.companyId] || []).filter((item) => item.id !== leadId);
         persistSampleLeads(lead.companyId, sampleLeadsRef.current[lead.companyId]);
@@ -2085,20 +2103,41 @@ export default function LeadsPage() {
       setLeads((current) => current.filter((item) => item.id !== leadId));
       setSelectedLeadId((current) => (current === leadId ? "" : current));
       setConfirmDeleteLeadId("");
+      const announce = (isDeleted: boolean) => {
+        if (typeof window === "undefined") return;
+        window.dispatchEvent(
+          new CustomEvent(LEAD_ARCHIVE_UPDATED_EVENT, {
+            detail: {
+              companyId: String(lead.companyId || "").trim(),
+              leadId,
+              isDeleted,
+            },
+          }),
+        );
+      };
       if (!isTemporarySampleLead(lead)) {
         void loadLeads(lead.companyId);
-        if (typeof window !== "undefined") {
-          window.dispatchEvent(
-            new CustomEvent(LEAD_ARCHIVE_UPDATED_EVENT, {
-              detail: {
-                companyId: String(lead.companyId || "").trim(),
-                leadId,
-                isDeleted: true,
-              },
-            }),
-          );
-        }
+        announce(true);
       }
+      // The Undo bar: out of the Archive and back on the board where it was (a sample lead, back on this device).
+      const leadName =
+        leadClientName(getLeadDynamicFields(lead), fieldLayoutForLead(lead)) || lead.name || lead.email || lead.phone || "Lead";
+      offerUndo(`${leadName} archived`, async () => {
+        if (isTemporarySampleLead(lead)) {
+          sampleLeadsRef.current[lead.companyId] = putBackAt(sampleLeadsRef.current[lead.companyId] || [], lead, sampleIndex);
+          persistSampleLeads(lead.companyId, sampleLeadsRef.current[lead.companyId]);
+        } else {
+          const response = await authorizedFetch("/api/leads", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ companyId: lead.companyId, leadId, isDeleted: false }),
+          }).catch(() => null);
+          if (!response?.ok) throw new Error("couldn't restore the lead");
+          announce(false);
+          void loadLeads(lead.companyId);
+        }
+        setLeads((current) => putBackAt(current, lead, listIndex));
+      });
     }
     setDeletingLeadId("");
   };
@@ -2164,12 +2203,11 @@ export default function LeadsPage() {
   };
 
   // The lead pop-up's Notes: the note being written (for which lead), adding one, its error, and the note whose delete
-  // is waiting for its second click (and the one being deleted).
+  // is waiting for its second click.
   const [leadNoteDraft, setLeadNoteDraft] = useState<{ leadId: string; text: string }>({ leadId: "", text: "" });
   const [leadNoteSaving, setLeadNoteSaving] = useState(false);
   const [leadNoteError, setLeadNoteError] = useState<{ leadId: string; message: string }>({ leadId: "", message: "" });
   const [confirmDeleteLeadNoteId, setConfirmDeleteLeadNoteId] = useState("");
-  const [deletingLeadNoteId, setDeletingLeadNoteId] = useState("");
 
   // A change to a lead's notes, onto the page (its list row, its opened details and — a sample lead — its saved copy).
   const applyLeadNotes = (lead: CompanyLeadRow, update: (notes: LeadNote[]) => LeadNote[]) => {
@@ -2217,26 +2255,44 @@ export default function LeadsPage() {
     setLeadNoteDraft((prev) => (prev.leadId === lead.id && prev.text.trim() === text ? { leadId: lead.id, text: "" } : prev));
   };
 
-  const deleteLeadNote = async (lead: CompanyLeadRow, note: LeadNote) => {
-    if (deletingLeadNoteId || !isUserVerified) return;
+  // A note deleted: off the page straight away, with the Undo bar — but only deleted on the server as the bar goes
+  // without Undo pressed (the server can't put a note back as it was: who wrote it and when are its own), so Undo just
+  // shows it again where it was. Couldn't be deleted then: it comes back, saying so.
+  const deleteLeadNote = (lead: CompanyLeadRow, note: LeadNote) => {
+    if (!isUserVerified) return;
     setConfirmDeleteLeadNoteId("");
     setLeadNoteError({ leadId: "", message: "" });
-    if (isTemporarySampleLead(lead)) {
-      applyLeadNotes(lead, (notes) => notes.filter((row) => row.id !== note.id));
-      return;
-    }
-    setDeletingLeadNoteId(note.id);
-    const response = await authorizedFetch("/api/leads", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ companyId: lead.companyId, leadId: lead.id, deleteNoteId: note.id }),
-    }).catch(() => null);
-    setDeletingLeadNoteId("");
-    if (!response?.ok) {
-      setLeadNoteError({ leadId: lead.id, message: "Couldn't delete the note — try again." });
-      return;
-    }
+    const index = ((leadsRef.current.find((row) => row.id === lead.id) ?? lead).notes ?? []).findIndex((row) => row.id === note.id);
+    const putBack = () => applyLeadNotes(lead, (notes) => putBackAt(notes, note, index));
     applyLeadNotes(lead, (notes) => notes.filter((row) => row.id !== note.id));
+    if (isTemporarySampleLead(lead)) {
+      offerUndo("Note deleted", putBack);
+      return;
+    }
+    const key = `note:${note.id}`;
+    pendingLeadRemovalsRef.current.set(key, (row) =>
+      row.id === lead.id && row.notes?.some((item) => item.id === note.id) ? { ...row, notes: row.notes.filter((item) => item.id !== note.id) } : row,
+    );
+    offerUndo(
+      "Note deleted",
+      () => {
+        pendingLeadRemovalsRef.current.delete(key);
+        putBack();
+      },
+      {
+        commit: async () => {
+          const response = await authorizedFetch("/api/leads", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ companyId: lead.companyId, leadId: lead.id, deleteNoteId: note.id }),
+          }).catch(() => null);
+          pendingLeadRemovalsRef.current.delete(key);
+          if (response?.ok) return;
+          putBack();
+          setLeadNoteError({ leadId: lead.id, message: "Couldn't delete the note — try again." });
+        },
+      },
+    );
   };
 
   // The lead pop-up's Checklists: this user's saved checklists (User Settings) to add from — read when a lead's opened
@@ -2323,6 +2379,8 @@ export default function LeadsPage() {
     void saveLeadChecklistOp(lead, { type: "check", checklistId, itemId, checked: !item.checked }, setChecked(item.checked), "Couldn't save that — try again.");
   };
 
+  // A checklist removed: off the page straight away, with the Undo bar — saved only as the bar goes without Undo
+  // pressed (as a note's delete), so Undo shows it again where it was, its ticks as they were.
   const removeLeadChecklist = (lead: CompanyLeadRow, checklistId: string) => {
     if (!isUserVerified) return;
     const current = leadChecklistsOf(lead);
@@ -2331,12 +2389,31 @@ export default function LeadsPage() {
     const removed = current[index];
     setConfirmRemoveLeadChecklistId("");
     setLeadChecklistError({ leadId: "", message: "" });
+    const putBack = (rows: ProjectChecklist[]) => putBackAt(rows, removed, index);
     applyLeadChecklists(lead, (rows) => rows.filter((row) => row.id !== checklistId));
-    void saveLeadChecklistOp(
-      lead,
-      { type: "remove", checklistId },
-      (rows) => (rows.some((row) => row.id === checklistId) ? rows : [...rows.slice(0, index), removed, ...rows.slice(index)]),
-      "Couldn't remove the checklist — try again.",
+    const message = `${removed.name || "Checklist"} removed`;
+    if (isTemporarySampleLead(lead)) {
+      offerUndo(message, () => applyLeadChecklists(lead, putBack));
+      return;
+    }
+    const key = `checklist:${checklistId}`;
+    pendingLeadRemovalsRef.current.set(key, (row) =>
+      row.id === lead.id && row.checklists?.some((item) => item.id === checklistId)
+        ? { ...row, checklists: row.checklists.filter((item) => item.id !== checklistId) }
+        : row,
+    );
+    offerUndo(
+      message,
+      () => {
+        pendingLeadRemovalsRef.current.delete(key);
+        applyLeadChecklists(lead, putBack);
+      },
+      {
+        commit: async () => {
+          await saveLeadChecklistOp(lead, { type: "remove", checklistId }, putBack, "Couldn't remove the checklist — try again.");
+          pendingLeadRemovalsRef.current.delete(key);
+        },
+      },
     );
   };
 
@@ -3009,8 +3086,9 @@ export default function LeadsPage() {
     const removedIndex = existing.findIndex((item) => item.url === imageUrl);
     const nextItems = existing.filter((item) => item.url !== imageUrl);
     setLeadImagesUploading(true);
+    let removed = false;
     try {
-      await saveLeadImages(lead, nextItems);
+      removed = await saveLeadImages(lead, nextItems);
       setLeadImagePreviewIndex((current) => {
         if (current < 0) return current;
         if (removedIndex < 0) return current;
@@ -3022,6 +3100,17 @@ export default function LeadsPage() {
     } finally {
       setLeadImagesUploading(false);
     }
+    // The Undo bar: the photo back where it was — its name and comments with it — among the lead's photos as they are by
+    // then (the file itself was never deleted, only taken off the lead).
+    const image = existing[removedIndex];
+    if (!removed || !image) return;
+    offerUndo(`${image.name || "Photo"} removed`, () => {
+      const latest = leadDetailsByIdRef.current[lead.id] ?? leadsRef.current.find((row) => row.id === lead.id) ?? lead;
+      const items = normalizeLeadImageItems(latest);
+      if (items.some((item) => item.url === image.url)) return;
+      const at = Math.min(removedIndex, items.length);
+      return saveLeadImages(latest, [...items.slice(0, at), image, ...items.slice(at)]);
+    });
   };
 
   const handleRenameLeadImage = async (lead: CompanyLeadRow, imageUrl: string, nextName: string) => {
@@ -3260,6 +3349,10 @@ export default function LeadsPage() {
   const handleDeleteLeadImageAnnotation = useCallback(async (annotationId: string) => {
     if (!leadImagesLead || leadImagePreviewIndex < 0) return;
     const existing = normalizeLeadImageItems(leadImagesLead);
+    // The comment, and where it was on its photo — for the Undo bar.
+    const image = existing[leadImagePreviewIndex];
+    const annotationIndex = (image?.annotations ?? []).findIndex((annotation) => annotation.id === annotationId);
+    const removedAnnotation = image?.annotations[annotationIndex];
     const nextItems = existing.map((item, idx) =>
       idx === leadImagePreviewIndex
         ? {
@@ -3289,7 +3382,18 @@ export default function LeadsPage() {
     if (leadImageListEditingAnnotation?.id === annotationId) {
       setLeadImageListEditingAnnotation(null);
     }
-    await saveLeadImages(optimisticLead, nextItems);
+    const saved = await saveLeadImages(optimisticLead, nextItems);
+    // The Undo bar: the comment back on its photo, where it was among its comments (the photos as they are by then).
+    if (!saved || !image || !removedAnnotation) return;
+    offerUndo("Comment deleted", () => {
+      const latest = leadDetailsByIdRef.current[optimisticLead.id] ?? leadsRef.current.find((row) => row.id === optimisticLead.id) ?? optimisticLead;
+      const items = normalizeLeadImageItems(latest);
+      if (!items.some((item) => item.url === image.url && !item.annotations.some((annotation) => annotation.id === removedAnnotation.id))) return;
+      return saveLeadImages(
+        latest,
+        items.map((item) => (item.url === image.url ? { ...item, annotations: putBackAt(item.annotations, removedAnnotation, annotationIndex) } : item)),
+      );
+    });
   }, [
     leadImageActiveAnnotationId,
     leadImageEditingAnnotation,
@@ -3298,6 +3402,7 @@ export default function LeadsPage() {
     leadImageDeleteHoverAnnotationId,
     leadImagePreviewIndex,
     leadImagesLead,
+    offerUndo,
     saveLeadImages,
     syncLeadImagesInState,
   ]);
@@ -4064,7 +4169,6 @@ export default function LeadsPage() {
           const color = String(member?.badgeColor || member?.userColor || "").trim() || "#7D99B3";
           const canDelete = canAdd && (note.createdByUid === currentUserUid || canDeleteAny);
           const armed = confirmDeleteLeadNoteId === note.id;
-          const deleting = deletingLeadNoteId === note.id;
           return (
             <div
               key={note.id}
@@ -4096,17 +4200,15 @@ export default function LeadsPage() {
                 armed ? (
                   <button
                     type="button"
-                    disabled={deleting}
-                    onClick={() => void deleteLeadNote(lead, note)}
-                    className="glass-shine absolute right-2 top-2 inline-flex h-6 items-center justify-center rounded-full px-2.5 text-[11px] font-bold text-white hover:brightness-105 disabled:opacity-60"
+                    onClick={() => deleteLeadNote(lead, note)}
+                    className="glass-shine absolute right-2 top-2 inline-flex h-6 items-center justify-center rounded-full px-2.5 text-[11px] font-bold text-white hover:brightness-105"
                     style={glassShineStyle("#EF4444")}
                   >
-                    {deleting ? "Deleting..." : "Delete"}
+                    Delete
                   </button>
                 ) : (
                   <button
                     type="button"
-                    disabled={Boolean(deletingLeadNoteId)}
                     onClick={() => setConfirmDeleteLeadNoteId(note.id)}
                     className="absolute right-2 top-2 inline-flex h-6 w-6 items-center justify-center rounded-full transition-opacity hover:bg-[var(--danger-soft)] hover:text-[var(--danger)] focus-visible:opacity-100 pointer-fine:opacity-0 pointer-fine:group-hover/note:opacity-100"
                     style={{ color: "var(--text-muted)" }}
@@ -4779,7 +4881,7 @@ export default function LeadsPage() {
                   portalled so it's fixed to the screen whatever the page around it does. */}
               {typeof document !== "undefined"
                 ? createPortal(
-                    <button
+                    <button data-bottom-bar=""
                       type="button"
                       onClick={openLeadForm}
                       // The glass shine (lib/glass-shine.ts), in the brand blue — with a floating button's deeper shadow.

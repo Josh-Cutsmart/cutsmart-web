@@ -7,6 +7,7 @@ import { Check, Copy, Eye, EyeOff, KeyRound, Plus, Trash2 } from "lucide-react";
 import { glassFieldClass, primaryButtonClass, primaryButtonStyle, smallButtonClass } from "@/components/settings-ui";
 import { activeDateTime } from "@/lib/company-formats";
 import { Skeleton, SkeletonGroup } from "@/components/skeleton";
+import { useUndo } from "@/components/undo-bar";
 import {
   changeMasterJoinCode,
   createTemporaryJoinCode,
@@ -75,8 +76,11 @@ export function CompanyJoinCodesModal({
   const [error, setError] = useState("");
   const [newCode, setNewCode] = useState("");
   const [confirmRevokeKey, setConfirmRevokeKey] = useState("");
+  // Codes deleted but still waiting on the Undo bar (see remove, below) — off the list meanwhile.
+  const [hiddenKeys, setHiddenKeys] = useState<string[]>([]);
+  const offerUndo = useUndo();
 
-  const temporaryCodes = (data?.codes ?? []).filter((row) => row.kind === "temporary");
+  const temporaryCodes = (data?.codes ?? []).filter((row) => row.kind === "temporary" && !hiddenKeys.includes(row.key));
 
   const saveMaster = async () => {
     if (nextMaster.trim().length < 4) {
@@ -133,23 +137,31 @@ export function CompanyJoinCodesModal({
     onReload();
   };
 
-  // A revoked code, off the list (tap twice — the first asks).
+  // A revoked code, off the list (tap twice — the first asks), with the Undo bar after. A deleted code can't be put back
+  // (it's gone from the server), so it's only hidden at first, and deleted as the bar goes without Undo being pressed
+  // (its commit) — undone, it's just shown again. (Revoked already, it can't be joined with meanwhile.) Couldn't be
+  // deleted, it's back, with why.
   const [confirmDeleteKey, setConfirmDeleteKey] = useState("");
-  const remove = async (record: JoinCodeRecord) => {
+  const remove = (record: JoinCodeRecord) => {
     if (confirmDeleteKey !== record.key) {
       setConfirmDeleteKey(record.key);
       return;
     }
-    setBusy(record.key);
-    setError("");
-    const result = await deleteJoinCode(companyId, record.key);
-    setBusy("");
     setConfirmDeleteKey("");
-    if (!result.ok) {
-      setError(result.error);
-      return;
-    }
-    onReload();
+    setError("");
+    setHiddenKeys((prev) => [...prev, record.key]);
+    const showAgain = () => setHiddenKeys((prev) => prev.filter((key) => key !== record.key));
+    offerUndo(`Code ${record.code} deleted`, showAgain, {
+      commit: async () => {
+        const result = await deleteJoinCode(companyId, record.key);
+        if (!result.ok) {
+          showAgain();
+          setError(result.error);
+          return;
+        }
+        onReload();
+      },
+    });
   };
 
   return createPortal(
@@ -315,7 +327,7 @@ export function CompanyJoinCodesModal({
                                 type="button"
                                 className={smallButtonClass}
                                 disabled={busy === record.key}
-                                onClick={() => void remove(record)}
+                                onClick={() => remove(record)}
                                 style={
                                   confirmDeleteKey === record.key
                                     ? { backgroundImage: "var(--danger-gradient)", color: "#fff", borderColor: "transparent" }

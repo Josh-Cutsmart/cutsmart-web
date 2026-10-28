@@ -74,6 +74,7 @@ export const SETTINGS_SEARCH_INDEX: Array<{ section: SettingsSection; label: str
   { section: "materials", card: "Sheet sizes", label: "Sheet sizes" },
   { section: "materials", card: "Board colour memory", label: "Board colour memory", keywords: "edging" },
   { section: "hardware", card: "Hardware brands", label: "Hardware brands", keywords: "drawers hinges" },
+  { section: "hardware", card: "Hardware brands", label: "Copy for cart format", keywords: "ordering order quick order blum cart id number item number quantity placeholders paste" },
   { section: "staff", card: "Staff", label: "Staff", keywords: "invite members" },
   { section: "staff", card: "Roles", label: "Roles & permissions" },
   { section: "staff", card: "Audit log", label: "Audit log", keywords: "roles permissions changes history who changed" },

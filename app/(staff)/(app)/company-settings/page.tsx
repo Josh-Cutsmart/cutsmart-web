@@ -1,12 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { SETTINGS_SEARCH_INDEX, SETTINGS_SECTIONS as sections, type SettingsSection } from "@/lib/company-settings-sections";
+import { CART_COPY_PLACEHOLDERS, DEFAULT_CART_COPY_FORMAT, formatCartCopyLine } from "@/lib/production-hardware";
 import { glassShineStyle } from "@/lib/glass-shine";
+import { useUndo } from "@/components/undo-bar";
 import { GlassModalHeader } from "@/components/glass-modal-header";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, Building2, CheckCircle2, ChevronDown, CircleHelp, ClipboardList, Clock3, DatabaseBackup, Download, GripVertical, HardHat, Layers3, Loader2, Package2, Plus, RotateCcw, Search, Settings, Trophy, Upload, Users, X } from "lucide-react";
+import { ArrowLeft, Building2, Check, CheckCircle2, ChevronDown, CircleHelp, ClipboardList, Clock3, DatabaseBackup, Download, GripVertical, HardHat, Layers3, Loader2, Package2, Plus, RotateCcw, Search, Settings, Trophy, Upload, Users, X } from "lucide-react";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { useAuth } from "@/lib/auth-context";
 import { authorizedFetch } from "@/lib/api-fetch";
@@ -120,6 +122,7 @@ import {
   primaryButtonStyle,
   rowFieldClass,
   smallButtonClass,
+  useGlassConfirm,
   useGlassPrompt,
 } from "@/components/settings-ui";
 
@@ -253,7 +256,16 @@ type DiscountTierRow = { low: string; high: string; discount: string };
 // toggled on / off in the project's Design tab). `isDefault`: on for every project's quote unless turned off there.
 // `id` stays the same through renames — it's what a project's toggles are kept against.
 type ExtraChargeRow = { id: string; name: string; price: string; isDefault: boolean };
-type HardwareRow = { name: string; color: string; default: boolean; drawersJson: string; hingesJson: string; otherJson: string };
+type HardwareRow = {
+  name: string;
+  color: string;
+  default: boolean;
+  drawersJson: string;
+  hingesJson: string;
+  otherJson: string;
+  // How a project's order copies this brand's items for its supplier's quick order (the Ordering tab). "" — the default.
+  cartCopyFormat: string;
+};
 type BackupTemplateSettings = {
   quoteTemplateHeaderHtml: string;
   quoteTemplateFooterHtml: string;
@@ -556,6 +568,12 @@ const ACTIVE_COMPANY_THEME_COLOR_STORAGE_KEY = "cutsmart_active_company_theme_co
 function toStr(v: unknown, fallback = "") {
   const t = String(v ?? "").trim();
   return t || fallback;
+}
+
+// The Undo bar (components/undo-bar.tsx) putting something back on a list it was taken off: at the place it was — or
+// at the end, if the list has got shorter than that since.
+function insertAt<T>(list: T[], index: number, item: T): T[] {
+  return [...list.slice(0, index), item, ...list.slice(index)];
 }
 
 // Case-insensitive compare for the "type this name to confirm" safety check — a name typed with
@@ -1352,6 +1370,7 @@ function normalizeHardware(raw: unknown): HardwareRow[] {
         drawersJson: JSON.stringify(drawers),
         hingesJson: JSON.stringify(hinges),
         otherJson: JSON.stringify(other),
+        cartCopyFormat: toStr(row.cartCopyFormat),
       };
     })
     .filter((r) => r.name);
@@ -1605,6 +1624,437 @@ function readDrawerLengths(item: Record<string, unknown>): string[] {
   return rows.map((v) => toStr(v)).filter(Boolean);
 }
 
+// A drawer type's runner weights, in kg (Blum's 30 and 65).
+function readDrawerWeights(item: Record<string, unknown>): string[] {
+  const rows = Array.isArray(item.hardwareWeights) ? item.hardwareWeights : [];
+  return rows.map((v) => toStr(v)).filter(Boolean);
+}
+
+// A height's own details: the runner lengths it doesn't come in, the weights each of its lengths doesn't come in
+// ("500|65" — a length and weight together), and its supplier's ID numbers — one for each weight a length comes in
+// ("500|65"), or for the length ("500") on a drawer type with no weights. Kept beside its heights (backs.heights stays as
+// it was, "M 90"), by the height's letter in lower case:
+// { m: { lengthsOff: ["300"], combosOff: ["350|65"], itemNumbers: { "500|30": "770M5002S", "500|65": "770M5002T" } } }.
+// Nothing set: no entry — so a length or weight added later is on for every height.
+type DrawerHeightDetails = { lengthsOff: string[]; combosOff: string[]; itemNumbers: Record<string, string> };
+type DrawerHeightDraft = DrawerHeightDetails & { label: string; size: string };
+
+const drawerComboKey = (length: string, weight: string) => `${length.trim()}|${weight.trim()}`;
+
+function readDrawerHeightDetailsMap(item: Record<string, unknown>): Record<string, unknown> {
+  return item.heightDetails && typeof item.heightDetails === "object" ? { ...(item.heightDetails as Record<string, unknown>) } : {};
+}
+
+function readDrawerHeightDetails(item: Record<string, unknown>, label: string): DrawerHeightDetails {
+  const entry = readDrawerHeightDetailsMap(item)[label.trim().toLowerCase()];
+  const list = (value: unknown) => (Array.isArray(value) ? value.map((v) => toStr(v)).filter(Boolean) : []);
+  if (!entry || typeof entry !== "object") return { lengthsOff: [], combosOff: [], itemNumbers: {} };
+  const row = entry as Record<string, unknown>;
+  const itemNumbers: Record<string, string> = {};
+  if (row.itemNumbers && typeof row.itemNumbers === "object") {
+    for (const [key, value] of Object.entries(row.itemNumbers as Record<string, unknown>)) {
+      if (toStr(value)) itemNumbers[key] = toStr(value);
+    }
+  }
+  return { lengthsOff: list(row.lengthsOff), combosOff: list(row.combosOff), itemNumbers };
+}
+
+// What a height comes in, in words — its chip's tooltip: "350 (30kg), 400 (30kg 770M4002S), 500 (30kg, 65kg)".
+// `restricted`: not every length and weight.
+function describeDrawerHeight(item: Record<string, unknown>, label: string): { text: string; restricted: boolean } {
+  const details = readDrawerHeightDetails(item, label);
+  const lengths = readDrawerLengths(item);
+  const weights = readDrawerWeights(item);
+  const parts = lengths
+    .filter((length) => !details.lengthsOff.includes(length))
+    .map((length) => {
+      const on = weights.filter((weight) => !details.combosOff.includes(drawerComboKey(length, weight)));
+      const withId = (text: string, key: string) => (details.itemNumbers[key] ? `${text} ${details.itemNumbers[key]}` : text);
+      const notes = weights.length
+        ? on.length
+          ? on.map((weight) => withId(`${weight}kg`, drawerComboKey(length, weight))).join(", ")
+          : "no weight"
+        : withId("", length).trim();
+      return notes ? `${length} (${notes})` : length;
+    });
+  const restricted = details.lengthsOff.some((v) => lengths.includes(v)) || details.combosOff.length > 0;
+  return { text: lengths.length ? `lengths ${parts.join(", ") || "none"}` : "", restricted };
+}
+
+function writeDrawerHeightDetailsMap(item: Record<string, unknown>, map: Record<string, unknown>): Record<string, unknown> {
+  const next = { ...item };
+  if (Object.keys(map).length) next.heightDetails = map;
+  else delete next.heightDetails;
+  return next;
+}
+
+// A height written back: its "M 90" in backs.heights (at `index`, or added on the end — null), and its details, moved
+// along with it if its letter changed.
+function writeDrawerHeight(item: Record<string, unknown>, index: number | null, height: DrawerHeightDraft): Record<string, unknown> {
+  const label = height.label.trim();
+  const size = height.size.trim();
+  const heights = readDrawerBackHeights(item);
+  const previousLabel = index != null ? readDrawerHeightLabel(heights[index] ?? "") : "";
+  const text = size ? `${label} ${size}` : label;
+  const nextHeights = index != null && index < heights.length ? heights.map((v, i) => (i === index ? text : v)) : [...heights, text];
+  const map = readDrawerHeightDetailsMap(item);
+  if (previousLabel) delete map[previousLabel.toLowerCase()];
+  const own: Record<string, unknown> = {};
+  if (height.lengthsOff.length) own.lengthsOff = height.lengthsOff;
+  if (height.combosOff.length) own.combosOff = height.combosOff;
+  const itemNumbers = Object.fromEntries(
+    Object.entries(height.itemNumbers)
+      .map(([key, value]) => [key, value.trim()] as const)
+      .filter(([, value]) => value),
+  );
+  if (Object.keys(itemNumbers).length) own.itemNumbers = itemNumbers;
+  if (Object.keys(own).length) map[label.toLowerCase()] = own;
+  return writeDrawerHeightDetailsMap(writeDrawerField(item, "backHeights", nextHeights), map);
+}
+
+// A drawer type's default weight ("" — none chosen): its drawers' weight, at every height and length that comes in it.
+function readDrawerDefaultWeight(item: Record<string, unknown>): string {
+  return toStr(item.defaultWeight);
+}
+
+function writeDrawerDefaultWeight(item: Record<string, unknown>, weight: string): Record<string, unknown> {
+  const next = { ...item };
+  if (weight.trim()) next.defaultWeight = weight.trim();
+  else delete next.defaultWeight;
+  return next;
+}
+
+// A weight changed (or removed — null) that was the default: the default follows it (or goes).
+function renameDrawerDefaultWeight(item: Record<string, unknown>, kind: "length" | "weight", from: string, to: string | null): Record<string, unknown> {
+  if (kind !== "weight" || readDrawerDefaultWeight(item) !== from.trim()) return item;
+  return writeDrawerDefaultWeight(item, (to ?? "").trim());
+}
+
+// Undoing a length, weight or height taken off: the drawer's lengths, weights (and its default), heights and their
+// details back as they were (`before`) — the rest of it (its name, cutting, depth requirement) as it is now.
+function restoreDrawerOptions(item: Record<string, unknown>, before: Record<string, unknown>): Record<string, unknown> {
+  const next: Record<string, unknown> = writeDrawerDefaultWeight(
+    { ...item, hardwareLengths: readDrawerLengths(before), hardwareWeights: readDrawerWeights(before) },
+    readDrawerDefaultWeight(before),
+  );
+  const backs = item.backs && typeof item.backs === "object" ? { ...(item.backs as Record<string, unknown>) } : {};
+  backs.heights = readDrawerBackHeights(before);
+  next.backs = backs;
+  return writeDrawerHeightDetailsMap(next, readDrawerHeightDetailsMap(before));
+}
+
+function removeDrawerHeight(item: Record<string, unknown>, index: number): Record<string, unknown> {
+  const heights = readDrawerBackHeights(item);
+  const map = readDrawerHeightDetailsMap(item);
+  delete map[readDrawerHeightLabel(heights[index] ?? "").toLowerCase()];
+  return writeDrawerHeightDetailsMap(
+    writeDrawerField(
+      item,
+      "backHeights",
+      heights.filter((_, i) => i !== index),
+    ),
+    map,
+  );
+}
+
+// A length or weight changed (or removed — null): what each height had switched off for it follows it.
+function renameDrawerHeightOption(item: Record<string, unknown>, kind: "length" | "weight", from: string, to: string | null): Record<string, unknown> {
+  const map = readDrawerHeightDetailsMap(item);
+  const was = from.trim();
+  const now = (to ?? "").trim();
+  for (const [label, entry] of Object.entries(map)) {
+    if (!entry || typeof entry !== "object") continue;
+    const row = { ...(entry as Record<string, unknown>) };
+    const list = (key: string) => (Array.isArray(row[key]) ? (row[key] as unknown[]).map((v) => toStr(v)).filter(Boolean) : []);
+    const put = (key: string, values: string[]) => {
+      if (values.length) row[key] = values;
+      else delete row[key];
+    };
+    if (kind === "length") {
+      const lengthsOff = list("lengthsOff");
+      put("lengthsOff", now ? lengthsOff.map((v) => (v === was ? now : v)) : lengthsOff.filter((v) => v !== was));
+    }
+    // (Its ID numbers, too — "500", "500|65".)
+    if (row.itemNumbers && typeof row.itemNumbers === "object") {
+      const itemNumbers: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(row.itemNumbers as Record<string, unknown>)) {
+        const [length = "", weight] = key.split("|");
+        const hit = kind === "length" ? length === was : weight === was;
+        if (!hit) itemNumbers[key] = value;
+        else if (now) itemNumbers[kind === "length" ? (weight == null ? now : drawerComboKey(now, weight)) : drawerComboKey(length, now)] = value;
+      }
+      if (Object.keys(itemNumbers).length) row.itemNumbers = itemNumbers;
+      else delete row.itemNumbers;
+    }
+    const combos = list("combosOff").flatMap((combo) => {
+      const [length = "", weight = ""] = combo.split("|");
+      const hit = kind === "length" ? length === was : weight === was;
+      if (!hit) return [combo];
+      if (!now) return [];
+      return [kind === "length" ? drawerComboKey(now, weight) : drawerComboKey(length, now)];
+    });
+    put("combosOff", combos);
+    if (Object.keys(row).length) map[label] = row;
+    else delete map[label];
+  }
+  return writeDrawerHeightDetailsMap(item, map);
+}
+
+// A drawer type's height, in a small pop-up under its chip: its name and back height, then the drawer type's runner
+// lengths down the side and its weights across the top — a length switched off: the height doesn't come in it; a weight
+// under a length switched off: that length doesn't come in that weight for this height (Blum's M: 350–450 in 30 kg only,
+// 500 and 550 in 30 or 65) — each weight's tick with its supplier's ID number beside it (no weights: each length's). An
+// existing height is saved as it's changed (whenever it has a name of its own); a new one — the same pop-up, empty — when
+// Add height is pressed.
+function DrawerHeightEditor({
+  drawer,
+  heightIndex,
+  color,
+  left,
+  onCommit,
+  onRemove,
+  onClose,
+}: {
+  drawer: Record<string, unknown>;
+  // Which of its heights (readDrawerBackHeights); null — a new one.
+  heightIndex: number | null;
+  color: string;
+  // How far along the Heights row it opens (under the chip pressed).
+  left: number;
+  onCommit: (height: DrawerHeightDraft) => void;
+  onRemove: () => void;
+  onClose: () => void;
+}) {
+  const heights = readDrawerBackHeights(drawer);
+  const existing = heightIndex != null ? (heights[heightIndex] ?? null) : null;
+  const lengths = readDrawerLengths(drawer);
+  const weights = readDrawerWeights(drawer);
+  const [draft, setDraft] = useState<DrawerHeightDraft>(() =>
+    existing != null
+      ? { label: readDrawerHeightLabel(existing), size: readDrawerHeightNumber(existing), ...readDrawerHeightDetails(drawer, readDrawerHeightLabel(existing)) }
+      : { label: "", size: "", lengthsOff: [], combosOff: [], itemNumbers: {} },
+  );
+  const isTaken = (label: string) =>
+    Boolean(label.trim()) && heights.some((height, i) => i !== heightIndex && readDrawerHeightLabel(height).toLowerCase() === label.trim().toLowerCase());
+  const taken = isTaken(draft.label);
+  const valid = Boolean(draft.label.trim()) && !taken;
+  const change = (patch: Partial<DrawerHeightDraft>) => {
+    const next = { ...draft, ...patch };
+    setDraft(next);
+    if (existing != null && next.label.trim() && !isTaken(next.label)) onCommit(next);
+  };
+  const toggleIn = (list: string[], value: string) => (list.includes(value) ? list.filter((v) => v !== value) : [...list, value]);
+  const onColor = textColorForHex(color);
+  // Under its row — or over it, when under would run off the bottom of the screen and there's more room above. (Placed
+  // straight onto it before it's painted, measured under first.)
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const panel = panelRef.current;
+    const row = panel?.parentElement;
+    if (!panel || !row) return;
+    Object.assign(panel.style, { top: "100%", bottom: "auto", marginTop: "6px", marginBottom: "0px", transformOrigin: "50% 0%" });
+    const rowRect = row.getBoundingClientRect();
+    const roomBelow = window.innerHeight - rowRect.bottom;
+    if (roomBelow < panel.offsetHeight + 16 && rowRect.top > roomBelow) {
+      Object.assign(panel.style, { top: "auto", bottom: "100%", marginTop: "0px", marginBottom: "6px", transformOrigin: "50% 100%" });
+    }
+  }, [lengths.length, weights.length]);
+  // A length it comes in (on: the brand's colour, ticked) — or doesn't (off: struck through).
+  const lengthChip = (length: string) => {
+    const on = !draft.lengthsOff.includes(length);
+    return (
+      <button
+        key={`length_${length}`}
+        type="button"
+        onClick={() => change({ lengthsOff: toggleIn(draft.lengthsOff, length) })}
+        aria-pressed={on}
+        className={`glass-shine inline-flex h-7 items-center justify-center gap-1 rounded-full border px-2.5 text-[12px] font-medium transition hover:brightness-95 ${on ? "" : "glass-shine-neutral line-through"}`}
+        style={on ? glassShineStyle(color, { color: onColor }) : { color: "var(--text-muted)" }}
+        title={on ? `Comes in ${length}mm — click to switch it off` : `Doesn't come in ${length}mm — click to switch it on`}
+      >
+        {on ? <Check size={12} strokeWidth={2.6} /> : null}
+        {length}mm
+      </button>
+    );
+  };
+  // Whether a length it comes in comes in a weight: a round tick (none for a length it doesn't come in).
+  const weightCell = (length: string, weight: string) => {
+    const lengthOn = !draft.lengthsOff.includes(length);
+    const key = drawerComboKey(length, weight);
+    const on = lengthOn && !draft.combosOff.includes(key);
+    return (
+      <span key={key} className="flex justify-center">
+        <button
+          type="button"
+          disabled={!lengthOn}
+          onClick={() => change({ combosOff: toggleIn(draft.combosOff, key) })}
+          aria-pressed={on}
+          aria-label={`${length}mm in ${weight}kg`}
+          className={`glass-shine inline-flex h-7 w-7 items-center justify-center rounded-full border transition hover:brightness-95 disabled:cursor-default disabled:opacity-35 ${on ? "" : "glass-shine-neutral"}`}
+          style={on ? glassShineStyle(color, { color: onColor }) : { color: "var(--text-muted)" }}
+          title={
+            !lengthOn
+              ? `Switch ${length}mm on first`
+              : on
+                ? `${length}mm comes in ${weight}kg — click to switch it off`
+                : `${length}mm doesn't come in ${weight}kg — click to switch it on`
+          }
+        >
+          {on ? <Check size={13} strokeWidth={2.6} /> : null}
+        </button>
+      </span>
+    );
+  };
+  // An ID number for this height (copied from a project's order, to find it in the supplier's cart): a length's, at a
+  // weight — or the length's own, with no weights. None for what it doesn't come in (its space kept, so the rows line up).
+  const idField = (length: string, weight?: string) => {
+    const key = weight != null ? drawerComboKey(length, weight) : length;
+    const off = draft.lengthsOff.includes(length) || (weight != null && draft.combosOff.includes(key));
+    if (off) return <span key={`id_${key}`} aria-hidden />;
+    return (
+      <input
+        key={`id_${key}`}
+        value={draft.itemNumbers[key] ?? ""}
+        onChange={(e) => change({ itemNumbers: { ...draft.itemNumbers, [key]: e.target.value } })}
+        placeholder="ID number"
+        aria-label={weight != null ? `${length}mm ${weight}kg ID number` : `${length}mm ID number`}
+        className={glassFieldSmClass}
+      />
+    );
+  };
+  const submit = () => {
+    if (existing == null) {
+      if (!valid) return;
+      onCommit(draft);
+    }
+    onClose();
+  };
+  return (
+    <div
+      ref={panelRef}
+      data-drawer-height-editor="true"
+      role="dialog"
+      aria-label={existing == null ? "New height" : `Height ${draft.label}`}
+      className="glass-menu-squeeze absolute z-40 w-[480px] max-w-[calc(100vw-48px)] space-y-3 rounded-[14px] border p-3 shadow-[0_12px_30px_rgba(15,23,42,0.14)]"
+      style={{
+        left,
+        borderColor: "var(--glass-border)",
+        backgroundColor: "var(--glass-modal-bg)",
+        backdropFilter: "blur(16px) saturate(200%)",
+        WebkitBackdropFilter: "blur(16px) saturate(200%)",
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          submit();
+        }
+      }}
+    >
+      <p className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
+        {existing == null ? "New height" : `Height ${draft.label || readDrawerHeightLabel(existing)}`}
+      </p>
+      <div className="grid grid-cols-2 gap-2">
+        <label className="min-w-0 space-y-1">
+          <span className="block text-[11.5px] font-medium text-[var(--text-main)]">Name</span>
+          <input
+            autoFocus
+            value={draft.label}
+            onChange={(e) => change({ label: e.target.value.replace(/\s+/g, "") })}
+            placeholder="e.g. M"
+            className={glassFieldSmClass}
+          />
+        </label>
+        <label className="min-w-0 space-y-1">
+          <span className="block text-[11.5px] font-medium text-[var(--text-main)]">Back height</span>
+          <span className="relative block">
+            <input
+              inputMode="decimal"
+              value={draft.size}
+              onChange={(e) => change({ size: e.target.value.replace(/\s+/g, "") })}
+              placeholder="e.g. 90"
+              className={glassFieldSmClass}
+              style={{ paddingRight: 32 }}
+            />
+            <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] text-[var(--text-muted)]">mm</span>
+          </span>
+        </label>
+      </div>
+      {taken ? (
+        <p className="text-[11.5px] font-medium" style={{ color: "var(--danger)" }}>
+          This drawer already has a {draft.label.trim()} height.
+        </p>
+      ) : null}
+      <div className="space-y-1.5">
+        <p className="text-[11.5px] font-medium text-[var(--text-main)]">{weights.length ? "Lengths and weights it comes in" : "Lengths it comes in"}</p>
+        {!lengths.length ? (
+          <span className="text-[11.5px] text-[var(--text-muted)]">Add the drawer&apos;s hardware lengths first.</span>
+        ) : (
+          <div
+            className="grid items-center gap-x-2 gap-y-1.5"
+            style={{
+              gridTemplateColumns: weights.length ? `auto ${weights.map(() => "28px minmax(0, 1fr)").join(" ")}` : "auto minmax(0, 1fr)",
+            }}
+          >
+            <span />
+            {weights.length ? (
+              weights.map((weight) => (
+                <span key={`weight_${weight}`} className="col-span-2 pl-1 text-[11.5px] font-medium text-[var(--text-main)]">
+                  {weight}kg
+                </span>
+              ))
+            ) : (
+              <span className="text-[11.5px] font-medium text-[var(--text-main)]">ID number</span>
+            )}
+            {lengths.map((length) => (
+              <Fragment key={`row_${length}`}>
+                {lengthChip(length)}
+                {weights.length
+                  ? weights.map((weight) => (
+                      <Fragment key={`cell_${length}_${weight}`}>
+                        {weightCell(length, weight)}
+                        {idField(length, weight)}
+                      </Fragment>
+                    ))
+                  : idField(length)}
+              </Fragment>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="flex items-center justify-between gap-2 pt-0.5">
+        {existing != null ? (
+          <button
+            type="button"
+            onClick={onRemove}
+            className="inline-flex h-8 items-center gap-1.5 rounded-full px-2.5 text-[12px] font-medium transition hover:bg-[color-mix(in_srgb,var(--danger)_10%,transparent)]"
+            style={{ color: "var(--danger)" }}
+          >
+            <Trash2 size={13} /> Remove height
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={onClose}
+            className="glass-shine glass-shine-neutral inline-flex h-8 items-center rounded-full border px-4 text-[12px] font-medium"
+            style={{ color: "var(--text-main)" }}
+          >
+            Cancel
+          </button>
+        )}
+        <button
+          type="button"
+          disabled={existing == null && !valid}
+          onClick={submit}
+          className="glass-shine inline-flex h-8 items-center rounded-full border px-4 text-[12px] font-medium text-white transition hover:brightness-105 disabled:opacity-55"
+          style={glassShineStyle("var(--brand)")}
+        >
+          {existing == null ? "Add height" : "Done"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function writeDrawerField(item: Record<string, unknown>, field: string, value: string | boolean | string[]): Record<string, unknown> {
   const next = { ...item };
   if (field === "name") {
@@ -1644,14 +2094,14 @@ function writeDrawerField(item: Record<string, unknown>, field: string, value: s
     next.spaceRequirement = String(value ?? "");
     return next;
   }
-  if (field === "hardwareLengths") {
+  if (field === "hardwareLengths" || field === "hardwareWeights") {
     const rows = Array.isArray(value)
       ? (value as unknown[]).map((v) => toStr(v)).filter(Boolean)
       : String(value ?? "")
           .split(",")
           .map((v) => v.trim())
           .filter(Boolean);
-    next.hardwareLengths = rows;
+    next[field] = rows;
     return next;
   }
   return next;
@@ -1787,6 +2237,9 @@ export default function CompanySettingsPage() {
   const [projectTagUsage, setProjectTagUsage] = useState<TagUsageRow[]>([]);
   // Dashboard > Tags: the tag waiting on "Delete tag?" (its row, name and how many projects use it).
   const [pendingTagDelete, setPendingTagDelete] = useState<{ index: number; value: string; count: number } | null>(null);
+  // Tags deleted but still on the Undo bar (lower-case names): hidden from the list, though not yet taken off anything
+  // (see commitTagDelete).
+  const [hiddenTagKeys, setHiddenTagKeys] = useState<string[]>([]);
   const [tagDeleteOrigin, setTagDeleteOrigin] = useState<GlassModalOrigin>(null);
   const tagDeletePanelRef = useRef<HTMLDivElement | null>(null);
   const tagDeleteOriginElRef = useRef<HTMLElement | null>(null);
@@ -1927,11 +2380,30 @@ export default function CompanySettingsPage() {
   const quoteHelperRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [hardware, setHardware] = useState<HardwareRow[]>([]);
   const [hardwareExpanded, setHardwareExpanded] = useState<Record<number, boolean>>({});
-  const [hardwareActiveTab, setHardwareActiveTab] = useState<Record<number, "drawers" | "hinges" | "other">>({});
+  const [hardwareActiveTab, setHardwareActiveTab] = useState<Record<number, "drawers" | "hinges" | "other" | "ordering">>({});
   const [hardwareDragIndex, setHardwareDragIndex] = useState<number | null>(null);
   const [hardwareDragOverIndex, setHardwareDragOverIndex] = useState<number | null>(null);
   const [drawerRowExpanded, setDrawerRowExpanded] = useState<Record<string, boolean>>({});
-  const [drawerHeightsExpanded, setDrawerHeightsExpanded] = useState<Record<string, boolean>>({});
+  // The drawer height pop-up (a drawer type's Heights): which brand, drawer and height (null — a new one), and how far
+  // along its row it opens. Closes on a press outside it (or its chips, which move it), or Escape.
+  const [drawerHeightEditor, setDrawerHeightEditor] = useState<{ hardwareIdx: number; drawerIdx: number; heightIdx: number | null; left: number } | null>(null);
+  useEffect(() => {
+    if (!drawerHeightEditor) return;
+    const onPress = (e: PointerEvent) => {
+      const target = e.target as Element | null;
+      if (target?.closest?.("[data-drawer-height-editor], [data-drawer-height-chip]")) return;
+      setDrawerHeightEditor(null);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setDrawerHeightEditor(null);
+    };
+    document.addEventListener("pointerdown", onPress);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onPress);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [drawerHeightEditor]);
   const [drawerDragHardwareIndex, setDrawerDragHardwareIndex] = useState<number | null>(null);
   const [drawerDragIndex, setDrawerDragIndex] = useState<number | null>(null);
   const [drawerDragOverIndex, setDrawerDragOverIndex] = useState<number | null>(null);
@@ -2306,7 +2778,7 @@ export default function CompanySettingsPage() {
     if (active !== "hardware") return;
     setHardwareExpanded({});
     setDrawerRowExpanded({});
-    setDrawerHeightsExpanded({});
+    setDrawerHeightEditor(null);
   }, [active]);
 
   useEffect(() => {
@@ -2533,18 +3005,29 @@ export default function CompanySettingsPage() {
       setConfirmCancelInviteId(invite.id);
       return;
     }
-    setCancellingInviteId(invite.id);
-    const ok = activeCompanyId ? await cancelCompanyInvite(activeCompanyId, invite.id) : false;
-    setCancellingInviteId("");
     setConfirmCancelInviteId("");
-    if (!ok) {
-      setSaveLabel("Couldn't cancel the invite");
-      return;
-    }
+    // Off the list straight away, but only really cancelled (the invite deleted, its join code revoked — not something
+    // that can be put back) as the Undo bar goes without Undo being pressed. Undo shows it again.
+    const companyId = activeCompanyId;
+    const at = pendingInvites.findIndex((row) => row.id === invite.id);
+    const showAgain = () =>
+      setPendingInvites((prev) => (prev.some((row) => row.id === invite.id) ? prev : insertAt(prev, at < 0 ? prev.length : at, invite)));
     setPendingInvites((prev) => prev.filter((row) => row.id !== invite.id));
-    setSaveLabel(`Invite cancelled: ${invite.email}`);
-    // Its join code stops working too.
-    if (activeCompanyId) void revokeJoinCodesForInvite(activeCompanyId, invite.id).then(() => setJoinCodesReloadTick((tick) => tick + 1));
+    offerUndo(`Invite to ${invite.email} cancelled`, showAgain, {
+      commit: async () => {
+        setCancellingInviteId(invite.id);
+        const ok = companyId ? await cancelCompanyInvite(companyId, invite.id) : false;
+        setCancellingInviteId("");
+        if (!ok) {
+          showAgain();
+          setSaveLabel("Couldn't cancel the invite");
+          return;
+        }
+        setSaveLabel(`Invite cancelled: ${invite.email}`);
+        // Its join code stops working too.
+        if (companyId) void revokeJoinCodesForInvite(companyId, invite.id).then(() => setJoinCodesReloadTick((tick) => tick + 1));
+      },
+    });
   };
 
   // Revoking a temporary code someone has already joined with: remove them first (Staff's Remove
@@ -2919,37 +3402,53 @@ export default function CompanySettingsPage() {
       setStaffRemovalError("Choose who to transfer their data to");
       return;
     }
-    setRemovingStaffUid(pendingStaffRemoval.uid);
-    const result = await removeCompanyMemberDetailed(activeCompanyId, pendingStaffRemoval.uid, {
-      transferToUid: toStr(transferTarget?.uid),
-      transferToName: toStr(transferTarget?.displayName || transferTarget?.email || transferTarget?.uid),
-      // Every kind is sent, on or off, so the server never falls back to its older "projects only" default.
-      transfer: transferTarget
-        ? pendingStaffRemoval.transfer
-        : (Object.fromEntries(STAFF_REMOVAL_DATA_ROWS.map(({ kind }) => [kind, false])) as Record<MemberRemovalDataKind, boolean>),
-    });
-    setRemovingStaffUid("");
-    if (!result.ok) {
-      setStaffRemovalError(`Staff removal failed (${result.error || "unknown"})`);
-      return;
-    }
-    setStaff((prev) => prev.filter((member) => toStr(member.uid) !== pendingStaffRemoval.uid));
-    setOpenStaffRoleUid((current) => (current === pendingStaffRemoval.uid ? "" : current));
+    // Off the list straight away, but only really removed (their data handed over, their place in the company gone —
+    // neither can be put back afterwards) as the Undo bar goes without Undo being pressed. Undo shows them again.
+    const removal = pendingStaffRemoval;
+    const companyId = activeCompanyId;
+    const at = staff.findIndex((member) => toStr(member.uid) === removal.uid);
+    const removedMember = at >= 0 ? staff[at] : undefined;
+    const showAgain = () => {
+      if (!removedMember) return;
+      setStaff((prev) => (prev.some((member) => toStr(member.uid) === removal.uid) ? prev : insertAt(prev, at, removedMember)));
+    };
+    setStaff((prev) => prev.filter((member) => toStr(member.uid) !== removal.uid));
+    setOpenStaffRoleUid((current) => (current === removal.uid ? "" : current));
     setPendingStaffRemoval(null);
-    const revokeCode = pendingStaffRemoval.revokeCode;
-    if (revokeCode) {
-      void revokeTemporaryJoinCode(activeCompanyId, revokeCode.key).then(() => setJoinCodesReloadTick((tick) => tick + 1));
-    }
-    const transferredTotal = Object.values(result.transferred ?? {}).reduce((sum, n) => sum + n, 0);
-    const skippedContacts = result.skippedContacts ?? 0;
-    const skippedNote = skippedContacts
-      ? ` (${skippedContacts} contact${skippedContacts === 1 ? "" : "s"} skipped — already in their contacts)`
-      : "";
-    setSaveLabel(
-      transferredTotal > 0
-        ? `Removed ${pendingStaffRemoval.displayName} and transferred ${transferredTotal} item${transferredTotal === 1 ? "" : "s"}${skippedNote}`
-        : `Removed ${pendingStaffRemoval.displayName}${skippedNote}`,
-    );
+    offerUndo(`${removal.displayName} removed`, showAgain, {
+      commit: async () => {
+        setRemovingStaffUid(removal.uid);
+        const result = await removeCompanyMemberDetailed(companyId, removal.uid, {
+          transferToUid: toStr(transferTarget?.uid),
+          transferToName: toStr(transferTarget?.displayName || transferTarget?.email || transferTarget?.uid),
+          // Every kind is sent, on or off, so the server never falls back to its older "projects only" default.
+          transfer: transferTarget
+            ? removal.transfer
+            : (Object.fromEntries(STAFF_REMOVAL_DATA_ROWS.map(({ kind }) => [kind, false])) as Record<MemberRemovalDataKind, boolean>),
+        });
+        setRemovingStaffUid("");
+        if (!result.ok) {
+          // (Still in the company, then — back on the list.)
+          showAgain();
+          setSaveLabel(`Staff removal failed (${result.error || "unknown"})`);
+          return;
+        }
+        const revokeCode = removal.revokeCode;
+        if (revokeCode) {
+          void revokeTemporaryJoinCode(companyId, revokeCode.key).then(() => setJoinCodesReloadTick((tick) => tick + 1));
+        }
+        const transferredTotal = Object.values(result.transferred ?? {}).reduce((sum, n) => sum + n, 0);
+        const skippedContacts = result.skippedContacts ?? 0;
+        const skippedNote = skippedContacts
+          ? ` (${skippedContacts} contact${skippedContacts === 1 ? "" : "s"} skipped — already in their contacts)`
+          : "";
+        setSaveLabel(
+          transferredTotal > 0
+            ? `Removed ${removal.displayName} and transferred ${transferredTotal} item${transferredTotal === 1 ? "" : "s"}${skippedNote}`
+            : `Removed ${removal.displayName}${skippedNote}`,
+        );
+      },
+    });
   };
 
   const cutlistColumnRows = useMemo(
@@ -2989,6 +3488,10 @@ export default function CompanySettingsPage() {
   };
 
   const removeItemCategorySubcategory = (index: number, name: string) => {
+    const key = String(name || "").toLowerCase();
+    const before = itemCategories[index];
+    const at = before ? parseSubcategoryNames(before.subcategories).findIndex((v) => v.toLowerCase() === key) : -1;
+    const color = before?.subcategoryColors[key];
     setItemCategories((prev) =>
       prev.map((row, i) => {
         if (i !== index) return row;
@@ -2998,6 +3501,22 @@ export default function CompanySettingsPage() {
         delete subcategoryColors[String(name || "").toLowerCase()];
         return { ...row, subcategories: next.join(", "), subcategoryColors };
       }),
+    );
+    if (at < 0) return;
+    // Undo: back in its place among the category's sub-categories, with its own colour (if it had one).
+    offerUndo(`${toStr(name, "Sub-category")} removed`, () =>
+      setItemCategories((prev) =>
+        prev.map((row, i) => {
+          if (i !== index) return row;
+          const current = parseSubcategoryNames(row.subcategories);
+          if (current.some((v) => v.toLowerCase() === key)) return row;
+          return {
+            ...row,
+            subcategories: insertAt(current, at, name).join(", "),
+            subcategoryColors: color ? { ...row.subcategoryColors, [key]: color } : row.subcategoryColors,
+          };
+        }),
+      ),
     );
   };
 
@@ -3027,11 +3546,16 @@ export default function CompanySettingsPage() {
   };
 
   const removeStatusSubStage = (statusIndex: number, subIndex: number) => {
+    const removed = statuses[statusIndex]?.subStages?.[subIndex];
     setStatuses((prev) =>
       prev.map((row, i) => {
         if (i !== statusIndex) return row;
         return { ...row, subStages: (row.subStages ?? []).filter((_, j) => j !== subIndex) };
       }),
+    );
+    if (!removed) return;
+    offerUndo(`${toStr(removed.name, "Sub-stage")} removed`, () =>
+      setStatuses((prev) => prev.map((row, i) => (i === statusIndex ? { ...row, subStages: insertAt(row.subStages ?? [], subIndex, removed) } : row))),
     );
   };
 
@@ -3104,13 +3628,20 @@ export default function CompanySettingsPage() {
     );
   };
 
-  const removeItemCategoryItem = (catIndex: number, itemIndex: number) => {
+  // An item taken out of a category (straight away when it's blank, or once its pop-up's been confirmed) — matched by
+  // its name too when it has one, in case the list changed while that pop-up was open.
+  const removeItemCategoryItem = (catIndex: number, itemIndex: number, itemName?: string) => {
+    const removed = itemCategories[catIndex]?.items?.[itemIndex];
+    if (!removed || (itemName !== undefined && removed.name.trim() !== itemName)) return;
     setItemCategories((prev) =>
       prev.map((row, i) => {
         if (i !== catIndex) return row;
         const nextItems = (row.items ?? []).filter((_, j) => j !== itemIndex);
         return { ...row, items: nextItems };
       }),
+    );
+    offerUndo(`${toStr(removed.name, "Item")} deleted`, () =>
+      setItemCategories((prev) => prev.map((row, i) => (i === catIndex ? { ...row, items: insertAt(row.items ?? [], itemIndex, removed) } : row))),
     );
   };
 
@@ -3179,12 +3710,33 @@ export default function CompanySettingsPage() {
   };
 
   const removeJobTypeSheetPrice = (jobTypeIndex: number, sheetPriceIndex: number) => {
+    const removed = jobTypes[jobTypeIndex]?.sheetPrices?.[sheetPriceIndex];
     setJobTypes((prev) =>
       prev.map((row, i) => {
         if (i !== jobTypeIndex) return row;
         const nextRows = (row.sheetPrices ?? []).filter((_, j) => j !== sheetPriceIndex);
         return { ...row, sheetPrices: nextRows };
       }),
+    );
+    if (!removed) return;
+    offerUndo(`${removed.sheetSize ? sheetSizeLabel(removed.sheetSize) : "Sheet size"} removed`, () =>
+      setJobTypes((prev) =>
+        prev.map((row, i) => (i === jobTypeIndex ? { ...row, sheetPrices: insertAt(row.sheetPrices ?? [], sheetPriceIndex, removed) } : row)),
+      ),
+    );
+  };
+
+  // A misc charge taken off a product.
+  const removeJobTypeMiscCharge = (jobTypeIndex: number, chargeIndex: number) => {
+    const removed = jobTypes[jobTypeIndex]?.miscCharges?.[chargeIndex];
+    if (!removed) return;
+    setJobTypes((prev) =>
+      prev.map((row, i) => (i === jobTypeIndex ? { ...row, miscCharges: (row.miscCharges ?? []).filter((_, j) => j !== chargeIndex) } : row)),
+    );
+    offerUndo(`${toStr(removed.name, "Charge")} removed`, () =>
+      setJobTypes((prev) =>
+        prev.map((row, i) => (i === jobTypeIndex ? { ...row, miscCharges: insertAt(row.miscCharges ?? [], chargeIndex, removed) } : row)),
+      ),
     );
   };
 
@@ -3236,6 +3788,14 @@ export default function CompanySettingsPage() {
     setMachines((prev) =>
       prev.map((m) => (m.id === activeMachineModalId ? { ...m, ...(typeof patch === "function" ? patch(m) : patch) } : m)),
     );
+  };
+  // Something taken off the open machine (a service entry, an edgebanding rule): its Undo puts it back on that same
+  // machine — found by its id, so it still lands there once the pop-up's been closed or another machine opened.
+  const removeFromActiveMachine = (message: string, remove: (m: Machine) => Partial<Machine>, putBack: (m: Machine) => Partial<Machine>) => {
+    const machineId = activeMachineModalId;
+    if (machineId === null) return;
+    updateActiveMachine(remove);
+    offerUndo(message, () => setMachines((prev) => prev.map((m) => (m.id === machineId ? { ...m, ...putBack(m) } : m))));
   };
   // Clears the flag on every OTHER machine of the SAME type first — at most one default per type,
   // ever. Used both from the modal (a toggle on the active machine) and the list row (a quick-set
@@ -3487,6 +4047,14 @@ export default function CompanySettingsPage() {
     );
   };
 
+  // A drawer type, hinge or other part taken off a brand — and its Undo, putting it back in the same place.
+  const removeHardwareJsonItem = (hardwareIndex: number, key: "drawersJson" | "hingesJson" | "otherJson", itemIndex: number, fallbackName: string) => {
+    const removed = parseJsonObjects(String(hardware[hardwareIndex]?.[key] || "[]"))[itemIndex];
+    if (!removed) return;
+    updateHardwareJsonList(hardwareIndex, key, (items) => items.filter((_, i) => i !== itemIndex));
+    offerUndo(`${toStr(removed.name, fallbackName)} removed`, () => updateHardwareJsonList(hardwareIndex, key, (items) => insertAt(items, itemIndex, removed)));
+  };
+
   const toggleHardwareExpanded = (index: number) => {
     setHardwareExpanded((prev) => ({ ...prev, [index]: !(prev[index] ?? false) }));
   };
@@ -3494,11 +4062,6 @@ export default function CompanySettingsPage() {
   const toggleDrawerRowExpanded = (hardwareIndex: number, drawerIndex: number) => {
     const key = `${hardwareIndex}:${drawerIndex}`;
     setDrawerRowExpanded((prev) => ({ ...prev, [key]: !(prev[key] ?? false) }));
-  };
-
-  const toggleDrawerHeightsExpanded = (hardwareIndex: number, drawerIndex: number) => {
-    const key = `${hardwareIndex}:${drawerIndex}:heights`;
-    setDrawerHeightsExpanded((prev) => ({ ...prev, [key]: !(prev[key] ?? false) }));
   };
 
   const onUploadCompanyLogo = async (file: File | null) => {
@@ -3550,15 +4113,13 @@ export default function CompanySettingsPage() {
   // Deleting a row here must fetch a fresh copy immediately before saving
   // (like the project page's own sync functions do) rather than reusing the
   // `boardColourMemory` snapshot this page loaded at mount, otherwise this
-  // delete could revert counts changed elsewhere since this page opened.
-  const onDeleteBoardColourMemoryRow = async (value: string) => {
-    if (!activeCompanyId || !canEditCompanySettings) return;
-    const targetValue = toStr(value);
-    if (!targetValue) return;
-    setBoardColourMemory((prev) => prev.filter((row) => row.value !== targetValue));
+  // delete could revert counts changed elsewhere since this page opened. Every write here goes
+  // through patchBoardColourMemory: `update` is handed that fresh copy and returns it changed.
+  const patchBoardColourMemory = async (update: (rows: BoardColourMemoryRow[]) => BoardColourMemoryRow[], failCode: string) => {
+    if (!activeCompanyId) return;
     try {
       const fresh = await fetchCompanyDoc(activeCompanyId);
-      const freshRows = normalizeBoardColourMemory(fresh?.boardMaterialUsage).filter((row) => row.value !== targetValue);
+      const freshRows = update(normalizeBoardColourMemory(fresh?.boardMaterialUsage));
       const result = await saveCompanyDocPatchDetailed(activeCompanyId, {
         boardMaterialUsage: {
           colours: freshRows.map((row) => ({
@@ -3569,46 +4130,83 @@ export default function CompanySettingsPage() {
         },
       });
       if (!result.ok) {
-        setSaveLabel(`Save failed (${result.error || "board-colour-remove-failed"})`);
+        setSaveLabel(`Save failed (${result.error || failCode})`);
       }
     } catch {
-      setSaveLabel("Save failed (board-colour-remove-failed)");
+      setSaveLabel(`Save failed (${failCode})`);
     }
   };
 
+  // Its Undo writes it back the same way, once the delete itself has gone through — with the count
+  // and edgings the fresh copy had for it, unless a project has recorded that colour again since.
+  const onDeleteBoardColourMemoryRow = async (value: string) => {
+    if (!activeCompanyId || !canEditCompanySettings) return;
+    const targetValue = toStr(value);
+    if (!targetValue) return;
+    const at = boardColourMemory.findIndex((row) => row.value === targetValue);
+    let removed = boardColourMemory[at];
+    let freshAt = at;
+    setBoardColourMemory((prev) => prev.filter((row) => row.value !== targetValue));
+    const deleted = patchBoardColourMemory((rows) => {
+      const i = rows.findIndex((row) => row.value === targetValue);
+      if (i >= 0) {
+        removed = rows[i];
+        freshAt = i;
+      }
+      return rows.filter((row) => row.value !== targetValue);
+    }, "board-colour-remove-failed");
+    if (removed) {
+      offerUndo(`${targetValue} removed`, async () => {
+        await deleted;
+        const back = removed;
+        const putBack = (rows: BoardColourMemoryRow[], index: number) => (rows.some((row) => row.value === targetValue) ? rows : insertAt(rows, index, back));
+        setBoardColourMemory((prev) => putBack(prev, at));
+        await patchBoardColourMemory((rows) => putBack(rows, freshAt), "board-colour-restore-failed");
+      });
+    }
+    await deleted;
+  };
+
   // Same fetch-fresh-then-patch reasoning as onDeleteBoardColourMemoryRow above — an edging's
-  // count is also live, bumped from the project page whenever a board row's edging changes.
+  // count is also live, bumped from the project page whenever a board row's edging changes. Its
+  // Undo too: back on its colour (if that's still there) once the delete has gone through.
   const onDeleteBoardEdgingMemoryRow = async (colourValue: string, edgingValue: string) => {
     if (!activeCompanyId || !canEditCompanySettings) return;
     const targetColour = toStr(colourValue);
     const targetEdging = toStr(edgingValue);
     if (!targetColour || !targetEdging) return;
-    setBoardColourMemory((prev) =>
-      prev.map((row) =>
-        row.value === targetColour
-          ? { ...row, edgings: row.edgings.filter((edging) => edging.value !== targetEdging) }
-          : row,
-      ),
-    );
-    try {
-      const fresh = await fetchCompanyDoc(activeCompanyId);
-      const freshRows = normalizeBoardColourMemory(fresh?.boardMaterialUsage);
-      const result = await saveCompanyDocPatchDetailed(activeCompanyId, {
-        boardMaterialUsage: {
-          colours: freshRows.map((row) => ({
-            value: row.value,
-            count: Number(row.count || 0),
-            edgings: (row.value === targetColour ? row.edgings.filter((edging) => edging.value !== targetEdging) : row.edgings)
-              .map((edging) => ({ value: edging.value, count: Number(edging.count || 0) })),
-          })),
-        },
-      });
-      if (!result.ok) {
-        setSaveLabel(`Save failed (${result.error || "board-edging-remove-failed"})`);
+    const colourRow = boardColourMemory.find((row) => row.value === targetColour);
+    const at = colourRow ? colourRow.edgings.findIndex((edging) => edging.value === targetEdging) : -1;
+    let removed = at >= 0 ? colourRow?.edgings[at] : undefined;
+    let freshAt = at;
+    const withoutIt = (row: BoardColourMemoryRow) =>
+      row.value === targetColour ? { ...row, edgings: row.edgings.filter((edging) => edging.value !== targetEdging) } : row;
+    setBoardColourMemory((prev) => prev.map(withoutIt));
+    const deleted = patchBoardColourMemory((rows) => {
+      const freshColour = rows.find((row) => row.value === targetColour);
+      const i = freshColour ? freshColour.edgings.findIndex((edging) => edging.value === targetEdging) : -1;
+      if (freshColour && i >= 0) {
+        removed = freshColour.edgings[i];
+        freshAt = i;
       }
-    } catch {
-      setSaveLabel("Save failed (board-edging-remove-failed)");
+      return rows.map(withoutIt);
+    }, "board-edging-remove-failed");
+    if (removed) {
+      offerUndo(`${targetEdging} removed`, async () => {
+        await deleted;
+        const back = removed;
+        if (!back) return;
+        const putBack = (rows: BoardColourMemoryRow[], index: number) =>
+          rows.map((row) =>
+            row.value === targetColour && !row.edgings.some((edging) => edging.value === targetEdging)
+              ? { ...row, edgings: insertAt(row.edgings, index, back) }
+              : row,
+          );
+        setBoardColourMemory((prev) => putBack(prev, at));
+        await patchBoardColourMemory((rows) => putBack(rows, freshAt), "board-edging-restore-failed");
+      });
     }
+    await deleted;
   };
 
   const save = async (mode: "manual" | "auto" = "manual") => {
@@ -3919,6 +4517,7 @@ export default function CompanySettingsPage() {
             drawers: trimHardwareItemNames(parseJsonList(row.drawersJson)),
             hinges: trimHardwareItemNames(parseJsonList(row.hingesJson)),
             other: trimHardwareItemNames(parseJsonList(row.otherJson)),
+            ...(toStr(row.cartCopyFormat) ? { cartCopyFormat: toStr(row.cartCopyFormat) } : {}),
             order: idx,
           };
         })
@@ -4105,6 +4704,41 @@ export default function CompanySettingsPage() {
     if (hasPendingBlurSaveRef.current) triggerBlurAutoSaveRef.current();
   };
   const ask = useGlassPrompt();
+  // Removing a hardware brand asks first; removing anything shows the Undo bar (components/undo-bar.tsx).
+  const confirmRemove = useGlassConfirm();
+  const offerUndo = useUndo();
+  // A row taken off one of this page's plain lists (rooms, statuses, charges…): its Undo puts the same row back where
+  // it was — and the page's autosave picks that up, as it did the removal.
+  const removeFromList = <T,>(setList: React.Dispatch<React.SetStateAction<T[]>>, index: number, item: T, message: string) => {
+    setList((prev) => prev.filter((_, i) => i !== index));
+    offerUndo(message, () => setList((prev) => insertAt(prev, index, item)));
+  };
+  // A tag's delete, done once its Undo bar has gone without Undo: off every project using it (the part that can't be
+  // put back), then off the company's list. Written to the company here rather than left to this page's own save, so
+  // it's still done if the page has been left by then.
+  const commitTagDelete = async (companyId: string, value: string) => {
+    const key = value.toLowerCase();
+    const isIt = (row: TagUsageRow) => toStr(row.value).toLowerCase() === key;
+    const removedOk = companyId ? await removeTagsFromCompanyProjects(companyId, [value]) : false;
+    setHiddenTagKeys((prev) => prev.filter((k) => k !== key));
+    if (!removedOk) {
+      setSaveLabel("Save failed (tags-remove-failed)");
+      return;
+    }
+    setProjectTagUsage((prev) => prev.filter((row) => !isIt(row)));
+    // (So this page's own save sees it's already gone, rather than taking it off every project again.)
+    setCompany((prev) => (prev ? { ...prev, projectTagUsage: { tags: normalizeProjectTagUsage(prev.projectTagUsage).filter((row) => !isIt(row)) } } : prev));
+    try {
+      const fresh = await fetchCompanyDoc(companyId);
+      const tags = normalizeProjectTagUsage(fresh?.projectTagUsage)
+        .filter((row) => !isIt(row))
+        .map((row) => ({ value: row.value, count: Number(row.count || 0) }));
+      const result = await saveCompanyDocPatchDetailed(companyId, { projectTagUsage: { tags } });
+      if (!result.ok) setSaveLabel(`Save failed (${result.error || "tags-remove-failed"})`);
+    } catch {
+      setSaveLabel("Save failed (tags-remove-failed)");
+    }
+  };
 
   // The company's chosen unit/currency, for every length and price shown on this page.
   const companyUnit = normalizeMeasurementUnit(form.measurementUnit);
@@ -4151,22 +4785,28 @@ export default function CompanySettingsPage() {
 
   // Explicit, deliberate reset (confirmed via its own popup) — saves immediately rather than on the
   // usual 2s debounce, since there's no reason to delay persisting a state the user just confirmed.
-  const resetSpecsTemplate = () => {
-    if (!canEditCompanySettings) return;
+  // Its Undo puts the template back as it was, saved straight away the same way.
+  const writeSpecsTemplateNow = (grid: SpecsGrid | null) => {
     if (specsTemplateSaveTimeoutRef.current) clearTimeout(specsTemplateSaveTimeoutRef.current);
-    setSpecsTemplateGrid(null);
+    setSpecsTemplateGrid(grid);
     setSpecsTemplateEditorKey((prev) => prev + 1);
-    setIsSpecsTemplateResetConfirmOpen(false);
     if (activeCompanyId) {
-      void saveCompanyDocPatchDetailed(activeCompanyId, { specsTemplateGrid: null }).then((result) => {
+      void saveCompanyDocPatchDetailed(activeCompanyId, { specsTemplateGrid: grid }).then((result) => {
         if (!result.ok) {
-          console.error("Specs template reset failed:", result.error);
+          console.error(grid ? "Specs template undo failed:" : "Specs template reset failed:", result.error);
           setSpecsTemplateSaveError(result.error || "unknown-save-error");
         } else {
           setSpecsTemplateSaveError("");
         }
       });
     }
+  };
+  const resetSpecsTemplate = () => {
+    if (!canEditCompanySettings) return;
+    const before = specsTemplateGrid;
+    writeSpecsTemplateNow(null);
+    setIsSpecsTemplateResetConfirmOpen(false);
+    offerUndo("Specs template reset", () => writeSpecsTemplateNow(before));
   };
 
   // Quote Layout's own isolated, independently-debounced write — same reasoning as Specs Layout's
@@ -4187,22 +4827,28 @@ export default function CompanySettingsPage() {
       });
     }, 2000);
   };
-  const resetQuoteTemplate = () => {
-    if (!canEditCompanySettings) return;
+  // Reset (and its Undo) as the Specs one is.
+  const writeQuoteTemplateNow = (grid: SpecsGrid | null) => {
     if (quoteTemplateSaveTimeoutRef.current) clearTimeout(quoteTemplateSaveTimeoutRef.current);
-    setQuoteGridTemplate(null);
+    setQuoteGridTemplate(grid);
     setQuoteTemplateEditorKey((prev) => prev + 1);
-    setIsQuoteTemplateResetConfirmOpen(false);
     if (activeCompanyId) {
-      void saveCompanyDocPatchDetailed(activeCompanyId, { quoteGridTemplate: null }).then((result) => {
+      void saveCompanyDocPatchDetailed(activeCompanyId, { quoteGridTemplate: grid }).then((result) => {
         if (!result.ok) {
-          console.error("Quote template reset failed:", result.error);
+          console.error(grid ? "Quote template undo failed:" : "Quote template reset failed:", result.error);
           setQuoteTemplateSaveError(result.error || "unknown-save-error");
         } else {
           setQuoteTemplateSaveError("");
         }
       });
     }
+  };
+  const resetQuoteTemplate = () => {
+    if (!canEditCompanySettings) return;
+    const before = quoteGridTemplate;
+    writeQuoteTemplateNow(null);
+    setIsQuoteTemplateResetConfirmOpen(false);
+    offerUndo("Quote template reset", () => writeQuoteTemplateNow(before));
   };
 
   // Temporary — moves a template between companies by hand: download it as JSON from one
@@ -4472,7 +5118,7 @@ export default function CompanySettingsPage() {
             />
             <button
               type="button"
-              onClick={() => setRoomNames((prev) => prev.filter((_, i) => i !== idx))}
+              onClick={() => removeFromList(setRoomNames, idx, value, `${toStr(value, "Room")} removed`)}
               className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
               style={{ color: "var(--text-muted)" }}
               title="Remove"
@@ -4769,7 +5415,12 @@ export default function CompanySettingsPage() {
                               </button>
                               <button
                                 type="button"
-                                onClick={() => setForm((prev) => ({ ...prev, logoPath: "" }))}
+                                onClick={() => {
+                                  // (The file itself stays in storage, so Undo only has to point back at it.)
+                                  const logoPath = form.logoPath;
+                                  setForm((prev) => ({ ...prev, logoPath: "" }));
+                                  offerUndo("Logo removed", () => setForm((prev) => ({ ...prev, logoPath })));
+                                }}
                                 disabled={isUploadingLogo || !canEditCompanySettings}
                                 className={smallButtonClass}
                               >
@@ -4923,7 +5574,7 @@ export default function CompanySettingsPage() {
                           />
                           <button
                             type="button"
-                            onClick={() => setBoardThicknesses((prev) => prev.filter((_, i) => i !== idx))}
+                            onClick={() => removeFromList(setBoardThicknesses, idx, value, `${value.trim() ? activeLength(value) : "Thickness"} removed`)}
                             className="inline-flex h-6 w-6 items-center justify-center rounded-full transition hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
                             style={{ color: "var(--text-muted)" }}
                             title="Remove"
@@ -4989,7 +5640,7 @@ export default function CompanySettingsPage() {
                           />
                           <button
                             type="button"
-                            onClick={() => setBoardFinishes((prev) => prev.filter((_, i) => i !== idx))}
+                            onClick={() => removeFromList(setBoardFinishes, idx, value, `${toStr(value, "Finish")} removed`)}
                             className="inline-flex h-6 w-6 items-center justify-center rounded-full transition hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
                             style={{ color: "var(--text-muted)" }}
                             title="Remove"
@@ -5028,7 +5679,19 @@ export default function CompanySettingsPage() {
                             </span>
                             Default
                           </button>
-                          <button type="button" onClick={() => setSheetSizes((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} title="Remove">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              removeFromList(
+                                setSheetSizes,
+                                idx,
+                                row,
+                                `${row.h.trim() && row.w.trim() ? `${activeLength(row.h, { withUnit: false })} × ${activeLength(row.w)}` : "Sheet size"} removed`,
+                              )
+                            }
+                            className={dangerIconButtonClass}
+                            title="Remove"
+                          >
                             <X size={15} />
                           </button>
                         </div>
@@ -5253,7 +5916,18 @@ export default function CompanySettingsPage() {
                                     <Star size={11} fill={m.isDefaultForType ? "currentColor" : "none"} /> {m.isDefaultForType ? "Default" : "Set default"}
                                   </button>
                                 ) : null}
-                                <button type="button" onClick={() => setMachines((prev) => prev.filter((row) => row.id !== m.id))} className={dangerIconButtonClass} title="Remove machine">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const at = machines.findIndex((row) => row.id === m.id);
+                                    setMachines((prev) => prev.filter((row) => row.id !== m.id));
+                                    offerUndo(`${toStr(m.name, machineTypeLabel(m))} removed`, () =>
+                                      setMachines((prev) => (prev.some((row) => row.id === m.id) ? prev : insertAt(prev, Math.max(0, at), m))),
+                                    );
+                                  }}
+                                  className={dangerIconButtonClass}
+                                  title="Remove machine"
+                                >
                                   <X size={15} />
                                 </button>
                               </div>
@@ -5479,7 +6153,11 @@ export default function CompanySettingsPage() {
                                       <button
                                         type="button"
                                         onClick={() =>
-                                          updateActiveMachine((m) => ({ serviceHistory: m.serviceHistory.filter((_, i) => i !== idx) }))
+                                          removeFromActiveMachine(
+                                            "Service entry removed",
+                                            (m) => ({ serviceHistory: m.serviceHistory.filter((_, i) => i !== idx) }),
+                                            (m) => ({ serviceHistory: insertAt(m.serviceHistory, idx, entry) }),
+                                          )
                                         }
                                         className={dangerIconButtonClass}
                                         title="Remove entry"
@@ -5568,9 +6246,11 @@ export default function CompanySettingsPage() {
                                         <button
                                           type="button"
                                           onClick={() =>
-                                            updateActiveMachine((m) => ({
-                                              edgebandingSettings: { ...m.edgebandingSettings, rules: m.edgebandingSettings.rules.filter((_, i) => i !== idx) },
-                                            }))
+                                            removeFromActiveMachine(
+                                              "Rule removed",
+                                              (m) => ({ edgebandingSettings: { ...m.edgebandingSettings, rules: m.edgebandingSettings.rules.filter((_, i) => i !== idx) } }),
+                                              (m) => ({ edgebandingSettings: { ...m.edgebandingSettings, rules: insertAt(m.edgebandingSettings.rules, idx, rule) } }),
+                                            )
                                           }
                                           className={dangerIconButtonClass}
                                           title="Remove rule"
@@ -5746,7 +6426,7 @@ export default function CompanySettingsPage() {
                             />
                             <button
                               type="button"
-                              onClick={() => setContractors((prev) => prev.filter((_, i) => i !== idx))}
+                              onClick={() => removeFromList(setContractors, idx, value, `${toStr(value, "Contractor")} removed`)}
                               className="inline-flex h-6 w-6 items-center justify-center rounded-full transition hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
                               style={{ color: "var(--text-muted)" }}
                               title="Remove"
@@ -5910,7 +6590,12 @@ export default function CompanySettingsPage() {
                             <span className="flex justify-center">
                               <GlassSwitch size="sm" checked={row.inNesting} onChange={(on) => setPartTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, inNesting: on } : v)))} ariaLabel="Include in nesting" />
                             </span>
-                            <button type="button" onClick={() => setPartTypes((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} title="Remove">
+                            <button
+                              type="button"
+                              onClick={() => removeFromList(setPartTypes, idx, row, `${toStr(row.name, "Part type")} removed`)}
+                              className={dangerIconButtonClass}
+                              title="Remove"
+                            >
                               <X size={15} />
                             </button>
                           </div>
@@ -6294,8 +6979,8 @@ export default function CompanySettingsPage() {
                           <button
                             type="button"
                             onClick={() => {
-                              if (activeRoleModalIndex === null || activeRoleIsProtected) return;
-                              setRoles((prev) => prev.filter((_, idx) => idx !== activeRoleModalIndex));
+                              if (activeRoleModalIndex === null || activeRoleIsProtected || !activeRoleModal) return;
+                              removeFromList(setRoles, activeRoleModalIndex, activeRoleModal, `${toStr(activeRoleModal.name, "Role")} deleted`);
                               setActiveRoleModalIndex(null);
                             }}
                             disabled={activeRoleIsProtected}
@@ -6772,7 +7457,12 @@ export default function CompanySettingsPage() {
                                 style={{ transform: statusSubStagesExpanded[idx] ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 200ms ease" }}
                               />
                             </button>
-                            <button type="button" onClick={() => setStatuses((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} title="Remove">
+                            <button
+                              type="button"
+                              onClick={() => removeFromList(setStatuses, idx, row, `${toStr(row.name, "Status")} removed`)}
+                              className={dangerIconButtonClass}
+                              title="Remove"
+                            >
                               <X size={15} />
                             </button>
                           </div>
@@ -6888,7 +7578,12 @@ export default function CompanySettingsPage() {
                               <Lock size={14} />
                             </span>
                           ) : (
-                            <button type="button" onClick={() => setContactCategories((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} title="Remove">
+                            <button
+                              type="button"
+                              onClick={() => removeFromList(setContactCategories, idx, row, `${toStr(row.name, "Category")} removed`)}
+                              className={dangerIconButtonClass}
+                              title="Remove"
+                            >
                               <X size={15} />
                             </button>
                           )}
@@ -6979,7 +7674,7 @@ export default function CompanySettingsPage() {
                   ) : null}
                   <Panel title="Tags" icon={Tags} description="Tags you can put on projects. The number is how many projects use each one.">
                     <div className="flex flex-wrap items-center gap-1.5">
-                      {projectTagUsage.map((row, idx) => (
+                      {projectTagUsage.map((row, idx) => hiddenTagKeys.includes(row.value.trim().toLowerCase()) ? null : (
                         <span key={`tag_row_${idx}`} className={chipClass}>
                           <input
                             value={row.value}
@@ -6996,7 +7691,7 @@ export default function CompanySettingsPage() {
                               // A blank tag that was never named goes straight away; a real one asks first,
                               // because deleting it also takes it off every project using it.
                               if (!row.value.trim()) {
-                                setProjectTagUsage((prev) => prev.filter((_, i) => i !== idx));
+                                removeFromList(setProjectTagUsage, idx, row, "Tag removed");
                                 return;
                               }
                               tagDeleteOriginElRef.current = e.currentTarget;
@@ -7035,7 +7730,7 @@ export default function CompanySettingsPage() {
                           </p>
                           {pendingTagDelete.count > 0 ? (
                             <p className="text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>
-                              The projects themselves stay as they are — only the tag is removed. This can&apos;t be undone (adding the tag again won&apos;t put it back on them).
+                              The projects themselves stay as they are — only the tag is removed. Once it&apos;s gone, adding the tag again won&apos;t put it back on them.
                             </p>
                           ) : null}
                         </div>
@@ -7048,10 +7743,14 @@ export default function CompanySettingsPage() {
                             onClick={() => {
                               const target = pendingTagDelete;
                               setPendingTagDelete(null);
-                              // Matched by position and name, in case the list changed while this was open.
-                              setProjectTagUsage((prev) => prev.filter((row, i) => !(i === target.index && row.value.trim() === target.value)));
-                              // Saved straight away — that's when it comes off the projects (see save()).
-                              triggerToggleAutosave();
+                              // Hidden straight away, but only taken off the projects (which can't be put back) as the
+                              // Undo bar goes without Undo being pressed — commitTagDelete. Undo just shows it again.
+                              const key = target.value.toLowerCase();
+                              const companyId = activeCompanyId;
+                              setHiddenTagKeys((prev) => [...prev, key]);
+                              offerUndo(`${target.value} deleted`, () => setHiddenTagKeys((prev) => prev.filter((k) => k !== key)), {
+                                commit: () => commitTagDelete(companyId, target.value),
+                              });
                             }}
                             className="inline-flex h-9 items-center justify-center rounded-[10px] border px-4 text-[12px] font-medium text-white transition hover:brightness-95"
                             style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
@@ -7288,7 +7987,7 @@ export default function CompanySettingsPage() {
                           </button>
                           <button
                             type="button"
-                            onClick={() => setCalendarCategories((prev) => prev.filter((_, i) => i !== idx))}
+                            onClick={() => removeFromList(setCalendarCategories, idx, row, `${toStr(row.name, "Category")} removed`)}
                             className={dangerIconButtonClass}
                             title="Remove — its events stay, shown as uncategorised"
                           >
@@ -7440,7 +8139,12 @@ export default function CompanySettingsPage() {
                               onOpen={() => leadAutomations.open({ status: row.name.trim(), subStage: "", color: row.color || "#64748B" })}
                             />
                           ) : null}
-                          <button type="button" onClick={() => setLeadStatuses((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} title="Remove">
+                          <button
+                            type="button"
+                            onClick={() => removeFromList(setLeadStatuses, idx, row, `${toStr(row.name, "Status")} removed`)}
+                            className={dangerIconButtonClass}
+                            title="Remove"
+                          >
                             <X size={15} />
                           </button>
                         </div>
@@ -7511,7 +8215,7 @@ export default function CompanySettingsPage() {
                           />
                           <button
                             type="button"
-                            onClick={() => setSmallJobStatuses((prev) => prev.filter((_, i) => i !== idx))}
+                            onClick={() => removeFromList(setSmallJobStatuses, idx, row, `${toStr(row.name, "Status")} removed`)}
                             disabled={smallJobStatuses.length <= 1}
                             className={dangerIconButtonClass}
                             title={smallJobStatuses.length <= 1 ? "Small jobs need at least one status" : "Remove"}
@@ -7628,9 +8332,6 @@ export default function CompanySettingsPage() {
                                   pendingItemCategoryDelete.name || "Untitled category"
                                 }” in the Sales item picker.`}
                           </p>
-                          <p className="text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>
-                            This can&apos;t be undone.
-                          </p>
                         </div>
                         <div className="flex items-center justify-end gap-2 border-t px-4 py-3" style={{ borderColor: "var(--glass-border)" }}>
                           <button type="button" onClick={() => setPendingItemCategoryDelete(null)} className={secondaryButtonClass}>
@@ -7643,17 +8344,12 @@ export default function CompanySettingsPage() {
                               setPendingItemCategoryDelete(null);
                               // Matched by position and name, in case the list changed while this was open.
                               if (target.itemIndex !== undefined) {
-                                const itemIndex = target.itemIndex;
-                                setItemCategories((prev) =>
-                                  prev.map((row, i) =>
-                                    i === target.index && (row.items ?? [])[itemIndex]?.name.trim() === target.itemName
-                                      ? { ...row, items: (row.items ?? []).filter((_, j) => j !== itemIndex) }
-                                      : row,
-                                  ),
-                                );
+                                removeItemCategoryItem(target.index, target.itemIndex, target.itemName ?? "");
                                 return;
                               }
-                              setItemCategories((prev) => prev.filter((row, i) => !(i === target.index && row.name.trim() === target.name)));
+                              const category = itemCategories[target.index];
+                              if (!category || category.name.trim() !== target.name) return;
+                              removeFromList(setItemCategories, target.index, category, `${toStr(category.name, "Category")} deleted`);
                               setItemCategoryExpanded({});
                             }}
                             className="inline-flex h-9 items-center justify-center rounded-[10px] border px-4 text-[12px] font-medium text-white transition hover:brightness-95"
@@ -7750,7 +8446,7 @@ export default function CompanySettingsPage() {
                                       const itemCount = (row.items ?? []).length;
                                       // A blank new one (no name, no items) just goes; anything else asks first.
                                       if (!row.name.trim() && itemCount === 0) {
-                                        setItemCategories((prev) => prev.filter((_, i) => i !== idx));
+                                        removeFromList(setItemCategories, idx, row, "Category removed");
                                         return;
                                       }
                                       itemCategoryDeleteOriginElRef.current = e.currentTarget;
@@ -8130,7 +8826,7 @@ export default function CompanySettingsPage() {
                         <GlassModalHeader title="Reset Template" onClose={() => setIsSpecsTemplateResetConfirmOpen(false)} />
                         <div className="space-y-4 px-5 py-4">
                           <p className="text-[12px]" style={{ color: "var(--text-main)" }}>
-                            This will permanently clear the entire specs template — every cell, row, column, and formatting choice. This can&apos;t be undone.
+                            This will clear the entire specs template — every cell, row, column, and formatting choice.
                           </p>
                           <div className="flex items-center justify-end gap-2">
                             <button
@@ -8285,7 +8981,7 @@ export default function CompanySettingsPage() {
                         <GlassModalHeader title="Reset Template" onClose={() => setIsQuoteTemplateResetConfirmOpen(false)} />
                         <div className="space-y-4 px-5 py-4">
                           <p className="text-[12px]" style={{ color: "var(--text-main)" }}>
-                            This will permanently clear the entire quote template — every cell, row, column, and formatting choice. This can&apos;t be undone.
+                            This will clear the entire quote template — every cell, row, column, and formatting choice.
                           </p>
                           <div className="flex items-center justify-end gap-2">
                             <button
@@ -8618,7 +9314,12 @@ export default function CompanySettingsPage() {
                                       );
                                     })}
                                   </span>
-                                  <button type="button" onClick={() => setJobTypes((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} title="Remove product">
+                                  <button
+                                    type="button"
+                                    onClick={() => removeFromList(setJobTypes, idx, row, `${toStr(row.name, "Product")} removed`)}
+                                    className={dangerIconButtonClass}
+                                    title="Remove product"
+                                  >
                                     <X size={15} />
                                   </button>
                                 </div>
@@ -8720,7 +9421,7 @@ export default function CompanySettingsPage() {
                                         {sellCell(charge.price, charge.marginPercent, "/ sheet", "+ ")}
                                         <button
                                           type="button"
-                                          onClick={() => updateJobType(idx, { miscCharges: (row.miscCharges ?? []).filter((_, j) => j !== chargeIdx) })}
+                                          onClick={() => removeJobTypeMiscCharge(idx, chargeIdx)}
                                           className={dangerIconButtonClass}
                                           title="Remove charge"
                                         >
@@ -8888,7 +9589,12 @@ export default function CompanySettingsPage() {
                               ariaLabel="On for every project by default"
                             />
                           </span>
-                          <button type="button" onClick={() => setExtraCharges((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} title="Remove charge">
+                          <button
+                            type="button"
+                            onClick={() => removeFromList(setExtraCharges, idx, row, `${toStr(row.name, "Charge")} removed`)}
+                            className={dangerIconButtonClass}
+                            title="Remove charge"
+                          >
                             <X size={15} />
                           </button>
                         </div>
@@ -8968,7 +9674,7 @@ export default function CompanySettingsPage() {
                               className={`${glassFieldSmClass} min-w-0 flex-1`}
                             />
                           ))}
-                          <button type="button" onClick={() => setDiscountTiers((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} title="Remove tier">
+                          <button type="button" onClick={() => removeFromList(setDiscountTiers, idx, row, "Discount tier removed")} className={dangerIconButtonClass} title="Remove tier">
                             <X size={15} />
                           </button>
                         </div>
@@ -8982,7 +9688,7 @@ export default function CompanySettingsPage() {
               )}
 
               {active === "hardware" && (
-                <Panel title="Hardware brands" icon={HardHat} description="Each brand's drawers, hinges and other parts. The default brand is used for new jobs. Drag to reorder.">
+                <Panel title="Hardware brands" icon={HardHat} description="Each brand's drawers, hinges and other parts. The default brand is used for new jobs. Drag to reorder." allowOverflow>
                   <div className="space-y-1.5">
                     {hardware.map((row, idx) => (
                       <div
@@ -9064,7 +9770,24 @@ export default function CompanySettingsPage() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => setHardware((prev) => sanitizeHardwareRows(prev.filter((_, i) => i !== idx)))}
+                          onClick={async (e) => {
+                            const name = row.name.trim();
+                            const ok = await confirmRemove.ask(
+                              {
+                                title: "Remove hardware brand",
+                                message: `Remove ${name || "this brand"} and all of its drawers, hinges and other parts?`,
+                                confirmLabel: "Remove brand",
+                              },
+                              e,
+                            );
+                            if (!ok) return;
+                            const removed = row;
+                            const at = idx;
+                            setHardware((prev) => sanitizeHardwareRows(prev.filter((_, i) => i !== at)));
+                            offerUndo(`${name || "Hardware brand"} removed`, () =>
+                              setHardware((prev) => sanitizeHardwareRows([...prev.slice(0, at), removed, ...prev.slice(at)])),
+                            );
+                          }}
                           className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] opacity-85 transition hover:bg-white/20"
                           title="Remove brand"
                         >
@@ -9082,6 +9805,7 @@ export default function CompanySettingsPage() {
                                 { value: "drawers", label: "Drawers" },
                                 { value: "hinges", label: "Hinges" },
                                 { value: "other", label: "Other" },
+                                { value: "ordering", label: "Ordering" },
                               ]}
                               onChange={(tab) => setHardwareActiveTab((prev) => ({ ...prev, [idx]: tab }))}
                             />
@@ -9093,7 +9817,7 @@ export default function CompanySettingsPage() {
                               onClick={() =>
                                 updateHardwareJsonList(idx, "drawersJson", (items) => [
                                   ...items,
-                                  { name: "", bottoms: { widthMinus: "", depthMinus: "" }, backs: { widthMinus: "" }, hardwareLengths: [], spaceRequirement: "", default: items.length === 0 },
+                                  { name: "", bottoms: { widthMinus: "", depthMinus: "" }, backs: { widthMinus: "" }, hardwareLengths: [], hardwareWeights: [], spaceRequirement: "", default: items.length === 0 },
                                 ])
                               }
                               className="inline-flex items-center gap-1 text-[12px] font-semibold"
@@ -9136,7 +9860,7 @@ export default function CompanySettingsPage() {
                                       triggerAutosaveAfterRowDrop();
                                     }}
                                   >
-                                    <div className="flex items-center gap-2">
+                                    <div className="flex flex-wrap items-center gap-2">
                                       <button
                                         type="button"
                                         draggable
@@ -9175,20 +9899,31 @@ export default function CompanySettingsPage() {
                                           )
                                         }
                                         placeholder="Drawer name"
-                                        className={`${gridCellInputClass} min-w-0 flex-1 font-semibold`}
+                                        className={`${gridCellInputClass} min-w-[140px] flex-1 font-semibold`}
                                       />
-                                      {/* Its supplier's item number (optional) — a copy button beside it on a project's order. */}
-                                      <input
-                                        value={String(drawer.itemNumber ?? "")}
-                                        onChange={(e) =>
-                                          updateHardwareJsonList(idx, "drawersJson", (items) =>
-                                            items.map((v, i) => (i === drawerIdx ? { ...v, itemNumber: e.target.value } : v)),
-                                          )
-                                        }
-                                        placeholder="Item number"
-                                        aria-label="Item number"
-                                        className={`${gridCellInputClass} w-[130px] shrink-0 max-sm:w-[96px]`}
-                                      />
+                                      {/* The space its runners need behind them — taken off a cabinet's depth before a length is picked. */}
+                                      <label
+                                        className="inline-flex shrink-0 items-center gap-1.5"
+                                        title="Depth requirement — the space the runners need behind them, taken off the cabinet's depth before a hardware length is picked"
+                                      >
+                                        <span className="text-[11.5px] font-medium text-[var(--text-muted)]">Depth req.</span>
+                                        <span className="relative block w-[76px]">
+                                          <input
+                                            inputMode="decimal"
+                                            value={readDrawerSpaceRequirement(drawer)}
+                                            onChange={(e) =>
+                                              updateHardwareJsonList(idx, "drawersJson", (items) =>
+                                                items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "spaceRequirement", e.target.value) : v)),
+                                              )
+                                            }
+                                            placeholder="0"
+                                            aria-label="Depth requirement"
+                                            className={glassFieldSmClass}
+                                            style={{ paddingRight: 30 }}
+                                          />
+                                          <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] text-[var(--text-muted)]">mm</span>
+                                        </span>
+                                      </label>
                                       <button
                                         type="button"
                                         onClick={() =>
@@ -9210,254 +9945,220 @@ export default function CompanySettingsPage() {
                                       </button>
                                       <button
                                         type="button"
-                                        onClick={() => updateHardwareJsonList(idx, "drawersJson", (items) => items.filter((_, i) => i !== drawerIdx))}
+                                        onClick={() => removeHardwareJsonItem(idx, "drawersJson", drawerIdx, "Drawer")}
                                         className={dangerIconButtonClass}
                                         title="Remove drawer"
                                       >
                                         <X size={15} />
                                       </button>
                                     </div>
-                                    {isExpanded && (
-                                      <div className="space-y-2.5 px-2 pb-1.5 pl-9 max-sm:pl-2">
-                                        <div className="flex items-center gap-2 text-[12px] max-lg:flex-wrap">
-                                          <p className="w-[70px] font-semibold text-[var(--text-main)]">Bottoms</p>
-                                          <span className="text-[var(--text-muted)]">Width</span>
-                                          <input inputMode="decimal"
-                                            value={readDrawerBottomWidth(drawer)}
-                                            onChange={(e) =>
-                                              updateHardwareJsonList(idx, "drawersJson", (items) =>
-                                                items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "bottomWidth", e.target.value) : v)),
-                                              )
-                                            }
-                                            className={`${glassFieldSmClass} w-[90px]`}
-                                          />
-                                          <span className="text-[var(--text-muted)]">Depth</span>
-                                          <input inputMode="decimal"
-                                            value={readDrawerBottomDepth(drawer)}
-                                            onChange={(e) =>
-                                              updateHardwareJsonList(idx, "drawersJson", (items) =>
-                                                items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "bottomDepth", e.target.value) : v)),
-                                              )
-                                            }
-                                            className={`${glassFieldSmClass} w-[90px]`}
-                                          />
-                                        </div>
-
-                                        <div className="flex flex-wrap items-center gap-2 text-[12px]">
-                                          <p className="w-[70px] font-semibold text-[var(--text-main)]">Backs</p>
-                                          <span className="text-[var(--text-muted)]">Width</span>
-                                          <input inputMode="decimal"
-                                            value={readDrawerBackWidth(drawer)}
-                                            onChange={(e) =>
-                                              updateHardwareJsonList(idx, "drawersJson", (items) =>
-                                                items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "backWidth", e.target.value) : v)),
-                                              )
-                                            }
-                                            className={`${glassFieldSmClass} w-[90px]`}
-                                          />
-                                          <span className="ml-2 text-[var(--text-muted)]">Heights</span>
-                                          <button
-                                            type="button"
-                                            onClick={() => toggleDrawerHeightsExpanded(idx, drawerIdx)}
-                                            className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] transition hover:bg-[color-mix(in_srgb,var(--text-main)_6%,transparent)]"
-                                            style={{ color: "var(--text-muted)" }}
-                                            title={(drawerHeightsExpanded[`${idx}:${drawerIdx}:heights`] ?? false) ? "Hide heights" : "Edit heights"}
-                                          >
-                                            <ChevronDown
-                                              size={15}
-                                              style={{ transform: (drawerHeightsExpanded[`${idx}:${drawerIdx}:heights`] ?? false) ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 200ms ease" }}
-                                            />
-                                          </button>
-                                          <button
-                                            type="button"
-                                            onClick={async () => {
-                                              const next = await ask.prompt({ title: "Add back height", label: "Back height", placeholder: "e.g. M 500" });
-                                              const value = toStr(next);
-                                              if (!value) return;
-                                              const current = readDrawerBackHeights(drawer);
-                                              updateHardwareJsonList(idx, "drawersJson", (items) =>
-                                                items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "backHeights", [...current, value]) : v)),
-                                              );
-                                            }}
-                                            className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-dashed border-[color-mix(in_srgb,var(--text-main)_22%,transparent)] text-[var(--brand-strong)] transition hover:bg-[var(--brand-soft)]"
-                                            title="Add back height"
-                                          >
-                                            <Plus size={14} />
-                                          </button>
-                                          {(() => {
-                                            const heightRows = readDrawerBackHeights(drawer);
-                                            const heightsOpen = drawerHeightsExpanded[`${idx}:${drawerIdx}:heights`] ?? false;
-                                            if (!heightsOpen) {
-                                              return (
-                                                <div className="flex flex-wrap items-center gap-1">
-                                                  {heightRows.map((height, hIdx) => (
-                                                    <span
-                                                      key={`${drawerIdx}_height_chip_${hIdx}`}
-                                                      className="inline-flex h-6 min-w-[28px] items-center justify-center rounded-[999px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[11px] font-semibold text-[var(--text-main)]"
-                                                      title={height}
-                                                    >
-                                                      {readDrawerHeightLabel(height)}
-                                                    </span>
-                                                  ))}
-                                                  {heightRows.length === 0 && (
-                                                    <span className="text-[11px] text-[var(--text-muted)]">No heights</span>
-                                                  )}
-                                                </div>
-                                              );
-                                            }
-                                            const firstHeight = heightRows[0];
-                                            const remainingHeights = heightRows.slice(1);
-                                            if (!firstHeight) {
-                                              return (
-                                                <div className="self-start">
-                                                  <span className="text-[11px] text-[var(--text-muted)]">No heights</span>
-                                                </div>
-                                              );
-                                            }
-                                            return (
-                                              <div className="self-start">
-                                                <div className="flex items-center gap-1">
-                                                  <button
-                                                    type="button"
-                                                    onClick={() => {
-                                                      const current = readDrawerBackHeights(drawer);
-                                                      const nextHeights = current.filter((_, j) => j !== 0);
-                                                      updateHardwareJsonList(idx, "drawersJson", (items) =>
-                                                        items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "backHeights", nextHeights) : v)),
-                                                      );
-                                                    }}
-                                                    className={dangerIconButtonClass}
-                                                  >
-                                                    <X size={13} />
-                                                  </button>
+                                    {isExpanded && (() => {
+                                      // Its runner lengths and weights (each a field with its unit, an X to take it off, and + to
+                                      // add one), how its bottoms and backs are cut, then its heights — a chip each, opening the
+                                      // pop-up that sets which lengths and weights that height comes in.
+                                      const updateDrawer = (update: (item: Record<string, unknown>) => Record<string, unknown>) =>
+                                        updateHardwareJsonList(idx, "drawersJson", (items) => items.map((v, i) => (i === drawerIdx ? update(v) : v)));
+                                      // A length, weight or height taken off — and the Undo bar, putting back the drawer's lengths,
+                                      // weights and heights as they were.
+                                      const removeWithUndo = (message: string, update: (item: Record<string, unknown>) => Record<string, unknown>) => {
+                                        const before = drawer;
+                                        updateDrawer(update);
+                                        offerUndo(message, () => updateDrawer((item) => restoreDrawerOptions(item, before)));
+                                      };
+                                      const optionList = (
+                                        title: string,
+                                        field: "hardwareLengths" | "hardwareWeights",
+                                        kind: "length" | "weight",
+                                        unit: string,
+                                        promptLabel: string,
+                                        placeholder: string,
+                                      ) => {
+                                        const values = field === "hardwareLengths" ? readDrawerLengths(drawer) : readDrawerWeights(drawer);
+                                        return (
+                                          <div className="flex flex-wrap items-center gap-2 text-[12px]">
+                                            <p className="w-[120px] font-semibold text-[var(--text-main)]">{title}</p>
+                                            {values.map((value, vIdx) => (
+                                              <div key={`${drawerIdx}_${field}_${vIdx}`} className="inline-flex items-center gap-0.5">
+                                                <span className="relative block w-[84px]">
                                                   <input
-                                                    value={readDrawerHeightLabel(firstHeight)}
+                                                    inputMode="decimal"
+                                                    value={value}
                                                     onChange={(e) => {
-                                                      const current = readDrawerBackHeights(drawer);
-                                                      const hiddenNumber = readDrawerHeightNumber(current[0] ?? "");
-                                                      const nextValue = hiddenNumber ? `${e.target.value} ${hiddenNumber}` : e.target.value;
-                                                      const nextHeights = current.map((v, j) => (j === 0 ? nextValue : v));
-                                                      updateHardwareJsonList(idx, "drawersJson", (items) =>
-                                                        items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "backHeights", nextHeights) : v)),
+                                                      const nextValue = e.target.value;
+                                                      updateDrawer((item) =>
+                                                        renameDrawerDefaultWeight(
+                                                          renameDrawerHeightOption(
+                                                            writeDrawerField(item, field, values.map((v, j) => (j === vIdx ? nextValue : v))),
+                                                            kind,
+                                                            value,
+                                                            nextValue.trim() || null,
+                                                          ),
+                                                          kind,
+                                                          value,
+                                                          nextValue.trim() || null,
+                                                        ),
                                                       );
                                                     }}
-                                                    className={`${glassFieldSmClass} w-[92px]`}
-                                                    title={firstHeight}
+                                                    aria-label={`${title} ${value}`}
+                                                    className={glassFieldSmClass}
+                                                    style={{ paddingRight: 30 }}
                                                   />
-                                                  <span className="inline-flex h-7 min-w-[56px] items-center justify-center rounded-[999px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[11px] font-semibold text-[var(--text-main)]">
-                                                    {readDrawerHeightNumber(firstHeight) || "-"}
-                                                  </span>
-                                                </div>
-                                                {remainingHeights.length > 0 && (
-                                                  <div className="mt-1 space-y-1">
-                                                    {remainingHeights.map((height, offsetIdx) => {
-                                                      const hIdx = offsetIdx + 1;
-                                                      return (
-                                                        <div key={`${drawerIdx}_height_${hIdx}`} className="flex items-center gap-1">
-                                                          <button
-                                                            type="button"
-                                                            onClick={() => {
-                                                              const current = readDrawerBackHeights(drawer);
-                                                              const nextHeights = current.filter((_, j) => j !== hIdx);
-                                                              updateHardwareJsonList(idx, "drawersJson", (items) =>
-                                                                items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "backHeights", nextHeights) : v)),
-                                                              );
-                                                            }}
-                                                            className={dangerIconButtonClass}
-                                                          >
-                                                            <X size={13} />
-                                                          </button>
-                                                          <input
-                                                            value={readDrawerHeightLabel(height)}
-                                                            onChange={(e) => {
-                                                              const current = readDrawerBackHeights(drawer);
-                                                              const hiddenNumber = readDrawerHeightNumber(current[hIdx] ?? "");
-                                                              const nextValue = hiddenNumber ? `${e.target.value} ${hiddenNumber}` : e.target.value;
-                                                              const nextHeights = current.map((v, j) => (j === hIdx ? nextValue : v));
-                                                              updateHardwareJsonList(idx, "drawersJson", (items) =>
-                                                                items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "backHeights", nextHeights) : v)),
-                                                              );
-                                                            }}
-                                                            className={`${glassFieldSmClass} w-[92px]`}
-                                                            title={height}
-                                                          />
-                                                          <span className="inline-flex h-7 min-w-[56px] items-center justify-center rounded-[999px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[11px] font-semibold text-[var(--text-main)]">
-                                                            {readDrawerHeightNumber(height) || "-"}
-                                                          </span>
-                                                        </div>
-                                                      );
-                                                    })}
-                                                  </div>
-                                                )}
-                                              </div>
-                                            );
-                                          })()}
-                                        </div>
-
-                                        <div className="flex flex-wrap items-center gap-2 text-[12px]">
-                                          <p className="w-[120px] font-semibold text-[var(--text-main)]">Hardware lengths</p>
-                                          <button
-                                            type="button"
-                                            onClick={async () => {
-                                              const next = await ask.prompt({ title: "Add hardware length", label: "Length", placeholder: "e.g. 500", inputMode: "decimal" });
-                                              const value = toStr(next);
-                                              if (!value) return;
-                                              const current = readDrawerLengths(drawer);
-                                              updateHardwareJsonList(idx, "drawersJson", (items) =>
-                                                items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "hardwareLengths", [...current, value]) : v)),
-                                              );
-                                            }}
-                                            className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-dashed border-[color-mix(in_srgb,var(--text-main)_22%,transparent)] text-[var(--brand-strong)] transition hover:bg-[var(--brand-soft)]"
-                                            title="Add hardware length"
-                                          >
-                                            <Plus size={14} />
-                                          </button>
-                                          <div className="flex flex-wrap items-center gap-2">
-                                            {readDrawerLengths(drawer).map((length, lIdx) => (
-                                              <div key={`${drawerIdx}_length_${lIdx}`} className="inline-flex items-center gap-1">
+                                                  <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] text-[var(--text-muted)]">{unit}</span>
+                                                </span>
+                                                {/* A weight: the drawer type's default — every height and length's, where it comes in it. */}
+                                                {kind === "weight" ? (
+                                                  (() => {
+                                                    const isDefault = readDrawerDefaultWeight(drawer) === value.trim();
+                                                    return (
+                                                      <button
+                                                        type="button"
+                                                        onClick={() => updateDrawer((item) => writeDrawerDefaultWeight(item, isDefault ? "" : value))}
+                                                        className="ml-1 inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-[11.5px] font-semibold"
+                                                        style={{ color: isDefault ? "var(--brand-strong)" : "var(--text-muted)" }}
+                                                        title={isDefault ? `${value}kg is the default — click to clear` : `Make ${value}kg the default weight`}
+                                                      >
+                                                        <span
+                                                          className="inline-flex h-4 w-4 items-center justify-center rounded-full border-[1.5px]"
+                                                          style={{ borderColor: isDefault ? "var(--brand)" : "color-mix(in srgb, var(--text-main) 25%, transparent)" }}
+                                                        >
+                                                          {isDefault ? <span className="h-2 w-2 rounded-full" style={{ backgroundColor: "var(--brand)" }} /> : null}
+                                                        </span>
+                                                        Default
+                                                      </button>
+                                                    );
+                                                  })()
+                                                ) : null}
                                                 <button
                                                   type="button"
-                                                  onClick={() => {
-                                                    const current = readDrawerLengths(drawer);
-                                                    const nextLengths = current.filter((_, j) => j !== lIdx);
-                                                    updateHardwareJsonList(idx, "drawersJson", (items) =>
-                                                      items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "hardwareLengths", nextLengths) : v)),
-                                                    );
-                                                  }}
+                                                  onClick={() =>
+                                                    removeWithUndo(`${value}${unit} removed`, (item) =>
+                                                      renameDrawerDefaultWeight(
+                                                        renameDrawerHeightOption(writeDrawerField(item, field, values.filter((_, j) => j !== vIdx)), kind, value, null),
+                                                        kind,
+                                                        value,
+                                                        null,
+                                                      ),
+                                                    )
+                                                  }
                                                   className={dangerIconButtonClass}
+                                                  title={`Remove ${value}${unit}`}
                                                 >
                                                   <X size={13} />
                                                 </button>
-                                                <input inputMode="decimal"
-                                                  value={length}
-                                                  onChange={(e) => {
-                                                    const current = readDrawerLengths(drawer);
-                                                    const nextLengths = current.map((v, j) => (j === lIdx ? e.target.value : v));
-                                                    updateHardwareJsonList(idx, "drawersJson", (items) =>
-                                                      items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "hardwareLengths", nextLengths) : v)),
-                                                    );
-                                                  }}
-                                                  className={`${glassFieldSmClass} w-[90px]`}
-                                                />
                                               </div>
                                             ))}
+                                            <button
+                                              type="button"
+                                              onClick={async () => {
+                                                const next = await ask.prompt({ title: `Add ${promptLabel.toLowerCase()}`, label: promptLabel, placeholder, inputMode: "decimal" });
+                                                const value = toStr(next);
+                                                if (!value) return;
+                                                updateDrawer((item) => writeDrawerField(item, field, [...(field === "hardwareLengths" ? readDrawerLengths(item) : readDrawerWeights(item)), value]));
+                                              }}
+                                              className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-dashed border-[color-mix(in_srgb,var(--text-main)_22%,transparent)] text-[var(--brand-strong)] transition hover:bg-[var(--brand-soft)]"
+                                              title={`Add ${promptLabel.toLowerCase()}`}
+                                            >
+                                              <Plus size={14} />
+                                            </button>
+                                          </div>
+                                        );
+                                      };
+                                      const cutField = (label: string, value: string, field: "bottomWidth" | "bottomDepth" | "backWidth") => (
+                                        <label className="inline-flex items-center gap-1.5">
+                                          <span className="text-[var(--text-muted)]">{label}</span>
+                                          <span className="block w-[76px]">
+                                            <input
+                                              inputMode="decimal"
+                                              value={value}
+                                              onChange={(e) => updateDrawer((item) => writeDrawerField(item, field, e.target.value))}
+                                              className={glassFieldSmClass}
+                                            />
+                                          </span>
+                                        </label>
+                                      );
+                                      const heightRows = readDrawerBackHeights(drawer);
+                                      const editorHere =
+                                        drawerHeightEditor && drawerHeightEditor.hardwareIdx === idx && drawerHeightEditor.drawerIdx === drawerIdx ? drawerHeightEditor : null;
+                                      // Opens the pop-up under what was pressed (kept within the row) — or shuts it, pressed again.
+                                      const openHeightEditor = (e: ReactMouseEvent<HTMLElement>, heightIdx: number | null) => {
+                                        if (editorHere && editorHere.heightIdx === heightIdx) {
+                                          setDrawerHeightEditor(null);
+                                          return;
+                                        }
+                                        const rowEl = e.currentTarget.closest("[data-drawer-heights-row]");
+                                        const rowRect = rowEl?.getBoundingClientRect();
+                                        const chipLeft = e.currentTarget.getBoundingClientRect().left - (rowRect?.left ?? 0);
+                                        const left = Math.max(0, Math.min(chipLeft, (rowRect?.width ?? 480) - 480));
+                                        setDrawerHeightEditor({ hardwareIdx: idx, drawerIdx, heightIdx, left });
+                                      };
+                                      return (
+                                        <div className="space-y-2.5 px-2 pb-1.5 pl-9 max-sm:pl-2">
+                                          {optionList("Hardware lengths", "hardwareLengths", "length", "mm", "Hardware length", "e.g. 500")}
+                                          {optionList("Hardware weights", "hardwareWeights", "weight", "kg", "Hardware weight", "e.g. 65")}
+                                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-[12px]">
+                                            <p className="w-[120px] font-semibold text-[var(--text-main)]">Cutting</p>
+                                            <span className="font-medium text-[var(--text-main)]">Bottoms</span>
+                                            {cutField("Width", readDrawerBottomWidth(drawer), "bottomWidth")}
+                                            {cutField("Depth", readDrawerBottomDepth(drawer), "bottomDepth")}
+                                            <span className="ml-3 font-medium text-[var(--text-main)]">Backs</span>
+                                            {cutField("Width", readDrawerBackWidth(drawer), "backWidth")}
+                                          </div>
+                                          <div data-drawer-heights-row="true" className="relative flex flex-wrap items-center gap-2 text-[12px]">
+                                            <p className="w-[120px] font-semibold text-[var(--text-main)]">Heights</p>
+                                            {heightRows.map((height, hIdx) => {
+                                              const label = readDrawerHeightLabel(height);
+                                              const size = readDrawerHeightNumber(height);
+                                              const { text: comesIn, restricted } = describeDrawerHeight(drawer, label);
+                                              const open = editorHere?.heightIdx === hIdx;
+                                              return (
+                                                <button
+                                                  key={`${drawerIdx}_height_${hIdx}`}
+                                                  type="button"
+                                                  data-drawer-height-chip="true"
+                                                  onClick={(e) => openHeightEditor(e, hIdx)}
+                                                  className={`glass-shine inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[12px] font-medium transition hover:brightness-95 ${open ? "" : "glass-shine-neutral"}`}
+                                                  style={open ? glassShineStyle(row.color || "#7D99B3", { color: textColorForHex(row.color || "#7D99B3") }) : { color: "var(--text-main)" }}
+                                                  title={`${label}${size ? ` — back ${size}mm` : ""}${comesIn ? ` · ${comesIn}` : ""} — click to edit`}
+                                                >
+                                                  <span className="font-semibold">{label}</span>
+                                                  {size ? <span className="opacity-70">{size}</span> : null}
+                                                  {/* (Not every length or weight — a dot.) */}
+                                                  {restricted ? <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: "currentColor", opacity: 0.6 }} /> : null}
+                                                </button>
+                                              );
+                                            })}
+                                            <button
+                                              type="button"
+                                              data-drawer-height-chip="true"
+                                              onClick={(e) => openHeightEditor(e, null)}
+                                              className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-dashed border-[color-mix(in_srgb,var(--text-main)_22%,transparent)] text-[var(--brand-strong)] transition hover:bg-[var(--brand-soft)]"
+                                              title="Add height"
+                                            >
+                                              <Plus size={14} />
+                                            </button>
+                                            {editorHere ? (
+                                              <DrawerHeightEditor
+                                                key={`${idx}:${drawerIdx}:${editorHere.heightIdx ?? "new"}`}
+                                                drawer={drawer}
+                                                heightIndex={editorHere.heightIdx}
+                                                color={row.color || "#7D99B3"}
+                                                left={editorHere.left}
+                                                onCommit={(height) => updateDrawer((item) => writeDrawerHeight(item, editorHere.heightIdx, height))}
+                                                onRemove={() => {
+                                                  if (editorHere.heightIdx != null) {
+                                                    const removeIdx = editorHere.heightIdx;
+                                                    const removedLabel = readDrawerHeightLabel(heightRows[removeIdx] ?? "");
+                                                    removeWithUndo(`Height ${removedLabel} removed`, (item) => removeDrawerHeight(item, removeIdx));
+                                                  }
+                                                  setDrawerHeightEditor(null);
+                                                }}
+                                                onClose={() => setDrawerHeightEditor(null)}
+                                              />
+                                            ) : null}
                                           </div>
                                         </div>
-
-                                        <div className="flex items-center gap-2 text-[12px] max-lg:flex-wrap">
-                                          <p className="w-[120px] font-semibold text-[var(--text-main)]">Depth requirement</p>
-                                          <input inputMode="decimal"
-                                            value={readDrawerSpaceRequirement(drawer)}
-                                            onChange={(e) =>
-                                              updateHardwareJsonList(idx, "drawersJson", (items) =>
-                                                items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "spaceRequirement", e.target.value) : v)),
-                                              )
-                                            }
-                                            className={`${glassFieldSmClass} w-[120px]`}
-                                          />
-                                        </div>
-                                      </div>
-                                    )}
+                                      );
+                                    })()}
                                   </div>
                                 );
                               });
@@ -9530,7 +10231,7 @@ export default function CompanySettingsPage() {
                                   </button>
                                   <button
                                     type="button"
-                                    onClick={() => updateHardwareJsonList(idx, "hingesJson", (items) => items.filter((_, i) => i !== hingeIdx))}
+                                    onClick={() => removeHardwareJsonItem(idx, "hingesJson", hingeIdx, "Hinge")}
                                     className={dangerIconButtonClass}
                                   >
                                     <X size={15} />
@@ -9555,8 +10256,8 @@ export default function CompanySettingsPage() {
                                         items.map((v, i) => (i === hingeIdx ? { ...v, itemNumber: e.target.value } : v)),
                                       )
                                     }
-                                    placeholder="Item number"
-                                    aria-label="Item number"
+                                    placeholder="ID number"
+                                    aria-label="ID number"
                                     className={`${gridCellInputClass} h-7 text-[12px]`}
                                   />
                                   </div>
@@ -9631,7 +10332,7 @@ export default function CompanySettingsPage() {
                                   </button>
                                   <button
                                     type="button"
-                                    onClick={() => updateHardwareJsonList(idx, "otherJson", (items) => items.filter((_, i) => i !== otherIdx))}
+                                    onClick={() => removeHardwareJsonItem(idx, "otherJson", otherIdx, "Part")}
                                     className={dangerIconButtonClass}
                                   >
                                     <X size={15} />
@@ -9656,8 +10357,8 @@ export default function CompanySettingsPage() {
                                         items.map((v, i) => (i === otherIdx ? { ...v, itemNumber: e.target.value } : v)),
                                       )
                                     }
-                                    placeholder="Item number"
-                                    aria-label="Item number"
+                                    placeholder="ID number"
+                                    aria-label="ID number"
                                     className={`${gridCellInputClass} h-7 text-[12px]`}
                                   />
                                   </div>
@@ -9667,6 +10368,77 @@ export default function CompanySettingsPage() {
                           </div>
                               </div>
                             )}
+                            {(hardwareActiveTab[idx] ?? "drawers") === "ordering" && (() => {
+                              // Copy for cart: how a project's order writes this brand's hinges and other items, a line each,
+                              // for its supplier's quick order — placeholders for the item's number ({id}), quantity and name (one
+                              // clicked goes in where the cursor is). Under it, what two of its items would come out as.
+                              const formatFieldId = `settings_hardware_cart_format_${idx}`;
+                              const insertPlaceholder = (token: string) => {
+                                const field = document.getElementById(formatFieldId) as HTMLInputElement | null;
+                                const current = row.cartCopyFormat;
+                                const start = field?.selectionStart ?? current.length;
+                                const end = field?.selectionEnd ?? current.length;
+                                const next = `${current.slice(0, start)}${token}${current.slice(end)}`;
+                                setHardware((prev) => prev.map((v, i) => (i === idx ? { ...v, cartCopyFormat: next } : v)));
+                                window.requestAnimationFrame(() => {
+                                  const again = document.getElementById(formatFieldId) as HTMLInputElement | null;
+                                  again?.focus();
+                                  again?.setSelectionRange(start + token.length, start + token.length);
+                                });
+                              };
+                              const numbered = [...parseJsonObjects(row.hingesJson), ...parseJsonObjects(row.otherJson)]
+                                .map((item) => ({ name: toStr(item.name), id: toStr(item.itemNumber) }))
+                                .filter((item) => item.name && item.id)
+                                .slice(0, 2);
+                              const examples = (numbered.length ? numbered : [{ name: "110° Soft Close", id: "71B3550" }]).map((item, i) => ({
+                                ...item,
+                                quantity: i === 0 ? 8 : 4,
+                              }));
+                              return (
+                                <div className="space-y-2">
+                                  <p className="text-[10.5px] font-bold uppercase tracking-[0.8px] text-[var(--text-muted)]">Copy for cart</p>
+                                  <p className="text-[12px] font-medium" style={{ color: "var(--text-main)" }}>
+                                    How a project&apos;s order copies {row.name || "this brand"}&apos;s hinges and other items, a line each, to paste
+                                    into the supplier&apos;s quick order. Left blank: <span className="font-mono">{DEFAULT_CART_COPY_FORMAT}</span>{" "}
+                                    (Blum&apos;s Quick order › Add items in bulk).
+                                  </p>
+                                  <input
+                                    id={formatFieldId}
+                                    value={row.cartCopyFormat}
+                                    onChange={(e) => setHardware((prev) => prev.map((v, i) => (i === idx ? { ...v, cartCopyFormat: e.target.value } : v)))}
+                                    placeholder={DEFAULT_CART_COPY_FORMAT}
+                                    aria-label="Copy for cart format"
+                                    spellCheck={false}
+                                    className={`${gridCellInputClass} w-full font-mono`}
+                                  />
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    {CART_COPY_PLACEHOLDERS.map((placeholder) => (
+                                      <button
+                                        key={placeholder.token}
+                                        type="button"
+                                        // (Keeps the cursor where it was in the field.)
+                                        onMouseDown={(e) => e.preventDefault()}
+                                        onClick={() => insertPlaceholder(placeholder.token)}
+                                        className="inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[12px] font-medium transition hover:bg-[color-mix(in_srgb,var(--text-main)_6%,transparent)]"
+                                        style={{ borderColor: "var(--glass-border)", color: "var(--text-main)" }}
+                                        title={`Add ${placeholder.label.toLowerCase()}`}
+                                      >
+                                        <span className="font-mono">{placeholder.token}</span>
+                                        <span className="text-[var(--text-muted)]">{placeholder.label}</span>
+                                      </button>
+                                    ))}
+                                  </div>
+                                  <div className="rounded-[10px] border px-3 py-2" style={{ borderColor: "var(--glass-border)" }}>
+                                    <p className="pb-1 text-[11px] font-medium text-[var(--text-muted)]">Copies as</p>
+                                    {examples.map((item) => (
+                                      <p key={item.name} className="whitespace-pre font-mono text-[12px] font-medium" style={{ color: "var(--text-main)" }}>
+                                        {formatCartCopyLine(row.cartCopyFormat, item).replace(/\t/g, "⇥")}
+                                      </p>
+                                    ))}
+                                  </div>
+                                </div>
+                              );
+                            })()}
                           </div>
                         )}
                       </div>
@@ -9674,7 +10446,7 @@ export default function CompanySettingsPage() {
                     <button
                       onClick={() => {
                         const nextIndex = hardware.length;
-                        setHardware((prev) => sanitizeHardwareRows([...prev, { name: "", color: "#7D99B3", default: prev.length === 0, drawersJson: "[]", hingesJson: "[]", otherJson: "[]" }]));
+                        setHardware((prev) => sanitizeHardwareRows([...prev, { name: "", color: "#7D99B3", default: prev.length === 0, drawersJson: "[]", hingesJson: "[]", otherJson: "[]", cartCopyFormat: "" }]));
                         setHardwareExpanded((prev) => ({ ...prev, [nextIndex]: false }));
                         setHardwareActiveTab((prev) => ({ ...prev, [nextIndex]: "drawers" }));
                       }}
@@ -10068,6 +10840,7 @@ export default function CompanySettingsPage() {
         {projectAutomations.layer}
         {leadAutomations.layer}
         {ask.element}
+        {confirmRemove.element}
     </>
   );
 }

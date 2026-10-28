@@ -3,6 +3,7 @@ import "./globals.css";
 import { DocumentScrollbar } from "@/components/glass-scrollbar-thumb";
 import { ScrollLockWatcher } from "@/components/scroll-lock-watcher";
 import { DropdownSqueezeWatcher } from "@/components/dropdown-squeeze-watcher";
+import { UndoBarProvider } from "@/components/undo-bar";
 
 export const metadata: Metadata = {
   title: "CutSmart Web",
@@ -188,7 +189,8 @@ export default function RootLayout({
             route, including the public, no-login app/client/*. Those live in
             app/(staff)/layout.tsx instead, scoped to just the staff-facing routes (login, company
             onboarding, and everything under (app)) — see that file's own comment for why. */}
-        {children}
+        {/* (The Undo bar, after anything's deleted — components/undo-bar.tsx.) */}
+        <UndoBarProvider>{children}</UndoBarProvider>
         {/* The page's own scrollbar, as the glass thumb (below the title bars) — every route. */}
         <DocumentScrollbar />
         <ScrollLockWatcher />
