@@ -49,6 +49,8 @@ whatsNew: [
 <li>Copy buttons beside the client's phone, email and address</li>
 <li>The client's contact category in a pill beside their name — change it there and it's changed everywhere</li>
 <li>Every pop-up has the same header, and fills the screen on a phone</li>
+<li>In dark mode a project's cards are see-through dark glass, as Reports' are — and Production's Notes card matches the others</li>
+<li>Cutlist Entry's column headings are easy to read in dark mode, held at the top too</li>
 </ul>
 
 <u><b>Production</b></u>
@@ -107,7 +109,11 @@ whatsNew: [
 <ul>
 <li>Search everything with <b>Ctrl+K</b> (⌘K on a Mac)</li>
 <li>Delete anything — a cutlist row, a board, a tag, an image, an event, a lead's note — and the yellow bar at the bottom offers <b>Undo</b> for a few seconds — and stays while your mouse is over it</li>
-<li>Soft placeholders while things load, instead of "Loading…"</li>
+<li>Soft placeholders while things load, instead of "Loading…" — on every page now</li>
+<li>An empty list says what goes there, with the button to add the first one</li>
+<li>The first project you open comes up quicker: the app fetches the project page ahead, while you're elsewhere</li>
+<li>Lose signal and a small bar at the top says so — your changes are kept on the device and saved when you're back, then <b>All changes saved</b></li>
+<li>Text is set the same way across the app, and reads properly in dark mode</li>
 <li>Dropdowns squeeze open from the button you pressed</li>
 <li>The page you're on glows in see-through glass in the sidebar</li>
 <li>Buttons like New event have the glass shine and rounded ends</li>

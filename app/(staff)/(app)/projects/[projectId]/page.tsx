@@ -39194,8 +39194,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         )
       : null;
   // The project's tab containers — General's, Design's (its stat cards, Rooms, Product, Extra Charges, Notes),
-  // Production's and Settings' — with the glass shine's neutral version (className "glass-shine glass-shine-neutral" —
-  // lib/glass-shine.ts; no colour of their own), still frosted.
+  // Production's and Settings' — with the glass shine's neutral version (className "glass-shine glass-shine-neutral
+  // glass-shine-panel" — lib/glass-shine.ts; no colour of their own; in dark mode the Reports page's see-through glass,
+  // app/globals.css), still frosted.
   // The General tab's side tabs (as Design's and Production's), each a pop-up over the page: the Lead it came from (a
   // project made from one), its Specifications (Production's), and its Schedule (Design's — for those who can see the
   // Calendar). None for someone who can see none of them: no side column then.
@@ -39295,13 +39296,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               key={tile.key}
               type="button"
               onClick={tile.onClick}
-              className="glass-shine glass-shine-neutral overflow-hidden rounded-[18px] border p-4 text-left transition hover:brightness-95"
+              className="glass-shine glass-shine-neutral glass-shine-panel overflow-hidden rounded-[18px] border p-4 text-left transition hover:brightness-95"
               style={tileStyle}
             >
               {tileContent}
             </button>
           ) : (
-            <div key={tile.key} className="glass-shine glass-shine-neutral overflow-hidden rounded-[18px] border p-4" style={tileStyle}>
+            <div key={tile.key} className="glass-shine glass-shine-neutral glass-shine-panel overflow-hidden rounded-[18px] border p-4" style={tileStyle}>
               {tileContent}
             </div>
           );
@@ -39312,7 +39313,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           only moves onto the next line when even that won't fit. Below xl they stack, full width. */}
       <div className="flex flex-wrap items-stretch gap-4">
         <section
-          className="glass-shine glass-shine-neutral w-full overflow-hidden rounded-[18px] border xl:w-auto xl:min-w-[320px] xl:max-w-[430px] xl:flex-[1_1_320px]"
+          className="glass-shine glass-shine-neutral glass-shine-panel w-full overflow-hidden rounded-[18px] border xl:w-auto xl:min-w-[320px] xl:max-w-[430px] xl:flex-[1_1_320px]"
           style={tabContainerStyle}
         >
           <div
@@ -39509,7 +39510,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         </section>
 
         <section
-          className="glass-shine glass-shine-neutral w-full overflow-hidden rounded-[18px] border xl:w-max xl:min-w-[340px] xl:max-w-full"
+          className="glass-shine glass-shine-neutral glass-shine-panel w-full overflow-hidden rounded-[18px] border xl:w-max xl:min-w-[340px] xl:max-w-full"
           style={tabContainerStyle}
         >
           {/* At xl: as wide as its widest product name needs (each name on one line), never under 340px,
@@ -39554,7 +39555,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
         {/* Extra charges (Company Settings → Sales → Extra charges): each one turned on / off for this project's quote. */}
         <section
-          className="glass-shine glass-shine-neutral w-full overflow-hidden rounded-[18px] border xl:w-max xl:min-w-[240px] xl:max-w-full"
+          className="glass-shine glass-shine-neutral glass-shine-panel w-full overflow-hidden rounded-[18px] border xl:w-max xl:min-w-[240px] xl:max-w-full"
           style={tabContainerStyle}
         >
           <div
@@ -39606,7 +39607,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       {/* Design's own notes — set out as General's and Production's Notes cards. */}
       <div ref={designNotesContainerRef} data-keyboard-center="true">
         <section
-          className="glass-shine glass-shine-neutral overflow-hidden rounded-[18px] border"
+          className="glass-shine glass-shine-neutral glass-shine-panel overflow-hidden rounded-[18px] border"
           style={tabContainerStyle}
         >
           <div
@@ -46329,10 +46330,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         </div>
                       </div>
                       <div
-                        className="grid gap-2 text-[11px] font-bold"
+                        className="grid gap-2 text-[11px] font-medium"
                         style={{
                           gridTemplateColumns: initialCutlistEntryGridTemplate,
-                          color: "var(--text-muted)",
+                          color: "var(--text-main)",
                           // (The rows' inset beside the Rooms column — as the production cutlist's: 12px clear, their 1px
                           // edge, 4px in at the X's end; the bar's own 4px already there.)
                           marginLeft: isCutlistRoomsPanelShown ? 13 : 0,
@@ -49652,10 +49653,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         </div>
                       </div>
                       <div
-                        className="grid gap-2 text-[11px] font-bold"
+                        className="grid gap-2 text-[11px] font-medium"
                         style={{
                           gridTemplateColumns: cutlistEntryGridTemplate,
-                          color: "var(--text-muted)",
+                          color: "var(--text-main)",
                           // (Over the rows' fields, wherever they are: the rows' inset beside the Rooms column — 12px clear
                           // of the side, their 1px edge, then 6px in at the X's end, 12px at the other; the bar's own 4px
                           // already there.)
@@ -57966,7 +57967,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       return (
                         <section
                           key={group.label}
-                          className="glass-shine glass-shine-neutral overflow-visible rounded-[18px] border"
+                          className="glass-shine glass-shine-neutral glass-shine-panel overflow-visible rounded-[18px] border"
                           style={{ animation: `glass-bubble-slide-in-up 460ms cubic-bezier(0.34, 1.56, 0.64, 1) ${groupIndex * 60}ms both` }}
                         >
                           {/* Its heading: tick them all; its name and how many picked; and — two or more picked — a
@@ -60016,19 +60017,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
     return (
       <div ref={productionNotesContainerRef} data-keyboard-center="true">
-        {/* Same rounded-[18px]/glass-bg-strong/blur(20px) recipe every other Production overview
-            container uses (Board Settings, Hardware, etc.) — this card was still on projectPalette's
-            plain opaque panelBg/rounded-14px instead, which is why it stood out as visibly different
-            even after the floating "sidebar" mode variant got the matching glass treatment. */}
+        {/* The app's neutral glass, as General's and Design's Notes cards — the same notes card on every tab, in light and
+            dark. */}
         <section
-          className="overflow-hidden rounded-[18px] border"
-          style={{
-            borderColor: "var(--glass-border)",
-            backgroundColor: "var(--glass-bg-strong)",
-            backdropFilter: "blur(20px) saturate(180%)",
-            WebkitBackdropFilter: "blur(20px) saturate(180%)",
-            boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
-          }}
+          className="glass-shine glass-shine-neutral glass-shine-panel overflow-hidden rounded-[18px] border"
+          style={{ backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)" }}
         >
           <CardHeader
             className="relative z-[2] flex h-[50px] flex-row items-center justify-between border-b px-4 py-2"
@@ -61213,7 +61206,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           icon circles in their contact category's colour (no ambient wash, no category name) (neutral when they
                           have no category, or no contact card yet). */}
                       <section
-                        className="glass-shine glass-shine-neutral group/client overflow-hidden rounded-[18px] border"
+                        className="glass-shine glass-shine-neutral glass-shine-panel group/client overflow-hidden rounded-[18px] border"
                         style={{
                           ...tabContainerStyle,
                           ["--ambient-color" as string]: clientCardAmbientColor,
@@ -61609,7 +61602,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
                     {project.leadCustomFields && project.leadCustomFields.length > 0 && (
                       <section
-                        className={`glass-shine glass-shine-neutral overflow-hidden rounded-[18px] border ${project.isSmallJob ? "xl:col-start-1 xl:row-start-2" : ""}`}
+                        className={`glass-shine glass-shine-neutral glass-shine-panel overflow-hidden rounded-[18px] border ${project.isSmallJob ? "xl:col-start-1 xl:row-start-2" : ""}`}
                         style={tabContainerStyle}
                       >
                         <CardHeader
@@ -61653,7 +61646,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       }
                     >
                       <section
-                        className={`glass-shine glass-shine-neutral overflow-hidden rounded-[18px] border ${project.isSmallJob ? "xl:flex xl:h-full xl:flex-col" : ""}`}
+                        className={`glass-shine glass-shine-neutral glass-shine-panel overflow-hidden rounded-[18px] border ${project.isSmallJob ? "xl:flex xl:h-full xl:flex-col" : ""}`}
                         style={tabContainerStyle}
                       >
                         <CardHeader
@@ -61703,7 +61696,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
                   <div className={project.isSmallJob ? "contents" : "space-y-4"}>
                     <section
-                      className={`glass-shine glass-shine-neutral group/images overflow-hidden rounded-[18px] border ${
+                      className={`glass-shine glass-shine-neutral glass-shine-panel group/images overflow-hidden rounded-[18px] border ${
                         project.isSmallJob ? (project.leadCustomFields?.length ? "xl:col-start-1 xl:row-start-3" : "xl:col-start-1 xl:row-start-2") : ""
                       }`}
                       style={tabContainerStyle}
@@ -61978,7 +61971,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 </section>
                     <section
                     // (Not on a small job: client details, notes and images only.)
-                    className={`glass-shine glass-shine-neutral group/files overflow-hidden rounded-[18px] border ${project.isSmallJob ? "hidden" : ""}`}
+                    className={`glass-shine glass-shine-neutral glass-shine-panel group/files overflow-hidden rounded-[18px] border ${project.isSmallJob ? "hidden" : ""}`}
                     style={tabContainerStyle}
                   >
                   <div
@@ -62368,7 +62361,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       {initialCutlistRoomFilter !== "Project Cutlist" && (
                         <section className="relative z-10 w-full flex-1 overflow-visible xl:-mx-4 xl:w-[calc(100%+2rem)]">
                           <div className="flex h-[50px] items-center px-1">
-                            <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Cutlist Entry</p>
+                            <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Cutlist Entry</p>
                           </div>
                           <div className="space-y-3 px-0 pb-0">
                             <div
@@ -62396,7 +62389,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   );
                                 })}
                               </div>
-                              <div className="grid gap-2 text-[11px] font-bold" style={{ gridTemplateColumns: initialCutlistEntryGridTemplate, color: projectPalette.textMuted }}>
+                              <div className="grid gap-2 text-[11px] font-medium" style={{ gridTemplateColumns: initialCutlistEntryGridTemplate, color: "var(--text-main)" }}>
                                 <p></p>
                                 {initialCutlistEntryColumnDefs.map((col) => (
                                   <p
@@ -62799,7 +62792,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       </section>
 
                       <section
-                        className="glass-shine glass-shine-neutral overflow-hidden rounded-[18px] border"
+                        className="glass-shine glass-shine-neutral glass-shine-panel overflow-hidden rounded-[18px] border"
                         style={tabContainerStyle}
                       >
                         <div className="border-b px-3 py-3" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
@@ -63173,7 +63166,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       {cutlistRoomFilter !== "Project Cutlist" && (
                       <section className="relative z-10 -mt-4 w-full flex-1 overflow-visible xl:-mx-4 xl:w-[calc(100%+2rem)]">
                         <div className="flex min-h-[50px] flex-wrap items-center gap-3 px-1">
-                          <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Cutlist Entry</p>
+                          <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Cutlist Entry</p>
                         </div>
                         <div className="space-y-3 px-0 pb-0">
                           {(
@@ -63204,7 +63197,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 })}
                               </div>
                               {!hideConfiguredDoorSingleEntryHeaderRow ? (
-                                <div className="grid gap-2 text-[11px] font-bold" style={{ gridTemplateColumns: cutlistEntryGridTemplate, color: projectPalette.textMuted }}>
+                                <div className="grid gap-2 text-[11px] font-medium" style={{ gridTemplateColumns: cutlistEntryGridTemplate, color: "var(--text-main)" }}>
                                   <p></p>
                                   {cutlistEntryColumnDefs.map((col) => (
                                     <p
@@ -64377,7 +64370,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       </div>
 
                       <section
-                        className="glass-shine glass-shine-neutral flex min-h-0 flex-col overflow-hidden rounded-[18px] border"
+                        className="glass-shine glass-shine-neutral glass-shine-panel flex min-h-0 flex-col overflow-hidden rounded-[18px] border"
                         style={tabContainerStyle}
                       >
                         <div className="flex min-h-[46px] flex-col gap-2 border-b px-3 py-3 sm:px-4 lg:flex-row lg:items-center lg:justify-between lg:py-0" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
@@ -64538,7 +64531,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     </section>
 
                     <section
-                      className={`glass-shine glass-shine-neutral ${nestingMobilePanel === "layouts" ? "hidden lg:flex" : "flex"} min-h-0 flex-col overflow-hidden rounded-[18px] border lg:max-h-none`}
+                      className={`glass-shine glass-shine-neutral glass-shine-panel ${nestingMobilePanel === "layouts" ? "hidden lg:flex" : "flex"} min-h-0 flex-col overflow-hidden rounded-[18px] border lg:max-h-none`}
                       style={tabContainerStyle}
                     >
                       <div className="flex h-[46px] items-center justify-between border-b px-3" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
@@ -64622,7 +64615,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
                     <div className="grid min-h-0 flex-1 gap-3">
                       <section
-                        className="glass-shine glass-shine-neutral min-h-0 overflow-hidden rounded-[18px] border"
+                        className="glass-shine glass-shine-neutral glass-shine-panel min-h-0 overflow-hidden rounded-[18px] border"
                         style={tabContainerStyle}
                       >
                         <div className="flex h-[46px] items-center justify-between border-b px-4" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
@@ -64673,7 +64666,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   <>
                   <div className="grid gap-4 xl:grid-cols-[1fr_1.35fr_1.05fr]">
                   <section
-                    className="glass-shine glass-shine-neutral relative z-10 overflow-hidden rounded-[18px] border"
+                    className="glass-shine glass-shine-neutral glass-shine-panel relative z-10 overflow-hidden rounded-[18px] border"
                     style={tabContainerStyle}
                   >
                     <div className="flex h-[50px] items-center border-b px-4" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
@@ -64708,7 +64701,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   </section>
 
                   <section
-                    className="glass-shine glass-shine-neutral relative z-10 overflow-hidden rounded-[18px] border"
+                    className="glass-shine glass-shine-neutral glass-shine-panel relative z-10 overflow-hidden rounded-[18px] border"
                     style={tabContainerStyle}
                   >
                     <div className="flex h-[50px] items-center border-b px-4" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
@@ -64781,7 +64774,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     </section>
 
                   <section
-                    className="glass-shine glass-shine-neutral relative z-10 overflow-hidden rounded-[18px] border"
+                    className="glass-shine glass-shine-neutral glass-shine-panel relative z-10 overflow-hidden rounded-[18px] border"
                     style={tabContainerStyle}
                   >
                     {/* With more than one room, the container is a list — "Global", then each room (which can have
@@ -64832,7 +64825,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 </div>
 
                 <section
-                  className="glass-shine glass-shine-neutral relative z-10 overflow-visible rounded-[18px] border"
+                  className="glass-shine glass-shine-neutral glass-shine-panel relative z-10 overflow-visible rounded-[18px] border"
                   style={tabContainerStyle}
                 >
                   <div className="flex h-[50px] items-center justify-between rounded-t-[18px] border-b px-4" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
@@ -65588,7 +65581,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 ) : null}
             <div className="grid gap-4 xl:grid-cols-2">
                 <section
-                  className="glass-shine glass-shine-neutral overflow-hidden rounded-[18px] border"
+                  className="glass-shine glass-shine-neutral glass-shine-panel overflow-hidden rounded-[18px] border"
                   style={tabContainerStyle}
                 >
                   <CardHeader
@@ -65630,7 +65623,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 </section>
 
                 <section
-                  className="glass-shine glass-shine-neutral overflow-hidden rounded-[18px] border"
+                  className="glass-shine glass-shine-neutral glass-shine-panel overflow-hidden rounded-[18px] border"
                   style={tabContainerStyle}
                 >
                   <CardHeader
@@ -65683,7 +65676,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 </section>
 
                 <section
-                  className="glass-shine glass-shine-neutral overflow-hidden rounded-[18px] border"
+                  className="glass-shine glass-shine-neutral glass-shine-panel overflow-hidden rounded-[18px] border"
                   style={tabContainerStyle}
                 >
                   <CardHeader
@@ -65901,7 +65894,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </section>
 
               <section
-                className="glass-shine glass-shine-neutral overflow-hidden rounded-[18px] border"
+                className="glass-shine glass-shine-neutral glass-shine-panel overflow-hidden rounded-[18px] border"
                 style={tabContainerStyle}
               >
                 <CardHeader

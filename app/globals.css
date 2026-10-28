@@ -1976,6 +1976,15 @@ body[data-theme="dark"] .glass-shine.glass-shine-neutral {
   box-shadow: var(--shadow-glass), inset 0 1px 0 rgba(255, 255, 255, 0.1);
 }
 
+/* A container in it (add glass-shine-panel too — the project page's cards, on all its tabs): in dark mode, the Reports
+ * page's see-through dark glass (its panels') instead of the plain grey — a fine edge and top highlight, the page faintly
+ * through it. In light mode just the neutral glass. */
+body[data-theme="dark"] .glass-shine.glass-shine-neutral.glass-shine-panel {
+  background: var(--glass-bg-strong);
+  border-color: var(--glass-border);
+  box-shadow: inset 0 1px 0 var(--glass-highlight), var(--shadow-glass);
+}
+
 /* The sidebar's selected page (the computer's sliding highlight, the phone menu's row): see-through glass — a light
  * wash of the brand blue with what's behind showing through, a fine edge of it, a white top highlight and a soft
  * shadow; not a flat fill. Its edge an inset shadow, so it takes no room (no shift when a row is picked). */
