@@ -12,6 +12,7 @@ import type { SpecsGrid, SpecsGridVersion } from "@/lib/specs-grid-types";
 import type { Project } from "@/lib/types";
 import { useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { Skeleton, SkeletonGroup } from "@/components/skeleton";
+import { EmptyState } from "@/components/empty-state";
 
 // Production › Specifications: the project's Specifications as the pages they read — the client portal's own sheet
 // view, read-only, scaled down to fit the pop-up's width (a phone's too), scrolling down it. Which sheet:
@@ -164,10 +165,13 @@ export function ProductionSpecificationsModal({
               Couldn&apos;t load the specifications — check your connection and try again.
             </p>
           ) : phase === "none" || !shown ? (
-            <div className="mx-auto max-w-[460px] rounded-[14px] border border-dashed px-5 py-10 text-center" style={{ borderColor: "var(--glass-border)" }}>
-              <p className="text-[14px] font-medium" style={{ color: "var(--text-main)" }}>No specifications yet.</p>
-              <p className="mt-1 text-[12.5px]" style={{ color: "var(--text-muted)" }}>They show here once they&apos;ve been started in Design › Specifications.</p>
-            </div>
+            <EmptyState
+              compact
+              className="py-10"
+              icon={<ClipboardList size={16} />}
+              title="No specifications yet"
+              hint="They show here once they've been started in Design › Specifications."
+            />
           ) : (
             // The client portal's sheet, read-only, scaled to fit the pop-up's width (fitToWidth). Confirmed or not:
             // the top bar's pill.

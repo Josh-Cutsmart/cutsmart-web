@@ -38,6 +38,8 @@ import {
   X,
 } from "lucide-react";
 import { GlassActionMenu, GlassDropdown } from "@/components/glass-dropdown";
+import { EmptyState } from "@/components/empty-state";
+import { Skeleton, SkeletonGroup } from "@/components/skeleton";
 import { LeadFormFields } from "@/components/lead-form-fields";
 import {
   GlassSwitch,
@@ -588,7 +590,7 @@ export function LeadFormsPanel({
     offerUndo(`${option.trim() || "Choice"} removed`, () => changeOptions((options) => insertAt(options, optionIndex, option)));
   };
 
-  const addForm = (event: ReactMouseEvent<HTMLElement>) => {
+  const addForm = (event?: ReactMouseEvent<HTMLElement>) => {
     const form = newLeadForm(forms.length === 0 ? "Website enquiry" : `Form ${forms.length + 1}`);
     setForms((prev) => [...prev, form]);
     openEditor(form.id, event);
@@ -623,17 +625,14 @@ export function LeadFormsPanel({
         }
       >
         {forms.length === 0 ? (
-          <div className="flex flex-col items-center gap-2 rounded-[14px] border border-dashed px-4 py-8 text-center" style={{ borderColor: "color-mix(in srgb, var(--text-main) 18%, transparent)" }}>
-            <FileInput size={22} style={{ color: "var(--text-muted)" }} />
-            <p className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
-              No lead forms yet.
-            </p>
-            <p className="max-w-[420px] text-[12.5px]" style={{ color: "var(--text-muted)" }}>
-              Start one with the usual questions — name, phone, email, address and their project — then change it however you like.
-            </p>
-            <button type="button" onClick={addForm} className={`${secondaryButtonClass} mt-1`}>
-              <Plus size={14} /> Create a form
-            </button>
+          <div className="rounded-[14px] border border-dashed" style={{ borderColor: "color-mix(in srgb, var(--text-main) 18%, transparent)" }}>
+            <EmptyState
+              compact
+              icon={<FileInput size={16} />}
+              title="No lead forms yet"
+              hint="Start one with the usual questions, then change it however you like."
+              action={{ label: "Create a form", icon: <Plus size={14} />, onClick: addForm }}
+            />
           </div>
         ) : (
           <div className="space-y-1.5">
@@ -708,7 +707,7 @@ export function LeadFormsPanel({
                 <button
                   type="button"
                   onClick={() => setEditingFormId("")}
-                  className="inline-flex h-9 shrink-0 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+                  className="inline-flex h-9 shrink-0 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-semibold transition hover:brightness-95"
                   style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
                 >
                   <ArrowLeft size={14} />
@@ -806,9 +805,7 @@ export function LeadFormsPanel({
                     }
                   >
                     {editingForm.questions.length === 0 ? (
-                      <p className="text-[13px] font-medium" style={{ color: "var(--text-muted)" }}>
-                        No questions yet — add one.
-                      </p>
+                      <EmptyState compact icon={<ListChecks size={16} />} title="No questions yet" hint="Add question picks what the form asks." />
                     ) : (
                       <div className="space-y-1.5">
                         {editingForm.questions.map((question, index) => (
@@ -965,13 +962,16 @@ export function LeadInboxPanel({ companyId, savedInbox }: { companyId: string; s
             {copied === "inbox" ? "Copied" : "Copy"}
           </button>
         </div>
+      ) : inbox.status === "loading" ? (
+        <SkeletonGroup label="Getting your address" className="flex items-center gap-2">
+          <Skeleton className="h-9 min-w-0 flex-1 rounded-[11px]" />
+          <Skeleton className="h-9 w-[82px] shrink-0 rounded-[11px]" />
+        </SkeletonGroup>
       ) : (
         <p className="text-[13px] font-medium" style={{ color: "var(--text-muted)" }}>
-          {inbox.status === "loading"
-            ? "Getting your address…"
-            : inbox.status === "preview"
-              ? "Each company gets its own address here — not in the Preview."
-              : "Couldn't get your address just now. Try again in a moment."}
+          {inbox.status === "preview"
+            ? "Each company gets its own address here — not in the Preview."
+            : "Couldn't get your address just now. Try again in a moment."}
         </p>
       )}
       {gmail && (gmail.link || gmail.code) ? (

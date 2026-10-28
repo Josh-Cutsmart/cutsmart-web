@@ -2,6 +2,7 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { GlassModalHeader } from "@/components/glass-modal-header";
+import { EmptyState } from "@/components/empty-state";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import {
@@ -755,7 +756,7 @@ export default function UserSettingsPage() {
   const saveStatusPill =
     isSaving || profileDirty || saveMsg ? (
       <div
-        className="inline-flex shrink-0 items-center gap-2 rounded-full border px-3 py-1 text-[11px] font-bold"
+        className="inline-flex shrink-0 items-center gap-2 rounded-full border px-3 py-1 text-[11px] font-medium"
         style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: saveStatusTone }}
       >
         <span className="inline-flex h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: saveStatusTone }} />
@@ -793,7 +794,7 @@ export default function UserSettingsPage() {
           type="button"
           disabled={verifyBusy || verifyCode.trim().length !== 6}
           onClick={() => void onConfirmVerificationCode()}
-          className="h-8 rounded-[8px] px-2.5 text-[11px] font-bold text-white disabled:opacity-55"
+          className="h-8 rounded-[8px] px-2.5 text-[11px] font-semibold text-white disabled:opacity-55"
           style={{ backgroundImage: "var(--brand-gradient)" }}
         >
           Verify
@@ -802,7 +803,7 @@ export default function UserSettingsPage() {
           type="button"
           disabled={verifyBusy || verifyResendCooldown > 0}
           onClick={() => void onSendVerificationCode()}
-          className="h-8 rounded-[8px] border px-2.5 text-[11px] font-bold disabled:opacity-55"
+          className="h-8 rounded-[8px] border px-2.5 text-[11px] font-semibold disabled:opacity-55"
           style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
         >
           {verifyResendCooldown > 0 ? `Resend (${verifyResendCooldown}s)` : "Resend Code"}
@@ -921,7 +922,7 @@ export default function UserSettingsPage() {
               boxShadow: "var(--shadow-glass)",
             }}
           />
-          <span className="relative z-10 flex w-full items-center justify-between px-3 text-[12px] font-bold">
+          <span className="relative z-10 flex w-full items-center justify-between px-3 text-[12px] font-semibold">
             <span
               style={{
                 color: isDarkMode ? "#ffffff" : "var(--brand-strong)",
@@ -955,7 +956,7 @@ export default function UserSettingsPage() {
           <p className="mt-1 text-[14px] font-semibold" style={{ color: "var(--text-main)" }}>{companyName || "-"}</p>
           {(companyRoleLabel || user?.role) ? (
             <span
-              className="mt-1.5 inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-bold"
+              className="mt-1.5 inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-medium"
               style={{
                 backgroundColor: companyRoleColor || "#7D99B3",
                 color: contrastTextForFill(companyRoleColor || "#7D99B3"),
@@ -1135,7 +1136,7 @@ export default function UserSettingsPage() {
     <button
       type="button"
       onClick={openNewChecklistEditor}
-      className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+      className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-[10px] border px-3 text-[12px] font-semibold transition hover:brightness-95"
       style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
     >
       <Plus size={14} />
@@ -1204,7 +1205,7 @@ export default function UserSettingsPage() {
       <button
         type="button"
         onClick={() => setChecklistRowsDraft((prev) => [...prev, ""])}
-        className="mt-3 inline-flex h-9 items-center gap-1.5 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+        className="mt-3 inline-flex h-9 items-center gap-1.5 rounded-[10px] border px-3 text-[12px] font-semibold transition hover:brightness-95"
         style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
       >
         <Plus size={14} />
@@ -1216,7 +1217,7 @@ export default function UserSettingsPage() {
           type="button"
           disabled={!checklistNameDraft.trim() || !checklistRowsDraft.some((v) => v.trim())}
           onClick={() => void saveChecklistDraft()}
-          className="h-10 rounded-[10px] px-4 text-[12px] font-bold text-white disabled:opacity-55"
+          className="h-10 rounded-[10px] px-4 text-[12px] font-semibold text-white disabled:opacity-55"
           style={{ backgroundImage: "var(--brand-gradient)" }}
         >
           Save Checklist
@@ -1224,7 +1225,7 @@ export default function UserSettingsPage() {
         <button
           type="button"
           onClick={closeChecklistEditor}
-          className="h-10 rounded-[10px] border px-4 text-[12px] font-bold transition hover:brightness-95"
+          className="h-10 rounded-[10px] border px-4 text-[12px] font-semibold transition hover:brightness-95"
           style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
         >
           Cancel
@@ -1242,7 +1243,7 @@ export default function UserSettingsPage() {
           <div className="flex min-w-0 items-center gap-2">
             <ClipboardList size={15} style={{ color: "var(--text-muted)" }} />
             <div className="min-w-0">
-              <p className="truncate text-[13px] font-bold" style={{ color: "var(--text-main)" }}>{template.name}</p>
+              <p className="truncate text-[13px] font-medium" style={{ color: "var(--text-main)" }}>{template.name}</p>
               <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
                 {template.items.length} item{template.items.length === 1 ? "" : "s"}
               </p>
@@ -1276,9 +1277,14 @@ export default function UserSettingsPage() {
       ))}
     </div>
   ) : (
-    <div className="flex flex-col items-center justify-center gap-2 rounded-[14px] border py-8 text-center" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>
-      <ClipboardList size={22} style={{ color: "var(--text-muted)", opacity: 0.6 }} />
-      <p className="text-[12px] font-semibold" style={{ color: "var(--text-muted)" }}>No checklists yet.</p>
+    <div className="rounded-[14px] border" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>
+      <EmptyState
+        compact
+        icon={<ClipboardList size={16} />}
+        title="No checklists yet"
+        hint="Checklists you create here can be added to any project."
+        action={{ label: "Create Checklist", icon: <Plus size={14} />, onClick: openNewChecklistEditor }}
+      />
     </div>
   );
   // The page's bar. On a phone it's fixed under the app's tab bar, so it stays put while the pages slide
@@ -1333,7 +1339,7 @@ export default function UserSettingsPage() {
           await saveProfile("manual");
           router.push("/dashboard");
         }}
-        className="inline-flex h-9 shrink-0 items-center rounded-[10px] border px-4 text-[12px] font-bold transition hover:brightness-95 disabled:opacity-55"
+        className="inline-flex h-9 shrink-0 items-center rounded-[10px] border px-4 text-[12px] font-semibold transition hover:brightness-95 disabled:opacity-55"
         style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
       >
         {isSaving ? "Saving..." : "Save & Back"}
@@ -1472,7 +1478,7 @@ export default function UserSettingsPage() {
         <MobileSettingsRow icon={BadgeCheck} label="Role">
           {companyRoleLabel || user?.role ? (
             <span
-              className="inline-flex shrink-0 items-center rounded-full px-2.5 py-1 text-[11px] font-bold"
+              className="inline-flex shrink-0 items-center rounded-full px-2.5 py-1 text-[11px] font-medium"
               style={{ backgroundColor: companyRoleColor || "#7D99B3", color: contrastTextForFill(companyRoleColor || "#7D99B3") }}
             >
               {companyRoleLabel || user?.role}
@@ -1771,7 +1777,7 @@ export default function UserSettingsPage() {
         <button
           type="button"
           onClick={() => void onClickDownloadApp()}
-          className="flex h-11 w-full items-center justify-center gap-1.5 rounded-[12px] border text-[13px] font-bold text-white transition hover:brightness-95"
+          className="flex h-11 w-full items-center justify-center gap-1.5 rounded-[12px] border text-[13px] font-semibold text-white transition hover:brightness-95"
           style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
         >
           <Download size={15} />
@@ -1785,7 +1791,7 @@ export default function UserSettingsPage() {
             setPwaHelpOrigin(captureGlassModalOrigin(e));
             setIsPwaHelpOpen(true);
           }}
-          className="flex h-11 w-full items-center justify-center gap-1.5 rounded-[12px] border text-[13px] font-bold text-white transition hover:brightness-95"
+          className="flex h-11 w-full items-center justify-center gap-1.5 rounded-[12px] border text-[13px] font-semibold text-white transition hover:brightness-95"
           style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
         >
           <HelpCircle size={15} />
@@ -1860,7 +1866,7 @@ export default function UserSettingsPage() {
                 ))}
               </div>
             ) : (
-              <p className="px-1 py-2 text-[12px]" style={{ color: "var(--text-muted)" }}>No settings match.</p>
+              <EmptyState compact icon={<Search size={16} />} title="No matches" hint="Try a different search" />
             )
           ) : (
             <div className={MOBILE_ROWS_CARD_CLASS} style={glassCardStyle}>

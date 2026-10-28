@@ -9,6 +9,7 @@ import { useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-m
 import { activeDate } from "@/lib/company-formats";
 import { ProjectEventsTimeline } from "@/components/project-timeline";
 import { SkeletonRows } from "@/components/skeleton";
+import { EmptyState } from "@/components/empty-state";
 import {
   calendarCategoryLevel,
   normalizeCalendarCategories,
@@ -185,12 +186,13 @@ export function ProjectScheduleModal({
           ) : !loaded ? (
             <SkeletonRows count={4} label="Loading the schedule" />
           ) : visibleEvents.length === 0 ? (
-            <div className="rounded-[14px] border border-dashed px-4 py-10 text-center" style={{ borderColor: "var(--glass-border)" }}>
-              <p className="text-[14px] font-medium" style={{ color: "var(--text-main)" }}>Nothing scheduled for this project.</p>
-              <p className="mt-1 text-[12.5px]" style={{ color: "var(--text-main)" }}>
-                Link this project to an event in the Calendar and it shows here.
-              </p>
-            </div>
+            <EmptyState
+              compact
+              className="py-10"
+              icon={<CalendarDays size={16} />}
+              title="Nothing scheduled yet"
+              hint="Link this project to an event in the Calendar and it shows here."
+            />
           ) : (
             <div className="space-y-4">
               <div className="space-y-2">

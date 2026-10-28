@@ -77,6 +77,7 @@ import { isPreviewMode } from "@/lib/preview-mode";
 import { db } from "@/lib/firebase";
 import { deleteDoc, doc, setDoc } from "@/lib/firestore-client";
 import { RestoreDialog, restoreStatusOptionsFrom } from "@/components/restore-dialog";
+import { Skeleton, SkeletonGroup } from "@/components/skeleton";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import type { Project } from "@/lib/types";
 
@@ -1960,9 +1961,16 @@ function ArchivedPageInner() {
                     );
                   })}
                 </div>
+              ) : isLoadingAny ? (
+                // Opening the cabinet: a drawer or two, waiting.
+                <SkeletonGroup label="Opening the cabinet" className="mt-1.5 space-y-2">
+                  {[0, 1].map((i) => (
+                    <Skeleton key={i} className="h-[46px] w-full rounded-[18px]" />
+                  ))}
+                </SkeletonGroup>
               ) : (
                 <p className="px-2.5 pb-2 pt-1 text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>
-                  {isLoadingAny ? "Opening the cabinet..." : "Nothing filed."}
+                  Nothing filed.
                 </p>
               )}
             </div>
@@ -2019,16 +2027,16 @@ function ArchivedPageInner() {
             {folders.length === 0 ? (
               isLoadingAny ? (
                 // Opening the cabinet: a folder or two, waiting.
-                <div className="space-y-6 pt-4" aria-busy="true">
+                <SkeletonGroup label="Opening the cabinet" className="space-y-6 pt-4">
                   {[0, 1].map((i) => (
-                    <div key={i} className="glass-shine glass-shine-neutral relative animate-pulse rounded-[24px] px-3 pb-3 pt-8">
-                      <span className="absolute -top-4 left-4 h-8 w-36 rounded-full" style={{ backgroundColor: "color-mix(in srgb, var(--brand) 25%, var(--panel-bg))" }} />
+                    <div key={i} className="glass-shine glass-shine-neutral relative rounded-[24px] px-3 pb-3 pt-8">
+                      <Skeleton className="absolute -top-4 left-4 h-8 w-36 rounded-full" style={{ backgroundColor: "color-mix(in srgb, var(--brand) 25%, var(--panel-bg))" }} />
                       {[0, 1, 2].map((j) => (
-                        <div key={j} className="mb-1.5 h-[54px] rounded-[18px]" style={{ backgroundColor: "var(--panel-muted)" }} />
+                        <Skeleton key={j} className="mb-1.5 h-[54px] w-full rounded-[18px]" />
                       ))}
                     </div>
                   ))}
-                </div>
+                </SkeletonGroup>
               ) : (
                 <div className="glass-shine glass-shine-neutral flex flex-col items-center rounded-[26px] px-6 py-12 text-center">
                   <span className="glass-shine inline-flex h-14 w-14 items-center justify-center rounded-full text-white" style={glassShineStyle("var(--brand)")}>

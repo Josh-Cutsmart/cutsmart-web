@@ -2,9 +2,11 @@
 
 import { ProtectedRoute } from "@/components/protected-route";
 import { AppShell } from "@/components/app-shell";
+import { ConnectionStatus } from "@/components/connection-status";
 import { DevMode } from "@/components/dev-mode";
 import { PreviewBanner } from "@/components/preview-banner";
 import { VerifyEmailGate } from "@/components/verify-email-gate";
+import { WarmProjectPage } from "@/components/warm-project-page";
 import { useAuth } from "@/lib/auth-context";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
@@ -32,6 +34,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       <DevMode />
       {/* CutSmart Preview only (lib/preview-mode.ts). */}
       <PreviewBanner />
+      {/* Offline, or changes slow to reach the database — and when they're all saved again. */}
+      <ConnectionStatus />
+      {/* The project page's code, fetched ahead (it's big). */}
+      <WarmProjectPage />
     </ProtectedRoute>
   );
 }

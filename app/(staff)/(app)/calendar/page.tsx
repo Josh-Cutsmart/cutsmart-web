@@ -54,6 +54,8 @@ import {
 } from "@/lib/calendar-data";
 import { GlassActionMenu, GlassDropdown, type GlassActionMenuItem } from "@/components/glass-dropdown";
 import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
+import { EmptyState } from "@/components/empty-state";
+import { Skeleton, SkeletonGroup, SkeletonLines } from "@/components/skeleton";
 import {
   GlassSwitch,
   Segmented,
@@ -719,9 +721,25 @@ function ProjectSchedulePanel({
       </div>
       <div className="-mx-1.5 min-h-0 flex-1 overflow-y-auto px-1.5">
         {!loaded ? (
-          <p className="px-2 py-3 text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>Loading…</p>
+          // Its rows to come: a heading, then a project or small job each (an emblem, its name and a line under it).
+          <SkeletonGroup label="Loading projects" className="px-2 pt-2">
+            <Skeleton className="mb-2 h-2.5 w-24" />
+            {[62, 48, 70, 54, 40].map((width) => (
+              <div key={width} className="flex items-center gap-2.5 py-1.5">
+                <Skeleton className="h-7 w-7 shrink-0 rounded-full" />
+                <div className="min-w-0 flex-1">
+                  <Skeleton className="h-3" style={{ width: `${width}%` }} />
+                  <Skeleton className="mt-1.5 h-2.5" style={{ width: `${width - 22}%` }} />
+                </div>
+              </div>
+            ))}
+          </SkeletonGroup>
         ) : unscheduled.length === 0 && scheduled.length === 0 ? (
-          <p className="px-2 py-3 text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>{search.trim() ? "No projects match." : "No projects yet."}</p>
+          search.trim() ? (
+            <EmptyState icon={<Search size={16} />} title="No matches" hint="Try a different search" compact />
+          ) : (
+            <EmptyState icon={<FolderKanban size={16} />} title="No projects yet" hint="Projects and small jobs show here, ready to drag onto a day." compact />
+          )
         ) : (
           <>
             {unscheduled.length ? (
@@ -2767,9 +2785,12 @@ function CalendarPageContent() {
     return (
       <div className={`overflow-hidden lg:min-h-0 lg:flex-1 lg:overflow-y-auto ${viewShell.className}`} style={viewShell.style}>
         {groups.length === 0 ? (
-          <p className="px-5 py-10 text-center text-[13px]" style={{ color: "var(--text-muted)" }}>
-            No events in the next {LIST_DAYS} days.
-          </p>
+          <EmptyState
+            icon={<CalendarDays size={20} />}
+            title={`No events in the next ${LIST_DAYS} days`}
+            hint="Events booked in that time show here, day by day."
+            action={canCreate ? { label: "New event", icon: <Plus size={15} />, onClick: (e?: ReactMouseEvent<HTMLElement>) => openNew(newEventStartMs(), true, e) } : undefined}
+          />
         ) : (
           groups.map((g) => (
             <div key={g.day.getTime()} className="border-b last:border-b-0" style={{ borderColor: "var(--glass-border)" }}>
@@ -2860,7 +2881,25 @@ function CalendarPageContent() {
 
   // ---------------------------------------------------------------- render
   if (access.status === "loading") {
-    return <div className="p-6 text-[13px]" style={{ color: "var(--text-muted)" }}>Checking access...</div>;
+    // While your access is checked: the calendar's shape — its sidebar, and a month of days.
+    return (
+      <SkeletonGroup label="Checking access" className="grid w-full gap-3 p-3 lg:grid-cols-[252px_minmax(0,1fr)]">
+        <div className="hidden space-y-3 rounded-[20px] border p-3.5 lg:block" style={cardStyle}>
+          <Skeleton className="h-5 w-28" />
+          <Skeleton className="h-9 w-full rounded-full" />
+          <Skeleton className="h-9 w-full rounded-full" />
+          <SkeletonLines lines={4} className="pt-2" />
+        </div>
+        <div className="rounded-[20px] border p-3" style={cardStyle}>
+          <Skeleton className="mb-3 h-6 w-40" />
+          <div className="grid grid-cols-7 gap-1.5">
+            {Array.from({ length: 35 }, (_, index) => (
+              <Skeleton key={index} className="h-16 w-full rounded-[10px] sm:h-20" />
+            ))}
+          </div>
+        </div>
+      </SkeletonGroup>
+    );
   }
   if (!canView) {
     return (

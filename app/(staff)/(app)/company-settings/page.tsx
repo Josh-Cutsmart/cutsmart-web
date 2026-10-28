@@ -96,11 +96,12 @@ import {
   type JoinCodesState,
 } from "@/lib/company-join-codes";
 import { FileText, Lightbulb } from "lucide-react";
-import { Box, FolderTree, History, LayoutTemplate, Lock, Percent, Receipt, Shield, ShieldCheck, UserMinus, UserPlus } from "lucide-react";
+import { Box, FolderTree, History, LayoutTemplate, Lock, Percent, Receipt, Shield, ShieldCheck, UserMinus, UserPlus, Wrench } from "lucide-react";
 import { isStaffContactCategory, withStaffContactCategory } from "@/lib/staff-contacts";
 import { Archive, Award, CalendarDays, CircleDashed, Cog, Columns3, Contact, Copy, Cpu, DoorClosed, DoorOpen, Eye, Factory, Globe2, Hammer, HardHat as TradeIcon, ImageUp, Inbox, KanbanSquare, KeyRound, Palette, PanelLeft, RefreshCw, Ruler, Shapes, SlidersHorizontal, Star, Tags, Trash2 } from "lucide-react";
 import { normalizeSmallJobStatuses } from "@/lib/small-jobs";
-import { SkeletonRows } from "@/components/skeleton";
+import { Skeleton, SkeletonGroup, SkeletonRows } from "@/components/skeleton";
+import { EmptyState } from "@/components/empty-state";
 import {
   ColorCircle,
   GlassSwitch,
@@ -5137,12 +5138,32 @@ export default function CompanySettingsPage() {
   return (
     <>
         {access.status === "loading" ? (
-          <div
-            className="rounded-[16px] border p-6 text-[13px] font-semibold"
-            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
-          >
-            Checking access...
-          </div>
+          <SkeletonGroup label="Checking access" className="grid w-full grid-cols-1 gap-[18px] lg:grid-cols-[264px_minmax(0,1fr)]">
+            <div className="space-y-3 rounded-[20px] border border-[var(--glass-border)] p-3.5 max-lg:hidden">
+              <Skeleton className="h-5 w-28" />
+              <Skeleton className="h-9 w-full rounded-[10px]" />
+              {[70, 56, 64, 48, 60, 52].map((width) => (
+                <Skeleton key={width} className="h-3.5" style={{ width: `${width}%` }} />
+              ))}
+            </div>
+            <div className="space-y-[18px]">
+              <div className="flex items-center gap-3.5 px-1 pt-1">
+                <Skeleton className="h-[46px] w-[46px] shrink-0 rounded-[14px]" />
+                <div className="min-w-0 flex-1">
+                  <Skeleton className="h-5 w-44" />
+                  <Skeleton className="mt-2 h-3 w-72 max-w-full" />
+                </div>
+              </div>
+              <div className="rounded-[20px] border border-[var(--glass-border)] px-4 py-2">
+                {[44, 58, 36, 50].map((width) => (
+                  <div key={width} className="flex items-center justify-between gap-3 border-b border-[var(--glass-border)] py-3.5 last:border-b-0">
+                    <Skeleton className="h-3" style={{ width: `${width}%` }} />
+                    <Skeleton className="h-8 w-32 rounded-[10px]" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          </SkeletonGroup>
         ) : access.status === "error" ? (
           <div
             className="rounded-[16px] border p-6 text-[13px] font-semibold"
@@ -5152,7 +5173,7 @@ export default function CompanySettingsPage() {
             <button
               type="button"
               onClick={() => access.retry()}
-              className="mt-3 inline-flex h-9 items-center rounded-[8px] border px-3 text-[12px] font-bold hover:brightness-95"
+              className="mt-3 inline-flex h-9 items-center rounded-[8px] border px-3 text-[12px] font-semibold hover:brightness-95"
               style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
             >
               Retry
@@ -5223,7 +5244,7 @@ export default function CompanySettingsPage() {
                     }}
                   >
                     {searchResults.length === 0 ? (
-                      <p className="px-2.5 py-2 text-[12px]" style={{ color: "var(--text-muted)" }}>No settings match &ldquo;{search.trim()}&rdquo;</p>
+                      <EmptyState compact icon={<Search size={16} />} title="No matches" hint="Try a different search" />
                     ) : (
                       searchResults.map((item) => (
                         <button
@@ -5364,7 +5385,7 @@ export default function CompanySettingsPage() {
                       <span className="font-mono text-[12.5px]" style={{ color: "var(--text-main)" }}>{toStr(company?.id, activeCompanyId)}</span>
                     </FieldRow>
                     <FieldRow label="Plan">
-                      <span className="rounded-full px-2.5 py-0.5 text-[11.5px] font-bold" style={{ backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}>
+                      <span className="rounded-full px-2.5 py-0.5 text-[11.5px] font-medium" style={{ backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}>
                         {toStr(company?.planName, "Free")}
                       </span>
                     </FieldRow>
@@ -5704,7 +5725,7 @@ export default function CompanySettingsPage() {
                   <Panel title="Board colour memory" icon={Palette} description="Recorded automatically from your cutlists, with the edging tapes used on each colour.">
                     <div className="space-y-1.5">
                       {boardColourMemory.length === 0 ? (
-                        <p className="text-[12.5px]" style={{ color: "var(--text-muted)" }}>Nothing recorded yet — colours appear here as they&apos;re used in cutlists.</p>
+                        <EmptyState compact icon={<Palette size={16} />} title="No colours recorded yet" hint="Colours appear here as they're used in cutlists." />
                       ) : null}
                       {boardColourMemory.map((row, idx) => {
                         const isExpanded = expandedBoardColourMemoryRows.has(row.value);
@@ -5906,7 +5927,7 @@ export default function CompanySettingsPage() {
                                     type="button"
                                     onClick={() => setMachineAsDefault(m.id)}
                                     title={m.isDefaultForType ? `Default ${machineTypeLabel(m)}` : `Make this the default ${machineTypeLabel(m)}`}
-                                    className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10.5px] font-bold transition"
+                                    className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10.5px] font-semibold transition"
                                     style={
                                       m.isDefaultForType
                                         ? { backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }
@@ -6126,7 +6147,7 @@ export default function CompanySettingsPage() {
                                 <FieldGroupHeading>Servicing History</FieldGroupHeading>
                                 <div className="space-y-1.5">
                                   {activeMachine.serviceHistory.length === 0 ? (
-                                    <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>No service entries yet.</p>
+                                    <EmptyState compact icon={<Wrench size={16} />} title="No service entries yet" hint="Add an entry each time the machine is serviced." />
                                   ) : null}
                                   {activeMachine.serviceHistory.map((entry, idx) => (
                                     <div key={entry.id} className={`${listRowClass} flex-wrap`}>
@@ -6887,9 +6908,7 @@ export default function CompanySettingsPage() {
                   {isOwnerOrAdmin(currentMemberRole) ? (
                     <Panel title="Audit log" icon={History} description="Every change to roles and permissions — who made it and when. Newest first.">
                       {roleAuditLog.length === 0 ? (
-                        <p className="text-[12.5px] font-medium" style={{ color: "var(--text-muted)" }}>
-                          No changes yet. Changing someone&apos;s role, or what a role can do, is noted here.
-                        </p>
+                        <EmptyState compact icon={<History size={16} />} title="No changes yet" hint="Changing someone's role, or what a role can do, is noted here." />
                       ) : (
                         <div>
                           {roleAuditLog.slice(0, roleAuditShown).map((entry) => (
@@ -8374,7 +8393,7 @@ export default function CompanySettingsPage() {
                           <button
                             type="button"
                             onClick={() => setIsItemCategoriesModalOpen(false)}
-                            className="inline-flex h-9 shrink-0 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+                            className="inline-flex h-9 shrink-0 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-semibold transition hover:brightness-95"
                             style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
                           >
                             <ArrowLeft size={14} />
@@ -8730,7 +8749,7 @@ export default function CompanySettingsPage() {
                             type="button"
                             onClick={downloadSpecsTemplate}
                             title="Download this template as a JSON file"
-                            className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+                            className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-semibold transition hover:brightness-95"
                             style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                           >
                             <Download size={14} />
@@ -8740,7 +8759,7 @@ export default function CompanySettingsPage() {
                             type="button"
                             onClick={() => specsTemplateFileInputRef.current?.click()}
                             title="Upload a template JSON file exported from another company"
-                            className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+                            className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-semibold transition hover:brightness-95"
                             style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                           >
                             <Upload size={14} />
@@ -8753,7 +8772,7 @@ export default function CompanySettingsPage() {
                               setSpecsTemplateResetConfirmOrigin(captureGlassModalOrigin(e));
                               setIsSpecsTemplateResetConfirmOpen(true);
                             }}
-                            className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+                            className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-semibold transition hover:brightness-95"
                             style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
                           >
                             <RotateCcw size={14} />
@@ -8762,7 +8781,7 @@ export default function CompanySettingsPage() {
                           <button
                             type="button"
                             onClick={() => setIsSpecsLayoutModalOpen(false)}
-                            className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+                            className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-semibold transition hover:brightness-95"
                             style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
                           >
                             <ArrowLeft size={14} />
@@ -8832,7 +8851,7 @@ export default function CompanySettingsPage() {
                             <button
                               type="button"
                               onClick={() => setIsSpecsTemplateResetConfirmOpen(false)}
-                              className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95"
+                              className="h-9 rounded-[9px] border px-4 text-[12px] font-semibold hover:brightness-95"
                               style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
                             >
                               Cancel
@@ -8840,7 +8859,7 @@ export default function CompanySettingsPage() {
                             <button
                               type="button"
                               onClick={resetSpecsTemplate}
-                              className="h-9 rounded-[9px] border px-4 text-[12px] font-bold text-white hover:brightness-95"
+                              className="h-9 rounded-[9px] border px-4 text-[12px] font-semibold text-white hover:brightness-95"
                               style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
                             >
                               Reset Template
@@ -8887,7 +8906,7 @@ export default function CompanySettingsPage() {
                             type="button"
                             onClick={downloadQuoteTemplate}
                             title="Download this template as a JSON file"
-                            className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+                            className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-semibold transition hover:brightness-95"
                             style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                           >
                             <Download size={14} />
@@ -8897,7 +8916,7 @@ export default function CompanySettingsPage() {
                             type="button"
                             onClick={() => quoteTemplateFileInputRef.current?.click()}
                             title="Upload a template JSON file exported from another company"
-                            className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+                            className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-semibold transition hover:brightness-95"
                             style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                           >
                             <Upload size={14} />
@@ -8910,7 +8929,7 @@ export default function CompanySettingsPage() {
                               setQuoteTemplateResetConfirmOrigin(captureGlassModalOrigin(e));
                               setIsQuoteTemplateResetConfirmOpen(true);
                             }}
-                            className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+                            className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-semibold transition hover:brightness-95"
                             style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
                           >
                             <RotateCcw size={14} />
@@ -8919,7 +8938,7 @@ export default function CompanySettingsPage() {
                           <button
                             type="button"
                             onClick={() => setIsQuoteLayoutModalOpen(false)}
-                            className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+                            className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-semibold transition hover:brightness-95"
                             style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
                           >
                             <ArrowLeft size={14} />
@@ -8987,7 +9006,7 @@ export default function CompanySettingsPage() {
                             <button
                               type="button"
                               onClick={() => setIsQuoteTemplateResetConfirmOpen(false)}
-                              className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95"
+                              className="h-9 rounded-[9px] border px-4 text-[12px] font-semibold hover:brightness-95"
                               style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
                             >
                               Cancel
@@ -8995,7 +9014,7 @@ export default function CompanySettingsPage() {
                             <button
                               type="button"
                               onClick={resetQuoteTemplate}
-                              className="h-9 rounded-[9px] border px-4 text-[12px] font-bold text-white hover:brightness-95"
+                              className="h-9 rounded-[9px] border px-4 text-[12px] font-semibold text-white hover:brightness-95"
                               style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
                             >
                               Reset Template
@@ -9019,18 +9038,23 @@ export default function CompanySettingsPage() {
                   >
                     {/* At a glance: each product's sell prices (cost + margin). Click any row to edit them all in the sheet. */}
                     {jobTypes.length === 0 ? (
-                      <div className="flex flex-col items-center gap-2 rounded-[14px] border border-dashed px-4 py-8 text-center" style={{ borderColor: "color-mix(in srgb, var(--text-main) 18%, transparent)" }}>
-                        <p className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>No products yet.</p>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            addProduct();
-                            openProductsSheet(e);
+                      <div className="rounded-[14px] border border-dashed" style={{ borderColor: "color-mix(in srgb, var(--text-main) 18%, transparent)" }}>
+                        <EmptyState
+                          compact
+                          icon={<Box size={16} />}
+                          title="No products yet"
+                          hint="Add your products and how they're priced on a quote."
+                          action={{
+                            label: "Add a product",
+                            icon: <Plus size={14} />,
+                            // EmptyState's button hands its click on, so the sheet still opens from it.
+                            onClick: (event?: ReactMouseEvent<HTMLElement>) => {
+                              addProduct();
+                              if (event) openProductsSheet(event);
+                              else setIsProductsSheetOpen(true);
+                            },
                           }}
-                          className={secondaryButtonClass}
-                        >
-                          <Plus size={14} /> Add a product
-                        </button>
+                        />
                       </div>
                     ) : (
                       <div className="overflow-x-auto">
@@ -9125,7 +9149,7 @@ export default function CompanySettingsPage() {
                           <button
                             type="button"
                             onClick={() => setIsProductsSheetOpen(false)}
-                            className="inline-flex h-9 shrink-0 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+                            className="inline-flex h-9 shrink-0 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-semibold transition hover:brightness-95"
                             style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
                           >
                             <ArrowLeft size={14} />
@@ -9138,12 +9162,15 @@ export default function CompanySettingsPage() {
                             scroll sideways, rather than squeezing them. */}
                         <div className="mx-auto flex w-max flex-col gap-3">
                           {jobTypes.length === 0 ? (
-                            <p
-                              className="rounded-[16px] border px-4 py-8 text-center text-[13px] font-medium"
-                              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                            >
-                              No products yet — add one.
-                            </p>
+                            <div className="rounded-[16px] border" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}>
+                              <EmptyState
+                                compact
+                                icon={<Box size={16} />}
+                                title="No products yet"
+                                hint="Each product gets its own card here, with its pricing."
+                                action={{ label: "Add product", icon: <Plus size={14} />, onClick: addProduct }}
+                              />
+                            </div>
                           ) : null}
                           {jobTypes.map((row, idx) => {
                             const collapsed = Boolean(productCollapsed[idx]);
@@ -9517,9 +9544,7 @@ export default function CompanySettingsPage() {
                           <span className="w-7 shrink-0" />
                         </div>
                       ) : (
-                        <p className="px-2 py-1 text-[12.5px] font-medium" style={{ color: "var(--text-main)" }}>
-                          No extra charges yet.
-                        </p>
+                        <EmptyState compact icon={<Receipt size={16} />} title="No extra charges yet" hint="Charges you add here can be turned on in a project's Design tab." />
                       )}
                       {extraCharges.map((row, idx) => (
                         <div
@@ -10695,9 +10720,9 @@ export default function CompanySettingsPage() {
                 {leadFieldsLoading ? (
                   <SkeletonRows count={3} avatar={false} label="Loading fields" />
                 ) : mergedLeadFieldLayout.length === 0 ? (
-                  <p className="rounded-[12px] border border-dashed px-3 py-4 text-[12.5px]" style={{ borderColor: "color-mix(in srgb, var(--text-main) 16%, transparent)", color: "var(--text-muted)" }}>
-                    No lead fields yet. Submit at least one Zapier lead and its fields will appear here.
-                  </p>
+                  <div className="rounded-[12px] border border-dashed" style={{ borderColor: "color-mix(in srgb, var(--text-main) 16%, transparent)" }}>
+                    <EmptyState compact icon={<Inbox size={16} />} title="No lead fields yet" hint="Submit at least one Zapier lead and its fields will appear here." />
+                  </div>
                 ) : (
                   <div className="space-y-1.5">
                     {/* Phones: "Use for" drops to its own line under each field (and its heading hides). */}

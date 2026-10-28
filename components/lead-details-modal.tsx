@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
-import { Check, ListChecks, Mail, Phone, X } from "lucide-react";
+import { Check, FileText, ListChecks, Mail, Phone, StickyNote, X } from "lucide-react";
 import { modalCloseButtonClass } from "@/components/settings-ui";
 import { CopyButton } from "@/components/copy-button";
 import { authorizedFetch } from "@/lib/api-fetch";
@@ -25,6 +25,7 @@ import type { ProjectChecklist } from "@/lib/types";
 import { useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { contrastTextForFill } from "@/lib/user-profile-format";
 import { Skeleton } from "@/components/skeleton";
+import { EmptyState } from "@/components/empty-state";
 
 // The lead a project was made from (project.sourceLeadId — Leads › Create Project, or a column automation converting
 // it), in its pop-up exactly as the Leads page lays it out — read only, the lead being archived once it became the
@@ -86,12 +87,7 @@ const SECTION_TITLE = "text-[16px] font-semibold";
 // Its checklists, ticked as they were.
 function ChecklistsList({ checklists }: { checklists: ProjectChecklist[] }) {
   if (!checklists.length) {
-    return (
-      <div className="flex flex-col items-center gap-2 pt-8 text-center" style={{ color: "var(--text-main)" }}>
-        <ListChecks size={26} strokeWidth={1.75} />
-        <p className="max-w-[220px] text-[12.5px] font-medium">No checklists were added to this lead.</p>
-      </div>
-    );
+    return <EmptyState compact className="pt-8" icon={<ListChecks size={16} />} title="No checklists on this lead" />;
   }
   return (
     <div className="space-y-2">
@@ -133,11 +129,7 @@ function ChecklistsList({ checklists }: { checklists: ProjectChecklist[] }) {
 // Its notes, newest first — each with who wrote it and when.
 function NotesList({ notes }: { notes: LeadNote[] }) {
   if (!notes.length) {
-    return (
-      <p className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
-        No notes on this lead.
-      </p>
-    );
+    return <EmptyState compact icon={<StickyNote size={16} />} title="No notes on this lead" hint="Notes written about this lead show here, newest first." />;
   }
   return (
     <div className="space-y-2">
@@ -377,9 +369,7 @@ export function LeadDetailsModal({
                     ))}
                   </div>
                 ) : (
-                  <p className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
-                    No details on this lead.
-                  </p>
+                  <EmptyState compact icon={<FileText size={16} />} title="No details on this lead" />
                 )}
               </section>
             ) : null}

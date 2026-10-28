@@ -423,7 +423,7 @@ export function SidebarUserSettingsPanel({
               boxShadow: "var(--shadow-glass)",
             }}
           />
-          <div className="relative z-10 grid w-full grid-cols-2 text-[11px] font-bold">
+          <div className="relative z-10 grid w-full grid-cols-2 text-[11px] font-semibold">
             <span className="text-center" style={{ color: isDarkMode ? "#ffffff" : "var(--brand-strong)", transition: "color 140ms ease" }}>Light</span>
             <span className="text-center" style={{ color: isDarkMode ? "#ffffff" : "var(--text-muted)", transition: "color 140ms ease", transform: "translateX(3px)" }}>Dark</span>
           </div>
@@ -438,7 +438,7 @@ export function SidebarUserSettingsPanel({
             <div className="mt-2 flex items-center gap-2">
               <p className="text-[10px] font-bold uppercase tracking-[0.9px]" style={{ color: "var(--text-muted)" }}>Role</p>
               <span
-                className="inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[10px] font-bold"
+                className="inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[10px] font-medium"
                 style={{ backgroundColor: companyRoleColor || "#7D99B3", color: contrastTextForFill(companyRoleColor || "#7D99B3") }}
               >
                 {companyRoleLabel || user?.role}

@@ -47,7 +47,9 @@ import {
   TableCellsMerge,
   TableCellsSplit,
   Undo2,
+  Workflow,
 } from "lucide-react";
+import { EmptyState } from "@/components/empty-state";
 import {
   type SpecsGrid,
   type SpecsGridSelection,
@@ -887,7 +889,7 @@ function MobileLongPressMenu({
         type="button"
         onClick={menu.onConfirm}
         title={menu.title}
-        className="flex w-full items-center gap-2.5 whitespace-nowrap px-4 py-3 text-left text-[14px] font-bold"
+        className="flex w-full items-center gap-2.5 whitespace-nowrap px-4 py-3 text-left text-[14px] font-medium"
         // No hover:brightness-95 (and tap-highlight explicitly killed) — this is a touch-only menu,
         // and a browser's own sticky :hover/tap-flash on a just-tapped element reads as the button
         // staying stuck "lit up" after it appears, not a real hover state. userSelect/
@@ -2904,12 +2906,12 @@ export default function SpecsGridEditor({
         <div className="mx-0.5 h-6 w-px" style={{ backgroundColor: "var(--glass-border)" }} />
         {showPageSizeSelector ? (
           <>
-            <label className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-bold" style={toolbarButtonStyle}>
+            <label className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-semibold" style={toolbarButtonStyle}>
               Sheet Size
               <select
                 value={liveGrid.pageSize}
                 onChange={(e) => applyChange(resizeGridToPageSize(liveGrid, e.target.value as SpecsPageSize), true)}
-                className="appearance-none text-[11px] font-bold outline-none"
+                className="appearance-none text-[11px] font-semibold outline-none"
                 style={{ color: "var(--text-main)", border: "none", background: "transparent" }}
               >
                 {(Object.keys(SPECS_PAGE_SIZES) as SpecsPageSize[]).map((size) => (
@@ -2943,7 +2945,7 @@ export default function SpecsGridEditor({
         >
           <Underline size={14} />
         </button>
-        <label className="inline-flex h-8 items-center gap-1 rounded-[8px] border pl-2 pr-1.5 text-[11px] font-bold" style={toolbarButtonStyle} title="Font">
+        <label className="inline-flex h-8 items-center gap-1 rounded-[8px] border pl-2 pr-1.5 text-[11px] font-semibold" style={toolbarButtonStyle} title="Font">
           <select
             key={activeCell ? `${activeCell.row}:${activeCell.col}` : "none"}
             defaultValue={activeCell?.cell?.style?.fontFamily ?? ""}
@@ -2967,7 +2969,7 @@ export default function SpecsGridEditor({
             // higher specificity than a single Tailwind utility class, so those classes alone
             // couldn't actually win against it; an inline style always overrides an external
             // stylesheet rule regardless of specificity.
-            className="max-w-[100px] appearance-none text-[11px] font-bold outline-none"
+            className="max-w-[100px] appearance-none text-[11px] font-semibold outline-none"
             style={{ color: "var(--text-main)", border: "none", background: "transparent" }}
           >
             <option value="">Default</option>
@@ -2979,7 +2981,7 @@ export default function SpecsGridEditor({
           </select>
           <ChevronDown size={12} />
         </label>
-        <label className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-bold" style={toolbarButtonStyle} title="Text size">
+        <label className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-semibold" style={toolbarButtonStyle} title="Text size">
           Size
           <input inputMode="numeric"
             key={activeCell ? `${activeCell.row}:${activeCell.col}` : "none"}
@@ -2997,7 +2999,7 @@ export default function SpecsGridEditor({
                 e.currentTarget.blur();
               }
             }}
-            className="w-12 bg-transparent text-[11px] font-bold outline-none"
+            className="w-12 bg-transparent text-[11px] font-semibold outline-none"
             style={{ color: "var(--text-main)" }}
           />
         </label>
@@ -3046,7 +3048,7 @@ export default function SpecsGridEditor({
             const rect = e.currentTarget.getBoundingClientRect();
             setColorPopover({ kind: "bg", anchorRect: { left: rect.left, top: rect.bottom, width: rect.width, height: 0 } });
           }}
-          className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-bold"
+          className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-semibold"
           style={toolbarButtonStyle}
         >
           <span className="inline-block h-4 w-4 rounded-[4px] border" style={{ backgroundColor: activeCell?.cell?.style?.bgColor ?? "transparent", borderColor: "var(--glass-border)" }} />
@@ -3058,7 +3060,7 @@ export default function SpecsGridEditor({
             const rect = e.currentTarget.getBoundingClientRect();
             setColorPopover({ kind: "text", anchorRect: { left: rect.left, top: rect.bottom, width: rect.width, height: 0 } });
           }}
-          className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-bold"
+          className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-semibold"
           style={toolbarButtonStyle}
         >
           <span
@@ -3078,7 +3080,7 @@ export default function SpecsGridEditor({
             const clampedLeft = Math.min(Math.max(8, rect.left), Math.max(8, viewportWidth - popoverWidth - 8));
             setBorderPopoverAnchorRect({ left: clampedLeft, top: rect.bottom, width: rect.width, height: 0 });
           }}
-          className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-bold"
+          className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-semibold"
           style={toolbarButtonStyle}
           title="Border settings"
         >
@@ -3092,7 +3094,7 @@ export default function SpecsGridEditor({
               type="button"
               disabled={!activeCell}
               onClick={() => activeCell && setCellImage(activeCell.row, activeCell.col, companyLogoUrl)}
-              className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-bold disabled:opacity-40"
+              className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-semibold disabled:opacity-40"
               style={toolbarButtonStyle}
               title="Insert company logo into the selected cell"
             >
@@ -3103,7 +3105,7 @@ export default function SpecsGridEditor({
               <button
                 type="button"
                 onClick={() => activeCell && setCellImage(activeCell.row, activeCell.col, null)}
-                className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-bold"
+                className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-semibold"
                 style={toolbarDangerStyle}
                 title="Remove image from the selected cell"
               >
@@ -3124,7 +3126,7 @@ export default function SpecsGridEditor({
               applyChange(mergeSelection(liveGrid, selection), true);
             }
           }}
-          className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-bold disabled:opacity-40"
+          className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-semibold disabled:opacity-40"
           style={toolbarButtonStyle}
           title={canUnmerge ? "Unmerge cells" : "Merge cells"}
         >
@@ -3168,7 +3170,7 @@ export default function SpecsGridEditor({
                     toggleCellConfirmableAllowed(activeCell.row, activeCell.col);
                   }
                 }}
-                className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-bold disabled:opacity-40"
+                className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-semibold disabled:opacity-40"
                 style={activeCell?.cell?.confirmableAllowed ? toolbarButtonActiveStyle : toolbarButtonStyle}
                 title="Mark this cell confirmable — staff can then use that project's own 'Mark for Confirmation' button to actually turn it into a client Yes/No question, per project, per round"
               >
@@ -3179,7 +3181,7 @@ export default function SpecsGridEditor({
             <button
               type="button"
               onClick={() => applyChange(insertRow(liveGrid, (activeCell?.row ?? liveGrid.rows.length - 1) + 1), true)}
-              className="inline-flex h-8 items-center gap-1 rounded-[8px] border px-2 text-[11px] font-bold"
+              className="inline-flex h-8 items-center gap-1 rounded-[8px] border px-2 text-[11px] font-semibold"
               style={toolbarButtonStyle}
             >
               <Plus size={12} /> Row
@@ -3187,7 +3189,7 @@ export default function SpecsGridEditor({
             <button
               type="button"
               onClick={() => activeCell && applyDeleteWithUndo(removeRow(liveGrid, activeCell.row), `Row ${activeCell.row + 1} deleted`)}
-              className="inline-flex h-8 items-center gap-1 rounded-[8px] border px-2 text-[11px] font-bold"
+              className="inline-flex h-8 items-center gap-1 rounded-[8px] border px-2 text-[11px] font-semibold"
               style={toolbarDangerStyle}
             >
               <Trash2 size={12} /> Row
@@ -3195,7 +3197,7 @@ export default function SpecsGridEditor({
             <button
               type="button"
               onClick={() => applyChange(insertColumn(liveGrid, (activeCell?.col ?? liveGrid.columnWidths.length - 1) + 1), true)}
-              className="inline-flex h-8 items-center gap-1 rounded-[8px] border px-2 text-[11px] font-bold"
+              className="inline-flex h-8 items-center gap-1 rounded-[8px] border px-2 text-[11px] font-semibold"
               style={toolbarButtonStyle}
             >
               <Plus size={12} /> Col
@@ -3203,7 +3205,7 @@ export default function SpecsGridEditor({
             <button
               type="button"
               onClick={() => activeCell && applyDeleteWithUndo(removeColumn(liveGrid, activeCell.col), `Column ${getColumnLetter(activeCell.col)} deleted`)}
-              className="inline-flex h-8 items-center gap-1 rounded-[8px] border px-2 text-[11px] font-bold"
+              className="inline-flex h-8 items-center gap-1 rounded-[8px] border px-2 text-[11px] font-semibold"
               style={toolbarDangerStyle}
             >
               <Trash2 size={12} /> Col
@@ -3223,7 +3225,7 @@ export default function SpecsGridEditor({
                 );
                 if (lastGroup) applyChange(setAnchorSplitGroup(liveGrid, lastGroup.id), true);
               }}
-              className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-bold disabled:opacity-40"
+              className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-semibold disabled:opacity-40"
               style={splitAnchorGroup ? toolbarButtonActiveStyle : toolbarButtonStyle}
               title="Everything below the line lands flush with the bottom of printed page 1 (only when page 1 isn't already full); everything above flows normally. Drag the line once it appears to move the split."
             >
@@ -3299,7 +3301,7 @@ export default function SpecsGridEditor({
                       key={side}
                       type="button"
                       onClick={() => toggleStyle((s) => ({ ...s, [key]: !s[key] }))}
-                      className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border text-[11px] font-bold"
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border text-[11px] font-semibold"
                       style={isOn ? toolbarButtonActiveStyle : toolbarButtonStyle}
                       title={`Toggle ${side.toLowerCase()} border`}
                     >
@@ -3315,13 +3317,13 @@ export default function SpecsGridEditor({
                   const rect = e.currentTarget.getBoundingClientRect();
                   setColorPopover({ kind: "border", anchorRect: { left: rect.left, top: rect.bottom, width: rect.width, height: 0 } });
                 }}
-                className="mb-3 inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-bold"
+                className="mb-3 inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-semibold"
                 style={toolbarButtonStyle}
               >
                 <span className="inline-block h-4 w-4 rounded-[4px] border-2" style={{ borderColor: activeCell?.cell?.style?.borderColor ?? "var(--text-main)" }} />
                 Choose color
               </button>
-              <label className="flex items-center justify-between gap-1.5 text-[11px] font-bold" style={{ color: "var(--text-main)" }} title="Border width">
+              <label className="flex items-center justify-between gap-1.5 text-[11px] font-medium" style={{ color: "var(--text-main)" }} title="Border width">
                 Width
                 <input inputMode="numeric"
                   key={activeCell ? `${activeCell.row}:${activeCell.col}` : "none"}
@@ -3339,7 +3341,7 @@ export default function SpecsGridEditor({
                       e.currentTarget.blur();
                     }
                   }}
-                  className="h-8 w-16 rounded-[8px] border bg-transparent px-2 text-[11px] font-bold outline-none"
+                  className="h-8 w-16 rounded-[8px] border bg-transparent px-2 text-[11px] font-medium outline-none"
                   style={{ borderColor: "var(--glass-border)", color: "var(--text-main)" }}
                 />
               </label>
@@ -3350,7 +3352,7 @@ export default function SpecsGridEditor({
 
       {isProjectSheetView && !hideSectionsBar && (liveGrid.groups.length > 0 || restorableDeletedGroups.length > 0) ? (
         <div className="flex flex-wrap items-center gap-1.5 border-b p-2" style={{ borderColor: "var(--glass-border)" }}>
-          <span className="text-[11px] font-bold" style={{ color: "var(--text-muted)" }}>
+          <span className="text-[11px] font-medium" style={{ color: "var(--text-muted)" }}>
             Sections:
           </span>
           {liveGrid.groups.map((g) => {
@@ -3369,7 +3371,7 @@ export default function SpecsGridEditor({
                   setDropTargetRowIndex(null);
                 }}
                 onClick={() => toggleGroupHidden(g.id, !hidden)}
-                className="inline-flex h-7 cursor-grab items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-bold active:cursor-grabbing"
+                className="inline-flex h-7 cursor-grab items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-semibold active:cursor-grabbing"
                 style={hidden ? toolbarButtonStyle : toolbarButtonActiveStyle}
                 title={hidden ? `Show "${g.name}" in the printed sheet — drag to reorder` : `Hide "${g.name}" from the printed sheet — drag to reorder`}
               >
@@ -3397,7 +3399,7 @@ export default function SpecsGridEditor({
                     setDropTargetRowIndex(null);
                   }}
                   title={`"${dg.name}" was deleted — drag it back into the sheet anywhere you like`}
-                  className="inline-flex h-7 cursor-grab items-center gap-1.5 rounded-[8px] border border-dashed px-2 text-[11px] font-bold active:cursor-grabbing"
+                  className="inline-flex h-7 cursor-grab items-center gap-1.5 rounded-[8px] border border-dashed px-2 text-[11px] font-semibold active:cursor-grabbing"
                   style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
                 >
                   <Undo2 size={12} />
@@ -4367,7 +4369,7 @@ export default function SpecsGridEditor({
                       type="button"
                       onClick={() => requestImportLinkedQuoteTextIntoZoneForGroup(g.id)}
                       title={`Import "${g.name}" from its editable zone's linked Quote group(s)`}
-                      className="flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-[7px] border px-2 text-[11px] font-bold shadow-sm transition hover:brightness-95"
+                      className="flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-[7px] border px-2 text-[11px] font-semibold shadow-sm transition hover:brightness-95"
                       style={
                         justImported
                           ? { borderColor: "var(--success-strong)", backgroundImage: "var(--success-gradient)", color: "#ffffff" }
@@ -4416,7 +4418,7 @@ export default function SpecsGridEditor({
                     type="button"
                     onClick={result.onClick}
                     title={result.title}
-                    className="flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-[7px] border px-2 text-[11px] font-bold shadow-sm transition hover:brightness-95"
+                    className="flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-[7px] border px-2 text-[11px] font-semibold shadow-sm transition hover:brightness-95"
                     // Always the same green as the "Submitted Version" button (var(--success-gradient)/
                     // var(--success-strong)) regardless of isActive — that one only still drives the
                     // label text (below), not the color anymore.
@@ -4814,7 +4816,7 @@ export default function SpecsGridEditor({
                   />
                   <button
                     type="submit"
-                    className="h-7 rounded-[6px] border px-2 text-[11px] font-bold hover:brightness-95"
+                    className="h-7 rounded-[6px] border px-2 text-[11px] font-semibold hover:brightness-95"
                     style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
                   >
                     Apply
@@ -5046,7 +5048,7 @@ export default function SpecsGridEditor({
                             rules: [...d.rules, { id: genSpecsGroupRuleId(), ifProductName: "", ifState: "on", thenState: "on" }],
                           }))
                         }
-                        className="inline-flex h-7 items-center gap-1 rounded-[7px] border px-2 text-[11px] font-bold transition hover:brightness-95"
+                        className="inline-flex h-7 items-center gap-1 rounded-[7px] border px-2 text-[11px] font-semibold transition hover:brightness-95"
                         style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
                       >
                         <Plus size={12} /> Add Rule
@@ -5056,12 +5058,20 @@ export default function SpecsGridEditor({
                       Automatically turn this group on or off based on whether a Product is selected on the project, applied the moment a project&apos;s sheet is first generated from this template.
                     </p>
                     {groupDraft.rules.length === 0 ? (
-                      <p
-                        className="rounded-[9px] border px-3 py-2 text-[11px]"
-                        style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
-                      >
-                        No rules yet.
-                      </p>
+                      <EmptyState
+                        compact
+                        icon={<Workflow size={16} />}
+                        title="No rules yet"
+                        action={{
+                          label: "Add Rule",
+                          icon: <Plus size={12} />,
+                          onClick: () =>
+                            setGroupDraft((d) => ({
+                              ...d,
+                              rules: [...d.rules, { id: genSpecsGroupRuleId(), ifProductName: "", ifState: "on", thenState: "on" }],
+                            })),
+                        }}
+                      />
                     ) : (
                       <div className="space-y-2">
                         {groupDraft.rules.map((rule, idx) => {
@@ -5076,7 +5086,7 @@ export default function SpecsGridEditor({
                               className="flex flex-wrap items-center gap-1.5 rounded-[9px] border p-2"
                               style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}
                             >
-                              <span className="text-[11px] font-bold" style={{ color: "var(--text-muted)" }}>IF</span>
+                              <span className="text-[11px] font-medium" style={{ color: "var(--text-muted)" }}>IF</span>
                               <select
                                 value={rule.ifProductName}
                                 onChange={(e) => updateRule({ ifProductName: e.target.value })}
@@ -5097,7 +5107,7 @@ export default function SpecsGridEditor({
                                 <option value="on">is On</option>
                                 <option value="off">is Off</option>
                               </select>
-                              <span className="text-[11px] font-bold" style={{ color: "var(--text-muted)" }}>THEN this is</span>
+                              <span className="text-[11px] font-medium" style={{ color: "var(--text-muted)" }}>THEN this is</span>
                               <select
                                 value={rule.thenState}
                                 onChange={(e) => updateRule({ thenState: e.target.value as "on" | "off" })}
@@ -5198,7 +5208,7 @@ export default function SpecsGridEditor({
                               zones: [{ id: genSpecsZoneId(), kind: "editable", startRow: previewSelectedRowRange.minRow, endRow: previewSelectedRowRange.maxRow }],
                             }));
                           }}
-                          className="inline-flex h-7 items-center gap-1 rounded-[7px] border px-2 text-[11px] font-bold transition hover:brightness-95 disabled:opacity-50"
+                          className="inline-flex h-7 items-center gap-1 rounded-[7px] border px-2 text-[11px] font-semibold transition hover:brightness-95 disabled:opacity-50"
                           style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
                         >
                           <Link2 size={12} />
@@ -5275,14 +5285,14 @@ export default function SpecsGridEditor({
                     <button
                       type="button"
                       onClick={() => setGroupModalTarget(null)}
-                      className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95"
+                      className="h-9 rounded-[9px] border px-4 text-[12px] font-semibold hover:brightness-95"
                       style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
                     >
                       Cancel
                     </button>
                     <button
                       type="submit"
-                      className="h-9 rounded-[9px] border px-4 text-[12px] font-bold text-white hover:brightness-95"
+                      className="h-9 rounded-[9px] border px-4 text-[12px] font-semibold text-white hover:brightness-95"
                       style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
                     >
                       Save
@@ -5495,7 +5505,7 @@ export default function SpecsGridEditor({
                     <button
                       type="button"
                       onClick={() => setPendingImportGroupId(null)}
-                      className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95"
+                      className="h-9 rounded-[9px] border px-4 text-[12px] font-semibold hover:brightness-95"
                       style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
                     >
                       Cancel
@@ -5507,7 +5517,7 @@ export default function SpecsGridEditor({
                         setPendingImportGroupId(null);
                         if (groupId) importLinkedQuoteTextIntoZoneForGroup(groupId);
                       }}
-                      className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95"
+                      className="h-9 rounded-[9px] border px-4 text-[12px] font-semibold hover:brightness-95"
                       style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
                     >
                       Replace

@@ -14,6 +14,7 @@ import { usePublishKeyboardInsetVars } from "@/lib/use-keyboard-inset";
 import { swallowNextClick } from "@/lib/swallow-dismiss-click";
 import { actedByLabel } from "@/lib/on-behalf";
 import { Skeleton, SkeletonGroup } from "@/components/skeleton";
+import { useDocumentTitle } from "@/lib/use-document-title";
 
 type Phase = "loading" | "ready" | "load-error";
 type Tab = "specs" | "quote" | "schedule";
@@ -94,7 +95,7 @@ function SubmitBar({ onSubmitClick }: { onSubmitClick: (e: ReactMouseEvent<HTMLB
       <button
         type="button"
         onClick={onSubmitClick}
-        className="h-9 shrink-0 rounded-[8px] px-4 text-[12px] font-bold text-white max-lg:h-11"
+        className="h-9 shrink-0 rounded-[8px] px-4 text-[12px] font-semibold text-white max-lg:h-11"
         style={{ backgroundColor: "#2F6BFF" }}
       >
         Submit
@@ -125,7 +126,7 @@ function AcceptBar({
       <button
         type="button"
         onClick={onAcceptClick}
-        className="glass-modal-panel flex min-w-0 flex-1 items-center justify-center px-4 py-3 text-[14px] font-bold transition hover:brightness-105"
+        className="glass-modal-panel flex min-w-0 flex-1 items-center justify-center px-4 py-3 text-[14px] font-semibold transition hover:brightness-105"
         style={{ backgroundColor: "#15803D", borderColor: "#15803D", color: "#ffffff", borderRadius: 8 }}
       >
         Accept Quote
@@ -133,7 +134,7 @@ function AcceptBar({
       <button
         type="button"
         onClick={onDeclineClick}
-        className="glass-modal-panel flex shrink-0 items-center justify-center px-4 py-3 text-[14px] font-bold transition hover:brightness-95"
+        className="glass-modal-panel flex shrink-0 items-center justify-center px-4 py-3 text-[14px] font-semibold transition hover:brightness-95"
         style={{ backgroundColor: "rgba(255,255,255,0.88)", borderColor: "#B42318", color: "#B42318", borderRadius: 8 }}
       >
         Decline
@@ -169,6 +170,8 @@ export default function ClientSpecsSharePage() {
   const [phase, setPhase] = useState<Phase>("loading");
   const [loadError, setLoadError] = useState("");
   const [projectName, setProjectName] = useState("");
+  // The tab's title: the project's name, once it's loaded.
+  useDocumentTitle(projectName);
   // The project's assigned staff member's own name/email/mobile (see resolveAssignedContactAdmin
   // in lib/specs-share.ts) — shown in the floating "Your point of contact" bubble. Whichever of
   // the two grid fetches below succeeds first populates this; both return the same value since
@@ -745,8 +748,8 @@ export default function ClientSpecsSharePage() {
                     tabButtonRefs.current.quote = el;
                   }}
                   onClick={() => selectTab("quote")}
-                  className="flex h-full items-center gap-1.5 px-4 text-[12px] font-bold uppercase tracking-[0.5px] max-lg:grow max-lg:justify-center max-lg:px-3"
-                  style={{ color: activeTab === "quote" ? "#2F6BFF" : "#000000" }}
+                  className="flex h-full items-center gap-1.5 px-4 text-[12px] font-semibold uppercase tracking-[0.5px] max-lg:grow max-lg:justify-center max-lg:px-3"
+                  style={{ color: activeTab === "quote" ? "#2F6BFF" : "var(--text-main)" }}
                 >
                   <QuoteIcon size={13} className="max-sm:hidden" />
                   Quote
@@ -760,8 +763,8 @@ export default function ClientSpecsSharePage() {
                     tabButtonRefs.current.specs = el;
                   }}
                   onClick={() => selectTab("specs")}
-                  className="flex h-full items-center gap-1.5 px-4 text-[12px] font-bold uppercase tracking-[0.5px] max-lg:grow max-lg:justify-center max-lg:px-3"
-                  style={{ color: activeTab === "specs" ? "#2F6BFF" : "#000000" }}
+                  className="flex h-full items-center gap-1.5 px-4 text-[12px] font-semibold uppercase tracking-[0.5px] max-lg:grow max-lg:justify-center max-lg:px-3"
+                  style={{ color: activeTab === "specs" ? "#2F6BFF" : "var(--text-main)" }}
                 >
                   <ClipboardList size={13} className="max-sm:hidden" />
                   Specifications
@@ -775,8 +778,8 @@ export default function ClientSpecsSharePage() {
                       tabButtonRefs.current.schedule = el;
                     }}
                     onClick={() => selectTab("schedule")}
-                    className="flex h-full items-center gap-1.5 px-4 text-[12px] font-bold uppercase tracking-[0.5px] max-lg:grow max-lg:justify-center max-lg:px-3"
-                    style={{ color: activeTab === "schedule" ? "#2F6BFF" : "#000000" }}
+                    className="flex h-full items-center gap-1.5 px-4 text-[12px] font-semibold uppercase tracking-[0.5px] max-lg:grow max-lg:justify-center max-lg:px-3"
+                    style={{ color: activeTab === "schedule" ? "#2F6BFF" : "var(--text-main)" }}
                   >
                     <CalendarDays size={13} className="max-sm:hidden" />
                     Schedule
@@ -785,7 +788,7 @@ export default function ClientSpecsSharePage() {
                 ) : null}
               </div>
             ) : (
-              <div className="flex h-full items-center gap-2 text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "#000000" }}>
+              <div className="flex h-full items-center gap-2 text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
                 {activeTab === "quote" ? <QuoteIcon size={14} /> : activeTab === "schedule" ? <CalendarDays size={14} /> : <ClipboardList size={14} />}
                 <span>{activeTab === "quote" ? "Quote" : activeTab === "schedule" ? "Schedule" : "Specifications"}</span>
               </div>
@@ -816,7 +819,7 @@ export default function ClientSpecsSharePage() {
                   type="button"
                   disabled={isPrinting}
                   onClick={() => void printActiveSheet()}
-                  className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-[8px] border px-2.5 text-[11px] font-bold disabled:opacity-60 max-lg:pointer-coarse:hidden"
+                  className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-[8px] border px-2.5 text-[11px] font-semibold disabled:opacity-60 max-lg:pointer-coarse:hidden"
                   style={{ borderColor: "#D8DEE8", backgroundColor: "#FFFFFF", color: "#000000" }}
                 >
                   <Printer size={13} />
@@ -826,7 +829,7 @@ export default function ClientSpecsSharePage() {
                   type="button"
                   disabled={isExportingPdf}
                   onClick={() => void exportActiveSheetPdf()}
-                  className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-[8px] border px-2.5 text-[11px] font-bold disabled:opacity-60 max-lg:h-10 max-lg:px-3"
+                  className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-[8px] border px-2.5 text-[11px] font-semibold disabled:opacity-60 max-lg:h-10 max-lg:px-3"
                   style={{ borderColor: "#D8DEE8", backgroundColor: "#FFFFFF", color: "#000000" }}
                 >
                   <Download size={13} />
@@ -905,7 +908,7 @@ export default function ClientSpecsSharePage() {
           </p>
           <div className="space-y-2 text-[13px]" style={{ color: "#0F172A" }}>
             {assignedContact.name ? (
-              <p className="flex items-center gap-2 font-bold">
+              <p className="flex items-center gap-2 font-medium">
                 <User size={14} className="shrink-0" style={{ color: "#64748B" }} />
                 <span>{assignedContact.name}</span>
               </p>
@@ -1122,7 +1125,7 @@ export default function ClientSpecsSharePage() {
               <button
                 type="button"
                 onClick={() => setShowSubmitModal(false)}
-                className="h-9 rounded-[8px] border px-4 text-[12px] font-bold max-lg:h-11 max-sm:flex-1"
+                className="h-9 rounded-[8px] border px-4 text-[12px] font-semibold max-lg:h-11 max-sm:flex-1"
                 style={{ borderColor: "#D8DEE8", color: "#000000" }}
               >
                 Cancel
@@ -1131,7 +1134,7 @@ export default function ClientSpecsSharePage() {
                 type="button"
                 disabled={isSubmitting}
                 onClick={() => void submitConfirmation()}
-                className="h-9 rounded-[8px] px-4 text-[12px] font-bold text-white disabled:opacity-60 max-lg:h-11 max-sm:flex-1"
+                className="h-9 rounded-[8px] px-4 text-[12px] font-semibold text-white disabled:opacity-60 max-lg:h-11 max-sm:flex-1"
                 style={{ backgroundColor: "#2F6BFF" }}
               >
                 {isSubmitting ? "Submitting…" : "Submit"}
@@ -1160,7 +1163,7 @@ export default function ClientSpecsSharePage() {
               <button
                 type="button"
                 onClick={() => setShowAcceptModal(false)}
-                className="h-9 rounded-[8px] border px-4 text-[12px] font-bold max-lg:h-11 max-sm:flex-1"
+                className="h-9 rounded-[8px] border px-4 text-[12px] font-semibold max-lg:h-11 max-sm:flex-1"
                 style={{ borderColor: "#D8DEE8", color: "#000000" }}
               >
                 Cancel
@@ -1169,7 +1172,7 @@ export default function ClientSpecsSharePage() {
                 type="button"
                 disabled={isAccepting}
                 onClick={() => void acceptQuote()}
-                className="h-9 rounded-[8px] px-4 text-[12px] font-bold text-white disabled:opacity-60 max-lg:h-11 max-sm:flex-1"
+                className="h-9 rounded-[8px] px-4 text-[12px] font-semibold text-white disabled:opacity-60 max-lg:h-11 max-sm:flex-1"
                 style={{ backgroundColor: "#15803D" }}
               >
                 {isAccepting ? "Accepting…" : "Accept Quote"}
@@ -1205,7 +1208,7 @@ export default function ClientSpecsSharePage() {
               <button
                 type="button"
                 onClick={() => setShowDeclineModal(false)}
-                className="h-9 rounded-[8px] border px-4 text-[12px] font-bold max-lg:h-11 max-sm:flex-1"
+                className="h-9 rounded-[8px] border px-4 text-[12px] font-semibold max-lg:h-11 max-sm:flex-1"
                 style={{ borderColor: "#D8DEE8", color: "#000000" }}
               >
                 Cancel
@@ -1214,7 +1217,7 @@ export default function ClientSpecsSharePage() {
                 type="button"
                 disabled={isDeclining}
                 onClick={() => void declineQuote()}
-                className="h-9 rounded-[8px] px-4 text-[12px] font-bold text-white disabled:opacity-60 max-lg:h-11 max-sm:flex-1"
+                className="h-9 rounded-[8px] px-4 text-[12px] font-semibold text-white disabled:opacity-60 max-lg:h-11 max-sm:flex-1"
                 style={{ backgroundColor: "#B42318" }}
               >
                 {isDeclining ? "Declining…" : "Decline Quote"}

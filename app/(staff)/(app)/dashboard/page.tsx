@@ -6,7 +6,7 @@ import { glassShineStyle } from "@/lib/glass-shine";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { useRouter } from "next/navigation";
 import { createPortal } from "react-dom";
-import { Activity, CalendarDays, CheckCircle2, ChevronRight, FolderKanban, Kanban, ListFilter, Lock, RefreshCw, Rows3, Search, Users2 } from "lucide-react";
+import { Activity, CalendarDays, CheckCircle2, ChevronRight, FolderKanban, Kanban, ListFilter, Lock, Plus, RefreshCw, Rows3, Search, Users2 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
 import { GlassDropdown, GLASS_MENU_CLASS, GLASS_MENU_MIN_WIDTH_PHONE_PX, GLASS_MENU_MIN_WIDTH_PX, GLASS_MENU_STYLE, glassMenuHeight } from "@/components/glass-dropdown";
@@ -65,6 +65,7 @@ import { useFloatingNotice } from "@/components/floating-notice";
 import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
 import { completedStatusMatcher, isProjectArchived, PROJECTS_ARCHIVED_EVENT, type ProjectsArchivedDetail } from "@/lib/project-archive";
 import { SkeletonBoard, SkeletonCards, SkeletonRows } from "@/components/skeleton";
+import { EmptyState } from "@/components/empty-state";
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 type SubStageRow = { name: string; color: string; isDefault?: boolean };
 // isComplete: Company Settings' "Completed" toggle — left undefined when the company hasn't set it, so
@@ -725,9 +726,9 @@ export default function DashboardPage() {
         panelMuted: "#F5F7FA",
         panelAlt: "#EEF2F7",
         border: "#D7DEE8",
-        text: "#111827",
+        text: "var(--text-main)",
         textMuted: "#64748B",
-        textSoft: "#475467",
+        textSoft: "var(--text-muted)",
         inputBg: "#F3F5F8",
         inputText: "#5B6472",
         rowHover: "#F2F6FC",
@@ -1904,7 +1905,7 @@ export default function DashboardPage() {
           cursor: isDragging ? "grabbing" : "pointer",
         }}
       >
-        <p className="flex min-w-0 items-center gap-1 text-[12.5px] font-bold" style={{ color: cardText }}>
+        <p className="flex min-w-0 items-center gap-1 text-[12.5px] font-medium" style={{ color: cardText }}>
           <span className="truncate">{project.name}</span>
           {bonusLockById.has(project.id) ? (
             <span
@@ -1921,7 +1922,7 @@ export default function DashboardPage() {
             {project.tags.slice(0, 3).map((tag) => (
               <span
                 key={tag}
-                className="rounded-[6px] px-1.5 py-[1px] text-[10px] font-bold"
+                className="rounded-[6px] px-1.5 py-[1px] text-[10px] font-medium"
                 style={{ backgroundColor: chipBg, color: cardText }}
               >
                 {tag}
@@ -2256,6 +2257,20 @@ export default function DashboardPage() {
     );
   };
 
+  // Nothing to show on the board or in the list: no projects at all (with Create First Project, for a role that can
+  // create them), or none that match the search / filter.
+  const renderNoProjects = () =>
+    liveProjects.length ? (
+      <EmptyState icon={<Search size={18} />} title="No matches" hint="Try a different search" compact />
+    ) : (
+      <EmptyState
+        icon={<FolderKanban size={20} />}
+        title="No projects yet"
+        hint="Projects you create show here, sorted by their status."
+        action={canCreateProject ? { label: "Create First Project", icon: <Plus size={14} strokeWidth={2.5} />, onClick: openNewProjectModal } : undefined}
+      />
+    );
+
   // The main board's own columns (loading/empty states, one per configured status, plus the
   // trailing "Other" bucket) — factored out the same way as renderSubBoardColumnsContent so it can
   // be rendered in the normal, interactive slot AND (non-interactively, fading out) as an overlay
@@ -2266,18 +2281,7 @@ export default function DashboardPage() {
         <SkeletonBoard columns={4} label="Loading projects" className="p-1" />
       )}
       {!showProjectsLoadingState && statusRowsLoaded && filtered.length === 0 && (
-        <div className="flex flex-col items-center gap-3 px-4 py-10">
-          <p className="text-[14px] font-bold" style={{ color: dashboardPalette.textSoft }}>No Projects Yet</p>
-          {canCreateProject ? (
-            <button
-              type="button"
-              onClick={openNewProjectModal}
-              className="rounded-[10px] bg-[image:var(--brand-gradient)] px-4 py-2 text-[12px] font-bold text-white shadow-[var(--shadow-sm)] transition hover:brightness-105"
-            >
-              Create First Project
-            </button>
-          ) : null}
-        </div>
+        <div className="w-full">{renderNoProjects()}</div>
       )}
       {!showProjectsLoadingState && statusRowsLoaded && filtered.length > 0 && dashboardStatusBoardColumns.columns.map((column) => {
         const isDragOver = dragOverProjectStatusColumn === column.name;
@@ -2634,13 +2638,7 @@ export default function DashboardPage() {
               </GlassModalHeader>
               <div ref={staffMembersScrollRef} className="glass-scroll hide-native-scrollbar min-h-0 flex-1 overflow-auto px-5 py-2">
                 {!companyMembers.length ? (
-                  <div
-                    className="flex flex-col items-center gap-2 rounded-[14px] border border-dashed px-4 py-10 text-center"
-                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}
-                  >
-                    <Users2 size={22} style={{ color: "var(--text-muted)" }} />
-                    <p className="text-[13px] font-semibold" style={{ color: "var(--text-muted)" }}>No staff members found.</p>
-                  </div>
+                  <EmptyState icon={<Users2 size={16} />} title="No staff members yet" hint="People who join the company show here." compact className="py-10" />
                 ) : (
                   <div>
                     {staffMembersByRole.map(([roleKey, members]) => {
@@ -2682,7 +2680,7 @@ export default function DashboardPage() {
                                     {initials(member.displayName || member.email || member.uid)}
                                   </span>
                                   <div className="min-w-0 flex-1">
-                                    <p className="truncate text-[13px] font-bold" style={{ color: "var(--text-main)" }}>
+                                    <p className="truncate text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
                                       {member.displayName || member.email || member.uid}
                                     </p>
                                     {member.email ? (
@@ -2694,7 +2692,7 @@ export default function DashboardPage() {
                                   <button
                                     type="button"
                                     disabled
-                                    className="inline-flex h-8 shrink-0 items-center justify-center rounded-[8px] border px-3 text-[12px] font-bold opacity-60"
+                                    className="inline-flex h-8 shrink-0 items-center justify-center rounded-[8px] border px-3 text-[12px] font-semibold opacity-60"
                                     style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
                                     title="Coming soon"
                                   >
@@ -2745,17 +2743,8 @@ export default function DashboardPage() {
   return (
     <>
           {access.status === "loading" ? (
-            <div
-              className="rounded-[14px] p-6 text-[13px] font-semibold"
-              style={{
-                border: `1px solid ${dashboardPalette.border}`,
-                backgroundColor: dashboardPalette.panelBg,
-                color: dashboardPalette.textSoft,
-                boxShadow: dashboardPalette.strongShadow,
-              }}
-            >
-              Checking access...
-            </div>
+            // While your access is checked: the board's own loading shapes, so it runs straight on into the board's.
+            <SkeletonBoard columns={4} label="Checking access" className="p-1" />
           ) : access.status === "error" ? (
             <div
               className="rounded-[14px] p-6 text-[13px] font-semibold"
@@ -2770,7 +2759,7 @@ export default function DashboardPage() {
               <button
                 type="button"
                 onClick={() => access.retry()}
-                className="mt-3 inline-flex h-9 items-center rounded-[8px] border px-3 text-[12px] font-bold hover:brightness-95"
+                className="mt-3 inline-flex h-9 items-center rounded-[8px] border px-3 text-[12px] font-semibold hover:brightness-95"
                 style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelBg, color: dashboardPalette.textSoft }}
               >
                 Retry
@@ -2977,7 +2966,7 @@ export default function DashboardPage() {
                     ]}
                     onChange={setQuickFilter}
                     ariaLabel="Status"
-                    triggerClassName="cs-own-fill h-9 min-w-[150px] shrink-0 justify-between rounded-full border px-3.5 text-[12px] font-bold"
+                    triggerClassName="cs-own-fill h-9 min-w-[150px] shrink-0 justify-between rounded-full border px-3.5 text-[12px] font-semibold"
                     triggerStyle={{
                       borderColor: quickFilter === "all" ? dashboardPalette.border : "var(--brand)",
                       backgroundColor: dashboardPalette.panelBg,
@@ -3080,7 +3069,7 @@ export default function DashboardPage() {
                   <BoardSortButton
                     value={projectBoardSort}
                     onChange={setProjectBoardSort}
-                    className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 border px-3 text-[12px] font-bold transition hover:brightness-95 max-sm:hidden"
+                    className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 border px-3 text-[12px] font-semibold transition hover:brightness-95 max-sm:hidden"
                     labelClassName="max-sm:hidden"
                     style={{
                       // Pops in once the search bar has slid out of its way (see searchSlideRef).
@@ -3104,7 +3093,7 @@ export default function DashboardPage() {
                     <select
                       value={pageSize}
                       onChange={(e) => setPageSize(Number(e.target.value))}
-                      className="h-9 border px-3 text-[12px] font-bold outline-none"
+                      className="h-9 border px-3 text-[12px] font-medium outline-none"
                       style={{
                         // Pill ends like the buttons beside it — set here, since globals.css gives every
                         // select 10px corners, which out-ranks a rounded-full class.
@@ -3170,20 +3159,7 @@ export default function DashboardPage() {
                   <SkeletonCards count={4} label="Loading projects" className="px-2 pt-2" />
                 )}
                 {!showProjectsLoadingState && filtered.length === 0 && (
-                  <div className="px-3 py-10">
-                    <div className="flex flex-col items-center gap-3">
-                      <p className="text-[14px] font-bold" style={{ color: dashboardPalette.textSoft }}>No Projects Yet</p>
-                      {canCreateProject ? (
-                        <button
-                          type="button"
-                          onClick={openNewProjectModal}
-                          className="rounded-[10px] bg-[image:var(--brand-gradient)] px-4 py-2 text-[12px] font-bold text-white shadow-[var(--shadow-sm)] transition hover:brightness-105"
-                        >
-                          Create First Project
-                        </button>
-                      ) : null}
-                    </div>
-                  </div>
+                  <div className="px-3">{renderNoProjects()}</div>
                 )}
                 {!isLoading && visibleProjects.length > 0 && (
                   <div className="grid grid-cols-1 gap-2 px-2 pb-2 pt-2 md:grid-cols-2">
@@ -3209,7 +3185,7 @@ export default function DashboardPage() {
                         }}
                       >
                         <div className="flex items-start justify-between gap-2">
-                          <p className="line-clamp-2 text-[16px] font-bold" style={{ color: dashboardPalette.text }}>{project.name}</p>
+                          <p className="line-clamp-2 text-[16px] font-medium" style={{ color: dashboardPalette.text }}>{project.name}</p>
                           <button
                             data-status-trigger="true"
                             data-status-trigger-project-id={project.id}
@@ -3235,13 +3211,13 @@ export default function DashboardPage() {
                           {project.tags.slice(0, 2).map((tag) => (
                             <span
                               key={tag}
-                              className="rounded-[8px] border px-2 py-[1px] text-[11px] font-bold"
+                              className="rounded-[8px] border px-2 py-[1px] text-[11px] font-medium"
                               style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelMuted, color: dashboardPalette.textSoft }}
                             >
                               {tag}
                             </span>
                           ))}
-                          {project.tags.length > 2 && <span className="font-bold" style={{ color: dashboardPalette.textMuted }}>...</span>}
+                          {project.tags.length > 2 && <span className="font-medium" style={{ color: dashboardPalette.textMuted }}>...</span>}
                         </div>
 
                         <div className="mt-2 hidden items-center gap-2 text-[12px] sm:flex">
@@ -3268,13 +3244,13 @@ export default function DashboardPage() {
                               {project.tags.slice(0, 2).map((tag) => (
                                 <span
                                   key={tag}
-                                  className="rounded-[8px] border px-2 py-[1px] text-[11px] font-bold"
+                                  className="rounded-[8px] border px-2 py-[1px] text-[11px] font-medium"
                                   style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelMuted, color: dashboardPalette.textSoft }}
                                 >
                                   {tag}
                                 </span>
                               ))}
-                              {project.tags.length > 2 && <span className="font-bold" style={{ color: dashboardPalette.textMuted }}>...</span>}
+                              {project.tags.length > 2 && <span className="font-medium" style={{ color: dashboardPalette.textMuted }}>...</span>}
                             </div>
                             {assignedDisplayName(project) ? (
                               <span className="flex items-center gap-1.5 text-[12px]">
@@ -3305,11 +3281,11 @@ export default function DashboardPage() {
 
                         <div className="mt-2 hidden gap-1 text-[11px] sm:grid sm:grid-cols-2" style={{ color: dashboardPalette.textSoft }}>
                           <p className="flex items-center gap-1.5">
-                            <span className="font-bold" style={{ color: dashboardPalette.textMuted }}>Created:</span>
+                            <span className="font-medium" style={{ color: dashboardPalette.textMuted }}>Created:</span>
                             <span>{dashboardDate(project.createdAt)}</span>
                           </p>
                           <p className="flex items-center gap-1.5">
-                            <span className="font-bold" style={{ color: dashboardPalette.textMuted }}>Modified:</span>
+                            <span className="font-medium" style={{ color: dashboardPalette.textMuted }}>Modified:</span>
                             <span>{dashboardDate(project.updatedAt)}</span>
                           </p>
                         </div>
@@ -3513,20 +3489,7 @@ export default function DashboardPage() {
                   )}
                   {!showProjectsLoadingState && filtered.length === 0 && (
                     <tr>
-                      <td className="py-10 text-center" colSpan={hideTagsColumnInList ? 5 : 6}>
-                        <div className="flex flex-col items-center gap-3">
-                          <p className="text-[14px] font-bold" style={{ color: dashboardPalette.textSoft }}>No Projects Yet</p>
-                          {canCreateProject ? (
-                            <button
-                              type="button"
-                              onClick={openNewProjectModal}
-                              className="rounded-[10px] bg-[image:var(--brand-gradient)] px-4 py-2 text-[12px] font-bold text-white shadow-[var(--shadow-sm)] transition hover:brightness-105"
-                            >
-                              Create First Project
-                            </button>
-                          ) : null}
-                        </div>
-                      </td>
+                      <td colSpan={hideTagsColumnInList ? 5 : 6}>{renderNoProjects()}</td>
                     </tr>
                   )}
 
@@ -3552,14 +3515,14 @@ export default function DashboardPage() {
                       onMouseLeave={() => setHoveredProjectId((prev) => (prev === project.id ? "" : prev))}
                       onClick={(e) => onProjectRowActivate(project, e.currentTarget)}
                     >
-                      <td className="py-[11px] pl-[10px] font-bold" style={{ color: dashboardPalette.text }}>{project.name}</td>
+                      <td className="py-[11px] pl-[10px] font-medium" style={{ color: dashboardPalette.text }}>{project.name}</td>
                       {!hideTagsColumnInList && (
                         <td className="py-[11px]">
                           <div className="flex flex-wrap gap-1">
                             {project.tags.slice(0, 2).map((tag) => (
                               <span
                                 key={tag}
-                                className="rounded-[8px] border px-2 py-[1px] text-[11px] font-bold"
+                                className="rounded-[8px] border px-2 py-[1px] text-[11px] font-medium"
                                 style={{
                                   borderColor: dashboardPalette.border,
                                   backgroundColor: dashboardPalette.panelMuted,
@@ -3569,7 +3532,7 @@ export default function DashboardPage() {
                                 {tag}
                               </span>
                             ))}
-                            {project.tags.length > 2 && <span className="font-bold" style={{ color: dashboardPalette.textMuted }}>...</span>}
+                            {project.tags.length > 2 && <span className="font-medium" style={{ color: dashboardPalette.textMuted }}>...</span>}
                           </div>
                         </td>
                       )}
@@ -3706,7 +3669,7 @@ export default function DashboardPage() {
                           setIsMobileQuickFilterOpen(false);
                           setMobileQuickFilterPos(null);
                         }}
-                        className="flex w-full items-center gap-2 rounded-[8px] px-3 py-2 text-left text-[12px] font-bold max-md:rounded-[10px] max-md:px-3.5 max-md:py-3 max-md:text-[15px]"
+                        className="flex w-full items-center gap-2 rounded-[8px] px-3 py-2 text-left text-[12px] font-medium max-md:rounded-[10px] max-md:px-3.5 max-md:py-3 max-md:text-[15px]"
                         style={{
                           backgroundImage: quickFilter === option.key ? "var(--brand-gradient)" : "none",
                           color: quickFilter === option.key ? "#FFFFFF" : dashboardPalette.text,

@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AlertTriangle, Check, Mail, MapPin, Phone, Users } from "lucide-react";
 import { GlassModalHeader } from "@/components/glass-modal-header";
+import { EmptyState } from "@/components/empty-state";
 import { mergeCompanyClients, type CompanyClientRow } from "@/lib/firestore-data";
 import type { DuplicateContactGroup } from "@/lib/contact-duplicates";
 import { glassShineStyle } from "@/lib/glass-shine";
@@ -83,9 +84,9 @@ export function ContactDuplicatesModal({
             and notes move onto it. Or leave them as they are.
           </p>
           {groups.length === 0 ? (
-            <p className="rounded-[14px] border border-dashed border-[var(--glass-border)] px-4 py-8 text-center text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
-              No possible duplicates left.
-            </p>
+            <div className="rounded-[14px] border border-dashed border-[var(--glass-border)]">
+              <EmptyState compact icon={<Check size={16} />} title="No possible duplicates left" />
+            </div>
           ) : null}
           {groups.map((group) => {
             const keepId = keepByGroup[group.key] ?? group.contacts[0]?.id;

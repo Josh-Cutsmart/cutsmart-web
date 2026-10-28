@@ -14,6 +14,7 @@ import {
 import { createPortal } from "react-dom";
 import { doc, getDoc, setDoc } from "@/lib/firestore-client";
 import { Bell, CalendarDays, ChevronLeft, ChevronRight, FolderKanban, Globe, Inbox, Plus, Search, Share, Sparkles, Timer, X, Zap, type LucideIcon } from "lucide-react";
+import { EmptyState } from "@/components/empty-state";
 import { db } from "@/lib/firebase";
 import { GlassDropdown } from "@/components/glass-dropdown";
 import { DevTestButton } from "@/components/dev-mode";
@@ -1081,7 +1082,7 @@ export function PushNotificationSettings({
         )}
       </div>
     ) : (
-      <p className="px-1 py-3 text-[12px]" style={subText}>No notifications match.</p>
+      <EmptyState compact icon={<Search size={16} />} title="No matches" hint="Try a different search" />
     );
 
   // Phone (User Settings' sections): cards of rows, like the rest of the page there.

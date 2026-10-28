@@ -1,7 +1,9 @@
 "use client";
 
 import { useRef, type RefObject } from "react";
+import { ListX } from "lucide-react";
 import { GlassModalHeader } from "@/components/glass-modal-header";
+import { EmptyState } from "@/components/empty-state";
 import { createPortal } from "react-dom";
 import { summarizeCutlistRowsByPartType, type CutlistRow } from "@/lib/cutlist-types";
 import { contrastTextForFill } from "@/lib/user-profile-format";
@@ -92,9 +94,7 @@ export function InitialMeasureCloseSummaryModal({
         <GlassModalHeader title="Initial Measure Summary" onClose={onClose} />
         <div className="glass-scroll min-h-0 flex-1 space-y-4 overflow-y-auto p-4 sm:p-5">
           {displayPartTypes.length === 0 ? (
-            <p className="text-[13px]" style={{ color: "var(--text-main)" }}>
-              No parts were entered into this cutlist.
-            </p>
+            <EmptyState compact icon={<ListX size={16} />} title="No parts entered" hint="Parts added to this cutlist are counted here." />
           ) : (
             <div>
               <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-main)" }}>
@@ -120,7 +120,7 @@ export function InitialMeasureCloseSummaryModal({
                       roomPartTypeCounts &&
                       rooms.map((room) => (
                         <tr key={room} className="border-b" style={{ borderColor: "var(--glass-border)" }}>
-                          <td className="px-2 py-1.5 text-left text-[11px] font-bold" style={{ color: "var(--text-main)" }}>{room}</td>
+                          <td className="px-2 py-1.5 text-left text-[11px] font-medium" style={{ color: "var(--text-main)" }}>{room}</td>
                           {displayPartTypes.map((partType) => (
                             <td key={partType} className="px-2 py-1.5" style={{ color: "var(--text-main)" }}>
                               {roomPartTypeCounts.get(room)?.get(partType) ?? 0}

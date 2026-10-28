@@ -6,6 +6,7 @@ import { HomeScreenManifestReload } from "@/components/home-screen-manifest-relo
 // the Calendar (see lib/home-screen-app.ts). appleWebApp is repeated in full because nested metadata
 // replaces the root layout's object, not merges it.
 export const metadata: Metadata = {
+  title: "Leads",
   manifest: "/manifest-leads.json",
   appleWebApp: {
     capable: true,

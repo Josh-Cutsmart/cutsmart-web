@@ -147,7 +147,7 @@ export function AcceptQuoteOnBehalfModal({
             type="button"
             onClick={() => void accept()}
             disabled={busy}
-            className="inline-flex h-9 items-center gap-1.5 rounded-full border px-4 text-[12px] font-bold text-white transition hover:brightness-95 disabled:opacity-60"
+            className="inline-flex h-9 items-center gap-1.5 rounded-full border px-4 text-[12px] font-semibold text-white transition hover:brightness-95 disabled:opacity-60"
             style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
           >
             <CheckCircle2 size={14} />
@@ -366,7 +366,7 @@ export function SubmitSpecsOnBehalfModal({
           type="button"
           onClick={() => void submit()}
           disabled={busy || !grid || alreadySubmitted}
-          className="inline-flex h-9 items-center gap-1.5 rounded-full border px-4 text-[12px] font-bold text-white transition hover:brightness-95 disabled:opacity-60"
+          className="inline-flex h-9 items-center gap-1.5 rounded-full border px-4 text-[12px] font-semibold text-white transition hover:brightness-95 disabled:opacity-60"
           style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
         >
           <CheckCircle2 size={14} />

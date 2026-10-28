@@ -26,6 +26,7 @@ import { readThemeMode, THEME_MODE_UPDATED_EVENT } from "@/lib/theme-mode";
 import type { Project } from "@/lib/types";
 import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
 import { SkeletonCards } from "@/components/skeleton";
+import { EmptyState } from "@/components/empty-state";
 
 // Small Jobs (the sidebar's): quick jobs and small fixes, each without a whole project (lib/small-jobs.ts) — a list,
 // laid out as the Dashboard's list (a flat page — lib/flat-page.ts): each job, its client, who it's assigned to, when it
@@ -108,7 +109,7 @@ export default function SmallJobsPage() {
   const isDarkMode = useSyncExternalStore(subscribeThemeMode, () => readThemeMode() === "dark", () => false);
   const palette = isDarkMode
     ? { border: "#3f3f46", text: "#f1f1f1", textMuted: "#aaaaaa", textSoft: "#c9d1d9" }
-    : { border: "#D7DEE8", text: "#111827", textMuted: "#64748B", textSoft: "#475467" };
+    : { border: "#D7DEE8", text: "var(--text-main)", textMuted: "#64748B", textSoft: "var(--text-muted)" };
 
   // The table's header: blurred once it's stuck under the top bar (the Dashboard's).
   const tableHeadRef = useRef<HTMLTableSectionElement | null>(null);
@@ -283,7 +284,8 @@ export default function SmallJobsPage() {
       {body}
     </div>
   );
-  if (access.status === "loading") return notice("Checking access...");
+  // While your access is checked: the page's own loading shapes.
+  if (access.status === "loading") return <SkeletonCards count={4} label="Checking access" />;
   if (access.status === "error") {
     return notice(
       <>
@@ -291,7 +293,7 @@ export default function SmallJobsPage() {
         <button
           type="button"
           onClick={() => access.retry()}
-          className="mt-3 inline-flex h-9 items-center rounded-full border px-3 text-[12px] font-bold hover:brightness-95"
+          className="mt-3 inline-flex h-9 items-center rounded-full border px-3 text-[12px] font-semibold hover:brightness-95"
           style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
         >
           Retry
@@ -349,7 +351,7 @@ export default function SmallJobsPage() {
             <button
               type="button"
               onClick={() => setLoadKey((key) => key + 1)}
-              className="mt-3 inline-flex h-9 items-center rounded-full border px-3 text-[12px] font-bold hover:brightness-95"
+              className="mt-3 inline-flex h-9 items-center rounded-full border px-3 text-[12px] font-semibold hover:brightness-95"
               style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
             >
               Retry
@@ -359,27 +361,23 @@ export default function SmallJobsPage() {
       ) : jobs === null ? (
         <SkeletonCards count={4} label="Loading small jobs" />
       ) : shown.length === 0 ? (
-        <div className="flex flex-col items-center justify-center gap-3 rounded-[18px] border px-4 py-14 text-center" style={MUTED_PANEL}>
-          <span className="glass-shine inline-flex h-11 w-11 items-center justify-center rounded-full text-white" style={glassShineStyle(SMALL_JOB_COLOR)}>
-            <Hammer size={19} />
-          </span>
-          <p className="text-[15px] font-medium" style={{ color: "var(--text-main)" }}>
-            {jobs.length ? "No small jobs match" : "No small jobs yet"}
-          </p>
-          <p className="max-w-[360px] text-[12.5px]" style={{ color: "var(--text-muted)" }}>
-            {jobs.length ? "Try another search or status." : "Quick jobs and small fixes — a toekick to replace, hinges to change — without a whole project."}
-          </p>
-          {!jobs.length && canCreate ? (
-            <button
-              type="button"
-              onClick={(e) => openNewSmallJob(captureGlassModalOrigin(e))}
-              className="glass-shine mt-1 inline-flex h-9 items-center gap-1.5 rounded-full border px-4 text-[13px] font-medium text-white hover:brightness-95"
-              style={glassShineStyle("var(--brand)")}
-            >
-              <Plus size={15} />
-              New Small Job
-            </button>
-          ) : null}
+        <div className="rounded-[18px] border" style={MUTED_PANEL}>
+          {jobs.length ? (
+            <EmptyState icon={<Search size={18} />} title="No matches" hint="Try a different search" compact className="py-10" />
+          ) : (
+            <EmptyState
+              icon={<Hammer size={20} />}
+              title="No small jobs yet"
+              accent={SMALL_JOB_COLOR}
+              hint="Quick jobs and small fixes — a toekick to replace, hinges to change — without a whole project."
+              action={
+                canCreate
+                  ? { label: "New Small Job", icon: <Plus size={15} />, onClick: (e) => openNewSmallJob(captureGlassModalOrigin(e)) }
+                  : undefined
+              }
+              className="py-14"
+            />
+          )}
         </div>
       ) : (
         <>
@@ -439,7 +437,7 @@ export default function SmallJobsPage() {
                       onMouseLeave={() => setHoveredJobId((prev) => (prev === job.id ? "" : prev))}
                       onClick={() => openJob(job)}
                     >
-                      <td className="truncate py-[11px] pl-[10px] font-bold" style={{ color: palette.text }}>
+                      <td className="truncate py-[11px] pl-[10px] font-medium" style={{ color: palette.text }}>
                         {job.name || "Untitled"}
                       </td>
                       <td className="truncate py-[11px]" style={{ color: palette.text }}>
@@ -479,7 +477,7 @@ export default function SmallJobsPage() {
               >
                 <div className="flex items-start gap-2">
                   <div className="min-w-0 flex-1">
-                    <p className="line-clamp-2 text-[16px] font-bold" style={{ color: palette.text }}>
+                    <p className="line-clamp-2 text-[16px] font-medium" style={{ color: palette.text }}>
                       {job.name || "Untitled"}
                     </p>
                     <p className="mt-0.5 truncate text-[12.5px]" style={{ color: palette.textSoft }}>

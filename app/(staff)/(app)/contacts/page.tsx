@@ -23,7 +23,7 @@ import {
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { AlertTriangle, Archive, Check, ChevronLeft, History, Mail, MapPin, MessageSquare, Pencil, Phone, Plus, Search, Share, Users, X } from "lucide-react";
+import { AlertTriangle, Archive, Check, ChevronLeft, FolderKanban, History, Mail, MapPin, MessageSquare, Pencil, Phone, Plus, Search, Share, Users, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { authorizedFetch } from "@/lib/api-fetch";
 import {
@@ -59,6 +59,7 @@ import { GlassActionMenu, GlassDropdown, type GlassActionMenuItem, type GlassDro
 import { contactInitials, readableTextOn, collectContactReach, openAddressInMaps } from "@/lib/contact-card";
 import { glassShineStyle } from "@/lib/glass-shine";
 import { Skeleton, SkeletonGroup, SkeletonRows } from "@/components/skeleton";
+import { EmptyState } from "@/components/empty-state";
 
 type ContactCategoryOption = { name: string; color: string };
 
@@ -81,7 +82,7 @@ const mobileFieldCardClass =
 // ! so these win over fieldReadonlyClass's own margin/height/padding/size on the same element.
 const mobileReadonlyLineClass = "!mt-0 !h-6 !px-0 !text-[14px]";
 const secondaryButtonClass =
-  "inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-3 text-[12px] font-bold text-[var(--text-main)] transition hover:brightness-95 disabled:opacity-60";
+  "inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-3 text-[12px] font-semibold text-[var(--text-main)] transition hover:brightness-95 disabled:opacity-60";
 
 // Theme colours come straight from the app's CSS variables (set per theme by globals.css) instead of
 // a JS-side light/dark palette, so this page follows the app's dark mode with no flash and no
@@ -296,7 +297,7 @@ function ClientsPageInner() {
 
   useEffect(() => {
     // Access itself is still loading/erroring — lib/use-company-access.ts's own status drives the
-    // "Checking access..." / error+retry render below; nothing to fetch here yet.
+    // The access check's skeleton / error+retry render below; nothing to fetch here yet.
     if (access.status !== "ready") {
       return;
     }
@@ -1244,16 +1245,14 @@ function ClientsPageInner() {
   return (
     <div style={contactsChromeless ? HOME_SCREEN_APP_PAGE_PADDING : { display: "contents" }}>
       {access.status === "loading" ? (
-        <div className={gateCardClass} style={{ borderColor: border, backgroundColor: panelBg, color: textSoft }}>
-          Checking access...
-        </div>
+        <SkeletonRows count={9} label="Checking access" className="min-w-full px-1 md:px-2" />
       ) : access.status === "error" ? (
         <div className={gateCardClass} style={{ borderColor: border, backgroundColor: panelBg, color: textSoft }}>
           <p>Couldn&apos;t check your access to clients — the connection may be slow or offline.</p>
           <button
             type="button"
             onClick={() => access.retry()}
-            className="mt-3 inline-flex h-9 items-center rounded-[8px] border px-3 text-[12px] font-bold hover:brightness-95"
+            className="mt-3 inline-flex h-9 items-center rounded-[8px] border px-3 text-[12px] font-semibold hover:brightness-95"
             style={{ borderColor: border, backgroundColor: panelBg, color: textSoft }}
           >
             Retry
@@ -1335,7 +1334,7 @@ function ClientsPageInner() {
                   <button
                     type="button"
                     onClick={openAddContact}
-                    className="glass-shine inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full px-4 text-[12px] font-bold text-white hover:brightness-105"
+                    className="glass-shine inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full px-4 text-[12px] font-semibold text-white hover:brightness-105"
                     style={glassShineStyle("var(--brand)")}
                   >
                     <Plus size={14} />
@@ -1478,11 +1477,18 @@ function ClientsPageInner() {
                 {loading ? (
                   <SkeletonRows count={9} label="Loading contacts" className="min-w-full px-1 md:px-2" />
                 ) : filteredClients.length === 0 ? (
-                  <div
-                    className="flex min-h-[50vh] min-w-full items-center justify-center px-4 py-5 text-[13px] md:px-5"
-                    style={{ color: textSoft }}
-                  >
-                    No contacts yet.
+                  <div className="flex min-h-[50vh] min-w-full items-center justify-center px-4 py-5 md:px-5">
+                    {search.trim() || categoryFilter ? (
+                      <EmptyState compact icon={<Search size={16} />} title="No matches" hint="Try a different search" />
+                    ) : (
+                      // Add Contact's own handler: the button hands it its click, so the form grows out of it as from Add Contact.
+                      <EmptyState
+                        icon={<Users size={20} />}
+                        title="No contacts yet"
+                        hint="Your clients show here, A to Z."
+                        action={{ label: "Add Contact", icon: <Plus size={14} />, onClick: openAddContact }}
+                      />
+                    )}
                   </div>
                 ) : (
                   groupedClients.map(([letter, letterClients]) => (
@@ -1826,7 +1832,7 @@ function ClientsPageInner() {
                             Profile
                           </p>
                           <div className="flex flex-col gap-2">
-                            <label className={`block text-[11px] font-bold ${mobileFieldCardClass} ${isEditingProfile ? "order-[-2]" : "!hidden"}`} style={{ color: "var(--text-muted)" }}>
+                            <label className={`block text-[11px] font-medium ${mobileFieldCardClass} ${isEditingProfile ? "order-[-2]" : "!hidden"}`} style={{ color: "var(--text-muted)" }}>
                               Name
                               <input
                                 defaultValue={activeDetail.name}
@@ -1839,7 +1845,7 @@ function ClientsPageInner() {
                               />
                             </label>
                             <div className={`flex items-center gap-2 ${mobileFieldCardClass} order-2`}>
-                              <label className="block min-w-0 flex-1 text-[11px] font-bold" style={{ color: "var(--text-muted)" }}>
+                              <label className="block min-w-0 flex-1 text-[11px] font-medium" style={{ color: "var(--text-muted)" }}>
                                 Email
                                 <input
                                   defaultValue={activeDetail.email}
@@ -1863,7 +1869,7 @@ function ClientsPageInner() {
                               ) : null}
                             </div>
                             <div className={`flex items-center gap-2 ${mobileFieldCardClass} order-1`}>
-                              <label className="block min-w-0 flex-1 text-[11px] font-bold" style={{ color: "var(--text-muted)" }}>
+                              <label className="block min-w-0 flex-1 text-[11px] font-medium" style={{ color: "var(--text-muted)" }}>
                                 Phone
                                 <input inputMode="tel"
                                   defaultValue={activeDetail.phone}
@@ -1890,7 +1896,7 @@ function ClientsPageInner() {
                               ) : null}
                             </div>
                             <div className={`flex items-center gap-2 ${mobileFieldCardClass} order-3`}>
-                              <label className="block min-w-0 flex-1 text-[11px] font-bold" style={{ color: "var(--text-muted)" }}>
+                              <label className="block min-w-0 flex-1 text-[11px] font-medium" style={{ color: "var(--text-muted)" }}>
                                 Address
                                 <input
                                   defaultValue={activeDetail.address}
@@ -1919,7 +1925,7 @@ function ClientsPageInner() {
                                 </div>
                               ) : null}
                             </div>
-                            <div className={`block text-[11px] font-bold ${mobileFieldCardClass} ${isEditingProfile ? "order-[-1]" : "!hidden"}`} style={{ color: "var(--text-muted)" }}>
+                            <div className={`block text-[11px] font-medium ${mobileFieldCardClass} ${isEditingProfile ? "order-[-1]" : "!hidden"}`} style={{ color: "var(--text-muted)" }}>
                               Category
                               <div className="mt-1">
                                 <GlassDropdown
@@ -1932,7 +1938,7 @@ function ClientsPageInner() {
                                 />
                               </div>
                             </div>
-                            <label className={`block text-[11px] font-bold ${mobileFieldCardClass} order-4`} style={{ color: "var(--text-muted)" }}>
+                            <label className={`block text-[11px] font-medium ${mobileFieldCardClass} order-4`} style={{ color: "var(--text-muted)" }}>
                               Notes
                               <textarea
                                 readOnly={isActiveContactArchived || isActiveContactStaff}
@@ -1964,8 +1970,8 @@ function ClientsPageInner() {
                           every project in its history (lib/firestore-data.ts), so nothing drops off. */}
                       <div className={`space-y-3 ${isEditingProfile || isActiveContactStaff ? "hidden" : ""}`}>
                         {([
-                          { title: "Active Projects", rows: activeDetail.history.filter((h) => !isPastContactProject(h)), empty: "No active projects." },
-                          { title: "Past Projects", rows: activeDetail.history.filter((h) => isPastContactProject(h)), empty: "No past projects." },
+                          { title: "Active Projects", rows: activeDetail.history.filter((h) => !isPastContactProject(h)), empty: "No active projects" },
+                          { title: "Past Projects", rows: activeDetail.history.filter((h) => isPastContactProject(h)), empty: "No past projects" },
                         ] as const).map((section) => (
                           <div key={section.title} className="glass-card-mobile rounded-[14px] border border-[var(--glass-border)] bg-[var(--panel-bg)] p-4">
                             <p className="text-[12px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
@@ -1973,7 +1979,7 @@ function ClientsPageInner() {
                             </p>
                             <div className="mt-3 space-y-2">
                               {section.rows.length === 0 ? (
-                                <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>{section.empty}</p>
+                                <EmptyState compact icon={<FolderKanban size={16} />} title={section.empty} />
                               ) : (
                                 section.rows.map((history) => {
                                   const canOpenProject = Boolean(String(history.projectId || "").trim()) && !history.deleted;
@@ -2190,7 +2196,7 @@ function ClientsPageInner() {
           >
             <GlassModalHeader title="Add Contact" onClose={() => setIsAddContactOpen(false)} closeDisabled={isSavingContact} />
             <div className="flex-1 space-y-2.5 overflow-y-auto px-4 py-4">
-              <label className="block text-[11px] font-bold" style={{ color: "var(--text-muted)" }}>
+              <label className="block text-[11px] font-medium" style={{ color: "var(--text-muted)" }}>
                 Name
                 <input
                   value={contactForm.name}
@@ -2198,7 +2204,7 @@ function ClientsPageInner() {
                   className={`${fieldInputClass} mt-1`}
                 />
               </label>
-              <label className="block text-[11px] font-bold" style={{ color: "var(--text-muted)" }}>
+              <label className="block text-[11px] font-medium" style={{ color: "var(--text-muted)" }}>
                 Email
                 <input
                   value={contactForm.email}
@@ -2206,7 +2212,7 @@ function ClientsPageInner() {
                   className={`${fieldInputClass} mt-1`}
                 />
               </label>
-              <label className="block text-[11px] font-bold" style={{ color: "var(--text-muted)" }}>
+              <label className="block text-[11px] font-medium" style={{ color: "var(--text-muted)" }}>
                 Phone
                 <input inputMode="tel"
                   value={contactForm.phone}
@@ -2214,7 +2220,7 @@ function ClientsPageInner() {
                   className={`${fieldInputClass} mt-1`}
                 />
               </label>
-              <label className="block text-[11px] font-bold" style={{ color: "var(--text-muted)" }}>
+              <label className="block text-[11px] font-medium" style={{ color: "var(--text-muted)" }}>
                 Address
                 <input
                   value={contactForm.address}
@@ -2222,7 +2228,7 @@ function ClientsPageInner() {
                   className={`${fieldInputClass} mt-1`}
                 />
               </label>
-              <div className="block text-[11px] font-bold" style={{ color: "var(--text-muted)" }}>
+              <div className="block text-[11px] font-medium" style={{ color: "var(--text-muted)" }}>
                 Category
                 <div className="mt-1">
                   <GlassDropdown
@@ -2234,7 +2240,7 @@ function ClientsPageInner() {
                   />
                 </div>
               </div>
-              <label className="block text-[11px] font-bold" style={{ color: "var(--text-muted)" }}>
+              <label className="block text-[11px] font-medium" style={{ color: "var(--text-muted)" }}>
                 Notes
                 <textarea
                   value={contactForm.notes}
@@ -2255,7 +2261,7 @@ function ClientsPageInner() {
                 type="button"
                 onClick={() => void handleAddContactSubmit()}
                 disabled={isSavingContact}
-                className="inline-flex h-9 items-center gap-1.5 rounded-[8px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
+                className="inline-flex h-9 items-center gap-1.5 rounded-[8px] border px-3 text-[12px] font-semibold hover:brightness-95 disabled:opacity-60"
                 style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
               >
                 {isSavingContact ? "Saving..." : "Save Contact"}

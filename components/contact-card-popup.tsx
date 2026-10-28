@@ -7,8 +7,9 @@
 
 import { useRef, type CSSProperties, type RefObject } from "react";
 import { createPortal } from "react-dom";
-import { ExternalLink, Mail, MapPin, MessageSquare, Phone, X } from "lucide-react";
+import { Contact, ExternalLink, Mail, MapPin, MessageSquare, Phone, X } from "lucide-react";
 import { GlassActionMenu, type GlassActionMenuItem } from "@/components/glass-dropdown";
+import { EmptyState } from "@/components/empty-state";
 import { modalCloseButtonClass, secondaryButtonClass } from "@/components/settings-ui";
 import { collectContactReach, contactInitials, openAddressInMaps, readableTextOn } from "@/lib/contact-card";
 import type { CompanyClientRow } from "@/lib/firestore-data";
@@ -139,9 +140,7 @@ export function ContactCardPopup({
           </div>
           <div className="mt-5 space-y-2">
             {details.length === 0 ? (
-              <p className="text-center text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
-                No contact details yet.
-              </p>
+              <EmptyState compact icon={<Contact size={16} />} title="No contact details yet" hint="Their phone, email, address and notes show here once they're added in Contacts." />
             ) : (
               details.map((row) => (
                 <div key={row.label} className="rounded-[14px] border px-3 py-2.5" style={boxStyle}>

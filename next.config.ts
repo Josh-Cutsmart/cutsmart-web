@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import { withSentryConfig } from "@sentry/nextjs/config";
 
 const nextConfig: NextConfig = {
   // The server reads these from its own deploy (lib/public-file-server.ts) — e.g. publishing a staged
@@ -29,4 +30,24 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+// Crash reporting (lib/crash-reporting.ts). With SENTRY_AUTH_TOKEN, SENTRY_ORG and SENTRY_PROJECT set on Vercel, each
+// build also sends Sentry its source maps — so a report shows the real code, not the minified — and then deletes them
+// from the build, so they're never served. Without them, no source maps at all.
+export default withSentryConfig(nextConfig, {
+  org: process.env.SENTRY_ORG,
+  project: process.env.SENTRY_PROJECT,
+  authToken: process.env.SENTRY_AUTH_TOKEN,
+  sourcemaps: { disable: !process.env.SENTRY_AUTH_TOKEN },
+  widenClientFileUpload: true,
+  // Nothing about the build itself sent to Sentry, and quiet locally.
+  telemetry: false,
+  silent: !process.env.CI,
+  // Errors only (no tracing, no screen recordings): their code left out of the app.
+  bundleSizeOptimizations: {
+    excludeDebugStatements: true,
+    excludeTracing: true,
+    excludeReplayShadowDom: true,
+    excludeReplayIframe: true,
+    excludeReplayWorker: true,
+  },
+});

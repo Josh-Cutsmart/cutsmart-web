@@ -59,14 +59,14 @@ export function VerifyEmailGate() {
           >
             <MailCheck size={26} />
           </div>
-          <h1 className="mt-4 text-[20px] font-extrabold text-[#0F172A]">
+          <h1 className="mt-4 text-[20px] font-extrabold text-[var(--text-main)]">
             Verify your email
           </h1>
-          <p className="mt-2 text-[13px] text-[#475467]">
+          <p className="mt-2 text-[13px] text-[var(--text-muted)]">
             {hasRequestedCode ? (
-              <>We&apos;ve sent a 6-digit code to <span className="font-semibold text-[#0F172A]">{user?.email || "your email"}</span></>
+              <>We&apos;ve sent a 6-digit code to <span className="font-semibold text-[var(--text-main)]">{user?.email || "your email"}</span></>
             ) : (
-              <>Confirm <span className="font-semibold text-[#0F172A]">{user?.email || "your email"}</span> to continue — we&apos;ll send you a 6-digit code.</>
+              <>Confirm <span className="font-semibold text-[var(--text-main)]">{user?.email || "your email"}</span> to continue — we&apos;ll send you a 6-digit code.</>
             )}
           </p>
         </div>
@@ -85,14 +85,14 @@ export function VerifyEmailGate() {
               }}
               placeholder="6-digit code"
               inputMode="numeric"
-              className="h-12 w-full rounded-[10px] border border-[#D8DEE8] bg-white/80 px-4 text-center text-[18px] font-bold tracking-[6px] text-[#0F172A] outline-none"
+              className="h-12 w-full rounded-[10px] border border-[#D8DEE8] bg-white/80 px-4 text-center text-[18px] font-medium tracking-[6px] text-[#0F172A] outline-none"
             />
             {error ? <p className="text-[12px] font-semibold text-[var(--danger-strong)]">{error}</p> : null}
             <button
               type="button"
               disabled={busy || code.trim().length !== 6}
               onClick={() => void onConfirm()}
-              className="h-11 w-full rounded-[10px] bg-[#2F6BFF] text-[13px] font-bold text-white hover:brightness-95 disabled:opacity-55"
+              className="h-11 w-full rounded-[10px] bg-[#2F6BFF] text-[13px] font-semibold text-white hover:brightness-95 disabled:opacity-55"
             >
               {busy ? "Verifying..." : "Verify"}
             </button>
@@ -100,7 +100,7 @@ export function VerifyEmailGate() {
               type="button"
               disabled={busy || resendCooldown > 0}
               onClick={() => void onSend()}
-              className="h-11 w-full rounded-[10px] border border-[#D8DEE8] bg-[color-mix(in_srgb,var(--panel-bg)_60%,transparent)] text-[13px] font-bold text-[#334155] hover:brightness-95 disabled:opacity-55"
+              className="h-11 w-full rounded-[10px] border border-[#D8DEE8] bg-[color-mix(in_srgb,var(--panel-bg)_60%,transparent)] text-[13px] font-semibold text-[var(--text-main)] hover:brightness-95 disabled:opacity-55"
             >
               {resendCooldown > 0 ? `Resend Code (${resendCooldown}s)` : "Resend Code"}
             </button>
@@ -115,7 +115,7 @@ export function VerifyEmailGate() {
                 setHasRequestedCode(true);
                 void onSend();
               }}
-              className="h-11 w-full rounded-[10px] bg-[#2F6BFF] text-[13px] font-bold text-white hover:brightness-95 disabled:opacity-55"
+              className="h-11 w-full rounded-[10px] bg-[#2F6BFF] text-[13px] font-semibold text-white hover:brightness-95 disabled:opacity-55"
             >
               {busy ? "Sending..." : "Send Code"}
             </button>
@@ -125,7 +125,7 @@ export function VerifyEmailGate() {
         <button
           type="button"
           onClick={() => void logout()}
-          className="mx-auto mt-5 flex items-center gap-1.5 text-[12px] font-semibold text-[#667085] hover:underline"
+          className="mx-auto mt-5 flex items-center gap-1.5 text-[12px] font-semibold text-[var(--text-muted)] hover:underline"
         >
           <LogOut size={13} />
           Not you? Log out

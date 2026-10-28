@@ -7,6 +7,7 @@ import { History } from "lucide-react";
 import { GlassModalHeader } from "@/components/glass-modal-header";
 import { ProjectEventsTimeline, type TimelineItem } from "@/components/project-timeline";
 import { Skeleton, SkeletonGroup } from "@/components/skeleton";
+import { EmptyState } from "@/components/empty-state";
 import { authorizedFetch } from "@/lib/api-fetch";
 import { fetchCompanyLeads, fetchGridVersions, type CompanyClientRow, type CompanyLeadRow } from "@/lib/firestore-data";
 import { isPreviewMode } from "@/lib/preview-mode";
@@ -241,9 +242,9 @@ export function ContactTimelineModal({
               }}
             />
           ) : (
-            <p className="rounded-[14px] border border-dashed border-[var(--glass-border)] px-4 py-8 text-center text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
-              Nothing yet — their projects, quotes and leads will show here.
-            </p>
+            <div className="rounded-[14px] border border-dashed border-[var(--glass-border)]">
+              <EmptyState compact icon={<History size={16} />} title="Nothing yet" hint="Their projects, quotes and leads will show here." />
+            </div>
           )}
           {/* (Still looking up quotes or leads after the projects are on it.) */}
           {!loaded && items.length ? (

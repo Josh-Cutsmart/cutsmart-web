@@ -38,6 +38,7 @@ import { glassShineStyle } from "@/lib/glass-shine";
 import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
 import { cn } from "@/lib/utils";
 import { SkeletonRows } from "@/components/skeleton";
+import { EmptyState } from "@/components/empty-state";
 import { useUndo } from "@/components/undo-bar";
 
 // A board's column automations (lib/column-automations.ts), for whoever's role has projects.automate: right-click a
@@ -590,9 +591,10 @@ function ColumnAutomationModal({
         </div>
         <div data-keyboard-scroll-pad="true" className="glass-scroll min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
           {rows.length === 0 ? (
-            <p className="rounded-[14px] border border-dashed border-[var(--panel-border)] px-4 py-6 text-center text-[13px] text-[var(--text-muted)]">
-              No automations on {column}. Save to leave it with none.
-            </p>
+            // (Add automation is just under it.)
+            <div className="rounded-[14px] border border-dashed border-[var(--panel-border)]">
+              <EmptyState compact icon={<Zap size={16} />} title={`No automations on ${column}`} hint="Add one below, or save to leave it with none." />
+            </div>
           ) : null}
           {rows.map((row) => {
             const problem = triedSave ? rowProblem(row) : "";

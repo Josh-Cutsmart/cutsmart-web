@@ -92,7 +92,7 @@ export default function ClientSpecsQuestionList({
                 disabled={isAnswering}
                 aria-pressed={q.answer === true}
                 onClick={() => onAnswer(q.rowId, q.colIndex, q.answer === true ? null : true)}
-                className="inline-flex h-11 min-w-[60px] items-center justify-center gap-1 rounded-[10px] border px-3 text-[12px] font-bold disabled:opacity-60"
+                className="inline-flex h-11 min-w-[60px] items-center justify-center gap-1 rounded-[10px] border px-3 text-[12px] font-semibold disabled:opacity-60"
                 style={
                   q.answer === true
                     ? { borderColor: "#15803D", backgroundColor: "#15803D", color: "#FFFFFF" }
@@ -107,7 +107,7 @@ export default function ClientSpecsQuestionList({
                 disabled={isAnswering}
                 aria-pressed={q.answer === false}
                 onClick={() => onAnswer(q.rowId, q.colIndex, q.answer === false ? null : false)}
-                className="inline-flex h-11 min-w-[60px] items-center justify-center gap-1 rounded-[10px] border px-3 text-[12px] font-bold disabled:opacity-60"
+                className="inline-flex h-11 min-w-[60px] items-center justify-center gap-1 rounded-[10px] border px-3 text-[12px] font-semibold disabled:opacity-60"
                 style={
                   q.answer === false
                     ? { borderColor: "#B42318", backgroundColor: "#B42318", color: "#FFFFFF" }

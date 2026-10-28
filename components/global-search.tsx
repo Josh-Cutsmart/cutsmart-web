@@ -10,6 +10,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType }
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { CalendarDays, FolderKanban, Hammer, Inbox, Search, Settings, UserRound, Users, X } from "lucide-react";
+import { EmptyState } from "@/components/empty-state";
+import { Skeleton, SkeletonGroup } from "@/components/skeleton";
 import { useAuth } from "@/lib/auth-context";
 import { useCompanyAccess } from "@/lib/use-company-access";
 import { SETTINGS_SEARCH_INDEX, SETTINGS_SECTIONS } from "@/lib/company-settings-sections";
@@ -444,13 +446,28 @@ export function GlobalSearch({ pages, canOpenSettings }: { pages: GlobalSearchPa
               );
             })}
             {!groups.length ? (
-              <p className="px-4 py-8 text-center text-[13px]" style={{ color: "var(--text-main)" }}>
-                {query.trim()
-                  ? loading
-                    ? "Searching…"
-                    : `Nothing matches “${query.trim()}”.`
-                  : "Search projects, small jobs, leads, contacts, events and pages."}
-              </p>
+              query.trim() ? (
+                loading ? (
+                  // Still gathering what can be searched: a few result rows, waiting.
+                  <SkeletonGroup label="Searching" className="pt-3">
+                    {[55, 40, 62].map((width) => (
+                      <div key={width} className="flex items-center gap-3 px-3 py-2">
+                        <Skeleton className="h-8 w-8 shrink-0 rounded-[10px]" />
+                        <span className="min-w-0 flex-1">
+                          <Skeleton className="h-3" style={{ width: `${width}%` }} />
+                          <Skeleton className="mt-2 h-2.5" style={{ width: `${width - 18}%` }} />
+                        </span>
+                      </div>
+                    ))}
+                  </SkeletonGroup>
+                ) : (
+                  <EmptyState compact icon={<Search size={17} />} title="No matches" hint="Try a different search" />
+                )
+              ) : (
+                <p className="px-4 py-8 text-center text-[13px]" style={{ color: "var(--text-main)" }}>
+                  Search projects, small jobs, leads, contacts, events and pages.
+                </p>
+              )
             ) : null}
           </div>
 

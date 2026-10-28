@@ -3699,8 +3699,8 @@ export function AppShell({
         panelBg: "#ffffff",
         panelMuted: "#F8FAFC",
         border: "#D8DEE8",
-        text: "#0F172A",
-        textMuted: "#475467",
+        text: "var(--text-main)",
+        textMuted: "var(--text-muted)",
         hoverBg: "#F7F8FC",
       };
   // The phone's menu is see-through glass over the page, where the muted grey was hard to read: its pages and icons
@@ -4477,7 +4477,7 @@ export function AppShell({
             </div>
             <span
               data-pull-label="true"
-              className="text-[11px] font-bold transition-opacity"
+              className="text-[11px] font-medium transition-opacity"
               style={{ opacity: 0, color: "var(--text-muted)", transitionDuration: "150ms" }}
             >
               Reload
@@ -4489,7 +4489,7 @@ export function AppShell({
             </div>
             <span
               data-pull-label="true"
-              className="text-[11px] font-bold transition-opacity"
+              className="text-[11px] font-medium transition-opacity"
               style={{ opacity: 1, color: "var(--text-muted)", transitionDuration: "150ms" }}
             >
               Dashboard
@@ -4501,7 +4501,7 @@ export function AppShell({
             </div>
             <span
               data-pull-label="true"
-              className="text-[11px] font-bold transition-opacity"
+              className="text-[11px] font-medium transition-opacity"
               style={{ opacity: 0, color: "var(--text-muted)", transitionDuration: "150ms" }}
             >
               Save & Back
@@ -5513,7 +5513,7 @@ export function AppShell({
                 <button
                   type="button"
                   onClick={() => setShowLogoutConfirm(false)}
-                  className="inline-flex h-10 items-center justify-center rounded-[10px] border px-4 text-[12px] font-bold hover:brightness-95"
+                  className="inline-flex h-10 items-center justify-center rounded-[10px] border px-4 text-[12px] font-semibold hover:brightness-95"
                   style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
                 >
                   Cancel
@@ -5524,7 +5524,7 @@ export function AppShell({
                     setShowLogoutConfirm(false);
                     void logout();
                   }}
-                  className="inline-flex h-10 items-center justify-center rounded-[10px] border px-4 text-[12px] font-bold text-white hover:brightness-95"
+                  className="inline-flex h-10 items-center justify-center rounded-[10px] border px-4 text-[12px] font-semibold text-white hover:brightness-95"
                   style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
                 >
                   Log Out

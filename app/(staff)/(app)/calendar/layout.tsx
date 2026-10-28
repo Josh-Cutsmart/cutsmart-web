@@ -5,6 +5,7 @@ import { HomeScreenManifestReload } from "@/components/home-screen-manifest-relo
 // here makes a "Calendar" icon that opens straight onto the calendar, separate from the main CutSmart one.
 // appleWebApp is repeated in full because nested metadata replaces the root layout's object, not merges it.
 export const metadata: Metadata = {
+  title: "Calendar",
   manifest: "/manifest-calendar.json",
   appleWebApp: {
     capable: true,

@@ -3,7 +3,9 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { GlassModalHeader } from "@/components/glass-modal-header";
-import { ChevronDown, Clock, DollarSign, Inbox, ListChecks, Minus, Plus, RefreshCw, RotateCcw, Search, Trophy, X, type LucideIcon } from "lucide-react";
+import { ChevronDown, Clock, DollarSign, FolderKanban, Inbox, ListChecks, Minus, Plus, RefreshCw, RotateCcw, Search, Trophy, Users, X, type LucideIcon } from "lucide-react";
+import { EmptyState } from "@/components/empty-state";
+import { Skeleton, SkeletonGroup } from "@/components/skeleton";
 import { useAuth } from "@/lib/auth-context";
 import { useDevModeOn } from "@/lib/dev-mode";
 import { activeDate, activeMoney, useCompanyFormats } from "@/lib/company-formats";
@@ -340,7 +342,8 @@ export default function ReportsPage() {
       {body}
     </div>
   );
-  if (access.status === "loading") return notice("Checking access...");
+  // While your access is checked: the page's own loading shapes.
+  if (access.status === "loading") return <ReportsSkeleton label="Checking access" />;
   if (access.status === "error") {
     return notice(
       <>
@@ -348,7 +351,7 @@ export default function ReportsPage() {
         <button
           type="button"
           onClick={() => access.retry()}
-          className="mt-3 inline-flex h-9 items-center rounded-full border px-3 text-[12px] font-bold hover:brightness-95"
+          className="mt-3 inline-flex h-9 items-center rounded-full border px-3 text-[12px] font-semibold hover:brightness-95"
           style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
         >
           Retry
@@ -426,7 +429,7 @@ export default function ReportsPage() {
               <button
                 type="button"
                 onClick={() => setLoadKey((key) => key + 1)}
-                className="mt-3 inline-flex h-9 items-center rounded-full border px-3 text-[12px] font-bold hover:brightness-95"
+                className="mt-3 inline-flex h-9 items-center rounded-full border px-3 text-[12px] font-semibold hover:brightness-95"
                 style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
               >
                 Retry
@@ -434,7 +437,7 @@ export default function ReportsPage() {
             </>,
           )
         : !report
-          ? notice("Working out the figures...")
+          ? <ReportsSkeleton label="Working out the figures" />
           : (
             <>
               <HeadlineCards headlines={report.headlines} previous={report.previous} />
@@ -453,9 +456,13 @@ export default function ReportsPage() {
                   {report.stageHistoryCount ? (
                     <StageBars stages={report.stages} />
                   ) : (
-                    <p className="py-8 text-center text-[13px] font-medium" style={MUTED}>
-                      Status changes are recorded from now on — this fills in as projects move through your statuses.
-                    </p>
+                    <EmptyState
+                      icon={<Clock size={16} />}
+                      title="No status changes yet"
+                      hint="Status changes are recorded from now on — this fills in as projects move through your statuses."
+                      compact
+                      className="py-8"
+                    />
                   )}
                 </Panel>
               </div>
@@ -693,7 +700,7 @@ function IncludedPanel({
             key={option.label}
             type="button"
             onClick={() => setAll(option.on)}
-            className="h-8 shrink-0 rounded-full border px-3 text-[11px] font-bold hover:brightness-95"
+            className="h-8 shrink-0 rounded-full border px-3 text-[11px] font-semibold hover:brightness-95"
             style={fieldStyle}
           >
             {option.label}
@@ -730,9 +737,11 @@ function IncludedPanel({
             );
           })}
           {shownStaff.length === 0 ? (
-            <p className="rounded-[16px] border border-dashed px-3 py-4 text-center text-[12px] font-semibold" style={{ borderColor: "var(--glass-border)", color: "var(--text-muted)" }}>
-              {staff.length ? "No staff match the search." : "No staff yet."}
-            </p>
+            staff.length ? (
+              <EmptyState icon={<Search size={16} />} title="No matches" hint="Try a different search" compact />
+            ) : (
+              <EmptyState icon={<Users size={16} />} title="No staff yet" hint="Your company's staff show here." compact />
+            )
           ) : null}
         </div>
       ) : (
@@ -823,13 +832,45 @@ function IncludedPanel({
               );
             })}
           {shownRows.length === 0 ? (
-            <p className="rounded-[16px] border border-dashed px-3 py-4 text-center text-[12px] font-semibold" style={{ borderColor: "var(--glass-border)", color: "var(--text-muted)" }}>
-              {rows.length ? "No projects match the search." : "No projects yet."}
-            </p>
+            rows.length ? (
+              <EmptyState icon={<Search size={16} />} title="No matches" hint="Try a different search" compact />
+            ) : (
+              <EmptyState icon={<FolderKanban size={16} />} title="No projects yet" hint="Your company's projects show here." compact />
+            )
           ) : null}
         </div>
       )}
     </aside>
+  );
+}
+
+// While the figures are worked out (or your access is checked): the page's shapes — the four headline cards, then a
+// pair of its panels.
+function ReportsSkeleton({ label }: { label: string }) {
+  return (
+    <SkeletonGroup label={label} className="space-y-4">
+      <div className="grid grid-cols-2 gap-2 sm:gap-4 lg:grid-cols-4">
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} className="min-w-0 rounded-[18px] border px-3 py-2.5 sm:px-5 sm:py-4" style={PANEL_STYLE}>
+            <div className="mb-2 flex items-center gap-2 sm:mb-3 sm:gap-2.5">
+              <Skeleton className="h-7 w-7 shrink-0 rounded-full sm:h-9 sm:w-9" />
+              <Skeleton className="h-3 w-[55%]" />
+            </div>
+            <Skeleton className="h-6 w-[45%] sm:h-8" />
+            <Skeleton className="mt-2 h-2.5 w-[70%]" />
+          </div>
+        ))}
+      </div>
+      <div className="grid gap-4 lg:grid-cols-2">
+        {[0, 1].map((i) => (
+          <div key={i} className="rounded-[18px] border p-4 sm:p-5" style={PANEL_STYLE}>
+            <Skeleton className="h-3.5 w-[40%]" />
+            <Skeleton className="mt-2 h-2.5 w-[70%]" />
+            <Skeleton className="mt-4 h-[160px] w-full rounded-[12px]" />
+          </div>
+        ))}
+      </div>
+    </SkeletonGroup>
   );
 }
 
@@ -1068,11 +1109,7 @@ function StageBars({ stages }: { stages: ReportData["stages"] }) {
 function Pipeline({ rows }: { rows: Array<{ status: string; color: string; count: number }> }) {
   const total = rows.reduce((sum, row) => sum + row.count, 0);
   if (!total) {
-    return (
-      <p className="py-4 text-center text-[13px] font-medium" style={MUTED}>
-        No projects on the board.
-      </p>
-    );
+    return <EmptyState icon={<FolderKanban size={16} />} title="No projects on the board" hint="Projects show here, in each status." compact />;
   }
   return (
     <div>
@@ -1102,11 +1139,7 @@ function PeopleTable({
   rows: Array<{ key: string; name: string; color: string; started: number; completed: number; quoted: number; won: number; wonValue: number; winRate: number | null }>;
 }) {
   if (!rows.length) {
-    return (
-      <p className="py-4 text-center text-[13px] font-medium" style={MUTED}>
-        Nothing assigned in this period.
-      </p>
-    );
+    return <EmptyState icon={<Users size={16} />} title="Nothing assigned in this period" hint="Projects assigned to your staff in this period show here." compact />;
   }
   const columns = "grid grid-cols-[minmax(0,1.6fr)_repeat(2,minmax(0,0.8fr))_minmax(0,1fr)] sm:grid-cols-[minmax(0,1.6fr)_repeat(3,minmax(0,0.7fr))_minmax(0,1fr)_minmax(0,1fr)]";
   return (
@@ -1145,11 +1178,7 @@ function PeopleTable({
 
 function Sources({ rows }: { rows: Array<{ label: string; count: number; converted: number }> }) {
   if (!rows.length) {
-    return (
-      <p className="py-4 text-center text-[13px] font-medium" style={MUTED}>
-        No leads in this period.
-      </p>
-    );
+    return <EmptyState icon={<Inbox size={16} />} title="No leads in this period" hint="Leads that come in during this period show here." compact />;
   }
   const max = Math.max(1, ...rows.map((row) => row.count));
   return (

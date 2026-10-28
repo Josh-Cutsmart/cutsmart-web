@@ -120,6 +120,7 @@ import { readBoardSortPrefs, saveBoardSortPrefs } from "@/lib/board-sort-prefs";
 import { clusterPins, computeSpreadPositions, findClusterContainingPin } from "@/lib/pin-clustering";
 import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
 import { Skeleton, SkeletonBoard, SkeletonGroup, SkeletonRows } from "@/components/skeleton";
+import { EmptyState } from "@/components/empty-state";
 
 const SAMPLE_LEADS_STORAGE_KEY_PREFIX = "cutsmart_sample_leads:";
 // A lead's place in its board column: newest first, except where it's been dragged to a spot of its
@@ -395,12 +396,12 @@ export default function LeadsPage() {
   const leadsListPalette =
     themeMode === "dark"
       ? { panelBg: "#212121", border: "#3f3f46", text: "#f1f1f1", textMuted: "#aaaaaa", textSoft: "#c9d1d9", rowHover: "#2a2a2a" }
-      : { panelBg: "#ffffff", border: "#D7DEE8", text: "#111827", textMuted: "#64748B", textSoft: "#475467", rowHover: "#F2F6FC" };
+      : { panelBg: "#ffffff", border: "#D7DEE8", text: "var(--text-main)", textMuted: "var(--text-muted)", textSoft: "var(--text-muted)", rowHover: "#F2F6FC" };
   // The toolbar's colours — the Dashboard toolbar's own (its dashboardPalette), so the two pages match.
   const leadsToolbarPalette =
     themeMode === "dark"
       ? { panelBg: "#212121", border: "#3f3f46", text: "#f1f1f1", textMuted: "#aaaaaa", inputText: "#f1f1f1" }
-      : { panelBg: "#ffffff", border: "#D7DEE8", text: "#111827", textMuted: "#64748B", inputText: "#5B6472" };
+      : { panelBg: "#ffffff", border: "#D7DEE8", text: "var(--text-main)", textMuted: "var(--text-muted)", inputText: "#5B6472" };
   const access = useCompanyAccess();
   const activeCompanyId = access.companyId;
   const canAccessLeads = access.status === "ready" && (isOwnerOrAdmin(access.role) || hasPermissionKey(access.permissionKeys, "leads.view"));
@@ -3850,7 +3851,7 @@ export default function LeadsPage() {
                         setCardStatusMenuLeadId(lead.id);
                       }
                     }}
-                    className="glass-shine relative z-40 inline-flex h-6 items-center justify-center rounded-full px-2.5 text-[10px] font-bold transition hover:brightness-95"
+                    className="glass-shine relative z-40 inline-flex h-6 items-center justify-center rounded-full px-2.5 text-[10px] font-medium transition hover:brightness-95"
                     style={glassShineStyle(leadStatusPillStyle(lead.status || "New"))}
                   >
                     {lead.status || "New"}
@@ -3891,7 +3892,7 @@ export default function LeadsPage() {
               </span>
             </div>
         )}
-        <p id={options?.preview ? undefined : `lead-board-name-${lead.id}`} className="truncate pr-8 text-[14px] font-bold" style={{ color: boardTextColor }}>
+        <p id={options?.preview ? undefined : `lead-board-name-${lead.id}`} className="truncate pr-8 text-[14px] font-medium" style={{ color: boardTextColor }}>
           {displayName}
         </p>
         {!effectiveCompact && (
@@ -3962,7 +3963,7 @@ export default function LeadsPage() {
         menuMinWidth={240}
         ariaLabel="Add a checklist"
         // Round-ended, with the glass shine (lib/glass-shine.ts) in the brand blue — as Add Note.
-        triggerClassName="glass-shine inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-full px-4 text-[12px] font-bold text-white transition hover:brightness-105"
+        triggerClassName="glass-shine inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-full px-4 text-[12px] font-semibold text-white transition hover:brightness-105"
         triggerStyle={glassShineStyle("var(--brand)")}
       >
         <Plus size={14} strokeWidth={2.75} />
@@ -4050,7 +4051,7 @@ export default function LeadsPage() {
                   <button
                     type="button"
                     onClick={() => removeLeadChecklist(lead, checklist.id)}
-                    className="glass-shine absolute right-2 top-2 inline-flex h-6 items-center justify-center rounded-full px-2.5 text-[11px] font-bold text-white hover:brightness-105"
+                    className="glass-shine absolute right-2 top-2 inline-flex h-6 items-center justify-center rounded-full px-2.5 text-[11px] font-semibold text-white hover:brightness-105"
                     style={glassShineStyle("#EF4444")}
                   >
                     Remove
@@ -4096,10 +4097,13 @@ export default function LeadsPage() {
         <div className="glass-scroll min-h-0 flex-1 overflow-y-auto px-5 pb-5">
           {list ?? (
             // Nothing added yet: what this is for, quietly.
-            <div className="flex flex-col items-center gap-2 pt-10 text-center" style={{ color: "var(--text-muted)" }}>
-              <ListChecks size={26} strokeWidth={1.75} style={{ color: "var(--text-main)" }} />
-              <p className="max-w-[220px] text-[12.5px] font-medium">Add one of your saved checklists to tick off for this lead.</p>
-            </div>
+            <EmptyState
+              compact
+              className="pt-8"
+              icon={<ListChecks size={17} />}
+              title="No checklists yet"
+              hint="Add one of your saved checklists to tick off for this lead."
+            />
           )}
         </div>
       </div>
@@ -4152,7 +4156,7 @@ export default function LeadsPage() {
             type="button"
             disabled={!draft.trim() || leadNoteSaving}
             onClick={() => void addLeadNote(lead)}
-            className="glass-shine inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-full px-4 text-[12px] font-bold text-white transition hover:brightness-105 disabled:opacity-50"
+            className="glass-shine inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-full px-4 text-[12px] font-semibold text-white transition hover:brightness-105 disabled:opacity-50"
             style={glassShineStyle("var(--brand)")}
           >
             <Plus size={14} strokeWidth={2.75} />
@@ -4201,7 +4205,7 @@ export default function LeadsPage() {
                   <button
                     type="button"
                     onClick={() => deleteLeadNote(lead, note)}
-                    className="glass-shine absolute right-2 top-2 inline-flex h-6 items-center justify-center rounded-full px-2.5 text-[11px] font-bold text-white hover:brightness-105"
+                    className="glass-shine absolute right-2 top-2 inline-flex h-6 items-center justify-center rounded-full px-2.5 text-[11px] font-semibold text-white hover:brightness-105"
                     style={glassShineStyle("#EF4444")}
                   >
                     Delete
@@ -4252,7 +4256,9 @@ export default function LeadsPage() {
           {heading}
           {composer}
         </div>
-        <div className="glass-scroll min-h-0 flex-1 overflow-y-auto px-5 pb-5">{list}</div>
+        <div className="glass-scroll min-h-0 flex-1 overflow-y-auto px-5 pb-5">
+          {list ?? <EmptyState compact className="pt-8" icon={<Pencil size={16} />} title="No notes yet" hint="Notes written about this lead show here, newest first." />}
+        </div>
       </div>
     );
   }
@@ -4364,8 +4370,8 @@ export default function LeadsPage() {
                 hideTriggerDot
                 menuMinWidth={170}
                 ariaLabel="Lead status"
-                // The Create Project button's size (h-9, px-3, 12px bold, a 1px border — here in the pill's own colour).
-                triggerClassName="glass-shine h-9 max-w-full gap-1.5! rounded-full border px-3 text-[12px] font-bold transition hover:brightness-95 disabled:cursor-wait"
+                // The Create Project button's size (h-9, px-3, 12px semibold, a 1px border — here in the pill's own colour).
+                triggerClassName="glass-shine h-9 max-w-full gap-1.5! rounded-full border px-3 text-[12px] font-semibold transition hover:brightness-95 disabled:cursor-wait"
                 triggerStyle={glassShineStyle(leadStatusPillStyle(lead.status || "New"))}
               />
               </div>
@@ -4670,16 +4676,18 @@ export default function LeadsPage() {
   return (
     <div style={leadsChromeless ? HOME_SCREEN_APP_PAGE_PADDING : { display: "contents" }}>
         {access.status === "loading" ? (
-          <div className="rounded-[14px] border p-6 text-[13px] font-semibold" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}>
-            Checking access...
-          </div>
+          leadsViewMode === "grid" ? (
+            <SkeletonRows count={8} avatar={false} label="Checking access" />
+          ) : (
+            <SkeletonBoard columns={4} label="Checking access" />
+          )
         ) : access.status === "error" ? (
           <div className="rounded-[14px] border p-6 text-[13px] font-semibold" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}>
             <p>Couldn&apos;t check your access to Leads — the connection may be slow or offline.</p>
             <button
               type="button"
               onClick={() => access.retry()}
-              className="mt-3 inline-flex h-9 items-center rounded-full border px-3 text-[12px] font-bold hover:brightness-95"
+              className="mt-3 inline-flex h-9 items-center rounded-full border px-3 text-[12px] font-semibold hover:brightness-95"
               style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
             >
               Retry
@@ -4941,7 +4949,7 @@ export default function LeadsPage() {
                               else setListOrder(option.key as "status" | "az" | "za" | "newest" | "oldest");
                               setLeadsPhoneMenu(null);
                             }}
-                            className="flex w-full items-center gap-2 rounded-[10px] px-3.5 py-3 text-left text-[15px] font-bold"
+                            className="flex w-full items-center gap-2 rounded-[10px] px-3.5 py-3 text-left text-[15px] font-medium"
                             style={{ backgroundImage: active ? "var(--brand-gradient)" : "none", color: active ? "#FFFFFF" : leadsToolbarPalette.text }}
                           >
                             {leadsPhoneMenu.kind === "status" ? (
@@ -4984,7 +4992,7 @@ export default function LeadsPage() {
                     setIsBoardCardsCompact((prev) => !prev);
                     setCompactCardOverrides({});
                   }}
-                  className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full border px-3 text-[12px] font-bold transition hover:brightness-95 max-sm:hidden"
+                  className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full border px-3 text-[12px] font-semibold transition hover:brightness-95 max-sm:hidden"
                   style={
                     isBoardCardsCompact
                       ? { backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)", color: "#fff" }
@@ -5003,7 +5011,7 @@ export default function LeadsPage() {
                 <BoardSortButton
                   value={leadBoardSort}
                   onChange={setLeadBoardSort}
-                  className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 border px-3 text-[12px] font-bold transition hover:brightness-95 max-sm:hidden"
+                  className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 border px-3 text-[12px] font-semibold transition hover:brightness-95 max-sm:hidden"
                   labelClassName="max-sm:hidden"
                   style={{
                     backgroundColor: leadsToolbarPalette.panelBg,
@@ -5028,7 +5036,7 @@ export default function LeadsPage() {
                     ]}
                     onChange={setStatusFilter}
                     ariaLabel="Status"
-                    triggerClassName="cs-own-fill h-9 min-w-[150px] shrink-0 justify-between rounded-full border px-3.5 text-[12px] font-bold max-sm:min-w-0 max-sm:flex-1"
+                    triggerClassName="cs-own-fill h-9 min-w-[150px] shrink-0 justify-between rounded-full border px-3.5 text-[12px] font-semibold max-sm:min-w-0 max-sm:flex-1"
                     triggerStyle={{
                       borderColor: statusFilter === "all" ? leadsToolbarPalette.border : "var(--brand)",
                       backgroundColor: leadsToolbarPalette.panelBg,
@@ -5046,7 +5054,7 @@ export default function LeadsPage() {
                     ]}
                     onChange={(next) => setListOrder((next as "status" | "az" | "za" | "newest" | "oldest") || "newest")}
                     ariaLabel="Order"
-                    triggerClassName="cs-own-fill h-9 min-w-[120px] shrink-0 justify-between rounded-full border px-3.5 text-[12px] font-bold max-sm:min-w-0 max-sm:flex-1"
+                    triggerClassName="cs-own-fill h-9 min-w-[120px] shrink-0 justify-between rounded-full border px-3.5 text-[12px] font-semibold max-sm:min-w-0 max-sm:flex-1"
                     triggerStyle={{
                       borderColor: leadsToolbarPalette.border,
                       backgroundColor: leadsToolbarPalette.panelBg,
@@ -5065,7 +5073,7 @@ export default function LeadsPage() {
                       value={listPageSize}
                       onChange={(e) => setListPageSize(Number(e.target.value))}
                       aria-label="Leads per page"
-                      className="cs-own-fill h-9 border px-3 text-[12px] font-bold outline-none"
+                      className="cs-own-fill h-9 border px-3 text-[12px] font-semibold outline-none"
                       style={{
                         borderRadius: 9999,
                         borderColor: leadsToolbarPalette.border,
@@ -5096,7 +5104,7 @@ export default function LeadsPage() {
                   type="button"
                   onClick={openLeadForm}
                   // The glass shine (lib/glass-shine.ts), in the brand blue.
-                  className="glass-shine inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full px-4 text-[12px] font-bold text-white hover:brightness-105 disabled:opacity-55 max-sm:w-9 max-sm:px-0"
+                  className="glass-shine inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full px-4 text-[12px] font-semibold text-white hover:brightness-105 disabled:opacity-55 max-sm:w-9 max-sm:px-0"
                   style={glassShineStyle("var(--brand)")}
                   title="Create Lead"
                   aria-label="Create Lead"
@@ -5109,15 +5117,24 @@ export default function LeadsPage() {
 
             {isLoading ? (
               leadsViewMode === "grid" ? (
-                <SkeletonBoard columns={4} label="Loading leads" />
-              ) : (
                 <SkeletonRows count={8} avatar={false} label="Loading leads" />
+              ) : (
+                <SkeletonBoard columns={4} label="Loading leads" />
               )
             ) : leadsViewMode === "grid" ? (
               filteredLeads.length === 0 ? (
-                <div className="flex flex-col items-center gap-2 rounded-[14px] border border-dashed px-4 py-10 text-center" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>
-                  <Inbox size={22} style={{ color: "var(--text-muted)" }} />
-                  <p className="text-[13px] font-semibold" style={{ color: "var(--text-muted)" }}>No leads yet.</p>
+                <div className="rounded-[14px] border border-dashed" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>
+                  {leads.length ? (
+                    <EmptyState compact icon={<Search size={17} />} title="No matches" hint="Try a different search" />
+                  ) : (
+                    // Create Lead's own handler: the button hands it its click, so the form grows out of it as from Create Lead.
+                    <EmptyState
+                      icon={<Inbox size={20} />}
+                      title="No leads yet"
+                      hint="Leads from your forms and lead emails show up here."
+                      action={{ label: "Create Lead", icon: <Plus size={14} />, onClick: openLeadForm }}
+                    />
+                  )}
                 </div>
               ) : (
                 <>
@@ -5148,7 +5165,7 @@ export default function LeadsPage() {
                             }}
                           >
                             <div className="flex items-start justify-between gap-2">
-                              <p className="line-clamp-2 text-[16px] font-bold" style={{ color: leadsListPalette.text }}>{details.name}</p>
+                              <p className="line-clamp-2 text-[16px] font-medium" style={{ color: leadsListPalette.text }}>{details.name}</p>
                               <button
                                 type="button"
                                 data-lead-status-trigger="true"
@@ -5248,7 +5265,7 @@ export default function LeadsPage() {
                               onClick={(e) => openLeadFromListRow(e.currentTarget, lead)}
                             >
                               <td className="truncate py-[11px] pl-[10px] text-[12px]" style={{ color: leadsListPalette.textSoft }}>{details.received}</td>
-                              <td className="truncate py-[11px] font-bold" style={{ color: leadsListPalette.text }}>{details.name}</td>
+                              <td className="truncate py-[11px] font-medium" style={{ color: leadsListPalette.text }}>{details.name}</td>
                               <td className="truncate py-[11px] text-[12px]" style={{ color: leadsListPalette.text }}>{details.phone || "-"}</td>
                               <td className="truncate py-[11px] text-[12px]" style={{ color: leadsListPalette.text }}>{details.email || "-"}</td>
                               <td className="truncate py-[11px] text-[12px]" style={{ color: leadsListPalette.text }}>{details.suburb || "-"}</td>
@@ -5315,8 +5332,8 @@ export default function LeadsPage() {
             ) : (
               // The board's panel — stuck as the row used to be (see the row's own note below for where) — with which board
               // this is over the columns (components/board-title-bar.tsx: Leads, in purple), clear of the toolbar the
-              // panel reaches up under (mt-6 / max-md:mt-3 — its -mt). With no leads (or none matching the search), its
-              // columns all the same, just empty — as the Dashboard's board.
+              // panel reaches up under (mt-6 / max-md:mt-3 — its -mt). With none matching the search, its columns all the
+              // same, just empty; with no leads at all, "No leads yet" in their place — as the Dashboard's board.
               <div
                 ref={boardStickyRef}
                 className="sticky -top-3 -mx-3 -mt-6 flex h-[calc(100svh-36px)] min-h-[280px] flex-col md:-mx-4 lg:-mx-5 max-md:top-0 max-md:-mt-3 max-md:h-[calc(100svh-48px)] lg:top-[36px] lg:h-[calc(100svh-36px)] lg:min-h-[320px]"
@@ -5346,7 +5363,16 @@ export default function LeadsPage() {
                 className="glass-scroll hide-native-scrollbar -mt-4 flex min-h-0 flex-1 snap-x snap-mandatory items-stretch gap-2 px-3 pb-[10px] pt-7 md:px-4 lg:px-5 max-md:pb-5 sm:snap-none"
                 style={{ overflowX: "auto", overflowY: "hidden" }}
               >
-                {leadStatusBoardColumns.columns.map((column) => {
+                {leads.length === 0 ? (
+                  <EmptyState
+                    className="w-full self-center"
+                    icon={<Inbox size={20} />}
+                    title="No leads yet"
+                    hint="Leads from your forms and lead emails show up here."
+                    action={{ label: "Create Lead", icon: <Plus size={14} />, onClick: openLeadForm }}
+                  />
+                ) : null}
+                {leads.length > 0 && leadStatusBoardColumns.columns.map((column) => {
                   const isDragOver = dragOverStatusColumn === column.name;
                   const isCollapsed = Boolean(collapsedStatusColumns[column.name]);
                   const dragHandlers = {
@@ -5792,7 +5818,7 @@ export default function LeadsPage() {
                               .join("") || "U"}
                           </span>
                           <span className="min-w-0">
-                            <span className="block truncate text-[13px] font-bold" style={{ color: "var(--text-main)" }}>
+                            <span className="block truncate text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
                               {member.displayName}
                             </span>
                             <span className="mt-1 block truncate text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
@@ -5802,10 +5828,10 @@ export default function LeadsPage() {
                         </button>
                       );
                     })
+                  ) : assignSearch.trim() ? (
+                    <EmptyState compact icon={<Search size={16} />} title="No matches" hint="Try a different search" />
                   ) : (
-                    <div className="px-5 py-8 text-[13px] font-semibold" style={{ color: "var(--text-muted)" }}>
-                      No staff found.
-                    </div>
+                    <EmptyState compact icon={<UserX size={16} />} title="No staff found" />
                   )}
                 </div>
                 <div className="flex items-center border-t px-[5px] pb-[5px] pt-[5px]" style={{ borderColor: "var(--glass-border)" }}>
@@ -5813,7 +5839,7 @@ export default function LeadsPage() {
                     type="button"
                     onClick={() => void handleAssignLead()}
                     disabled={!selectedAssignedMember || assigningLeadId === assignLeadId}
-                    className="flex h-11 w-full items-center justify-center whitespace-nowrap rounded-full border px-4 text-[12px] font-bold text-white hover:brightness-95 disabled:cursor-not-allowed"
+                    className="flex h-11 w-full items-center justify-center whitespace-nowrap rounded-full border px-4 text-[12px] font-semibold text-white hover:brightness-95 disabled:cursor-not-allowed"
                     style={{
                       backgroundImage: "var(--brand-gradient)",
                       borderColor: "var(--brand-strong)",
@@ -5907,7 +5933,7 @@ export default function LeadsPage() {
                     }}
                   >
                     <ImagePlus size={26} />
-                    <p className="mt-3 text-[13px] font-bold">
+                    <p className="mt-3 text-[13px] font-medium">
                       {leadImagesUploading ? "Uploading images..." : "Drag and drop images here or click to upload"}
                     </p>
                     <p className="mt-1 text-[11px] font-semibold" style={{ color: "var(--text-muted)" }}>
@@ -6137,7 +6163,7 @@ export default function LeadsPage() {
                                 >
                                   {idx + 1}
                                 </span>
-                                <span className="min-w-0 truncate text-[13px] font-bold" style={{ color: "var(--text-main)" }}>
+                                <span className="min-w-0 truncate text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
                                   {String(annotation.createdByName || "").trim() || `Comment ${idx + 1}`}
                                 </span>
                               </div>
@@ -6298,7 +6324,7 @@ export default function LeadsPage() {
                                       [annotation.id]: !current[annotation.id],
                                     }));
                                   }}
-                                  className="absolute bottom-[10px] right-0 inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-bold opacity-0 transition-opacity group-hover/comment:opacity-100"
+                                  className="absolute bottom-[10px] right-0 inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-semibold opacity-0 transition-opacity group-hover/comment:opacity-100"
                                   data-lead-image-comments-no-drag="true"
                                   style={{
                                     color: "var(--text-main)",
@@ -6662,7 +6688,7 @@ export default function LeadsPage() {
                           <button
                             type="button"
                             onClick={() => setLeadImageDraftAnnotation(null)}
-                            className="inline-flex h-8 items-center justify-center rounded-full border px-3 text-[11px] font-bold"
+                            className="inline-flex h-8 items-center justify-center rounded-full border px-3 text-[11px] font-semibold"
                             style={{ borderColor: "#D7DEE8", color: "#64748B", backgroundColor: "#ffffff" }}
                           >
                             Cancel
@@ -6670,7 +6696,7 @@ export default function LeadsPage() {
                           <button
                             type="button"
                             onClick={() => void handleSaveLeadImageAnnotation()}
-                            className="inline-flex h-8 items-center justify-center rounded-full border px-3 text-[11px] font-bold text-white"
+                            className="inline-flex h-8 items-center justify-center rounded-full border px-3 text-[11px] font-semibold text-white"
                             style={{ borderColor: companyThemeColor, backgroundColor: companyThemeColor }}
                           >
                             Save Note
@@ -7068,7 +7094,7 @@ export default function LeadsPage() {
                             <button
                               type="button"
                               onClick={() => setLeadImageDraftAnnotation(null)}
-                              className="inline-flex h-8 items-center justify-center rounded-full border px-3 text-[11px] font-bold"
+                              className="inline-flex h-8 items-center justify-center rounded-full border px-3 text-[11px] font-semibold"
                               style={{ borderColor: "var(--glass-border)", color: "var(--text-muted)", backgroundColor: "var(--panel-bg)" }}
                             >
                               Cancel
@@ -7076,7 +7102,7 @@ export default function LeadsPage() {
                             <button
                               type="button"
                               onClick={() => void handleSaveLeadImageAnnotation()}
-                              className="inline-flex h-8 items-center justify-center rounded-full border px-3 text-[11px] font-bold text-white"
+                              className="inline-flex h-8 items-center justify-center rounded-full border px-3 text-[11px] font-semibold text-white"
                               style={{ borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)" }}
                             >
                               Save Note
@@ -7166,7 +7192,7 @@ export default function LeadsPage() {
                   <button
                     type="button"
                     onClick={() => setConfirmDeleteLeadId("")}
-                    className="inline-flex h-9 items-center justify-center rounded-full border px-4 text-[12px] font-bold hover:brightness-95"
+                    className="inline-flex h-9 items-center justify-center rounded-full border px-4 text-[12px] font-semibold hover:brightness-95"
                     style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
                   >
                     Cancel
@@ -7178,7 +7204,7 @@ export default function LeadsPage() {
                       const lead = getLeadById(confirmDeleteLeadId);
                       if (lead) void handleDeleteLead(lead);
                     }}
-                    className="inline-flex h-9 items-center justify-center rounded-full border px-4 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-55"
+                    className="inline-flex h-9 items-center justify-center rounded-full border px-4 text-[12px] font-semibold text-white hover:brightness-95 disabled:opacity-55"
                     style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
                   >
                     {deletingLeadId === confirmDeleteLeadId ? "Archiving..." : "Archive"}

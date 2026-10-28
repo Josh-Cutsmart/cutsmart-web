@@ -24,7 +24,8 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   const { companyId, formId } = await params;
   const loaded = await loadForm(companyId, formId);
   const title = loaded ? [loaded.form.title || loaded.form.name, loaded.companyName].filter(Boolean).join(" — ") : "Form not available";
-  return { title, robots: { index: false, follow: false } };
+  // (Its own title, not "· CutSmart" after it — it's the company's form, on their website.)
+  return { title: { absolute: title }, robots: { index: false, follow: false } };
 }
 
 // Light, whatever the CutSmart theme on this device (the root layout's theme script reads the staff app's setting);

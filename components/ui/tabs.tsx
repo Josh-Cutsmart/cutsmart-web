@@ -19,11 +19,11 @@ export function Tabs({ value, onChange, items }: TabsProps) {
           title={item.title}
           onClick={() => onChange(item.value)}
           className={cn(
-            "rounded-[8px] px-3 py-1.5 text-[12px] font-bold transition",
+            "rounded-[8px] px-3 py-1.5 text-[12px] font-semibold transition",
             item.disabled && "cursor-not-allowed opacity-55",
             value === item.value
               ? "border border-[var(--panel-border)] bg-white text-[var(--text-main)] shadow-sm"
-              : "text-[#64748B] hover:text-[var(--text-main)]",
+              : "text-[var(--text-muted)] hover:text-[var(--text-main)]",
           )}
         >
           {item.label}

@@ -7,6 +7,7 @@ import { Check, Copy, Eye, EyeOff, KeyRound, Plus, Trash2 } from "lucide-react";
 import { glassFieldClass, primaryButtonClass, primaryButtonStyle, smallButtonClass } from "@/components/settings-ui";
 import { activeDateTime } from "@/lib/company-formats";
 import { Skeleton, SkeletonGroup } from "@/components/skeleton";
+import { EmptyState } from "@/components/empty-state";
 import { useUndo } from "@/components/undo-bar";
 import {
   changeMasterJoinCode,
@@ -343,7 +344,9 @@ export function CompanyJoinCodesModal({
                       );
                     })}
                   </div>
-                ) : null}
+                ) : (
+                  <EmptyState compact icon={<KeyRound size={16} />} title="No temporary codes yet" hint="Codes you create show here, with who used them." />
+                )}
               </section>
               {error ? <p className="text-[12.5px] font-medium" style={{ color: "var(--danger)" }}>{error}</p> : null}
             </>

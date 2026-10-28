@@ -14,6 +14,8 @@ import {
   Trophy,
   Wrench,
 } from "lucide-react";
+import { EmptyState } from "@/components/empty-state";
+import { Skeleton, SkeletonGroup } from "@/components/skeleton";
 import { useAuth } from "@/lib/auth-context";
 import {
   fetchCompanyDoc,
@@ -174,7 +176,7 @@ export default function CompanyWrappedPage() {
               className="h-10 rounded-[10px] border border-white/30 bg-white/15 px-3 text-[14px] font-semibold text-white outline-none"
             >
               {availableYears.map((y) => (
-                <option key={y} value={y} className="text-[#111827]">
+                <option key={y} value={y} className="text-[var(--text-main)]">
                   {y}
                 </option>
               ))}
@@ -187,9 +189,39 @@ export default function CompanyWrappedPage() {
       </div>
 
       {isLoading ? (
-        <div className="rounded-[18px] border px-5 py-10 text-center text-[14px]" style={{ borderColor: palette.border, backgroundColor: palette.panelMuted, color: palette.textMuted }}>
-          Loading your {year} stats...
-        </div>
+        // The stat tiles and the two leaderboards, waiting.
+        <SkeletonGroup label={`Loading your ${year} stats`} className="space-y-5">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            {statTiles.map((tile) => (
+              <div
+                key={tile.label}
+                className="rounded-[16px] border px-5 py-4"
+                style={{ borderColor: palette.border, backgroundColor: palette.panelBg, boxShadow: "var(--shadow-sm)" }}
+              >
+                <div className="mb-3 flex items-center gap-2.5">
+                  <Skeleton className="h-9 w-9 shrink-0 rounded-full" />
+                  <Skeleton className="h-3 w-28" />
+                </div>
+                <Skeleton className="h-8 w-20 rounded-[8px]" />
+              </div>
+            ))}
+          </div>
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+            {[0, 1].map((panel) => (
+              <div key={panel} className="rounded-[16px] border px-5 py-4" style={{ borderColor: palette.border, backgroundColor: palette.panelBg, boxShadow: "var(--shadow-sm)" }}>
+                <div className="mb-3 flex items-center gap-2.5">
+                  <Skeleton className="h-9 w-9 shrink-0 rounded-full" />
+                  <Skeleton className="h-3.5 w-44" />
+                </div>
+                <div className="space-y-2">
+                  {[0, 1, 2, 3, 4].map((row) => (
+                    <Skeleton key={row} className="h-9 w-full rounded-[10px]" />
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </SkeletonGroup>
       ) : (
         <>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -237,7 +269,12 @@ export default function CompanyWrappedPage() {
                   ))}
                 </div>
               ) : (
-                <p className="text-[13px]" style={{ color: palette.textMuted }}>No board colour usage recorded yet for {year}.</p>
+                <EmptyState
+                  compact
+                  icon={<Palette size={17} />}
+                  title="No board colours recorded yet"
+                  hint={`Board colours used on ${year}'s projects show here.`}
+                />
               )}
               <p className="mt-3 text-[11px]" style={{ color: palette.textMuted }}>
                 A sheet material and its board colour are the same thing in CutSmart, so this list covers both.
@@ -264,7 +301,12 @@ export default function CompanyWrappedPage() {
                   ))}
                 </div>
               ) : (
-                <p className="text-[13px]" style={{ color: palette.textMuted }}>No hinge order quantities recorded yet for {year}.</p>
+                <EmptyState
+                  compact
+                  icon={<Wrench size={17} />}
+                  title="No hinges ordered yet"
+                  hint={`Hinges added to project orders in ${year} show here.`}
+                />
               )}
             </div>
           </div>

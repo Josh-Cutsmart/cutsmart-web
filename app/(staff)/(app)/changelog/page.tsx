@@ -4,7 +4,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent 
 import { GlassModalHeader } from "@/components/glass-modal-header";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Check, ChevronDown, ChevronLeft, Copy, Pencil, Search, Sparkles } from "lucide-react";
+import { Check, ChevronDown, ChevronLeft, Copy, History, MessageSquare, Pencil, Search, Sparkles } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import {
   fetchAppChangelogHistory,
@@ -34,7 +34,8 @@ import {
   type WaitingPublish,
 } from "@/components/whats-new-sheet";
 import { useKeepMenuInView } from "@/lib/use-keep-menu-in-view";
-import { SkeletonRows } from "@/components/skeleton";
+import { EmptyState } from "@/components/empty-state";
+import { Skeleton, SkeletonGroup, SkeletonLines, SkeletonRows } from "@/components/skeleton";
 type ReportDeviceType = "desktop" | "tablet" | "mobile";
 const HEADER_HEIGHT = 56;
 const DESKTOP_TAB_BAR_HEIGHT = 48;
@@ -209,7 +210,7 @@ function PerPageDropdown({
           }
           setOpen(true);
         }}
-        className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-3 text-[12px] font-bold outline-none"
+        className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-3 text-[12px] font-semibold outline-none"
         style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
       >
         {value} per page
@@ -239,7 +240,7 @@ function PerPageDropdown({
                 onChange(opt);
                 setOpen(false);
               }}
-              className="block w-full rounded-[8px] px-3 py-2 text-left text-[12px] font-bold max-md:rounded-[10px] max-md:px-3.5 max-md:py-3 max-md:text-[15px]"
+              className="block w-full rounded-[8px] px-3 py-2 text-left text-[12px] font-medium max-md:rounded-[10px] max-md:px-3.5 max-md:py-3 max-md:text-[15px]"
               style={{
                 backgroundImage: value === opt ? "var(--brand-gradient)" : "none",
                 color: value === opt ? "#FFFFFF" : "var(--text-main)",
@@ -275,6 +276,8 @@ export default function ChangelogPage() {
     return () => setReduceMainTopPadding(false);
   }, [setReduceMainTopPadding]);
   const [entries, setEntries] = useState<UpdateChangelogEntry[]>([]);
+  // Until the versions first arrive: their skeleton, not "No changelog entries yet".
+  const [entriesLoaded, setEntriesLoaded] = useState(false);
   const [activeVersion, setActiveVersion] = useState("");
   const [entriesPerPage, setEntriesPerPage] = useState<number>(10);
   const [visibleEntryCount, setVisibleEntryCount] = useState<number>(10);
@@ -515,6 +518,7 @@ export default function ChangelogPage() {
     if (!uid) {
       setEntries([]);
       setActiveVersion("");
+      setEntriesLoaded(true);
       return;
     }
     let cancelled = false;
@@ -523,6 +527,7 @@ export default function ChangelogPage() {
       if (cancelled) return;
       const rows = normalizeChangelogHistory(appRows);
       setEntries(rows);
+      setEntriesLoaded(true);
       setActiveVersion(rows[0]?.version || "");
       setVisibleEntryCount((current) => {
         const minimum = entriesPerPage;
@@ -999,7 +1004,7 @@ export default function ChangelogPage() {
                   Current version
                 </span>
                 <span
-                  className="rounded-full border px-2.5 py-1 text-[11px] font-bold"
+                  className="rounded-full border px-2.5 py-1 text-[11px] font-medium"
                   style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
                 >
                   {formatVersionLabel(appVersion || entries[0]?.version || "")}
@@ -1032,7 +1037,7 @@ export default function ChangelogPage() {
                       <button
                         type="button"
                         onClick={() => window.dispatchEvent(new Event(OPEN_WHATS_NEW_DRAFT_EVENT))}
-                        className="mr-2 inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-3 text-[12px] font-bold text-white transition hover:brightness-95"
+                        className="mr-2 inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-3 text-[12px] font-semibold text-white transition hover:brightness-95"
                         style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
                       >
                         <Sparkles size={13} />
@@ -1044,7 +1049,7 @@ export default function ChangelogPage() {
                     <button
                       type="button"
                       onClick={() => setShowDevReports((prev) => !prev)}
-                      className="h-8 rounded-[8px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+                      className="h-8 rounded-[8px] border px-3 text-[12px] font-semibold transition hover:brightness-95"
                       style={
                         showDevReports
                           ? { backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)", color: "#fff" }
@@ -1059,7 +1064,7 @@ export default function ChangelogPage() {
                   <button
                     type="button"
                     onClick={(e) => { composerOriginElRef.current = e.currentTarget; openComposer("issue", captureGlassModalOrigin(e)); }}
-                    className="h-8 rounded-[8px] border px-3 text-[12px] font-bold text-white transition hover:brightness-95"
+                    className="h-8 rounded-[8px] border px-3 text-[12px] font-semibold text-white transition hover:brightness-95"
                     style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
                   >
                     Report Issue
@@ -1067,7 +1072,7 @@ export default function ChangelogPage() {
                   <button
                     type="button"
                     onClick={(e) => { composerOriginElRef.current = e.currentTarget; openComposer("feature", captureGlassModalOrigin(e)); }}
-                    className="h-8 rounded-[8px] border px-3 text-[12px] font-bold text-white transition hover:brightness-95"
+                    className="h-8 rounded-[8px] border px-3 text-[12px] font-semibold text-white transition hover:brightness-95"
                     style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
                   >
                     Suggest Feature
@@ -1090,7 +1095,7 @@ export default function ChangelogPage() {
                     <button
                       type="button"
                       onClick={() => window.dispatchEvent(new Event(OPEN_WHATS_NEW_DRAFT_EVENT))}
-                      className="mr-2 inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-3 text-[12px] font-bold text-white transition hover:brightness-95"
+                      className="mr-2 inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-3 text-[12px] font-semibold text-white transition hover:brightness-95"
                       style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
                     >
                       <Sparkles size={13} />
@@ -1102,7 +1107,7 @@ export default function ChangelogPage() {
                   <button
                     type="button"
                     onClick={() => setShowDevReports((prev) => !prev)}
-                    className="h-8 rounded-[8px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+                    className="h-8 rounded-[8px] border px-3 text-[12px] font-semibold transition hover:brightness-95"
                     style={
                       showDevReports
                         ? { backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)", color: "#fff" }
@@ -1200,7 +1205,7 @@ export default function ChangelogPage() {
                           <button
                             type="button"
                             onClick={() => setDevReportFilter("all")}
-                            className="h-7 rounded-[8px] border px-3 text-[11px] font-bold transition hover:brightness-95"
+                            className="h-7 rounded-[8px] border px-3 text-[11px] font-semibold transition hover:brightness-95"
                             style={
                               devReportFilter === "all"
                                 ? { backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)", color: "#fff" }
@@ -1212,7 +1217,7 @@ export default function ChangelogPage() {
                           <button
                             type="button"
                             onClick={() => setDevReportFilter("issue")}
-                            className="h-7 rounded-[8px] border px-3 text-[11px] font-bold transition hover:brightness-95"
+                            className="h-7 rounded-[8px] border px-3 text-[11px] font-semibold transition hover:brightness-95"
                             style={
                               devReportFilter === "issue"
                                 ? { borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }
@@ -1224,7 +1229,7 @@ export default function ChangelogPage() {
                           <button
                             type="button"
                             onClick={() => setDevReportFilter("feature")}
-                            className="h-7 rounded-[8px] border px-3 text-[11px] font-bold transition hover:brightness-95"
+                            className="h-7 rounded-[8px] border px-3 text-[11px] font-semibold transition hover:brightness-95"
                             style={
                               devReportFilter === "feature"
                                 ? { backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)", color: "#fff" }
@@ -1236,7 +1241,7 @@ export default function ChangelogPage() {
                           <button
                             type="button"
                             onClick={() => setDevReportStatusFilter("open")}
-                            className="h-7 rounded-[8px] border px-3 text-[11px] font-bold transition hover:brightness-95"
+                            className="h-7 rounded-[8px] border px-3 text-[11px] font-semibold transition hover:brightness-95"
                             style={
                               devReportStatusFilter === "open"
                                 ? { backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)", color: "#fff" }
@@ -1248,7 +1253,7 @@ export default function ChangelogPage() {
                           <button
                             type="button"
                             onClick={() => setDevReportStatusFilter("completed")}
-                            className="h-7 rounded-[8px] border px-3 text-[11px] font-bold transition hover:brightness-95"
+                            className="h-7 rounded-[8px] border px-3 text-[11px] font-semibold transition hover:brightness-95"
                             style={
                               devReportStatusFilter === "completed"
                                 ? { backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)", color: "#fff" }
@@ -1263,7 +1268,16 @@ export default function ChangelogPage() {
                       {reportsLoading ? (
                         <SkeletonRows count={4} avatar={false} label="Loading reports" />
                       ) : !visibleDevReports.length ? (
-                        <p className="text-[13px] font-semibold" style={{ color: "var(--text-muted)" }}>No reports yet.</p>
+                        reports.length ? (
+                          <EmptyState compact icon={<Search size={17} />} title="No matches" hint="Try a different search" />
+                        ) : (
+                          <EmptyState
+                            compact
+                            icon={<MessageSquare size={17} />}
+                            title="No reports yet"
+                            hint="Issues and feature ideas people send show here."
+                          />
+                        )
                       ) : (
                         <div className="space-y-2">
                           {pagedDevReports.map((report) => (
@@ -1292,7 +1306,7 @@ export default function ChangelogPage() {
                                   {formatVersionLabel(report.appVersion)}{"   |   "}{formatDeviceLabel(report.deviceType)}{"   |   "}
                                   {report.reporterEmail || report.reporterName}
                                 </span>
-                                <label className="ml-auto inline-flex items-center gap-1 text-[11px] font-bold" style={{ color: "var(--text-main)" }}>
+                                <label className="ml-auto inline-flex items-center gap-1 text-[11px] font-medium" style={{ color: "var(--text-main)" }}>
                                   <input
                                     type="checkbox"
                                     checked={Boolean(report.completed)}
@@ -1303,7 +1317,7 @@ export default function ChangelogPage() {
                                   {report.kind === "feature" ? "Complete" : "Resolved"}
                                 </label>
                               </div>
-                              <p className="text-[13px] font-bold" style={{ color: "var(--text-main)" }}>{report.subject || "(No subject)"}</p>
+                              <p className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>{report.subject || "(No subject)"}</p>
                               <p className="mt-1 whitespace-pre-wrap text-[13px]" style={{ color: "var(--text-muted)" }}>{report.body || "-"}</p>
                             </div>
                           ))}
@@ -1316,7 +1330,7 @@ export default function ChangelogPage() {
                                     Math.min(visibleDevReports.length, current + entriesPerPage),
                                   )
                                 }
-                                className="h-10 rounded-[10px] border px-5 text-[13px] font-bold transition hover:brightness-95"
+                                className="h-10 rounded-[10px] border px-5 text-[13px] font-semibold transition hover:brightness-95"
                                 style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
                               >
                                 Show More
@@ -1328,13 +1342,38 @@ export default function ChangelogPage() {
                     </div>
                   )}
 
-                  {!showDevReports && !entries.length && (
-                    <div
-                      className="rounded-[14px] border p-4 text-[14px] font-semibold"
-                      style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
-                    >
-                      No changelog entries yet.
-                    </div>
+                  {!showDevReports && !entriesLoaded && (
+                    // The version cards, waiting (on a phone, the short version rows).
+                    <SkeletonGroup label="Loading the changelog" className={isCompactChangelogViewport ? "space-y-2" : "space-y-4"}>
+                      {[0, 1, 2].map((index) =>
+                        isCompactChangelogViewport ? (
+                          <div
+                            key={index}
+                            className="flex items-center justify-between gap-3 rounded-[14px] border px-4 py-3.5"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-bg-strong)" }}
+                          >
+                            <Skeleton className="h-4 w-20 rounded-[6px]" />
+                            <Skeleton className="h-2.5 w-16" />
+                          </div>
+                        ) : (
+                          <div
+                            key={index}
+                            className="overflow-hidden rounded-[16px] border"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-bg-strong)" }}
+                          >
+                            <div className="flex h-[50px] items-center justify-between border-b px-3" style={{ borderColor: "var(--glass-border)" }}>
+                              <Skeleton className="h-5 w-24 rounded-[6px]" />
+                              <Skeleton className="h-2.5 w-20" />
+                            </div>
+                            <SkeletonLines lines={4} className="px-4 py-4" />
+                          </div>
+                        ),
+                      )}
+                    </SkeletonGroup>
+                  )}
+
+                  {!showDevReports && entriesLoaded && !entries.length && (
+                    <EmptyState icon={<History size={20} />} title="No changelog entries yet" hint="Each published version's notes show here." />
                   )}
 
                   {!showDevReports && !!entries.length && (
@@ -1445,7 +1484,7 @@ export default function ChangelogPage() {
                                 Math.min(entries.length, current + entriesPerPage),
                               )
                             }
-                            className="h-10 rounded-[10px] border px-5 text-[13px] font-bold transition hover:brightness-95"
+                            className="h-10 rounded-[10px] border px-5 text-[13px] font-semibold transition hover:brightness-95"
                             style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
                           >
                             Show More
@@ -1496,7 +1535,7 @@ export default function ChangelogPage() {
                       }}
                       type="button"
                       onClick={() => openVersionFromSidebar(entry.version)}
-                      className={`relative z-[1] flex h-9 w-full items-center justify-between gap-2 rounded-[8px] px-3 text-left text-[13px] font-bold transition-colors ${!isActive ? "hover:bg-[var(--panel-muted)]" : ""}`}
+                      className={`relative z-[1] flex h-9 w-full items-center justify-between gap-2 rounded-[8px] px-3 text-left text-[13px] font-medium transition-colors ${!isActive ? "hover:bg-[var(--panel-muted)]" : ""}`}
                       style={{ color: isActive ? "var(--brand)" : "var(--text-main)" }}
                     >
                       <span className="truncate">{entry.version || "Unknown"}</span>
@@ -1521,7 +1560,7 @@ export default function ChangelogPage() {
               <button
                 type="button"
                 onClick={(e) => { composerOriginElRef.current = e.currentTarget; openComposer("issue", captureGlassModalOrigin(e)); }}
-                className="flex-1 text-[15px] font-bold text-white transition hover:brightness-95"
+                className="flex-1 text-[15px] font-semibold text-white transition hover:brightness-95"
                 style={{ backgroundImage: "var(--danger-gradient)" }}
               >
                 Report Issue
@@ -1529,7 +1568,7 @@ export default function ChangelogPage() {
               <button
                 type="button"
                 onClick={(e) => { composerOriginElRef.current = e.currentTarget; openComposer("feature", captureGlassModalOrigin(e)); }}
-                className="flex-1 text-[15px] font-bold text-white transition hover:brightness-95"
+                className="flex-1 text-[15px] font-semibold text-white transition hover:brightness-95"
                 style={{ backgroundImage: "var(--success-gradient)" }}
               >
                 Suggest Feature
@@ -1634,7 +1673,7 @@ export default function ChangelogPage() {
                     type="button"
                     onClick={() => void submitVersionEdit()}
                     disabled={isSavingVersionEdit}
-                    className="h-10 w-full rounded-[10px] border text-[13px] font-bold text-white transition hover:brightness-95 disabled:opacity-60"
+                    className="h-10 w-full rounded-[10px] border text-[13px] font-semibold text-white transition hover:brightness-95 disabled:opacity-60"
                     style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
                   >
                     {isSavingVersionEdit ? "Saving..." : "Submit"}
@@ -1689,7 +1728,7 @@ export default function ChangelogPage() {
                       type="button"
                       onClick={() => void onSubmitReport()}
                       disabled={submitBusy}
-                      className="h-9 rounded-[8px] border px-4 text-[12px] font-bold text-white transition hover:brightness-95 disabled:opacity-60"
+                      className="h-9 rounded-[8px] border px-4 text-[12px] font-semibold text-white transition hover:brightness-95 disabled:opacity-60"
                       style={{ backgroundColor: "#16A34A", borderColor: "#166534" }}
                     >
                       {submitBusy ? "Submitting..." : "Submit"}

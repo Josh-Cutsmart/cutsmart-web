@@ -153,7 +153,7 @@ export function SidebarColorPickerPopover({
       <button
         type="button"
         onClick={onUseCompanyDefault}
-        className="mt-3 h-9 w-full rounded-[8px] border text-[12px] font-bold transition hover:brightness-95"
+        className="mt-3 h-9 w-full rounded-[8px] border text-[12px] font-semibold transition hover:brightness-95"
         style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
       >
         Use Company Default

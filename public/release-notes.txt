@@ -111,6 +111,8 @@ whatsNew: [
 <li>Dropdowns squeeze open from the button you pressed</li>
 <li>The page you're on glows in see-through glass in the sidebar</li>
 <li>Buttons like New event have the glass shine and rounded ends</li>
+<li>Each browser tab is named for its page — "Calendar · CutSmart", or the project's own name</li>
+<li>A link that goes nowhere, or a project that's been removed, shows a proper page with the way back — and if something goes wrong, the app says so and offers <b>Try again</b>, with the menu still there</li>
 </ul>
 
 <u><b>Phones</b></u>

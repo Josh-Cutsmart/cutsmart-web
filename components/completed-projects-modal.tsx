@@ -26,6 +26,7 @@ import {
 } from "@/lib/completed-projects";
 import type { Project } from "@/lib/types";
 import { SkeletonRows } from "@/components/skeleton";
+import { EmptyState } from "@/components/empty-state";
 import { useUndo } from "@/components/undo-bar";
 import { restoreCompletedProjectRecord } from "@/lib/undo-restore-misc";
 
@@ -968,7 +969,7 @@ export function CompletedProjectsModal({
   };
   const openedLists = (bucket: string) => {
     const isUnsorted = bucket === "unsorted";
-    const list = (title: string, colour: string, items: CompletionRow[], empty: string) => (
+    const list = (title: string, colour: string, items: CompletionRow[], empty: string, emptyHint?: string) => (
       <section key={title} className="mt-4">
         <div className="mb-1.5 flex items-center gap-2 px-1">
           <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: colour }} />
@@ -982,9 +983,13 @@ export function CompletedProjectsModal({
         {items.length ? (
           <div className="space-y-1.5">{items.map(renderRow)}</div>
         ) : (
-          <p className="rounded-[18px] border border-dashed px-3 py-3 text-[12px] font-medium" style={{ borderColor: "var(--glass-border)", color: "var(--text-muted)" }}>
-            {query ? "Nothing matches." : empty}
-          </p>
+          <div className="rounded-[18px] border border-dashed" style={{ borderColor: "var(--glass-border)" }}>
+            {query ? (
+              <EmptyState compact icon={<Search size={16} />} title="No matches" hint="Try a different search" />
+            ) : (
+              <EmptyState compact title={empty} hint={emptyHint} />
+            )}
+          </div>
         )}
       </section>
     );
@@ -993,11 +998,11 @@ export function CompletedProjectsModal({
         <SkeletonRows count={5} avatar={false} label="Loading the record" className="mt-4" />
       );
     }
-    if (isUnsorted) return list("Not sorted", "#64748B", listRows, "Everything's sorted.");
+    if (isUnsorted) return list("Not sorted", "#64748B", listRows, "Everything's sorted");
     return (
       <>
-        {list("Qualified", GREEN, listRows.filter((row) => bucketOf(row) === bucket), "None yet — drop jobs on the left half of the quarter.")}
-        {list("Non qualified", "#DC2626", listRows.filter((row) => bucketOf(row) === `${bucket}|nq`), "None yet — drop jobs on the right half of the quarter.")}
+        {list("Qualified", GREEN, listRows.filter((row) => bucketOf(row) === bucket), "None yet", "Drop jobs on the left half of the quarter.")}
+        {list("Non qualified", "#DC2626", listRows.filter((row) => bucketOf(row) === `${bucket}|nq`), "None yet", "Drop jobs on the right half of the quarter.")}
       </>
     );
   };
@@ -1248,11 +1253,17 @@ export function CompletedProjectsModal({
           ) : load.status === "loading" ? (
             <SkeletonRows count={5} avatar={false} label="Loading the record" className="mt-4" />
           ) : months.length === 0 ? (
-            <div className="mt-4 flex flex-col items-center gap-2 rounded-[22px] border border-dashed px-4 py-10 text-center" style={{ borderColor: "var(--text-main)" }}>
-              <CheckCircle2 size={22} style={{ color: "var(--text-main)" }} />
-              <p className="text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
-                {query ? "Nothing completed matches." : isAllTime ? "No completed projects yet." : "Nothing completed in this period."}
-              </p>
+            <div className="mt-4 rounded-[22px] border border-dashed" style={{ borderColor: "var(--text-main)" }}>
+              {query ? (
+                <EmptyState compact icon={<Search size={16} />} title="No matches" hint="Try a different search" />
+              ) : (
+                <EmptyState
+                  compact
+                  icon={<CheckCircle2 size={16} />}
+                  title={isAllTime ? "No completed projects yet" : "Nothing completed in this period"}
+                  hint="Projects show here once they're marked complete."
+                />
+              )}
             </div>
           ) : (
             <div className="mt-4 space-y-4">

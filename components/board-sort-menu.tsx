@@ -198,7 +198,7 @@ export function BoardSortButton({
           if (menuPos) setMenuPos(null);
           else setMenuPos(menuPosUnder(e.currentTarget));
         }}
-        className={className ?? "inline-flex h-9 shrink-0 items-center gap-1.5 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"}
+        className={className ?? "inline-flex h-9 shrink-0 items-center gap-1.5 rounded-[10px] border px-3 text-[12px] font-semibold transition hover:brightness-95"}
         style={
           isSorted
             ? { backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)", color: "#fff", ...style }

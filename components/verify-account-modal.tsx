@@ -73,7 +73,7 @@ export function VerifyAccountModal({
               type="button"
               disabled={busy || code.trim().length !== 6}
               onClick={() => void onConfirm()}
-              className="h-10 rounded-[10px] px-4 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-55"
+              className="h-10 rounded-[10px] px-4 text-[12px] font-semibold text-white hover:brightness-95 disabled:opacity-55"
               style={{ backgroundImage: "var(--brand-gradient)" }}
             >
               Verify
@@ -82,7 +82,7 @@ export function VerifyAccountModal({
               type="button"
               disabled={busy || resendCooldown > 0}
               onClick={() => void onSend()}
-              className="h-10 rounded-[10px] border px-4 text-[12px] font-bold hover:brightness-95 disabled:opacity-55"
+              className="h-10 rounded-[10px] border px-4 text-[12px] font-semibold hover:brightness-95 disabled:opacity-55"
               style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
             >
               {resendCooldown > 0 ? `Resend (${resendCooldown}s)` : "Resend Code"}

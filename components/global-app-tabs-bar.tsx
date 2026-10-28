@@ -47,6 +47,7 @@ import { openWhatsNew } from "@/components/whats-new-sheet";
 import { swallowNextClick } from "@/lib/swallow-dismiss-click";
 import { bounceOriginElement } from "@/lib/use-glass-modal-pop-origin";
 import { GlassDropdown } from "@/components/glass-dropdown";
+import { Skeleton, SkeletonGroup } from "@/components/skeleton";
 import { useAppTabs, type AppWorkspaceTab } from "@/lib/app-tabs-context";
 import { applyThemeMode, readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
 import { useAuth } from "@/lib/auth-context";
@@ -646,8 +647,8 @@ export function GlobalAppTabsBar() {
         panelBg: "#ffffff",
         panelMuted: "#F8FAFC",
         border: "#D8DEE8",
-        text: "#0F172A",
-        textMuted: "#475467",
+        text: "var(--text-main)",
+        textMuted: "var(--text-muted)",
         // The page grey (--bg-app, the same as a flat page's — lib/flat-page.ts).
         stripBg: "rgba(245,247,250,0.4)",
         tabIdleBg: "rgba(255,255,255,0.55)",
@@ -1846,17 +1847,17 @@ export function GlobalAppTabsBar() {
     // Still loading: a few faint cards the shape of the real ones.
     if (!isNotifListLoaded && notifRows.length === 0) {
       return (
-        <div className="space-y-2 px-4 pb-4 pt-2" aria-busy="true" aria-label="Loading notifications">
+        <SkeletonGroup label="Loading notifications" className="space-y-2 px-4 pb-4 pt-2">
           {[0, 1, 2].map((index) => (
             <div key={index} className="flex items-start gap-3 rounded-[16px] border px-3 py-3" style={{ borderColor: "var(--glass-border)", backgroundColor: NOTIF_CARD_BG }}>
-              <span className="h-10 w-10 shrink-0 animate-pulse rounded-[12px]" style={{ backgroundColor: NOTIF_ICON_BG }} />
+              <Skeleton className="h-10 w-10 shrink-0 rounded-[12px]" />
               <span className="min-w-0 flex-1 space-y-2 pt-1">
-                <span className="block h-3 w-3/5 animate-pulse rounded-full" style={{ backgroundColor: NOTIF_ICON_BG }} />
-                <span className="block h-2.5 w-4/5 animate-pulse rounded-full" style={{ backgroundColor: NOTIF_ICON_BG }} />
+                <Skeleton className="h-3 w-3/5 rounded-full" />
+                <Skeleton className="h-2.5 w-4/5 rounded-full" />
               </span>
             </div>
           ))}
-        </div>
+        </SkeletonGroup>
       );
     }
     if (notifRows.length === 0) {
@@ -2173,7 +2174,7 @@ export function GlobalAppTabsBar() {
                     onMouseDown={handleAuxButtonMouseDown}
                     // The tabs' hover look (globals.css) — only on hover here, never kept while it's open.
                     data-app-top-tab="true"
-                    className="relative isolate inline-flex h-9 min-w-[100px] max-w-[200px] shrink-0 items-center gap-2 rounded-full px-4 text-left text-[12px] font-bold transition-colors"
+                    className="relative isolate inline-flex h-9 min-w-[100px] max-w-[200px] shrink-0 items-center gap-2 rounded-full px-4 text-left text-[12px] font-semibold transition-colors"
                     style={{
                       backgroundColor: isActiveTab ? shellPalette.panelBg : shellPalette.tabIdleBg,
                       boxShadow: isActiveTab ? "none" : "var(--shadow-sm)",
@@ -2289,7 +2290,7 @@ export function GlobalAppTabsBar() {
                     onTouchMove={onTabTouchMove}
                     onTouchEnd={onTabTouchEnd}
                     onTouchCancel={onTabTouchCancel}
-                    className="min-w-0 flex-1 truncate text-left text-[12px] font-bold"
+                    className="min-w-0 flex-1 truncate text-left text-[12px] font-semibold"
                     style={{
                       color: isActiveTab ? shellPalette.text : shellPalette.textMuted,
                       cursor: isPressed ? "grabbing" : isActiveTab ? "default" : "pointer",

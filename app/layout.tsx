@@ -6,7 +6,12 @@ import { DropdownSqueezeWatcher } from "@/components/dropdown-squeeze-watcher";
 import { UndoBarProvider } from "@/components/undo-bar";
 
 export const metadata: Metadata = {
-  title: "CutSmart Web",
+  // Each page's tab title: its name, then the app's — "Calendar · CutSmart" (the page's layout's metadata; a project's
+  // name from the page itself, lib/use-document-title.ts). Just "CutSmart" for a page with none.
+  title: {
+    default: "CutSmart",
+    template: "%s · CutSmart",
+  },
   description: "CutSmart web workspace for sales and production cutlists.",
   manifest: "/manifest.json",
   // Makes "Add to Home Screen" on iOS launch as a standalone app (no Safari
