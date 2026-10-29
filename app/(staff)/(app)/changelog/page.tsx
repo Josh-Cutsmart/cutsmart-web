@@ -4,7 +4,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent 
 import { GlassModalHeader } from "@/components/glass-modal-header";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Check, ChevronDown, ChevronLeft, Copy, History, MessageSquare, Pencil, Search, Sparkles } from "lucide-react";
+import { Check, ChevronDown, ChevronLeft, Copy, Pencil, Search, Sparkles } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import {
   fetchAppChangelogHistory,
@@ -1273,7 +1273,7 @@ export default function ChangelogPage() {
                         ) : (
                           <EmptyState
                             compact
-                            icon={<MessageSquare size={17} />}
+                            icon={<Search size={17} />}
                             title="No reports yet"
                             hint="Issues and feature ideas people send show here."
                           />
@@ -1373,7 +1373,7 @@ export default function ChangelogPage() {
                   )}
 
                   {!showDevReports && entriesLoaded && !entries.length && (
-                    <EmptyState icon={<History size={20} />} title="No changelog entries yet" hint="Each published version's notes show here." />
+                    <EmptyState icon={<Search size={20} />} title="No changelog entries yet" hint="Each published version's notes show here." />
                   )}
 
                   {!showDevReports && !!entries.length && (

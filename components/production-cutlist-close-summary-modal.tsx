@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, type RefObject } from "react";
-import { ListX } from "lucide-react";
+import { Scissors } from "lucide-react";
 import { GlassModalHeader } from "@/components/glass-modal-header";
 import { EmptyState } from "@/components/empty-state";
 import { createPortal } from "react-dom";
@@ -83,7 +83,7 @@ export function ProductionCutlistCloseSummaryModal({
         <GlassModalHeader title="Production Cutlist Summary" onClose={onClose} />
         <div className="glass-scroll min-h-0 flex-1 space-y-4 overflow-y-auto p-4 sm:p-5">
           {displayPartTypes.length === 0 ? (
-            <EmptyState compact icon={<ListX size={16} />} title="No parts entered" hint="Parts added to this cutlist are counted here." />
+            <EmptyState compact icon={<Scissors size={16} />} title="No parts entered" hint="Parts added to this cutlist are counted here." />
           ) : (
             <div>
               <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-main)" }}>

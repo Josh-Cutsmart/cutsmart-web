@@ -987,7 +987,7 @@ export function CompletedProjectsModal({
             {query ? (
               <EmptyState compact icon={<Search size={16} />} title="No matches" hint="Try a different search" />
             ) : (
-              <EmptyState compact title={empty} hint={emptyHint} />
+              <EmptyState compact icon={<CheckCircle2 size={16} />} title={empty} hint={emptyHint} />
             )}
           </div>
         )}

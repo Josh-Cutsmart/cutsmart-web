@@ -6,7 +6,7 @@ import { glassShineStyle } from "@/lib/glass-shine";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { useRouter } from "next/navigation";
 import { createPortal } from "react-dom";
-import { Activity, CalendarDays, CheckCircle2, ChevronRight, FolderKanban, Kanban, ListFilter, Lock, Plus, RefreshCw, Rows3, Search, Users2 } from "lucide-react";
+import { Activity, CalendarDays, CheckCircle2, ChevronRight, FolderKanban, Kanban, ListFilter, Lock, MoreHorizontal, Plus, RefreshCw, Rows3, Search, Users2 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
 import { GlassDropdown, GLASS_MENU_CLASS, GLASS_MENU_MIN_WIDTH_PHONE_PX, GLASS_MENU_MIN_WIDTH_PX, GLASS_MENU_STYLE, glassMenuHeight } from "@/components/glass-dropdown";
@@ -40,13 +40,11 @@ import { BoardColumnSortMenu, BoardSortButton } from "@/components/board-sort-me
 import { readBoardSortPrefs, saveBoardSortPrefs } from "@/lib/board-sort-prefs";
 import { useAppTabs } from "@/lib/app-tabs-context";
 import {
-  addProjectChange,
   fetchCompanyDoc,
   fetchCompanyMembers,
   fetchProjects,
   fetchUserColorMapByUids,
   updateProjectPatch,
-  updateProjectStatus,
 } from "@/lib/firestore-data";
 import type { CompanyMemberOption } from "@/lib/firestore-data";
 import { PROJECT_COLUMN_MOVED_EVENT, type ProjectColumnMovedDetail } from "@/lib/firestore-data";
@@ -59,18 +57,34 @@ import { hedgedAsync } from "@/lib/load-retry";
 import { readLastKnown, saveLastKnown } from "@/lib/last-known";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { CompletedProjectsModal } from "@/components/completed-projects-modal";
-import { bonusLockMessage, bonusLockOf, fetchBonusLock, fetchCompletedProjectRecords, type CompletedProjectRecord } from "@/lib/completed-projects";
+import { bonusLockMessage, bonusLockOf, fetchCompletedProjectRecords, type CompletedProjectRecord } from "@/lib/completed-projects";
 import { completionBonusSettingsFrom, type CompletionBonusSettings } from "@/lib/completion-bonus";
 import { useFloatingNotice } from "@/components/floating-notice";
 import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
 import { completedStatusMatcher, isProjectArchived, PROJECTS_ARCHIVED_EVENT, type ProjectsArchivedDetail } from "@/lib/project-archive";
 import { SkeletonBoard, SkeletonCards, SkeletonRows } from "@/components/skeleton";
 import { EmptyState } from "@/components/empty-state";
+import {
+  landingSubStage,
+  moveProjectStatus,
+  PROJECT_PATCHED_EVENT,
+  projectQuickActionsAccess,
+  projectStatusRowsFrom,
+  projectTagSuggestionsFrom,
+  statusMoveLocalPatch,
+  type ProjectPatchedDetail,
+  type ProjectStatusRow,
+} from "@/lib/project-actions";
+import {
+  NO_PROJECT_QUICK_ACTIONS,
+  ProjectQuickActionsMenu,
+  projectQuickActionsAttrs,
+  useProjectQuickActionsRequest,
+  type ProjectQuickActionsStaff,
+} from "@/components/project-quick-actions-menu";
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
-type SubStageRow = { name: string; color: string; isDefault?: boolean };
-// isComplete: Company Settings' "Completed" toggle — left undefined when the company hasn't set it, so
-// completedStatusMatcher can fall back to the old name-based rule.
-type StatusRow = { name: string; color: string; subStages?: SubStageRow[]; isComplete?: boolean };
+// The company's statuses (lib/project-actions.ts — read from its doc by projectStatusRowsFrom).
+type StatusRow = ProjectStatusRow;
 type RoleRow = { id: string; name: string; color: string };
 
 const statCards = [
@@ -159,49 +173,6 @@ function statusPillColors(status: string) {
 
   const bg = defaults[key] ?? "#64748B";
   return { backgroundColor: bg, color: rowTextColorForFill(bg) };
-}
-
-function normalizeStatuses(raw: unknown): StatusRow[] {
-  if (!Array.isArray(raw)) {
-    return [
-      { name: "New", color: "#3060D0" },
-      { name: "In Production", color: "#2A7A3B" },
-      { name: "On Hold", color: "#C77700" },
-      { name: "Complete", color: "#2A7A3B" },
-    ];
-  }
-  const rows = raw
-    .filter((item) => item && typeof item === "object")
-    .map((item) => {
-      const row = item as Record<string, unknown>;
-      const subStagesRaw = Array.isArray(row.subStages) ? row.subStages : [];
-      const subStages: SubStageRow[] = subStagesRaw
-        .filter((sub) => sub && typeof sub === "object")
-        .map((sub) => {
-          const subRow = sub as Record<string, unknown>;
-          return {
-            name: String(subRow.name ?? "").trim(),
-            color: String(subRow.color ?? "").trim() || "#64748B",
-            isDefault: Boolean(subRow.isDefault),
-          };
-        })
-        .filter((sub) => sub.name);
-      return {
-        name: String(row.name ?? "").trim(),
-        color: String(row.color ?? "").trim() || "#64748B",
-        subStages,
-        ...(typeof row.isComplete === "boolean" ? { isComplete: row.isComplete } : {}),
-      };
-    })
-    .filter((row) => row.name);
-  return rows.length
-    ? rows
-    : [
-        { name: "New", color: "#3060D0" },
-        { name: "In Production", color: "#2A7A3B" },
-        { name: "On Hold", color: "#C77700" },
-        { name: "Complete", color: "#2A7A3B" },
-      ];
 }
 
 // White by default (the common case for typical mid/dark status & column colors) — only switches
@@ -540,8 +511,8 @@ export default function DashboardPage() {
     };
   }, []);
   const projectBoardDragGhost = useDragGhost();
-  const [statusRows, setStatusRows] = useState<StatusRow[]>(normalizeStatuses(undefined));
-  // `statusRows` starts out as a generic placeholder (see normalizeStatuses(undefined) above) —
+  const [statusRows, setStatusRows] = useState<StatusRow[]>(projectStatusRowsFrom(undefined));
+  // `statusRows` starts out as a generic placeholder (projectStatusRowsFrom(undefined), lib/project-actions.ts) —
   // the company's real, configured statuses/colors only land once the company doc fetch below
   // resolves. The board view's own loading gate (`showProjectsLoadingState`) goes false as soon
   // as PROJECTS have loaded, which happens earlier and independently — so without this, the
@@ -549,6 +520,8 @@ export default function DashboardPage() {
   // real ones the instant the company doc arrives, visible as a flash on every load.
   const [statusRowsLoaded, setStatusRowsLoaded] = useState(false);
   const [companyMembers, setCompanyMembers] = useState<CompanyMemberOption[]>([]);
+  // The tags the company's projects use, the most used first — a card's right-click Edit Tags suggests them.
+  const [projectTagSuggestions, setProjectTagSuggestions] = useState<string[]>([]);
   const [roleRows, setRoleRows] = useState<RoleRow[]>([]);
   const [creatorColorByUid, setCreatorColorByUid] = useState<Record<string, string>>({});
   const [companyThemeColor, setCompanyThemeColor] = useState("#2F6BFF");
@@ -940,10 +913,11 @@ export default function DashboardPage() {
         if (cancelled) return;
         const bundle = companyId && companyBundle ? companyBundle : null;
         const companyDoc = bundle ? (bundle[0] as Record<string, unknown> | null) : null;
+        if (companyDoc) setProjectTagSuggestions(projectTagSuggestionsFrom(companyDoc));
         const fresh: DashboardSnapshot = {
           projects: items,
           colors: userColorMap,
-          statusRows: normalizeStatuses(companyDoc?.projectStatuses),
+          statusRows: projectStatusRowsFrom(companyDoc?.projectStatuses),
           members: bundle ? bundle[1] : [],
           roleRows: bundle ? normalizeRoleRows(companyDoc?.roles) : [],
           themeColor: String(companyDoc?.themeColor ?? "").trim(),
@@ -956,7 +930,7 @@ export default function DashboardPage() {
         if (shownSnapshot) return;
         setAllProjects([]);
         setCreatorColorByUid({});
-        setStatusRows(normalizeStatuses(undefined));
+        setStatusRows(projectStatusRowsFrom(undefined));
         setStatusRowsLoaded(true);
         setCompanyMembers([]);
         setRoleRows([]);
@@ -1020,6 +994,35 @@ export default function DashboardPage() {
       window.removeEventListener(PROJECTS_ARCHIVED_EVENT, onProjectsArchived as EventListener);
     };
   }, []);
+
+  // Changed from a project's right-click menu — a card's here, or its tab's in the top bar (lib/project-actions.ts):
+  // assigned (in their colour, if it isn't known here yet), tagged (the suggestions read again), moved, or back out of
+  // the archive. Shown straight away.
+  useEffect(() => {
+    const onProjectPatched = (event: Event) => {
+      const detail = (event as CustomEvent<ProjectPatchedDetail>).detail;
+      if (!detail?.projectId) return;
+      setAllProjects((prev) =>
+        prev.map((row) =>
+          row.id === detail.projectId ? (Object.assign({}, row, detail.patch, { updatedAt: new Date().toISOString() }) as Project) : row,
+        ),
+      );
+      const assignedUid = String(detail.patch.assignedToUid || "").trim();
+      const member = assignedUid ? companyMembers.find((row) => String(row.uid || "").trim() === assignedUid) : undefined;
+      const memberColor = String(member?.userColor || member?.badgeColor || "").trim();
+      if (assignedUid && memberColor) setCreatorColorByUid((prev) => (prev[assignedUid] ? prev : { ...prev, [assignedUid]: memberColor }));
+      if (detail.patch.tags && dashboardCompanyId) {
+        fetchCompanyDoc(dashboardCompanyId).then(
+          (companyDoc) => {
+            if (companyDoc) setProjectTagSuggestions(projectTagSuggestionsFrom(companyDoc));
+          },
+          () => undefined,
+        );
+      }
+    };
+    window.addEventListener(PROJECT_PATCHED_EVENT, onProjectPatched);
+    return () => window.removeEventListener(PROJECT_PATCHED_EVENT, onProjectPatched);
+  }, [companyMembers, dashboardCompanyId]);
 
   const openNewProjectModal = (e?: React.MouseEvent<HTMLElement>) => {
     const origin = e ? captureGlassModalOrigin(e) : null;
@@ -1161,14 +1164,11 @@ export default function DashboardPage() {
       />
     );
   };
+  // Their role and permissions as this page works them out (the account's own until the company's have loaded).
+  const dashboardRole = String(access.role || user?.role || "").trim().toLowerCase() || "staff";
+  const dashboardPermissionKeys = access.permissionKeys.length ? access.permissionKeys : user?.permissions ?? [];
   const canEditProjectFromDashboard = (project: Project) =>
-    projectTabAccess(
-      project,
-      String(access.role || user?.role || "").trim().toLowerCase() || "staff",
-      "general",
-      user?.uid,
-      access.permissionKeys.length ? access.permissionKeys : user?.permissions ?? [],
-    ).edit && Boolean(user?.verified);
+    projectTabAccess(project, dashboardRole, "general", user?.uid, dashboardPermissionKeys).edit && Boolean(user?.verified);
 
   const openProjectInDashboard = async (projectId: string, projectName?: string) => {
     const name = String(projectName || "").trim();
@@ -1253,26 +1253,19 @@ export default function DashboardPage() {
     // A card entering a column with sub-stages lands in whichever one is marked "Default" in
     // Company Settings — not "Other" — so it's immediately triaged; a column with none marked
     // default (or none configured at all) just clears to "".
-    const destinationStatusRow = statusRows.find((row) => row.name.trim().toLowerCase() === nextStatus.trim().toLowerCase());
-    const nextSubStageId = chosenSubStage ?? destinationStatusRow?.subStages?.find((sub) => sub.isDefault)?.name ?? "";
+    const nextSubStageId = landingSubStage(statusRows, nextStatus, chosenSubStage);
     setStatusUpdatingProjectId(project.id);
-    // Same completion date updateProjectStatus stores (kept between completed statuses, stamped on
-    // entering one), so the Completed Projects pop-up has the right date straight away.
-    const nowIso = new Date().toISOString();
-    const nextCompletedAtIso = isCompletedStatus(nextStatus)
-      ? (isCompletedStatus(previousStatus) && String(project.completedAtIso || "").trim()) || nowIso
-      : "";
     // Optimistic: drop the card straight into its new column instead of waiting on the write to
-    // resolve first — the round-trip is what made a drop feel like it "took a while" to land.
+    // resolve first — the round-trip is what made a drop feel like it "took a while" to land. With
+    // the same completion date updateProjectStatus stores, so the Completed Projects pop-up has the
+    // right date straight away.
+    const localPatch = statusMoveLocalPatch(project, nextStatus, nextSubStageId, isCompletedStatus, new Date().toISOString());
     setAllProjects((prev) =>
       prev.map((row) =>
         row.id === project.id
           ? ({
               ...row,
-              statusLabel: nextStatus,
-              dashboardSubStageId: nextSubStageId,
-              updatedAt: nowIso,
-              completedAtIso: nextCompletedAtIso || undefined,
+              ...localPatch,
               ...(boardOrder !== undefined ? { dashboardBoardOrder: boardOrder } : {}),
             } as Project)
           : row,
@@ -1280,14 +1273,14 @@ export default function DashboardPage() {
     );
     setStatusMenuProjectId("");
     setStatusMenuPos(null);
-    const ok = await updateProjectStatus(project, nextStatus, nextSubStageId, boardOrder !== undefined ? { dashboardBoardOrder: boardOrder } : undefined);
+    // Saved, and its new status noted in its changelog (lib/project-actions.ts). Locked since the records were read
+    // (someone sorted it meanwhile): said.
+    const ok = await moveProjectStatus(project, nextStatus, nextSubStageId, {
+      actor: String(user?.displayName || user?.email || "Staff").trim() || "Staff",
+      extraPatch: boardOrder !== undefined ? { dashboardBoardOrder: boardOrder } : undefined,
+      onLocked: showStatusLockNotice,
+    });
     if (!ok) {
-      // Locked since the records were read (someone sorted it meanwhile) — say so.
-      if (changesStatus && project.companyId) {
-        void fetchBonusLock(project.companyId, project.id).then((lock) => {
-          if (lock) showStatusLockNotice(lock);
-        });
-      }
       // Persist failed — put it back where it actually is.
       setAllProjects((prev) =>
         prev.map((row) =>
@@ -1302,9 +1295,6 @@ export default function DashboardPage() {
             : row,
         ),
       );
-    } else if (previousStatus !== nextStatus) {
-      const actor = String(user?.displayName || user?.email || "Staff").trim() || "Staff";
-      void addProjectChange(project.id, actor, `Status changed: ${previousStatus || "(none)"} → ${nextStatus}`);
     }
     setStatusUpdatingProjectId("");
   };
@@ -1386,6 +1376,28 @@ export default function DashboardPage() {
   const statusMenuProject = useMemo(
     () => allProjects.find((p) => p.id === statusMenuProjectId) ?? null,
     [allProjects, statusMenuProjectId],
+  );
+
+  // A card's (or list row's) right-click menu (components/project-quick-actions-menu.tsx): its project as it is now,
+  // what this person can do to it (the rules this page and the project page go by), and the staff to assign it to, in
+  // their colours as the cards show them.
+  const projectQuickActions = useProjectQuickActionsRequest("dashboard");
+  const quickActionsProjectId = projectQuickActions.request?.projectId ?? "";
+  const quickActionsProject = useMemo(
+    () => (quickActionsProjectId ? allProjects.find((p) => p.id === quickActionsProjectId) ?? null : null),
+    [allProjects, quickActionsProjectId],
+  );
+  const quickActionsAccess = quickActionsProject
+    ? projectQuickActionsAccess(quickActionsProject, dashboardRole, user?.uid, dashboardPermissionKeys, Boolean(user?.verified))
+    : NO_PROJECT_QUICK_ACTIONS;
+  const quickActionsStaff = useMemo<ProjectQuickActionsStaff[]>(
+    () =>
+      companyMembers.map((member) => ({
+        uid: member.uid,
+        name: member.displayName,
+        color: String(creatorColorByUid[String(member.uid || "").trim()] || member.userColor || member.badgeColor || companyThemeColor).trim(),
+      })),
+    [companyMembers, creatorColorByUid, companyThemeColor],
   );
 
   useEffect(() => {
@@ -1885,6 +1897,7 @@ export default function DashboardPage() {
       <div
         key={project.id}
         id={`${idPrefix}${project.id}`}
+        {...projectQuickActionsAttrs("dashboard", project.id)}
         draggable={canEdit}
         onDragStart={(e) => handleDragStart(e, project)}
         onDragEnd={handleDragEnd}
@@ -1916,6 +1929,20 @@ export default function DashboardPage() {
               <Lock size={11} strokeWidth={2.4} />
             </span>
           ) : null}
+          {/* A touch screen (no right-click): a ⋯ in its top right corner for its quick actions — the same menu, under it. */}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              projectQuickActions.openFrom(e.currentTarget);
+            }}
+            onKeyDown={(e) => e.stopPropagation()}
+            className="-my-1.5 -mr-1.5 ml-auto hidden h-8 w-8 shrink-0 items-center justify-center rounded-full transition active:bg-[color-mix(in_srgb,currentColor_12%,transparent)] pointer-coarse:inline-flex"
+            style={{ color: cardText }}
+            aria-label={`Actions for ${project.name}`}
+          >
+            <MoreHorizontal size={17} />
+          </button>
         </p>
         {project.tags.length > 0 && (
           <div className="flex flex-wrap gap-1">
@@ -3166,6 +3193,7 @@ export default function DashboardPage() {
                     {visibleProjects.map((project) => (
                       <div
                         key={project.id}
+                        {...projectQuickActionsAttrs("dashboard", project.id)}
                         role="button"
                         tabIndex={0}
                         className="w-full cursor-pointer rounded-[14px] border px-3.5 py-3.5 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-soft)]"
@@ -3503,6 +3531,7 @@ export default function DashboardPage() {
                     return (
                     <tr
                       key={project.id}
+                      {...projectQuickActionsAttrs("dashboard", project.id)}
                       className="cursor-pointer transition-colors"
                       style={{
                         // Its divider (a line along the bottom, fading out at each end the same as the
@@ -3768,6 +3797,23 @@ export default function DashboardPage() {
               )}
             {completedProjectsModal}
             {columnAutomation.layer}
+            <ProjectQuickActionsMenu
+              request={projectQuickActions.request}
+              onClose={projectQuickActions.close}
+              project={quickActionsProject}
+              statuses={statusMenuStatuses}
+              staff={quickActionsStaff}
+              tagSuggestions={projectTagSuggestions}
+              access={quickActionsAccess}
+              moving={Boolean(quickActionsProject) && statusUpdatingProjectId === quickActionsProjectId}
+              // Open: as clicking it does (flying up to the top bar from where it was right-clicked).
+              onOpen={(projectId, source) => {
+                const project = allProjects.find((row) => row.id === projectId);
+                if (project) onProjectRowActivate(project, source.isConnected ? source : null);
+              }}
+              // Move: this page's own status menu's save.
+              onMove={(project, status, subStage) => void onSelectProjectStatus(project, status, undefined, subStage)}
+            />
             {showCompletedProjectsModal && <GlassScrollbarThumb scrollRef={completedProjectsScrollRef} zIndexClassName="z-[8]" />}
             {staffModal}
             {showStaffModal && <GlassScrollbarThumb scrollRef={staffMembersScrollRef} zIndexClassName="z-[8]" />}

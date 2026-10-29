@@ -641,12 +641,14 @@ body[data-theme="dark"] .project-tab-lens-outline {
 }
 
 /* Calendar month view (app/(staff)/(app)/calendar/page.tsx): days outside the month in view are greyed.
-   The scroller carries which of its three months is in view as data-live (0/1/2), set straight from the
+   The scroller carries which of its five months is in view as data-live (0–4), set straight from the
    scroll position rather than by a React re-render (which made scrolling stutter); each day carries which
    month it belongs to as data-mi. The day's own transition fades the change. */
 .cal-month-scroller[data-live="0"] .cal-day:not([data-mi="0"]),
 .cal-month-scroller[data-live="1"] .cal-day:not([data-mi="1"]),
-.cal-month-scroller[data-live="2"] .cal-day:not([data-mi="2"]) {
+.cal-month-scroller[data-live="2"] .cal-day:not([data-mi="2"]),
+.cal-month-scroller[data-live="3"] .cal-day:not([data-mi="3"]),
+.cal-month-scroller[data-live="4"] .cal-day:not([data-mi="4"]) {
   --cal-day-bg: color-mix(in srgb, var(--text-main) 2.5%, transparent);
   --cal-day-num: var(--text-muted);
 }

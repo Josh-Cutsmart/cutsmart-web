@@ -54,6 +54,7 @@ import { useAuth } from "@/lib/auth-context";
 import { prefetchProjectById, projectViewableByUser } from "@/lib/firestore-data";
 import { readUserNotificationDoc, restoreUserNotificationDoc } from "@/lib/undo-restore-misc";
 import { useUndo } from "@/components/undo-bar";
+import { ProjectTabQuickActions, projectQuickActionsAttrs } from "@/components/project-quick-actions-menu";
 import {
   addUserNotification,
   deleteUserNotification,
@@ -2217,6 +2218,7 @@ export function GlobalAppTabsBar() {
               const isCollapsedDragSource = collapsedDraggedGroupKey === group.groupKey;
               const groupShiftX = getDraggedGroupShiftX(group.groupKey);
               const isPressed = pressedGroupKey === group.groupKey || isDragActive;
+              const tabProjectId = activeTab.scopeKey.startsWith("project:") ? activeTab.scopeKey.slice("project:".length) : "";
               return (
                 <div
                   key={group.groupKey}
@@ -2224,6 +2226,8 @@ export function GlobalAppTabsBar() {
                     groupNodeRefs.current[group.groupKey] = node;
                   }}
                   data-app-tab-group={group.groupKey}
+                  // A project's tab: right-click for its quick actions (components/project-quick-actions-menu.tsx).
+                  {...(tabProjectId ? projectQuickActionsAttrs("tabs", tabProjectId) : {})}
                   // Its project starts loading as soon as it's pointed at or touched (warmProjectTab).
                   onPointerEnter={() => warmProjectTab(group.groupKey)}
                   onPointerDown={() => warmProjectTab(group.groupKey)}
@@ -2634,6 +2638,28 @@ export function GlobalAppTabsBar() {
             document.body,
           )
         : null}
+      {/* A project tab's right-click menu: Open is the tab's own (as clicking it — nothing to do for the one that's open);
+          archiving it pops its tab away, as its X does. */}
+      <ProjectTabQuickActions
+        onOpen={(projectId) => {
+          const group = scrollableTabGroups.find((item) => item.tabs.some((tab) => tab.scopeKey === `project:${projectId}`));
+          if (!group) {
+            router.push(`/projects/${projectId}?tab=general`);
+            return;
+          }
+          if (group.tabs.some((tab) => tab.key === displayActiveAppTabKey)) return;
+          warmProjectTab(`project:${projectId}`);
+          selectGroupPrimaryTab(group);
+        }}
+        onOpenTab={(projectId, tab) => {
+          warmProjectTab(`project:${projectId}`);
+          router.push(`/projects/${projectId}?tab=${tab}`);
+        }}
+        onArchiving={(projectId) => {
+          const group = scrollableTabGroups.find((item) => item.tabs.some((tab) => tab.scopeKey === `project:${projectId}`));
+          if (group) popAwayClosingTab(group.groupKey);
+        }}
+      />
     </>
   );
 }

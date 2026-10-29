@@ -23,7 +23,7 @@ import {
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { AlertTriangle, Archive, Check, ChevronLeft, FolderKanban, History, Mail, MapPin, MessageSquare, Pencil, Phone, Plus, Search, Share, Users, X } from "lucide-react";
+import { AlertTriangle, Archive, Check, ChevronLeft, History, Mail, MapPin, MessageSquare, Pencil, Phone, Plus, Search, Share, Users, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { authorizedFetch } from "@/lib/api-fetch";
 import {
@@ -1979,7 +1979,7 @@ function ClientsPageInner() {
                             </p>
                             <div className="mt-3 space-y-2">
                               {section.rows.length === 0 ? (
-                                <EmptyState compact icon={<FolderKanban size={16} />} title={section.empty} />
+                                <EmptyState compact icon={<Users size={16} />} title={section.empty} />
                               ) : (
                                 section.rows.map((history) => {
                                   const canOpenProject = Boolean(String(history.projectId || "").trim()) && !history.deleted;

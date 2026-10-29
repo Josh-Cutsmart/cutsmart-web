@@ -9,6 +9,7 @@
 
 import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { WheelDatePicker, WheelTimePicker } from "@/components/wheel-date-picker";
+import { popupTintStyle, registerPopupTint } from "@/lib/popup-tint";
 import { GlassModalHeader } from "@/components/glass-modal-header";
 import { createPortal } from "react-dom";
 import Link from "next/link";
@@ -163,17 +164,20 @@ function textOn(hex: string) {
 // The month view's scroller (all screen sizes): one continuous run of weeks covering the previous, current and next month
 // (each week appears once, so the days either side of a month never show twice). `starts` are the row
 // indexes of the week holding each month's 1st — the snap points, with 6 rows showing at a time.
-function mobileMonthWeeks(cursor: Date): { weeks: Date[]; starts: [number, number, number]; months: [Date, Date, Date] } {
-  const cur = startOfMonth(cursor);
-  const prev = startOfMonth(cursor);
-  prev.setMonth(prev.getMonth() - 1);
-  const next = startOfMonth(cursor);
-  next.setMonth(next.getMonth() + 1);
-  const first = startOfWeek(prev);
+// How many months the month view holds either side of the one it's on — there already, so a quick run of swipes (or
+// wheel flicks) lands on a month that's drawn and has its events, rather than running out and bouncing back.
+const MONTHS_AROUND = 2;
+function mobileMonthWeeks(cursor: Date): { weeks: Date[]; starts: number[]; months: Date[] } {
+  const months = Array.from({ length: MONTHS_AROUND * 2 + 1 }, (_, i) => {
+    const m = startOfMonth(cursor);
+    m.setMonth(m.getMonth() + i - MONTHS_AROUND);
+    return m;
+  });
+  const first = startOfWeek(months[0]);
   const rowOf = (m: Date) => Math.round((startOfWeek(m).getTime() - first.getTime()) / (7 * DAY_MS));
-  const starts: [number, number, number] = [0, rowOf(cur), rowOf(next)];
-  const weeks = Array.from({ length: starts[2] + 6 }, (_, i) => addDays(first, i * 7));
-  return { weeks, starts, months: [prev, cur, next] };
+  const starts = months.map(rowOf);
+  const weeks = Array.from({ length: starts[starts.length - 1] + 6 }, (_, i) => addDays(first, i * 7));
+  return { weeks, starts, months };
 }
 
 // Phones' day / week swipe (onDaySwipeMove), once the view under the finger has changed: the new day (week)
@@ -201,13 +205,13 @@ function viewRange(view: CalendarView, cursor: Date): { from: Date; to: Date } {
     return { from, to };
   }
   if (view === "month") {
-    // The month plus the ones either side, so swiping to the next/previous month (mobile) shows its
-    // events straight away.
-    const prev = startOfMonth(cursor);
-    prev.setMonth(prev.getMonth() - 1);
-    const next = startOfMonth(cursor);
-    next.setMonth(next.getMonth() + 1);
-    return { from: startOfWeek(prev), to: addDays(startOfWeek(next), 42) };
+    // The month plus the ones the scroller holds either side (MONTHS_AROUND), so scrolling on to them shows
+    // their events straight away.
+    const first = startOfMonth(cursor);
+    first.setMonth(first.getMonth() - MONTHS_AROUND);
+    const last = startOfMonth(cursor);
+    last.setMonth(last.getMonth() + MONTHS_AROUND);
+    return { from: startOfWeek(first), to: addDays(startOfWeek(last), 42) };
   }
   if (view === "week") {
     const from = startOfWeek(cursor);
@@ -511,37 +515,6 @@ const cardStyle: CSSProperties = {
   boxShadow: "inset 0 1px 0 var(--glass-highlight), var(--shadow-glass)",
 };
 
-// The event pop-up is themed by the event's category: a wash of its colour over the glass. The colour is a
-// registered custom property, so it can be animated — picking another category fades the wash over to the
-// new colour instead of snapping. Browsers without CSS.registerProperty just switch straight to it.
-const POPUP_TINT_VAR = "--cal-popup-tint";
-let popupTintRegistered = false;
-function registerPopupTint() {
-  if (popupTintRegistered || typeof CSS === "undefined" || typeof CSS.registerProperty !== "function") return;
-  popupTintRegistered = true;
-  try {
-    CSS.registerProperty({ name: POPUP_TINT_VAR, syntax: "<color>", inherits: false, initialValue: "transparent" });
-  } catch {
-    // already registered (e.g. after a hot reload)
-  }
-}
-// color "" = no category yet: no wash. The glass shine's look (lib/glass-shine.ts), well coloured: the whole pop-up a
-// wash of it (lighter top left, deeper bottom right), a glow of it in each of those corners, a fine edge of it and the
-// white top highlight.
-function popupTintStyle(color: string): CSSProperties {
-  const tint = `var(${POPUP_TINT_VAR})`;
-  return {
-    [POPUP_TINT_VAR]: color || "transparent",
-    transition: `${POPUP_TINT_VAR} 360ms ease`,
-    borderRadius: "inherit",
-    backgroundImage: [
-      `radial-gradient(120% 70% at 0% 0%, color-mix(in srgb, ${tint} 34%, transparent), transparent 70%)`,
-      `radial-gradient(90% 60% at 100% 100%, color-mix(in srgb, ${tint} 24%, transparent), transparent 70%)`,
-      `linear-gradient(145deg, color-mix(in srgb, ${tint} 14%, transparent), color-mix(in srgb, ${tint} 28%, transparent))`,
-    ].join(", "),
-    boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${tint} 30%, transparent), inset 0 1px 0 rgba(255, 255, 255, 0.6)`,
-  } as CSSProperties;
-}
 // The pop-up's main button (Edit / Save / Add event) in the category's colour.
 function categoryButtonStyle(color: string): CSSProperties {
   return { backgroundColor: color, color: textOn(color), boxShadow: `0 6px 16px color-mix(in srgb, ${color} 35%, transparent)` };
@@ -862,14 +835,51 @@ function CalendarPageContent() {
     }
     /* eslint-enable react-hooks/set-state-in-effect */
   }, []);
+  // A day opened from the month, week or year view (tapping it): that view, to go back to — the < at the bottom left on
+  // a phone or tablet (as the + at the right), a round ‹ to the left of Today on a computer. Back, it's on the day being looked
+  // at (its month, week or year), wherever the day view was moved on to.
+  const [dayOpenedFrom, setDayOpenedFrom] = useState<CalendarView | null>(null);
+  // ...its name, for the buttons' labels ("Back to month") — kept after, while the computer's one slides away.
+  const [dayBackLabel, setDayBackLabel] = useState("");
   const changeView = (next: CalendarView) => {
     setView(next);
+    if (next !== "day") setDayOpenedFrom(null);
     try {
       window.localStorage.setItem(VIEW_STORAGE_KEY, next);
     } catch {
       // ignore
     }
   };
+  // A view picked from the switcher starts at today — today's day, week, month or year — not wherever the last view had
+  // been scrolled to.
+  const pickView = (next: CalendarView) => {
+    setCursor(startOfDay(new Date()));
+    changeView(next);
+  };
+  const openDay = (day: Date) => {
+    if (view !== "day") {
+      setDayOpenedFrom(view);
+      setDayBackLabel(CALENDAR_VIEW_OPTIONS.find((o) => o.value === view)?.label ?? "");
+    }
+    setCursor(startOfDay(day));
+    changeView("day");
+  };
+  const backFromDay = () => {
+    if (dayOpenedFrom) changeView(dayOpenedFrom);
+  };
+  const dayBackShown = view === "day" && Boolean(dayOpenedFrom);
+  // The computer's ‹ (a round button): to the left of Today, sliding open (Today sliding over for it) and shut again — its width
+  // from nothing to the button's own, and back (written straight onto it: a size, not something to render). Shut, it
+  // also takes back the row's 8px gap after it, so Today sits at the start.
+  const dayBackWrapRef = useRef<HTMLSpanElement | null>(null);
+  const dayBackButtonRef = useRef<HTMLButtonElement | null>(null);
+  useLayoutEffect(() => {
+    const wrap = dayBackWrapRef.current;
+    const button = dayBackButtonRef.current;
+    if (!wrap || !button) return;
+    wrap.style.width = dayBackShown ? `${button.offsetWidth}px` : "0px";
+    wrap.style.marginRight = dayBackShown ? "0px" : "-8px";
+  }, [dayBackShown, dayBackLabel]);
   const toggleHidden = (id: string) => {
     setHidden((prev) => {
       const next = new Set(prev);
@@ -1496,6 +1506,14 @@ function CalendarPageContent() {
   // projects with something booked from those without); a project being dragged from it, and the time it'd go at in
   // the Week/Day views' hours.
   const [schedulePanelOpen, setSchedulePanelOpen] = useState(false);
+  // ...and done sliding open: only then is it shown in full, its shadow and all. While it slides (open or shut) it's
+  // clipped to its width, as it grows from nothing — which would cut its shadow off too. With no slide (reduced motion),
+  // in full straight away.
+  const [schedulePanelSettled, setSchedulePanelSettled] = useState(false);
+  const showSchedulePanel = (open: boolean) => {
+    setSchedulePanelSettled(open && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+    setSchedulePanelOpen(open);
+  };
   const [linkedEvents, setLinkedEvents] = useState<CalendarEvent[]>([]);
   const [linkedEventsLoaded, setLinkedEventsLoaded] = useState(false);
   useEffect(() => {
@@ -1824,8 +1842,9 @@ function CalendarPageContent() {
 
   // One week of the month view. `month` is the month being shown — days outside it are greyed (they fade
   // as that changes). `place` sizes/snaps the row in the month view's continuous week scroller.
-  // windowMonths: the scroller's three months (prev / current / next). Each day is tagged with which one
-  // it's in (data-mi); app/globals.css greys the days that aren't in the month in view (data-live).
+  // windowMonths: the scroller's months (the one it's on in the middle, MONTHS_AROUND either side). Each day is
+  // tagged with which one it's in (data-mi); app/globals.css greys the days that aren't in the month in view
+  // (data-live).
   const weekRow = (weekStart: Date, windowMonths: Date[], place?: { className?: string; style?: CSSProperties }) => {
     const S = slotsPerDay;
     // The week's days, less any left-out non-work days (weekCols).
@@ -1853,8 +1872,7 @@ function CalendarPageContent() {
               key={dayMs}
               data-mi={monthIdx}
               onClick={() => {
-                setCursor(startOfDay(dd));
-                changeView("day");
+                openDay(dd);
               }}
               {...dayDropProps(dayMs)}
               title={holiday ? `${holiday} — open this day` : "Open this day"}
@@ -1872,8 +1890,7 @@ function CalendarPageContent() {
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
-                    setCursor(startOfDay(dd));
-                    changeView("day");
+                    openDay(dd);
                   }}
                   className="inline-flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[12px] font-semibold transition duration-300 hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)]"
                   style={isToday ? { backgroundImage: "var(--brand-gradient)", color: "#fff" } : { color: "var(--cal-day-num, var(--text-main))" }}
@@ -1896,8 +1913,7 @@ function CalendarPageContent() {
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
-                      setCursor(startOfDay(dd));
-                      changeView("day");
+                      openDay(dd);
                     }}
                     className="inline-flex h-[18px] shrink-0 items-center rounded-full px-1.5 text-[10.5px] font-semibold transition hover:brightness-95"
                     style={{ backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
@@ -1929,14 +1945,14 @@ function CalendarPageContent() {
     );
   };
 
-  // ---- Mobile: swipe up/down between months. Three months are rendered stacked (previous, current,
-  // next), the scroller snaps to whole months, and once it settles on the previous or next one the
-  // cursor moves and the scroller is put back on the middle — so there's always a loaded month on
-  // each side and it can never rest between two months.
+  // ---- Mobile: swipe up/down between months. Five months are rendered stacked (the one it's on, and
+  // MONTHS_AROUND either side), the scroller snaps to whole months, and once it settles on another one the
+  // cursor moves and the scroller is put back on the middle — so there are always loaded months ahead
+  // and behind, even for swipes quicker than it settles, and it can never rest between two months.
 
   const monthScrollerRef = useRef<HTMLDivElement | null>(null);
   const monthSettleTimerRef = useRef<number | null>(null);
-  // Which of the three months (0 prev, 1 current, 2 next) the scroller is nearest to, so the greyed days
+  // Which of its months (0 the first; MONTHS_AROUND the one it's on) the scroller is nearest to, so the greyed days
   // fade over to the month coming into view. Written straight onto the scroller as data-live (styled in
   // app/globals.css), not React state — re-rendering the calendar mid-scroll is what made it stutter.
   const setLiveMonth = (el: HTMLDivElement, idx: number) => {
@@ -1958,14 +1974,14 @@ function CalendarPageContent() {
     if (view !== "month") return;
     const el = monthScrollerRef.current;
     if (!el) return;
-    el.scrollTop = (mobileMonthWeeks(cursor).starts[1] * el.clientHeight) / 6;
-    setLiveMonth(el, 1);
+    el.scrollTop = (mobileMonthWeeks(cursor).starts[MONTHS_AROUND] * el.clientHeight) / 6;
+    setLiveMonth(el, MONTHS_AROUND);
   }, [cursor, isMobile, monthRowsHeight, view]);
   const settleMonthScroller = () => {
     const el = monthScrollerRef.current;
     if (!el || !el.clientHeight) return;
     const idx = nearestMonthIdx(el);
-    if (idx === 1) return;
+    if (idx === MONTHS_AROUND) return;
     // The month itself, not "one on from whatever the cursor is now": scrollend and the settle timer can
     // both fire before the re-render, and a relative step would then move two months.
     const target = mobileMonthWeeks(cursor).months[idx];
@@ -2347,8 +2363,7 @@ function CalendarPageContent() {
                         key={d.getTime()}
                         type="button"
                         onClick={() => {
-                          setCursor(startOfDay(d));
-                          changeView("day");
+                          openDay(d);
                         }}
                         title={holiday || undefined}
                         className="flex w-full min-w-0 items-center justify-center gap-1.5 border-l px-1 py-1.5 text-[12px] font-semibold first:border-l-0"
@@ -2706,8 +2721,7 @@ function CalendarPageContent() {
                             openNew(dayMs, true, e);
                             return;
                           }
-                          setCursor(day);
-                          changeView("day");
+                          openDay(day);
                         }}
                         className={`border-r last:border-r-0 ${canCreate ? "cursor-pointer" : ""}`}
                         style={{
@@ -2722,8 +2736,7 @@ function CalendarPageContent() {
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
-                            setCursor(day);
-                            changeView("day");
+                            openDay(day);
                           }}
                           className="block w-full px-1 pt-1 text-right text-[11.5px] leading-none hover:text-[var(--brand-strong)]"
                           style={{ color: isToday ? "var(--text-main)" : "var(--text-muted)", fontWeight: isToday ? 600 : 400 }}
@@ -3170,7 +3183,7 @@ function CalendarPageContent() {
           {canCreate ? (
             <button
               type="button"
-              onClick={() => setSchedulePanelOpen((v) => !v)}
+              onClick={() => showSchedulePanel(!schedulePanelOpen)}
               aria-pressed={schedulePanelOpen}
               className={`${pillButtonClass} h-9`}
               style={schedulePanelOpen ? { borderColor: "var(--brand)", color: "var(--brand-strong)" } : undefined}
@@ -3184,10 +3197,13 @@ function CalendarPageContent() {
 
         {/* The Schedule panel (a computer): the grid's third column, after the calendar — its width slides open from
             nothing, the calendar giving way as it does. (Its width, not the grid's columns: Chrome doesn't animate those
-            here.) Its 12px padding before it is the gap; out past the grid's top, bottom and right by its padding, so its
-            shadow isn't cut off there. Faded out as it closes. */}
+            here.) Its 12px padding before it is the gap. Clipped to its width only while it slides (schedulePanelSettled):
+            open, nothing of it is cut off — its shadow reaching out over the gap and past the grid. Faded out as it closes. */}
         <div
-          className="hidden min-h-0 overflow-hidden transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none lg:col-start-3 lg:row-start-1 lg:block"
+          className={`hidden min-h-0 transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none lg:col-start-3 lg:row-start-1 lg:block ${schedulePanelSettled ? "overflow-visible" : "overflow-hidden"}`}
+          onTransitionEnd={(e) => {
+            if (e.target === e.currentTarget && e.propertyName === "width" && schedulePanelOpen) setSchedulePanelSettled(true);
+          }}
           style={{
             width: schedulePanelOpen ? SCHEDULE_PANEL_W + 12 : 0,
             marginTop: -12,
@@ -3207,7 +3223,7 @@ function CalendarPageContent() {
               projects={scheduleProjects}
               linkedEvents={linkedEvents}
               loaded={linkedEventsLoaded && projectsLoaded}
-              onClose={() => setSchedulePanelOpen(false)}
+              onClose={() => showSchedulePanel(false)}
               onDragStart={beginProjectDrag}
               onDragEnd={endProjectDrag}
               onPick={(project, e) => openNew(newEventStartMs(), true, e, project)}
@@ -3227,6 +3243,25 @@ function CalendarPageContent() {
               some width (down to 150px) before the title truncates. */}
           {/* (With the Schedule panel open on a narrow window, it wraps rather than running under the panel.) */}
           <div className={`flex flex-wrap items-center gap-2 md:flex-nowrap ${schedulePanelOpen ? "lg:flex-wrap" : ""}`}>
+            <span
+              ref={dayBackWrapRef}
+              className="inline-flex shrink-0 overflow-hidden max-lg:hidden"
+              style={{ width: 0, marginRight: -8, transition: "width 280ms cubic-bezier(0.2, 0.8, 0.2, 1), margin-right 280ms cubic-bezier(0.2, 0.8, 0.2, 1)" }}
+              inert={!dayBackShown}
+            >
+              <button
+                ref={dayBackButtonRef}
+                type="button"
+                onClick={backFromDay}
+                // (Round: just the arrow, Today's height — the glass shine in green, as the phone's.)
+                className="glass-shine inline-flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-full text-white transition hover:brightness-105"
+                style={glassShineStyle("#16A34A")}
+                aria-label={`Back to ${dayBackLabel.toLowerCase()}`}
+                title={`Back to ${dayBackLabel.toLowerCase()}`}
+              >
+                <ChevronLeft size={24} strokeWidth={2.4} />
+              </button>
+            </span>
             <button type="button" onClick={() => setCursor(startOfDay(new Date()))} className={pillButtonClass}>
               Today
             </button>
@@ -3282,7 +3317,7 @@ function CalendarPageContent() {
                   strongText
                   value={view}
                   options={CALENDAR_VIEW_OPTIONS}
-                  onChange={changeView}
+                  onChange={pickView}
                 />
               </div>
               {/* The search button's own place in the row — a circle the switcher's height (bigger on a phone). */}
@@ -3349,7 +3384,7 @@ function CalendarPageContent() {
               // Computer: the view switcher, and right of it the search box — always open.
               <div className="flex min-w-0 items-center gap-2">
                 <div className="shrink-0">
-                  <Segmented size="sm" tone="brand" pill strongText value={view} options={CALENDAR_VIEW_OPTIONS} onChange={changeView} />
+                  <Segmented size="sm" tone="brand" pill strongText value={view} options={CALENDAR_VIEW_OPTIONS} onChange={pickView} />
                 </div>
                 <label
                   className="flex h-[34px] w-[240px] min-w-[150px] items-center gap-2 rounded-full border border-[var(--glass-border)] px-3 transition-colors focus-within:border-[var(--brand)]"
@@ -3432,6 +3467,27 @@ function CalendarPageContent() {
               title="New event"
             >
               <Plus size={28} strokeWidth={2.4} />
+            </button>,
+            document.body,
+          )
+        : null}
+
+      {/* ...and, in a day opened from the month, week or year view, a floating < at the bottom left to go back to it (the
+          glass shine in green, beside the blue +). */}
+      {dayBackShown && typeof document !== "undefined"
+        ? createPortal(
+            <button data-bottom-bar=""
+              type="button"
+              onClick={backFromDay}
+              className="glass-shine fixed left-4 z-[60] inline-flex h-14 w-14 items-center justify-center rounded-full text-white transition hover:brightness-105 active:scale-95 lg:hidden"
+              style={glassShineStyle("#16A34A", {
+                bottom: "calc(20px + env(safe-area-inset-bottom))",
+                boxShadow: "0 10px 28px rgba(15,23,42,0.28), inset 0 1px 0 rgba(255,255,255,0.5)",
+              })}
+              aria-label={`Back to ${dayBackLabel.toLowerCase()}`}
+              title={`Back to ${dayBackLabel.toLowerCase()}`}
+            >
+              <ChevronLeft size={28} strokeWidth={2.4} />
             </button>,
             document.body,
           )

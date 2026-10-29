@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { GlassModalHeader } from "@/components/glass-modal-header";
-import { ChevronDown, Clock, DollarSign, FolderKanban, Inbox, ListChecks, Minus, Plus, RefreshCw, RotateCcw, Search, Trophy, Users, X, type LucideIcon } from "lucide-react";
+import { ChartColumn, ChevronDown, Clock, DollarSign, Inbox, ListChecks, Minus, Plus, RefreshCw, RotateCcw, Search, Trophy, X, type LucideIcon } from "lucide-react";
 import { EmptyState } from "@/components/empty-state";
 import { Skeleton, SkeletonGroup } from "@/components/skeleton";
 import { useAuth } from "@/lib/auth-context";
@@ -457,7 +457,7 @@ export default function ReportsPage() {
                     <StageBars stages={report.stages} />
                   ) : (
                     <EmptyState
-                      icon={<Clock size={16} />}
+                      icon={<ChartColumn size={16} />}
                       title="No status changes yet"
                       hint="Status changes are recorded from now on — this fills in as projects move through your statuses."
                       compact
@@ -740,7 +740,7 @@ function IncludedPanel({
             staff.length ? (
               <EmptyState icon={<Search size={16} />} title="No matches" hint="Try a different search" compact />
             ) : (
-              <EmptyState icon={<Users size={16} />} title="No staff yet" hint="Your company's staff show here." compact />
+              <EmptyState icon={<ChartColumn size={16} />} title="No staff yet" hint="Your company's staff show here." compact />
             )
           ) : null}
         </div>
@@ -835,7 +835,7 @@ function IncludedPanel({
             rows.length ? (
               <EmptyState icon={<Search size={16} />} title="No matches" hint="Try a different search" compact />
             ) : (
-              <EmptyState icon={<FolderKanban size={16} />} title="No projects yet" hint="Your company's projects show here." compact />
+              <EmptyState icon={<ChartColumn size={16} />} title="No projects yet" hint="Your company's projects show here." compact />
             )
           ) : null}
         </div>
@@ -1109,7 +1109,7 @@ function StageBars({ stages }: { stages: ReportData["stages"] }) {
 function Pipeline({ rows }: { rows: Array<{ status: string; color: string; count: number }> }) {
   const total = rows.reduce((sum, row) => sum + row.count, 0);
   if (!total) {
-    return <EmptyState icon={<FolderKanban size={16} />} title="No projects on the board" hint="Projects show here, in each status." compact />;
+    return <EmptyState icon={<ChartColumn size={16} />} title="No projects on the board" hint="Projects show here, in each status." compact />;
   }
   return (
     <div>
@@ -1139,7 +1139,7 @@ function PeopleTable({
   rows: Array<{ key: string; name: string; color: string; started: number; completed: number; quoted: number; won: number; wonValue: number; winRate: number | null }>;
 }) {
   if (!rows.length) {
-    return <EmptyState icon={<Users size={16} />} title="Nothing assigned in this period" hint="Projects assigned to your staff in this period show here." compact />;
+    return <EmptyState icon={<ChartColumn size={16} />} title="Nothing assigned in this period" hint="Projects assigned to your staff in this period show here." compact />;
   }
   const columns = "grid grid-cols-[minmax(0,1.6fr)_repeat(2,minmax(0,0.8fr))_minmax(0,1fr)] sm:grid-cols-[minmax(0,1.6fr)_repeat(3,minmax(0,0.7fr))_minmax(0,1fr)_minmax(0,1fr)]";
   return (
@@ -1178,7 +1178,7 @@ function PeopleTable({
 
 function Sources({ rows }: { rows: Array<{ label: string; count: number; converted: number }> }) {
   if (!rows.length) {
-    return <EmptyState icon={<Inbox size={16} />} title="No leads in this period" hint="Leads that come in during this period show here." compact />;
+    return <EmptyState icon={<ChartColumn size={16} />} title="No leads in this period" hint="Leads that come in during this period show here." compact />;
   }
   const max = Math.max(1, ...rows.map((row) => row.count));
   return (

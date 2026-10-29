@@ -11,8 +11,10 @@ The Order, redesigned | Everything to order at a glance, Drawers, Hinges and Oth
 whatsNew: [
 <u><b>Dashboard</b></u>
 <ul>
+<li>Right-click a project — its card, or its tab up top; on a phone or tablet, the <b>⋯</b> on its card — for <b>Open</b> (or straight to Design or Production), <b>Move</b>, <b>Change Assigned</b>, <b>Edit Tags</b> and <b>Archive</b></li>
 <li>Right-click a column and choose <b>Automate</b>: <b>Notify</b> people or roles when a project enters it, leaves it or has been in it a while — or <b>Move</b> it on, <b>Assign</b> it or <b>Tag</b> it</li>
 <li>Add <b>Only if…</b> to an automation — who it's assigned to, where it came from, its tags or its name — and it waits until that's true</li>
+<li>The Automate pop-up takes its column's colour, as the calendar's pop-ups take their category's</li>
 <li>A timed move can count from when each project moved in, so the ones already there count too</li>
 <li>Whoever moves a card is told what their move set off</li>
 <li>A status with sub-statuses shows the sub-status in a pill of its own — each half opens its own menu</li>
@@ -55,6 +57,8 @@ whatsNew: [
 
 <u><b>Production</b></u>
 <ul>
+<li>A room with nothing in its cutlist yet shows <b>Add your first piece</b> — press it and pick the part type (Initial Measure and Production)</li>
+<li>Cutlist Entry's column headings only show while there are rows being entered</li>
 <li><b>Order</b> redesigned: the order at a glance up top, Drawers, Hinges and Other side by side, then Boards and Misc</li>
 <li>Drag hinges and other parts in from the <b>Hardware Library</b>, or click one to add it</li>
 <li>Two people in the Order see each other's changes as they're made</li>
@@ -90,6 +94,9 @@ whatsNew: [
 <li>The date wheel shows the weekday, and its days and months scroll on into the month (and year) either side</li>
 <li>Add staff shows each person's coloured initials</li>
 <li>The month view fits more events in each day</li>
+<li>Scroll through months as fast as you like — the two months either side are always ready, with their events, so it doesn't bounce back</li>
+<li>Switching to Day, Week, Month or Year starts on today — not wherever you'd scrolled to</li>
+<li>Open a day from the month, week or year and a <b>‹</b> takes you back to it — at the bottom left on a phone, sliding in to the left of Today on a computer</li>
 </ul>
 
 <u><b>Company Settings</b></u>

@@ -85,7 +85,7 @@ export function ContactDuplicatesModal({
           </p>
           {groups.length === 0 ? (
             <div className="rounded-[14px] border border-dashed border-[var(--glass-border)]">
-              <EmptyState compact icon={<Check size={16} />} title="No possible duplicates left" />
+              <EmptyState compact icon={<Users size={16} />} title="No possible duplicates left" />
             </div>
           ) : null}
           {groups.map((group) => {

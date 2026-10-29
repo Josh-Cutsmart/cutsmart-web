@@ -805,7 +805,7 @@ export function LeadFormsPanel({
                     }
                   >
                     {editingForm.questions.length === 0 ? (
-                      <EmptyState compact icon={<ListChecks size={16} />} title="No questions yet" hint="Add question picks what the form asks." />
+                      <EmptyState compact icon={<FileInput size={16} />} title="No questions yet" hint="Add question picks what the form asks." />
                     ) : (
                       <div className="space-y-1.5">
                         {editingForm.questions.map((question, index) => (

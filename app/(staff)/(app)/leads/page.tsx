@@ -9,7 +9,7 @@ import { useUndo } from "@/components/undo-bar";
 import { glassShineStyle } from "@/lib/glass-shine";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type TouchEvent as ReactTouchEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { createPortal } from "react-dom";
-import { Activity, ArrowUpDown, CalendarDays, Check, CheckCircle2, ChevronsLeftRight, ChevronsRightLeft, ImagePlus, Inbox, Kanban, ListChecks, ListFilter, Mail, MapPin, Pencil, Phone, Plus, Rows3, Search, Sparkles, Trash2, UserX, X } from "lucide-react";
+import { Activity, ArrowUpDown, CalendarDays, Check, CheckCircle2, ChevronsLeftRight, ChevronsRightLeft, ImagePlus, Inbox, Kanban, ListFilter, Mail, MapPin, Pencil, Phone, Plus, Rows3, Search, Sparkles, Trash2, UserX, X } from "lucide-react";
 import { DASHBOARD_STAT_CARDS_UPDATED_EVENT, readDashboardStatCardsEnabled } from "@/lib/ui-preferences";
 import { flatPageBg } from "@/lib/flat-page";
 import {
@@ -4100,7 +4100,7 @@ export default function LeadsPage() {
             <EmptyState
               compact
               className="pt-8"
-              icon={<ListChecks size={17} />}
+              icon={<Inbox size={17} />}
               title="No checklists yet"
               hint="Add one of your saved checklists to tick off for this lead."
             />
@@ -4257,7 +4257,7 @@ export default function LeadsPage() {
           {composer}
         </div>
         <div className="glass-scroll min-h-0 flex-1 overflow-y-auto px-5 pb-5">
-          {list ?? <EmptyState compact className="pt-8" icon={<Pencil size={16} />} title="No notes yet" hint="Notes written about this lead show here, newest first." />}
+          {list ?? <EmptyState compact className="pt-8" icon={<Inbox size={16} />} title="No notes yet" hint="Notes written about this lead show here, newest first." />}
         </div>
       </div>
     );
@@ -5831,7 +5831,7 @@ export default function LeadsPage() {
                   ) : assignSearch.trim() ? (
                     <EmptyState compact icon={<Search size={16} />} title="No matches" hint="Try a different search" />
                   ) : (
-                    <EmptyState compact icon={<UserX size={16} />} title="No staff found" />
+                    <EmptyState compact icon={<Inbox size={16} />} title="No staff found" />
                   )}
                 </div>
                 <div className="flex items-center border-t px-[5px] pb-[5px] pt-[5px]" style={{ borderColor: "var(--glass-border)" }}>

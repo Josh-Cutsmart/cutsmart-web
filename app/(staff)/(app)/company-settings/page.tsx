@@ -96,9 +96,9 @@ import {
   type JoinCodesState,
 } from "@/lib/company-join-codes";
 import { FileText, Lightbulb } from "lucide-react";
-import { Box, FolderTree, History, LayoutTemplate, Lock, Percent, Receipt, Shield, ShieldCheck, UserMinus, UserPlus, Wrench } from "lucide-react";
+import { Box, FolderTree, History, LayoutTemplate, Lock, Percent, Receipt, Shield, ShieldCheck, UserMinus, UserPlus } from "lucide-react";
 import { isStaffContactCategory, withStaffContactCategory } from "@/lib/staff-contacts";
-import { Archive, Award, CalendarDays, CircleDashed, Cog, Columns3, Contact, Copy, Cpu, DoorClosed, DoorOpen, Eye, Factory, Globe2, Hammer, HardHat as TradeIcon, ImageUp, Inbox, KanbanSquare, KeyRound, Palette, PanelLeft, RefreshCw, Ruler, Shapes, SlidersHorizontal, Star, Tags, Trash2 } from "lucide-react";
+import { Archive, Award, CalendarDays, CircleDashed, Cog, Columns3, Contact, Copy, Cpu, DoorClosed, DoorOpen, Eye, Factory, Globe2, Hammer, HardHat as TradeIcon, ImageUp, Inbox, KanbanSquare, KeyRound, Link2, Palette, PanelLeft, RefreshCw, Ruler, Shapes, SlidersHorizontal, Star, Tags, Trash2 } from "lucide-react";
 import { normalizeSmallJobStatuses } from "@/lib/small-jobs";
 import { Skeleton, SkeletonGroup, SkeletonRows } from "@/components/skeleton";
 import { EmptyState } from "@/components/empty-state";
@@ -6147,7 +6147,7 @@ export default function CompanySettingsPage() {
                                 <FieldGroupHeading>Servicing History</FieldGroupHeading>
                                 <div className="space-y-1.5">
                                   {activeMachine.serviceHistory.length === 0 ? (
-                                    <EmptyState compact icon={<Wrench size={16} />} title="No service entries yet" hint="Add an entry each time the machine is serviced." />
+                                    <EmptyState compact icon={<Factory size={16} />} title="No service entries yet" hint="Add an entry each time the machine is serviced." />
                                   ) : null}
                                   {activeMachine.serviceHistory.map((entry, idx) => (
                                     <div key={entry.id} className={`${listRowClass} flex-wrap`}>
@@ -10721,7 +10721,7 @@ export default function CompanySettingsPage() {
                   <SkeletonRows count={3} avatar={false} label="Loading fields" />
                 ) : mergedLeadFieldLayout.length === 0 ? (
                   <div className="rounded-[12px] border border-dashed" style={{ borderColor: "color-mix(in srgb, var(--text-main) 16%, transparent)" }}>
-                    <EmptyState compact icon={<Inbox size={16} />} title="No lead fields yet" hint="Submit at least one Zapier lead and its fields will appear here." />
+                    <EmptyState compact icon={<Link2 size={16} />} title="No lead fields yet" hint="Submit at least one Zapier lead and its fields will appear here." />
                   </div>
                 ) : (
                   <div className="space-y-1.5">

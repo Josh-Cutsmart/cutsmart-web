@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
-import { Check, FileText, ListChecks, Mail, Phone, StickyNote, X } from "lucide-react";
+import { Check, Inbox, ListChecks, Mail, Phone, X } from "lucide-react";
 import { modalCloseButtonClass } from "@/components/settings-ui";
 import { CopyButton } from "@/components/copy-button";
 import { authorizedFetch } from "@/lib/api-fetch";
@@ -87,7 +87,7 @@ const SECTION_TITLE = "text-[16px] font-semibold";
 // Its checklists, ticked as they were.
 function ChecklistsList({ checklists }: { checklists: ProjectChecklist[] }) {
   if (!checklists.length) {
-    return <EmptyState compact className="pt-8" icon={<ListChecks size={16} />} title="No checklists on this lead" />;
+    return <EmptyState compact className="pt-8" icon={<Inbox size={16} />} title="No checklists on this lead" />;
   }
   return (
     <div className="space-y-2">
@@ -129,7 +129,7 @@ function ChecklistsList({ checklists }: { checklists: ProjectChecklist[] }) {
 // Its notes, newest first — each with who wrote it and when.
 function NotesList({ notes }: { notes: LeadNote[] }) {
   if (!notes.length) {
-    return <EmptyState compact icon={<StickyNote size={16} />} title="No notes on this lead" hint="Notes written about this lead show here, newest first." />;
+    return <EmptyState compact icon={<Inbox size={16} />} title="No notes on this lead" hint="Notes written about this lead show here, newest first." />;
   }
   return (
     <div className="space-y-2">
@@ -369,7 +369,7 @@ export function LeadDetailsModal({
                     ))}
                   </div>
                 ) : (
-                  <EmptyState compact icon={<FileText size={16} />} title="No details on this lead" />
+                  <EmptyState compact icon={<Inbox size={16} />} title="No details on this lead" />
                 )}
               </section>
             ) : null}

@@ -5,6 +5,8 @@ import { createPortal } from "react-dom";
 import { Check, Clock, FolderPlus, Plus, Search, Trash2, UserCheck, Users, X, Zap } from "lucide-react";
 import { GLASS_MENU_CLASS, GLASS_MENU_STYLE, GlassDropdown } from "@/components/glass-dropdown";
 import { modalCloseButtonClass } from "@/components/settings-ui";
+import { readableTextOn } from "@/lib/contact-card";
+import { popupTintStyle } from "@/lib/popup-tint";
 import { useAuth } from "@/lib/auth-context";
 import { normalizeRoles, type RoleRow } from "@/lib/company-roles";
 import {
@@ -574,13 +576,16 @@ function ColumnAutomationModal({
         data-phone-fullscreen="true"
         className="glass-modal-panel relative flex h-full w-full flex-col overflow-hidden max-sm:rounded-none! max-sm:border-0! sm:h-auto sm:max-h-[min(760px,92vh)] sm:w-[min(680px,96vw)] lg:w-[min(1000px,94vw)]"
       >
+        {/* Themed by its column's colour, as the calendar's event pop-up is by its category's: a wash of it over the glass,
+            behind everything in the pop-up (lib/popup-tint.ts). */}
+        <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10" style={popupTintStyle(target.color)} />
         {/* As every pop-up's header (GlassModalHeader — the Schedule pop-up's): 56px, its icon and title in 14px bold
             capitals — the column it's for beside it; on a phone, under the notch. */}
         <div className="glass-modal-header flex h-[56px] shrink-0 items-center gap-3 px-5 max-sm:h-[calc(56px+env(safe-area-inset-top))] max-sm:pt-[env(safe-area-inset-top)]">
           <div className="flex min-w-0 flex-1 items-center gap-2 text-[var(--text-main)]">
             <Zap size={16} className="shrink-0" />
             <p className="shrink-0 text-[14px] font-bold uppercase tracking-[1px]">Automate</p>
-            <span className="inline-flex min-w-0 items-center gap-1.5 text-[13px] font-medium text-[var(--text-muted)]">
+            <span className="inline-flex min-w-0 items-center gap-1.5 text-[13px] font-medium text-[var(--text-main)]">
               <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: target.color }} />
               <span className="truncate">{column}</span>
             </span>
@@ -918,21 +923,15 @@ function ColumnAutomationModal({
           </button>
         </div>
         <div className="flex items-center gap-2 border-t border-[var(--glass-border)] px-5 py-3 max-sm:pb-[calc(12px+env(safe-area-inset-bottom))]">
+          {/* (No Cancel: the X up in its header closes it.) */}
           <p className="min-w-0 flex-1 truncate text-[12px] font-medium text-[var(--danger)]">{error}</p>
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={saving}
-            className="inline-flex h-10 shrink-0 items-center rounded-full border border-[var(--panel-border)] bg-[var(--panel-bg)] px-4 text-[13px] font-medium text-[var(--text-main)] transition hover:bg-[var(--panel-muted)] disabled:opacity-60"
-          >
-            Cancel
-          </button>
           <button
             type="button"
             onClick={() => void save()}
             disabled={saving}
-            className="glass-shine inline-flex h-10 shrink-0 items-center gap-1.5 rounded-full px-5 text-[13px] font-medium text-white transition hover:brightness-105 disabled:opacity-60"
-            style={glassShineStyle("var(--brand)")}
+            // (In its column's colour — the calendar pop-up's main button is its category's — words dark on a light one.)
+            className="glass-shine inline-flex h-10 shrink-0 items-center gap-1.5 rounded-full px-5 text-[13px] font-medium transition hover:brightness-105 disabled:opacity-60"
+            style={glassShineStyle(target.color || "var(--brand)", { color: target.color ? readableTextOn(target.color) : "#FFFFFF" })}
           >
             <Check size={15} strokeWidth={2.5} />
             {saving ? "Saving..." : "Save"}
