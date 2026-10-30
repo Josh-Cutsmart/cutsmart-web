@@ -64,6 +64,12 @@ whatsNew: [
 <li>Shaped pieces show as drawings in the CNC Cutlist, on the Nesting sheets, on labels and in the printed cutlist and Excel — with lacquer worked out from their true area</li>
 <li><b>Custom cabinets</b>: set "What is it?" to a cabinet, give it a height and shelves, and its backs, ends, top, bottom and shelves are worked out at the board's thickness — turn it round in 3D, and its parts go through the CNC Cutlist, Nesting, labels, edge tape and sheet counts</li>
 <li>Initial Measure takes shaped pieces and custom cabinets too</li>
+<li>The shape pop-up, laid out afresh: the drawing on the left, and beside it the piece's name, board, quantity, grain and information — set right there</li>
+<li><b>Add line</b>, then right-click a piece of the outline and <b>Delete line</b> to cut a notch, a step or a corner out of a shape — only what would go is lit up</li>
+<li>Type a length while drawing a line to make it exactly that long</li>
+<li>Angles at every corner that isn't square, and cut-outs measured from the edges — on screen and on paper</li>
+<li>Zoom and move round the drawing; in 3D, drag to move, right-drag to turn and scroll to zoom</li>
+<li>A custom cabinet starts at the project's Base Cab Height, and right-clicking an edge picks Doors, Back or End</li>
 <li>A room with nothing in its cutlist yet shows <b>Add your first piece</b> — press it and pick the part type (Initial Measure and Production)</li>
 <li>Cutlist Entry's column headings only show while there are rows being entered</li>
 <li><b>Order</b> redesigned: the order at a glance up top, Drawers, Hinges and Other side by side, then Boards and Misc</li>

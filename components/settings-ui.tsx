@@ -210,6 +210,7 @@ export function Segmented<T extends string>({
   pill = false,
   fill = false,
   strongText = false,
+  flip = false,
 }: {
   value: T;
   options: Array<{ value: T; label: ReactNode }>;
@@ -226,6 +227,9 @@ export function Segmented<T extends string>({
   fill?: boolean;
   // The options not chosen in the main text colour, not muted.
   strongText?: boolean;
+  // Two options: a click anywhere on it flips to the other (as the app's other two-way toggles do) — not only a click on
+  // the one wanted.
+  flip?: boolean;
 }) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const [thumb, setThumb] = useState<{ left: number; width: number } | null>(null);
@@ -273,7 +277,10 @@ export function Segmented<T extends string>({
             aria-checked={on}
             data-seg-value={opt.value}
             disabled={disabled}
-            onClick={() => onChange(opt.value)}
+            onClick={() => {
+              const other = flip && options.length === 2 ? options.find((candidate) => candidate.value !== value) : undefined;
+              onChange(other ? other.value : opt.value);
+            }}
             className={`relative z-[1] ${fill ? "min-w-0 flex-1" : ""} ${pill ? "rounded-full" : "rounded-[9px]"} font-semibold transition-colors ${size === "sm" ? "h-[26px] px-2.5 text-[12px]" : size === "lg" ? "h-[32px] px-3 text-[14px]" : "h-[30px] px-3.5 text-[12.5px]"}`}
             style={{ color: on ? (tone === "brand" ? "#FFFFFF" : "var(--text-main)") : strongText ? "var(--text-main)" : "var(--text-muted)" }}
           >

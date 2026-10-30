@@ -1,13 +1,16 @@
 "use client";
 
-import { useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useMemo, useState } from "react";
 import { RotateCcw } from "lucide-react";
+import { useView3dGestures } from "@/lib/use-view-3d-gestures";
 import { CABINET_EDGE_ROLE_COLORS, cabinetModelFaces, projectCabinetFaces, type CabinetModel, type CabinetView } from "@/lib/cutlist-cabinet-shape";
 
 // A custom cabinet in 3D (lib/cutlist-cabinet-shape.ts's customCabinetModel): every panel in the board's real thickness,
 // the doors see-through. Drawn by hand — each face turned by the view's yaw and pitch, the ones facing away left out,
-// the rest drawn back to front as SVG polygons, shaded by which way they face. Dragged to turn it (the left or middle
-// mouse button, or a finger); Reset view puts it back.
+// the rest drawn back to front as SVG polygons, shaded by which way they face. With a mouse: dragged to move it, the
+// right (or middle) button dragged to turn it, the wheel to zoom; on a touch screen a finger turns it and two pinch it
+// (zoomed and moved). Reset view puts it all back. (The moving and zooming — lib/use-view-3d-gestures.ts — is the shape
+// editor's flat piece's 3D view's too.)
 
 // Looking down at it from the front, a little from the right.
 export const CABINET_3D_DEFAULT_VIEW: CabinetView = { yaw: -0.6, pitch: 0.5 };
@@ -37,6 +40,9 @@ export function CutlistCabinet3d({
   height,
   color,
   highlight = null,
+  bandedFaces,
+  bandColor = CABINET_EDGE_ROLE_COLORS.doors,
+  hint,
 }: {
   model: CabinetModel;
   // The view's size (px).
@@ -46,9 +52,18 @@ export function CutlistCabinet3d({
   color: string;
   // A part picked out (customCabinetParts' key — hovered in the parts list).
   highlight?: string | null;
+  // Faces in the banding's colour (a flat piece's banded sides — lib/cutlist-cabinet-shape.ts's flatPieceModel).
+  bandedFaces?: Set<string>;
+  bandColor?: string;
+  // Its own words along the bottom (a flat piece's: no doors).
+  hint?: string;
 }) {
   const [view, setView] = useState<CabinetView>(CABINET_3D_DEFAULT_VIEW);
-  const dragRef = useRef<{ pointerId: number; x: number; y: number; yaw: number; pitch: number } | null>(null);
+  // (Taken apart: its ref callback alone goes to `ref`.)
+  const { attachTo, handlers, transform, zoomed, resetZoom, coarse } = useView3dGestures({
+    onTurn: (dx, dy) =>
+      setView((prev) => ({ yaw: prev.yaw + dx * TURN_PER_PX, pitch: Math.min(PITCH_MAX, Math.max(PITCH_MIN, prev.pitch + dy * TURN_PER_PX)) })),
+  });
   const faces = useMemo(() => cabinetModelFaces(model), [model]);
 
   const drawn = useMemo(() => {
@@ -56,7 +71,11 @@ export function CutlistCabinet3d({
     const door = CABINET_EDGE_ROLE_COLORS.doors;
     return projectCabinetFaces(model, faces, view, { width, height }).map((face) => {
       const picked = Boolean(highlight) && face.part === highlight;
-      const fill = face.translucent ? mixHex(door, "#FFFFFF", 0.35 * face.light) : mixHex(board.dark, board.light, 0.25 + 0.75 * face.light);
+      const fill = face.translucent
+        ? mixHex(door, "#FFFFFF", 0.35 * face.light)
+        : bandedFaces?.has(face.key)
+          ? mixHex(mixHex(bandColor, "#0F172A", 0.25), mixHex(bandColor, "#FFFFFF", 0.35), face.light)
+          : mixHex(board.dark, board.light, 0.25 + 0.75 * face.light);
       return {
         key: face.key,
         points: pts(face.screen),
@@ -67,35 +86,18 @@ export function CutlistCabinet3d({
         picked,
       };
     });
-  }, [color, faces, height, highlight, model, view, width]);
-
-  const onPointerDown = (event: ReactPointerEvent<SVGSVGElement>) => {
-    if (event.pointerType === "mouse" && event.button !== 0 && event.button !== 1) return;
-    // (The middle button: no autoscroll.)
-    if (event.button === 1) event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
-    dragRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, yaw: view.yaw, pitch: view.pitch };
-  };
-  const onPointerMove = (event: ReactPointerEvent<SVGSVGElement>) => {
-    const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    const pitch = Math.min(PITCH_MAX, Math.max(PITCH_MIN, drag.pitch + (event.clientY - drag.y) * TURN_PER_PX));
-    setView({ yaw: drag.yaw + (event.clientX - drag.x) * TURN_PER_PX, pitch });
-  };
-  const endDrag = (event: ReactPointerEvent<SVGSVGElement>) => {
-    if (dragRef.current?.pointerId === event.pointerId) dragRef.current = null;
-  };
+  }, [bandColor, bandedFaces, color, faces, height, highlight, model, view, width]);
 
   if (!model.prisms.length) {
     return (
-      <div className="absolute inset-0 flex items-center justify-center text-[13px] font-medium" style={{ color: "var(--text-muted)" }}>
+      <div className="absolute inset-0 flex items-center justify-center text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
         Close the outline to see it in 3D.
       </div>
     );
   }
   const turned = Math.abs(view.yaw - CABINET_3D_DEFAULT_VIEW.yaw) > 1e-6 || Math.abs(view.pitch - CABINET_3D_DEFAULT_VIEW.pitch) > 1e-6;
   return (
-    <div className="absolute inset-0">
+    <div ref={attachTo} className="absolute inset-0">
       <svg
         width={width}
         height={height}
@@ -103,40 +105,37 @@ export function CutlistCabinet3d({
         className="absolute inset-0 select-none"
         style={{ touchAction: "none", cursor: "grab" }}
         role="img"
-        aria-label="The cabinet in 3D — drag to turn it"
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={endDrag}
-        onPointerCancel={endDrag}
-        onMouseDown={(event) => {
-          if (event.button === 1) event.preventDefault();
-        }}
-        onAuxClick={(event) => event.preventDefault()}
-        onContextMenu={(event) => {
-          if (dragRef.current) event.preventDefault();
-        }}
+        aria-label="The cabinet in 3D — drag to move it, right-drag to turn it, scroll to zoom"
+        {...handlers}
       >
-        {drawn.map((face) => (
-          <polygon
-            key={face.key}
-            points={face.points}
-            fill={face.fill}
-            fillOpacity={face.fillOpacity}
-            stroke={face.stroke}
-            strokeOpacity={face.strokeOpacity}
-            strokeWidth={face.picked ? 1.2 : 0.7}
-            strokeLinejoin="round"
-          />
-        ))}
-        <text x={14} y={height - 14} fontSize={11} fontWeight={500} fill="var(--text-muted)" pointerEvents="none">
-          Drag to turn it · doors shown see-through
+        <g transform={transform}>
+          {drawn.map((face) => (
+            <polygon
+              key={face.key}
+              points={face.points}
+              fill={face.fill}
+              fillOpacity={face.fillOpacity}
+              stroke={face.stroke}
+              strokeOpacity={face.strokeOpacity}
+              strokeWidth={face.picked ? 1.2 : 0.7}
+              strokeLinejoin="round"
+              vectorEffect="non-scaling-stroke"
+            />
+          ))}
+        </g>
+        <text x={14} y={height - 14} fontSize={11} fontWeight={500} fill="var(--text-main)" pointerEvents="none">
+          {coarse ? "Drag to turn · pinch to zoom" : "Drag to move · right-drag to turn · scroll to zoom"}
+          {hint ?? " · doors see-through"}
         </text>
       </svg>
       <button
         type="button"
-        disabled={!turned}
-        onClick={() => setView(CABINET_3D_DEFAULT_VIEW)}
-        className="glass-shine glass-shine-neutral absolute right-3 top-3 z-10 inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-[12px] font-medium text-[var(--text-main)] transition hover:brightness-[0.97] disabled:opacity-45"
+        disabled={!turned && !zoomed}
+        onClick={() => {
+          setView(CABINET_3D_DEFAULT_VIEW);
+          resetZoom();
+        }}
+        className="glass-shine glass-shine-neutral absolute left-3 top-3 z-10 inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-[12px] font-medium text-[var(--text-main)] transition hover:brightness-[0.97] disabled:opacity-45"
         title="Back to how it started"
       >
         <RotateCcw size={13} />

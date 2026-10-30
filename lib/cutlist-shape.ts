@@ -571,6 +571,34 @@ function cornersFor(
   });
 }
 
+// The angle at each corner that isn't square, in degrees: between its two edges, on the side they open towards (a
+// convex corner's in the material — 135° on an angled corner; an inside corner's out in the gap). `from` / `to`: which
+// way its edges run from it (unit, to the corner before and after); `between`: halfway between them. Not where a curve
+// meets it, nor a straight-through point.
+export type ShapeCornerAngle = { index: number; point: ShapePoint; degrees: number; from: ShapePoint; to: ShapePoint; between: ShapePoint };
+export function shapeCornerAngles(geometry: ShapeGeometry): ShapeCornerAngle[] {
+  if (!geometry.valid) return [];
+  const n = geometry.edges.length;
+  const out: ShapeCornerAngle[] = [];
+  for (const corner of geometry.corners) {
+    if (corner.nextToCurve) continue;
+    const degrees = (corner.angle * 180) / Math.PI;
+    if (Math.abs(degrees - 90) < 0.05 || degrees > 179.95 || degrees < 0.05) continue;
+    const prev = geometry.edges[(corner.index - 1 + n) % n]?.startVertex;
+    const next = geometry.edges[corner.index]?.endVertex;
+    if (!prev || !next) continue;
+    const from = unit(sub(prev, corner.point));
+    const to = unit(sub(next, corner.point));
+    out.push({ index: corner.index, point: corner.point, degrees, from, to, between: unit(add(from, to)) });
+  }
+  return out;
+}
+
+// An angle as it's written: "135°", "112.5°".
+export function formatShapeDegrees(degrees: number): string {
+  return `${Math.round(degrees * 10) / 10}°`;
+}
+
 // An edge's outward normal (unit), for a polygon wound `orientation` (1: positive area).
 function normalOf(from: ShapePoint, to: ShapePoint, orientation: 1 | -1): ShapePoint {
   const d = unit(sub(to, from));
@@ -883,6 +911,8 @@ export type ShapeDimension = {
   fromAnchor: ShapePoint;
   toAnchor: ShapePoint;
   normal: ShapePoint;
+  // How far out it sits among those on its side: 0 nearest (shapeCutoutDimensions'); none — the first.
+  tier?: number;
 };
 export function templateDimensions(shape: CutlistShape): ShapeDimension[] {
   if (!isTemplateShapeKind(shape.kind)) return [];
@@ -931,6 +961,157 @@ export function templateDimensions(shape: CutlistShape): ShapeDimension[] {
         dim("cy", [W, H - p.cy], [W, H], right, [W, H - p.cy], [W - p.cx, H]),
       ];
   }
+}
+
+// ---- Where its cut-outs are: each place the outline steps in from the box round it (its corner points' box) — a notch
+// or slot cut into one side, or a corner cut away (a step, an angled corner) — dimensioned from that box's sides:
+//  - a notch: its width along the side it's in, and how far it is from the nearer end of that side (more than one on a
+//    side: each from the one before, along it); its depth in from that side, along the side at its nearer end;
+//  - a cut corner: how far it's set back along each of the two sides it's cut from.
+// Each a dimension line along one of the box's sides (`from` → `to` on that side, `normal` out of it), its extension
+// lines from what it measures (`fromAnchor` / `toAnchor`), and its `tier` — 0 nearest the side, each further one out
+// past the last, so none on a side overlap. (Anything else dimensioned along a side goes out past its highest tier.)
+// `covered`: the edges whose own length one of them already says — the same measurement, the same way (a notch's floor,
+// a step's edges, the bit of a side up to a notch) — their own number not needed.
+export function shapeCutoutDimensions(shape: CutlistShape): { dims: ShapeDimension[]; covered: number[] } {
+  const V = shapeVertices(shape);
+  const n = V.length;
+  if (n < 3) return { dims: [], covered: [] };
+  const bulges = shapeBulges(shape);
+  const box = pointsBounds(V);
+  const EPS = 1e-3;
+  type Side = "top" | "right" | "bottom" | "left";
+  const axisOf = (side: Side) => (side === "top" || side === "bottom" ? 0 : 1);
+  const lineOf = (side: Side) => (side === "top" ? box.minY : side === "bottom" ? box.maxY : side === "left" ? box.minX : box.maxX);
+  const outward: Record<Side, ShapePoint> = { top: [0, -1], bottom: [0, 1], left: [-1, 0], right: [1, 0] };
+  const sidesOf = (p: ShapePoint): Side[] => {
+    const out: Side[] = [];
+    if (Math.abs(p[1] - box.minY) < EPS) out.push("top");
+    if (Math.abs(p[0] - box.maxX) < EPS) out.push("right");
+    if (Math.abs(p[1] - box.maxY) < EPS) out.push("bottom");
+    if (Math.abs(p[0] - box.minX) < EPS) out.push("left");
+    return out;
+  };
+  // (A point on a side at `u` along it.)
+  const onSide = (side: Side, u: number): ShapePoint => (axisOf(side) === 0 ? [u, lineOf(side)] : [lineOf(side), u]);
+  const adjacent = (a: Side, b: Side) =>
+    (a === "top" || a === "bottom") !== (b === "top" || b === "bottom");
+  const sides = V.map(sidesOf);
+
+  // The cut-outs: from a corner on the box round past any off it to the next one on it — leaving the box (an edge
+  // straight across from one side to another, with none off it, counts).
+  type Notch = { side: Side; lo: number; hi: number; loAt: ShapePoint; hiAt: ShapePoint; depth: number; deepest: ShapePoint; edges: number[] };
+  type Corner = { side: Side; u: number; at: ShapePoint; cornerU: number; cornerAt: ShapePoint; edges: number[] };
+  const notches: Notch[] = [];
+  const corners: Corner[] = [];
+  const start = sides.findIndex((list) => list.length > 0);
+  if (start < 0) return { dims: [], covered: [] };
+  for (let k = 0; k < n; k += 1) {
+    const a = (start + k) % n;
+    if (!sides[a].length) continue;
+    let b = (a + 1) % n;
+    const edges = [a];
+    while (!sides[b].length) {
+      edges.push(b);
+      b = (b + 1) % n;
+    }
+    const common = sides[a].filter((side) => sides[b].includes(side));
+    if (edges.length === 1 && common.length) continue;
+    if (common.length && edges.length > 1) {
+      const side = common[0];
+      const axis = axisOf(side);
+      const line = lineOf(side);
+      let depth = 0;
+      let deepest = V[a];
+      for (const j of edges.slice(1)) {
+        const d = Math.abs(V[j][1 - axis] - line);
+        if (d > depth) {
+          depth = d;
+          deepest = V[j];
+        }
+      }
+      const [loAt, hiAt] = V[a][axis] <= V[b][axis] ? [V[a], V[b]] : [V[b], V[a]];
+      notches.push({ side, lo: loAt[axis], hi: hiAt[axis], loAt, hiAt, depth, deepest, edges });
+      continue;
+    }
+    // A corner: the sides each end's on that meet.
+    let pair: [Side, Side] | null = null;
+    for (const sa of sides[a]) for (const sb of sides[b]) if (!pair && adjacent(sa, sb)) pair = [sa, sb];
+    if (!pair) continue;
+    const [sa, sb] = pair;
+    // (The box's corner where they meet: along sa, at sb's line; along sb, at sa's line.)
+    corners.push({ side: sa, u: V[a][axisOf(sa)], at: V[a], cornerU: lineOf(sb), cornerAt: V[b], edges });
+    corners.push({ side: sb, u: V[b][axisOf(sb)], at: V[b], cornerU: lineOf(sa), cornerAt: V[a], edges });
+  }
+
+  type Dim = ShapeDimension & { side: Side; lo: number; hi: number; edges: number[] };
+  const dims: Dim[] = [];
+  const push = (side: Side, key: string, u0: number, u1: number, fromAnchor: ShapePoint, toAnchor: ShapePoint, edges: number[]) => {
+    if (Math.abs(u1 - u0) < 0.05) return;
+    const [lo, hi, fa, ta] = u0 <= u1 ? [u0, u1, fromAnchor, toAnchor] : [u1, u0, toAnchor, fromAnchor];
+    dims.push({ key, value: roundTenth(hi - lo), from: onSide(side, lo), to: onSide(side, hi), fromAnchor: fa, toAnchor: ta, normal: outward[side], side, lo, hi, edges });
+  };
+  corners.forEach((corner, i) => push(corner.side, `cut:corner:${i}`, corner.u, corner.cornerU, corner.at, corner.cornerAt, corner.edges));
+  const allSides: Side[] = ["top", "right", "bottom", "left"];
+  for (const side of allSides) {
+    const axis = axisOf(side);
+    const list = notches.filter((notch) => notch.side === side).sort((x, y) => x.lo - y.lo);
+    if (!list.length) continue;
+    // Where the side itself starts and ends (its corner points on it — past any corner cut at its ends).
+    const along = V.map((p, i) => ({ p, i })).filter(({ i }) => sides[i].includes(side));
+    const first = along.reduce((best, item) => (item.p[axis] < best.p[axis] ? item : best), along[0]);
+    const last = along.reduce((best, item) => (item.p[axis] > best.p[axis] ? item : best), along[0]);
+    list.forEach((notch, i) => {
+      push(side, `cut:${side}:${i}:w`, notch.lo, notch.hi, notch.loAt, notch.hiAt, notch.edges);
+      if (list.length === 1) {
+        const before = notch.lo - first.p[axis];
+        const after = last.p[axis] - notch.hi;
+        if (before <= after) push(side, `cut:${side}:${i}:at`, first.p[axis], notch.lo, first.p, notch.loAt, []);
+        else push(side, `cut:${side}:${i}:at`, notch.hi, last.p[axis], notch.hiAt, last.p, []);
+      } else {
+        const prev = i === 0 ? first.p : list[i - 1].hiAt;
+        push(side, `cut:${side}:${i}:at`, prev[axis], notch.lo, prev, notch.loAt, []);
+      }
+      // Its depth: along the side at its nearer end, in from this one.
+      const nearStart = notch.lo - first.p[axis] <= last.p[axis] - notch.hi;
+      const across: Side = axis === 0 ? (nearStart ? "left" : "right") : nearStart ? "top" : "bottom";
+      const line = lineOf(side);
+      const inward = side === "top" || side === "left" ? 1 : -1;
+      push(across, `cut:${side}:${i}:d`, line, line + inward * notch.depth, nearStart ? first.p : last.p, notch.deepest, notch.edges);
+    });
+  }
+
+  // Tiers: on each side, the shortest nearest; each on the nearest tier where it overlaps none already there.
+  const tiers: Array<Array<[number, number]>> = [];
+  const placed: ShapeDimension[] = [];
+  for (const side of allSides) {
+    tiers.length = 0;
+    for (const dim of dims.filter((d) => d.side === side).sort((x, y) => x.hi - x.lo - (y.hi - y.lo))) {
+      let tier = 0;
+      while (tiers[tier]?.some(([lo, hi]) => dim.lo < hi - 0.05 && dim.hi > lo + 0.05)) tier += 1;
+      (tiers[tier] ??= []).push([dim.lo, dim.hi]);
+      placed.push({ key: dim.key, value: dim.value, from: dim.from, to: dim.to, fromAnchor: dim.fromAnchor, toAnchor: dim.toAnchor, normal: dim.normal, tier });
+    }
+  }
+
+  // The edges whose own length one of them says: straight, the same way, over the same stretch — on its side, or part of
+  // the cut-out it's for.
+  const covered = new Set<number>();
+  for (const dim of dims) {
+    const axis = axisOf(dim.side);
+    for (let i = 0; i < n; i += 1) {
+      if (bulges[i]) continue;
+      const p = V[i];
+      const q = V[(i + 1) % n];
+      if (Math.abs(p[1 - axis] - q[1 - axis]) > EPS) continue;
+      const lo = Math.min(p[axis], q[axis]);
+      const hi = Math.max(p[axis], q[axis]);
+      if (Math.abs(lo - dim.lo) > 0.05 || Math.abs(hi - dim.hi) > 0.05) continue;
+      const onItsSide = sides[i].includes(dim.side) && sides[(i + 1) % n].includes(dim.side);
+      if (onItsSide || dim.edges.includes(i)) covered.add(i);
+    }
+  }
+  return { dims: placed, covered: [...covered].sort((a, b) => a - b) };
 }
 
 // ---- Custom outlines.
@@ -1121,6 +1302,433 @@ export function customOutlineSelfIntersects(points: ShapePoint[], bulges: Record
 export function shapeSelfIntersects(shape: CutlistShape): boolean {
   if (shape.kind !== "custom") return false;
   return customOutlineSelfIntersects(shape.points ?? [], shapeBulges(shape), true);
+}
+
+// ---- Cutting shapes out of a shape (the shape editor's Add line, then Delete line). Lines drawn on it (`lines` —
+// straight pieces, each from a point to a point, mm) and its outline (its corner points' outline — a rounded corner's
+// at its corner point, a curve by the straight line across it) are taken as one drawing: every piece split wherever it
+// crosses or touches another, every region they close off inside the shape a face. Deleting a piece of the outline
+// takes away the face inside it, and the outline's what's round the faces left. So a notch drawn down into the top
+// edge, the top's piece over it deleted: the notch is cut out. (A line's own piece deleted: just that piece of it, from
+// crossing to crossing — cutShapeLinePiece.)
+//
+// Refused (`reason`): "nothing" — no line cuts that face off from the rest (deleting it would leave nothing); "split" —
+// what's left would be in two; "hole" — it'd leave a hole (a shape drawn inside, not touching the outline: the shape
+// can't have one); "curve" — a line crosses a curved edge (it can't be cut there); "invalid" — what's left would cross
+// itself, or be next to nothing; "miss" — the piece isn't on the outline.
+//
+// What's kept keeps what it had where it's still there: each corner's radius (a corner the cut makes takes the
+// default — square, or an inside corner's R25), each curve on an edge kept whole, each edge's banding (a piece of a
+// banded edge stays banded; an edge along a line isn't), a cabinet's edge roles (`edgeRoles` — every edge's, as it is
+// now; an edge along a line, Doors) and through backs. It's a Custom outline from then on, whatever it was. The lines
+// left: each piece still inside it (not on its new outline, not in what was cut away).
+export type ShapeCutLine = { a: ShapePoint; b: ShapePoint };
+export type ShapeCutResult =
+  | { ok: true; shape: CutlistShape; lines: ShapeCutLine[] }
+  | { ok: false; reason: "nothing" | "split" | "hole" | "curve" | "invalid" | "miss" };
+
+const CUT_EPS = 1e-6;
+const NODE_MERGE_MM = 1e-3;
+
+type ArrangementEdge = { u: number; v: number; outline: number | null; line: number | null };
+type Arrangement = {
+  nodes: ShapePoint[];
+  edges: ArrangementEdge[];
+  // Each edge's two sides (half-edge 2k: u → v, 2k + 1: v → u): the face on its left, and whether that's a face inside
+  // the shape (a region closed off, not the outside round it).
+  faceOf: number[];
+  inside: boolean[];
+  // Each face's half-edges, in order round it.
+  cycles: number[][];
+  // A shape drawn inside, touching nothing else (it'd be a hole).
+  floatingLoop: boolean;
+};
+
+// The drawing: the outline's edges and the lines, split at every crossing, as nodes and edges, and its faces.
+function shapeArrangement(V: ShapePoint[], bulges: Record<number, number>, lines: ShapeCutLine[]): Arrangement | "curve" {
+  type Seg = { a: ShapePoint; b: ShapePoint; outline: number | null; line: number | null; at: number[] };
+  const segs: Seg[] = [];
+  V.forEach((p, i) => segs.push({ a: p, b: V[(i + 1) % V.length], outline: i, line: null, at: [0, 1] }));
+  lines.forEach((line, i) => {
+    if (distanceBetween(line.a, line.b) > NODE_MERGE_MM) segs.push({ a: line.a, b: line.b, outline: null, line: i, at: [0, 1] });
+  });
+  // Where each crosses or touches each other (along the same line: where each one's ends lie on the other).
+  for (let i = 0; i < segs.length; i += 1) {
+    for (let j = i + 1; j < segs.length; j += 1) {
+      const s1 = segs[i];
+      const s2 = segs[j];
+      const d1 = sub(s1.b, s1.a);
+      const d2 = sub(s2.b, s2.a);
+      const l1 = len(d1);
+      const l2 = len(d2);
+      const denom = cross(d1, d2);
+      const w = sub(s2.a, s1.a);
+      if (Math.abs(denom) < 1e-9 * l1 * l2) {
+        if (Math.abs(cross(w, d1)) / l1 > NODE_MERGE_MM) continue;
+        const onto = (p: ShapePoint, s: Seg, d: ShapePoint, l: number) => dot(sub(p, s.a), d) / (l * l);
+        for (const [p, s, d, l] of [
+          [s2.a, s1, d1, l1],
+          [s2.b, s1, d1, l1],
+          [s1.a, s2, d2, l2],
+          [s1.b, s2, d2, l2],
+        ] as Array<[ShapePoint, Seg, ShapePoint, number]>) {
+          const t = onto(p, s, d, l);
+          if (t > -CUT_EPS && t < 1 + CUT_EPS) s.at.push(clamp(t, 0, 1));
+        }
+        continue;
+      }
+      const t = cross(w, d2) / denom;
+      const u = cross(w, d1) / denom;
+      const tolT = NODE_MERGE_MM / l1;
+      const tolU = NODE_MERGE_MM / l2;
+      if (t < -tolT || t > 1 + tolT || u < -tolU || u > 1 + tolU) continue;
+      s1.at.push(clamp(t, 0, 1));
+      s2.at.push(clamp(u, 0, 1));
+    }
+  }
+  // (A line can't cut a curved edge part way along.)
+  for (const seg of segs) {
+    if (seg.outline === null || !bulges[seg.outline]) continue;
+    const l = distanceBetween(seg.a, seg.b);
+    if (seg.at.some((t) => t * l > NODE_MERGE_MM * 10 && (1 - t) * l > NODE_MERGE_MM * 10)) return "curve";
+  }
+  const nodes: ShapePoint[] = [];
+  const nodeAt = (p: ShapePoint) => {
+    const found = nodes.findIndex((q) => distanceBetween(p, q) <= NODE_MERGE_MM);
+    if (found >= 0) return found;
+    nodes.push([roundFine(p[0]), roundFine(p[1])]);
+    return nodes.length - 1;
+  };
+  // (The outline's corners first: each keeps its own place.)
+  V.forEach((p) => nodeAt(p));
+  const edges: ArrangementEdge[] = [];
+  const byPair = new Map<string, number>();
+  for (const seg of segs) {
+    const d = sub(seg.b, seg.a);
+    const ts = [...new Set(seg.at.map((t) => Math.round(t * 1e9) / 1e9))].sort((a, b) => a - b);
+    let prev = nodeAt(ts[0] === 0 ? seg.a : add(seg.a, mul(d, ts[0])));
+    for (let k = 1; k < ts.length; k += 1) {
+      const next = nodeAt(ts[k] === 1 ? seg.b : add(seg.a, mul(d, ts[k])));
+      if (next === prev) continue;
+      const key = prev < next ? `${prev}:${next}` : `${next}:${prev}`;
+      const existing = byPair.get(key);
+      if (existing === undefined) {
+        byPair.set(key, edges.length);
+        edges.push({ u: prev, v: next, outline: seg.outline, line: seg.line });
+      } else if (edges[existing].outline === null && seg.outline !== null) {
+        // (A line drawn along the outline: it's the outline there.)
+        edges[existing] = { u: prev, v: next, outline: seg.outline, line: null };
+      }
+      prev = next;
+    }
+  }
+  // Round each face, keeping it on the left: at each node, on along the next edge clockwise from the one come in on.
+  const outgoing: number[][] = nodes.map(() => []);
+  edges.forEach((edge, k) => {
+    outgoing[edge.u].push(2 * k);
+    outgoing[edge.v].push(2 * k + 1);
+  });
+  const from = (h: number) => (h % 2 === 0 ? edges[h >> 1].u : edges[h >> 1].v);
+  const to = (h: number) => (h % 2 === 0 ? edges[h >> 1].v : edges[h >> 1].u);
+  const angleOf = (h: number) => {
+    const d = sub(nodes[to(h)], nodes[from(h)]);
+    return Math.atan2(d[1], d[0]);
+  };
+  for (const list of outgoing) list.sort((a, b) => angleOf(a) - angleOf(b));
+  const nextOf = (h: number) => {
+    const list = outgoing[to(h)];
+    const back = list.indexOf(h ^ 1);
+    return list[(back - 1 + list.length) % list.length];
+  };
+  const faceOf = new Array<number>(edges.length * 2).fill(-1);
+  const inside: boolean[] = [];
+  const cycles: number[][] = [];
+  for (let h = 0; h < edges.length * 2; h += 1) {
+    if (faceOf[h] >= 0) continue;
+    const face = inside.length;
+    const cycle: number[] = [];
+    let at = h;
+    for (let guard = 0; guard < edges.length * 2 + 1 && faceOf[at] < 0; guard += 1) {
+      faceOf[at] = face;
+      cycle.push(at);
+      at = nextOf(at);
+    }
+    const area = signedPolygonArea(cycle.map((e) => nodes[from(e)]));
+    // (Closed off — round it anticlockwise, as the sums go — and inside the shape: a point just to the left of one of
+    // its edges is.)
+    let isInside = false;
+    if (area > 1e-6) {
+      const e = cycle.reduce((best, k) => (distanceBetween(nodes[from(k)], nodes[to(k)]) > distanceBetween(nodes[from(best)], nodes[to(best)]) ? k : best), cycle[0]);
+      const p = nodes[from(e)];
+      const q = nodes[to(e)];
+      const dir = unit(sub(q, p));
+      isInside = pointInPolygon(add(midpoint(p, q), mul([-dir[1], dir[0]], Math.min(0.01, distanceBetween(p, q) * 0.01))), V);
+    }
+    inside.push(isInside);
+    cycles.push(cycle);
+  }
+  // A shape drawn inside without touching the outline: a part of the drawing with no outline in it, closed round.
+  const group = nodes.map((_, i) => i);
+  const root = (i: number): number => (group[i] === i ? i : (group[i] = root(group[i])));
+  for (const edge of edges) group[root(edge.u)] = root(edge.v);
+  const counts = new Map<number, { nodes: Set<number>; edges: number; outline: boolean }>();
+  for (const edge of edges) {
+    const r = root(edge.u);
+    const c = counts.get(r) ?? { nodes: new Set<number>(), edges: 0, outline: false };
+    c.nodes.add(edge.u);
+    c.nodes.add(edge.v);
+    c.edges += 1;
+    c.outline ||= edge.outline !== null;
+    counts.set(r, c);
+  }
+  const floatingLoop = [...counts.values()].some((c) => !c.outline && c.edges >= c.nodes.size);
+  return { nodes, edges, faceOf, inside, cycles, floatingLoop };
+}
+
+// The piece of the outline (its `edge`) or of a line (`line`, its index in `lines`) at a point: from the crossing or
+// end before it to the one after (the shape editor's hover, and what Delete line takes); and, a piece of the outline,
+// the region inside it that Delete line would cut away (its points in order — null if there's none to cut). null: no
+// piece there (or a line crosses a curve).
+export function shapeCutPieceAt(
+  shape: CutlistShape,
+  lines: ShapeCutLine[],
+  pick: { edge: number | null; line: number | null; at: ShapePoint },
+): { from: ShapePoint; to: ShapePoint; face: ShapePoint[] | null } | null {
+  const V = shapeVertices(shape);
+  if (V.length < 3) return null;
+  const arr = shapeArrangement(V, shapeBulges(shape), lines);
+  if (arr === "curve") return null;
+  let best = -1;
+  let bestDistance = Infinity;
+  arr.edges.forEach((edge, k) => {
+    if (pick.edge !== null ? edge.outline !== pick.edge : edge.line !== pick.line) return;
+    const p = arr.nodes[edge.u];
+    const e = sub(arr.nodes[edge.v], p);
+    const t = clamp(dot(sub(pick.at, p), e) / Math.max(dot(e, e), 1e-12), 0, 1);
+    const d = distanceBetween(pick.at, add(p, mul(e, t)));
+    if (d < bestDistance) {
+      bestDistance = d;
+      best = k;
+    }
+  });
+  if (best < 0) return null;
+  const edge = arr.edges[best];
+  let face: ShapePoint[] | null = null;
+  if (pick.edge !== null) {
+    const side = arr.inside[arr.faceOf[2 * best]] ? arr.faceOf[2 * best] : arr.inside[arr.faceOf[2 * best + 1]] ? arr.faceOf[2 * best + 1] : -1;
+    // (The whole shape: nothing cut off there.)
+    if (side >= 0 && arr.inside.filter(Boolean).length > 1) {
+      face = arr.cycles[side].map((h) => arr.nodes[h % 2 === 0 ? arr.edges[h >> 1].u : arr.edges[h >> 1].v]);
+    }
+  }
+  return { from: arr.nodes[edge.u], to: arr.nodes[edge.v], face };
+}
+
+// The face inside the shape next to a piece of its outline (its edge, and where on it) — -1: none.
+function faceInsidePiece(arr: Arrangement, V: ShapePoint[], pick: { edge: number; at: ShapePoint }): number {
+  let best = -1;
+  let bestDistance = Infinity;
+  arr.edges.forEach((edge, k) => {
+    if (edge.outline !== pick.edge) return;
+    const p = arr.nodes[edge.u];
+    const e = sub(arr.nodes[edge.v], p);
+    const t = clamp(dot(sub(pick.at, p), e) / Math.max(dot(e, e), 1e-12), 0, 1);
+    const d = distanceBetween(pick.at, add(p, mul(e, t)));
+    if (d < bestDistance) {
+      bestDistance = d;
+      best = k;
+    }
+  });
+  if (best < 0) return -1;
+  void V;
+  const left = arr.faceOf[2 * best];
+  const right = arr.faceOf[2 * best + 1];
+  return arr.inside[left] ? left : arr.inside[right] ? right : -1;
+}
+
+export function cutShapeFace(
+  shape: CutlistShape,
+  lines: ShapeCutLine[],
+  pick: { edge: number; at: ShapePoint },
+  options: { edgeRoles?: CabinetEdgeRole[] } = {},
+): ShapeCutResult {
+  const V = shapeVertices(shape);
+  const n = V.length;
+  if (n < 3) return { ok: false, reason: "invalid" };
+  if (!Number.isInteger(pick.edge) || pick.edge < 0 || pick.edge >= n) return { ok: false, reason: "miss" };
+  const bulges = shapeBulges(shape);
+  const arr = shapeArrangement(V, bulges, lines);
+  if (arr === "curve") return { ok: false, reason: "curve" };
+  if (arr.floatingLoop) return { ok: false, reason: "hole" };
+  const removed = faceInsidePiece(arr, V, pick);
+  if (removed < 0) return { ok: false, reason: "miss" };
+  const remaining = (face: number) => arr.inside[face] && face !== removed;
+  if (!arr.inside.some((_, face) => remaining(face))) return { ok: false, reason: "nothing" };
+  // What's round what's left: each edge with what's left on one side and not the other — taken the way the outline
+  // went, so its edges keep their direction (and their curves, which way they bow).
+  const forward = signedPolygonArea(V) > 0;
+  const chosen: number[] = [];
+  arr.edges.forEach((_, k) => {
+    const left = remaining(arr.faceOf[2 * k]);
+    const right = remaining(arr.faceOf[2 * k + 1]);
+    if (left === right) return;
+    chosen.push(left === forward ? 2 * k : 2 * k + 1);
+  });
+  const from = (h: number) => (h % 2 === 0 ? arr.edges[h >> 1].u : arr.edges[h >> 1].v);
+  const to = (h: number) => (h % 2 === 0 ? arr.edges[h >> 1].v : arr.edges[h >> 1].u);
+  const leaving = new Map<number, number>();
+  for (const h of chosen) {
+    if (leaving.has(from(h))) return { ok: false, reason: "split" };
+    leaving.set(from(h), h);
+  }
+  const cycle: number[] = [];
+  let at = chosen[0];
+  for (let guard = 0; guard <= chosen.length && at !== undefined; guard += 1) {
+    cycle.push(at);
+    at = leaving.get(to(at)) as number;
+    if (at === chosen[0]) break;
+  }
+  if (at !== chosen[0] || cycle.length !== chosen.length) {
+    // (The face cut away doesn't reach the outline: what's left would have a hole in it.)
+    const touchesOutline = arr.edges.some((edge, k) => edge.outline !== null && (arr.faceOf[2 * k] === removed || arr.faceOf[2 * k + 1] === removed));
+    return { ok: false, reason: touchesOutline ? "split" : "hole" };
+  }
+  // Pieces of the same edge one after another (an outline edge, or a line, straight on) are one edge again.
+  type Run = { start: number; outline: number | null; line: number | null };
+  const runs: Run[] = [];
+  for (const h of cycle) {
+    const edge = arr.edges[h >> 1];
+    const last = runs[runs.length - 1];
+    const sameOutline = last && edge.outline !== null && last.outline === edge.outline;
+    const straightLine =
+      last &&
+      edge.outline === null &&
+      last.outline === null &&
+      Math.abs(cross(unit(sub(arr.nodes[to(h)], arr.nodes[from(h)])), unit(sub(arr.nodes[from(h)], arr.nodes[last.start])))) < 1e-9;
+    if (sameOutline || straightLine) continue;
+    runs.push({ start: from(h), outline: edge.outline, line: edge.line });
+  }
+  if (runs.length > 1 && runs[0].outline !== null && runs[runs.length - 1].outline === runs[0].outline) {
+    runs[0].start = runs[runs.length - 1].start;
+    runs.pop();
+  }
+  const pts = runs.map((run) => arr.nodes[run.start]);
+  const fromCorner = runs.map((run) => (run.start < n ? run.start : null));
+  const fromEdge = runs.map((run) => run.outline);
+  const out = rebuiltOutline(shape, V, bulges, pts, fromCorner, fromEdge, options);
+  if (!out) return { ok: false, reason: "invalid" };
+  // The lines left: each piece of them inside what's left (not round it).
+  const kept: ShapeCutLine[] = [];
+  arr.edges.forEach((edge, k) => {
+    if (edge.line === null) return;
+    if (!remaining(arr.faceOf[2 * k]) || !remaining(arr.faceOf[2 * k + 1])) return;
+    const a = arr.nodes[edge.u];
+    const b = arr.nodes[edge.v];
+    const last = kept[kept.length - 1];
+    // (Pieces of one line, end to end and straight on: one again.)
+    if (last && distanceBetween(last.b, a) <= NODE_MERGE_MM && Math.abs(cross(unit(sub(last.b, last.a)), unit(sub(b, a)))) < 1e-9) last.b = b;
+    else kept.push({ a, b });
+  });
+  return { ok: true, shape: out, lines: kept };
+}
+
+// A line's piece deleted (right-clicked at `at`): that line, less the piece of it between the crossings either side of
+// that point (crossings with the outline or another line). The rest of the lines as they were.
+export function cutShapeLinePiece(shape: CutlistShape, lines: ShapeCutLine[], index: number, at: ShapePoint): ShapeCutLine[] {
+  const line = lines[index];
+  if (!line) return lines;
+  const V = shapeVertices(shape);
+  const d = sub(line.b, line.a);
+  const l2 = dot(d, d);
+  if (!(l2 > 0)) return lines.filter((_, i) => i !== index);
+  const ts = [0, 1];
+  const others: Array<[ShapePoint, ShapePoint]> = [
+    ...V.map((p, i) => [p, V[(i + 1) % V.length]] as [ShapePoint, ShapePoint]),
+    ...lines.filter((_, i) => i !== index).map((other) => [other.a, other.b] as [ShapePoint, ShapePoint]),
+  ];
+  for (const [p, q] of others) {
+    const e = sub(q, p);
+    const denom = cross(d, e);
+    const w = sub(p, line.a);
+    if (Math.abs(denom) < 1e-12) continue;
+    const t = cross(w, e) / denom;
+    const u = cross(w, d) / denom;
+    if (t > CUT_EPS && t < 1 - CUT_EPS && u > -CUT_EPS && u < 1 + CUT_EPS) ts.push(t);
+  }
+  ts.sort((a, b) => a - b);
+  const tAt = clamp(dot(sub(at, line.a), d) / l2, 0, 1);
+  let k = 0;
+  while (k < ts.length - 2 && ts[k + 1] < tAt) k += 1;
+  const point = (t: number): ShapePoint => [roundFine(line.a[0] + d[0] * t), roundFine(line.a[1] + d[1] * t)];
+  const pieces: ShapeCutLine[] = [];
+  if (ts[k] > CUT_EPS) pieces.push({ a: line.a, b: point(ts[k]) });
+  if (ts[k + 1] < 1 - CUT_EPS) pieces.push({ a: point(ts[k + 1]), b: line.b });
+  return [...lines.slice(0, index), ...pieces, ...lines.slice(index + 1)];
+}
+
+// A new outline from what it was: its points, each one's corner it was (or null — made by the cut), each edge after it
+// its edge it's (part of) (or null — along a line). Its radii, curves, banding, roles and through backs where they
+// still are (see cutShapeFace). null: it'd cross itself, or be next to nothing.
+function rebuiltOutline(
+  shape: CutlistShape,
+  V: ShapePoint[],
+  bulges: Record<number, number>,
+  pts: ShapePoint[],
+  fromCorner: Array<number | null>,
+  fromEdge: Array<number | null>,
+  options: { edgeRoles?: CabinetEdgeRole[] },
+): CutlistShape | null {
+  const n = V.length;
+  const m = pts.length;
+  if (m < 3) return null;
+  const radii: Record<number, number> = {};
+  const nextBulges: Record<number, number> = {};
+  const banded: number[] = [];
+  const roles: Record<number, CabinetEdgeRole> = {};
+  const throughBacks: Record<number, boolean> = {};
+  const bandedBefore = new Set(shape.banded ?? []);
+  const storedRoles = shape.cabinet?.roles ?? {};
+  for (let k = 0; k < m; k += 1) {
+    const corner = fromCorner[k];
+    if (corner !== null) {
+      if (shape.radii?.[corner] !== undefined) radii[k] = shape.radii[corner];
+      if (shape.cabinet?.throughBacks?.[corner]) throughBacks[k] = true;
+    }
+    const edge = fromEdge[k];
+    if (edge === null) {
+      roles[k] = "doors";
+      continue;
+    }
+    // (Kept whole — from its own corner to the next — it keeps its curve.)
+    if (bulges[edge] && corner === edge && fromCorner[(k + 1) % m] === (edge + 1) % n) nextBulges[k] = bulges[edge];
+    if (bandedBefore.has(edge)) banded.push(k);
+    const role = options.edgeRoles?.[edge] ?? storedRoles[edge];
+    if (role) roles[k] = role;
+  }
+  if (Math.abs(signedPolygonArea(pts)) <= 1 || customOutlineSelfIntersects(pts, nextBulges, true)) return null;
+  const out: CutlistShape = { version: 1, kind: "custom", params: {}, points: pts.map((p) => [p[0], p[1]] as ShapePoint), radii, banded };
+  if (Object.keys(nextBulges).length) out.bulges = nextBulges;
+  if (shape.base) out.base = shape.base;
+  if (shape.cabinet || options.edgeRoles) {
+    const cabinet: CutlistShapeCabinet = { ...(shape.cabinet ?? { height: DEFAULT_CABINET_HEIGHT }) };
+    delete cabinet.roles;
+    delete cabinet.throughBacks;
+    if (options.edgeRoles || shape.cabinet?.roles) cabinet.roles = roles;
+    if (Object.keys(throughBacks).length) cabinet.throughBacks = throughBacks;
+    out.cabinet = cabinet;
+  }
+  return out;
+}
+
+// A point inside a polygon (its corner points) — by how many of its edges a line from it to the right crosses.
+function pointInPolygon(point: ShapePoint, polygon: ShapePoint[]): boolean {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
+    const a = polygon[i];
+    const b = polygon[j];
+    if (a[1] > point[1] !== b[1] > point[1] && point[0] < ((b[0] - a[0]) * (point[1] - a[1])) / (b[1] - a[1]) + a[0]) inside = !inside;
+  }
+  return inside;
 }
 
 // Where a click or tap puts the next point of a drawing. Snap on: onto a point already there (within 12px — the first

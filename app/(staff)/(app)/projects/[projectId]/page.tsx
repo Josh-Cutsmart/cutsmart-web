@@ -165,9 +165,15 @@ import type { ChecklistTemplate, Cutlist, Project, ProjectChange, ProjectCheckli
 import { storage, auth } from "@/lib/firebase";
 import { blobToDataUrl, resolveProjectImageDataUrl, resolveProjectImageUrl } from "@/lib/project-image-data";
 import { summarizeCutlistRowsByPartType, type CutlistDraftRow, type CutlistRow, type DoorModeValue, type ProductComparison } from "@/lib/cutlist-types";
-import { cutlistShapeForStorage, describeCutlistShape, formatShapeMm, isCabinetShape, normalizeCutlistShape, shapeBandingSummary, shapeForCutlistRow, shapeGeometry, shapeOuterSize, type CutlistShape, type ShapePoint } from "@/lib/cutlist-shape";
+import { createTemplateShape, cutlistShapeForStorage, describeCutlistShape, formatShapeMm, isCabinetShape, normalizeCutlistShape, shapeBandingSummary, shapeForCutlistRow, shapeGeometry, shapeOuterSize, type CutlistShape, type ShapePoint } from "@/lib/cutlist-shape";
 import { cabinetPlanDrawingOps, cabinetPlanPngDataUrl, cabinetSettings, cachedCustomCabinetParts, customCabinetPartLines, customCabinetSize, customCabinetSizeText, type CabinetPart } from "@/lib/cutlist-cabinet-shape";
-import { CutlistShapeEditor } from "@/components/cutlist-shape-editor";
+import {
+  CutlistShapeEditor,
+  type CutlistShapeEditorBoardOption,
+  type CutlistShapeEditorFieldKey,
+  type CutlistShapeEditorFields,
+  type CutlistShapeGrainAxis,
+} from "@/components/cutlist-shape-editor";
 import { CutlistShapeThumbnail } from "@/components/cutlist-shape-thumbnail";
 import { CutlistCabinetPlanDrawing, CutlistCabinetPlanThumbnail, CutlistShapeDetail, CutlistShapeDrawing, CutlistShapeSizeCell, cutlistShapeBandingText, downloadCustomCabinetDxfs, downloadCutlistShapeDxf } from "@/components/cutlist-shape-drawing";
 import { shapeDrawingOps, shapeDrawingPngDataUrl, shapeOutlinePolyline } from "@/lib/cutlist-shape-render";
@@ -9045,10 +9051,11 @@ export default function ProjectDetailsPage() {
     partType: string;
     room: string;
     readOnly: boolean;
-    grainLabel: string;
-    thicknessMm: number;
-    // A custom cabinet's board thickness (mm): what its parts are worked out at (customCabinetThicknessForBoard).
-    boardThicknessMm: number;
+    // Its row's fields as it opens; which of them its cutlist shows (its columns that are on); that cutlist's boards,
+    // each with its thickness and whether it has a grain.
+    fields: CutlistShapeEditorFields;
+    visibleFields: CutlistShapeEditorFieldKey[];
+    boardOptions: CutlistShapeEditorBoardOption[];
   } | null>(null);
   const [isShapeEditorOpen, setIsShapeEditorOpen] = useState(false);
   const [shapeEditorOrigin, setShapeEditorOrigin] = useState<GlassModalOrigin>(null);
@@ -26350,11 +26357,15 @@ export default function ProjectDetailsPage() {
         : { board: cutlistBoardOptions[0] ?? "", quantity: "" };
       return [
         ...prev,
-        createDraftCutlistRow(partType, currentRoom, {
-          ...seed,
-          doorMode: isDoorPartType(partType) ? "manual" : undefined,
-          ...extra,
-        }),
+        {
+          ...createDraftCutlistRow(partType, currentRoom, {
+            ...seed,
+            doorMode: isDoorPartType(partType) ? "manual" : undefined,
+            ...extra,
+          }),
+          // (An id given: the row's known before it's in — a Custom piece's, its shape editor open on it.)
+          ...(extra?.id ? { id: extra.id } : {}),
+        },
       ];
     });
   };
@@ -30020,7 +30031,10 @@ export default function ProjectDetailsPage() {
       const seed = last
         ? { board: last.board, room: last.room, quantity: "" }
         : { board: initialMeasureBoardOptions[0] ?? "", quantity: "" };
-      return [...prev, createDraftCutlistRow(partType, initialCutlistEntryRoom || defaultInitialCutlistRoom, { ...seed, ...extra })];
+      return [
+        ...prev,
+        { ...createDraftCutlistRow(partType, initialCutlistEntryRoom || defaultInitialCutlistRoom, { ...seed, ...extra }), ...(extra?.id ? { id: extra.id } : {}) },
+      ];
     });
   };
 
@@ -30964,35 +30978,57 @@ export default function ProjectDetailsPage() {
     !cutlistRows.some((row) => row.room === cutlistRoomFilter);
   // Its Add a piece pressed: the cutlist's part types in a strip under it (in which cutlist), to pick the first piece's.
   const [firstPieceStrip, setFirstPieceStrip] = useState<"" | "initial" | "production">("");
-  // How a row's grain runs, in words (the shape editor's summary).
-  const cutlistShapeGrainLabel = (row: CutlistRow) => {
-    if (!productionBoardAllowsGrainForValue(String(row.board ?? "").trim())) return "None";
-    const axis = effectiveGrainValueForRow(row).match(/^([HWD])\s*:/i)?.[1]?.toUpperCase();
-    return axis === "H" ? "Along the height" : axis === "W" ? "Along the width" : "None";
+  // A row's grain as the shape editor has it: the side it runs along — Production's "H:1200" by its letter, an Initial
+  // Measure row's plain size by which of its sizes that is ("" — none set).
+  const shapeEditorGrainAxis = (row: CutlistRow, initial: boolean): CutlistShapeGrainAxis => {
+    const stored = String(row.grainValue ?? "").trim();
+    if (!stored) return "";
+    const side = initial
+      ? initialMeasureGrainDimensionChoicesForRow(row).find((choice) => choice.value === stored)?.field
+      : stored.match(/^([HWD])\s*:/i)?.[1]?.toUpperCase();
+    return side === "H" || side === "W" || side === "D" ? side : "";
   };
-  // ...an Initial Measure row's (its product's grain).
-  const initialCutlistShapeGrainLabel = (row: CutlistRow) => {
-    if (!initialMeasureBoardGrainFor(String(row.board ?? "").trim())) return "None";
-    const axis = String(row.grainValue ?? "").trim().match(/^([HWD])\s*:/i)?.[1]?.toUpperCase();
-    return axis === "H" ? "Along the height" : axis === "W" ? "Along the width" : "None";
+  // The shape editor's Board: its cutlist's boards (Initial Measure's: its products) as a row's Board cell shows them —
+  // and the one it's on, should that not be one of them now — each with its thickness (customCabinetThicknessForBoard:
+  // the 3D slab's, and what a custom cabinet's parts are worked out at) and whether it has a grain.
+  const shapeEditorBoardOptions = (initial: boolean, current: string): CutlistShapeEditorBoardOption[] => {
+    const values = initial ? initialMeasureBoardOptions : cutlistBoardOptions;
+    return (current && !values.includes(current) ? [...values, current] : values).map((value) => ({
+      value,
+      label: boardDisplayLabel(value) || value,
+      sheet: boardSizeFor(value),
+      thicknessMm: customCabinetThicknessForBoard(value),
+      grained: initial ? initialMeasureBoardGrainFor(value) : productionBoardAllowsGrainForValue(value),
+    }));
   };
+  // ...and the row's fields it shows: those whose column is on in that cutlist (Company Settings › Production › Cutlist
+  // columns — Grain, as the cutlist has it, only once there's a board with one).
+  const shapeEditorFieldKeys = (initial: boolean): CutlistShapeEditorFieldKey[] =>
+    (initial ? initialCutlistColumnDefs : cutlistColumnDefs)
+      .map((col) => col.key)
+      .filter((key): key is CutlistShapeEditorFieldKey => key === "name" || key === "board" || key === "quantity" || key === "information" || key === "grain");
   // The shape editor opened: on a row's shape (a Custom row without one: a rectangle at its size), or — a new piece — on
-  // the L corner it starts with. View only while the cutlist is. (Initial Measure's: its own Cutlist Entry and List.)
-  const openCutlistShapeEditor = (e: ReactMouseEvent<HTMLElement>, target: CutlistShapeEditorTarget) => {
+  // the L corner it starts with; its row's fields as they are (a new piece's as the row it'll be added as starts: the
+  // board that row would get, one of it, no name or information yet). View only while the cutlist is. (Initial
+  // Measure's: its own Cutlist Entry and List.)
+  // (`givenRow`: the row it's for, when it's only just been added — not in the rows yet.)
+  const openCutlistShapeEditor = (e: ReactMouseEvent<HTMLElement>, target: CutlistShapeEditorTarget, givenRow?: CutlistRow) => {
     const initial = target.scope === "initial";
     const draftRows = initial ? initialCutlistDraftRows : cutlistDraftRows;
     const listRows = initial ? initialCutlistRows : cutlistRows;
     const row =
-      target.mode === "draft"
+      givenRow ??
+      (target.mode === "draft"
         ? draftRows.find((r) => r.id === target.rowId)
         : target.mode === "row"
           ? listRows.find((r) => r.id === target.rowId)
-          : undefined;
+          : undefined);
     if (target.mode !== "new" && !row) return;
-    // (A new piece's board, for its thickness in 3D: the one the row it'll be added as takes — addDraftRowForPartType.)
-    const lastDraft =
-      [...draftRows].reverse().find((r) => target.mode === "new" && String(r.room || "") === String(target.room)) ??
-      draftRows[draftRows.length - 1];
+    // (A new piece's board: the one the row it'll be added as takes — addDraftRowForPartType's, the last row's in its
+    // room, else the last's; Initial Measure's addInitialDraftRowForPartType, the last row's.)
+    const lastDraft = initial
+      ? draftRows[draftRows.length - 1]
+      : ([...draftRows].reverse().find((r) => target.mode === "new" && String(r.room || "") === String(target.room)) ?? draftRows[draftRows.length - 1]);
     const board = String(row ? row.board : (lastDraft?.board ?? (initial ? initialMeasureBoardOptions[0] : cutlistBoardOptions[0]) ?? ""));
     shapeEditorOriginElRef.current = e.currentTarget;
     setShapeEditorOrigin(captureGlassModalOrigin(e));
@@ -31003,20 +31039,19 @@ export default function ProjectDetailsPage() {
       partType: target.mode === "new" ? target.partType : String(row?.partType || ""),
       room: target.mode === "new" ? target.room : String(row?.room || ""),
       readOnly: initial ? salesReadOnly : productionReadOnly,
-      grainLabel: row ? (initial ? initialCutlistShapeGrainLabel(row) : cutlistShapeGrainLabel(row)) : "",
-      thicknessMm: boardThicknessFor(board) || 18,
-      boardThicknessMm: customCabinetThicknessForBoard(board),
+      fields: row
+        ? {
+            name: String(row.name ?? ""),
+            board,
+            quantity: String(row.quantity ?? ""),
+            information: String(row.information ?? ""),
+            grain: shapeEditorGrainAxis(row, initial),
+          }
+        : { name: "", board, quantity: "1", information: "", grain: "" },
+      visibleFields: shapeEditorFieldKeys(initial),
+      boardOptions: shapeEditorBoardOptions(initial, board),
     });
     setIsShapeEditorOpen(true);
-  };
-  // A row's grain kept on the same side when its Height or Width (a custom cabinet's Depth) changes with its shape — one
-  // on its Depth let go when it's a flat piece again (it has none).
-  const grainForResizedShape = (row: Partial<CutlistRow>, height: string, width: string, depth = ""): Partial<CutlistRow> => {
-    const axis = String(row.grainValue ?? "").trim().match(/^([HWD])\s*:/i)?.[1]?.toUpperCase();
-    if (axis === "H") return { grainValue: `H:${height}`, grain: true };
-    if (axis === "W") return { grainValue: `W:${width}`, grain: true };
-    if (axis === "D") return depth ? { grainValue: `D:${depth}`, grain: true } : { grainValue: "" };
-    return {};
   };
   // A shape as it's saved on its row, and the row's sizes from it. A custom cabinet: no banding of its own (its top view's
   // edges are its backs, ends and doors — its parts are banded), its Height × Width × Depth the cabinet's
@@ -31041,116 +31076,207 @@ export default function ProjectDetailsPage() {
   // What the activity log says it is ("L corner 1311 × 1138" — a cabinet's with its Height × Width × Depth).
   const describeShapeForLog = (shape: CutlistShape) =>
     isCabinetShape(shape) ? `${describeCutlistShape(shape)} cabinet, ${customCabinetSizeText(shape)}` : describeCutlistShape(shape);
-  // Saved in the shape editor: a new piece added to the Cutlist Entry as a row of its part type; a row's shape changed —
-  // and its Height × Width with it (the shape's outer size) — in the Entry, or in the List and saved as any change there is.
-  // (A custom cabinet's Height × Width × Depth its cabinet's, its own banding none — shapeRowFields. Made flat again, or
-  // given back its part type's: its parts go with it — they're only ever worked out from its shape.)
-  const saveCutlistShapeFromEditor = async (edited: CutlistShape) => {
+  // The grain a piece from the shape editor is saved with, run through the rows' own rules: none on a board without a
+  // grain; a way it can't be cut (it doesn't fit the sheet that way — validateCutlistRowInput) swapped for the next way
+  // that can, as the Grain toggle skips one, or let go if none can; and, with just one way that can, that one (as
+  // autoSelectGrainValueForRow picks it).
+  const settleShapeEditorGrain = <T extends Pick<CutlistRow, "partType" | "board" | "height" | "width" | "depth" | "grainValue" | "grain">>(
+    row: T,
+    initial: boolean,
+  ): T => {
+    const board = String(row.board ?? "").trim();
+    if (!(initial ? initialMeasureBoardGrainFor(board) : productionBoardAllowsGrainForValue(board))) return { ...row, grainValue: "", grain: false };
+    const candidates = initial ? initialMeasureGrainDimensionOptionsForRow(row) : grainDimensionOptionsForRow(row);
+    const fits = (value: string) => {
+      const candidate = { ...row, grainValue: value };
+      const issues = validateCutlistRowInput(
+        candidate,
+        String(row.partType || "").trim(),
+        "Entry",
+        initial ? { boardSheetText: initialMeasureChosenSheetTextForRow(candidate), boardMaxEdge: initialMeasureBoardMaxEdgeFor(board) } : undefined,
+      );
+      return !issues.some((issue) => issue.field === "grain");
+    };
+    const working = candidates.filter(fits);
+    const chosen = String(row.grainValue ?? "").trim();
+    let value = chosen;
+    if (working.length === 1) value = working[0];
+    else if (chosen && !fits(chosen)) {
+      const from = candidates.indexOf(chosen);
+      value = [...candidates.slice(from + 1), ...candidates.slice(0, Math.max(0, from))].find(fits) ?? "";
+    }
+    return { ...row, grainValue: value, grain: Boolean(value) };
+  };
+  // A row as the shape editor leaves it: its shape and the sizes from it (shapeRowFields), its fields as set there, and
+  // its grain on the side chosen — at that side's size now (Production's "H:1200", Initial Measure's plain size; on its
+  // Depth only while it's a cabinet) — settled (settleShapeEditorGrain). `before`: the row it was (a new piece: none).
+  const shapeEditorRowPatch = (
+    shape: CutlistShape,
+    fields: CutlistShapeEditorFields,
+    before: CutlistRow | null,
+    partType: string,
+    initial: boolean,
+  ): Partial<CutlistRow> => {
+    const sized = shapeRowFields(shape, before);
+    const side = fields.grain === "H" ? sized.height : fields.grain === "W" ? sized.width : fields.grain === "D" ? String(sized.depth ?? "") : "";
+    const settled = settleShapeEditorGrain(
+      {
+        partType: before?.partType || partType,
+        board: fields.board,
+        height: sized.height,
+        width: sized.width,
+        depth: sized.depth ?? String(before?.depth ?? ""),
+        grainValue: side ? (initial ? side : `${fields.grain}:${side}`) : "",
+        grain: false,
+      },
+      initial,
+    );
+    return {
+      shape: sized.shape,
+      ...shapeSizePatch(sized),
+      name: fields.name,
+      board: fields.board,
+      quantity: fields.quantity,
+      information: fields.information,
+      grainValue: settled.grainValue,
+      grain: settled.grain,
+    };
+  };
+  // Its cells' warnings let go: its sizes (the shape's now), and each field it changed.
+  const clearShapeEditorWarnings = (rowId: string, before: CutlistRow, patch: Partial<CutlistRow>) => {
+    for (const key of ["height", "width", "depth"]) clearWarningForCell(rowId, key);
+    for (const key of ["name", "board", "quantity"] as const) {
+      if (key in patch && String(before[key] ?? "") !== String(patch[key] ?? "")) clearWarningForCell(rowId, key);
+    }
+    if ("grainValue" in patch && String(before.grainValue ?? "") !== String(patch.grainValue ?? "")) clearWarningForCell(rowId, "grain");
+  };
+  // A List row changed in the shape editor: the row as it now is, its change logged as the List logs one — its shape
+  // (a new one, or its corners or banding), then each field changed as a change of it in its cell is logged (not
+  // Information, which the List doesn't log; nor its grain only moving with a new size, just a new side) — or null:
+  // nothing's changed.
+  const shapeEditorListRow = (row: CutlistRow, edited: CutlistShape, fields: CutlistShapeEditorFields, initial: boolean): CutlistRow | null => {
+    const patch = shapeEditorRowPatch(edited, fields, row, row.partType, initial);
+    const updated: CutlistRow = { ...row, ...patch };
+    const shape = patch.shape ?? edited;
+    const sameShape =
+      Boolean(row.shape && JSON.stringify(cutlistShapeForStorage(row.shape)) === JSON.stringify(cutlistShapeForStorage(shape))) &&
+      String(row.height) === String(updated.height) &&
+      String(row.width) === String(updated.width) &&
+      String(row.depth ?? "") === String(updated.depth ?? "");
+    const sameFields =
+      (["name", "board", "quantity", "information"] as const).every((key) => String(row[key] ?? "") === String(updated[key] ?? "")) &&
+      String(row.grainValue ?? "").trim() === String(updated.grainValue ?? "").trim();
+    if (sameShape && sameFields) return null;
+    const scope = initial ? "initial" : "production";
+    const changePrefix = initial ? "initial:change" : "change";
+    const changedRowName = String(updated.name || row.name || "Unnamed Row").trim();
+    if (!sameShape) {
+      const before = row.shape ? describeShapeForLog(row.shape) : `${row.width || "-"} × ${row.height || "-"}`;
+      const after = describeShapeForLog(shape);
+      logCutlistActivity(`${changedRowName} | Shape:`, {
+        partType: row.partType,
+        valueFrom: before,
+        valueTo: before === after ? `${after} (corners / banding)` : after,
+        dedupeKey: `${changePrefix}:${row.id}:shape:${before}->${after}`,
+        scope,
+      });
+    }
+    for (const key of ["name", "board", "quantity", "grain"] as const) {
+      if (key === "grain" && shapeEditorGrainAxis(row, initial) === shapeEditorGrainAxis(updated, initial)) continue;
+      const before = cutlistValueForActivity(row, key);
+      const after = cutlistValueForActivity(updated, key);
+      if (before === after) continue;
+      logCutlistActivity(`${changedRowName} | ${cutlistFieldLabel(key)}:`, {
+        partType: updated.partType || row.partType,
+        valueFrom: before,
+        valueTo: after,
+        dedupeKey: `${changePrefix}:${updated.id}:${key}:${before}->${after}`,
+        scope,
+      });
+    }
+    clearShapeEditorWarnings(row.id, row, patch);
+    return updated;
+  };
+  // Saved in the shape editor: a new piece added to the Cutlist Entry as a row of its part type; a row's shape and
+  // fields changed — its Height × Width with its shape (the shape's outer size) — in the Entry, or in the List and saved
+  // as any change there is. (A custom cabinet's Height × Width × Depth its cabinet's, its own banding none —
+  // shapeRowFields. Made flat again, or given back its part type's: its parts go with it — they're only ever worked out
+  // from its shape.)
+  const saveCutlistShapeFromEditor = async (edited: CutlistShape, fields: CutlistShapeEditorFields) => {
     const editor = shapeEditor;
     setIsShapeEditorOpen(false);
     if (!editor || editor.readOnly) return;
     const target = editor.target;
     if (target.scope === "initial") {
-      await saveInitialCutlistShapeFromEditor(target, edited);
+      await saveInitialCutlistShapeFromEditor(target, edited, fields);
       return;
     }
     if (target.mode === "new") {
-      const fields = shapeRowFields(edited, null);
-      addDraftRowForPartType(target.partType, { shape: fields.shape, ...shapeSizePatch(fields), clashLeft: "", clashRight: "", clashing: "" });
+      addDraftRowForPartType(target.partType, { ...shapeEditorRowPatch(edited, fields, null, target.partType, false), clashLeft: "", clashRight: "", clashing: "" });
       return;
     }
     if (target.mode === "draft") {
       const draft = cutlistDraftRows.find((r) => r.id === target.rowId);
       if (!draft) return;
-      const fields = shapeRowFields(edited, draft);
-      updateDraftCutlistRow(target.rowId, { shape: fields.shape, ...shapeSizePatch(fields), ...grainForResizedShape(draft, fields.height, fields.width, fields.depth) });
-      clearWarningForCell(target.rowId, "height");
-      clearWarningForCell(target.rowId, "width");
-      clearWarningForCell(target.rowId, "depth");
+      const patch = shapeEditorRowPatch(edited, fields, draft, draft.partType, false);
+      updateDraftCutlistRow(target.rowId, patch);
+      clearShapeEditorWarnings(target.rowId, draft, patch);
       return;
     }
     if (productionReadOnly) return;
     const row = cutlistRows.find((r) => r.id === target.rowId);
     if (!row) return;
-    const fields = shapeRowFields(edited, row);
-    const shape = fields.shape;
-    const unchanged =
-      row.shape &&
-      JSON.stringify(cutlistShapeForStorage(row.shape)) === JSON.stringify(cutlistShapeForStorage(shape)) &&
-      String(row.height) === fields.height &&
-      String(row.width) === fields.width &&
-      (fields.depth === undefined || String(row.depth ?? "") === fields.depth);
-    if (unchanged) return;
-    const updated = autoSelectGrainValueForRow({ ...row, shape, ...shapeSizePatch(fields), ...grainForResizedShape(row, fields.height, fields.width, fields.depth) });
+    const updated = shapeEditorListRow(row, edited, fields, false);
+    if (!updated) return;
     const next = cutlistRows.map((r) => (r.id === row.id ? updated : r));
-    const before = row.shape ? describeShapeForLog(row.shape) : `${row.width || "-"} × ${row.height || "-"}`;
-    const after = describeShapeForLog(shape);
-    const changedRowName = String(row.name || "Unnamed Row").trim();
-    logCutlistActivity(`${changedRowName} | Shape:`, {
-      partType: row.partType,
-      valueFrom: before,
-      valueTo: before === after ? `${after} (corners / banding)` : after,
-      dedupeKey: `change:${row.id}:shape:${before}->${after}`,
-    });
-    clearWarningForCell(row.id, "height");
-    clearWarningForCell(row.id, "width");
-    clearWarningForCell(row.id, "depth");
     setCutlistRows(next);
     await persistCutlistRows(next);
   };
-  // ...and Initial Measure's: a new piece added to its Cutlist Entry; a row's shape changed (its Height × Width with it)
-  // in the Entry, or in its List and saved as any change there is.
-  const saveInitialCutlistShapeFromEditor = async (target: CutlistShapeEditorTarget, edited: CutlistShape) => {
+  // ...and Initial Measure's: a new piece added to its Cutlist Entry; a row's shape and fields changed in the Entry, or
+  // in its List and saved as any change there is.
+  const saveInitialCutlistShapeFromEditor = async (target: CutlistShapeEditorTarget, edited: CutlistShape, fields: CutlistShapeEditorFields) => {
     if (salesReadOnly) return;
     if (target.mode === "new") {
-      const fields = shapeRowFields(edited, null);
-      addInitialDraftRowForPartType(target.partType, { shape: fields.shape, ...shapeSizePatch(fields), clashLeft: "", clashRight: "", clashing: "" });
+      addInitialDraftRowForPartType(target.partType, { ...shapeEditorRowPatch(edited, fields, null, target.partType, true), clashLeft: "", clashRight: "", clashing: "" });
       return;
     }
     if (target.mode === "draft") {
       const draft = initialCutlistDraftRows.find((r) => r.id === target.rowId);
       if (!draft) return;
-      const fields = shapeRowFields(edited, draft);
-      updateInitialDraftCutlistRow(target.rowId, { shape: fields.shape, ...shapeSizePatch(fields), ...grainForResizedShape(draft, fields.height, fields.width, fields.depth) });
-      clearWarningForCell(target.rowId, "height");
-      clearWarningForCell(target.rowId, "width");
-      clearWarningForCell(target.rowId, "depth");
+      const patch = shapeEditorRowPatch(edited, fields, draft, draft.partType, true);
+      updateInitialDraftCutlistRow(target.rowId, patch);
+      clearShapeEditorWarnings(target.rowId, draft, patch);
       return;
     }
     const row = initialCutlistRows.find((r) => r.id === target.rowId);
     if (!row) return;
-    const fields = shapeRowFields(edited, row);
-    const shape = fields.shape;
-    const unchanged =
-      row.shape &&
-      JSON.stringify(cutlistShapeForStorage(row.shape)) === JSON.stringify(cutlistShapeForStorage(shape)) &&
-      String(row.height) === fields.height &&
-      String(row.width) === fields.width &&
-      (fields.depth === undefined || String(row.depth ?? "") === fields.depth);
-    if (unchanged) return;
-    const updated: CutlistRow = { ...row, shape, ...shapeSizePatch(fields), ...grainForResizedShape(row, fields.height, fields.width, fields.depth) };
+    const updated = shapeEditorListRow(row, edited, fields, true);
+    if (!updated) return;
     const next = initialCutlistRows.map((r) => (r.id === row.id ? updated : r));
-    const before = row.shape ? describeShapeForLog(row.shape) : `${row.width || "-"} × ${row.height || "-"}`;
-    const after = describeShapeForLog(shape);
-    const changedRowName = String(row.name || "Unnamed Row").trim();
-    logCutlistActivity(`${changedRowName} | Shape:`, {
-      partType: row.partType,
-      valueFrom: before,
-      valueTo: before === after ? `${after} (corners / banding)` : after,
-      dedupeKey: `initial:change:${row.id}:shape:${before}->${after}`,
-      scope: "initial",
-    });
-    clearWarningForCell(row.id, "height");
-    clearWarningForCell(row.id, "width");
-    clearWarningForCell(row.id, "depth");
     setInitialCutlistRows(next);
     await persistInitialCutlistRows(next);
   };
   // An Initial Measure part type picked to add (its pills, and the first piece's strip): a Custom piece is drawn first
   // (the shape editor — saving it adds the row); anything else is a row of it in its Cutlist Entry.
+  // A Custom part type picked: its row's in the Cutlist Entry straight away (a draft, the L corner the editor starts
+  // with, one of it, on the board the next row gets), and the shape editor opens on it — closed without saving, it's
+  // still there to come back to.
+  const addCustomPieceDraft = (e: ReactMouseEvent<HTMLElement>, partType: string, initial: boolean) => {
+    const draftRows = initial ? initialCutlistDraftRows : cutlistDraftRows;
+    const room = initial ? initialCutlistEntryRoom || defaultInitialCutlistRoom : cutlistEntryRoom || defaultCutlistRoom;
+    const last = initial ? draftRows[draftRows.length - 1] : ([...draftRows].reverse().find((r) => String(r.room || "") === String(room)) ?? draftRows[draftRows.length - 1]);
+    const board = String(last?.board ?? (initial ? initialMeasureBoardOptions[0] : cutlistBoardOptions[0]) ?? "");
+    const sized = shapeRowFields(createTemplateShape("L"), null);
+    const id = `draft_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const extra: Partial<CutlistDraftRow> = { id, board, quantity: "1", shape: sized.shape, ...shapeSizePatch(sized), clashLeft: "", clashRight: "", clashing: "" };
+    if (initial) addInitialDraftRowForPartType(partType, extra);
+    else addDraftRowForPartType(partType, extra);
+    const row: CutlistRow = { ...createDraftCutlistRow(partType, room, extra), id };
+    openCutlistShapeEditor(e, initial ? { mode: "draft", rowId: id, scope: "initial" } : { mode: "draft", rowId: id }, row);
+  };
   const pickInitialEntryPartType = (e: ReactMouseEvent<HTMLElement>, v: string) => {
     if (isCustomPartType(v)) {
-      openCutlistShapeEditor(e, { mode: "new", partType: v, room: initialCutlistEntryRoom || defaultInitialCutlistRoom, scope: "initial" });
+      addCustomPieceDraft(e, v, true);
       return;
     }
     addInitialDraftRowForPartType(v);
@@ -31159,9 +31285,9 @@ export default function ProjectDetailsPage() {
   // which (the door / drawer picker, from the pill); a Custom piece is drawn first (the shape editor); anything else is a
   // row of it in the Cutlist Entry.
   const pickProductionEntryPartType = (e: ReactMouseEvent<HTMLButtonElement>, v: string) => {
-    // A Custom part type: its shape drawn first (the shape editor) — saving it adds the row.
+    // A Custom part type: its row added as a draft, and the shape editor open on it (addCustomPieceDraft).
     if (isCustomPartType(v)) {
-      openCutlistShapeEditor(e, { mode: "new", partType: v, room: cutlistEntryRoom || defaultCutlistRoom });
+      addCustomPieceDraft(e, v, false);
       return;
     }
     doorDrawerPickerModalOriginElRef.current = e.currentTarget;
@@ -31185,15 +31311,35 @@ export default function ProjectDetailsPage() {
       room={shapeEditor.room}
       color={partTypeColors[shapeEditor.partType] ?? "#CBD5E1"}
       readOnly={shapeEditor.readOnly}
-      grainLabel={shapeEditor.grainLabel}
-      thicknessMm={shapeEditor.thicknessMm}
-      // (What it can be — any other part type: a Cabinetry one makes it a custom cabinet, worked out at its board's thickness.)
+      // (Its row's fields — those its cutlist shows — its board one of that cutlist's, which sets its thickness. A List
+      // row's name, board and quantity can't be left empty, as its cells' can't.)
+      fields={shapeEditor.fields}
+      visibleFields={shapeEditor.visibleFields}
+      boardOptions={shapeEditor.boardOptions}
+      renderBoardPicker={({ value, disabled, onChange }) => (
+        <BoardPillDropdown
+          value={value}
+          options={shapeEditor.boardOptions.map((option) => option.value)}
+          disabled={disabled}
+          // (Looking as the pop-up's other fields do — the app's glass form field, cs-glass-field, light and dark.)
+          className="cs-glass-field h-9! rounded-[11px]! px-3! text-[13px]! font-medium"
+          bg="color-mix(in srgb, var(--panel-bg) 40%, transparent)"
+          border="color-mix(in srgb, var(--text-main) 16%, transparent)"
+          text="var(--text-main)"
+          getSize={boardSizeFor}
+          getLabel={boardDisplayLabel}
+          onChange={onChange}
+        />
+      )}
+      requireFields={shapeEditor.target.mode === "row"}
+      // (What it can be — any other part type: a Cabinetry one makes it a custom cabinet, worked out at its board's
+      // thickness, the project's Base Cab Height tall to start with.)
       baseOptions={shapeBaseOptions}
-      boardThicknessMm={shapeEditor.boardThicknessMm}
+      defaultCabinetHeightMm={Number.parseFloat(resolvedProductionBaseCabHeight) || undefined}
       isNew={shapeEditor.target.mode === "new"}
       origin={shapeEditorOrigin}
       originElRef={shapeEditorOriginElRef}
-      onSave={(shape) => void saveCutlistShapeFromEditor(shape)}
+      onSave={(shape, fields) => void saveCutlistShapeFromEditor(shape, fields)}
       onClose={() => setIsShapeEditorOpen(false)}
     />
   ) : null;

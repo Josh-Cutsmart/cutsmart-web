@@ -89,7 +89,8 @@ export function useFloatingNotice({
       ? createPortal(
           <div
             data-bottom-bar={takesBottom ? undefined : ""}
-            className={`pointer-events-none fixed inset-x-0 flex justify-center px-4 ${takesBottom ? "z-[2147483001]" : "z-[1800]"}`}
+            // (The Undo bar over everything — any pop-up too, a phone's whole-screen ones included: what it undoes can be in one.)
+            className={`pointer-events-none fixed inset-x-0 flex justify-center px-4 ${takesBottom ? "z-[2147483647]" : "z-[1800]"}`}
             // (In the CutSmart Preview, above its own bar along the bottom — but the Undo bar, which takes its place.)
             style={{ bottom: `calc(${isPreviewMode() && !takesBottom ? 60 : 24}px + env(safe-area-inset-bottom))` }}
           >

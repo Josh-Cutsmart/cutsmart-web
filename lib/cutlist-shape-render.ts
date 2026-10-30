@@ -3,17 +3,21 @@
 //
 //  - shapeOutlinePolyline / shapeBandedPolylines: the outline and its banding as points (mm, y down), its curves
 //    sampled finely enough to print — for drawing it any way at all (jsPDF lines, a canvas, nesting's own SVG).
-//  - shapeDrawingOps: the whole drawing — outline, banding, arrows at the banding, dimensions, R and curve labels — as
+//  - shapeDrawingOps: the whole drawing — outline, banding, arrows at the banding, dimensions (a custom outline's
+//    cut-outs placed too), angles, R and curve labels — as
 //    a list of plain drawing steps (paths, boxes, text) in px, so anything can draw it the same (jsPDF included).
 //  - shapeDrawingSvg: that drawing as a standalone SVG (inline attributes only — no CSS variables: it goes on white
 //    paper). shapeDrawingPngDataUrl: the same as a PNG, for Excel and PDF images.
 
 import {
+  formatShapeDegrees,
   formatShapeMm,
   placeShapeLabels,
   sampleShapeOutline,
   shapeBandedChains,
   shapeChainPoints,
+  shapeCornerAngles,
+  shapeCutoutDimensions,
   shapeGeometry,
   templateDimensions,
   isTemplateShapeKind,
@@ -139,7 +143,7 @@ export type ShapeDrawing = {
 };
 
 // Helvetica's widths (em) — near enough to size a number's box without a canvas to measure it on.
-const CHAR_EM: Record<string, number> = { ".": 0.278, ",": 0.278, " ": 0.278, "-": 0.333, R: 0.722, W: 0.944, H: 0.722, "×": 0.584 };
+const CHAR_EM: Record<string, number> = { ".": 0.278, ",": 0.278, " ": 0.278, "-": 0.333, R: 0.722, W: 0.944, H: 0.722, "×": 0.584, "°": 0.4 };
 function textWidth(text: string, size: number, bold = false): number {
   let em = 0;
   for (const ch of text) em += CHAR_EM[ch] ?? (/[0-9]/.test(ch) ? 0.556 : 0.6);
@@ -178,6 +182,17 @@ function alongLine(line: ShapePoint[], t: number): { point: ShapePoint; directio
   return null;
 }
 
+// Whether a point is inside a closed outline (px — its last point joins back to its first).
+function insideOutline(p: ShapePoint, outline: ShapePoint[]): boolean {
+  let inside = false;
+  for (let i = 0, j = outline.length - 1; i < outline.length; j = i, i += 1) {
+    const a = outline[i];
+    const b = outline[j];
+    if (a[1] > p[1] !== b[1] > p[1] && p[0] < ((b[0] - a[0]) * (p[1] - a[1])) / (b[1] - a[1]) + a[0]) inside = !inside;
+  }
+  return inside;
+}
+
 // The box round some points, grown by `pad`.
 function boxAround(points: ShapePoint[], pad: number): ShapeLabelBox {
   const xs = points.map((p) => p[0]);
@@ -208,17 +223,28 @@ export function shapeDrawingOps(shape: CutlistShape, opts: ShapeDrawingOptions =
   const arrowReach = arrowGap + arrowHead + arrowShaft + 2 * k;
 
   // ---- How far out its numbers go (px), so there's room for them round it. A template's dimension lines sit 22 out; a
-  // custom outline's segment lengths sit just off each segment, and its Width and Height lines out past those.
-  const dims: ShapeDimension[] = !showDimensions ? [] : isTemplate ? templateDimensions(shape) : customOuterDimensions(geometry);
+  // custom outline's segment lengths sit just off each segment, its cut-outs' dimension lines (shapeCutoutDimensions —
+  // where each is, how wide, how deep; a cut corner's set-backs) out past those, stacked, and its Width and Height lines
+  // out past them. (A segment whose length a cut-out's dimension already says: not said again.)
+  const cutouts = !showDimensions || isTemplate ? null : shapeCutoutDimensions(shape);
+  const covered = new Set(cutouts?.covered ?? []);
+  const outerTier = (normal: ShapePoint) =>
+    1 + Math.max(-1, ...(cutouts?.dims ?? []).filter((d) => d.normal[0] === normal[0] && d.normal[1] === normal[1]).map((d) => d.tier ?? 0));
+  const dims: ShapeDimension[] = !showDimensions
+    ? []
+    : isTemplate
+      ? templateDimensions(shape)
+      : [...(cutouts?.dims ?? []), ...customOuterDimensions(geometry).map((d) => ({ ...d, tier: outerTier(d.normal) }))];
   const segmentReach = (normal: ShapePoint, text: string) => (Math.abs(normal[0]) * labelW(text) + Math.abs(normal[1]) * labelH) / 2 + 3 * k;
-  const segmentTexts = isTemplate ? [] : geometry.edges.map((edge) => formatShapeMm(edge.vertexLength));
-  const widestSegment = Math.max(0, ...segmentTexts.map((text) => labelW(text)));
+  const segmentTexts = isTemplate ? [] : geometry.edges.map((edge) => (covered.has(edge.index) ? "" : formatShapeMm(edge.vertexLength)));
+  const widestSegment = Math.max(0, ...segmentTexts.filter(Boolean).map((text) => labelW(text)));
   const dimOffsetFor = (d: ShapeDimension) => {
     if (isTemplate) return 22 * k;
-    // (Clear of the segment labels on that side: across them, then half its own label.)
+    // (Clear of the segment labels on that side: across them, then half its own label — and a tier further out each.)
     const across = Math.abs(d.normal[0]) * (widestSegment + 3 * k) + Math.abs(d.normal[1]) * (labelH + 3 * k);
     const own = (Math.abs(d.normal[0]) * labelW(formatShapeMm(d.value)) + Math.abs(d.normal[1]) * labelH) / 2;
-    return Math.max(22 * k, across + 2 * k + own);
+    const tierStep = Math.abs(d.normal[0]) * (widestSegment + 6 * k) + Math.abs(d.normal[1]) * (labelH + 6 * k);
+    return Math.max(22 * k, across + 2 * k + own) + (d.tier ?? 0) * Math.max(tierStep, 14 * k);
   };
   let padX = showArrows ? arrowReach : 2 * k;
   let padY = padX;
@@ -257,21 +283,27 @@ export function shapeDrawingOps(shape: CutlistShape, opts: ShapeDrawingOptions =
     ops.push({ kind: "path", points: line, closed: false, stroke: bandColor, lineWidth: bandWidth, lineCap: chain.closed ? "butt" : "round", lineJoin: "round" });
   }
 
-  // ---- An arrow at each banded stretch (one at its middle — a custom outline's a third of the way along, clear of its
-  // segment's length in the middle; one going the whole way round, four along it), pointing in at it from outside.
-  // (Outward: the shape's own way round — a uniform scale keeps it.)
+  // ---- An arrow at each banded stretch (one at its middle; one going the whole way round, four along it), inside the
+  // shape pointing out at it — so its numbers keep the outside to themselves. Where the piece is too narrow there for
+  // one, a shorter one; too narrow even for that, one outside pointing in. (Outward: the shape's own way round — a
+  // uniform scale keeps it.)
   const arrows: ShapeLabelBox[] = [];
   if (showArrows) {
     for (const { chain, line } of bandLines) {
       const count = chain.closed ? 4 : 1;
       for (let j = 0; j < count; j += 1) {
-        const at = alongLine(line, chain.closed ? (j + 0.5) / count : isTemplate || !showDimensions ? 0.5 : 1 / 3);
+        const at = alongLine(line, chain.closed ? (j + 0.5) / count : 0.5);
         if (!at) continue;
         const n: ShapePoint = [at.direction[1] * geometry.orientation, -at.direction[0] * geometry.orientation];
-        const tip = add(at.point, mul(n, arrowGap));
-        const base = add(tip, mul(n, arrowHead));
-        const tail = add(base, mul(n, arrowShaft));
-        const head = arrowHeadPoints(tip, tail, arrowHead);
+        // side -1: in from the banding; 1: out from it.
+        const arrowAt = (side: number, shaft: number) => {
+          const tip = add(at.point, mul(n, side * arrowGap));
+          const base = add(tip, mul(n, side * arrowHead));
+          const tail = add(base, mul(n, side * shaft));
+          return { base, tail, head: arrowHeadPoints(tip, tail, arrowHead), clear: add(tail, mul(n, side * 1.5 * k)) };
+        };
+        const fitsInside = (arrow: ReturnType<typeof arrowAt>) => [...arrow.head, arrow.tail, arrow.clear].every((p) => insideOutline(p, outline));
+        const { base, tail, head } = [arrowAt(-1, arrowShaft), arrowAt(-1, 1.5 * k)].find(fitsInside) ?? arrowAt(1, arrowShaft);
         ops.push({ kind: "path", points: [tail, base], closed: false, stroke: bandColor, lineWidth: 1.1 * k, lineCap: "round" });
         ops.push({ kind: "path", points: head, closed: true, fill: bandColor, stroke: bandColor, lineWidth: 0.4 * k, lineJoin: "round" });
         arrows.push(boxAround([...head, tail], 1 * k));
@@ -281,8 +313,8 @@ export function shapeDrawingOps(shape: CutlistShape, opts: ShapeDrawingOptions =
 
   const labels: ShapeDrawingLabel[] = [];
   if (showDimensions) {
-    // ---- Dimension lines: a template's own (its Width and Height among them); a custom outline's Width and Height
-    // round the box it's in.
+    // ---- Dimension lines: a template's own (its Width and Height among them); a custom outline's cut-outs placed, and
+    // its Width and Height round the box it's in.
     const requests: LabelRequest[] = [];
     const dimOps: ShapeDrawingOp[] = [];
     for (const d of dims) {
@@ -311,7 +343,7 @@ export function shapeDrawingOps(shape: CutlistShape, opts: ShapeDrawingOptions =
     // of its curve) — and a curve's height too.
     if (!isTemplate) {
       for (const edge of geometry.edges) {
-        if (edge.vertexLength < 1e-6) continue;
+        if (edge.vertexLength < 1e-6 || !segmentTexts[edge.index]) continue;
         const n = edge.normal;
         const on = toPx(edge.curve ? edge.curve.mid : mid(edge.startVertex, edge.endVertex));
         const text = segmentTexts[edge.index];
@@ -340,6 +372,29 @@ export function shapeDrawingOps(shape: CutlistShape, opts: ShapeDrawingOptions =
       const natural = add(anchor, mul(corner.outward, 10 * k + labelH / 2));
       const text = `R${formatShapeMm(corner.radius)}`;
       requests.push({ id: `rad:${corner.index}`, text, arc: false, width: textWidth(text, fontSize) + 6 * k, height: labelH, x: natural[0], y: natural[1], anchor, normal: corner.outward });
+    }
+
+    // ---- Corners that aren't square: their angle, a little arc between their edges and the number just past it.
+    for (const corner of shapeCornerAngles(geometry)) {
+      const at = toPx(corner.point);
+      const count = geometry.edges.length;
+      const edgePx = Math.min(geometry.edges[(corner.index - 1 + count) % count].vertexLength, geometry.edges[corner.index].vertexLength) * scale;
+      const radius = Math.max(6 * k, Math.min(18 * k, edgePx * 0.4));
+      const start = Math.atan2(corner.from[1], corner.from[0]);
+      let sweep = Math.atan2(corner.to[1], corner.to[0]) - start;
+      // (The short way round: the side its edges open towards.)
+      while (sweep > Math.PI) sweep -= 2 * Math.PI;
+      while (sweep < -Math.PI) sweep += 2 * Math.PI;
+      const arc: ShapePoint[] = [];
+      for (let s = 0; s <= 12; s += 1) {
+        const t = start + (sweep * s) / 12;
+        arc.push([at[0] + radius * Math.cos(t), at[1] + radius * Math.sin(t)]);
+      }
+      ops.push({ kind: "path", points: arc, closed: false, stroke: INK, lineWidth: 1 * k, lineCap: "round" });
+      const text = formatShapeDegrees(corner.degrees);
+      const anchor = add(at, mul(corner.between, radius));
+      const natural = add(at, mul(corner.between, radius + 4 * k + labelH / 2));
+      requests.push({ id: `ang:${corner.index}`, text, arc: false, width: textWidth(text, fontSize) + 6 * k, height: labelH, x: natural[0], y: natural[1], anchor, normal: corner.between });
     }
 
     const placed = placeShapeLabels(requests, { width, height }, { gap: 2 * k, step: 4 * k, reach: 16, margin: 1.5 * k, obstacles: arrows });

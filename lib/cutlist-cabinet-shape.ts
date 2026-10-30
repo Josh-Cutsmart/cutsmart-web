@@ -982,6 +982,45 @@ export function cabinetModelFaces(model: CabinetModel): CabinetFace[] {
   return faces;
 }
 
+// A flat piece as a model the same 3D view draws (components/cutlist-cabinet-3d.tsx — turned, moved and zoomed as a
+// cabinet is): one slab of its outline (its curves and rounded corners sampled), `thicknessMm` thick, lying flat.
+// `bandedFaces`: its sides along banded edges (their faces' keys, as cabinetModelFaces makes them), for the banding's
+// colour.
+export function flatPieceModel(shape: CutlistShape, thicknessMm: number): { model: CabinetModel; bandedFaces: Set<string> } {
+  const t = Math.max(0.1, Number(thicknessMm) || 0);
+  const geometry = shapeGeometry(shape);
+  const empty: CabinetModel = { prisms: [], height: t, thicknessMm: t, bounds: { minX: 0, minY: 0, minZ: 0, maxX: 0, maxY: 0, maxZ: t } };
+  if (!geometry.valid) return { model: empty, bandedFaces: new Set() };
+  const n = geometry.edges.length;
+  const samples = sampleShapeOutline(geometry, PLAN_SAMPLING);
+  if (samples.length < 3) return { model: empty, bandedFaces: new Set() };
+  // (Each sample's way on to the next: along an edge — banded or not — or round a rounded corner, banded where both its
+  // edges are, as a run of banding goes round it.)
+  let polygon = samples.map((sample) => sample.point);
+  let banded = samples.map((sample) =>
+    sample.edge !== null
+      ? geometry.edges[sample.edge].banded
+      : sample.corner !== null
+        ? geometry.edges[(sample.corner - 1 + n) % n].banded && geometry.edges[sample.corner].banded
+        : false,
+  );
+  // (Wound clockwise on the screen, as a cabinet's prisms are: the other way round, its sides' bandings go with them.)
+  if (signedPolygonArea(polygon) < 0) {
+    const m = polygon.length;
+    polygon = [...polygon].reverse();
+    banded = polygon.map((_, i) => banded[(2 * m - 2 - i) % m]);
+  }
+  const xs = polygon.map((p) => p[0]);
+  const ys = polygon.map((p) => p[1]);
+  const model: CabinetModel = {
+    prisms: [{ key: "piece", part: "piece", kind: "top", polygon, z0: 0, z1: t, translucent: false }],
+    height: t,
+    thicknessMm: t,
+    bounds: { minX: Math.min(...xs), minY: Math.min(...ys), minZ: 0, maxX: Math.max(...xs), maxY: Math.max(...ys), maxZ: t },
+  };
+  return { model, bandedFaces: new Set(banded.flatMap((on, i) => (on ? [`piece:side${i}`] : []))) };
+}
+
 // ---- The cabinet everywhere else: the cutlists, the CNC Cutlist, nesting, prints, labels and Excel (the project page,
 // components/cutlist-shape-drawing.tsx, lib/cutlist-print-pdf.ts, lib/cutlist-excel.ts).
 
