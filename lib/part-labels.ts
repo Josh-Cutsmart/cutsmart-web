@@ -2,6 +2,8 @@
 
 import type { jsPDF as JsPdf } from "jspdf";
 import qrcode from "qrcode-generator";
+import { formatShapeMetres, shapeGeometry, type CutlistShape, type ShapePoint } from "@/lib/cutlist-shape";
+import { shapeBandedPolylines, shapeOutlinePolyline } from "@/lib/cutlist-shape-render";
 import type { PrintTitleLogo } from "@/lib/print-title-page";
 
 // Production › Labels: a sticky label for every piece the workshop cuts — one per piece (a part's quantity is that
@@ -73,6 +75,9 @@ export type PartLabel = {
   assignedTo: string;
   // Its QR code's link (none: no QR code) — the part in its project (/projects/<id>?part=<row>).
   qrUrl?: string;
+  // A Custom piece: the shape it's cut to (lib/cutlist-shape.ts) — drawn as its real outline (its x across the label,
+  // its y down it, onto wideMm × tallMm), its banded runs marked as clashed edges are. (Its clashed / clashCode empty.)
+  shape?: CutlistShape | null;
 };
 
 // The edges a clashing's long / short edges are: a tall piece's long edges its sides, a wide one's its top and bottom —
@@ -283,8 +288,39 @@ function drawQr(ops: LabelOp[], rows: boolean[][], x: number, y: number, size: n
   });
 }
 
+// A Custom piece's outline and its banded runs (mm, y down, its curves sampled), and how much of it is banded — null when
+// it isn't a shape that can be drawn.
+function labelShapeLines(shape: CutlistShape | null | undefined): { outline: ShapePoint[]; banded: ShapePoint[][]; bandedMm: number } | null {
+  if (!shape) return null;
+  try {
+    const outline = shapeOutlinePolyline(shape);
+    if (outline.length < 3) return null;
+    return { outline, banded: shapeBandedPolylines(shape), bandedMm: shapeGeometry(shape).bandedLengthMm };
+  } catch {
+    return null;
+  }
+}
+
+// The point `t` (0–1) of the way along a line, by its length.
+function pointAlongLine(line: ShapePoint[], t: number): ShapePoint | null {
+  if (line.length < 2) return null;
+  const lengths = line.slice(1).map((p, i) => Math.hypot(p[0] - line[i][0], p[1] - line[i][1]));
+  const total = lengths.reduce((sum, l) => sum + l, 0);
+  if (!(total > 0)) return line[0];
+  let target = clamp(t, 0, 1) * total;
+  for (let i = 0; i < lengths.length; i += 1) {
+    if (target <= lengths[i] || i === lengths.length - 1) {
+      const f = lengths[i] > 0 ? Math.min(1, target / lengths[i]) : 0;
+      return [line[i][0] + (line[i + 1][0] - line[i][0]) * f, line[i][1] + (line[i + 1][1] - line[i][1]) * f];
+    }
+    target -= lengths[i];
+  }
+  return null;
+}
+
 // The piece's outline, to scale, in the middle of its box: its clashed edges' Xs, its grain's arrow, a door's hinges
-// (each with where it goes, beside its edge) — and its clashing and hinge side under it.
+// (each with where it goes, beside its edge) — and its clashing and hinge side under it. A Custom piece: its real outline
+// (its shape's), each banded run drawn heavier with an X across it, and how much is banded under it.
 function drawOutline(ops: LabelOp[], label: PartLabel, box: { x: number; y: number; w: number; h: number }, k: number) {
   const markHalf = 1.15 * k;
   const hingeSize = 6.2 * k;
@@ -298,7 +334,9 @@ function drawOutline(ops: LabelOp[], label: PartLabel, box: { x: number; y: numb
       reserve[hinges.side] += hingeSize * LABEL_PT * 0.75 + 1 * k;
     }
   }
-  const caption = label.clashCode || hinges?.tag ? captionSize * LABEL_PT * 1.35 : 0;
+  const shaped = labelShapeLines(label.shape);
+  const clashCode = shaped ? (shaped.bandedMm > 0 ? `Banded ${formatShapeMetres(shaped.bandedMm)} m` : "") : label.clashCode;
+  const caption = clashCode || hinges?.tag ? captionSize * LABEL_PT * 1.35 : 0;
   const availW = box.w - reserve.left - reserve.right;
   const availH = box.h - reserve.top - reserve.bottom - caption;
   if (availW < 3 || availH < 3) return;
@@ -310,7 +348,43 @@ function drawOutline(ops: LabelOp[], label: PartLabel, box: { x: number; y: numb
   const dh = clamp(tall * scale, Math.min(2.4 * k, availH), availH);
   const ox = box.x + reserve.left + (availW - dw) / 2;
   const oy = box.y + reserve.top + (availH - dh) / 2;
-  ops.push({ kind: "rect", x: ox, y: oy, w: dw, h: dh, stroke: INK, lineWidth: 0.4 });
+  // An X across an edge (or a run of one) at (cx, cy).
+  const crossAt = (cx: number, cy: number) => {
+    ops.push({ kind: "line", x1: cx - markHalf, y1: cy - markHalf, x2: cx + markHalf, y2: cy + markHalf, stroke: INK, lineWidth: 0.45 });
+    ops.push({ kind: "line", x1: cx - markHalf, y1: cy + markHalf, x2: cx + markHalf, y2: cy - markHalf, stroke: INK, lineWidth: 0.45 });
+  };
+  if (shaped) {
+    // Its shape's outline fitted onto the box the rectangle would be (the box round it is its Width × Height) — in
+    // lines only (the on-screen label draws lines, not paths). Each banded run over it, heavier, with an X across its
+    // middle (one going the whole way round: two, opposite each other).
+    const xs = shaped.outline.map((p) => p[0]);
+    const ys = shaped.outline.map((p) => p[1]);
+    const minX = Math.min(...xs);
+    const minY = Math.min(...ys);
+    const spanX = Math.max(Math.max(...xs) - minX, 1e-6);
+    const spanY = Math.max(Math.max(...ys) - minY, 1e-6);
+    const at = (p: ShapePoint): ShapePoint => [ox + ((p[0] - minX) / spanX) * dw, oy + ((p[1] - minY) / spanY) * dh];
+    const outline = shaped.outline.map(at);
+    outline.forEach((p, index) => {
+      const q = outline[(index + 1) % outline.length];
+      ops.push({ kind: "line", x1: p[0], y1: p[1], x2: q[0], y2: q[1], stroke: INK, lineWidth: 0.4 });
+    });
+    for (const run of shaped.banded) {
+      const line = run.map(at);
+      for (let index = 0; index < line.length - 1; index += 1) {
+        ops.push({ kind: "line", x1: line[index][0], y1: line[index][1], x2: line[index + 1][0], y2: line[index + 1][1], stroke: INK, lineWidth: 0.9 });
+      }
+      const first = line[0];
+      const last = line[line.length - 1];
+      const closed = line.length > 2 && Math.hypot(first[0] - last[0], first[1] - last[1]) < 1e-6;
+      for (const t of closed ? [0.25, 0.75] : [0.5]) {
+        const mark = pointAlongLine(line, t);
+        if (mark) crossAt(mark[0], mark[1]);
+      }
+    }
+  } else {
+    ops.push({ kind: "rect", x: ox, y: oy, w: dw, h: dh, stroke: INK, lineWidth: 0.4 });
+  }
 
   // Its grain: an arrow down its middle, the way it runs.
   if (label.grain === "tall" ? dh > 7 && dw > 3 : label.grain === "wide" ? dw > 7 && dh > 3 : false) {
@@ -337,11 +411,10 @@ function drawOutline(ops: LabelOp[], label: PartLabel, box: { x: number; y: numb
   }
 
   // An X on each edge that's clashed, across its middle.
-  for (const edge of label.clashed) {
+  for (const edge of shaped ? [] : label.clashed) {
     const cx = edge === "left" ? ox : edge === "right" ? ox + dw : ox + dw / 2;
     const cy = edge === "top" ? oy : edge === "bottom" ? oy + dh : oy + dh / 2;
-    ops.push({ kind: "line", x1: cx - markHalf, y1: cy - markHalf, x2: cx + markHalf, y2: cy + markHalf, stroke: INK, lineWidth: 0.45 });
-    ops.push({ kind: "line", x1: cx - markHalf, y1: cy + markHalf, x2: cx + markHalf, y2: cy - markHalf, stroke: INK, lineWidth: 0.45 });
+    crossAt(cx, cy);
   }
 
   // A door's hinges, to scale: each a 35 mm cup, its centre 22.5 mm in from the hinged edge and exactly as far along it
@@ -381,11 +454,11 @@ function drawOutline(ops: LabelOp[], label: PartLabel, box: { x: number; y: numb
   // Under it: its clashing (bold), then its hinges' side.
   if (caption) {
     const base = oy + dh + reserve.bottom + captionSize * LABEL_PT * 1.05;
-    const tag = hinges?.tag ? `${label.clashCode ? "  ·  " : ""}${hinges.tag}` : "";
-    const codeW = measureLabelText(label.clashCode, captionSize, true);
+    const tag = hinges?.tag ? `${clashCode ? "  ·  " : ""}${hinges.tag}` : "";
+    const codeW = measureLabelText(clashCode, captionSize, true);
     const tagW = measureLabelText(tag, captionSize);
     const startX = clamp(ox + dw / 2 - (codeW + tagW) / 2, box.x, box.x + box.w - codeW - tagW);
-    if (label.clashCode) ops.push({ kind: "text", x: startX, y: base, text: label.clashCode, size: captionSize, bold: true, color: INK });
+    if (clashCode) ops.push({ kind: "text", x: startX, y: base, text: clashCode, size: captionSize, bold: true, color: INK });
     if (tag) ops.push({ kind: "text", x: startX + codeW, y: base, text: tag, size: captionSize, color: SOFT });
   }
 }

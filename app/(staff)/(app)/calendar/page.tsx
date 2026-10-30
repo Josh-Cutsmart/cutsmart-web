@@ -2716,14 +2716,17 @@ function CalendarPageContent() {
                     return (
                       <div
                         key={col}
+                        // A computer: an empty spot starts an event on it (its number opens the day). A phone: the day, as the
+                        // month view's — the days too small to aim for the number, and a new event on every tap was the
+                        // surprise.
                         onClick={(e) => {
-                          if (canCreate) {
+                          if (canCreate && !isMobile) {
                             openNew(dayMs, true, e);
                             return;
                           }
                           openDay(day);
                         }}
-                        className={`border-r last:border-r-0 ${canCreate ? "cursor-pointer" : ""}`}
+                        className={`border-r last:border-r-0 ${canCreate || isMobile ? "cursor-pointer" : ""}`}
                         style={{
                           borderColor: "var(--glass-border)",
                           backgroundColor: isToday ? "color-mix(in srgb, var(--accent-amber) 22%, transparent)" : undefined,

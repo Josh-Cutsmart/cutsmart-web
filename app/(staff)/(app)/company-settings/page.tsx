@@ -240,7 +240,9 @@ type GapAllowancesSettings = {
   tallTopOfDoorToTopNoScribers: string;
   tallVerticalGapDoorsPanels: string;
 };
-type PartTypeCategory = "" | "cabinetry" | "drawer" | "door" | "panel" | "extra";
+// "custom": a piece cut to a shape of its own (an L-shaped corner shelf, a notched top...) — drawn in the Production
+// Cutlist (components/cutlist-shape-editor.tsx) instead of typed as a Height × Width.
+type PartTypeCategory = "" | "cabinetry" | "drawer" | "door" | "panel" | "extra" | "custom";
 type PartTypeRow = {
   name: string;
   color: string;
@@ -1126,7 +1128,7 @@ function normalizePartTypes(raw: unknown): PartTypeRow[] {
       const name = toStr(row.name);
       const categoryRaw = toStr(row.category ?? row.kind ?? row.type).trim().toLowerCase();
       const category: PartTypeCategory =
-        categoryRaw === "cabinetry" || categoryRaw === "drawer" || categoryRaw === "door" || categoryRaw === "panel" || categoryRaw === "extra"
+        categoryRaw === "cabinetry" || categoryRaw === "drawer" || categoryRaw === "door" || categoryRaw === "panel" || categoryRaw === "extra" || categoryRaw === "custom"
           ? categoryRaw
           : Boolean(row.cabinetry ?? row.isCabinetry ?? false)
             ? "cabinetry"
@@ -1138,6 +1140,8 @@ function normalizePartTypes(raw: unknown): PartTypeRow[] {
                   ? "panel"
                   : Boolean(row.extra ?? row.isExtra ?? false)
                     ? "extra"
+                    : Boolean(row.custom ?? row.isCustom ?? false)
+                      ? "custom"
                 : "";
       return {
         name,
@@ -4306,7 +4310,7 @@ export default function CompanySettingsPage() {
           const name = toStr(row.name);
           if (!name) return null;
           const category: PartTypeCategory =
-            row.category === "cabinetry" || row.category === "drawer" || row.category === "door" || row.category === "panel" || row.category === "extra"
+            row.category === "cabinetry" || row.category === "drawer" || row.category === "door" || row.category === "panel" || row.category === "extra" || row.category === "custom"
               ? row.category
               : "";
             return {
@@ -4319,6 +4323,7 @@ export default function CompanySettingsPage() {
               door: category === "door",
               panel: category === "panel",
               extra: category === "extra",
+              custom: category === "custom",
               autoClashLeft: toStr(row.autoClashLeft),
               autoClashRight: toStr(row.autoClashRight),
               initialMeasure: Boolean(row.initialMeasure),
@@ -6572,12 +6577,13 @@ export default function CompanySettingsPage() {
                                 { value: "door", label: "Doors" },
                                 { value: "panel", label: "Panels" },
                                 { value: "extra", label: "Extras" },
+                                { value: "custom", label: "Custom" },
                               ]}
                               onChange={(next) =>
                                 setPartTypes((prev) =>
                                   prev.map((v, i) =>
                                     i === idx
-                                      ? { ...v, category: next === "cabinetry" || next === "drawer" || next === "door" || next === "panel" || next === "extra" ? next : "" }
+                                      ? { ...v, category: next === "cabinetry" || next === "drawer" || next === "door" || next === "panel" || next === "extra" || next === "custom" ? next : "" }
                                       : v,
                                   ),
                                 )

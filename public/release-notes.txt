@@ -57,6 +57,13 @@ whatsNew: [
 
 <u><b>Production</b></u>
 <ul>
+<li><b>Custom shapes</b>: set a part type to Custom in Company Settings and its pieces are drawn — an L corner, a U, a notch, an angled corner, or any shape you draw line by line (snapping to 45° and 90°). Tap any size to change it, any corner to round it, any edge to band it</li>
+<li>A shaped piece's cut size, banding and drawing go on its cutlist row, and its banding counts in the board's edge tape</li>
+<li>Round a corner into a curve by dragging its handle, and a shape can't be drawn crossing itself</li>
+<li>Shaped pieces have a <b>Custom</b> table of their own — open one for a large drawing, <b>Edit shape</b> and <b>Download DXF</b> for the CNC</li>
+<li>Shaped pieces show as drawings in the CNC Cutlist, on the Nesting sheets, on labels and in the printed cutlist and Excel — with lacquer worked out from their true area</li>
+<li><b>Custom cabinets</b>: set "What is it?" to a cabinet, give it a height and shelves, and its backs, ends, top, bottom and shelves are worked out at the board's thickness — turn it round in 3D, and its parts go through the CNC Cutlist, Nesting, labels, edge tape and sheet counts</li>
+<li>Initial Measure takes shaped pieces and custom cabinets too</li>
 <li>A room with nothing in its cutlist yet shows <b>Add your first piece</b> — press it and pick the part type (Initial Measure and Production)</li>
 <li>Cutlist Entry's column headings only show while there are rows being entered</li>
 <li><b>Order</b> redesigned: the order at a glance up top, Drawers, Hinges and Other side by side, then Boards and Misc</li>
@@ -130,6 +137,9 @@ whatsNew: [
 
 <u><b>Phones</b></u>
 <ul>
+<li>Swipe a pop-up down to close it — from its top, so a long one still scrolls</li>
+<li>With the keyboard up, a pop-up's own background carries on behind the keyboard instead of the page showing through</li>
+<li>Calendar: tapping a day in the year view opens that day, as the month view does</li>
 <li>A small buzz as you pick up a card or event and as it lands (Android)</li>
 <li>Cutlist: one glass bar along the top, with arrows to step between rooms</li>
 <li>Cutlist entry: rows show in full, edge to edge in their part type's colour — tap a row's top bar to fold it away</li>

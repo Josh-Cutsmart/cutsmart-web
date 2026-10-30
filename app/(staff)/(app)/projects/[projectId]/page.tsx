@@ -149,7 +149,7 @@ import { useProjectOrderLive, type OrderLists } from "@/lib/use-project-order-li
 import { alsoEditingText, useCutlistPresence, type CutlistPresencePerson } from "@/lib/use-cutlist-presence";
 import { mergeCutlistRows } from "@/lib/cutlist-merge";
 import { downloadCutlistExcel } from "@/lib/cutlist-excel";
-import { buildCutlistPrintPdf } from "@/lib/cutlist-print-pdf";
+import { buildCutlistPrintPdf, drawShapeDrawingOps } from "@/lib/cutlist-print-pdf";
 import { drawPrintTitlePage, loadPrintTitleLogo, notesHtmlToPlainText, type PrintTitleLogo, type PrintTitlePage } from "@/lib/print-title-page";
 import { useProjectChecklists } from "@/lib/use-project-checklists";
 import { useProjectSalesGrid } from "@/lib/use-project-sales-grid";
@@ -165,7 +165,13 @@ import type { ChecklistTemplate, Cutlist, Project, ProjectChange, ProjectCheckli
 import { storage, auth } from "@/lib/firebase";
 import { blobToDataUrl, resolveProjectImageDataUrl, resolveProjectImageUrl } from "@/lib/project-image-data";
 import { summarizeCutlistRowsByPartType, type CutlistDraftRow, type CutlistRow, type DoorModeValue, type ProductComparison } from "@/lib/cutlist-types";
-import { formatLacquerSqm, lacquerPieceAreaMm2, lacquerSidesForProductType, mm2ToM2, type LacquerSides } from "@/lib/lacquer-area";
+import { cutlistShapeForStorage, describeCutlistShape, formatShapeMm, isCabinetShape, normalizeCutlistShape, shapeBandingSummary, shapeForCutlistRow, shapeGeometry, shapeOuterSize, type CutlistShape, type ShapePoint } from "@/lib/cutlist-shape";
+import { cabinetPlanDrawingOps, cabinetPlanPngDataUrl, cabinetSettings, cachedCustomCabinetParts, customCabinetPartLines, customCabinetSize, customCabinetSizeText, type CabinetPart } from "@/lib/cutlist-cabinet-shape";
+import { CutlistShapeEditor } from "@/components/cutlist-shape-editor";
+import { CutlistShapeThumbnail } from "@/components/cutlist-shape-thumbnail";
+import { CutlistCabinetPlanDrawing, CutlistCabinetPlanThumbnail, CutlistShapeDetail, CutlistShapeDrawing, CutlistShapeSizeCell, cutlistShapeBandingText, downloadCustomCabinetDxfs, downloadCutlistShapeDxf } from "@/components/cutlist-shape-drawing";
+import { shapeDrawingOps, shapeDrawingPngDataUrl, shapeOutlinePolyline } from "@/lib/cutlist-shape-render";
+import { formatLacquerSqm, LACQUER_EDGE_THICKNESS_MM, lacquerPieceAreaMm2, lacquerSidesForProductType, mm2ToM2, type LacquerSides } from "@/lib/lacquer-area";
 import { isProjectArchived, projectArchivedAtIso, PROJECTS_ARCHIVED_EVENT, type ProjectsArchivedDetail } from "@/lib/project-archive";
 import { Skeleton, SkeletonGroup, SkeletonLines, SkeletonRows } from "@/components/skeleton";
 import { EmptyState } from "@/components/empty-state";
@@ -1292,10 +1298,12 @@ type ProductSheetPricing = {
 
 // The clashed edges (a clash value's 1L / 2L / 1S / 2S, each side) of a cutlist row across its whole quantity, in mm —
 // read the same way as the Production edge-tape maths (rawEdgeTapeByBoardKey).
+// (A Custom piece — its shape: what's banded on it, round its curves too.)
 function clashedEdgeMm(
-  row: { height?: unknown; width?: unknown; depth?: unknown; clashing?: unknown; clashLeft?: unknown; clashRight?: unknown },
+  row: { height?: unknown; width?: unknown; depth?: unknown; clashing?: unknown; clashLeft?: unknown; clashRight?: unknown; shape?: CutlistShape },
   qty: number,
 ): number {
+  if (row.shape) return qty > 0 ? shapeGeometry(row.shape).bandedLengthMm * qty : 0;
   const dimOf = (value: unknown) => {
     const match = String(value ?? "").replace(/,/g, ".").match(/-?\d+(?:\.\d+)?/);
     const n = match ? Number.parseFloat(match[0]) : 0;
@@ -1317,10 +1325,11 @@ function clashedEdgeMm(
 
 // A cutlist row's lacquered area across its whole quantity, in mm² — the Design tab's Lacquer column formula.
 function lacqueredRowMm2(
-  row: { height?: unknown; width?: unknown; depth?: unknown; clashing?: unknown; clashLeft?: unknown; clashRight?: unknown },
+  row: { height?: unknown; width?: unknown; depth?: unknown; clashing?: unknown; clashLeft?: unknown; clashRight?: unknown; shape?: CutlistShape },
   qty: number,
   sides: LacquerSides,
 ): number {
+  if (row.shape) return shapeLacquerMm2(row.shape, qty, sides);
   const split = splitClashing(String(row.clashing || ""));
   return lacquerPieceAreaMm2({
     dims: [row.height, row.width, row.depth],
@@ -1328,6 +1337,123 @@ function lacqueredRowMm2(
     quantity: qty,
     sides,
   });
+}
+
+// A Custom piece's lacquered area across its whole quantity, in mm² — lib/lacquer-area.ts' formula on its true shape:
+// its faces (its own area, not the box round it) × the sides sprayed, and its banded edges × the edge thickness.
+function shapeLacquerMm2(shape: CutlistShape, quantity: unknown, sides: LacquerSides): number {
+  if (sides <= 0) return 0;
+  const qty = Math.max(0, Number.parseInt(String(quantity ?? "0"), 10) || 0);
+  if (qty <= 0) return 0;
+  const geometry = shapeGeometry(shape);
+  if (!geometry.valid) return 0;
+  return (geometry.areaMm2 * sides + geometry.bandedLengthMm * LACQUER_EDGE_THICKNESS_MM) * qty;
+}
+
+// The cutlists' one "Custom" table (Production and Initial Measure, desktop and phone, and the CNC Cutlist): every
+// Custom part type's rows together, after the other part types' tables — keyed by this, never a part type's own name.
+const CUSTOM_CUTLIST_GROUP_KEY = "__custom__";
+const CUSTOM_CUTLIST_GROUP_TITLE = "Custom";
+// Its rows' order: flat pieces first (0), a custom cabinet's (when a shape is one — its `cabinet`) after them (1); each
+// kept in the order it came otherwise. (Read loosely: not every shape has a `cabinet`.)
+const customCutlistRowSortKey = (row: { shape?: CutlistShape }) =>
+  row.shape && (row.shape as unknown as Record<string, unknown>).cabinet ? 1 : 0;
+type CutlistRowGroup = { partType: string; rows: CutlistRow[]; custom?: boolean };
+// A table's title: its part type's — the Custom table's "Custom".
+const cutlistGroupTitle = (group: { partType: string; custom?: boolean }) => (group.custom ? CUSTOM_CUTLIST_GROUP_TITLE : group.partType);
+
+// ---- A custom cabinet (a Custom row whose shape is one of the company's Cabinetry part types — isCabinetShape): its
+// pieces, from lib/cutlist-cabinet-shape.ts' customCabinetParts at its board's thickness, as a cabinet's own are
+// (CabinetryDerivedPiece) — each across the row's quantity. Worked out from its shape wherever they're needed, never kept
+// on the row (so nothing's left of them once it's flat again, or no longer Custom).
+//  - Its backs and ends: panels, Height × Width (along their edge) — an end's front edge taped, as a cabinet's sides'
+//    are (autoClashByDominant: its long or short side, whichever its height is).
+//  - Its top, bottom and shelves: cut to their own shapes (`shape`, banded along their doors edges), Width × Depth —
+//    the box round them, from above (no Height, as a cabinet's top and shelves).
+// A part there's nothing left of (its problem) isn't one. Keyed "custom_<part>" — `<row>__cab__custom_<part>` as a row.
+type CustomCabinetDerivedPiece = CabinetryDerivedPiece & { label: string; part: CabinetPart; shape?: CutlistShape };
+// Which way its grain runs: as its grain value says ("H:720"), or the size it matches. Its panels' grain goes the same
+// way up (Height) or along them (Width); its shaped parts' along their Width, or (Depth) front to back.
+function customCabinetGrainAxis(row: Partial<CutlistRow>): "height" | "width" | "depth" | null {
+  const grain = String(row.grainValue ?? "").trim();
+  if (!grain) return null;
+  const prefixed = grain.match(/^([HWD])\s*:/i);
+  if (prefixed) {
+    const axis = prefixed[1].toUpperCase();
+    return axis === "H" ? "height" : axis === "W" ? "width" : "depth";
+  }
+  const value = Number.parseFloat(grain.replace(/[^\d.-]/g, ""));
+  if (!Number.isFinite(value)) return null;
+  for (const key of ["height", "width", "depth"] as const) {
+    if (Math.abs(toNum(row[key]) - value) < 0.001) return key;
+  }
+  return null;
+}
+function customCabinetDerivedPieces(row: Partial<CutlistRow>, shape: CutlistShape, thicknessMm: number): CustomCabinetDerivedPiece[] {
+  const mainQty = Math.max(1, Math.floor(toNum(row.quantity) || 1));
+  const axis = customCabinetGrainAxis(row);
+  const out: CustomCabinetDerivedPiece[] = [];
+  for (const line of customCabinetPartLines(cachedCustomCabinetParts(shape, thicknessMm))) {
+    const part = line.part;
+    const w = Number(part.width);
+    const h = Number(part.height);
+    if (part.problem || !(w > 0) || !(h > 0) || part.quantity <= 0 || (part.kind === "shape" && !part.shape)) continue;
+    const key = `custom_${part.key.replace(/[^a-z0-9]+/gi, "_")}`;
+    const quantity = String(part.quantity * mainQty);
+    if (part.kind === "panel") {
+      const height = formatShapeMm(h);
+      const width = formatShapeMm(w);
+      const clash = part.name === "End" ? autoClashByDominant(h, w) : { clashLeft: "", clashRight: "" };
+      const grainValue = !axis ? "" : axis === "height" ? `H:${height}` : `W:${width}`;
+      out.push({ key, partName: line.label, label: line.label, part, height, width, depth: "", quantity, ...clash, grainValue });
+      continue;
+    }
+    const width = formatShapeMm(w);
+    const depth = formatShapeMm(h);
+    const grainValue = !axis ? "" : axis === "depth" ? `D:${depth}` : `W:${width}`;
+    out.push({ key, partName: line.label, label: line.label, part, shape: part.shape, height: "", width, depth, quantity, clashLeft: "", clashRight: "", grainValue });
+  }
+  return out;
+}
+// Its pieces as the CNC Cutlist's cabinets list theirs (their Piece Sizes): each on its own line, its Top and Bottom one
+// ("Top / Bottom", both) — they're the same shape.
+function customCabinetBreakdownLines(pieces: CustomCabinetDerivedPiece[]): Array<{ key: string; label: string; piece: CustomCabinetDerivedPiece; quantity: number }> {
+  const top = pieces.find((piece) => piece.part.name === "Top");
+  const bottom = pieces.find((piece) => piece.part.name === "Bottom");
+  const merged = Boolean(top && bottom && top.width === bottom.width && top.depth === bottom.depth);
+  const out: Array<{ key: string; label: string; piece: CustomCabinetDerivedPiece; quantity: number }> = [];
+  for (const piece of pieces) {
+    if (merged && piece === bottom) continue;
+    if (merged && piece === top && bottom) {
+      out.push({ key: "top_bottom", label: "Top / Bottom", piece, quantity: toNum(top.quantity) + toNum(bottom.quantity) });
+      continue;
+    }
+    out.push({ key: piece.key, label: piece.partName, piece, quantity: toNum(piece.quantity) });
+  }
+  return out;
+}
+// A piece's sizes as the breakdown writes them: a panel's Height × Width, a shaped one's Width × Depth.
+const customCabinetPieceDims = (piece: CustomCabinetDerivedPiece): Array<{ key: "height" | "width" | "depth"; value: string }> =>
+  (["height", "width", "depth"] as const).filter((key) => String(piece[key] || "").trim()).map((key) => ({ key, value: String(piece[key]) }));
+// ...as the rows they're cut from — each piece a row of its own, named after it and part of the cabinet, its own shape
+// (or none: a panel) — as a cabinet's pieces are in nesting, sheet counts, edge tape, lacquer and costs.
+function customCabinetRowsFromPieces(row: CutlistRow, pieces: CustomCabinetDerivedPiece[]): CutlistRow[] {
+  return pieces.map((piece) => ({
+    ...row,
+    id: `${row.id}__cab__${piece.key}`,
+    name: piece.partName || row.name,
+    parentName: String(row.name || ""),
+    height: piece.height,
+    width: piece.width,
+    depth: piece.depth,
+    quantity: piece.quantity,
+    clashing: joinClashing(piece.clashLeft, piece.clashRight),
+    clashLeft: piece.clashLeft,
+    clashRight: piece.clashRight,
+    information: String(row.information || ""),
+    grainValue: piece.grainValue ?? "",
+    shape: piece.shape,
+  }));
 }
 
 // Picks which sheet size a piece of the given dimensions would actually be cut from for a given
@@ -4446,6 +4572,27 @@ const NESTING_MACHINE_MIN_TRIM_NOTE = "Undersize piece - Cut after machining";
 // Cap on the CNC mobile row list's Part Name column width (in ch) — past this, a name marquees
 // instead of the whole column (and everything after it) growing to fit it.
 const CNC_MOBILE_PART_NAME_CH_MAX = 22;
+// The CNC Cutlist PDF's Custom cards (pt): a title bar over the piece's drawing (beside it, its details — two columns of
+// four rows, then its Information, its lines making it taller). cncPrintPageCount lays them out the same.
+const CNC_CUSTOM_PDF_HEADER_H = 22;
+const CNC_CUSTOM_PDF_ROW_H = 18;
+const CNC_CUSTOM_PDF_DRAWING = { width: 300, height: 150 };
+function cncCustomPdfCardHeight(infoLineCount: number): number {
+  const detailsH = 4 * CNC_CUSTOM_PDF_ROW_H + CNC_CUSTOM_PDF_ROW_H + Math.max(0, infoLineCount - 1) * 12;
+  return CNC_CUSTOM_PDF_HEADER_H + Math.max(CNC_CUSTOM_PDF_DRAWING.height + 16, detailsH);
+}
+// A custom cabinet's card: its top view down its left; its details (eight rows) beside it and its pieces' sizes (a row
+// each) beside them — as tall as the longer — then its Information.
+const CNC_CUSTOM_CABINET_PDF_DETAIL_ROWS = 8;
+function cncCustomCabinetPdfCardHeight(infoLineCount: number, pieceLineCount: number): number {
+  const rows = Math.max(CNC_CUSTOM_CABINET_PDF_DETAIL_ROWS, pieceLineCount);
+  const detailsH = rows * CNC_CUSTOM_PDF_ROW_H + CNC_CUSTOM_PDF_ROW_H + Math.max(0, infoLineCount - 1) * 12;
+  return CNC_CUSTOM_PDF_HEADER_H + Math.max(CNC_CUSTOM_PDF_DRAWING.height + 16, detailsH);
+}
+const cncCustomCardPdfHeight = (card: { infoLines: string[]; cabinet: { pieces: CustomCabinetDerivedPiece[] } | null }) => {
+  const infoCount = Math.max(1, card.infoLines.length);
+  return card.cabinet ? cncCustomCabinetPdfCardHeight(infoCount, customCabinetBreakdownLines(card.cabinet.pieces).length) : cncCustomPdfCardHeight(infoCount);
+};
 
 type NestingFlatPiece = {
   id: string;
@@ -4483,6 +4630,81 @@ function nestingPlacementTrueSize(piece: NestingFlatPiece, rotated: boolean, min
   const hitMin =
     piece.trueWidth < minPieceMm - 0.001 || piece.trueHeight < minPieceMm - 0.001;
   return { trueOnSheetW, trueOnSheetH, hitMin };
+}
+
+// A Custom piece placed on a nesting sheet (it's packed by the box round it): its true outline (lib/cutlist-shape-render.ts),
+// fitted to its true size on the sheet (w × h, mm, from the box's top left) — turned a quarter when it lies on the sheet
+// the other way round to how it's drawn: the packer turning it (rotated), or its grain having it go on Height first
+// (computeNestingSheetLayouts), but not both. null: not a shaped piece.
+const nestingShapeOutlineCache = new WeakMap<CutlistShape, ShapePoint[]>();
+function nestingPlacementOutline(placement: NestingSheetPlacement, w: number, h: number): ShapePoint[] | null {
+  const shape = placement.piece.row.shape;
+  if (!shape || !(w > 0) || !(h > 0)) return null;
+  let outline = nestingShapeOutlineCache.get(shape);
+  if (!outline) {
+    outline = shapeOutlinePolyline(shape);
+    nestingShapeOutlineCache.set(shape, outline);
+  }
+  if (outline.length < 3) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const [x, y] of outline) {
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+  }
+  const bw = Math.max(maxX - minX, 1e-6);
+  const bh = Math.max(maxY - minY, 1e-6);
+  const grainTurned = Math.abs(placement.piece.trueWidth - bw) > 0.5 && Math.abs(placement.piece.trueWidth - bh) <= 0.5;
+  const turned = grainTurned !== placement.rotated;
+  return outline.map(([x, y]): ShapePoint => {
+    const u = (x - minX) / bw;
+    const v = (y - minY) / bh;
+    // (A quarter turn clockwise: its left edge along the top.)
+    return turned ? [(1 - v) * w, u * h] : [u * w, v * h];
+  });
+}
+
+// That outline on a sheet's preview: filled and edged as any piece is, over its packed box's top left at its true size
+// (as an undersize piece's real material is drawn) — behind the piece's name.
+function NestingShapeOutline({
+  points,
+  trueW,
+  trueH,
+  boxW,
+  boxH,
+  fill,
+  stroke,
+}: {
+  points: ShapePoint[];
+  trueW: number;
+  trueH: number;
+  boxW: number;
+  boxH: number;
+  fill: string;
+  stroke: string;
+}) {
+  return (
+    <svg
+      aria-hidden="true"
+      className="pointer-events-none absolute left-0 top-0 overflow-visible"
+      style={{ width: `${Math.min(100, (trueW / Math.max(boxW, 1e-6)) * 100)}%`, height: `${Math.min(100, (trueH / Math.max(boxH, 1e-6)) * 100)}%`, zIndex: -1 }}
+      viewBox={`0 0 ${trueW} ${trueH}`}
+      preserveAspectRatio="none"
+    >
+      <polygon
+        points={points.map(([x, y]) => `${x.toFixed(2)},${y.toFixed(2)}`).join(" ")}
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={1}
+        strokeLinejoin="round"
+        vectorEffect="non-scaling-stroke"
+      />
+    </svg>
+  );
 }
 
 type NestingSheetLayout = {
@@ -7671,6 +7893,9 @@ function serializeCutlistRowsForStorage(
       Depth: row.depth,
       ...(normalizeDrawerDepths(row.drawerDepths) ? { DrawerDepths: normalizeDrawerDepths(row.drawerDepths) } : {}),
       ...(normalizeDrawerWeights(row.drawerWeights) ? { DrawerWeights: normalizeDrawerWeights(row.drawerWeights) } : {}),
+      // A Custom part type's piece: its shape (lib/cutlist-shape.ts — its points as {x, y}, Firestore holding no arrays of
+      // arrays).
+      ...(row.shape ? { Shape: cutlistShapeForStorage(row.shape) } : {}),
       Quantity: row.quantity,
         Clashing: isCabinetry
           ? ""
@@ -7719,6 +7944,7 @@ function serializeCutlistRowsSnapshot(rows: CutlistRow[]) {
       depth: String(row.depth ?? ""),
       drawerDepths: normalizeDrawerDepths(row.drawerDepths) ?? null,
       drawerWeights: normalizeDrawerWeights(row.drawerWeights) ?? null,
+      shape: row.shape ? cutlistShapeForStorage(row.shape) : null,
       quantity: String(row.quantity ?? ""),
       clashing: String(row.clashing ?? ""),
       clashLeft: String(row.clashLeft ?? ""),
@@ -7742,6 +7968,13 @@ function serializeCutlistRowsSnapshot(rows: CutlistRow[]) {
       })),
   );
 }
+
+// What the shape editor (components/cutlist-shape-editor.tsx) is open for: a new piece of a Custom part type picked in the
+// Cutlist Entry, a row there, or one in the Cutlist List — the Production cutlist's, or (scope "initial") Initial
+// Measure's.
+type CutlistShapeEditorTarget = ({ mode: "new"; partType: string; room: string } | { mode: "draft" | "row"; rowId: string }) & {
+  scope?: "initial";
+};
 
 // Telling one cutlist row from another, and whether it's changed — for lib/cutlist-merge.ts.
 const cutlistRowKeyOf = (row: CutlistRow) => String(row.id ?? "");
@@ -8803,6 +9036,27 @@ export default function ProjectDetailsPage() {
   // addDrawerFrontsDraftRow below. Doors additionally ask Tall vs Base, since
   // that decides which cabinetry/gap-allowance settings the row's starting
   // height is derived from.
+  // The shape editor (components/cutlist-shape-editor.tsx): what it's open for, and on — `session` new each time, so it
+  // starts afresh. Kept while it closes (isShapeEditorOpen false), so it shrinks back with what was in it.
+  const [shapeEditor, setShapeEditor] = useState<{
+    target: CutlistShapeEditorTarget;
+    session: number;
+    shape: CutlistShape | null;
+    partType: string;
+    room: string;
+    readOnly: boolean;
+    grainLabel: string;
+    thicknessMm: number;
+    // A custom cabinet's board thickness (mm): what its parts are worked out at (customCabinetThicknessForBoard).
+    boardThicknessMm: number;
+  } | null>(null);
+  const [isShapeEditorOpen, setIsShapeEditorOpen] = useState(false);
+  const [shapeEditorOrigin, setShapeEditorOrigin] = useState<GlassModalOrigin>(null);
+  const shapeEditorOriginElRef = useRef<HTMLElement | null>(null);
+  // The Custom tables' rows opened out (their drop-down arrow): their drawing big, Edit shape and Download DXF — by
+  // "production:<row>" / "initial:<row>".
+  const [expandedShapeRows, setExpandedShapeRows] = useState<Record<string, boolean>>({});
+  const toggleShapeRowExpand = (key: string) => setExpandedShapeRows((prev) => ({ ...prev, [key]: !prev[key] }));
   const [doorDrawerPickerPartType, setDoorDrawerPickerPartType] = useState("");
   // (Its colour's — kept as it closes, when the part type's already cleared.)
   const [doorDrawerPickerColorPartType, setDoorDrawerPickerColorPartType] = useState("");
@@ -11583,6 +11837,8 @@ export default function ProjectDetailsPage() {
             hingesDown: normalizeDoorHingeValues(item.hingesDown ?? item.HingesDown ?? item.hingeDown ?? item.HingeDown),
             drawerDepths: normalizeDrawerDepths(item.DrawerDepths ?? item.drawerDepths),
             drawerWeights: normalizeDrawerWeights(item.DrawerWeights ?? item.drawerWeights),
+            // A Custom part type's piece: its shape, as Production's rows keep it (serializeCutlistRowsForStorage's Shape).
+            shape: normalizeCutlistShape(item.Shape ?? item.shape),
             information: String(item.Information ?? item.information ?? ""),
             grain: grainParsed.grain,
             grainValue: grainParsed.grainValue,
@@ -13144,6 +13400,58 @@ export default function ProjectDetailsPage() {
   const isPanelPartType = (partType: string) =>
     Boolean(partTypePanelMap[String(partType || "").trim().toLowerCase()]);
 
+  // A Custom part type's pieces are cut to a shape of their own, drawn in the shape editor (components/
+  // cutlist-shape-editor.tsx) — their Height and Width the shape's outer size, their banding the shape's.
+  const partTypeCustomMap = useMemo(() => {
+    const out: Record<string, boolean> = {};
+    const raw = Array.isArray(companyDoc?.partTypes) ? companyDoc.partTypes : [];
+    for (const row of raw) {
+      if (!row || typeof row !== "object") continue;
+      const item = row as Record<string, unknown>;
+      const name = toStr(item.name);
+      if (!name) continue;
+      const category = toStr(item.category ?? item.kind ?? item.type).trim().toLowerCase();
+      out[name.trim().toLowerCase()] = category === "custom" || Boolean(item.custom ?? item.isCustom ?? false);
+    }
+    return out;
+  }, [companyDoc?.partTypes]);
+
+  const isCustomPartType = (partType: string) =>
+    Boolean(partTypeCustomMap[String(partType || "").trim().toLowerCase()]);
+  // The shape a row's cut to: its own — or, a Custom row that's never had one drawn, a rectangle at its size. null: an
+  // ordinary part.
+  const cutlistRowShape = (row: Partial<CutlistRow>) => shapeForCutlistRow(row, isCustomPartType(String(row.partType || "")));
+  // A Custom piece (it has a shape, or its part type is a Custom one) — in the cutlists' one "Custom" table.
+  const isCustomCutlistRow = (row: Partial<CutlistRow>) => Boolean(row.shape) || isCustomPartType(String(row.partType || ""));
+  // A custom cabinet's board thickness (mm) — what its parts are worked out at and its top view drawn with: its board's
+  // (Board Settings), else what its name says ("18mm"), else 18. (An Initial Measure row's board is a product: by name.)
+  const customCabinetThicknessForBoard = useCallback(
+    (boardValue: unknown) => {
+      const raw = String(boardValue ?? "").trim();
+      const key = boardMetaByKey[raw] ? raw : (Object.entries(boardMetaByKey).find(([, meta]) => meta.label === raw)?.[0] ?? raw);
+      const meta = boardMetaByKey[key];
+      if (meta && meta.thickness > 0) return meta.thickness;
+      const named = String(meta?.label || raw).match(/(\d+(?:\.\d+)?)\s*mm/i);
+      const fromName = named ? Number.parseFloat(named[1]) : 0;
+      return Number.isFinite(fromName) && fromName > 0 ? fromName : 18;
+    },
+    [boardMetaByKey],
+  );
+  // A row's custom cabinet — its shape, board thickness and pieces (customCabinetDerivedPieces) — or null: not one. (A row
+  // of a Cabinetry part type is a cabinet of its own, whatever shape it has.)
+  const customCabinetOf = useCallback(
+    (row: Partial<CutlistRow>) => {
+      const shape = row.shape;
+      if (!shape || !isCabinetShape(shape)) return null;
+      if (partTypeCabinetryMap[String(row.partType || "").trim().toLowerCase()]) return null;
+      const thicknessMm = customCabinetThicknessForBoard(row.board);
+      return { shape, thicknessMm, pieces: customCabinetDerivedPieces(row, shape, thicknessMm) };
+    },
+    [customCabinetThicknessForBoard, partTypeCabinetryMap],
+  );
+  // A Custom piece's banding in words, for its Clashing: its shape's — a custom cabinet's, its shaped parts'.
+  const cutlistRowBandingText = (row: Partial<CutlistRow>, shape: CutlistShape) => cutlistShapeBandingText(shape, customCabinetThicknessForBoard(row.board));
+
   const isConfiguredDoorRowLike = (row: { partType?: unknown; doorMode?: unknown } | null | undefined) =>
     !!row && isDoorPartType(String(row.partType || "")) && isConfiguredDoorModeValue(row.doorMode);
 
@@ -13162,7 +13470,9 @@ export default function ProjectDetailsPage() {
       const rightRaw = toStr(item.autoClashRight ?? item.clashRight).toUpperCase().trim();
       const left = leftRaw === "1L" || leftRaw === "2L" ? leftRaw : "";
       const right = rightRaw === "1S" || rightRaw === "2S" ? rightRaw : "";
-      out[name.trim().toLowerCase()] = { left, right };
+      // (None for a Custom part type — its banding is drawn on its shape.)
+      const custom = toStr(item.category ?? item.kind ?? item.type).trim().toLowerCase() === "custom" || Boolean(item.custom ?? item.isCustom ?? false);
+      out[name.trim().toLowerCase()] = custom ? { left: "", right: "" } : { left, right };
     }
     return out;
   }, [companyDoc?.partTypes]);
@@ -13258,6 +13568,30 @@ export default function ProjectDetailsPage() {
     }
     return out;
   }, [companyDoc?.partTypes]);
+  // What a Custom piece can be (the shape editor's "What is it?"): every other part type, in Company Settings' order,
+  // with its category and colour — a Cabinetry one makes it a custom cabinet.
+  const shapeBaseOptions = useMemo(() => {
+    const raw = Array.isArray(companyDoc?.partTypes) ? companyDoc.partTypes : [];
+    const out: Array<{ partType: string; category: string; color: string }> = [];
+    for (const row of raw) {
+      if (!row || typeof row !== "object") continue;
+      const item = row as Record<string, unknown>;
+      const name = toStr(item.name).trim();
+      const key = name.toLowerCase();
+      if (!name || partTypeCustomMap[key] || out.some((option) => option.partType.toLowerCase() === key)) continue;
+      const category = partTypeCabinetryMap[key]
+        ? "cabinetry"
+        : partTypeDoorMap[key]
+          ? "door"
+          : partTypeDrawerMap[key]
+            ? "drawer"
+            : partTypePanelMap[key]
+              ? "panel"
+              : toStr(item.category ?? item.kind ?? item.type).trim().toLowerCase();
+      out.push({ partType: name, category, color: partTypeColors[name] ?? "#CBD5E1" });
+    }
+    return out;
+  }, [companyDoc?.partTypes, partTypeCabinetryMap, partTypeColors, partTypeCustomMap, partTypeDoorMap, partTypeDrawerMap, partTypePanelMap]);
   // A cutlist as an Excel file, laid out like its list (lib/cutlist-excel.ts) — every room, every field — from the
   // download button in its top bar. Its board as the list shows it: the project's board's name, or (Initial Measure's
   // products) as it's written.
@@ -13280,6 +13614,13 @@ export default function ProjectDetailsPage() {
         boardOf: (value) => {
           const meta = kind === "production" ? boardMetaByKey[resolveBoardKey(value)] : undefined;
           return { label: meta?.label ?? value.split(" @@ ")[0].trim() };
+        },
+        // A Custom piece: its shape — in one Custom section, a drawing of it in its row.
+        shapeOf: (row) => cutlistRowShape(row),
+        // A custom cabinet: its board thickness, and its pieces as rows under it (its information on it, not them).
+        cabinetOf: (row) => {
+          const cabinet = customCabinetOf(row);
+          return cabinet ? { thicknessMm: cabinet.thicknessMm, pieces: customCabinetRowsFromPieces(row, cabinet.pieces).map((piece) => ({ ...piece, information: "" })) } : null;
         },
       });
     } catch (error) {
@@ -13379,6 +13720,26 @@ export default function ProjectDetailsPage() {
       rows: printRows,
       partTypeColors,
       partTypeOrder: partTypeOptions,
+      // A Custom piece: its shape — printed in one Custom section, with a drawing of it (its sizes, banding arrows).
+      shapeOf: (row) => cutlistRowShape(row),
+      // A custom cabinet: its board thickness (its top view's backs and ends), and its pieces printed under it.
+      cabinetOf: (row) => {
+        const cabinet = customCabinetOf(row);
+        if (!cabinet) return null;
+        return {
+          thicknessMm: cabinet.thicknessMm,
+          pieces: cabinet.pieces.map((piece) => ({
+            name: piece.partName,
+            height: piece.height,
+            width: piece.width,
+            depth: piece.depth,
+            quantity: piece.quantity,
+            clashLeft: piece.clashLeft,
+            clashRight: piece.clashRight,
+            banding: piece.shape ? shapeBandingSummary(piece.shape) : "",
+          })),
+        };
+      },
       // (A row keeps its board as "<name> @@ <sheet>": the project's board's name for it, else the name part.)
       boardOf: (value) => boardMetaByKey[resolveBoardKey(value)]?.label ?? value.split(" @@ ")[0].trim(),
       kindOf: (row) =>
@@ -16297,6 +16658,12 @@ export default function ProjectDetailsPage() {
   const initialMeasureCutPieces = useMemo(() => {
     const rowsForEdgeTape: CutlistRow[] = [];
     for (const row of initialCutlistRows) {
+      // A custom cabinet: its pieces — its backs and ends (an end's front edge taped), its shaped top, bottom and shelves.
+      const customCabinet = customCabinetOf(row);
+      if (customCabinet) {
+        rowsForEdgeTape.push(...customCabinetRowsFromPieces(row, customCabinet.pieces));
+        continue;
+      }
       if (isCabinetryPartType(row.partType)) {
         for (const piece of buildCabinetryDerivedPieces(row)) {
           const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
@@ -16325,7 +16692,7 @@ export default function ProjectDetailsPage() {
     }
     return rowsForEdgeTape;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialCutlistRows, isCabinetryPartType, isDrawerPartType, isDoorPartType, buildCabinetryDerivedPieces, buildDrawerDerivedPieces, buildConfiguredDoorDerivedPieces]);
+  }, [initialCutlistRows, isCabinetryPartType, isDrawerPartType, isDoorPartType, buildCabinetryDerivedPieces, buildDrawerDerivedPieces, buildConfiguredDoorDerivedPieces, customCabinetOf]);
   // Linear metres of edge tape per Sales Product, shown next to each product in the Sales tab's
   // own "Product" checklist. Same excess-per-end/minimum-order-rules/round-to-nearest formula as
   // requiredEdgetapeByBoardRowId just above, and the same raw-mm-then-apply-settings two-step
@@ -16359,6 +16726,16 @@ export default function ProjectDetailsPage() {
       if (!productName) continue;
       const qty = Math.max(0, Number.parseInt(String(row.quantity || "0"), 10) || 0);
       if (qty <= 0) continue;
+      // A Custom row: what's banded on its shape (round its curves too) — one length of tape for each banded run, as the
+      // Production Board Settings total counts it (rawEdgeTapeByBoardKey), its excess per end added for each below.
+      const shape = shapeForCutlistRow(row, Boolean(partTypeCustomMap[String(row.partType || "").trim().toLowerCase()]));
+      if (shape) {
+        const geometry = shapeGeometry(shape);
+        if (geometry.bandedLengthMm <= 0) continue;
+        mmByProduct[productName] = (mmByProduct[productName] ?? 0) + geometry.bandedLengthMm * qty;
+        tapeRunCountByProduct[productName] = (tapeRunCountByProduct[productName] ?? 0) + geometry.bandedStrips * qty;
+        continue;
+      }
       const dims = [parseDim(row.height), parseDim(row.width), parseDim(row.depth)].filter((v) => v > 0);
       if (!dims.length) continue;
       const longDim = Math.max(...dims);
@@ -16374,7 +16751,7 @@ export default function ProjectDetailsPage() {
       tapeRunCountByProduct[productName] = (tapeRunCountByProduct[productName] ?? 0) + leftTape.runs + rightTape.runs;
     }
     return { mmByProduct, tapeRunCountByProduct };
-  }, [initialMeasureCutPieces]);
+  }, [initialMeasureCutPieces, partTypeCustomMap]);
   const initialMeasureEdgeTapeMetersByProductName = useMemo(() => {
     const out: Record<string, string> = {};
     const excessPerEndMm = Math.max(0, Number.parseFloat(String(edgebandingSettings.excessPerEndMm || "").replace(/,/g, ".")) || 0);
@@ -16429,6 +16806,13 @@ export default function ProjectDetailsPage() {
       const productName = String(row.board || "").trim().toLowerCase();
       const sides = salesProductLacquerSidesByName[productName] ?? 0;
       if (!productName || sides <= 0) continue;
+      // A Custom row: its true area (not the box round it), and its banded edges (shapeLacquerMm2).
+      const shape = shapeForCutlistRow(row, Boolean(partTypeCustomMap[String(row.partType || "").trim().toLowerCase()]));
+      if (shape) {
+        const shapeMm2 = shapeLacquerMm2(shape, row.quantity, sides);
+        if (shapeMm2 > 0) mm2ByProduct[productName] = (mm2ByProduct[productName] ?? 0) + shapeMm2;
+        continue;
+      }
       const split = splitClashing(String(row.clashing || ""));
       const mm2 = lacquerPieceAreaMm2({
         dims: [row.height, row.width, row.depth],
@@ -16441,7 +16825,7 @@ export default function ProjectDetailsPage() {
     const out: Record<string, string> = {};
     for (const [productName, mm2] of Object.entries(mm2ByProduct)) out[productName] = formatLacquerSqm(mm2ToM2(mm2));
     return out;
-  }, [initialMeasureCutPieces, salesProductLacquerSidesByName]);
+  }, [initialMeasureCutPieces, salesProductLacquerSidesByName, partTypeCustomMap]);
   const salesRoomSheetAnalysis = useMemo(() => {
     type FlatPiece = {
       id: string;
@@ -16477,6 +16861,12 @@ export default function ProjectDetailsPage() {
 
     const expandedRows: CutlistRow[] = [];
     for (const row of initialCutlistRows) {
+      // A custom cabinet: its pieces, each cut on its own (its shaped ones packed by the box round them).
+      const customCabinet = customCabinetOf(row);
+      if (customCabinet) {
+        expandedRows.push(...customCabinetRowsFromPieces(row, customCabinet.pieces));
+        continue;
+      }
       if (isCabinetryPartType(row.partType)) {
         const pieces = buildCabinetryDerivedPieces(row);
         for (const piece of pieces) {
@@ -16801,6 +17191,7 @@ export default function ProjectDetailsPage() {
     initialMeasureCutPieces,
     initialMeasureEdgeTapeMetersByProductName,
     initialMeasureLacquerSqmByProductName,
+    customCabinetOf,
   ]);
   const salesRoomPricingByName = salesRoomSheetAnalysis.pricingByRoom;
   // The Product Compare tool's own calculator — same bucketing+packing engine as
@@ -16834,6 +17225,11 @@ export default function ProjectDetailsPage() {
 
       const expandedRows: CutlistRow[] = [];
       for (const row of rows) {
+        const customCabinet = customCabinetOf(row);
+        if (customCabinet) {
+          expandedRows.push(...customCabinetRowsFromPieces(row, customCabinet.pieces));
+          continue;
+        }
         if (isCabinetryPartType(row.partType)) {
           for (const piece of buildCabinetryDerivedPieces(row)) {
             const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
@@ -16961,7 +17357,7 @@ export default function ProjectDetailsPage() {
     // plain functions redefined every render (same reasoning as salesRoomSheetAnalysis's own
     // comment above) — deterministic given the state already listed, safe to omit.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [productSheetPricingByName, nestingSheetSettings, initialMeasureBoardGrainMap],
+    [productSheetPricingByName, nestingSheetSettings, initialMeasureBoardGrainMap, customCabinetOf],
   );
   // Product Compare — fetched once per project into its own subcollection-backed list, same
   // hydrate-once-per-project-id guard pattern as specsSheetVersionsHydratedForProjectIdRef above.
@@ -18821,6 +19217,8 @@ export default function ProjectDetailsPage() {
       depth: String(seed?.depth ?? ""),
       drawerDepths: normalizeDrawerDepths(seed?.drawerDepths),
       drawerWeights: normalizeDrawerWeights(seed?.drawerWeights),
+      // (A Custom piece's shape — kept as it is, or brought back from this device's copy of the Cutlist Entry.)
+      shape: normalizeCutlistShape(seed?.shape),
       quantity: String(seed?.quantity ?? ""),
       clashing: joinClashing(left, right),
       clashLeft: left,
@@ -21003,6 +21401,7 @@ export default function ProjectDetailsPage() {
             hingeSide: normalizeHingeSideValue(item.hingeSide ?? item.HingeSide),
             drawerDepths: normalizeDrawerDepths(item.DrawerDepths ?? item.drawerDepths),
             drawerWeights: normalizeDrawerWeights(item.DrawerWeights ?? item.drawerWeights),
+            shape: normalizeCutlistShape(item.Shape ?? item.shape),
               information: String(item.Information ?? item.information ?? item.info ?? ""),
               grain: grainParsed.grain,
               grainValue: grainParsed.grainValue,
@@ -25940,7 +26339,8 @@ export default function ProjectDetailsPage() {
     setIsCutlistImportOpen(false);
   };
 
-  const addDraftRowForPartType = (partType: string) => {
+  // (`extra`: more of it — a new Custom piece's shape and size.)
+  const addDraftRowForPartType = (partType: string, extra?: Partial<CutlistDraftRow>) => {
     setActiveCutlistPartType(partType);
     setCutlistDraftRows((prev) => {
       const currentRoom = cutlistEntryRoom || defaultCutlistRoom;
@@ -25953,6 +26353,7 @@ export default function ProjectDetailsPage() {
         createDraftCutlistRow(partType, currentRoom, {
           ...seed,
           doorMode: isDoorPartType(partType) ? "manual" : undefined,
+          ...extra,
         }),
       ];
     });
@@ -29611,14 +30012,15 @@ export default function ProjectDetailsPage() {
     await persistCutlistRows(nextRows);
   };
 
-  const addInitialDraftRowForPartType = (partType: string) => {
+  // (`extra`: more of it — a new Custom piece's shape and size.)
+  const addInitialDraftRowForPartType = (partType: string, extra?: Partial<CutlistDraftRow>) => {
     setInitialActiveCutlistPartType(partType);
     setInitialCutlistDraftRows((prev) => {
       const last = prev[prev.length - 1];
       const seed = last
         ? { board: last.board, room: last.room, quantity: "" }
         : { board: initialMeasureBoardOptions[0] ?? "", quantity: "" };
-      return [...prev, createDraftCutlistRow(partType, initialCutlistEntryRoom || defaultInitialCutlistRoom, seed)];
+      return [...prev, createDraftCutlistRow(partType, initialCutlistEntryRoom || defaultInitialCutlistRoom, { ...seed, ...extra })];
     });
   };
 
@@ -30384,6 +30786,7 @@ export default function ProjectDetailsPage() {
       depth: String(source.depth ?? ""),
       drawerDepths: normalizeDrawerDepths(source.drawerDepths),
       drawerWeights: normalizeDrawerWeights(source.drawerWeights),
+      ...(source.shape ? { shape: source.shape } : {}),
       quantity: isClassicDrawerMode
         ? String(Math.max(1, drawerTokens.length))
         : isConfiguredDoorMode && !String(source.quantity ?? "").trim()
@@ -30504,36 +30907,50 @@ export default function ProjectDetailsPage() {
     clearWarningForCell("single", "height");
   }, [clearWarningForCell, effectiveCutlistEntryRow, isDoorPartType]);
 
-  const groupedCutlistRows = useMemo(() => {
+  // A cutlist list's tables: one for each part type, in the company's order — except every Custom part type's rows, which
+  // are ONE "Custom" table (CUSTOM_CUTLIST_GROUP_KEY) after them all: its flat pieces first (customCutlistRowSortKey),
+  // each its own part type's pill.
+  const groupCutlistRowsByPartType = (rows: CutlistRow[], order: string[]): CutlistRowGroup[] => {
     const grouped = new Map<string, CutlistRow[]>();
-    for (const row of visibleCutlistRows) {
+    const custom: CutlistRow[] = [];
+    for (const row of rows) {
+      if (isCustomCutlistRow(row)) {
+        custom.push(row);
+        continue;
+      }
       const key = String(row.partType || "Unassigned");
       grouped.set(key, [...(grouped.get(key) ?? []), row]);
     }
-    const rank = new Map(partTypeOptions.map((name, idx) => [name, idx]));
-    return Array.from(grouped.entries())
+    const rank = new Map(order.map((name, idx) => [name, idx]));
+    const groups: CutlistRowGroup[] = Array.from(grouped.entries())
       .sort((a, b) => {
         const ar = rank.has(a[0]) ? Number(rank.get(a[0])) : 999;
         const br = rank.has(b[0]) ? Number(rank.get(b[0])) : 999;
         return ar - br || a[0].localeCompare(b[0]);
       })
-      .map(([partType, rows]) => ({ partType, rows }));
-  }, [visibleCutlistRows, partTypeOptions]);
-  const groupedInitialCutlistRows = useMemo(() => {
-    const grouped = new Map<string, CutlistRow[]>();
-    for (const row of visibleInitialCutlistRows) {
-      const key = String(row.partType || "Unassigned");
-      grouped.set(key, [...(grouped.get(key) ?? []), row]);
+      .map(([partType, groupRows]) => ({ partType, rows: groupRows }));
+    if (custom.length) {
+      const ordered = custom
+        .map((row, index) => ({ row, index }))
+        .sort((a, b) => customCutlistRowSortKey(a.row) - customCutlistRowSortKey(b.row) || a.index - b.index)
+        .map((entry) => entry.row);
+      groups.push({ partType: CUSTOM_CUTLIST_GROUP_KEY, rows: ordered, custom: true });
     }
-    const rank = new Map(initialMeasurePartTypeOptions.map((name, idx) => [name, idx]));
-    return Array.from(grouped.entries())
-      .sort((a, b) => {
-        const ar = rank.has(a[0]) ? Number(rank.get(a[0])) : 999;
-        const br = rank.has(b[0]) ? Number(rank.get(b[0])) : 999;
-        return ar - br || a[0].localeCompare(b[0]);
-      })
-      .map(([partType, rows]) => ({ partType, rows }));
-  }, [initialMeasurePartTypeOptions, visibleInitialCutlistRows]);
+    return groups;
+  };
+  // A table's colour: its part type's — the Custom table's, its first piece's part type's.
+  const cutlistGroupColor = (group: CutlistRowGroup) =>
+    partTypeColors[group.custom ? String(group.rows[0]?.partType || "Unassigned") : group.partType] ?? "#CBD5E1";
+  const groupedCutlistRows = useMemo(
+    () => groupCutlistRowsByPartType(visibleCutlistRows, partTypeOptions),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [visibleCutlistRows, partTypeOptions, partTypeCustomMap],
+  );
+  const groupedInitialCutlistRows = useMemo(
+    () => groupCutlistRowsByPartType(visibleInitialCutlistRows, initialMeasurePartTypeOptions),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [initialMeasurePartTypeOptions, visibleInitialCutlistRows, partTypeCustomMap],
+  );
 
   // A room with nothing in it yet — no rows being entered, and none in its cutlist: "Add your first piece" in place of
   // its Cutlist Entry and its (empty) Cutlist List (renderFirstPiecePrompt). Not Project Cutlist (every room — no entry).
@@ -30547,9 +30964,206 @@ export default function ProjectDetailsPage() {
     !cutlistRows.some((row) => row.room === cutlistRoomFilter);
   // Its Add a piece pressed: the cutlist's part types in a strip under it (in which cutlist), to pick the first piece's.
   const [firstPieceStrip, setFirstPieceStrip] = useState<"" | "initial" | "production">("");
+  // How a row's grain runs, in words (the shape editor's summary).
+  const cutlistShapeGrainLabel = (row: CutlistRow) => {
+    if (!productionBoardAllowsGrainForValue(String(row.board ?? "").trim())) return "None";
+    const axis = effectiveGrainValueForRow(row).match(/^([HWD])\s*:/i)?.[1]?.toUpperCase();
+    return axis === "H" ? "Along the height" : axis === "W" ? "Along the width" : "None";
+  };
+  // ...an Initial Measure row's (its product's grain).
+  const initialCutlistShapeGrainLabel = (row: CutlistRow) => {
+    if (!initialMeasureBoardGrainFor(String(row.board ?? "").trim())) return "None";
+    const axis = String(row.grainValue ?? "").trim().match(/^([HWD])\s*:/i)?.[1]?.toUpperCase();
+    return axis === "H" ? "Along the height" : axis === "W" ? "Along the width" : "None";
+  };
+  // The shape editor opened: on a row's shape (a Custom row without one: a rectangle at its size), or — a new piece — on
+  // the L corner it starts with. View only while the cutlist is. (Initial Measure's: its own Cutlist Entry and List.)
+  const openCutlistShapeEditor = (e: ReactMouseEvent<HTMLElement>, target: CutlistShapeEditorTarget) => {
+    const initial = target.scope === "initial";
+    const draftRows = initial ? initialCutlistDraftRows : cutlistDraftRows;
+    const listRows = initial ? initialCutlistRows : cutlistRows;
+    const row =
+      target.mode === "draft"
+        ? draftRows.find((r) => r.id === target.rowId)
+        : target.mode === "row"
+          ? listRows.find((r) => r.id === target.rowId)
+          : undefined;
+    if (target.mode !== "new" && !row) return;
+    // (A new piece's board, for its thickness in 3D: the one the row it'll be added as takes — addDraftRowForPartType.)
+    const lastDraft =
+      [...draftRows].reverse().find((r) => target.mode === "new" && String(r.room || "") === String(target.room)) ??
+      draftRows[draftRows.length - 1];
+    const board = String(row ? row.board : (lastDraft?.board ?? (initial ? initialMeasureBoardOptions[0] : cutlistBoardOptions[0]) ?? ""));
+    shapeEditorOriginElRef.current = e.currentTarget;
+    setShapeEditorOrigin(captureGlassModalOrigin(e));
+    setShapeEditor({
+      target,
+      session: Date.now(),
+      shape: row ? cutlistRowShape(row) : null,
+      partType: target.mode === "new" ? target.partType : String(row?.partType || ""),
+      room: target.mode === "new" ? target.room : String(row?.room || ""),
+      readOnly: initial ? salesReadOnly : productionReadOnly,
+      grainLabel: row ? (initial ? initialCutlistShapeGrainLabel(row) : cutlistShapeGrainLabel(row)) : "",
+      thicknessMm: boardThicknessFor(board) || 18,
+      boardThicknessMm: customCabinetThicknessForBoard(board),
+    });
+    setIsShapeEditorOpen(true);
+  };
+  // A row's grain kept on the same side when its Height or Width (a custom cabinet's Depth) changes with its shape — one
+  // on its Depth let go when it's a flat piece again (it has none).
+  const grainForResizedShape = (row: Partial<CutlistRow>, height: string, width: string, depth = ""): Partial<CutlistRow> => {
+    const axis = String(row.grainValue ?? "").trim().match(/^([HWD])\s*:/i)?.[1]?.toUpperCase();
+    if (axis === "H") return { grainValue: `H:${height}`, grain: true };
+    if (axis === "W") return { grainValue: `W:${width}`, grain: true };
+    if (axis === "D") return depth ? { grainValue: `D:${depth}`, grain: true } : { grainValue: "" };
+    return {};
+  };
+  // A shape as it's saved on its row, and the row's sizes from it. A custom cabinet: no banding of its own (its top view's
+  // edges are its backs, ends and doors — its parts are banded), its Height × Width × Depth the cabinet's
+  // (customCabinetSize). A flat piece: its outer Height × Width — and no Depth, if it was a cabinet before.
+  const shapeRowFields = (shape: CutlistShape, before: Partial<CutlistRow> | null) => {
+    const cabinet = isCabinetShape(shape);
+    const saved: CutlistShape = cabinet && shape.banded.length ? { ...shape, banded: [] } : shape;
+    if (cabinet) {
+      const size = customCabinetSize(saved);
+      return { shape: saved, height: formatShapeMm(size.height), width: formatShapeMm(size.width), depth: formatShapeMm(size.depth) };
+    }
+    const outer = shapeOuterSize(saved);
+    const wasCabinet = Boolean(before?.shape && isCabinetShape(before.shape));
+    return { shape: saved, height: formatShapeMm(outer.height), width: formatShapeMm(outer.width), depth: wasCabinet ? "" : undefined };
+  };
+  // Its sizes as a row's fields (Depth only when it's set — a cabinet's, or let go — so a flat piece's is left as it is).
+  const shapeSizePatch = (fields: { height: string; width: string; depth?: string }): Partial<CutlistRow> => ({
+    height: fields.height,
+    width: fields.width,
+    ...(fields.depth !== undefined ? { depth: fields.depth } : {}),
+  });
+  // What the activity log says it is ("L corner 1311 × 1138" — a cabinet's with its Height × Width × Depth).
+  const describeShapeForLog = (shape: CutlistShape) =>
+    isCabinetShape(shape) ? `${describeCutlistShape(shape)} cabinet, ${customCabinetSizeText(shape)}` : describeCutlistShape(shape);
+  // Saved in the shape editor: a new piece added to the Cutlist Entry as a row of its part type; a row's shape changed —
+  // and its Height × Width with it (the shape's outer size) — in the Entry, or in the List and saved as any change there is.
+  // (A custom cabinet's Height × Width × Depth its cabinet's, its own banding none — shapeRowFields. Made flat again, or
+  // given back its part type's: its parts go with it — they're only ever worked out from its shape.)
+  const saveCutlistShapeFromEditor = async (edited: CutlistShape) => {
+    const editor = shapeEditor;
+    setIsShapeEditorOpen(false);
+    if (!editor || editor.readOnly) return;
+    const target = editor.target;
+    if (target.scope === "initial") {
+      await saveInitialCutlistShapeFromEditor(target, edited);
+      return;
+    }
+    if (target.mode === "new") {
+      const fields = shapeRowFields(edited, null);
+      addDraftRowForPartType(target.partType, { shape: fields.shape, ...shapeSizePatch(fields), clashLeft: "", clashRight: "", clashing: "" });
+      return;
+    }
+    if (target.mode === "draft") {
+      const draft = cutlistDraftRows.find((r) => r.id === target.rowId);
+      if (!draft) return;
+      const fields = shapeRowFields(edited, draft);
+      updateDraftCutlistRow(target.rowId, { shape: fields.shape, ...shapeSizePatch(fields), ...grainForResizedShape(draft, fields.height, fields.width, fields.depth) });
+      clearWarningForCell(target.rowId, "height");
+      clearWarningForCell(target.rowId, "width");
+      clearWarningForCell(target.rowId, "depth");
+      return;
+    }
+    if (productionReadOnly) return;
+    const row = cutlistRows.find((r) => r.id === target.rowId);
+    if (!row) return;
+    const fields = shapeRowFields(edited, row);
+    const shape = fields.shape;
+    const unchanged =
+      row.shape &&
+      JSON.stringify(cutlistShapeForStorage(row.shape)) === JSON.stringify(cutlistShapeForStorage(shape)) &&
+      String(row.height) === fields.height &&
+      String(row.width) === fields.width &&
+      (fields.depth === undefined || String(row.depth ?? "") === fields.depth);
+    if (unchanged) return;
+    const updated = autoSelectGrainValueForRow({ ...row, shape, ...shapeSizePatch(fields), ...grainForResizedShape(row, fields.height, fields.width, fields.depth) });
+    const next = cutlistRows.map((r) => (r.id === row.id ? updated : r));
+    const before = row.shape ? describeShapeForLog(row.shape) : `${row.width || "-"} × ${row.height || "-"}`;
+    const after = describeShapeForLog(shape);
+    const changedRowName = String(row.name || "Unnamed Row").trim();
+    logCutlistActivity(`${changedRowName} | Shape:`, {
+      partType: row.partType,
+      valueFrom: before,
+      valueTo: before === after ? `${after} (corners / banding)` : after,
+      dedupeKey: `change:${row.id}:shape:${before}->${after}`,
+    });
+    clearWarningForCell(row.id, "height");
+    clearWarningForCell(row.id, "width");
+    clearWarningForCell(row.id, "depth");
+    setCutlistRows(next);
+    await persistCutlistRows(next);
+  };
+  // ...and Initial Measure's: a new piece added to its Cutlist Entry; a row's shape changed (its Height × Width with it)
+  // in the Entry, or in its List and saved as any change there is.
+  const saveInitialCutlistShapeFromEditor = async (target: CutlistShapeEditorTarget, edited: CutlistShape) => {
+    if (salesReadOnly) return;
+    if (target.mode === "new") {
+      const fields = shapeRowFields(edited, null);
+      addInitialDraftRowForPartType(target.partType, { shape: fields.shape, ...shapeSizePatch(fields), clashLeft: "", clashRight: "", clashing: "" });
+      return;
+    }
+    if (target.mode === "draft") {
+      const draft = initialCutlistDraftRows.find((r) => r.id === target.rowId);
+      if (!draft) return;
+      const fields = shapeRowFields(edited, draft);
+      updateInitialDraftCutlistRow(target.rowId, { shape: fields.shape, ...shapeSizePatch(fields), ...grainForResizedShape(draft, fields.height, fields.width, fields.depth) });
+      clearWarningForCell(target.rowId, "height");
+      clearWarningForCell(target.rowId, "width");
+      clearWarningForCell(target.rowId, "depth");
+      return;
+    }
+    const row = initialCutlistRows.find((r) => r.id === target.rowId);
+    if (!row) return;
+    const fields = shapeRowFields(edited, row);
+    const shape = fields.shape;
+    const unchanged =
+      row.shape &&
+      JSON.stringify(cutlistShapeForStorage(row.shape)) === JSON.stringify(cutlistShapeForStorage(shape)) &&
+      String(row.height) === fields.height &&
+      String(row.width) === fields.width &&
+      (fields.depth === undefined || String(row.depth ?? "") === fields.depth);
+    if (unchanged) return;
+    const updated: CutlistRow = { ...row, shape, ...shapeSizePatch(fields), ...grainForResizedShape(row, fields.height, fields.width, fields.depth) };
+    const next = initialCutlistRows.map((r) => (r.id === row.id ? updated : r));
+    const before = row.shape ? describeShapeForLog(row.shape) : `${row.width || "-"} × ${row.height || "-"}`;
+    const after = describeShapeForLog(shape);
+    const changedRowName = String(row.name || "Unnamed Row").trim();
+    logCutlistActivity(`${changedRowName} | Shape:`, {
+      partType: row.partType,
+      valueFrom: before,
+      valueTo: before === after ? `${after} (corners / banding)` : after,
+      dedupeKey: `initial:change:${row.id}:shape:${before}->${after}`,
+      scope: "initial",
+    });
+    clearWarningForCell(row.id, "height");
+    clearWarningForCell(row.id, "width");
+    clearWarningForCell(row.id, "depth");
+    setInitialCutlistRows(next);
+    await persistInitialCutlistRows(next);
+  };
+  // An Initial Measure part type picked to add (its pills, and the first piece's strip): a Custom piece is drawn first
+  // (the shape editor — saving it adds the row); anything else is a row of it in its Cutlist Entry.
+  const pickInitialEntryPartType = (e: ReactMouseEvent<HTMLElement>, v: string) => {
+    if (isCustomPartType(v)) {
+      openCutlistShapeEditor(e, { mode: "new", partType: v, room: initialCutlistEntryRoom || defaultInitialCutlistRoom, scope: "initial" });
+      return;
+    }
+    addInitialDraftRowForPartType(v);
+  };
   // A production part type picked to add (its pills, and the first piece's strip): a door or drawer bank first asks
-  // which (the door / drawer picker, from the pill); anything else is a row of it in the Cutlist Entry.
+  // which (the door / drawer picker, from the pill); a Custom piece is drawn first (the shape editor); anything else is a
+  // row of it in the Cutlist Entry.
   const pickProductionEntryPartType = (e: ReactMouseEvent<HTMLButtonElement>, v: string) => {
+    // A Custom part type: its shape drawn first (the shape editor) — saving it adds the row.
+    if (isCustomPartType(v)) {
+      openCutlistShapeEditor(e, { mode: "new", partType: v, room: cutlistEntryRoom || defaultCutlistRoom });
+      return;
+    }
     doorDrawerPickerModalOriginElRef.current = e.currentTarget;
     if (isDoorPartType(v)) {
       setDrawerBankCountDraft("3");
@@ -30562,6 +31176,27 @@ export default function ProjectDetailsPage() {
     }
     addDraftRowForPartType(v);
   };
+  const cutlistShapeEditorPortal = shapeEditor ? (
+    <CutlistShapeEditor
+      open={isShapeEditorOpen}
+      session={shapeEditor.session}
+      shape={shapeEditor.shape}
+      partType={shapeEditor.partType}
+      room={shapeEditor.room}
+      color={partTypeColors[shapeEditor.partType] ?? "#CBD5E1"}
+      readOnly={shapeEditor.readOnly}
+      grainLabel={shapeEditor.grainLabel}
+      thicknessMm={shapeEditor.thicknessMm}
+      // (What it can be — any other part type: a Cabinetry one makes it a custom cabinet, worked out at its board's thickness.)
+      baseOptions={shapeBaseOptions}
+      boardThicknessMm={shapeEditor.boardThicknessMm}
+      isNew={shapeEditor.target.mode === "new"}
+      origin={shapeEditorOrigin}
+      originElRef={shapeEditorOriginElRef}
+      onSave={(shape) => void saveCutlistShapeFromEditor(shape)}
+      onClose={() => setIsShapeEditorOpen(false)}
+    />
+  ) : null;
   // "Add your first piece" (an empty room): the page's icon, and Add a piece — which opens the cutlist's part types in a
   // strip under it, the Cutlist Entry's own pills; one picked adds the first row, as they do there.
   const renderFirstPiecePrompt = (kind: "initial" | "production") => {
@@ -30587,7 +31222,7 @@ export default function ProjectDetailsPage() {
                   disabled={readOnly}
                   onClick={(e) => {
                     setFirstPieceStrip("");
-                    if (kind === "initial") addInitialDraftRowForPartType(v);
+                    if (kind === "initial") pickInitialEntryPartType(e, v);
                     else pickProductionEntryPartType(e, v);
                   }}
                   style={{ backgroundColor: color, borderColor: color, color: isLightHex(color) ? "#1F2937" : "#F8FAFC" }}
@@ -31039,15 +31674,17 @@ export default function ProjectDetailsPage() {
         };
       });
   }, [filteredCncRows, partTypeOptions, boardDisplayLabel, isCabinetryPartType, isConfiguredDoorRowLike, isDrawerPartType]);
+  // (Not the Custom pieces either: they're the Custom section's — cncCustomCards — after the boards' tables.)
   const cncRowsByBoardNonCab = useMemo(
     () =>
       cncRowsByBoard
         .map((group) => ({
           ...group,
-          rows: group.rows.filter((row) => !isCabinetryPartType(row.partType)),
+          rows: group.rows.filter((row) => !isCabinetryPartType(row.partType) && !isCustomCutlistRow(row)),
         }))
         .filter((group) => group.rows.length > 0),
-    [cncRowsByBoard, isCabinetryPartType],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [cncRowsByBoard, isCabinetryPartType, partTypeCustomMap],
   );
   // Mobile: swiping left/right (or tapping the bar's arrows) scrolls the Cutlist list to the
   // next/previous board type's section — same swipe-to-move-between-boards behavior as Nesting,
@@ -31391,7 +32028,8 @@ export default function ProjectDetailsPage() {
 
     for (const group of cncRowsByBoardForPrintIds) {
       for (const row of group.rows) {
-        if (isCabinetryPartType(row.partType)) continue;
+        // (A Custom piece: numbered after them all, in the Custom section — below.)
+        if (isCabinetryPartType(row.partType) || isCustomCutlistRow(row)) continue;
         const isGroupedConfiguredDoor = isConfiguredDoorRowLike(row);
         const isDrawer = isDrawerPartType(row.partType);
         const isDrawerOnGrainedBoard = isDrawer && boardGrainFor(String(row.board || "").trim());
@@ -31410,6 +32048,18 @@ export default function ProjectDetailsPage() {
       }
     }
 
+    // The Custom pieces (the CNC Cutlist's Custom section): after the boards' tables, flat pieces first — as cncCustomCards.
+    const customRows = cncRowsByBoardForPrintIds
+      .flatMap((group) => group.rows.filter((row) => !isCabinetryPartType(row.partType) && isCustomCutlistRow(row)))
+      .map((row, index) => ({ row, index }))
+      .sort((a, b) => customCutlistRowSortKey(a.row) - customCutlistRowSortKey(b.row) || a.index - b.index);
+    for (const { row } of customRows) {
+      runningId += 1;
+      out[row.id] = runningId;
+      const sourceId = String((row as CncDisplayRow).sourceRowId || "");
+      if (sourceId) out[sourceId] = runningId;
+    }
+
     let lastCabSourceId = "";
     for (const group of cncRowsByBoardForPrintIds) {
       for (const row of group.rows) {
@@ -31425,12 +32075,14 @@ export default function ProjectDetailsPage() {
     }
 
     return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     boardGrainFor,
     cncRowsByBoardForPrintIds,
     isCabinetryPartType,
     isConfiguredDoorRowLike,
     isDrawerPartType,
+    partTypeCustomMap,
   ]);
   // ---- Production › Labels (lib/part-labels.ts, components/part-label.tsx): a label for every piece the workshop cuts —
   // each part as many times as its quantity; a cabinet's, drawer's or configured door's own pieces each theirs, under
@@ -31502,7 +32154,7 @@ export default function ProjectDetailsPage() {
     const made: Array<{ id: number; order: number; label: PartLabel }> = [];
     const add = (
       row: CutlistRow,
-      piece: { key: string; name: string; parentName: string; height: string; width: string; depth: string; clashLeft: string; clashRight: string; grainValue: string },
+      piece: { key: string; name: string; parentName: string; height: string; width: string; depth: string; clashLeft: string; clashRight: string; grainValue: string; shape?: CutlistShape | null },
       copies: number,
       idOfCopy: (copy: number) => number,
       withHinges = false,
@@ -31522,7 +32174,10 @@ export default function ProjectDetailsPage() {
           ? (resolveGrainAxis(piece.grainValue, h, w, d) ?? (mm.height > 0 ? "height" : mm.width > 0 ? "width" : "depth"))
           : null;
       const grain = grainAxis === tallKey ? "tall" : grainAxis === wideKey ? "wide" : null;
-      const clash = clashedEdgesFor(joinClashing(piece.clashLeft, piece.clashRight), tallMm, wideMm);
+      // (A Custom piece — a part of its own, not a piece of one: drawn as its real outline, its banding on it. A custom
+      // cabinet's shaped piece: its own outline.)
+      const labelShape = piece.shape !== undefined ? piece.shape : piece.key === "part" ? cutlistRowShape(row) : null;
+      const clash = labelShape ? { edges: [], code: "" } : clashedEdgesFor(joinClashing(piece.clashLeft, piece.clashRight), tallMm, wideMm);
       const sizes = ([["H", h], ["W", w], ["D", d]] as const)
         .filter(([, value]) => value)
         .map(([axis, value]) => ({ axis, value: lengthText(value) }));
@@ -31549,6 +32204,7 @@ export default function ProjectDetailsPage() {
             grain,
             clashed: clash.edges,
             clashCode: clash.code,
+            ...(labelShape ? { shape: labelShape } : {}),
             hinges: withHinges ? hingesFor(row, copy) : null,
             info,
             copy,
@@ -31564,6 +32220,20 @@ export default function ProjectDetailsPage() {
     for (const row of cncPrintSourceRows) {
       if (countOf(row.quantity) <= 0) continue;
       const parentName = toStr(row.name, "");
+      // A custom cabinet: each of its pieces, under its ID — its backs and ends as a cabinet's sides are, its shaped
+      // top, bottom and shelves each as its own outline.
+      const customCabinet = customCabinetOf(row);
+      if (customCabinet) {
+        for (const piece of customCabinet.pieces) {
+          add(
+            row,
+            { key: piece.key, name: piece.partName, parentName, height: piece.height, width: piece.width, depth: piece.depth, clashLeft: piece.clashLeft, clashRight: piece.clashRight, grainValue: String(piece.grainValue || ""), shape: piece.shape ?? null },
+            countOf(piece.quantity),
+            () => idFor(row.id),
+          );
+        }
+        continue;
+      }
       if (isCabinetryPartType(row.partType)) {
         for (const piece of buildCabinetryDerivedPieces(row)) {
           add(
@@ -31759,6 +32429,39 @@ export default function ProjectDetailsPage() {
     isConfiguredDoorRowLike(row) && boardGrainFor(String(row.board || "").trim())
       ? "NOTE: Cut as bank, (1) being the top."
       : "";
+  // The CNC Cutlist's one Custom section — after the boards' tables, before the cabinets: every Custom piece it shows (as
+  // the boards' tables would, by board), flat pieces first (customCutlistRowSortKey), each with its drawing beside it.
+  // Numbered on after the boards' tables (and the cabinets after them) — as nestingPrintDisplayIdByRowId numbers them.
+  const cncCustomCards = useMemo(() => {
+    const rows = cncRowsByBoard.flatMap((group) => group.rows.filter((row) => !isCabinetryPartType(row.partType) && isCustomCutlistRow(row)));
+    // (A custom cabinet's: its board thickness and its pieces — its card as the cabinets' cards are.)
+    const out: Array<{
+      row: CncDisplayRow;
+      shape: CutlistShape;
+      displayId: number;
+      boardLabel: string;
+      infoLines: string[];
+      cabinet: { thicknessMm: number; pieces: CustomCabinetDerivedPiece[] } | null;
+    }> = [];
+    rows
+      .map((row, index) => ({ row, index }))
+      .sort((a, b) => customCutlistRowSortKey(a.row) - customCutlistRowSortKey(b.row) || a.index - b.index)
+      .forEach(({ row }) => {
+        const shape = cutlistRowShape(row);
+        if (!shape) return;
+        const customCabinet = customCabinetOf(row);
+        out.push({
+          row,
+          shape,
+          displayId: cncNonCabDisplayIdCount + out.length + 1,
+          boardLabel: boardDisplayLabel(row.board) || String(row.board || "-"),
+          infoLines: informationLinesFromValue(String(row.information || "")),
+          cabinet: customCabinet ? { thicknessMm: customCabinet.thicknessMm, pieces: customCabinet.pieces } : null,
+        });
+      });
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cncRowsByBoard, isCabinetryPartType, partTypeCustomMap, cncNonCabDisplayIdCount, boardDisplayLabel, customCabinetOf]);
   const cncCabinetCards = useMemo(() => {
     const q = String(cncSearch || "").trim().toLowerCase();
     const rows = cncSourceRows.filter((row) => {
@@ -31796,7 +32499,7 @@ export default function ProjectDetailsPage() {
         return out;
       })(),
       row,
-      displayId: cncNonCabDisplayIdCount + idx + 1,
+      displayId: cncNonCabDisplayIdCount + cncCustomCards.length + idx + 1,
       boardLabel: boardDisplayLabel(row.board) || String(row.board || "-"),
       thicknessMm: (() => {
         const fromRow = Math.max(0, boardThicknessFor(String(row.board || "").trim()));
@@ -31825,6 +32528,7 @@ export default function ProjectDetailsPage() {
     boardThicknessFor,
     buildCabinetryDerivedPieces,
     cncNonCabDisplayIdCount,
+    cncCustomCards.length,
   ]);
   const cncCabinetHasGrain = useMemo(
     () => cncCabinetCards.some((card) => boardGrainFor(String(card.row.board || "").trim())),
@@ -32084,6 +32788,22 @@ export default function ProjectDetailsPage() {
       const visible = typeof nestingVisibilityMap[row.id] === "boolean" ? nestingVisibilityMap[row.id] : row.includeInNesting !== false;
       if (!visible) continue;
 
+      // A custom cabinet (one row in the list, shown or hidden as one): its pieces — its shaped ones packed by the box
+      // round them, their outlines drawn on the sheets (nestingPlacementOutline, from each piece's own shape).
+      const customCabinet = customCabinetOf(row);
+      if (customCabinet) {
+        for (const nestedRow of customCabinetRowsFromPieces(row, customCabinet.pieces)) {
+          if (
+            !q ||
+            [nestedRow.name, nestedRow.parentName, nestedRow.board, nestedRow.partType, nestedRow.room, nestedRow.information]
+              .some((v) => String(v || "").toLowerCase().includes(q))
+          ) {
+            expanded.push(nestedRow);
+          }
+        }
+        continue;
+      }
+
       if (isCabinetryPartType(row.partType)) {
         const pieces = buildCabinetryDerivedPieces(row);
         for (const piece of pieces) {
@@ -32195,6 +32915,7 @@ export default function ProjectDetailsPage() {
     cabinetryPieceGrainValue,
     buildDrawerDerivedPieces,
     buildConfiguredDoorListSubrows,
+    customCabinetOf,
     effectiveCutlistRows,
     isCabinetryPartType,
     isDrawerPartType,
@@ -32210,6 +32931,12 @@ export default function ProjectDetailsPage() {
     const expanded: CutlistRow[] = [];
     for (const row of effectiveCutlistRows) {
       if (!isPartTypeIncludedInNesting(row.partType)) continue;
+
+      const customCabinet = customCabinetOf(row);
+      if (customCabinet) {
+        expanded.push(...customCabinetRowsFromPieces(row, customCabinet.pieces));
+        continue;
+      }
 
       if (isCabinetryPartType(row.partType)) {
         const pieces = buildCabinetryDerivedPieces(row);
@@ -32288,6 +33015,7 @@ export default function ProjectDetailsPage() {
     buildCabinetryDerivedPieces,
     buildDrawerDerivedPieces,
     buildConfiguredDoorDerivedPieces,
+    customCabinetOf,
     effectiveCutlistRows,
     isCabinetryPartType,
     isDrawerPartType,
@@ -32680,6 +33408,20 @@ export default function ProjectDetailsPage() {
       });
     });
 
+    // (The Custom pieces' cards — laid out as the CNC Cutlist PDF lays them out.)
+    if (cncCustomCards.length > 0) {
+      doc.addPage();
+      let y = topPad + boardBarHeight + 8;
+      for (const card of cncCustomCards) {
+        const cardH = cncCustomCardPdfHeight(card);
+        if (y + cardH > pageHeight - 20) {
+          doc.addPage();
+          y = topPad + boardBarHeight + 8;
+        }
+        y += cardH + 10;
+      }
+    }
+
     if (cncCabinetCards.length > 0) {
       doc.addPage();
       let y = topPad + boardBarHeight + 8;
@@ -32704,7 +33446,7 @@ export default function ProjectDetailsPage() {
     }
 
     return doc.getNumberOfPages();
-  }, [cncCabinetCards, cncPrintSourceRows, cncRowsByBoardNonCab, pdfExportModules, shouldRenderPrintModal, showCutlistGrainColumn]);
+  }, [cncCabinetCards, cncCustomCards, cncPrintSourceRows, cncRowsByBoardNonCab, pdfExportModules, shouldRenderPrintModal, showCutlistGrainColumn]);
   const requiredSheetCountByBoardKey = useMemo(() => {
     const out: Record<string, number> = {};
     for (const group of nestingBoardLayoutsForSheetCount) {
@@ -32753,6 +33495,12 @@ export default function ProjectDetailsPage() {
   const productionCutPieces = useMemo(() => {
     const rowsForEdgeTape: CutlistRow[] = [];
     for (const row of effectiveCutlistRows) {
+      // A custom cabinet: its pieces — its backs and ends (an end's front edge taped), its shaped top, bottom and shelves.
+      const customCabinet = customCabinetOf(row);
+      if (customCabinet) {
+        rowsForEdgeTape.push(...customCabinetRowsFromPieces(row, customCabinet.pieces));
+        continue;
+      }
       if (isCabinetryPartType(row.partType)) {
         const pieces = buildCabinetryDerivedPieces(row);
         for (const piece of pieces) {
@@ -32816,6 +33564,7 @@ export default function ProjectDetailsPage() {
     buildCabinetryDerivedPieces,
     buildDrawerDerivedPieces,
     buildConfiguredDoorDerivedPieces,
+    customCabinetOf,
   ]);
   // TRUE per-board edge length actually needing tape — raw geometry only, no excess-per-end
   // allowance, no minimum-order "add extra meters" rules, no round-to-nearest-roll. Those three
@@ -32850,6 +33599,15 @@ export default function ProjectDetailsPage() {
       if (!boardKey) continue;
       const qty = Math.max(0, Number.parseInt(String(row.quantity || "0"), 10) || 0);
       if (qty <= 0) continue;
+      // A Custom row: what's banded on its shape (round its curves too) — one length of tape for each banded run.
+      const shape = shapeForCutlistRow(row, Boolean(partTypeCustomMap[String(row.partType || "").trim().toLowerCase()]));
+      if (shape) {
+        const geometry = shapeGeometry(shape);
+        if (geometry.bandedLengthMm <= 0) continue;
+        mmByBoardKey[boardKey] = (mmByBoardKey[boardKey] ?? 0) + geometry.bandedLengthMm * qty;
+        tapeRunCountByBoardKey[boardKey] = (tapeRunCountByBoardKey[boardKey] ?? 0) + geometry.bandedStrips * qty;
+        continue;
+      }
       const dims = [parseDim(row.height), parseDim(row.width), parseDim(row.depth)].filter((v) => v > 0);
       if (!dims.length) continue;
       const longDim = Math.max(...dims);
@@ -32865,7 +33623,7 @@ export default function ProjectDetailsPage() {
       tapeRunCountByBoardKey[boardKey] = (tapeRunCountByBoardKey[boardKey] ?? 0) + leftTape.runs + rightTape.runs;
     }
     return { mmByBoardKey, tapeRunCountByBoardKey };
-  }, [productionCutPieces, resolveBoardKey]);
+  }, [productionCutPieces, resolveBoardKey, partTypeCustomMap]);
   const requiredEdgetapeByBoardRowId = useMemo(() => {
     const out: Record<string, string> = {};
     const excessPerEndMm = Math.max(
@@ -32944,6 +33702,12 @@ export default function ProjectDetailsPage() {
     let totalMm2 = 0;
     for (const row of productionCutPieces) {
       if (!boardLacquerFor(String(row.board || ""))) continue;
+      // A piece cut to a shape (a Custom piece, a custom cabinet's top, bottom or shelf): its true area and its banded
+      // edges (shapeLacquerMm2), as the Design tab's.
+      if (row.shape) {
+        totalMm2 += shapeLacquerMm2(row.shape, row.quantity, sides);
+        continue;
+      }
       const split = splitClashing(String(row.clashing || ""));
       totalMm2 += lacquerPieceAreaMm2({
         dims: [row.height, row.width, row.depth],
@@ -33035,7 +33799,8 @@ export default function ProjectDetailsPage() {
             !query || [row.name, row.board, row.partType, row.information].some((v) => String(v || "").toLowerCase().includes(query));
           return roomOk && typeOk && searchOk;
         })
-        .map((row) => String(row.partType || "Unassigned")),
+        // (A Custom piece's table: the Custom one.)
+        .map((row) => (isCustomCutlistRow(row) ? CUSTOM_CUTLIST_GROUP_KEY : String(row.partType || "Unassigned"))),
     );
     setCollapsedCutlistGroups((prev) => {
       const opening = Object.keys(prev).filter((key) => prev[key] && groupKeys.has(key));
@@ -33071,7 +33836,8 @@ export default function ProjectDetailsPage() {
             !query || [row.name, row.board, row.partType, row.information].some((v) => String(v || "").toLowerCase().includes(query));
           return roomOk && typeOk && searchOk;
         })
-        .map((row) => String(row.partType || "Unassigned")),
+        // (A Custom piece's table: the Custom one.)
+        .map((row) => (isCustomCutlistRow(row) ? CUSTOM_CUTLIST_GROUP_KEY : String(row.partType || "Unassigned"))),
     );
     setInitialCollapsedCutlistGroups((prev) => {
       const opening = Object.keys(prev).filter((key) => prev[key] && groupKeys.has(key));
@@ -33332,6 +34098,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
   const startCellEdit = (row: CutlistRow, key: CutlistEditableField, infoLineIndex?: number) => {
     if (productionReadOnly) return;
+    // A Custom row's Height and Width are its shape's outer size, and its banding is drawn on it: changed in the shape
+    // editor (Edit shape), not typed here.
+    if ((key === "height" || key === "width" || key === "clashing") && cutlistRowShape(row)) return;
+    // (A custom cabinet's Depth: its top view's, set by its shape too.)
+    if (key === "depth" && row.shape && isCabinetShape(row.shape)) return;
     setEditingCell({ rowId: row.id, key });
     if (key === "information") {
       setEditingInfoFocusLine({ rowId: row.id, lineIndex: Math.max(0, Number(infoLineIndex ?? 0)) });
@@ -33483,6 +34254,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           break;
         case "partType":
           updated.partType = value;
+          // (Made any part type but a Custom one: its shape let go — it's a rectangle at its size again.)
+          if (updated.shape && !isCustomPartType(value)) updated.shape = undefined;
           if (isCabinetryPartType(value)) {
             updated.clashing = "";
             updated.clashLeft = "";
@@ -33834,15 +34607,20 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
     setCutlistPartTypeFilter("All Part Types");
     setCutlistRoomFilter("Project Cutlist");
-    setCollapsedCutlistGroups((prev) => ({ ...prev, [parent.partType]: false }));
-    if (parsed.kind === "cab") {
+    // (A custom cabinet's piece: its row in the Custom table, opened on how it's built.)
+    const customParent = isCustomCutlistRow(parent);
+    const customCabinetParent = parsed.kind === "cab" && Boolean(customCabinetOf(parent));
+    setCollapsedCutlistGroups((prev) => ({ ...prev, [customParent ? CUSTOM_CUTLIST_GROUP_KEY : parent.partType]: false }));
+    if (customCabinetParent) {
+      setExpandedShapeRows((prev) => ({ ...prev, [`production:${parent.id}`]: true }));
+    } else if (parsed.kind === "cab") {
       setExpandedCabinetryRows((prev) => ({ ...prev, [parent.id]: true }));
     } else if (parsed.kind === "drw") {
       setExpandedDrawerRows((prev) => ({ ...prev, [parent.id]: true }));
     } else if (parsed.kind === "dor") {
       setExpandedDoorRows((prev) => ({ ...prev, [parent.id]: true }));
     }
-    setCutlistJumpTarget(parsed);
+    setCutlistJumpTarget(customCabinetParent ? { ...parsed, subKey: "shape" } : parsed);
     setProductionNav("cutlist");
     setNestingFullscreen(false);
     setIsNestingSheetPreviewOpen(false);
@@ -39865,6 +40643,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           const marginX = (selectedNestingSheet.group.sheetWidth - selectedNestingSheet.group.innerW) / 2;
           const marginY = (selectedNestingSheet.group.sheetHeight - selectedNestingSheet.group.innerH) / 2;
           const { trueOnSheetW, trueOnSheetH, hitMin } = nestingPlacementTrueSize(placement.piece, placement.rotated, nestingSettings.minPieceSize);
+          // (A Custom piece: its true outline, in place of the box it's packed by.)
+          const shapeOutline = nestingPlacementOutline(placement, trueOnSheetW, trueOnSheetH);
           return (
             <div
               key={`preview_${placement.piece.id}_${placement.x}_${placement.y}`}
@@ -39904,11 +40684,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 top: `${((marginY + placement.y) / selectedNestingSheet.group.sheetHeight) * 100}%`,
                 width: `${(placement.w / selectedNestingSheet.group.sheetWidth) * 100}%`,
                 height: `${(placement.h / selectedNestingSheet.group.sheetHeight) * 100}%`,
-                backgroundColor: hitMin ? "transparent" : lightenHex(c, 0.18),
+                backgroundColor: hitMin || shapeOutline ? "transparent" : lightenHex(c, 0.18),
                 backgroundImage: hitMin
                   ? `repeating-linear-gradient(45deg, ${darkenHex(c, 0.12)}55 0px, ${darkenHex(c, 0.12)}55 5px, transparent 5px, transparent 10px)`
                   : undefined,
-                borderColor: darkenHex(c, 0.22),
+                borderColor: shapeOutline && !hitMin ? "transparent" : darkenHex(c, 0.22),
                 borderStyle: hitMin ? "dashed" : "solid",
                 color: t,
                 zIndex: nestingPreviewHoverPieceId === hoverPlacementKey ? 20 : 10,
@@ -39918,7 +40698,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     : "none",
               }}
             >
-              {hitMin && (
+              {shapeOutline ? (
+                <NestingShapeOutline points={shapeOutline} trueW={trueOnSheetW} trueH={trueOnSheetH} boxW={placement.w} boxH={placement.h} fill={lightenHex(c, 0.18)} stroke={darkenHex(c, 0.22)} />
+              ) : null}
+              {!shapeOutline && hitMin && (
                 <div
                   className="absolute left-0 top-0 border-r border-b border-dashed"
                   style={{
@@ -40263,6 +41046,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   const orderMiscQtyTotal = orderMiscLines.reduce((sum, line) => sum + (Number(line.qty) || 0), 0);
 
   const startInitialCellEdit = (row: CutlistRow, key: CutlistEditableField) => {
+    // (A Custom row's Height, Width and banding: its shape's — changed in the shape editor, as Production's.)
+    if ((key === "height" || key === "width" || key === "clashing") && cutlistRowShape(row)) return;
+    // (A custom cabinet's Depth: its top view's, set by its shape too.)
+    if (key === "depth" && row.shape && isCabinetShape(row.shape)) return;
     if (key === "grain") {
       if (!initialMeasureBoardGrainFor(String(row.board ?? "").trim())) return;
       setInitialEditingCell({ rowId: row.id, key });
@@ -40322,6 +41109,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           break;
         case "partType":
           updated.partType = value;
+          // (Made any part type but a Custom one: its shape let go — it's a rectangle at its size again.)
+          if (updated.shape && !isCustomPartType(value)) updated.shape = undefined;
           break;
         case "hinges":
           break;
@@ -40753,7 +41542,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         updated.clashing = clashed.clashing;
         updated = autoSelectGrainValueForRow(updated);
       }
-      if ((change.clashLeft !== undefined || change.clashRight !== undefined) && !isCabinetryPartType(updated.partType)) {
+      if ((change.clashLeft !== undefined || change.clashRight !== undefined) && !isCabinetryPartType(updated.partType) && !cutlistRowShape(updated)) {
         const split = splitClashing(String(updated.clashing || joinClashing(String(updated.clashLeft ?? ""), String(updated.clashRight ?? ""))));
         updated.clashing = joinClashing(change.clashLeft ?? split.left, change.clashRight ?? split.right).trim().toUpperCase();
         const after = splitClashing(updated.clashing);
@@ -41054,6 +41843,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     type ScannedPiece = { key: string; partName: string; height: string; width: string; depth: string; clashLeft: string; clashRight: string };
     const pieces: ScannedPiece[] = scannedPieceKey
       ? [
+          ...(customCabinetOf(row)?.pieces ?? []),
           ...(isCabinetryPartType(row.partType) ? buildCabinetryDerivedPieces(row) : []),
           ...(isDoorPartType(row.partType) && normalizeDoorModeValue(row.doorMode) !== "manual" ? buildConfiguredDoorDerivedPieces(row) : []),
           ...(isClassicDrawerRowLike(row) ? buildDrawerDerivedPieces(row) : []),
@@ -41074,9 +41864,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       .map(([axis, value]) => [axis, String(value ?? "").trim()] as const)
       .filter(([, value]) => value);
     const split = splitClashing(String(row.clashing || ""));
-    const edging = piece
-      ? joinClashing(piece.clashLeft, piece.clashRight)
-      : joinClashing(String(row.clashLeft || split.left), String(row.clashRight || split.right));
+    // (A custom cabinet's shaped piece: what's banded on it.)
+    const pieceShape = piece ? customCabinetOf(row)?.pieces.find((p) => p.key === piece.key)?.shape : undefined;
+    const edging = pieceShape
+      ? shapeBandingSummary(pieceShape)
+      : piece
+        ? joinClashing(piece.clashLeft, piece.clashRight)
+        : joinClashing(String(row.clashLeft || split.left), String(row.clashRight || split.right));
     const info = informationLinesFromValue(String(row.information || "")).map((l) => l.trim()).filter(Boolean);
     const partColor = partTypeColors[String(row.partType || "")] ?? "#CBD5E1";
     const displayId = nestingPrintDisplayIdByRowId[row.id];
@@ -41650,6 +42444,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             const pieceW = placement.w * previewScale;
             const pieceH = placement.h * previewScale;
             const { trueOnSheetW, trueOnSheetH, hitMin } = nestingPlacementTrueSize(placement.piece, placement.rotated, nestingSettings.minPieceSize);
+            // (A Custom piece: its true outline, in place of the box it's packed by.)
+            const shapeOutline = nestingPlacementOutline(placement, trueOnSheetW, trueOnSheetH);
             // Below the machine's cut minimum: the full pieceW/H box is still the reserved
             // packing footprint (used for every routing/legend calc below), but only trueBoxW/H
             // is real material — drawn solid on top of a crosshatched "trim after cutting" fill
@@ -41667,7 +42463,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             doc.setFillColor(fill[0], fill[1], fill[2]);
             doc.setDrawColor(stroke[0], stroke[1], stroke[2]);
             doc.setLineWidth(0.18);
-            doc.rect(pieceX, pieceY, trueBoxW, trueBoxH, "FD");
+            if (shapeOutline) {
+              // A Custom piece: its true outline (scaled onto the page as the sheet is), not the box it's packed by.
+              const pts = shapeOutline.map(([px, py]): [number, number] => [pieceX + px * previewScale, pieceY + py * previewScale]);
+              const deltas = pts.slice(1).map((p, i) => [p[0] - pts[i][0], p[1] - pts[i][1]]);
+              doc.lines(deltas, pts[0][0], pts[0][1], [1, 1], "FD", true);
+            } else {
+              doc.rect(pieceX, pieceY, trueBoxW, trueBoxH, "FD");
+            }
 
             const idText = placementDisplayLabels[placementIdx] ?? "-";
             const idFontSize = 8;
@@ -42689,6 +43492,163 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       rowPtr += 1; // one-row gap between board tables
     }
 
+    // The Custom pieces: a card each, as the cabinets' below — its drawing (a PNG: its sizes, banding arrows) down its
+    // left, its details beside it.
+    if (cncCustomCards.length > 0) {
+      const tableStartCol = spacerCols + 1;
+      sheet.mergeCells(rowPtr, tableStartCol, rowPtr, totalCols);
+      const customTitle = sheet.getCell(rowPtr, tableStartCol);
+      customTitle.value = CUSTOM_CUTLIST_GROUP_TITLE;
+      customTitle.font = { bold: true, color: { argb: whiteFont }, size: 14 };
+      customTitle.alignment = { horizontal: "left", vertical: "middle" };
+      setRangeFill(rowPtr, rowPtr, tableStartCol, totalCols, blackBg);
+      setRangeOuterBorder(rowPtr, rowPtr, tableStartCol, totalCols);
+      sheet.getRow(rowPtr).height = 22;
+      rowPtr += 1;
+
+      for (const card of cncCustomCards) {
+        const headerRow = rowPtr;
+        const bodyStart = headerRow + 1;
+        // (A custom cabinet's: its details down the left, its pieces' sizes down the right — as many rows as the longer.)
+        const cabinetLines = card.cabinet ? customCabinetBreakdownLines(card.cabinet.pieces) : [];
+        const bodyRows = card.cabinet ? Math.max(9, cabinetLines.length + 1) : 5;
+        const bodyEnd = bodyStart + bodyRows - 1;
+        sheet.mergeCells(headerRow, tableStartCol + 1, headerRow, totalCols);
+        sheet.getCell(headerRow, tableStartCol).value = String(card.displayId);
+        sheet.getCell(headerRow, tableStartCol).alignment = { horizontal: "center", vertical: "middle" };
+        sheet.getCell(headerRow, tableStartCol).font = { color: { argb: "FF0F172A" }, size: 11 };
+        sheet.getCell(headerRow, tableStartCol + 1).value = `${String(card.row.name || "-")}   (${String(card.row.partType || "Unassigned")})`;
+        sheet.getCell(headerRow, tableStartCol + 1).font = { bold: true, color: { argb: "FF0F172A" }, size: 11 };
+        sheet.getCell(headerRow, tableStartCol + 1).alignment = { horizontal: "left", vertical: "middle" };
+        setRangeFill(headerRow, headerRow, tableStartCol, totalCols, "FFF5F8FC");
+        for (let c = tableStartCol; c <= totalCols; c += 1) {
+          const cell = sheet.getCell(headerRow, c);
+          cell.border = { ...(cell.border ?? {}), bottom: { style: "thin", color: { argb: darkBorder } } };
+        }
+        sheet.getRow(headerRow).height = 22;
+
+        // Its drawing across C:E, its whole body's height; its details F:K and M:… as the cabinets'.
+        const imageColStart = tableStartCol + 1;
+        const imageColEnd = tableStartCol + 3;
+        sheet.mergeCells(bodyStart, imageColStart, bodyEnd, imageColEnd);
+        const leftLabelColStart = tableStartCol + 4;
+        const leftLabelColEnd = tableStartCol + 5;
+        const leftValueColStart = tableStartCol + 6;
+        const leftValueColEnd = tableStartCol + 9;
+        const rightLabelColStart = tableStartCol + 10;
+        const rightLabelColEnd = tableStartCol + 11;
+        const rightValueColStart = tableStartCol + 12;
+        const rightValueColEnd = totalCols;
+        const infoLines = card.infoLines.length ? card.infoLines : [""];
+        const grainValue = String(card.row.grainValue ?? "");
+        const cabinetSize = card.cabinet ? customCabinetSize(card.shape) : null;
+        const cabinetShelves = card.cabinet ? cabinetSettings(card.shape) : null;
+        const leftRows: Array<[string, string]> = cabinetSize && cabinetShelves
+          ? [
+              ["Room", String(card.row.room || "-")],
+              ["Material", card.boardLabel || "-"],
+              ["Edgetape", boardEdgingFor(card.row.board)],
+              ["Type", card.shape.base?.partType || "Cabinet"],
+              ["Size (H x W x D)", ""],
+              ["Quantity", String(card.row.quantity || "")],
+              ["Grain", boardGrainFor(card.row.board) ? (grainValue.trim() || (card.row.grain ? "Yes" : "N/A")) : "N/A"],
+              ["Shelves", `${cabinetShelves.fixedShelves} fixed, ${cabinetShelves.adjustableShelves} adjustable`],
+              ...Array.from({ length: Math.max(0, bodyRows - 9) }, (): [string, string] => ["", ""]),
+              ["Information", infoLines.join("\n")],
+            ]
+          : [
+              ["Room", String(card.row.room || "-")],
+              ["Material", card.boardLabel || "-"],
+              ["Edgetape", boardEdgingFor(card.row.board)],
+              ["Banding", shapeBandingSummary(card.shape)],
+              ["Information", infoLines.join("\n")],
+            ];
+        const rightRows: Array<[string, string]> = card.cabinet
+          ? Array.from({ length: bodyRows }, (_, i): [string, string] => [cabinetLines[i]?.label ?? "", ""])
+          : [
+              ["Part Type", String(card.row.partType || "Unassigned")],
+              ["Size (H x W)", ""],
+              ["Quantity", String(card.row.quantity || "")],
+              ["Grain", boardGrainFor(card.row.board) ? (grainValue.trim() || (card.row.grain ? "Yes" : "N/A")) : "N/A"],
+              ["", ""],
+            ];
+        for (let i = 0; i < bodyRows; i += 1) {
+          const r = bodyStart + i;
+          sheet.mergeCells(r, leftLabelColStart, r, leftLabelColEnd);
+          sheet.mergeCells(r, leftValueColStart, r, leftValueColEnd);
+          sheet.mergeCells(r, rightLabelColStart, r, rightLabelColEnd);
+          sheet.mergeCells(r, rightValueColStart, r, rightValueColEnd);
+          const [lk, lv] = leftRows[i];
+          const [rk, rv] = rightRows[i];
+          const lkc = sheet.getCell(r, leftLabelColStart);
+          lkc.value = lk;
+          lkc.font = { bold: true, color: { argb: "FF0F172A" }, size: 10 };
+          lkc.alignment = { horizontal: "left", vertical: "middle" };
+          const lvc = sheet.getCell(r, leftValueColStart);
+          lvc.value = lv;
+          lvc.font = { color: { argb: "FF0F172A" }, size: 10 };
+          lvc.alignment = { horizontal: "left", vertical: "middle", wrapText: true };
+          const rkc = sheet.getCell(r, rightLabelColStart);
+          rkc.value = rk;
+          rkc.font = { bold: true, color: { argb: "FF0F172A" }, size: 10 };
+          rkc.alignment = { horizontal: "left", vertical: "middle" };
+          const rvc = sheet.getCell(r, rightValueColStart);
+          if (card.cabinet) {
+            // A custom cabinet: its size (H x W x D) down the left; each of its pieces' sizes down the right.
+            if (cabinetSize && i === 4) {
+              lvc.value = buildDimExcelRichText(formatShapeMm(cabinetSize.height), formatShapeMm(cabinetSize.width), formatShapeMm(cabinetSize.depth), grainValue);
+            }
+            const line = cabinetLines[i];
+            if (line) {
+              const dims = customCabinetPieceDims(line.piece);
+              const dimOf = (key: "height" | "width" | "depth") => dims.find((dim) => dim.key === key)?.value ?? "";
+              rvc.value = buildDimExcelRichText(dimOf("height"), dimOf("width"), dimOf("depth"), String(line.piece.grainValue || ""), line.quantity > 0 ? ` (x${line.quantity})` : "");
+            } else {
+              rvc.value = rv;
+            }
+          } else {
+            rvc.value = i === 1 ? buildDimExcelRichText(String(card.row.height ?? ""), String(card.row.width ?? ""), "", grainValue) : rv;
+          }
+          rvc.font = { color: { argb: "FF0F172A" }, size: 10 };
+          rvc.alignment = { horizontal: "left", vertical: "middle", wrapText: true };
+          sheet.getRow(r).height = i === bodyRows - 1 ? Math.max(40, 16 + Math.max(0, infoLines.length - 1) * 14) : card.cabinet ? 20 : 26;
+        }
+        setRangeFill(bodyStart, bodyEnd, tableStartCol, totalCols, whiteBg);
+        setRangeOuterBorder(headerRow, bodyEnd, tableStartCol, totalCols);
+        setVerticalDividers(headerRow, bodyEnd, tableStartCol, totalCols);
+
+        // Its drawing, fitted (contained, centred) in C:E.
+        const colWidthPx = (col1Based: number) => Math.max(1, Math.round(Number(sheet.getColumn(col1Based).width ?? 8) * 7 + 5));
+        const rowHeightPx = (row1Based: number) => Math.max(1, Math.round((Number(sheet.getRow(row1Based).height ?? 15) * 96) / 72));
+        let areaWpx = 0;
+        for (let c = imageColStart; c <= imageColEnd; c += 1) areaWpx += colWidthPx(c);
+        let areaHpx = 0;
+        for (let r = bodyStart; r <= bodyEnd; r += 1) areaHpx += rowHeightPx(r);
+        const insetPx = 6;
+        const drawWpx = Math.max(16, areaWpx - insetPx * 2);
+        const drawHpx = Math.max(16, areaHpx - insetPx * 2);
+        let dataUrl = "";
+        try {
+          // (A custom cabinet: its top view, its backs and ends a board thick.)
+          dataUrl = card.cabinet
+            ? await cabinetPlanPngDataUrl(card.shape, { thicknessMm: card.cabinet.thicknessMm, width: drawWpx, height: drawHpx, fontSize: 9, background: "#FFFFFF", pixelRatio: 2 })
+            : await shapeDrawingPngDataUrl(card.shape, { width: drawWpx, height: drawHpx, fontSize: 9, background: "#FFFFFF", pixelRatio: 2 });
+        } catch {
+          dataUrl = "";
+        }
+        if (dataUrl) {
+          const imgId = workbook.addImage({ base64: dataUrl, extension: "png" });
+          // (ExcelJS anchors are zero-based; its first column's own width in, a little down.)
+          sheet.addImage(imgId, {
+            tl: { col: imageColStart - 1 + insetPx / colWidthPx(imageColStart), row: bodyStart - 1 + insetPx / rowHeightPx(bodyStart) },
+            ext: { width: Math.round(drawWpx), height: Math.round(drawHpx) },
+            editAs: "oneCell",
+          });
+        }
+        rowPtr = bodyEnd + 2;
+      }
+    }
+
     if (cncCabinetCards.length > 0) {
       const tableStartCol = spacerCols + 1;
       const leftEnd = Math.max(tableStartCol, totalCols - 5);
@@ -43694,6 +44654,256 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       doc.setLineWidth(0.7);
       doc.roundedRect(sidePad, topPad, tableW, sectionH, cornerRadius, cornerRadius, "S");
     });
+
+    // The Custom pieces: one card each — its drawing (lib/cutlist-shape-render.ts, as vectors: its sizes, R labels and
+    // arrows at its banding) beside its details — on pages of their own after the boards' tables, as the cabinets' are.
+    if (cncCustomCards.length > 0) {
+      const drawCustomPageHeader = () => {
+        const barW = pageWidth - sidePad * 2;
+        doc.setFillColor(17, 17, 17);
+        doc.roundedRect(sidePad, topPad, barW, boardBarHeight, 7, 7, "F");
+        doc.setTextColor(255, 255, 255);
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(9);
+        doc.text(CUSTOM_CUTLIST_GROUP_TITLE, sidePad + 8, topPad + 14);
+      };
+      doc.addPage();
+      drawCustomPageHeader();
+      let y = topPad + boardBarHeight + 8;
+      const cardGap = 10;
+      const cardX = sidePad;
+      const cardW = pageWidth - sidePad * 2;
+      const headerH = CNC_CUSTOM_PDF_HEADER_H;
+      const bodyPad = 8;
+      const imageColW = CNC_CUSTOM_PDF_DRAWING.width + bodyPad * 2;
+      const hexRgb = (hex: string): [number, number, number] => {
+        const clean = /^#?([0-9a-f]{6})$/i.exec(hex.trim())?.[1] ?? "CBD5E1";
+        return [Number.parseInt(clean.slice(0, 2), 16), Number.parseInt(clean.slice(2, 4), 16), Number.parseInt(clean.slice(4, 6), 16)];
+      };
+      for (const card of cncCustomCards) {
+        const infoLines = card.infoLines.length ? card.infoLines : [""];
+        const cardH = cncCustomCardPdfHeight(card);
+        const bodyH = cardH - headerH;
+        if (y + cardH > pageHeight - 20) {
+          doc.addPage();
+          drawCustomPageHeader();
+          y = topPad + boardBarHeight + 8;
+        }
+        doc.setFillColor(255, 255, 255);
+        doc.roundedRect(cardX, y, cardW, cardH, 6, 6, "F");
+        doc.setFillColor(245, 248, 252);
+        doc.roundedRect(cardX, y, cardW, headerH, 6, 6, "F");
+        doc.rect(cardX, y + 6, cardW, Math.max(0, headerH - 6), "F");
+        doc.setFont("helvetica", "normal");
+        doc.setTextColor(15, 23, 42);
+        doc.setFontSize(9);
+        doc.text(String(card.displayId), cardX + 20, y + headerH / 2 + 3, { align: "center" });
+        doc.setFont("helvetica", "bold");
+        const nameText = String(card.row.name || "-");
+        doc.text(nameText, cardX + 48, y + 14);
+        // Its part type, in a pill of its colour after its name.
+        const pillText = String(card.row.partType || "Unassigned");
+        const pillHex = normalizeHexColor(partTypeColors[String(card.row.partType || "")] ?? "") || "#CBD5E1";
+        const pillX = cardX + 48 + doc.getTextWidth(nameText) + 8;
+        doc.setFontSize(7.5);
+        const pillW = doc.getTextWidth(pillText) + 10;
+        doc.setFillColor(...hexRgb(pillHex));
+        doc.roundedRect(pillX, y + 5, pillW, 12, 3, 3, "F");
+        if (isLightHex(pillHex)) doc.setTextColor(15, 23, 42);
+        else doc.setTextColor(255, 255, 255);
+        doc.text(pillText, pillX + 5, y + 13.5);
+
+        const bodyY = y + headerH;
+        // A custom cabinet: as the cabinets' cards — its top view (its backs and ends a board thick, its dimensions) down
+        // its left; its details, then its pieces' sizes (the size its grain runs along bold and underlined); its information.
+        if (card.cabinet) {
+          const cabinet = card.cabinet;
+          const pieceLines = customCabinetBreakdownLines(cabinet.pieces);
+          const plan = cabinetPlanDrawingOps(card.shape, {
+            thicknessMm: cabinet.thicknessMm,
+            width: CNC_CUSTOM_PDF_DRAWING.width,
+            height: Math.min(CNC_CUSTOM_PDF_DRAWING.height, bodyH - bodyPad * 2),
+            fontSize: 7,
+            background: "#FFFFFF",
+          });
+          drawShapeDrawingOps(doc, plan.ops, cardX + bodyPad, bodyY + (bodyH - plan.height) / 2);
+          const detailX = cardX + imageColW;
+          const detailW = cardW - imageColW;
+          const colGap = 10;
+          const colW = (detailW - bodyPad * 2 - colGap) / 2;
+          const leftColX = detailX + bodyPad;
+          const rightColX = leftColX + colW + colGap;
+          const rowH = CNC_CUSTOM_PDF_ROW_H;
+          const labelOffset = 74;
+          const rowCount = Math.max(CNC_CUSTOM_CABINET_PDF_DETAIL_ROWS, pieceLines.length);
+          const baselineFor = (rowIndex: number) => bodyY + rowIndex * rowH + rowH / 2 + 3;
+          const drawLabel = (x: number, rowIndex: number, key: string) => {
+            doc.setFont("helvetica", "bold");
+            doc.setFontSize(8);
+            doc.setTextColor(15, 23, 42);
+            doc.text(key, x, baselineFor(rowIndex));
+          };
+          const drawKv = (x: number, rowIndex: number, key: string, value: string) => {
+            drawLabel(x, rowIndex, key);
+            doc.setFont("helvetica", "normal");
+            const wrapped = doc.splitTextToSize(String(value || ""), Math.max(10, colW - labelOffset - 4)) as string[];
+            doc.text(wrapped.slice(0, 1), x + labelOffset, baselineFor(rowIndex));
+          };
+          // Sizes in a run — "720 x 1311 x 1138 (x2)" — the grain's bold and underlined.
+          const drawDims = (x: number, rowIndex: number, dims: Array<{ key: "height" | "width" | "depth"; value: string }>, grain: string, suffix = "") => {
+            const baselineY = baselineFor(rowIndex);
+            let cx = x;
+            dims.forEach((dim, dimIdx) => {
+              doc.setFont("helvetica", "normal");
+              doc.setFontSize(8);
+              if (dimIdx > 0) {
+                doc.text(" x ", cx, baselineY);
+                cx += doc.getTextWidth(" x ");
+              }
+              const match = matchesGrainDimension(grain, dim.value, dim.key);
+              doc.setFont("helvetica", match ? "bold" : "normal");
+              const w = doc.getTextWidth(dim.value);
+              doc.text(dim.value, cx, baselineY);
+              if (match) {
+                doc.setDrawColor(15, 23, 42);
+                doc.setLineWidth(0.6);
+                doc.line(cx, baselineY + 1, cx + w, baselineY + 1);
+              }
+              cx += w;
+            });
+            if (suffix) {
+              doc.setFont("helvetica", "normal");
+              doc.text(suffix, cx, baselineY);
+            }
+          };
+          const size = customCabinetSize(card.shape);
+          const settings = cabinetSettings(card.shape);
+          const grainValue = String(card.row.grainValue ?? "");
+          drawKv(leftColX, 0, "Room", String(card.row.room || "-"));
+          drawKv(leftColX, 1, "Material", card.boardLabel || "-");
+          drawKv(leftColX, 2, "Edgetape", boardEdgingFor(card.row.board));
+          drawKv(leftColX, 3, "Type", card.shape.base?.partType || "Cabinet");
+          drawLabel(leftColX, 4, "Size (H x W x D)");
+          drawDims(
+            leftColX + labelOffset,
+            4,
+            [
+              { key: "height", value: formatShapeMm(size.height) },
+              { key: "width", value: formatShapeMm(size.width) },
+              { key: "depth", value: formatShapeMm(size.depth) },
+            ],
+            grainValue,
+          );
+          drawKv(leftColX, 5, "Quantity", String(card.row.quantity || ""));
+          drawKv(leftColX, 6, "Grain", boardGrainFor(card.row.board) ? (grainValue.trim() || (card.row.grain ? "Yes" : "N/A")) : "N/A");
+          drawKv(leftColX, 7, "Shelves", `${settings.fixedShelves} fixed, ${settings.adjustableShelves} adjustable`);
+          pieceLines.forEach((line, lineIndex) => {
+            drawLabel(rightColX, lineIndex, line.label);
+            drawDims(rightColX + labelOffset, lineIndex, customCabinetPieceDims(line.piece), String(line.piece.grainValue || ""), line.quantity > 0 ? ` (x${line.quantity})` : "");
+          });
+          doc.setDrawColor(228, 231, 238);
+          doc.setLineWidth(0.5);
+          for (let i = 1; i <= rowCount; i += 1) doc.line(detailX, bodyY + i * rowH, cardX + cardW, bodyY + i * rowH);
+          doc.line(rightColX - colGap / 2, bodyY, rightColX - colGap / 2, bodyY + rowCount * rowH);
+          const infoStartY = bodyY + rowCount * rowH + rowH / 2 + 3;
+          doc.setFont("helvetica", "bold");
+          doc.setFontSize(8);
+          doc.setTextColor(15, 23, 42);
+          doc.text("Information", leftColX, infoStartY);
+          doc.setFont("helvetica", "normal");
+          doc.text(infoLines, leftColX + 88, infoStartY);
+          doc.setDrawColor(17, 17, 17);
+          doc.setLineWidth(0.7);
+          doc.roundedRect(cardX, y, cardW, cardH, 6, 6, "S");
+          doc.line(cardX + 40, y, cardX + 40, y + headerH);
+          doc.line(cardX, y + headerH, cardX + cardW, y + headerH);
+          doc.line(detailX, bodyY, detailX, bodyY + bodyH);
+          y += cardH + cardGap;
+          continue;
+        }
+        // Its drawing, centred down the card's left.
+        const drawing = shapeDrawingOps(card.shape, {
+          width: CNC_CUSTOM_PDF_DRAWING.width,
+          height: Math.min(CNC_CUSTOM_PDF_DRAWING.height, bodyH - bodyPad * 2),
+          fontSize: 7,
+          background: "#FFFFFF",
+        });
+        drawShapeDrawingOps(doc, drawing.ops, cardX + bodyPad, bodyY + (bodyH - drawing.height) / 2);
+
+        // Its details: two columns of four, then its information.
+        const detailX = cardX + imageColW;
+        const detailW = cardW - imageColW;
+        const colGap = 10;
+        const colW = (detailW - bodyPad * 2 - colGap) / 2;
+        const leftColX = detailX + bodyPad;
+        const rightColX = leftColX + colW + colGap;
+        const rowH = CNC_CUSTOM_PDF_ROW_H;
+        const labelOffset = 62;
+        const drawKv = (x: number, rowIndex: number, key: string, value: string) => {
+          const baselineY = bodyY + rowIndex * rowH + rowH / 2 + 3;
+          doc.setFont("helvetica", "bold");
+          doc.setFontSize(8);
+          doc.setTextColor(15, 23, 42);
+          doc.text(key, x, baselineY);
+          doc.setFont("helvetica", "normal");
+          const wrapped = doc.splitTextToSize(String(value || ""), Math.max(10, colW - labelOffset - 4)) as string[];
+          doc.text(wrapped.slice(0, 1), x + labelOffset, baselineY);
+        };
+        const grainValue = String(card.row.grainValue ?? "");
+        drawKv(leftColX, 0, "Room", String(card.row.room || "-"));
+        drawKv(leftColX, 1, "Material", card.boardLabel || "-");
+        drawKv(leftColX, 2, "Edgetape", boardEdgingFor(card.row.board));
+        drawKv(leftColX, 3, "Banding", shapeBandingSummary(card.shape));
+        // Size: H × W, the size its grain runs along bold and underlined.
+        drawKv(rightColX, 0, "Size", "");
+        {
+          const baselineY = bodyY + rowH / 2 + 3;
+          let cx = rightColX + labelOffset;
+          const parts: Array<{ text: string; key?: "height" | "width" }> = [
+            { text: "H " },
+            { text: String(card.row.height || "-"), key: "height" },
+            { text: " x W " },
+            { text: String(card.row.width || "-"), key: "width" },
+          ];
+          for (const part of parts) {
+            const match = part.key ? matchesGrainDimension(grainValue, part.text, part.key) : false;
+            doc.setFont("helvetica", match ? "bold" : "normal");
+            doc.setFontSize(8);
+            doc.text(part.text, cx, baselineY);
+            const w = doc.getTextWidth(part.text);
+            if (match) {
+              doc.setDrawColor(15, 23, 42);
+              doc.setLineWidth(0.6);
+              doc.line(cx, baselineY + 1, cx + w, baselineY + 1);
+            }
+            cx += w;
+          }
+        }
+        drawKv(rightColX, 1, "Quantity", String(card.row.quantity || ""));
+        drawKv(rightColX, 2, "Grain", boardGrainFor(card.row.board) ? (grainValue.trim() || (card.row.grain ? "Yes" : "N/A")) : "N/A");
+        drawKv(rightColX, 3, "Part Type", pillText);
+        doc.setDrawColor(228, 231, 238);
+        doc.setLineWidth(0.5);
+        for (let i = 1; i <= 4; i += 1) doc.line(detailX, bodyY + i * rowH, cardX + cardW, bodyY + i * rowH);
+        doc.line(rightColX - colGap / 2, bodyY, rightColX - colGap / 2, bodyY + 4 * rowH);
+        const infoStartY = bodyY + 4 * rowH + rowH / 2 + 3;
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(8);
+        doc.setTextColor(15, 23, 42);
+        doc.text("Information", leftColX, infoStartY);
+        doc.setFont("helvetica", "normal");
+        doc.text(infoLines, leftColX + 88, infoStartY);
+
+        // Its border and dividers last, as the cabinets' cards.
+        doc.setDrawColor(17, 17, 17);
+        doc.setLineWidth(0.7);
+        doc.roundedRect(cardX, y, cardW, cardH, 6, 6, "S");
+        doc.line(cardX + 40, y, cardX + 40, y + headerH);
+        doc.line(cardX, y + headerH, cardX + cardW, y + headerH);
+        doc.line(detailX, bodyY, detailX, bodyY + bodyH);
+        y += cardH + cardGap;
+      }
+    }
 
     if (cncCabinetCards.length > 0) {
       const drawCabinetsPageHeader = () => {
@@ -45294,7 +46504,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               key={`im_fullscreen_mobile_entry_${v}`}
                               type="button"
                               disabled={salesReadOnly}
-                              onClick={() => addInitialDraftRowForPartType(v)}
+                              onClick={(e) => pickInitialEntryPartType(e, v)}
                               // (Round-ended, with the glass shine in its colour.)
                               style={glassShineStyle(color, { color: isLightHex(color) ? "#1F2937" : "#F8FAFC" })}
                               className="glass-shine relative rounded-full border px-3 py-1 text-[11px] font-medium transition-[transform,box-shadow] duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:z-10 hover:scale-110 hover:shadow-lg disabled:opacity-55 disabled:hover:scale-100 disabled:hover:shadow-none"
@@ -45320,6 +46530,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           const draftIsCabinetry = isCabinetryPartType(draft.partType);
                           const draftBoardAllowsGrain = initialMeasureBoardGrainFor(String(draft.board ?? "").trim());
                           const mutedLabelColor = draftTextColor;
+                          // (A Custom piece: its shape — its Height and Width the shape's, its banding drawn on it — as Production's.)
+                          const draftShape = cutlistRowShape(draft);
                           return (
                             <div
                               key={draft.id}
@@ -45403,6 +46615,47 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     style={warningStyleForCell(draft.id, "name", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
                                   />
                                 </div>
+                                {/* (A Custom piece: its shape, then its Height and Width — the shape's, not typed.) */}
+                                {draftShape ? (
+                                  <div className="grid grid-cols-3 items-end gap-2">
+                                    <div className="space-y-1 text-center">
+                                      <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Shape</p>
+                                      <button
+                                        type="button"
+                                        onClick={(e) => openCutlistShapeEditor(e, { mode: "draft", rowId: draft.id, scope: "initial" })}
+                                        className="glass-shine glass-shine-neutral inline-flex h-8 w-full items-center justify-center rounded-[8px] border"
+                                        style={{ color: draftTextColor }}
+                                        title={salesReadOnly ? "View shape" : "Edit shape"}
+                                        aria-label={salesReadOnly ? "View shape" : "Edit shape"}
+                                      >
+                                        {isCabinetShape(draftShape) ? (
+                                          <CutlistCabinetPlanThumbnail shape={draftShape} boardThicknessMm={customCabinetThicknessForBoard(draft.board)} color={color} width={56} height={24} title="Custom cabinet" />
+                                        ) : (
+                                          <CutlistShapeThumbnail shape={draftShape} color={color} width={56} height={24} />
+                                        )}
+                                      </button>
+                                    </div>
+                                    {(["height", "width"] as const).map((field) => (
+                                      <div key={field} className="space-y-1 text-center">
+                                        <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>{field === "height" ? "Height" : "Width"}</p>
+                                        <input
+                                          ref={registerCutlistWarnCellRef(draft.id, field)}
+                                          readOnly
+                                          tabIndex={-1}
+                                          value={field === "height" ? draft.height : draft.width}
+                                          title="Set by the shape — Edit shape to change it"
+                                          className={`h-8 w-full cursor-default rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, field)}`}
+                                          style={{
+                                            ...warningStyleForCell(draft.id, field, { backgroundColor: "transparent", borderColor: draftFieldBorder, color: draftTextColor }),
+                                            ...(matchesGrainDimension(String(draft.grainValue ?? ""), field === "height" ? draft.height : draft.width, field)
+                                              ? { fontWeight: 700, textDecoration: "underline" }
+                                              : {}),
+                                          }}
+                                        />
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (
                                 <div className="grid grid-cols-3 gap-2">
                                   <div className="space-y-1 text-center">
                                     <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Height</p>
@@ -45464,6 +46717,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     />
                                   </div>
                                 </div>
+                                )}
                                 <div className={`grid gap-2 ${draftIsCabinetry ? "grid-cols-1" : showInitialCutlistGrainColumn && draftBoardAllowsGrain ? "grid-cols-3" : "grid-cols-2"}`}>
                                   <div className="space-y-1 text-center">
                                     <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Quantity</p>
@@ -45482,6 +46736,24 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   {!draftIsCabinetry ? (
                                     <div className="space-y-1">
                                       <p className="text-center text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Clashing</p>
+                                      {draftShape ? (
+                                        <div className="flex h-8 items-center justify-between gap-2">
+                                          <span className="min-w-0 truncate text-[12px] font-medium" style={{ color: draftTextColor }} title="Edge banding — set on the shape">
+                                            {cutlistRowBandingText(draft, draftShape)}
+                                          </span>
+                                          <button
+                                            type="button"
+                                            onClick={(e) => openCutlistShapeEditor(e, { mode: "draft", rowId: draft.id, scope: "initial" })}
+                                            className="glass-shine inline-flex h-8 shrink-0 items-center gap-1 rounded-full border px-3 text-[11px] font-medium text-white hover:brightness-95"
+                                            style={glassShineStyle("var(--brand)")}
+                                            title={salesReadOnly ? "View shape" : "Edit shape"}
+                                            aria-label={salesReadOnly ? "View shape" : "Edit shape"}
+                                          >
+                                            <Pencil size={12} />
+                                            {salesReadOnly ? "View" : "Edit"}
+                                          </button>
+                                        </div>
+                                      ) : (
                                       <div className="grid grid-cols-2 gap-2">
                                         <BoardPillDropdown
                                           value={draft.clashLeft ?? ""}
@@ -45508,6 +46780,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                           onChange={(v) => updateInitialDraftCutlistRow(draft.id, { clashRight: v })}
                                         />
                                       </div>
+                                      )}
                                     </div>
                                   ) : null}
                                   {showInitialCutlistGrainColumn && draftBoardAllowsGrain ? (
@@ -45603,7 +46876,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   )}
                   <div className="-mx-3">
                     {groupedInitialCutlistRows.map((group) => {
-                      const color = partTypeColors[group.partType] ?? "#CBD5E1";
+                      const color = cutlistGroupColor(group);
                       // (Its part type's colours as the desktop list's: the colour itself along its title bar, a lighter wash of it
                       // over the headings, a pale one over the rows, words in a dark shade of it.)
                       const palette = cutlistTablePalette(color);
@@ -45625,7 +46898,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             className="relative flex w-full cursor-pointer items-center justify-between gap-3 px-3 py-2 text-left text-[16px] font-semibold"
                             style={{ backgroundColor: palette.titleBarBg, color: palette.titleText }}
                           >
-                            <span className="min-w-0 truncate">{group.partType}</span>
+                            <span className="min-w-0 truncate">{cutlistGroupTitle(group)}</span>
                             <span className="flex shrink-0 items-center gap-2">
                               <span className="text-[11px] font-bold" style={{ color: palette.titleText }}>
                                 {rowCount} {rowCount === 1 ? "Row" : "Rows"}
@@ -45676,12 +46949,33 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       <span className="w-[96px] shrink-0 truncate text-[11px] font-medium">
                                         {boardDisplayLabel(row.board) || "-"}
                                       </span>
-                                      <span className="min-w-0 flex-1 truncate text-[12px] font-semibold">
-                                        {row.name || "-"}
+                                      <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                                        {/* (The Custom table: each piece its own part type's pill.) */}
+                                        {group.custom ? (
+                                          <span
+                                            className="inline-block max-w-[72px] shrink-0 truncate rounded-full px-2 py-[1px] text-[10px] font-medium"
+                                            style={{ backgroundColor: partTypeColors[row.partType || "Unassigned"] ?? color, color: isLightHex(partTypeColors[row.partType || "Unassigned"] ?? color) ? "#1F2937" : "#F8FAFC" }}
+                                          >
+                                            {row.partType || "Unassigned"}
+                                          </span>
+                                        ) : null}
+                                        <span className="min-w-0 truncate text-[12px] font-semibold">
+                                          {row.name || "-"}
+                                        </span>
                                       </span>
-                                      <span className="shrink-0 whitespace-nowrap text-right text-[11px] font-medium" style={{ width: `${sizeCh}ch` }}>
-                                        {mobileListSizeText(row)}
-                                      </span>
+                                      {(() => {
+                                        // (A Custom piece: in place of its size, a drawing of it — its outer size under it.)
+                                        const rowShape = group.custom ? cutlistRowShape(row) : null;
+                                        return rowShape ? (
+                                          <span className="shrink-0">
+                                            <CutlistShapeSizeCell shape={rowShape} color={partTypeColors[row.partType || "Unassigned"] ?? color} textColor={palette.text} thumbWidth={52} thumbHeight={24} strokeColor={palette.text} boardThicknessMm={customCabinetThicknessForBoard(row.board)} />
+                                          </span>
+                                        ) : (
+                                          <span className="shrink-0 whitespace-nowrap text-right text-[11px] font-medium" style={{ width: `${sizeCh}ch` }}>
+                                            {mobileListSizeText(row)}
+                                          </span>
+                                        );
+                                      })()}
                                       <span className="mr-2 w-[28px] shrink-0 text-center text-[12px] font-medium">
                                         {row.quantity || ""}
                                       </span>
@@ -45701,10 +46995,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   const group = groupedInitialCutlistRows.find((g) => g.partType === initialMobileRowDetailKey.partType);
                   const row = group?.rows.find((r) => r.id === initialMobileRowDetailKey.rowId);
                   if (!group || !row) return null;
-                  const clashingValue = joinClashing(String(row.clashLeft ?? ""), String(row.clashRight ?? "")) || row.clashing || "-";
+                  // (A Custom piece: its shape, and the banding drawn on it in place of its clashing.)
+                  const rowShape = cutlistRowShape(row);
+                  const clashingValue = rowShape
+                    ? cutlistRowBandingText(row, rowShape)
+                    : joinClashing(String(row.clashLeft ?? ""), String(row.clashRight ?? "")) || row.clashing || "-";
                   const rowBoardAllowsGrain = initialMeasureBoardGrainFor(String(row.board ?? "").trim());
                   const closeInitialMobileRowDetail = () => setIsInitialMobileRowDetailOpen(false);
-                  const detailColor = partTypeColors[group.partType] ?? "#CBD5E1";
+                  // (The Custom table's: its own part type's colour.)
+                  const detailColor = partTypeColors[group.custom ? String(row.partType || "Unassigned") : group.partType] ?? "#CBD5E1";
                   const detailPalette = groupColorPalette(detailColor);
                   const detailBarBg = detailPalette.headerBg;
                   // Same reference size/weight as CNC's own popup (see its own "label" comment) —
@@ -45726,7 +47025,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           <div className="glass-modal-header relative flex h-[56px] shrink-0 items-center justify-between gap-3 px-5" style={{ backgroundColor: hexToRgba(detailPalette.titleBarBg, 0.6) }}>
                             <div className="min-w-0">
                               <p className="truncate text-[14px] font-bold uppercase tracking-[1px]" style={{ color: detailPalette.text }}>{row.name || "Part"}</p>
-                              <p className="truncate text-[12px] font-medium" style={{ color: detailPalette.text }}>{group.partType}</p>
+                              <p className="truncate text-[12px] font-medium" style={{ color: detailPalette.text }}>{group.custom ? row.partType : group.partType}</p>
                             </div>
                             <button type="button" onClick={closeInitialMobileRowDetail} className={modalCloseButtonClass} style={{ color: detailPalette.text }} aria-label="Close">
                               <X size={16} />
@@ -45838,6 +47137,31 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 </button>
                               )}
                             </div>
+
+                            {rowShape ? (
+                              <>
+                                <div className="mt-4 rounded-[8px] px-3 py-1.5" style={{ backgroundColor: detailBarBg }}>
+                                  <p className={detailLabel} style={{ color: detailPalette.text }}>Shape</p>
+                                </div>
+                                {/* (Its drawing big enough to read, Edit shape and its DXF under it — as Production's.) */}
+                                <div className="px-3 pt-2">
+                                  <CutlistShapeDetail
+                                    shape={rowShape}
+                                    name={String(row.name || row.partType || "Shape")}
+                                    readOnly={salesReadOnly}
+                                    onEdit={(e) => openCutlistShapeEditor(e, { mode: "row", rowId: row.id, scope: "initial" })}
+                                    drawingWidth={360}
+                                    drawingHeight={230}
+                                    fontSize={11}
+                                    stacked
+                                    textColor={detailPalette.text}
+                                    boardThicknessMm={customCabinetThicknessForBoard(row.board)}
+                                    color={partTypeColors[String(row.partType || "Unassigned")] ?? "#CBD5E1"}
+                                    quantity={row.quantity}
+                                  />
+                                </div>
+                              </>
+                            ) : null}
 
                             <div className="mt-4 grid grid-cols-3 gap-4 rounded-[8px] px-3 py-1.5 text-center" style={{ backgroundColor: detailBarBg }}>
                               <p className={detailLabel} style={{ color: detailPalette.text }}>Height</p>
@@ -46381,7 +47705,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 key={`im_pt_full_${v}`}
                                 type="button"
                                 disabled={salesReadOnly}
-                                onClick={() => addInitialDraftRowForPartType(v)}
+                                onClick={(e) => pickInitialEntryPartType(e, v)}
                                 style={{
                                   backgroundColor: color,
                                   borderColor: color,
@@ -46436,6 +47760,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         const draftFieldBorder = draftPalette.fieldBorder;
                         const draftIsCabinetry = isCabinetryPartType(draft.partType);
                         const draftBoardAllowsGrain = initialMeasureBoardGrainFor(String(draft.board ?? "").trim());
+                        // (A Custom piece: its shape — its Height and Width the shape's, its banding drawn on it — as Production's.)
+                        const draftShape = cutlistRowShape(draft);
+                        const draftHeightGrainMatch = matchesGrainDimension(String(draft.grainValue ?? ""), draft.height, "height");
+                        const draftWidthGrainMatch = matchesGrainDimension(String(draft.grainValue ?? ""), draft.width, "width");
                         return (
                           <div
                             key={draft.id}
@@ -46498,7 +47826,18 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell(draft.id, "name")}`}
                               style={{ ...warningStyleForCell(draft.id, "name", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...initialCutlistEntryCellStyle("name") }}
                             />
-                            {isDrawerPartType(draft.partType) ? (
+                            {/* (A Custom piece's Height and Width: its shape's outer size — not typed.) */}
+                            {draftShape ? (
+                              <input
+                                ref={registerCutlistWarnCellRef(draft.id, "height")}
+                                value={draft.height}
+                                readOnly
+                                tabIndex={-1}
+                                title="Set by the shape — Edit shape to change it"
+                                className={`h-8 cursor-default rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`}
+                                style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: "transparent", borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...initialCutlistEntryCellStyle("height") }}
+                              />
+                            ) : isDrawerPartType(draft.partType) ? (
                               <div ref={registerCutlistWarnCellRef(draft.id, "height")} style={initialCutlistEntryCellStyle("height")}>
                                 <DrawerHeightDropdown
                                   value={String(draft.height || "")}
@@ -46524,6 +47863,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...initialCutlistEntryCellStyle("height") }}
                               />
                             )}
+                            {draftShape ? (
+                              <input
+                                ref={registerCutlistWarnCellRef(draft.id, "width")}
+                                value={draft.width}
+                                readOnly
+                                tabIndex={-1}
+                                title="Set by the shape — Edit shape to change it"
+                                className={`h-8 cursor-default rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`}
+                                style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: "transparent", borderColor: draftFieldBorder, color: draftTextColor }), ...(draftWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...initialCutlistEntryCellStyle("width") }}
+                              />
+                            ) : (
                             <input
                               ref={registerCutlistWarnCellRef(draft.id, "width")}
                               disabled={salesReadOnly}
@@ -46535,6 +47885,26 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`}
                               style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...initialCutlistEntryCellStyle("width") }}
                             />
+                            )}
+                            {draftShape ? (
+                              // (A Custom piece has no Depth: the drawing of its shape there — Edit shape.)
+                              <div ref={registerCutlistWarnCellRef(draft.id, "depth")} style={initialCutlistEntryCellStyle("depth")}>
+                                <button
+                                  type="button"
+                                  onClick={(e) => openCutlistShapeEditor(e, { mode: "draft", rowId: draft.id, scope: "initial" })}
+                                  className="glass-shine glass-shine-neutral inline-flex h-8 w-full items-center justify-center rounded-[8px] border"
+                                  style={{ color: draftTextColor }}
+                                  title={salesReadOnly ? "View shape" : "Edit shape"}
+                                  aria-label={salesReadOnly ? "View shape" : "Edit shape"}
+                                >
+                                  {isCabinetShape(draftShape) ? (
+                                    <CutlistCabinetPlanThumbnail shape={draftShape} boardThicknessMm={customCabinetThicknessForBoard(draft.board)} color={color} width={56} height={24} title="Custom cabinet" />
+                                  ) : (
+                                    <CutlistShapeThumbnail shape={draftShape} color={color} width={56} height={24} />
+                                  )}
+                                </button>
+                              </div>
+                            ) : (
                             <input
                               ref={registerCutlistWarnCellRef(draft.id, "depth")}
                               disabled={salesReadOnly}
@@ -46546,6 +47916,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "depth")}`}
                               style={{ ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...initialCutlistEntryCellStyle("depth") }}
                             />
+                            )}
                             <input
                               ref={registerCutlistWarnCellRef(draft.id, "quantity")}
                               disabled={salesReadOnly || isDrawerPartType(draft.partType)}
@@ -46557,7 +47928,26 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`}
                               style={{ ...warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...initialCutlistEntryCellStyle("quantity") }}
                             />
-                            {draftIsCabinetry ? (
+                            {draftShape ? (
+                              <div className="flex items-center" style={initialCutlistEntryCellStyle("clashing", 2)}>
+                                <div className="flex w-full min-w-0 items-center justify-between gap-1.5">
+                                  <span className="min-w-0 truncate text-[11px] font-medium" style={{ color: draftTextColor }} title="Edge banding — set on the shape">
+                                    {cutlistRowBandingText(draft, draftShape)}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => openCutlistShapeEditor(e, { mode: "draft", rowId: draft.id, scope: "initial" })}
+                                    className="glass-shine inline-flex h-7 shrink-0 items-center gap-1 rounded-full border px-2.5 text-[11px] font-medium text-white hover:brightness-95"
+                                    style={glassShineStyle("var(--brand)")}
+                                    title={salesReadOnly ? "View shape" : "Edit shape"}
+                                    aria-label={salesReadOnly ? "View shape" : "Edit shape"}
+                                  >
+                                    <Pencil size={11} />
+                                    {salesReadOnly ? "View" : "Edit"}
+                                  </button>
+                                </div>
+                              </div>
+                            ) : draftIsCabinetry ? (
                               <div className="grid content-start gap-[1px]" style={initialCutlistEntryCellStyle("clashing", 2)}>
                                 <div className="grid content-start gap-0">
                                   <div className="grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
@@ -46768,7 +48158,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       <EmptyState compact icon={<Ruler size={16} />} title="No cutlist rows yet" hint="Parts added to the cutlist show here, grouped by part type." />
                     )}
                     {groupedInitialCutlistRows.map((group) => {
-                      const color = partTypeColors[group.partType] ?? "#CBD5E1";
+                      const color = cutlistGroupColor(group);
                       const palette = cutlistTablePalette(color);
                       const groupTextColor = palette.text;
                       const collapsed = Boolean(initialCollapsedCutlistGroups[group.partType]);
@@ -46793,10 +48183,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         minWidth: initialMeasureGroupGrainSegments * 32,
                         maxWidth: initialMeasureGroupGrainSegments * 32,
                       };
+                      // (The Custom table: Height, Width and Depth one Shape column — its piece's drawing, its outer size under it.)
+                      const initialGroupColumnDefs = group.custom
+                        ? initialCutlistListColumnDefs
+                            .filter((col) => col.key !== "width" && col.key !== "depth")
+                            .map((col) => (col.key === "height" ? { ...col, label: "Shape" } : col))
+                        : initialCutlistListColumnDefs;
                       // A column's usual width (Information counted at 120px — it gives up its room first), and its share
                       // of the table in proportion to them all.
                       const initialListColumnPx = (key: CutlistEditableField) => {
                         if (key === "information") return 120;
+                        if (key === "height" && group.custom) return 132;
                         if (key === "grain") return initialMeasureGroupGrainColumnStyle.width;
                         const style = cutlistListColumnStyle(key) as { width?: number; minWidth?: number };
                         return style.width ?? style.minWidth ?? 0;
@@ -46804,7 +48201,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       const initialListColumnsTotalPx =
                         78 +
                         (showRoomColumnInInitialList ? initialCutlistRoomColumnWidthPx : 0) +
-                        initialCutlistListColumnDefs.reduce((sum, col) => sum + initialListColumnPx(col.key as CutlistEditableField), 0);
+                        initialGroupColumnDefs.reduce((sum, col) => sum + initialListColumnPx(col.key as CutlistEditableField), 0);
                       // (As the production cutlist's: usual widths when they fit, their shares of the table when not.)
                       const initialListTableWidth =
                         initialCutlistListWrapWidth === null ? null : initialCutlistListWrapWidth - (isCutlistRoomsPanelShown ? 26 : 0);
@@ -46839,7 +48236,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           >
                             <div className="flex h-full items-center gap-3">
                               <span className="inline-flex h-full items-center pl-4 text-[21px] font-semibold leading-none">
-                                {group.partType}
+                                {cutlistGroupTitle(group)}
                               </span>
                               <span
                                 className="inline-flex items-center rounded-full px-2.5 py-[4px] text-[12px] font-semibold leading-none"
@@ -46870,7 +48267,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   toggleInitialCutlistGroup(group.partType);
                                 }}
                                 aria-expanded={!collapsed}
-                                aria-label={collapsed ? `Show ${group.partType}` : `Hide ${group.partType}`}
+                                aria-label={collapsed ? `Show ${cutlistGroupTitle(group)}` : `Hide ${cutlistGroupTitle(group)}`}
                                 // (Round, a wash of white over the title bar: V to open the group, ^ to fold it away.)
                                 className="flex h-8 w-8 items-center justify-center rounded-full text-current transition hover:brightness-95"
                                 style={{ backgroundColor: palette.countChipBg }}
@@ -46895,7 +48292,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               <tr>
                                 <th className="px-2 py-2" style={{ width: initialListColumnWidth(78) }}></th>
                                 {showRoomColumnInInitialList && <th className="px-2 py-2" style={{ color: palette.headerText, width: initialListColumnWidth(initialCutlistRoomColumnWidthPx) }}>Room</th>}
-                                {initialCutlistListColumnDefs.map((col) => (
+                                {initialGroupColumnDefs.map((col) => (
                                   <th
                                     key={`im_full_list_h_${group.partType}_${col.key}`}
                                     className={`px-2 py-2 ${cutlistHeaderAlignClass(col.key as CutlistEditableField)}`}
@@ -46913,13 +48310,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               {group.rows.map((row, idx) => {
                                 const rowPartColor = partTypeColors[row.partType || "Unassigned"] ?? "#CBD5E1";
                                 const rowPartTextColor = isLightHex(rowPartColor) ? "#000000" : "#FFFFFF";
+                                // (A Custom piece — the Custom table: a drawing of it in place of its Height, Width and Depth, its
+                                // banding as its Clashing; its drop-down arrow opens it big, with Edit shape and its DXF.)
+                                const rowShape = group.custom ? cutlistRowShape(row) : null;
+                                const shapeOpen = Boolean(rowShape && expandedShapeRows[`initial:${row.id}`]);
                                 return (
+                                  <Fragment key={`im_full_row_${group.partType}_${row.id}_${idx}`}>
                                   <tr
-                                    key={`im_full_row_${group.partType}_${row.id}_${idx}`}
                                     data-cutlist-row-id={row.id}
                                     className="border-t"
                                     style={{
-                                      backgroundColor: palette.rowBg,
+                                      backgroundColor: shapeOpen ? palette.rowOpenBg : palette.rowBg,
                                       color: groupTextColor,
                                       borderTopColor: palette.divider,
                                       // (The part Needs attention just took you to: washed amber a moment, then fading back.)
@@ -46930,6 +48331,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     }}
                                   >
                                 <td className="px-2 py-[3px] align-middle" style={{ width: 78, minWidth: 78, maxWidth: 78 }}>
+                                      <div className="flex items-center gap-1">
                                       {(() => {
                                         const rowPendingDelete = pendingGroupRows.includes(row.id);
                                         return (
@@ -46953,6 +48355,24 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                           </button>
                                         );
                                       })()}
+                                      {rowShape ? (
+                                        // (Its drop-down arrow — its drawing big, Edit shape and Download DXF under it.)
+                                        <button
+                                          type="button"
+                                          onClick={() => toggleShapeRowExpand(`initial:${row.id}`)}
+                                          className="glass-shine inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border"
+                                          style={glassShineStyle(rowPartColor)}
+                                          title={shapeOpen ? "Hide its drawing" : "Show its drawing"}
+                                          aria-expanded={shapeOpen}
+                                        >
+                                          <ChevronDown
+                                            size={13}
+                                            color={isLightHex(rowPartColor) ? palette.text : "#FFFFFF"}
+                                            style={{ transform: shapeOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 120ms ease" }}
+                                          />
+                                        </button>
+                                      ) : null}
+                                      </div>
                                     </td>
                                     {showRoomColumnInInitialList && (
                                       <td
@@ -46985,8 +48405,46 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         )}
                                       </td>
                                     )}
-                                    {initialCutlistListColumnDefs.map((col) => {
+                                    {initialGroupColumnDefs.map((col) => {
                                       const key = col.key as CutlistEditableField;
+                                      // A Custom piece: its Shape (a drawing of it, its outer size under it — set by the shape) and its
+                                      // banding as its Clashing.
+                                      if (rowShape && key === "height") {
+                                        const grainValue = String(row.grainValue ?? "");
+                                        const grainAxis = matchesGrainDimension(grainValue, row.height, "height")
+                                          ? "height"
+                                          : matchesGrainDimension(grainValue, row.width, "width")
+                                            ? "width"
+                                            : matchesGrainDimension(grainValue, row.depth, "depth")
+                                              ? "depth"
+                                              : null;
+                                        return (
+                                          <td
+                                            ref={registerCutlistWarnCellRef(row.id, key)}
+                                            key={`im_full_list_c_${row.id}_${key}`}
+                                            className="px-2 py-[3px] text-center align-middle"
+                                            style={{ color: groupTextColor }}
+                                            title="Its outer size — set by the shape"
+                                            onDoubleClick={() => toggleShapeRowExpand(`initial:${row.id}`)}
+                                          >
+                                            <CutlistShapeSizeCell shape={rowShape} color={rowPartColor} textColor={groupTextColor} grainAxis={grainAxis} strokeColor={groupTextColor} boardThicknessMm={customCabinetThicknessForBoard(row.board)} />
+                                          </td>
+                                        );
+                                      }
+                                      if (rowShape && key === "clashing") {
+                                        return (
+                                          <td
+                                            ref={registerCutlistWarnCellRef(row.id, key)}
+                                            key={`im_full_list_c_${row.id}_${key}`}
+                                            className={`px-2 py-[3px] align-middle ${cutlistCellAlignClass(key)}`}
+                                            style={{ ...cutlistListColumnStyle(key), color: groupTextColor }}
+                                            title="Edge banding — set on the shape"
+                                            onDoubleClick={(e) => openCutlistShapeEditor(e, { mode: "row", rowId: row.id, scope: "initial" })}
+                                          >
+                                            {cutlistRowBandingText(row, rowShape)}
+                                          </td>
+                                        );
+                                      }
                                       if (key === "partType") {
                                         const options = Array.from(new Set([row.partType, ...initialMeasurePartTypeOptions].filter(Boolean)));
                                         return (
@@ -47187,6 +48645,31 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       );
                                     })}
                                   </tr>
+                                  {shapeOpen && rowShape && (
+                                    <tr
+                                      data-cutlist-subrow-parent={row.id}
+                                      data-cutlist-subrow-key="shape"
+                                      className="border-t"
+                                      style={{ backgroundColor: palette.subRowBg, color: groupTextColor, borderTopColor: palette.divider }}
+                                    >
+                                      <td colSpan={1 + (showRoomColumnInInitialList ? 1 : 0) + initialGroupColumnDefs.length} className="px-4 py-3 align-middle">
+                                        <CutlistShapeDetail
+                                          shape={rowShape}
+                                          name={String(row.name || row.partType || "Shape")}
+                                          readOnly={salesReadOnly}
+                                          onEdit={(e) => openCutlistShapeEditor(e, { mode: "row", rowId: row.id, scope: "initial" })}
+                                          drawingWidth={620}
+                                          drawingHeight={300}
+                                          fontSize={12}
+                                          textColor={groupTextColor}
+                                          boardThicknessMm={customCabinetThicknessForBoard(row.board)}
+                                          color={rowPartColor}
+                                          quantity={row.quantity}
+                                        />
+                                      </td>
+                                    </tr>
+                                  )}
+                                  </Fragment>
                                 );
                               })}
                             </tbody>
@@ -47202,6 +48685,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             </div>
           </div>
           {cutlistFieldWarningBubblesPortal}
+          {cutlistShapeEditorPortal}
           {addRoomModalPortal}
           {unlockEditModalPortal}
           {remedialsModalPortal}
@@ -47393,6 +48877,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           const draftFieldBorder = draftPalette.fieldBorder;
                           const draftFolded = Boolean(cutlistCompactFoldedDraftRows[draft.id]);
                             const draftIsCabinetry = isCabinetryPartType(draft.partType);
+                            // (A Custom piece: its shape — its Height and Width the shape's, its banding drawn on it.)
+                            const draftShape = cutlistRowShape(draft);
                             const draftIsDoor = isDoorPartType(draft.partType);
                             const draftDoorMode = selectedDoorModeValue(draft.doorMode);
                             const draftIsConfiguredDoor =
@@ -47862,7 +49348,46 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 ) : null}
                                 {!draftIsConfiguredDoor ? (
                                 <>
-                                {/* (Height, Width and Depth in thirds — or, for a front (no Depth), Height and Width in halves.) */}
+                                {/* (Height, Width and Depth in thirds — or, for a front (no Depth), Height and Width in halves. A Custom
+                                    piece: its shape, then its Height and Width — the shape's, not typed.) */}
+                                {draftShape ? (
+                                  <div className={`grid grid-cols-3 items-end gap-2 ${isTabletProjectViewport ? "sm:col-span-2" : ""}`}>
+                                    <div className="space-y-1 text-center">
+                                      <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Shape</p>
+                                      <button
+                                        type="button"
+                                        onClick={(e) => openCutlistShapeEditor(e, { mode: "draft", rowId: draft.id })}
+                                        className="glass-shine glass-shine-neutral inline-flex h-8 w-full items-center justify-center rounded-[8px] border"
+                                        style={{ color: draftTextColor }}
+                                        title={productionReadOnly ? "View shape" : "Edit shape"}
+                                        aria-label={productionReadOnly ? "View shape" : "Edit shape"}
+                                      >
+                                        {isCabinetShape(draftShape) ? (
+                                          <CutlistCabinetPlanThumbnail shape={draftShape} boardThicknessMm={customCabinetThicknessForBoard(draft.board)} color={color} width={56} height={24} title="Custom cabinet" />
+                                        ) : (
+                                          <CutlistShapeThumbnail shape={draftShape} color={color} width={56} height={24} />
+                                        )}
+                                      </button>
+                                    </div>
+                                    {(["height", "width"] as const).map((field) => (
+                                      <div key={field} className="space-y-1 text-center">
+                                        <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>{field === "height" ? "Height" : "Width"}</p>
+                                        <input
+                                          ref={registerCutlistWarnCellRef(draft.id, field)}
+                                          readOnly
+                                          tabIndex={-1}
+                                          value={field === "height" ? draft.height : draft.width}
+                                          title="Set by the shape — Edit shape to change it"
+                                          className={`h-8 w-full cursor-default rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, field)}`}
+                                          style={{
+                                            ...warningStyleForCell(draft.id, field, { backgroundColor: "transparent", borderColor: draftFieldBorder, color: draftTextColor }),
+                                            ...((field === "height" ? draftHeightGrainMatch : draftWidthGrainMatch) ? { fontWeight: 700, textDecoration: "underline" } : {}),
+                                          }}
+                                        />
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (
                                 <div className={`grid ${isFrontBankRow || draftIsDoor ? "grid-cols-2" : "grid-cols-3"} gap-2 ${isTabletProjectViewport ? "sm:col-span-2" : ""}`}>
                                   <div className="space-y-1 text-center">
                                     <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Height</p>
@@ -48065,6 +49590,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     </div>
                                   )}
                                 </div>
+                                )}
                                 <div className={`grid gap-2 ${draftIsCabinetry ? "grid-cols-2" : draftBoardAllowsGrain && showCutlistGrainColumn ? "grid-cols-4" : "grid-cols-3"} ${isTabletProjectViewport ? "sm:col-span-2" : ""}`}>
                                   <div className="space-y-1 text-center">
                                     <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Quantity</p>
@@ -48098,6 +49624,24 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     <>
                                       <div className="space-y-1 col-span-2">
                                         <p className="text-center text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Clashing</p>
+                                        {draftShape ? (
+                                          <div className="flex h-8 items-center justify-between gap-2">
+                                            <span className="min-w-0 truncate text-[12px] font-medium" style={{ color: draftTextColor }} title="Edge banding — set on the shape">
+                                              {cutlistRowBandingText(draft, draftShape)}
+                                            </span>
+                                            <button
+                                              type="button"
+                                              onClick={(e) => openCutlistShapeEditor(e, { mode: "draft", rowId: draft.id })}
+                                              className="glass-shine inline-flex h-8 shrink-0 items-center gap-1 rounded-full border px-3 text-[11px] font-medium text-white hover:brightness-95"
+                                              style={glassShineStyle("var(--brand)")}
+                                              title={productionReadOnly ? "View shape" : "Edit shape"}
+                                              aria-label={productionReadOnly ? "View shape" : "Edit shape"}
+                                            >
+                                              <Pencil size={12} />
+                                              {productionReadOnly ? "View" : "Edit"}
+                                            </button>
+                                          </div>
+                                        ) : (
                                         <div className="grid grid-cols-2 gap-2">
                                           <div>
                                             <BoardPillDropdown
@@ -48128,6 +49672,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                             />
                                           </div>
                                         </div>
+                                        )}
                                       </div>
                                       {showCutlistGrainColumn && draftBoardAllowsGrain ? (
                                         <div className="space-y-1 text-center">
@@ -48317,7 +49862,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       directly on the page background rather than in an extra boxed container. */}
                   <div className="-mx-3">
                     {groupedCutlistRows.map((group) => {
-                      const color = partTypeColors[group.partType] ?? "#CBD5E1";
+                      const color = cutlistGroupColor(group);
                       // (Its part type's colours as the desktop list's: the colour itself along its title bar, a lighter wash of it
                       // over the headings, a pale one over the rows, words in a dark shade of it.)
                       const palette = cutlistTablePalette(color);
@@ -48339,7 +49884,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             className="relative flex w-full cursor-pointer items-center justify-between gap-3 px-3 py-2 text-left text-[16px] font-semibold"
                             style={{ backgroundColor: palette.titleBarBg, color: palette.titleText }}
                           >
-                            <span className="min-w-0 truncate">{group.partType}</span>
+                            <span className="min-w-0 truncate">{cutlistGroupTitle(group)}</span>
                             <span className="flex shrink-0 items-center gap-2">
                               <span className="text-[11px] font-bold" style={{ color: palette.titleText }}>
                                 {rowCount} {rowCount === 1 ? "Row" : "Rows"}
@@ -48390,12 +49935,33 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       <span className="w-[96px] shrink-0 truncate text-[11px] font-medium">
                                         {boardDisplayLabel(row.board) || "-"}
                                       </span>
-                                      <span className="min-w-0 flex-1 truncate text-[12px] font-semibold">
-                                        {row.name || "-"}
+                                      <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                                        {/* (The Custom table: each piece its own part type's pill.) */}
+                                        {group.custom ? (
+                                          <span
+                                            className="inline-block max-w-[72px] shrink-0 truncate rounded-full px-2 py-[1px] text-[10px] font-medium"
+                                            style={{ backgroundColor: partTypeColors[row.partType || "Unassigned"] ?? color, color: isLightHex(partTypeColors[row.partType || "Unassigned"] ?? color) ? "#1F2937" : "#F8FAFC" }}
+                                          >
+                                            {row.partType || "Unassigned"}
+                                          </span>
+                                        ) : null}
+                                        <span className="min-w-0 truncate text-[12px] font-semibold">
+                                          {row.name || "-"}
+                                        </span>
                                       </span>
-                                      <span className="shrink-0 whitespace-nowrap text-right text-[11px] font-medium" style={{ width: `${sizeCh}ch` }}>
-                                        {mobileListSizeText(row)}
-                                      </span>
+                                      {(() => {
+                                        // (A Custom piece: in place of its size, a drawing of it — its outer size under it.)
+                                        const rowShape = group.custom ? cutlistRowShape(row) : null;
+                                        return rowShape ? (
+                                          <span className="shrink-0">
+                                            <CutlistShapeSizeCell shape={rowShape} color={partTypeColors[row.partType || "Unassigned"] ?? color} textColor={palette.text} thumbWidth={52} thumbHeight={24} strokeColor={palette.text} boardThicknessMm={customCabinetThicknessForBoard(row.board)} />
+                                          </span>
+                                        ) : (
+                                          <span className="shrink-0 whitespace-nowrap text-right text-[11px] font-medium" style={{ width: `${sizeCh}ch` }}>
+                                            {mobileListSizeText(row)}
+                                          </span>
+                                        );
+                                      })()}
                                       <span className="mr-2 w-[28px] shrink-0 text-center text-[12px] font-medium">
                                         {row.quantity || ""}
                                       </span>
@@ -48422,10 +49988,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   const rowBoardAllowsGrain = productionBoardAllowsGrainForValue(String(row.board ?? "").trim());
                   const rowGrainValue = String(row.grainValue ?? "").trim();
                   const rowIsBankFront = Boolean(row.bankGroupId);
-                  const clashingValue = joinClashing(row.clashLeft ?? "", row.clashRight ?? "") || row.clashing || "-";
+                  // (A Custom piece: its shape, and the banding drawn on it in place of its clashing.)
+                  const rowShape = cutlistRowShape(row);
+                  const clashingValue = rowShape ? cutlistRowBandingText(row, rowShape) : joinClashing(row.clashLeft ?? "", row.clashRight ?? "") || row.clashing || "-";
                   const rowIsCabinetry = isCabinetryPartType(row.partType);
                   const closeProductionMobileRowDetail = () => setIsProductionMobileRowDetailOpen(false);
-                  const detailColor = partTypeColors[group.partType] ?? "#CBD5E1";
+                  // (The Custom table's: its own part type's colour.)
+                  const detailColor = partTypeColors[group.custom ? String(row.partType || "Unassigned") : group.partType] ?? "#CBD5E1";
                   const detailPalette = groupColorPalette(detailColor);
                   const detailBarBg = detailPalette.headerBg;
                   // Same reference size/weight as CNC's own popup (see its own "label" comment) —
@@ -48447,7 +50016,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           <div className="glass-modal-header relative flex h-[56px] shrink-0 items-center justify-between gap-3 px-5" style={{ backgroundColor: hexToRgba(detailPalette.titleBarBg, 0.6) }}>
                             <div className="min-w-0">
                               <p className="truncate text-[14px] font-bold uppercase tracking-[1px]" style={{ color: detailPalette.text }}>{row.name || "Part"}</p>
-                              <p className="truncate text-[12px] font-medium" style={{ color: detailPalette.text }}>{group.partType}</p>
+                              <p className="truncate text-[12px] font-medium" style={{ color: detailPalette.text }}>{group.custom ? row.partType : group.partType}</p>
                             </div>
                             <button type="button" onClick={closeProductionMobileRowDetail} className={modalCloseButtonClass} style={{ color: detailPalette.text }} aria-label="Close">
                               <X size={16} />
@@ -48548,6 +50117,32 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               )}
                             </div>
 
+                            {rowShape ? (
+                              <>
+                                <div className="mt-4 rounded-[8px] px-3 py-1.5" style={{ backgroundColor: detailBarBg }}>
+                                  <p className={detailLabel} style={{ color: detailPalette.text }}>Shape</p>
+                                </div>
+                                {/* (Its drawing big enough to read — its sizes, R labels and arrows at its banding — Edit shape and
+                                    its DXF under it.) */}
+                                <div className="px-3 pt-2">
+                                  <CutlistShapeDetail
+                                    shape={rowShape}
+                                    name={String(row.name || row.partType || "Shape")}
+                                    readOnly={productionReadOnly}
+                                    onEdit={(e) => openCutlistShapeEditor(e, { mode: "row", rowId: row.id })}
+                                    drawingWidth={360}
+                                    drawingHeight={230}
+                                    fontSize={11}
+                                    stacked
+                                    textColor={detailPalette.text}
+                                    boardThicknessMm={customCabinetThicknessForBoard(row.board)}
+                                    color={partTypeColors[String(row.partType || "Unassigned")] ?? "#CBD5E1"}
+                                    quantity={row.quantity}
+                                  />
+                                </div>
+                              </>
+                            ) : null}
+
                             {!rowIsConfiguredDoor ? (
                               <>
                                 <div className="mt-4 grid grid-cols-3 gap-4 rounded-[8px] px-3 py-1.5 text-center" style={{ backgroundColor: detailBarBg }}>
@@ -48602,7 +50197,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     ) : (
                                       <button
                                         type="button"
-                                        disabled={productionReadOnly}
+                                        disabled={productionReadOnly || Boolean(rowShape)}
                                         onClick={() => startCellEdit(row, "height")}
                                         className={`min-w-0 rounded-[6px] px-1 disabled:opacity-100 ${isDrawerPartType(row.partType) ? "" : "py-[2px]"}`}
                                         style={{ color: detailPalette.text, ...(matchesGrainDimension(rowGrainValue, row.height, "height") ? { fontWeight: 700, textDecoration: "underline" } : undefined) }}
@@ -48636,7 +50231,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     ) : (
                                       <button
                                         type="button"
-                                        disabled={productionReadOnly}
+                                        disabled={productionReadOnly || Boolean(rowShape)}
                                         onClick={() => startCellEdit(row, "width")}
                                         className="min-w-0 rounded-[6px] px-1 py-[2px] disabled:opacity-100"
                                         style={{ color: detailPalette.text, ...(matchesGrainDimension(rowGrainValue, row.width, "width") ? { fontWeight: 700, textDecoration: "underline" } : undefined) }}
@@ -49408,6 +51003,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             {renderContractorNotesDrawers()}
             {renderCutlistCabinetryDrawer()}
             {cutlistLeaveCheckPortal}
+            {cutlistShapeEditorPortal}
           </div>
         </ProtectedRoute>
       );
@@ -49798,6 +51394,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         const draftFieldBg = "#FFFFFF";
                         const draftFieldBorder = draftPalette.fieldBorder;
                         const draftIsCabinetry = isCabinetryPartType(draft.partType);
+                        // (A Custom piece: its shape — its Height and Width the shape's, its banding drawn on it.)
+                        const draftShape = cutlistRowShape(draft);
                             const draftIsDoor = isDoorPartType(draft.partType);
                             const draftDoorMode = selectedDoorModeValue(draft.doorMode);
                         const isFrontBankRow = draftIsDoor && (draftDoorMode === "drawer" || draftDoorMode === "door");
@@ -50381,7 +51979,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             </div>
                             ) : null}
                           </div>
-                          {isDrawerPartType(draft.partType) ? (
+                          {/* (A Custom piece's Height and Width: its shape's outer size — not typed.) */}
+                          {draftShape ? (
+                            <input ref={registerCutlistWarnCellRef(draft.id, "height")} value={draft.height} readOnly tabIndex={-1} title="Set by the shape — Edit shape to change it" className={`${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} w-full cursor-default rounded-[8px] border bg-transparent px-2 text-center ${warningClassForCell(draft.id, "height")}`} style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: "transparent", borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("height"), marginLeft: isSubPartDraft ? -4 : undefined }} />
+                          ) : isDrawerPartType(draft.partType) ? (
                             <div ref={registerCutlistWarnCellRef(draft.id, "height")} style={{ ...cutlistEntryCellStyle("height"), display: "flex", alignItems: "center", marginLeft: isSubPartDraft ? -4 : undefined, width: isSubPartDraft ? "100%" : undefined }}>
                             <DrawerHeightDropdown
                               value={String(draft.height || "")}
@@ -50473,7 +52074,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             <input ref={registerCutlistWarnCellRef(draft.id, "height")} disabled={productionReadOnly} inputMode="decimal" title={heightWarn || undefined} value={draft.height} onChange={(e) => updateDraftCutlistRow(draft.id, { height: numericDimensionText(e.target.value) })} className={`${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} w-full rounded-[8px] border bg-transparent px-2 text-center ${warningClassForCell(draft.id, "height")}`} style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("height"), marginLeft: isSubPartDraft ? -4 : undefined }} />
                           )}
                           <div ref={registerCutlistWarnCellRef(draft.id, "width")} style={{ ...cutlistEntryCellStyle("width"), ...subCellCenterStyle }}>
-                            {isFrontBankRow && draftDoorMode === "door" ? (() => {
+                            {draftShape ? (
+                              <input value={draft.width} readOnly tabIndex={-1} title="Set by the shape — Edit shape to change it" className={`${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} w-full cursor-default rounded-[8px] border bg-transparent px-2 text-center ${warningClassForCell(draft.id, "width")}`} style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: "transparent", borderColor: draftFieldBorder, color: draftTextColor }), ...(draftWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                            ) : isFrontBankRow && draftDoorMode === "door" ? (() => {
                               const frontWidths = normalizeDoorFrontWidths(draft.doorFrontWidths, frontBankCount);
                               const frontWidthManual = normalizeDoorFrontWidthManual(draft.doorFrontWidthManual, frontBankCount);
                               const seamCount = Math.max(0, frontBankCount - 1);
@@ -50539,7 +52142,23 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             )}
                           </div>
                           <div ref={registerCutlistWarnCellRef(draft.id, "depth")} style={{ ...cutlistEntryCellStyle("depth"), ...subCellCenterStyle }}>
-                            {isFrontBankRow || draftIsDoor ? null : isDrawerPartType(draft.partType) && drawerDepthKeys(draft).length > 0 ? (
+                            {draftShape ? (
+                              // (A Custom piece has no Depth: the drawing of its shape there — Edit shape.)
+                              <button
+                                type="button"
+                                onClick={(e) => openCutlistShapeEditor(e, { mode: "draft", rowId: draft.id })}
+                                className={`glass-shine glass-shine-neutral inline-flex w-full items-center justify-center rounded-[8px] border ${isSubPartDraft ? "h-6" : "h-8"}`}
+                                style={{ color: draftTextColor }}
+                                title={productionReadOnly ? "View shape" : "Edit shape"}
+                                aria-label={productionReadOnly ? "View shape" : "Edit shape"}
+                              >
+                                {isCabinetShape(draftShape) ? (
+                                  <CutlistCabinetPlanThumbnail shape={draftShape} boardThicknessMm={customCabinetThicknessForBoard(draft.board)} color={color} width={56} height={isSubPartDraft ? 18 : 24} title="Custom cabinet" />
+                                ) : (
+                                  <CutlistShapeThumbnail shape={draftShape} color={color} width={56} height={isSubPartDraft ? 18 : 24} />
+                                )}
+                              </button>
+                            ) : isFrontBankRow || draftIsDoor ? null : isDrawerPartType(draft.partType) && drawerDepthKeys(draft).length > 0 ? (
                               // (Drawers: a depth for each.)
                               renderDrawerDepthBoxes(
                                 draft,
@@ -50582,7 +52201,26 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               <input disabled={productionReadOnly || (isDrawerPartType(draft.partType) && !draftIsDoor)} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })} className={`${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} w-full rounded-[8px] border bg-transparent px-2 text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`} style={warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
                             )}
                           </div>
-                          {draftIsCabinetry ? (
+                          {draftShape ? (
+                            <div style={{ ...cutlistEntryCellStyle("clashing", 2), ...subCellCenterStyle }}>
+                              <div className="flex w-full min-w-0 items-center justify-between gap-1.5">
+                                <span className="min-w-0 truncate text-[11px] font-medium" style={{ color: draftTextColor }} title="Edge banding — set on the shape">
+                                  {cutlistRowBandingText(draft, draftShape)}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={(e) => openCutlistShapeEditor(e, { mode: "draft", rowId: draft.id })}
+                                  className={`glass-shine inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 text-[11px] font-medium text-white hover:brightness-95 ${isSubPartDraft ? "h-6" : "h-7"}`}
+                                  style={glassShineStyle("var(--brand)")}
+                                  title={productionReadOnly ? "View shape" : "Edit shape"}
+                                  aria-label={productionReadOnly ? "View shape" : "Edit shape"}
+                                >
+                                  <Pencil size={11} />
+                                  {productionReadOnly ? "View" : "Edit"}
+                                </button>
+                              </div>
+                            </div>
+                          ) : draftIsCabinetry ? (
                             <div style={{ ...cutlistEntryCellStyle("clashing", 2), ...subCellCenterStyle }}>
                               <BoardPillDropdown
                                 value={draft.cabinetryClashBottom || ""}
@@ -50811,7 +52449,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       <EmptyState compact icon={<Scissors size={16} />} title="No cutlist rows yet" hint="Parts added to the cutlist show here, grouped by part type." />
                     )}
                     {groupedCutlistRows.map((group) => {
-                      const color = partTypeColors[group.partType] ?? "#CBD5E1";
+                      const color = cutlistGroupColor(group);
                       const palette = cutlistTablePalette(color);
                       const groupTextColor = palette.text;
                       const collapsed = Boolean(collapsedCutlistGroups[group.partType]);
@@ -50824,15 +52462,25 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         : [];
                       const pendingGroupCount = pendingGroupRows.length;
                       const groupDeleteConfirmArmed = Boolean(deleteConfirmArmedGroups[group.partType]);
-                      const groupColumnDefs = isDoorPartType(group.partType)
-                        ? cutlistListColumnDefs.filter((col) => col.key !== "depth")
-                        : cutlistListColumnDefs;
+                      // (The Custom table: Height, Width and Depth one Shape column — its piece's drawing, its outer size under it.)
+                      // (Its rows each their own part type's pill: its Part column always there.)
+                      const groupColumnDefs = group.custom
+                        ? [
+                            ...(cutlistListColumnDefs.some((col) => col.key === "partType") ? [] : [{ label: "Part", key: "partType" as const }]),
+                            ...cutlistListColumnDefs
+                              .filter((col) => col.key !== "width" && col.key !== "depth")
+                              .map((col) => (col.key === "height" ? { ...col, label: "Shape" } : col)),
+                          ]
+                        : isDoorPartType(group.partType)
+                          ? cutlistListColumnDefs.filter((col) => col.key !== "depth")
+                          : cutlistListColumnDefs;
                       // A column's usual width (Information's least), and its width in the table: its share of the table, in
                       // proportion to them all (a table's columns don't take min(…) — it came out every column alike).
                       // (Information counted at 120px, not its usual 216px least: mostly short notes, it gives up its room
                       // first — Board and Part Name kept wide enough for their words on one line.)
                       const listColumnPx = (key: CutlistEditableField) => {
                         if (key === "information") return 120;
+                        if (key === "height" && group.custom) return 132;
                         const style = cutlistListColumnStyle(key) as { width?: number; minWidth?: number };
                         return style.width ?? style.minWidth ?? 0;
                       };
@@ -50876,7 +52524,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           >
                             <div className="flex h-full items-center gap-3">
                               <span className="inline-flex h-full items-center pl-4 text-[21px] font-semibold leading-none">
-                                {group.partType}
+                                {cutlistGroupTitle(group)}
                               </span>
                               <span
                                 className="inline-flex items-center rounded-full px-2.5 py-[4px] text-[12px] font-semibold leading-none"
@@ -50927,7 +52575,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   toggleCutlistGroup(group.partType);
                                 }}
                                 aria-expanded={!collapsed}
-                                aria-label={collapsed ? `Show ${group.partType}` : `Hide ${group.partType}`}
+                                aria-label={collapsed ? `Show ${cutlistGroupTitle(group)}` : `Hide ${cutlistGroupTitle(group)}`}
                                 // (Round, a wash of white over the title bar: V to open the group, ^ to fold it away.)
                                 className="flex h-8 w-8 items-center justify-center rounded-full text-current transition hover:brightness-95"
                                 style={{ backgroundColor: palette.countChipBg }}
@@ -50984,6 +52632,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 const rowIsDrawer = isDrawerPartType(row.partType);
                                 const rowIsDoor = isDoorPartType(row.partType);
                                 const rowIsConfiguredDoor = rowIsDoor && normalizeDoorModeValue(row.doorMode) !== "manual";
+                                // (A Custom piece — in the Custom table: its shape, a drawing of it in place of its Height, Width and
+                                // Depth, its banding as its Clashing; its drop-down arrow opens it big, with Edit shape and its DXF.)
+                                const rowShape = cutlistRowShape(row);
+                                const rowColor = group.custom ? (partTypeColors[row.partType || "Unassigned"] ?? color) : color;
+                                const shapeOpen = Boolean(group.custom && rowShape && expandedShapeRows[`production:${row.id}`]);
                                 // A row split out of a Drawer-submode front bank (see
                                 // expandAcceptedRowForCutlist) — no hinges, no piece breakdown to
                                 // expand, just a chain-link marker showing it's grouped with its
@@ -51021,7 +52674,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   className="border-t"
                                   style={{
                                     // (Opened — its hinges or parts below it: a deeper wash, with them.)
-                                    backgroundColor: (rowIsCabinetry ? cabinetryOpen : rowIsDrawer ? drawerOpen : rowIsDoor ? expandedDoorHingeRowId === row.id || doorOpen : false)
+                                    backgroundColor: (rowIsCabinetry ? cabinetryOpen : rowIsDrawer ? drawerOpen : rowIsDoor ? expandedDoorHingeRowId === row.id || doorOpen : shapeOpen)
                                       ? palette.rowOpenBg
                                       : palette.rowBg,
                                     color: groupTextColor,
@@ -51086,6 +52739,23 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         )}
                                       </button>
                                       )}
+                                      {rowShape ? (
+                                        // (A Custom piece: its drop-down arrow — its drawing big, Edit shape and Download DXF under it.)
+                                        <button
+                                          type="button"
+                                          onClick={() => toggleShapeRowExpand(`production:${row.id}`)}
+                                          className="glass-shine relative z-[1] inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border"
+                                          style={glassShineStyle(rowColor)}
+                                          title={shapeOpen ? "Hide its drawing" : "Show its drawing"}
+                                          aria-expanded={shapeOpen}
+                                        >
+                                          <ChevronDown
+                                            size={13}
+                                            color={isLightHex(rowColor) ? palette.text : "#FFFFFF"}
+                                            style={{ transform: shapeOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 120ms ease" }}
+                                          />
+                                        </button>
+                                      ) : (
                                       <button
                                         type="button"
                                         disabled={rowIsBankFront || !(rowIsCabinetry || rowIsDrawer || rowIsDoor)}
@@ -51123,6 +52793,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                           />
                                         )}
                                       </button>
+                                      )}
                                     </div>
                                   </td>
                                   {showRoomColumnInList && (
@@ -51281,6 +52952,28 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         </td>
                                       );
                                     }
+                                    // A Custom piece (the Custom table): its Shape — a drawing of it, its outer size under it (in place of
+                                    // its Height, Width and Depth: set by the shape, not typed).
+                                    if (col.key === "height" && group.custom && rowShape) {
+                                      const grainAxis = matchesGrainDimension(effectiveGrainValueForRow(row), row.height, "height")
+                                        ? "height"
+                                        : matchesGrainDimension(effectiveGrainValueForRow(row), row.width, "width")
+                                          ? "width"
+                                          : matchesGrainDimension(effectiveGrainValueForRow(row), row.depth, "depth")
+                                            ? "depth"
+                                            : null;
+                                      return (
+                                        <td
+                                          key={`${row.id}_${col.label}`}
+                                          className="px-2 py-[3px] text-center align-middle"
+                                          onDoubleClick={() => toggleShapeRowExpand(`production:${row.id}`)}
+                                          title="Its outer size — set by the shape"
+                                          style={{ color: groupTextColor }}
+                                        >
+                                          <CutlistShapeSizeCell shape={rowShape} color={rowColor} textColor={groupTextColor} grainAxis={grainAxis} strokeColor={groupTextColor} boardThicknessMm={customCabinetThicknessForBoard(row.board)} />
+                                        </td>
+                                      );
+                                    }
                                     // A Drawer row: a depth for each of its drawers (renderDrawerDepthLines).
                                     if (col.key === "depth" && isDrawerPartType(row.partType) && drawerDepthKeys(row).length > 0) {
                                       return (
@@ -51362,6 +53055,20 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                               String(row.height ?? "")
                                             )
                                           )}
+                                        </td>
+                                      );
+                                    }
+                                    // A Custom piece's Clashing: the banding on its shape (double-click: the shape editor).
+                                    if (col.key === "clashing" && rowShape) {
+                                      return (
+                                        <td
+                                          key={`${row.id}_${col.label}`}
+                                          className={`px-2 py-[3px] align-middle ${alignClass}`}
+                                          onDoubleClick={(e) => openCutlistShapeEditor(e, { mode: "row", rowId: row.id })}
+                                          title="Edge banding — set on the shape"
+                                          style={{ ...cutlistListColumnStyle("clashing"), color: groupTextColor }}
+                                        >
+                                          {cutlistRowBandingText(row, rowShape)}
                                         </td>
                                       );
                                     }
@@ -51788,6 +53495,30 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     </td>
                                   </tr>
                                 )}
+                                {shapeOpen && rowShape && (
+                                  <tr
+                                    data-cutlist-subrow-parent={row.id}
+                                    data-cutlist-subrow-key="shape"
+                                    className="border-t"
+                                    style={{ backgroundColor: palette.subRowBg, color: groupTextColor, borderTopColor: palette.divider }}
+                                  >
+                                    <td colSpan={1 + (showRoomColumnInList ? 1 : 0) + groupColumnDefs.length} className="px-4 py-3 align-middle">
+                                      <CutlistShapeDetail
+                                        shape={rowShape}
+                                        name={String(row.name || row.partType || "Shape")}
+                                        readOnly={productionReadOnly}
+                                        onEdit={(e) => openCutlistShapeEditor(e, { mode: "row", rowId: row.id })}
+                                        drawingWidth={620}
+                                        drawingHeight={300}
+                                        fontSize={12}
+                                        textColor={groupTextColor}
+                                        boardThicknessMm={customCabinetThicknessForBoard(row.board)}
+                                        color={rowColor}
+                                        quantity={row.quantity}
+                                      />
+                                    </td>
+                                  </tr>
+                                )}
                                 {rowIsCabinetry && cabinetryOpen && cabinetryPieces.map((piece, pieceIdx) => (
                                   <tr
                                     key={`${row.id}_cab_${piece.key}`}
@@ -51972,6 +53703,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           </div>
           {cutlistFieldWarningBubblesPortal}
           {cutlistLeaveCheckPortal}
+          {cutlistShapeEditorPortal}
           {addRoomModalPortal}
           {unlockEditModalPortal}
           {/* The floating bar: Notes and Contractors, at the bottom of the screen over the cutlist — the Quote window's
@@ -52997,7 +54729,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 }
                 style={isCompactProjectViewport ? { scrollBehavior: "smooth", backgroundColor: "var(--bg-app)" } : undefined}
               >
-                {cncRowsByBoardNonCab.length === 0 && cncCabinetCards.length === 0 && (
+                {cncRowsByBoardNonCab.length === 0 && cncCustomCards.length === 0 && cncCabinetCards.length === 0 && (
                   <div
                     className={
                       isCompactProjectViewport
@@ -53442,6 +55174,278 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     boardSectionContent
                   );
                   });
+                })()}
+                {/* The Custom section: every Custom piece, each with its drawing beside it (its sizes, banding arrows) — as the
+                    cabinets below have theirs. After the boards' tables, numbered on after them (cncCustomCards). */}
+                {cncCustomCards.length > 0 && (() => {
+                  const customCollapsed = Boolean(cncCollapsedGroups["cnc:board:custom"]);
+                  const customSectionContent = (
+                  <section
+                    className="overflow-hidden rounded-[14px] border"
+                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-bg-strong)", backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)` }}
+                  >
+                    <div className="overflow-hidden rounded-[14px]">
+                    <div
+                      className="relative flex cursor-pointer items-center justify-between gap-3 border-b px-3 py-2 text-[16px] font-semibold"
+                      style={{ borderColor: "var(--glass-border)", backgroundColor: "#111111", color: "#FFFFFF" }}
+                      onClick={() => toggleCncGroup("cnc:board:custom")}
+                      title={customCollapsed ? "Expand custom pieces" : "Collapse custom pieces"}
+                    >
+                      <span className="min-w-0 truncate">{CUSTOM_CUTLIST_GROUP_TITLE}</span>
+                      <span className="shrink-0 text-[12px] font-medium" style={{ color: "#FFFFFF" }}>
+                        {formatPartCount(cncCustomCards.reduce((sum, card) => sum + (Number.parseInt(String(card.row.quantity || "0"), 10) || 0), 0))}
+                      </span>
+                    </div>
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateRows: customCollapsed ? "0fr" : "1fr",
+                        transition: "grid-template-rows 220ms ease",
+                      }}
+                    >
+                    <div className="overflow-hidden">
+                    <div className="divide-y divide-[var(--glass-border)] bg-white">
+                    {cncCustomCards.map(({ row, shape, displayId, boardLabel, infoLines, cabinet }, idx) => {
+                      const partColor = partTypeColors[row.partType || "Unassigned"] ?? "#CBD5E1";
+                      const partText = isLightHex(partColor) ? "#0F172A" : "#F8FAFC";
+                      const grainValue = String(row.grainValue ?? "");
+                      const grained = { fontWeight: 700, textDecoration: "underline" } as const;
+                      // A custom cabinet: as the cabinets below are — its top view (its backs and ends a board thick, its
+                      // dimensions) on the left; its details, specifications and pieces' sizes on the right.
+                      if (cabinet) {
+                        const size = customCabinetSize(shape);
+                        const settings = cabinetSettings(shape);
+                        const sizeParts = [
+                          { key: "height" as const, value: formatShapeMm(size.height) },
+                          { key: "width" as const, value: formatShapeMm(size.width) },
+                          { key: "depth" as const, value: formatShapeMm(size.depth) },
+                        ];
+                        const sizeLabel = (
+                          <span className="inline-flex items-center gap-1">
+                            {sizeParts.map((part, partIdx) => (
+                              <span key={`cc_size_${part.key}`} className="inline-flex items-center gap-1">
+                                {partIdx > 0 && <span className="text-[10px] text-[#0F172A]">x</span>}
+                                <span className="relative inline-block">
+                                  <span className="absolute inset-x-0 -top-[7px] text-center text-[7px] font-bold uppercase leading-none text-[#0F172A]">
+                                    {part.key === "height" ? "H" : part.key === "width" ? "W" : "D"}
+                                  </span>
+                                  <span style={matchesGrainDimension(grainValue, part.value, part.key) ? grained : undefined}>{part.value}</span>
+                                </span>
+                              </span>
+                            ))}
+                          </span>
+                        );
+                        const pieceDims = (piece: CustomCabinetDerivedPiece, quantity: number) => (
+                          <>
+                            {customCabinetPieceDims(piece).map((dim, dimIdx) => (
+                              <span key={`cc_dim_${dim.key}`}>
+                                {dimIdx > 0 ? " x " : ""}
+                                <span style={matchesGrainDimension(String(piece.grainValue || ""), dim.value, dim.key) ? grained : undefined}>{dim.value}</span>
+                              </span>
+                            ))}
+                            {quantity > 0 ? ` (x${quantity})` : ""}
+                          </>
+                        );
+                        const lines = customCabinetBreakdownLines(cabinet.pieces);
+                        const detailRows: Array<[string, ReactNode]> = [
+                          ["Room", row.room || "-"],
+                          ["Material", boardLabel || "-"],
+                          ["Edgetape", boardEdgingFor(row.board)],
+                          ["Type", shape.base?.partType || "Cabinet"],
+                        ];
+                        const specRows: Array<[string, ReactNode]> = [
+                          ["Size", sizeLabel],
+                          ["Quantity", row.quantity || ""],
+                          ["Grain", boardGrainFor(row.board) ? (grainValue.trim() || (row.grain ? "Yes" : "N/A")) : "N/A"],
+                          ["Fixed Shelves", settings.fixedShelves > 0 ? settings.fixedShelves : "N/A"],
+                          ["Adjustable Shelves", settings.adjustableShelves > 0 ? settings.adjustableShelves : "N/A"],
+                        ];
+                        const dxfButton = (
+                          <button
+                            type="button"
+                            onClick={() => void downloadCustomCabinetDxfs(shape, cabinet.thicknessMm, String(row.name || row.partType || "Cabinet"))}
+                            className="glass-shine glass-shine-neutral inline-flex h-8 items-center gap-1.5 rounded-full border px-3.5 text-[12px] font-medium hover:brightness-95"
+                            style={{ color: "var(--text-main)" }}
+                            title="Download its top, bottom and shelves as DXFs (a zip)"
+                          >
+                            <Download size={13} />
+                            Download DXF
+                          </button>
+                        );
+                        const kv = (label: string, value: ReactNode, key: string, labelW: number, last: boolean) => (
+                          <div key={key} className={`grid items-center px-3 py-1 ${last ? "" : "border-b border-[#E4E7EE]"}`} style={{ gridTemplateColumns: `${labelW}px 1fr` }}>
+                            <p className="font-medium text-[#0F172A]">{label}</p>
+                            <div className="min-w-0 break-words">{value}</div>
+                          </div>
+                        );
+                        return (
+                          <article
+                            key={`cnc_custom_card_${row.id}`}
+                            className="bg-white"
+                            style={{ backgroundColor: idx % 2 === 1 ? "#F6F8FB" : "#FFFFFF" }}
+                          >
+                            <div className="grid grid-cols-[80px_1fr] border-b border-[#E4E7EE] text-[12px]">
+                              <p className="border-r border-[#E4E7EE] px-3 py-2 text-[#0F172A]">{displayId}</p>
+                              <div className="flex min-w-0 items-center gap-2 px-3 py-1.5">
+                                <p className="min-w-0 truncate font-semibold text-[#0F172A]">{row.name || "-"}</p>
+                                <span className="inline-flex max-w-[140px] shrink-0 truncate rounded-[7px] px-2 py-[1px] text-[11px] font-semibold" style={{ backgroundColor: partColor, color: partText }}>
+                                  {row.partType || "Unassigned"}
+                                </span>
+                              </div>
+                            </div>
+                            {isCompactProjectViewport ? (
+                              <div className="space-y-3 px-3 py-3 text-[12px] text-[#334155]">
+                                <div className="flex justify-center">
+                                  <CutlistCabinetPlanDrawing shape={shape} boardThicknessMm={cabinet.thicknessMm} width={340} height={210} fontSize={10} />
+                                </div>
+                                {([
+                                  ["Cabinet Details", detailRows],
+                                  ["Specifications", specRows],
+                                  ["Piece Sizes", lines.map((line) => [line.label, pieceDims(line.piece, line.quantity)] as [string, ReactNode])],
+                                ] as Array<[string, Array<[string, ReactNode]>]>).map(([title, list]) => (
+                                  <div key={`cc_${row.id}_${title}`} className="overflow-hidden rounded-[10px] border border-[#E4E7EE]">
+                                    <div className="border-b border-[#E4E7EE] bg-[#F8FAFC] px-3 py-2 text-[11px] font-extrabold uppercase tracking-[0.7px] text-[#0F172A]">
+                                      {title}
+                                    </div>
+                                    {list.map(([label, value], i) => kv(label, value, `cc_${row.id}_${title}_${label}`, 120, i === list.length - 1))}
+                                  </div>
+                                ))}
+                                <div className="overflow-hidden rounded-[10px] border border-[#E4E7EE]">
+                                  <div className="border-b border-[#E4E7EE] bg-[#F8FAFC] px-3 py-2 text-[11px] font-extrabold uppercase tracking-[0.7px] text-[#0F172A]">
+                                    Information
+                                  </div>
+                                  <div className="space-y-1 px-3 py-2">
+                                    {infoLines.map((line, infoIdx) => (
+                                      <p key={`cc_info_m_${row.id}_${infoIdx}`} className="min-h-[16px] break-words">
+                                        {line}
+                                      </p>
+                                    ))}
+                                  </div>
+                                </div>
+                                <div className="flex justify-end">{dxfButton}</div>
+                              </div>
+                            ) : (
+                              <div className="flex items-stretch gap-3 px-3">
+                                <div className="shrink-0 self-center py-2">
+                                  <CutlistCabinetPlanDrawing shape={shape} boardThicknessMm={cabinet.thicknessMm} width={320} height={190} fontSize={10} />
+                                </div>
+                                <div className="grid min-w-0 flex-1 self-stretch grid-cols-3">
+                                  <div className="min-w-0 self-stretch border-l border-[#E4E7EE] pt-2 pb-0 text-[12px] text-[#334155]">
+                                    {detailRows.map(([label, value], i) => kv(label, value, `cc_${row.id}_d_${label}`, 120, i === detailRows.length - 1))}
+                                  </div>
+                                  <div className="min-w-0 self-stretch border-l border-[#E4E7EE] pt-2 pb-0 text-[12px] text-[#334155]">
+                                    {specRows.map(([label, value], i) => kv(label, value, `cc_${row.id}_s_${label}`, 120, i === specRows.length - 1))}
+                                  </div>
+                                  <div className="min-w-0 self-stretch border-l border-[#E4E7EE] pt-2 pb-0 text-[12px] text-[#334155]">
+                                    {lines.map((line, i) => kv(line.label, pieceDims(line.piece, line.quantity), `cc_${row.id}_p_${line.key}`, 130, i === lines.length - 1))}
+                                  </div>
+                                  <div className="col-span-3 min-w-0 border-l border-t border-[#E4E7EE] px-3 py-2 text-[12px] text-[#334155]">
+                                    <div className="flex items-start gap-3">
+                                      <div className="grid min-w-0 flex-1 grid-cols-[120px_1fr] items-start">
+                                        <p className="font-medium text-[#0F172A]">Information</p>
+                                        <div className="space-y-1">
+                                          {infoLines.map((line, infoIdx) => (
+                                            <p key={`cc_info_${row.id}_${infoIdx}`} className="min-h-[16px]">
+                                              {line}
+                                            </p>
+                                          ))}
+                                        </div>
+                                      </div>
+                                      {dxfButton}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </article>
+                        );
+                      }
+                      const sizeCell = (
+                        <span className="inline-flex items-center gap-1">
+                          <span>H</span>
+                          <span style={matchesGrainDimension(grainValue, String(row.height ?? ""), "height") ? grained : undefined}>{row.height || "-"}</span>
+                          <span className="text-[10px]">x</span>
+                          <span>W</span>
+                          <span style={matchesGrainDimension(grainValue, String(row.width ?? ""), "width") ? grained : undefined}>{row.width || "-"}</span>
+                        </span>
+                      );
+                      const details: Array<[string, ReactNode]> = [
+                        ["Room", row.room || "-"],
+                        ["Material", boardLabel || "-"],
+                        ["Edgetape", boardEdgingFor(row.board)],
+                        ["Banding", shapeBandingSummary(shape)],
+                        ["Size", sizeCell],
+                        ["Quantity", row.quantity || ""],
+                        ["Grain", boardGrainFor(row.board) ? (grainValue.trim() || (row.grain ? "Yes" : "N/A")) : "N/A"],
+                      ];
+                      return (
+                        <article
+                          key={`cnc_custom_card_${row.id}`}
+                          className="bg-white"
+                          style={{ backgroundColor: idx % 2 === 1 ? "#F6F8FB" : "#FFFFFF" }}
+                        >
+                          <div className="grid grid-cols-[80px_1fr] border-b border-[#E4E7EE] text-[12px]">
+                            <p className="border-r border-[#E4E7EE] px-3 py-2 text-[#0F172A]">{displayId}</p>
+                            <div className="flex min-w-0 items-center gap-2 px-3 py-1.5">
+                              <p className="min-w-0 truncate font-semibold text-[#0F172A]">{row.name || "-"}</p>
+                              <span className="inline-flex max-w-[140px] shrink-0 truncate rounded-[7px] px-2 py-[1px] text-[11px] font-semibold" style={{ backgroundColor: partColor, color: partText }}>
+                                {row.partType || "Unassigned"}
+                              </span>
+                            </div>
+                          </div>
+                          <div className={isCompactProjectViewport ? "space-y-3 px-3 py-3" : "flex items-stretch gap-3 px-3 py-2"}>
+                            <div className={isCompactProjectViewport ? "flex justify-center" : "shrink-0 self-center"}>
+                              <CutlistShapeDrawing shape={shape} width={isCompactProjectViewport ? 340 : 320} height={isCompactProjectViewport ? 210 : 190} fontSize={10} />
+                            </div>
+                            <div className={`min-w-0 flex-1 text-[12px] text-[#334155] ${isCompactProjectViewport ? "overflow-hidden rounded-[10px] border border-[#E4E7EE]" : "self-stretch border-l border-[#E4E7EE]"}`}>
+                              <div className={isCompactProjectViewport ? "" : "grid grid-cols-2"}>
+                                {details.map(([label, value]) => (
+                                  <div key={`cnc_custom_${row.id}_${label}`} className="grid grid-cols-[110px_1fr] items-center border-b border-[#E4E7EE] px-3 py-1">
+                                    <p className="font-medium text-[#0F172A]">{label}</p>
+                                    <div className="min-w-0 break-words">{value}</div>
+                                  </div>
+                                ))}
+                              </div>
+                              <div className="grid grid-cols-[110px_1fr] items-start px-3 py-2">
+                                <p className="font-medium text-[#0F172A]">Information</p>
+                                <div className="space-y-1">
+                                  {infoLines.map((line, infoIdx) => (
+                                    <p key={`cnc_custom_info_${row.id}_${infoIdx}`} className="min-h-[16px] break-words">
+                                      {line}
+                                    </p>
+                                  ))}
+                                </div>
+                              </div>
+                              <div className="flex justify-end px-3 pb-2">
+                                <button
+                                  type="button"
+                                  onClick={() => downloadCutlistShapeDxf(shape, String(row.name || row.partType || "Shape"))}
+                                  className="glass-shine glass-shine-neutral inline-flex h-8 items-center gap-1.5 rounded-full border px-3.5 text-[12px] font-medium hover:brightness-95"
+                                  style={{ color: "var(--text-main)" }}
+                                >
+                                  <Download size={13} />
+                                  Download DXF
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        </article>
+                      );
+                    })}
+                    </div>
+                    </div>
+                    </div>
+                    </div>
+                  </section>
+                  );
+                  // Mobile: its own page, after the board-type pages — as the cabinets' (below).
+                  return isCompactProjectViewport ? (
+                    <div className="hide-native-scrollbar h-full w-full shrink-0 snap-start overflow-y-auto px-3" style={{ paddingTop: 115, paddingBottom: 66 }}>
+                      {customSectionContent}
+                    </div>
+                  ) : (
+                    customSectionContent
+                  );
                 })()}
                 {cncCabinetCards.length > 0 && (() => {
                   const cabinetSectionContent = (
@@ -54280,7 +56284,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         )}
         {/* Mobile: same fixed-position, active-page-tracking thumb as Nesting's own — see
             cncCompactActiveBoardScrollRef's own comment. */}
-        {isCompactProjectViewport && (cncRowsByBoardNonCab.length > 0 || cncCabinetCards.length > 0) && (
+        {isCompactProjectViewport && (cncRowsByBoardNonCab.length > 0 || cncCustomCards.length > 0 || cncCabinetCards.length > 0) && (
           <GlassScrollbarThumb
             scrollRef={cncCompactActiveBoardScrollRef}
             anchorRef={cncCompactScrollRef}
@@ -58620,6 +60624,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       const marginX = (group.sheetWidth - group.innerW) / 2;
                                       const marginY = (group.sheetHeight - group.innerH) / 2;
                                       const { trueOnSheetW, trueOnSheetH, hitMin } = nestingPlacementTrueSize(placement.piece, placement.rotated, nestingSettings.minPieceSize);
+                                      // (A Custom piece: its true outline, in place of the box it's packed by.)
+                                      const shapeOutline = nestingPlacementOutline(placement, trueOnSheetW, trueOnSheetH);
                                       return (
                                         <div
                                           key={`${placement.piece.id}_compact`}
@@ -58655,16 +60661,19 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                             top: `${((marginY + placement.y) / group.sheetHeight) * 100}%`,
                                             width: `${(placement.w / group.sheetWidth) * 100}%`,
                                             height: `${(placement.h / group.sheetHeight) * 100}%`,
-                                            backgroundColor: hitMin ? "transparent" : lightenHex(c, 0.18),
+                                            backgroundColor: hitMin || shapeOutline ? "transparent" : lightenHex(c, 0.18),
                                             backgroundImage: hitMin
                                               ? `repeating-linear-gradient(45deg, ${darkenHex(c, 0.12)}55 0px, ${darkenHex(c, 0.12)}55 5px, transparent 5px, transparent 10px)`
                                               : undefined,
-                                            borderColor: darkenHex(c, 0.22),
+                                            borderColor: shapeOutline && !hitMin ? "transparent" : darkenHex(c, 0.22),
                                             borderStyle: hitMin ? "dashed" : "solid",
                                             color: t,
                                           }}
                                         >
-                                          {hitMin && (
+                                          {shapeOutline ? (
+                                            <NestingShapeOutline points={shapeOutline} trueW={trueOnSheetW} trueH={trueOnSheetH} boxW={placement.w} boxH={placement.h} fill={lightenHex(c, 0.18)} stroke={darkenHex(c, 0.22)} />
+                                          ) : null}
+                                          {!shapeOutline && hitMin && (
                                             <div
                                               className="absolute left-0 top-0 border-r border-b border-dashed"
                                               style={{
@@ -59013,6 +61022,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       const marginX = (group.sheetWidth - group.innerW) / 2;
                                       const marginY = (group.sheetHeight - group.innerH) / 2;
                                       const { trueOnSheetW, trueOnSheetH, hitMin } = nestingPlacementTrueSize(placement.piece, placement.rotated, nestingSettings.minPieceSize);
+                                      // (A Custom piece: its true outline, in place of the box it's packed by.)
+                                      const shapeOutline = nestingPlacementOutline(placement, trueOnSheetW, trueOnSheetH);
                                       return (
                                         <div
                                           key={placement.piece.id}
@@ -59048,16 +61059,19 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                             top: `${((marginY + placement.y) / group.sheetHeight) * 100}%`,
                                             width: `${(placement.w / group.sheetWidth) * 100}%`,
                                             height: `${(placement.h / group.sheetHeight) * 100}%`,
-                                            backgroundColor: hitMin ? "transparent" : lightenHex(c, 0.18),
+                                            backgroundColor: hitMin || shapeOutline ? "transparent" : lightenHex(c, 0.18),
                                             backgroundImage: hitMin
                                               ? `repeating-linear-gradient(45deg, ${darkenHex(c, 0.12)}55 0px, ${darkenHex(c, 0.12)}55 5px, transparent 5px, transparent 10px)`
                                               : undefined,
-                                            borderColor: darkenHex(c, 0.22),
+                                            borderColor: shapeOutline && !hitMin ? "transparent" : darkenHex(c, 0.22),
                                             borderStyle: hitMin ? "dashed" : "solid",
                                             color: t,
                                           }}
                                         >
-                                          {hitMin && (
+                                          {shapeOutline ? (
+                                            <NestingShapeOutline points={shapeOutline} trueW={trueOnSheetW} trueH={trueOnSheetH} boxW={placement.w} boxH={placement.h} fill={lightenHex(c, 0.18)} stroke={darkenHex(c, 0.22)} />
+                                          ) : null}
+                                          {!shapeOutline && hitMin && (
                                             <div
                                               className="absolute left-0 top-0 border-r border-b border-dashed"
                                               style={{

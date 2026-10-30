@@ -1,3 +1,5 @@
+import type { CutlistShape } from "@/lib/cutlist-shape";
+
 export type DoorModeValue = "" | "manual" | "door" | "drawer";
 
 export type CutlistRow = {
@@ -60,6 +62,9 @@ export type CutlistRow = {
   parentName?: string;
   bankGroupId?: string;
   bankFrontIndexes?: number[];
+  // A Custom part type's piece: the shape it's cut to (lib/cutlist-shape.ts) — its Height and Width are the shape's
+  // outer size, its edge banding the shape's own.
+  shape?: CutlistShape;
 };
 
 export type CutlistDraftRow = CutlistRow;

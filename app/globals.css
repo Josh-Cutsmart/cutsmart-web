@@ -1340,8 +1340,11 @@ html[data-keyboard-open="true"] .glass-modal-panel {
    header along the top below the status bar / notch (env(safe-area-inset-top)), its body filling the rest. Laid over
    the screen itself (position: fixed, inset 0), so whatever padding its wrapper keeps round it on a bigger screen
    doesn't matter; !important over the sizes each panel sets for a bigger screen (some inline). With the keyboard up it
-   ends above the keyboard — its body scrolling — instead of being shrunk and moved as the rule above does. (Those marked
-   data-phone-fullscreen size themselves; data-phone-keep-box: a panel that keeps its box on a phone.) */
+   keeps what's in it above the keyboard — its body scrolling — instead of being shrunk and moved as the rule above does.
+   Its own background carries on down behind the see-through keyboard (as far as the backdrop's reaches — below), rather
+   than ending at the keyboard's top with the page showing through under it; its padding takes the same back off, so what's
+   in it ends just where it did. (Those marked data-phone-fullscreen size themselves; data-phone-keep-box: a panel that
+   keeps its box on a phone.) */
 @media (max-width: 639.98px) {
   .glass-modal-panel:not([data-phone-fullscreen="true"]):not([data-phone-keep-box="true"]) {
     position: fixed !important;
@@ -1360,9 +1363,9 @@ html[data-keyboard-open="true"] .glass-modal-panel {
   }
   html[data-keyboard-open="true"] .glass-modal-panel:not([data-phone-fullscreen="true"]):not([data-phone-keep-box="true"]) {
     top: var(--keyboard-offset-top-px, 0px) !important;
-    bottom: var(--keyboard-inset-px, 0px) !important;
+    bottom: calc(-1 * (var(--keyboard-inset-px, 0px) + var(--keyboard-offset-top-px, 0px))) !important;
     transform: none;
-    padding-bottom: 0;
+    padding-bottom: calc(2 * var(--keyboard-inset-px, 0px) + var(--keyboard-offset-top-px, 0px));
   }
 }
 

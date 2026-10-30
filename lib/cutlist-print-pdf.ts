@@ -2,6 +2,9 @@
 
 import type { jsPDF as JsPdf } from "jspdf";
 import { activeLength } from "@/lib/company-formats";
+import { formatShapeMm, isCabinetShape, shapeBandingSummary, shapeOuterSize, type CutlistShape } from "@/lib/cutlist-shape";
+import { shapeDrawingOps, type ShapeDrawing, type ShapeDrawingOp } from "@/lib/cutlist-shape-render";
+import { cabinetPlanDrawingOps, cabinetSettings, customCabinetSize } from "@/lib/cutlist-cabinet-shape";
 import type { CutlistRow } from "@/lib/cutlist-types";
 import { drawPrintTitlePage, type PrintTitlePage } from "@/lib/print-title-page";
 
@@ -22,7 +25,13 @@ import { drawPrintTitlePage, type PrintTitlePage } from "@/lib/print-title-page"
 //   list breaks it down) under it, each with its sizes, quantity and clashing;
 // - doors (a door part type's): in each board's table, its doors first and then its drawer fronts — when the part type
 //   has both, "Doors" / "Drawers" written up a strip down the table's side, beside each;
-// - the rest of each part type's last page filled with blank rows, to write extra parts in by hand.
+// - the rest of each part type's last page filled with blank rows, to write extra parts in by hand;
+// - Custom pieces (shapeOf: a row cut to a shape of its own) all in one "Custom" section after the rest, whatever their
+//   part types — flat pieces first — each with its outer Height × Width, its banding over both Clashing cells, and a
+//   drawing of it (its dimensions, radii and arrows at its banding — lib/cutlist-shape-render.ts) under it, beside its
+//   second line. A custom cabinet (cabinetOf) after the flat pieces: its Height × Width × Depth, its top view (its backs
+//   and ends a board thick, its dimensions — lib/cutlist-cabinet-shape.ts) under it, then its pieces under that (as a
+//   drawer's are), each with its sizes, quantity and clashing (a shaped one's banding over both cells).
 // A part and its second line always stay on the same page; a board's table carries on onto the next page (its bar
 // saying so) when it runs out of room. Drawn straight with jsPDF (loaded with the page's other PDF modules), so it's
 // made within the click that prints it.
@@ -36,6 +45,8 @@ export type CutlistPrintPiece = {
   quantity: string;
   clashLeft: string;
   clashRight: string;
+  // A shaped piece's banding (a custom cabinet's top, bottom and shelves): over both Clashing cells, in place of them.
+  banding?: string;
 };
 
 export type CutlistPrintInput = {
@@ -63,6 +74,12 @@ export type CutlistPrintInput = {
   titlePage?: PrintTitlePage;
   // false: no "Page n of m" of its own (in a project folder, which numbers all its pages — the project's page).
   pageNumbers?: boolean;
+  // A Custom part type's piece: the shape it's cut to (null: an ordinary part). Those print in the one Custom section,
+  // each with a drawing of it.
+  shapeOf?: (row: CutlistRow) => CutlistShape | null;
+  // A custom cabinet (its shape a Cabinetry part type's — isCabinetShape): its board thickness (its top view's backs and
+  // ends drawn that thick) and its pieces, across the row's quantity. null: not one.
+  cabinetOf?: (row: CutlistRow) => { thicknessMm: number; pieces: CutlistPrintPiece[] } | null;
 };
 
 type Rgb = [number, number, number];
@@ -123,6 +140,13 @@ const STRIP_FONT = 6.5;
 const PIECE_INDENT = 10;
 // Between one thing and the next in the Hinges column's positions.
 const HINGE_GAP = 8;
+// A Custom piece's drawing, under its row (pt — its steps' px drawn a point each): its size, its numbers' size, the room
+// above and below it, and the gap to its second line's words beside it.
+const SHAPE_DRAW_W = 260;
+const SHAPE_DRAW_H = 130;
+const SHAPE_DRAW_FONT = 7;
+const SHAPE_PAD = 4;
+const SHAPE_GAP = 12;
 
 // Columns that go together under one heading: Clashing's two sides, Hinges' side and positions.
 const FIRST_OF_PAIR: string[] = ["clashLeft", "hingeSide"];
@@ -220,6 +244,62 @@ function hingeSegments(row: CutlistRow, input: CutlistPrintInput): Segment[] {
   return out;
 }
 
+// Where a Custom piece goes in the Custom section: flat pieces (0) before custom cabinets (1) — a shape with a cabinet
+// on it (another part of the app adds one) — each kept in the order it comes.
+const shapeSortKey = (shape: CutlistShape) => (Boolean((shape as unknown as Record<string, unknown>).cabinet) ? 1 : 0);
+
+// A colour (#RRGGBB) washed towards white — a fill at less than full strength, on the white page.
+function faded(color: string, opacity: number): string {
+  const rgb = hexToRgb(color);
+  if (!rgb || opacity >= 1) return color;
+  return `#${tint(rgb, Math.max(0, opacity))
+    .map((channel) => channel.toString(16).padStart(2, "0"))
+    .join("")}`;
+}
+
+// A shape's drawing (lib/cutlist-shape-render.ts — its steps in px, y down) drawn as vectors, a px a point, its top left
+// at (x, y). (The project page's CNC Cutlist PDF draws its Custom pieces with it too.)
+export function drawShapeDrawingOps(doc: JsPdf, ops: ShapeDrawingOp[], x: number, y: number) {
+  for (const op of ops) {
+    if (op.kind === "path") {
+      if (op.points.length < 2) continue;
+      const fill = op.fill ? faded(op.fill, op.fillOpacity ?? 1) : "";
+      if (!fill && !op.stroke) continue;
+      if (fill) doc.setFillColor(fill);
+      if (op.stroke) {
+        doc.setDrawColor(op.stroke);
+        doc.setLineWidth(op.lineWidth ?? 1);
+        doc.setLineCap(op.lineCap ?? "butt");
+        doc.setLineJoin(op.lineJoin ?? "miter");
+      }
+      doc.moveTo(x + op.points[0][0], y + op.points[0][1]);
+      for (let index = 1; index < op.points.length; index += 1) doc.lineTo(x + op.points[index][0], y + op.points[index][1]);
+      if (op.closed) doc.close();
+      if (fill && op.stroke) doc.fillStroke();
+      else if (fill) doc.fill();
+      else doc.stroke();
+    } else if (op.kind === "rect") {
+      doc.setFillColor(op.fill);
+      if (op.stroke) {
+        doc.setDrawColor(op.stroke);
+        doc.setLineWidth(op.lineWidth ?? 1);
+      }
+      const style = op.stroke ? "FD" : "F";
+      const r = Math.max(0, Math.min(op.r, op.w / 2, op.h / 2));
+      if (r > 0) doc.roundedRect(x + op.x, y + op.y, op.w, op.h, r, r, style);
+      else doc.rect(x + op.x, y + op.y, op.w, op.h, style);
+    } else {
+      doc.setFont("helvetica", op.bold ? "bold" : "normal");
+      doc.setFontSize(op.size);
+      doc.setTextColor(op.color);
+      doc.text(op.text, x + op.x, y + op.y, { align: op.align, baseline: "alphabetic" });
+    }
+  }
+  // (Back to the page's own: square ends and joins.)
+  doc.setLineCap("butt");
+  doc.setLineJoin("miter");
+}
+
 type Values = Record<ColumnKey, string>;
 const BLANK: Values = {
   group: "",
@@ -238,7 +318,70 @@ const BLANK: Values = {
 
 // What a part prints in its columns: its own row's values (a drawer's: its name and information, then its pieces'), its
 // hinges, and a cabinet's shelves' clashing (over both sides, as the list shows it).
-function printedPart(row: CutlistRow, input: CutlistPrintInput): { own: Values; pieces: Values[]; hinges: Segment[]; cabinetClash: string } {
+// A Custom piece: its own row (its outer Height × Width, no Depth), its banding over both Clashing cells, and its shape.
+// A custom cabinet: its own row (its Height × Width × Depth), then its pieces (a shaped one's banding over both Clashing
+// cells — pieceClash), its top view under its own row.
+function printedPart(
+  row: CutlistRow,
+  input: CutlistPrintInput,
+): {
+  own: Values;
+  pieces: Values[];
+  hinges: Segment[];
+  cabinetClash: string;
+  shape: CutlistShape | null;
+  cabinet?: { thicknessMm: number; pieceClash: string[] };
+} {
+  const shape = input.shapeOf?.(row) ?? null;
+  const cabinet = shape && isCabinetShape(shape) ? (input.cabinetOf?.(row) ?? null) : null;
+  if (shape && cabinet) {
+    const outer = customCabinetSize(shape);
+    const pieces = cabinet.pieces.filter((piece) => (Number.parseInt(toStr(piece.quantity), 10) || 0) > 0);
+    return {
+      own: {
+        ...BLANK,
+        room: toStr(row.room),
+        name: toStr(row.name),
+        height: size(toStr(row.height) || formatShapeMm(outer.height)),
+        width: size(toStr(row.width) || formatShapeMm(outer.width)),
+        depth: size(toStr(row.depth) || formatShapeMm(outer.depth)),
+        quantity: toStr(row.quantity),
+        information: toStr(row.information),
+      },
+      pieces: pieces.map((piece) => ({
+        ...BLANK,
+        name: piece.name,
+        height: size(piece.height),
+        width: size(piece.width),
+        depth: size(piece.depth),
+        quantity: toStr(piece.quantity),
+        clashLeft: piece.banding ? "" : toStr(piece.clashLeft),
+        clashRight: piece.banding ? "" : toStr(piece.clashRight),
+      })),
+      hinges: [],
+      cabinetClash: "",
+      shape,
+      cabinet: { thicknessMm: cabinet.thicknessMm, pieceClash: pieces.map((piece) => toStr(piece.banding)) },
+    };
+  }
+  if (shape) {
+    const outer = shapeOuterSize(shape);
+    return {
+      own: {
+        ...BLANK,
+        room: toStr(row.room),
+        name: toStr(row.name),
+        height: size(toStr(row.height) || formatShapeMm(outer.height)),
+        width: size(toStr(row.width) || formatShapeMm(outer.width)),
+        quantity: toStr(row.quantity),
+        information: toStr(row.information),
+      },
+      pieces: [],
+      hinges: [],
+      cabinetClash: shapeBandingSummary(shape),
+      shape,
+    };
+  }
   const pieces = (input.piecesOf?.(row) ?? []).filter((piece) => (Number.parseInt(toStr(piece.quantity), 10) || 0) > 0);
   if (pieces.length) {
     return {
@@ -255,6 +398,7 @@ function printedPart(row: CutlistRow, input: CutlistPrintInput): { own: Values; 
       })),
       hinges: [],
       cabinetClash: "",
+      shape: null,
     };
   }
   const [clashLeft, clashRight] = clashSides(row);
@@ -277,6 +421,7 @@ function printedPart(row: CutlistRow, input: CutlistPrintInput): { own: Values; 
     pieces: [],
     hinges: hingeSegments(row, input),
     cabinetClash,
+    shape: null,
   };
 }
 
@@ -317,6 +462,15 @@ function detailSegments(row: CutlistRow, input: CutlistPrintInput): Segment[] {
           .join(", "),
       ]);
     }
+  }
+  // (A Custom piece: which part type it is — its section is all of them. A custom cabinet's: what cabinet it is, and its
+  // shelves.)
+  const shape = input.shapeOf?.(row) ?? null;
+  if (shape && toStr(row.partType)) out.push(["Part Type", toStr(row.partType)]);
+  if (shape && isCabinetShape(shape) && input.cabinetOf?.(row)) {
+    const settings = cabinetSettings(shape);
+    if (toStr(shape.base?.partType)) out.push(["Cabinet", toStr(shape.base?.partType)]);
+    out.push(["Shelves", `${settings.fixedShelves} fixed, ${settings.adjustableShelves} adjustable`]);
   }
   const axis = grainAxis(row);
   if (axis) out.push(["Grain", axis === "height" ? "Height" : axis === "width" ? "Width" : "Depth"]);
@@ -409,7 +563,7 @@ export function buildCutlistPrintPdf(jsPDF: JsPdfCtor, input: CutlistPrintInput)
       for (const values of [printed.own, ...printed.pieces]) {
         for (const key of Object.keys(values) as ColumnKey[]) if (values[key]) used.add(key);
       }
-      if (printed.cabinetClash) used.add("clashLeft");
+      if (printed.cabinetClash || printed.cabinet?.pieceClash.some(Boolean)) used.add("clashLeft");
       if (printed.hinges.length) used.add("hinges");
     }
     // (Clashing's two sides, and Hinges' side and positions, together.)
@@ -436,14 +590,25 @@ export function buildCutlistPrintPdf(jsPDF: JsPdfCtor, input: CutlistPrintInput)
     const index = input.partTypeOrder.findIndex((name) => name.toLowerCase() === type.toLowerCase());
     return index < 0 ? Number.MAX_SAFE_INTEGER : index;
   };
-  const sections: Array<{ type: string; rows: CutlistRow[] }> = [];
+  // (Custom pieces: one Custom section after them all — flat pieces first — in the colour of its first one's part type.)
+  const sections: Array<{ type: string; rows: CutlistRow[]; colourType?: string }> = [];
+  const customRows: Array<{ row: CutlistRow; key: number; index: number }> = [];
   for (const row of rows) {
+    const shape = input.shapeOf?.(row) ?? null;
+    if (shape) {
+      customRows.push({ row, key: shapeSortKey(shape), index: customRows.length });
+      continue;
+    }
     const type = toStr(row.partType) || "Unassigned";
     const section = sections.find((item) => item.type.toLowerCase() === type.toLowerCase());
     if (section) section.rows.push(row);
     else sections.push({ type, rows: [row] });
   }
   sections.sort((a, b) => orderOf(a.type) - orderOf(b.type));
+  if (customRows.length) {
+    const ordered = customRows.sort((a, b) => a.key - b.key || a.index - b.index).map((item) => item.row);
+    sections.push({ type: "Custom", rows: ordered, colourType: toStr(ordered[0].partType) });
+  }
 
   // A line of text cut to fit `width` (with an ellipsis), in the current font.
   const fit = (text: string, width: number) => {
@@ -586,13 +751,28 @@ export function buildCutlistPrintPdf(jsPDF: JsPdfCtor, input: CutlistPrintInput)
     const height = Math.max(ROW_H, lines * FONT * LINE + 4.4);
     return { ...options, cells, height };
   };
+  // A Custom piece's drawing — worked out once for each (a part's laid out more than once). A custom cabinet's: its top
+  // view, its backs and ends `cabinetThickness` thick.
+  const drawings = new Map<CutlistRow, ShapeDrawing>();
+  const drawingOf = (row: CutlistRow, shape: CutlistShape, width: number, cabinetThickness?: number) => {
+    const known = drawings.get(row);
+    if (known && known.width === width) return known;
+    const options = { width, height: SHAPE_DRAW_H, fontSize: SHAPE_DRAW_FONT, background: "#FFFFFF" };
+    const drawing = cabinetThickness !== undefined ? cabinetPlanDrawingOps(shape, { ...options, thicknessMm: cabinetThickness }) : shapeDrawingOps(shape, options);
+    drawings.set(row, drawing);
+    return drawing;
+  };
   // A part laid out: its row (or a drawer's: its own row, then its pieces'), its second line's words (under its own
-  // row), and how high it all is.
+  // row — a Custom piece's beside its drawing), and how high it all is.
   const layoutPart = (row: CutlistRow) => {
     const printed = printedPart(row, input);
     const before: TableLine[] = [];
     const after: TableLine[] = [];
-    if (printed.pieces.length) {
+    if (printed.cabinet) {
+      // (A custom cabinet: its own row with its sizes, then its pieces — under its top view.)
+      before.push(tableLine(printed.own, { axis: grainAxis(row) }));
+      printed.pieces.forEach((piece, index) => after.push(tableLine(piece, { indent: PIECE_INDENT, mergedClash: printed.cabinet?.pieceClash[index] || "" })));
+    } else if (printed.pieces.length) {
       before.push(tableLine(printed.own, { bold: true, nameSpan: true }));
       for (const piece of printed.pieces) after.push(tableLine(piece, { indent: PIECE_INDENT }));
     } else {
@@ -601,14 +781,18 @@ export function buildCutlistPrintPdf(jsPDF: JsPdfCtor, input: CutlistPrintInput)
       before.push(tableLine(printed.own, { axis: grainAxis(row), mergedClash: printed.cabinetClash, hinges }));
     }
     const segments = detailSegments(row, input);
-    const detailLines = segments.length ? layoutSegments(doc, segments, detailWidth - PAD_X * 2) : [];
-    const detailH = detailLines.length ? detailLines.length * DETAIL_FONT * LINE + 2.5 : 0;
+    const drawing = printed.shape ? drawingOf(row, printed.shape, Math.max(80, Math.min(SHAPE_DRAW_W, detailWidth - PAD_X * 2)), printed.cabinet?.thicknessMm) : null;
+    // (Beside a drawing: what's left of the width.)
+    const textOffset = drawing ? drawing.width + SHAPE_GAP : 0;
+    const detailLines = segments.length ? layoutSegments(doc, segments, Math.max(60, detailWidth - PAD_X * 2 - textOffset)) : [];
+    const textH = detailLines.length ? detailLines.length * DETAIL_FONT * LINE + 2.5 : 0;
+    const detailH = drawing ? Math.max(textH, drawing.height + SHAPE_PAD * 2) : textH;
     const height = [...before, ...after].reduce((sum, line) => sum + line.height, 0) + detailH;
     // How many parts it is: its pieces', or its own quantity.
     const parts = printed.pieces.length
       ? printed.pieces.reduce((sum, piece) => sum + (Number.parseInt(piece.quantity, 10) || 0), 0)
       : Number(row.quantity) || 0;
-    return { before, after, detailLines, detailH, height, parts };
+    return { before, after, detailLines, detailH, height, parts, drawing, textOffset };
   };
 
   // A table row, from `y`.
@@ -693,14 +877,23 @@ export function buildCutlistPrintPdf(jsPDF: JsPdfCtor, input: CutlistPrintInput)
       drawLine(line, top);
       top += line.height;
     }
-    if (part.detailLines.length) {
+    if (part.detailH > 0) {
+      // A Custom piece's drawing, on white, boxed in a fine line.
+      if (part.drawing) {
+        const drawX = detailLeft + PAD_X;
+        const drawY = top + SHAPE_PAD;
+        drawShapeDrawingOps(doc, part.drawing.ops, drawX, drawY);
+        doc.setDrawColor(...LIGHT_LINE);
+        doc.setLineWidth(0.35);
+        doc.rect(drawX, drawY, part.drawing.width, part.drawing.height, "S");
+      }
       doc.setFontSize(DETAIL_FONT);
       doc.setTextColor(...DETAIL_TEXT);
       part.detailLines.forEach((line, lineIndex) => {
-        const baseline = top + lineIndex * DETAIL_FONT * LINE + DETAIL_FONT * 0.86;
+        const baseline = top + (part.drawing ? SHAPE_PAD : 0) + lineIndex * DETAIL_FONT * LINE + DETAIL_FONT * 0.86;
         line.forEach((word) => {
           doc.setFont("helvetica", word.bold ? "bold" : "normal");
-          doc.text(word.text, detailLeft + PAD_X + word.x, baseline);
+          doc.text(word.text, detailLeft + PAD_X + part.textOffset + word.x, baseline);
         });
       });
       // (Only the line between Room and the rest.)
@@ -720,7 +913,7 @@ export function buildCutlistPrintPdf(jsPDF: JsPdfCtor, input: CutlistPrintInput)
   }
   sections.forEach((section) => {
     setColumnsFor(section.rows);
-    const colour = hexToRgb(input.partTypeColors[section.type] ?? "") ?? FALLBACK_COLOUR;
+    const colour = hexToRgb(input.partTypeColors[section.colourType ?? section.type] ?? "") ?? FALLBACK_COLOUR;
     const headingColour = tint(colour, 0.55);
     // Its boards (as the list shows them), each with its parts — in the order they come.
     const boards: Array<{ label: string; rows: CutlistRow[] }> = [];

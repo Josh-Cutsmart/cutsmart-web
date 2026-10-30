@@ -3,6 +3,7 @@ import "./globals.css";
 import { DocumentScrollbar } from "@/components/glass-scrollbar-thumb";
 import { ScrollLockWatcher } from "@/components/scroll-lock-watcher";
 import { DropdownSqueezeWatcher } from "@/components/dropdown-squeeze-watcher";
+import { ModalSwipeToClose } from "@/components/modal-swipe-to-close";
 import { UndoBarProvider } from "@/components/undo-bar";
 
 export const metadata: Metadata = {
@@ -201,6 +202,8 @@ export default function RootLayout({
         <ScrollLockWatcher />
         {/* Every dropdown squeezing out of what opened it as it opens — every route. */}
         <DropdownSqueezeWatcher />
+        {/* A touch screen: any pop-up swiped down from its top closes — every route. */}
+        <ModalSwipeToClose />
       </body>
     </html>
   );
