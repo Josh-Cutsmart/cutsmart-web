@@ -70,8 +70,15 @@ whatsNew: [
 <li>Angles at every corner that isn't square, and cut-outs measured from the edges — on screen and on paper</li>
 <li>Zoom and move round the drawing; in 3D, drag to move, right-drag to turn and scroll to zoom</li>
 <li>A custom cabinet starts at the project's Base Cab Height, and right-clicking an edge picks Doors, Back or End</li>
+<li><b>True-shape nesting</b> on a CNC: pieces are laid out by their real outline, so smaller pieces fill an L's corner or a U's middle and shapes fit into each other — never more sheets than before</li>
+<li><b>Export</b> a shape's drawing — 2D or 3D, as a PNG or PDF, with its sizes</li>
+<li>In 3D, click an edge to band it (a cabinet's to make it doors, a back or an end); right-drag in 2D turns straight into 3D</li>
+<li>A custom cabinet's doors edges are taped on every part along them — top, bottom and shelves — and every end's front</li>
+<li>A Custom piece goes into Cutlist Entry as soon as it's picked, and closing its drawing with changes asks first, with <b>Save &amp; close</b></li>
 <li>A room with nothing in its cutlist yet shows <b>Add your first piece</b> — press it and pick the part type (Initial Measure and Production)</li>
 <li>Cutlist Entry's column headings only show while there are rows being entered</li>
+<li>An empty Project Cutlist lists the project's rooms as buttons — one press takes you to that room's cutlist (Initial Measure and Production)</li>
+<li>The cutlists' boxes match their dropdowns, in dark mode too — no more see-through boxes with light text on a pale row</li>
 <li><b>Order</b> redesigned: the order at a glance up top, Drawers, Hinges and Other side by side, then Boards and Misc</li>
 <li>Drag hinges and other parts in from the <b>Hardware Library</b>, or click one to add it</li>
 <li>Two people in the Order see each other's changes as they're made</li>
@@ -115,6 +122,8 @@ whatsNew: [
 <u><b>Company Settings</b></u>
 <ul>
 <li>Staff &amp; Permissions: an <b>Audit log</b> of every role and permission change — who made it and when</li>
+<li>Staff &amp; Permissions: <b>Access codes</b> — make a one-person code to join with, name it (and rename it), search them, see who used each, and revoke one any time. Everyone you invite with <b>Add staff</b> gets one too, without having to type it</li>
+<li><b>Add staff</b>: their email, which access code (a new one, or one you've made) and the role they start in</li>
 <li><b>View as this role</b>: see the app as someone with that role would, until you press Exit</li>
 <li>Backup &amp; Output: <b>Full data export</b> — everything your company has, in one file to keep</li>
 <li>Hardware drawers, laid out afresh: hardware lengths and weights, how bottoms and backs are cut, then each height's own lengths and weights — click a height to tick just the ones it comes in</li>

@@ -24,6 +24,7 @@ import {
   cachedCustomCabinetModel,
   cachedCustomCabinetParts,
   customCabinetBandingSummary,
+  customCabinetPartClashingText,
   customCabinetPartLines,
   customCabinetSize,
   customCabinetSizeText,
@@ -305,6 +306,7 @@ export function CutlistShapeDetail({
   stacked = false,
   textColor = "var(--text-main)",
   boardThicknessMm,
+  doorGapMm,
   color = "#CBD5E1",
   quantity,
 }: {
@@ -318,8 +320,10 @@ export function CutlistShapeDetail({
   // On a phone: the buttons under the drawing, not beside it.
   stacked?: boolean;
   textColor?: string;
-  // A custom cabinet's: its board thickness (mm), its part type's colour (its 3D view's), and how many of it the row is.
+  // A custom cabinet's: its board thickness (mm), its part type's colour (its 3D view's), and how many of it the row is —
+  // and the gap between its doors where they meet (mm, the project's Vertical gap between doors / panels).
   boardThicknessMm?: number;
+  doorGapMm?: number;
   color?: string;
   quantity?: number | string;
 }) {
@@ -336,6 +340,7 @@ export function CutlistShapeDetail({
         stacked={stacked}
         textColor={textColor}
         boardThicknessMm={boardThicknessMm}
+        doorGapMm={doorGapMm}
         color={color}
         quantity={quantity}
       />
@@ -391,6 +396,7 @@ export function CutlistCabinetDetail({
   stacked = false,
   textColor = "var(--text-main)",
   boardThicknessMm,
+  doorGapMm,
   color = "#CBD5E1",
   quantity,
 }: {
@@ -404,13 +410,14 @@ export function CutlistCabinetDetail({
   stacked?: boolean;
   textColor?: string;
   boardThicknessMm?: number;
+  doorGapMm?: number;
   color?: string;
   quantity?: number | string;
 }) {
   const thicknessMm = boardMmOf(boardThicknessMm);
   const [hoverPart, setHoverPart] = useState<string | null>(null);
   const parts = cachedCustomCabinetParts(shape, thicknessMm);
-  const model = cachedCustomCabinetModel(shape, thicknessMm);
+  const model = cachedCustomCabinetModel(shape, thicknessMm, doorGapMm);
   const lines = useMemo(() => customCabinetPartLines(parts), [parts]);
   const each = Math.max(1, Number.parseInt(String(quantity ?? "1"), 10) || 1);
   const hasShapedParts = parts.some((part) => part.kind === "shape" && part.shape);
@@ -468,7 +475,7 @@ export function CutlistCabinetDetail({
                   Size
                 </th>
                 <th className="px-3 py-1.5 font-medium" style={muted}>
-                  Banding
+                  Clashing
                 </th>
                 <th className="px-3 py-1.5 text-center font-medium" style={muted}>
                   Shape
@@ -490,7 +497,7 @@ export function CutlistCabinetDetail({
                     <td className="px-3 py-1 text-center">{part.problem ? "-" : part.quantity * each}</td>
                     <td className="whitespace-nowrap px-3 py-1">{part.problem ? part.problem : customCabinetPartSizeText(part)}</td>
                     <td className="whitespace-nowrap px-3 py-1">
-                      {part.kind === "shape" && part.shape ? shapeBandingSummary(part.shape) : part.name === "End" ? "Front edge" : "-"}
+                      {customCabinetPartClashingText(part)}
                     </td>
                     <td className="px-3 py-1">
                       {part.kind === "shape" && part.shape ? (

@@ -24,6 +24,8 @@ export type JoinCodeRecord = {
   // Made for an invite (Staff > Add staff): which one, and who it was sent to.
   inviteId?: string;
   invitedEmail?: string;
+  // The role its person starts in (set by the server, from Add staff's Role). None: Staff.
+  roleId?: string;
 };
 
 export type JoinCodesState = { masterCode: string; masterKey: string; codes: JoinCodeRecord[] };
@@ -41,6 +43,9 @@ const ERROR_MESSAGES: Record<string, string> = {
   "member-still-in-company": "Remove the person who used this code first.",
   "not-revoked": "Only a revoked code can be deleted.",
   forbidden: "You don't have access to join codes.",
+  "role-not-allowed": "You can't give new staff that role.",
+  "no-such-role": "That role doesn't exist any more. Pick another one.",
+  "code-not-available": "That access code can't be used any more. Pick another one.",
   preview: "Not available in the CutSmart Preview.",
 };
 
@@ -73,10 +78,17 @@ async function postJoinCodes(companyId: string, body: Record<string, unknown>): 
   }
 }
 
-export const createTemporaryJoinCode = (companyId: string, label: string, invite?: { inviteId: string; invitedEmail: string }) =>
+// An invite's code can carry the role they'll start in (roleId), checked by the server.
+type InviteLink = { inviteId: string; invitedEmail: string; roleId?: string };
+
+export const createTemporaryJoinCode = (companyId: string, label: string, invite?: InviteLink) =>
   postJoinCodes(companyId, { action: "create-temporary", label, ...(invite ?? {}) });
+// Add staff with one of the company's waiting codes instead of a new one.
+export const linkJoinCodeToInvite = (companyId: string, key: string, invite: InviteLink) =>
+  postJoinCodes(companyId, { action: "link-invite", key, ...invite });
 export const changeMasterJoinCode = (companyId: string, code: string) => postJoinCodes(companyId, { action: "change-master", code });
 export const revokeTemporaryJoinCode = (companyId: string, key: string) => postJoinCodes(companyId, { action: "revoke", key });
+export const renameTemporaryJoinCode = (companyId: string, key: string, label: string) => postJoinCodes(companyId, { action: "rename", key, label });
 export const revokeJoinCodesForInvite = (companyId: string, inviteId: string) => postJoinCodes(companyId, { action: "revoke-for-invite", inviteId });
 export const deleteJoinCode = (companyId: string, key: string) => postJoinCodes(companyId, { action: "delete", key });
 

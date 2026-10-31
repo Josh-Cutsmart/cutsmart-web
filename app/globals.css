@@ -204,8 +204,9 @@ p {
   cursor: grabbing;
 }
 
-.cs-app select,
-.cs-app textarea {
+/* (Not the cutlists' text boxes and selects — cutlist-field, below.) */
+.cs-app select:where(:not(.cutlist-field)),
+.cs-app textarea:where(:not(.cutlist-field)) {
   border: 1px solid var(--panel-border);
   border-radius: 10px;
   background: #ffffff;
@@ -367,9 +368,16 @@ body[data-theme="dark"].cs-app .text-\[\#6B7D94\] {
   color: var(--text-muted) !important;
 }
 
-body[data-theme="dark"].cs-app input:not([type="color"]):not([type="checkbox"]):not([type="radio"]),
-body[data-theme="dark"].cs-app select,
-body[data-theme="dark"].cs-app textarea {
+/* The cutlists' text boxes and selects (cutlist-field: Initial Measure's and Production's entry rows, their lists'
+   boxes typed into in place, and their phone rows and pop-ups) are left out of these blanket rules — the grey box
+   here, the see-through one below, and the white one in light mode above. They keep the fill, border and text colour
+   they're given, as the dropdowns beside them do (BoardPillDropdown and the like are buttons, which none of these
+   rules reach), so a text box and a dropdown look the same in both themes: a white box edged in its part type's
+   colour in an entry row, the panel's own colours in a list. Their focus border (the brand blue, below) and their
+   red warning still show. :where() adds no weight, so the rules written to out-rank these still do. */
+body[data-theme="dark"].cs-app input:not([type="color"]):not([type="checkbox"]):not([type="radio"]):where(:not(.cutlist-field)),
+body[data-theme="dark"].cs-app select:where(:not(.cutlist-field)),
+body[data-theme="dark"].cs-app textarea:where(:not(.cutlist-field)) {
   background: #303134 !important;
   border-color: #4b5563 !important;
   color: #f1f1f1 !important;
@@ -378,8 +386,8 @@ body[data-theme="dark"].cs-app textarea {
 /* Inputs that intentionally opt out of the blanket dark-mode background above (e.g. a search
    input meant to be transparent so its own styled wrapper chip shows through, not a flat gray
    rectangle sitting inside it) — respects that explicit intent instead of overriding it. */
-body[data-theme="dark"].cs-app input.bg-transparent:not([type="color"]):not([type="checkbox"]):not([type="radio"]),
-body[data-theme="dark"].cs-app textarea.bg-transparent {
+body[data-theme="dark"].cs-app input.bg-transparent:not([type="color"]):not([type="checkbox"]):not([type="radio"]):where(:not(.cutlist-field)),
+body[data-theme="dark"].cs-app textarea.bg-transparent:where(:not(.cutlist-field)) {
   background: transparent !important;
   color: #f1f1f1 !important;
 }

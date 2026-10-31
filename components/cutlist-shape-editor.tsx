@@ -15,12 +15,43 @@ import {
   type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
-import { ArrowRightLeft, Check, Eraser, Magnet, Maximize2, Minus, Plus, RotateCcw, Scissors, Shapes, Slash, Trash2, Undo2, X } from "lucide-react";
+import {
+  ArrowRightLeft,
+  ChevronDown,
+  Check,
+  CircleHelp,
+  Download,
+  Eraser,
+  FileText,
+  FlipHorizontal2,
+  FlipVertical2,
+  Grid3x3,
+  Image as ImageIcon,
+  Magnet,
+  Maximize2,
+  Minus,
+  MousePointer2,
+  PenLine,
+  Plus,
+  Redo2,
+  RotateCcw,
+  RotateCw,
+  Ruler,
+  RulerDimensionLine,
+  Scissors,
+  Shapes,
+  Trash2,
+  Undo2,
+  X,
+} from "lucide-react";
 import { GlassModalHeader } from "@/components/glass-modal-header";
-import { GLASS_MENU_CLASS, GLASS_MENU_ROW_CLASS, GLASS_MENU_STYLE, GlassDropdown } from "@/components/glass-dropdown";
+import { GLASS_MENU_CLASS, GLASS_MENU_ROW_CLASS, GLASS_MENU_STYLE, GlassActionMenu, GlassDropdown } from "@/components/glass-dropdown";
 import { Segmented, glassFieldClass } from "@/components/settings-ui";
 import { CUTLIST_SHAPE_BAND_COLOR, CutlistShapeThumbnail } from "@/components/cutlist-shape-thumbnail";
-import { CutlistCabinet3d } from "@/components/cutlist-cabinet-3d";
+import { CABINET_3D_DEFAULT_VIEW, CutlistCabinet3d, readCabinetRolesShown, type Cabinet3dFace } from "@/components/cutlist-cabinet-3d";
+import { type View3dTurnStart } from "@/lib/use-view-3d-gestures";
+import { downloadShapeDrawingPdf, downloadShapeDrawingPng, shapeExportFileName, type ShapeDrawingBuilder } from "@/lib/cutlist-shape-export";
+import { shapeDrawingOps } from "@/lib/cutlist-shape-render";
 import { useUndo } from "@/components/undo-bar";
 import {
   CABINET_EDGE_ROLES,
@@ -31,13 +62,18 @@ import {
   cabinetRoleChains,
   cabinetSettings,
   customCabinetModel,
+  cabinet3dDrawingOps,
+  cabinetPlanDrawingOps,
+  customCabinetBanding,
   customCabinetParts,
+  customCabinetPartClashingText,
   flatPieceModel,
   cycleCabinetEdgeRole,
   resetCabinetEdgeRoles,
   setCabinetEdgeRole,
   toggleCabinetThroughBack,
   type CabinetSettings,
+  type CabinetView,
 } from "@/lib/cutlist-cabinet-shape";
 import { glassShineStyle } from "@/lib/glass-shine";
 import { swallowNextClick } from "@/lib/swallow-dismiss-click";
@@ -57,6 +93,7 @@ import {
   formatShapeMetres,
   formatShapeMm,
   isCabinetShape,
+  isTemplateShapeKind,
   normalizeCustomShape,
   normalizeCutlistShape,
   placeShapeLabels,
@@ -81,6 +118,7 @@ import {
   snapCustomPoint,
   templateDimensions,
   toggleShapeRunBanding,
+  transformShape,
   cutShapeFace,
   cutShapeLinePiece,
   type CabinetEdgeRole,
@@ -88,8 +126,10 @@ import {
   type CutlistShape,
   type CutlistShapeBase,
   type CutlistShapeKind,
+  type CutlistShapeTemplateKind,
   type ShapeBounds,
   type ShapeCutLine,
+  type ShapeTransform,
   type ShapeLabelRequest,
   type ShapePoint,
 } from "@/lib/cutlist-shape";
@@ -112,8 +152,6 @@ import {
 const DIM_OFFSET = 30;
 // The area an empty drawing starts on (mm).
 const DRAW_AREA: ShapeBounds = { minX: 0, minY: 0, maxX: 2400, maxY: 1400, width: 2400, height: 1400 };
-// The shapes offered. (A plain rectangle isn't one — a row without a shape still opens on one, rectShapeFromSize.)
-const EDITOR_KINDS = CUTLIST_SHAPE_KINDS.filter((option) => option.kind !== "rect");
 // What's said when a change would make the outline cross itself (and it isn't made).
 const CROSSING_MESSAGE = "That would cross another line";
 // How far a curve's handle moves before it's a drag, not a click (px).
@@ -121,6 +159,8 @@ const DRAG_START_PX = 4;
 // A press on a cabinet's edge held this long, not moving more than this, is a long press (a touch screen's right-click).
 const HOLD_MS = 500;
 const HOLD_SLOP_PX = 8;
+// How far a right-button drag on the 2D drawing goes before it's a turn in 3D, not a right-click (px).
+const RIGHT_DRAG_PX = 5;
 // The row's fields it can set, as its cutlist's columns name them.
 const ALL_FIELDS: ReadonlyArray<CutlistShapeEditorFieldKey> = ["name", "board", "quantity", "information", "grain"];
 
@@ -247,6 +287,13 @@ export type CutlistShapeEditorProps = {
   baseOptions?: Array<{ partType: string; category: string; color?: string }>;
   // How tall it is when it's first made a cabinet (mm) — the project's Base Cab Height. Default: 720.
   defaultCabinetHeightMm?: number;
+  // What's added to each end of every length of edge banding (mm — Company Settings › Machining's Excess per end), as
+  // the cutlists' edge tape totals add it: its Clashing figure counts it too.
+  bandingExcessPerEndMm?: number;
+  // The gap between two of a cabinet's doors where they meet (mm — the project's Vertical gap between doors / panels: a
+  // base cabinet's, `tallDoorGapMm` a tall one's — 1400 or more high).
+  doorGapMm?: number;
+  tallDoorGapMm?: number;
   // Adding a piece (Save adds a row) rather than changing one.
   isNew?: boolean;
   origin?: GlassModalOrigin;
@@ -256,6 +303,28 @@ export type CutlistShapeEditorProps = {
 };
 
 // The pop-up: grows out of what opened it (useGlassModalPopOrigin); the whole screen on a phone (globals.css).
+// The Cabinet parts list open or shut — for the session: kept here, and in sessionStorage where it can be (a private
+// window or blocked storage just has it shut on a reload).
+const CABINET_PARTS_OPEN_KEY = "cutsmart.shapeEditor.cabinetPartsOpen";
+let cabinetPartsOpenNow: boolean | null = null;
+function readCabinetPartsOpen(): boolean {
+  if (cabinetPartsOpenNow !== null) return cabinetPartsOpenNow;
+  try {
+    cabinetPartsOpenNow = typeof window !== "undefined" && window.sessionStorage.getItem(CABINET_PARTS_OPEN_KEY) === "1";
+  } catch {
+    cabinetPartsOpenNow = false;
+  }
+  return cabinetPartsOpenNow;
+}
+function rememberCabinetPartsOpen(open: boolean) {
+  cabinetPartsOpenNow = open;
+  try {
+    window.sessionStorage.setItem(CABINET_PARTS_OPEN_KEY, open ? "1" : "0");
+  } catch {
+    // (Not kept past a reload, then.)
+  }
+}
+
 export function CutlistShapeEditor(props: CutlistShapeEditorProps) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const shouldRender = useGlassModalPopOrigin(props.open, props.origin ?? null, panelRef, undefined, props.originElRef);
@@ -278,7 +347,12 @@ export function CutlistShapeEditor(props: CutlistShapeEditorProps) {
   );
 }
 
-type ShapeState = { shape: CutlistShape; closed: boolean };
+// A shape type as it was left (for going back to it).
+type KindState = { shape: CutlistShape; closed: boolean };
+// The drawing at a step (Undo and Redo): its shape, closed or not, the lines drawn on it, what it is and a cabinet's own.
+type ShapeState = { shape: CutlistShape; closed: boolean; guides: GuideLine[]; base: CutlistShapeBase | null; cabinet: CabinetSettings };
+// The tools: Select (what a click does), Line (a drawing's lines, or lines on a finished shape), Measure.
+type EditorTool = "select" | "line" | "measure";
 type EditorLabel = ShapeLabelRequest & { text: string; value: number; editable: boolean; title: string; live?: boolean };
 // A Custom outline's segment being bowed by its handle: which, the pointer, where it went down (client px), whether it's
 // moved far enough to be a drag, and its bulge so far.
@@ -297,6 +371,10 @@ type GuideLine = { id: number; a: ShapePoint; b: ShapePoint };
 function editorStateKey(shape: CutlistShape, base: CutlistShapeBase | null, cabinet: CabinetSettings, fields: CutlistShapeEditorFields, closed: boolean): string {
   return JSON.stringify([cutlistShapeForStorage(shape), base, cabinet, fields, closed]);
 }
+// ...and just its drawing — its outline, corners, curves, banding and edges' roles, and the lines drawn on it.
+function drawingStateKey(shape: CutlistShape, closed: boolean, guides: GuideLine[]): string {
+  return JSON.stringify([cutlistShapeForStorage(shape), closed, guides.map((guide) => [guide.a, guide.b])]);
+}
 
 function ShapeEditorBody({
   shape: openedShape,
@@ -311,6 +389,9 @@ function ShapeEditorBody({
   requireFields = false,
   baseOptions,
   defaultCabinetHeightMm,
+  bandingExcessPerEndMm = 0,
+  doorGapMm = 0,
+  tallDoorGapMm,
   isNew = false,
   onSave,
   onClose,
@@ -343,6 +424,15 @@ function ShapeEditorBody({
   // A cabinet's edge under the pointer, and a part hovered in its parts list.
   const [hoverEdge, setHoverEdge] = useState<number | null>(null);
   const [hoverPart, setHoverPart] = useState<string | null>(null);
+  // The Cabinet parts list: shut till it's opened (and as it was left, for the rest of the session).
+  const [partsOpen, setPartsOpen] = useState(readCabinetPartsOpen);
+  const togglePartsOpen = () => {
+    const open = !partsOpen;
+    setPartsOpen(open);
+    // (Shut: nothing in it can be pointed at, so nothing's picked out on the drawing.)
+    if (!open) setHoverPart(null);
+    rememberCabinetPartsOpen(open);
+  };
   // With lines drawn: where on the outline the pointer is (mm), the line under it (and where on it), and Delete line
   // pointed at in a menu — what's picked out is just the piece between crossings, and what Delete line would cut away.
   const [hoverAt, setHoverAt] = useState<ShapePoint | null>(null);
@@ -351,14 +441,31 @@ function ShapeEditorBody({
   // A Custom outline being drawn isn't closed yet (a template, or one opened, always is).
   const [closed, setClosed] = useState(true);
   // Each shape type as it was left, for going back to it.
-  const [byKind, setByKind] = useState<Partial<Record<CutlistShapeKind, ShapeState>>>({});
+  const [byKind, setByKind] = useState<Partial<Record<CutlistShapeKind, KindState>>>({});
   // A Custom outline's steps back (Undo).
   const [history, setHistory] = useState<ShapeState[]>([]);
+  // ...and its steps forward again (Redo) — let go once something else is done.
+  const [future, setFuture] = useState<ShapeState[]>([]);
+  // The template it was before a run of turns and flips (it goes back to it when they bring it back) — let go at any
+  // other change.
+  const [templateOrigin, setTemplateOrigin] = useState<CutlistShapeTemplateKind | null>(null);
+  // Measure: on, and the measurement — its points so far (two: a length; three: an angle, at the middle one), and
+  // whether it's finished (no more points to it). Never saved.
+  const [measureOn, setMeasureOn] = useState(false);
+  const [measure, setMeasure] = useState<{ points: ShapePoint[]; done: boolean } | null>(null);
+  // The grid behind the drawing, and its numbers (always on an export and on paper).
+  const [gridOn, setGridOn] = useState(true);
+  const [dimsOn, setDimsOn] = useState(true);
+  // The keys' list, open.
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [snapOn, setSnapOn] = useState(true);
   // How it was opened (its drawing, what it is, a cabinet's own, its fields) — anything else, and closing it asks first
   // (Are you sure? — its X, Escape, a swipe down).
   const [openedKey] = useState(() => editorStateKey(shape, base, cabinet, fields, closed));
   const [confirmClose, setConfirmClose] = useState(false);
+  // (Clear asks first — Clear the drawing? — once the drawing's not as it was opened.)
+  const [openedDrawingKey] = useState(() => drawingStateKey(shape, closed, []));
+  const [confirmClear, setConfirmClear] = useState(false);
   const [view, setView] = useState<"2d" | "3d">("2d");
   const [size, setSize] = useState({ width: 0, height: 0 });
   // The drawing's scale (px per mm) — null: fitted to the view. Kept while sizes change, so the drawing grows and shrinks.
@@ -368,6 +475,14 @@ function ShapeEditorBody({
   // The view zoomed or moved by hand (the wheel, a pinch, − / +, a drag): changes to the shape leave it where it is,
   // till Fit (or a new shape type, or a resize) fits it again.
   const [viewSet, setViewSet] = useState(false);
+  // The 3D view's turn (kept here: its export draws it as it's seen); a turn carried on into it from a right-drag on the
+  // 2D drawing; the face under the pointer there. And the 2D drawing being moved (the closed hand shows).
+  const [view3d, setView3d] = useState<CabinetView>(CABINET_3D_DEFAULT_VIEW);
+  const [turnStart, setTurnStart] = useState<View3dTurnStart | null>(null);
+  const [hover3d, setHover3d] = useState<Cabinet3dFace | null>(null);
+  // A cabinet's roles shown in 3D (its Labels switch — its export the same).
+  const [rolesShown, setRolesShown] = useState(readCabinetRolesShown);
+  const [panning, setPanning] = useState(false);
   const [pointer, setPointer] = useState<ShapePoint | null>(null);
   const [hoverRun, setHoverRun] = useState<number | null>(null);
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null);
@@ -386,6 +501,7 @@ function ShapeEditorBody({
   const holdViewRef = useRef(false);
   // The typed length's box, and a finger held on a cabinet's edge (the click its long press ends in isn't a tap too).
   const lengthInputRef = useRef<HTMLInputElement | null>(null);
+  const statusAtRef = useRef<HTMLSpanElement | null>(null);
   const edgeHoldRef = useRef<EdgeHold | null>(null);
   const holdOpenedMenuRef = useRef(false);
   // The view being moved: a drag on the drawing's empty space (or the middle button anywhere); the fingers on it (two:
@@ -394,6 +510,8 @@ function ShapeEditorBody({
   const touchesRef = useRef(new Map<number, ShapePoint>());
   const pinchRef = useRef<{ dist: number; mid: ShapePoint; s: number; ox: number; oy: number } | null>(null);
   const pinchedRef = useRef(false);
+  // (A right-button press on the 2D drawing: dragged a few px, it's 3D, turning from there.)
+  const rightDragRef = useRef<{ pointerId: number; x: number; y: number } | null>(null);
   useEffect(
     () => () => {
       if (edgeHoldRef.current) window.clearTimeout(edgeHoldRef.current.timer);
@@ -474,7 +592,12 @@ function ShapeEditorBody({
   const roles = useMemo(() => (cabinetLive ? cabinetEdgeRoles(cabinetLive) : []), [cabinetLive]);
   const backCorners = useMemo(() => (cabinetLive ? cabinetBackCorners(cabinetLive) : []), [cabinetLive]);
   const parts = useMemo(() => (cabinetLive ? customCabinetParts(cabinetLive, { thicknessMm: boardMm }) : []), [boardMm, cabinetLive]);
-  const model = useMemo(() => (cabinetLive ? customCabinetModel(cabinetLive, { thicknessMm: boardMm }) : null), [boardMm, cabinetLive]);
+  // (Its doors the project's gap apart where they meet — a tall cabinet's gap if it's one.)
+  const cabinetDoorGap = cabinet.height >= 1400 && tallDoorGapMm !== undefined ? tallDoorGapMm : doorGapMm;
+  const model = useMemo(
+    () => (cabinetLive ? customCabinetModel(cabinetLive, { thicknessMm: boardMm, doorGapMm: cabinetDoorGap }) : null),
+    [boardMm, cabinetDoorGap, cabinetLive],
+  );
   const hasRoleChanges = Boolean(shape.cabinet?.roles || shape.cabinet?.throughBacks);
 
   // ---- The view: mm to px.
@@ -556,6 +679,7 @@ function ShapeEditorBody({
       drag.moved = true;
       setScale(s);
       setViewSet(true);
+      setPanning(true);
     }
     setPan({ ox: drag.ox + dx, oy: drag.oy + dy });
     return true;
@@ -564,11 +688,16 @@ function ShapeEditorBody({
     const drag = panDragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return false;
     panDragRef.current = null;
+    setPanning(false);
     return true;
   };
   // Two fingers on the drawing: a pinch — zoomed about them, and moved as they move. (Heard before anything under them,
   // so whatever the first finger had started — a line, a curve, a long press — is let go.)
   const onStageTouchDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === "mouse") {
+      rightDragRef.current = event.button === 2 && view === "2d" && live ? { pointerId: event.pointerId, x: event.clientX, y: event.clientY } : null;
+      return;
+    }
     if (event.pointerType !== "touch") return;
     const touches = touchesRef.current;
     if (!touches.size) pinchedRef.current = false;
@@ -583,6 +712,16 @@ function ShapeEditorBody({
     setPointer(null);
   };
   const onStageTouchMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    // (A right-drag: a few px, and it's 3D — turned on from there by the same drag. Not dragged: an edge's menu, as ever.)
+    const right = rightDragRef.current;
+    if (right && right.pointerId === event.pointerId) {
+      if (!(event.buttons & 2)) rightDragRef.current = null;
+      else if (Math.hypot(event.clientX - right.x, event.clientY - right.y) >= RIGHT_DRAG_PX) {
+        rightDragRef.current = null;
+        changeView("3d", { pointerId: event.pointerId, x: event.clientX, y: event.clientY });
+      }
+      return;
+    }
     const touches = touchesRef.current;
     if (event.pointerType !== "touch" || !touches.has(event.pointerId)) return;
     touches.set(event.pointerId, stagePoint(event.clientX, event.clientY));
@@ -597,6 +736,7 @@ function ShapeEditorBody({
     setViewSet(true);
   };
   const onStageTouchUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (rightDragRef.current?.pointerId === event.pointerId) rightDragRef.current = null;
     if (event.pointerType !== "touch") return;
     touchesRef.current.delete(event.pointerId);
     if (touchesRef.current.size < 2) pinchRef.current = null;
@@ -611,7 +751,7 @@ function ShapeEditorBody({
     // (Overflowing: no longer room round it for its numbers.)
     const room = pad * 0.7;
     const tooBig = b.width * keep + 2 * room > size.width || b.height * keep + 2 * room > size.height;
-    if (isCustom) setHistory((prev) => [...prev.slice(-99), { shape, closed }]);
+    record();
     // (Zoomed or moved by hand: the view stays as it was put.)
     if (viewSet) {
       setShape(next);
@@ -638,9 +778,9 @@ function ShapeEditorBody({
     if (readOnly || kind === shape.kind) return;
     const kept = byKind[kind];
     setByKind((prev) => ({ ...prev, [shape.kind]: { shape, closed } }));
+    record();
     setShape(kept?.shape ?? (kind === "custom" ? createCustomShape() : createTemplateShape(kind)));
     setClosed(kept?.closed ?? kind !== "custom");
-    setHistory([]);
     fitView();
     setPointer(null);
     setHoverRun(null);
@@ -655,20 +795,70 @@ function ShapeEditorBody({
     setLineStart(null);
   };
 
-  const pushHistory = () => setHistory((prev) => [...prev.slice(-99), { shape, closed }]);
-  const undo = () => {
-    const last = history[history.length - 1];
-    if (!last) return;
-    setHistory((prev) => prev.slice(0, -1));
-    setShape(last.shape);
-    setClosed(last.closed);
+  // Undo and Redo: every change to the drawing a step — a size typed, a radius, a curve, its banding, a cabinet's roles,
+  // a cut, a line drawn, a turn or a flip, what it is, a cabinet's height and shelves, Clear — taken back, or done again.
+  const current = (): ShapeState => ({ shape, closed, guides, base, cabinet });
+  const record = () => {
+    setHistory((prev) => [...prev.slice(-99), current()]);
+    setFuture([]);
+    setTemplateOrigin(null);
+  };
+  const pushHistory = record;
+  const restore = (state: ShapeState) => {
+    if (state.shape.kind !== shape.kind || state.closed !== closed) fitView();
+    setShape(state.shape);
+    setClosed(state.closed);
+    setGuides(state.guides);
+    setBase(state.base);
+    setCabinet(state.cabinet);
     setEditing(null);
     setHoverRun(null);
+    setHoverEdge(null);
     setLengthText(null);
     setEdgeMenu(null);
+    setLineStart(null);
+  };
+  const undo = () => {
+    const last = history[history.length - 1];
+    if (!last || readOnly) return;
+    setHistory((prev) => prev.slice(0, -1));
+    setFuture((prev) => [...prev, current()]);
+    restore(last);
+  };
+  const redo = () => {
+    const next = future[future.length - 1];
+    if (!next || readOnly) return;
+    setFuture((prev) => prev.slice(0, -1));
+    setHistory((prev) => [...prev.slice(-99), current()]);
+    restore(next);
+  };
+  // Rotate 90° and the flips: the shape turned or mirrored, everything on it with it (lib/cutlist-shape.ts's
+  // transformShape) — the lines drawn on it too — fitted to the view again.
+  const transformBy = (how: ShapeTransform) => {
+    if (readOnly || !live || drawing) return;
+    // (A template turned or flipped into a Custom outline goes back to it when it's turned back to match — kept till
+    // anything else is done. A drawn Custom outline stays Custom.)
+    const backTo = isTemplateShapeKind(shape.kind) ? shape.kind : templateOrigin;
+    const { shape: next, mapPoint } = transformShape(cabinetMode && cabShape ? cabShape : shape, how, { backTo });
+    record();
+    setTemplateOrigin(backTo);
+    setShape(next);
+    setGuides((prev) => prev.map((guide) => ({ ...guide, a: mapPoint(guide.a), b: mapPoint(guide.b) })));
+    setMeasure(null);
+    setEditing(null);
+    setHoverRun(null);
+    setHoverEdge(null);
+    setEdgeMenu(null);
+    fitView();
   };
   // Clear: the drawing gone (an Undo step) — and the Undo bar along the bottom, to put it back as it was: its outline,
-  // corners, curves, banding and edges' roles, and the lines drawn on it.
+  // corners, curves, banding and edges' roles, and the lines drawn on it. Changed from how it was opened, it's asked
+  // first (Clear the drawing?).
+  const requestClear = () => {
+    if (!points.length) return;
+    if (drawingStateKey(shape, closed, guides) === openedDrawingKey) clearDrawing();
+    else setConfirmClear(true);
+  };
   const clearDrawing = () => {
     if (!points.length) return;
     const before = { shape, closed, guides };
@@ -840,6 +1030,7 @@ function ShapeEditorBody({
     if (readOnly) return;
     const option = baseOptions?.find((candidate) => candidate.partType === partType);
     if (!option) return;
+    record();
     setBase({ partType: option.partType, category: String(option.category ?? "").trim().toLowerCase() });
     setHoverRun(null);
     setHoverEdge(null);
@@ -918,7 +1109,7 @@ function ShapeEditorBody({
       );
       return;
     }
-    setHistory((prev) => [...prev.slice(-99), { shape, closed }]);
+    record();
     // (Where it is now — cutting it doesn't move it.)
     setScale(s);
     setPan(origin);
@@ -935,6 +1126,7 @@ function ShapeEditorBody({
     const index = guides.findIndex((guide) => guide.id === id);
     if (index < 0) return;
     const guide = guides[index];
+    record();
     setGuides(withNewIds(cutShapeLinePiece(shape, cutLines, index, at ?? v.mid(guide.a, guide.b))));
   };
   const pickEdgeRole = (edgeIndex: number, role: CabinetEdgeRole) => {
@@ -1013,10 +1205,13 @@ function ShapeEditorBody({
     const value = Number.parseFloat(String(text).replace(/,/g, "."));
     if (!Number.isFinite(value) || value <= 0) return;
     const height = Math.min(4000, Math.max(Math.max(1, 2 * boardMm + 1), Math.round(value * 10) / 10));
+    if (height === cabinet.height) return;
+    record();
     setCabinet((prev) => ({ ...prev, height }));
   };
   const stepShelves = (key: "fixedShelves" | "adjustableShelves", by: number) => {
     if (readOnly) return;
+    record();
     setCabinet((prev) => ({ ...prev, [key]: Math.min(20, Math.max(0, prev[key] + by)) }));
   };
 
@@ -1129,8 +1324,15 @@ function ShapeEditorBody({
     return best ? { ...aimed, ...measured(from, best), point: best } : aimed;
   };
   const lineDrawing = lineMode && Boolean(lineStart) && Boolean(live) && !readOnly && view === "2d";
-  const toggleLineMode = () => {
-    setLineMode((on) => !on);
+  // The tool in use: Measure if it's on; else a drawing still open is drawn with Line; else what's picked.
+  const activeTool: EditorTool = measureOn ? "measure" : drawing || lineMode ? "line" : "select";
+  const pickTool = (next: EditorTool) => {
+    if (next === "line" && !drawing && (!live || readOnly || view !== "2d")) return;
+    if (next === "measure" && view !== "2d") return;
+    // (A drawing still open: its own Line — Add line's only for a finished shape.)
+    setLineMode(next === "line" && !drawing);
+    setMeasureOn(next === "measure");
+    setMeasure(null);
     setLineStart(null);
     setPointer(null);
     setLengthText(null);
@@ -1144,6 +1346,7 @@ function ShapeEditorBody({
     if (!lineStart || distanceBetween(lineStart, end) < 1) return;
     const from = lineStart;
     const landed = onLinework(end);
+    record();
     setGuides((prev) => [...prev, { id: prev.reduce((top, guide) => Math.max(top, guide.id), 0) + 1, a: from, b: end }]);
     setLineStart(landed ? null : end);
     setLengthText(null);
@@ -1220,6 +1423,46 @@ function ShapeEditorBody({
       openEdgeMenu({ edge, guide: null, at }, event.clientX, event.clientY);
     }
   };
+  // Measure: a click a point, another the second — the length between them; a third, the angle at the second (each leg's
+  // length too), and it's finished. A right-click finishes it as it is; another clears it. The next click after it's
+  // finished starts a new one. Snapped only to what's drawn — corners, points on edges and lines, lines' ends, crossings
+  // (lineSnap) — never to an angle or the 10mm steps: anywhere else, exactly where the pointer is. Never saved, never a
+  // change.
+  const measureAt = (raw: ShapePoint): ShapePoint => lineSnap(raw) ?? fine(raw);
+  const measureEnd = (_from: ShapePoint, raw: ShapePoint) => measureAt(raw);
+  const onMeasurePointerDown = (event: ReactPointerEvent<SVGRectElement>) => {
+    if (event.pointerType === "mouse" && event.button === 1) {
+      startPan(event);
+      return;
+    }
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setPointer(localPoint(event));
+  };
+  const onMeasurePointerUp = (event: ReactPointerEvent<SVGRectElement>) => {
+    if (endPan(event)) return;
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    const raw = localPoint(event);
+    if (event.pointerType !== "mouse") setPointer(null);
+    if (pinchedRef.current) return;
+    if (!measure || measure.done) {
+      setMeasure({ points: [measureAt(raw)], done: false });
+      return;
+    }
+    const last = measure.points[measure.points.length - 1];
+    const next = measureEnd(last, raw);
+    if (distanceBetween(last, next) < 0.5) return;
+    const points = [...measure.points, next];
+    setMeasure({ points, done: points.length >= 3 });
+  };
+  // (A right-click: the measurement finished as it is — then cleared. Never an edge's menu.)
+  const onMeasureContextMenu = (event: ReactMouseEvent<SVGRectElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!measure) return;
+    if (measure.done || measure.points.length < 2) setMeasure(null);
+    else setMeasure({ ...measure, done: true });
+  };
   const localPoint = (event: ReactPointerEvent<SVGRectElement>): ShapePoint => {
     const rect = event.currentTarget.getBoundingClientRect();
     return toMm(event.clientX - rect.left, event.clientY - rect.top);
@@ -1255,6 +1498,13 @@ function ShapeEditorBody({
   // The line being drawn's end as it's aimed — and, none started, where one would start.
   const lineNext = lineDrawing && lineStart ? (typedSnap ?? (pointer ? lineEndFor(lineStart, pointer) : null)) : null;
   const lineStartAt = lineMode && !lineStart && pointer && live ? lineSnap(pointer) : null;
+  // The measurement as it stands — its next point following the pointer till it's down (not once it's finished).
+  const measurePoints: ShapePoint[] = !measure
+    ? []
+    : !measure.done && pointer && measureOn
+      ? [...measure.points, measureEnd(measure.points[measure.points.length - 1], pointer)]
+      : measure.points;
+  const measureStartAt = measureOn && (!measure || measure.done) && pointer ? lineSnap(pointer) : null;
   // (The next line would cross one already drawn — or, closing it, the line back would: shown red, and not taken.)
   const snappedCrosses = snapped
     ? snapped.closes
@@ -1459,7 +1709,9 @@ function ShapeEditorBody({
           return { left: at[0] - r, top: at[1] - r, right: at[0] + r, bottom: at[1] + r };
         })
       : [];
-  const placed = size.width > 0 ? placeShapeLabels(labels, size, { obstacles: handleBoxes }) : [];
+  // (Its numbers off: none — but a number being typed, and the live length of a line being drawn.)
+  const shownLabels = dimsOn ? labels : labels.filter((label) => label.live || label.id === editing?.id);
+  const placed = size.width > 0 && view === "2d" ? placeShapeLabels(shownLabels, size, { obstacles: handleBoxes }) : [];
 
   // ---- Its sizes, and its row's fields.
   const outer = live ? live.bounds : pointsBounds(points);
@@ -1479,21 +1731,29 @@ function ShapeEditorBody({
       ];
   const grainIndex = Math.max(0, grainChoices.findIndex((choice) => choice.axis === fields.grain));
   const grainShown = grained ? grainChoices[grainIndex].axis : "";
-  // (A cabinet's banding: its shaped parts' doors edges, each as many times as there are of it.)
-  const cabinetBandingMm = parts.reduce((sum, item) => sum + (item.shape ? shapeGeometry(item.shape).bandedLengthMm * item.quantity : 0), 0);
+  // Its edge banding: a flat piece's banded edges, a cabinet's everything along its doors (customCabinetBanding — its
+  // shaped parts' doors edges, its ends' fronts, each as many times as there are of it) — each length of it with the
+  // excess per end added at both its ends, as the cutlists' edge tape totals have it.
+  const excessMm = Math.max(0, Number(bandingExcessPerEndMm) || 0);
+  const banding = cabinetMode ? customCabinetBanding(parts) : live ? { mm: live.bandedLengthMm, strips: live.bandedStrips } : { mm: 0, strips: 0 };
+  const bandingText = !live
+    ? "—"
+    : banding.mm > 0 && excessMm > 0
+      ? `${formatShapeMetres(banding.mm + 2 * excessMm * banding.strips)} m`
+      : `${formatShapeMetres(banding.mm)} m`;
   const grainText = grainShown === "H" ? "Along the height" : grainShown === "W" ? "Along the width" : grainShown === "D" ? "Along the depth" : "None";
   const summary: Array<{ label: string; value: string }> = cabinetMode
     ? [
         { label: "Footprint", value: footprint },
         { label: "Height", value: `${formatShapeMm(cabinet.height)} mm` },
         { label: "Board", value: `${formatShapeMm(boardMm)} mm` },
-        { label: "Edge banding", value: live ? `${formatShapeMetres(cabinetBandingMm)} m` : "—" },
+        { label: "Clashing", value: bandingText },
         { label: "Grain", value: grainText },
       ]
     : [
         { label: "Cut size", value: footprint },
         { label: "Area", value: live ? `${(live.areaMm2 / 1e6).toFixed(2)} m²` : "—" },
-        { label: "Edge banding", value: live ? `${formatShapeMetres(live.bandedLengthMm)} m` : "—" },
+        { label: "Clashing", value: bandingText },
         { label: "Grain", value: grainText },
       ];
   const setField = <K extends keyof CutlistShapeEditorFields>(key: K, value: CutlistShapeEditorFields[K]) => {
@@ -1545,7 +1805,11 @@ function ShapeEditorBody({
   };
 
   const tap = coarse ? "Tap" : "Click";
-  const hint = readOnly
+  const hint = measureOn
+    ? coarse
+      ? `Tap two points for a length, a third for the angle · Esc to stop measuring.`
+      : `Click two points for a length, a third for the angle · right-click to finish, again to clear.`
+    : readOnly
     ? "View only."
     : drawing
       ? typedSnap
@@ -1579,8 +1843,45 @@ function ShapeEditorBody({
               : "Right-click a piece of the outline to delete it up to the line."
             : "";
 
-  // The keys. Escape: an edge's menu closed, the number or length being typed let go, a field left — else the editor
-  // closed. Ctrl/⌘ Z: a Custom outline's last step undone. A number key while a line's being drawn: its length typed
+  // The tools' keys (the toolbar's tooltips and its ? list say them): V Select, L Line, M Measure, R Rotate 90°, H Flip
+  // horizontal (Shift H vertical), S Snap, G Grid, D Dimensions, ? the list. Each says whether it did anything.
+  const shortcutList: Array<{ keys: string; what: string }> = [
+    { keys: "V", what: "Select" },
+    { keys: "L", what: "Line" },
+    { keys: "M", what: "Measure" },
+    { keys: "Esc", what: "Back to Select (a measurement cleared)" },
+    { keys: "Ctrl Z", what: "Undo" },
+    { keys: "Ctrl Y / Ctrl Shift Z", what: "Redo" },
+    { keys: "R", what: "Rotate 90°" },
+    { keys: "H", what: "Flip horizontal" },
+    { keys: "Shift H", what: "Flip vertical" },
+    { keys: "S", what: "Snap on / off" },
+    { keys: "G", what: "Grid on / off" },
+    { keys: "D", what: "Dimensions on / off" },
+    { keys: "0–9", what: "Type a line's length while drawing" },
+    { keys: "?", what: "These keys" },
+  ];
+  const runShortcut = (rawKey: string, shift: boolean): boolean => {
+    const key = rawKey.toLowerCase();
+    if (rawKey === "?") {
+      setShortcutsOpen((open) => !open);
+      return true;
+    }
+    if (view !== "2d" && key !== "s" && key !== "g" && key !== "d") return false;
+    if (key === "v") pickTool("select");
+    else if (key === "l") pickTool("line");
+    else if (key === "m") pickTool("measure");
+    else if (key === "r" && !readOnly) transformBy("rotate");
+    else if (key === "h" && !readOnly) transformBy(shift ? "flipV" : "flipH");
+    else if (key === "s" && !readOnly) setSnapOn((on) => !on);
+    else if (key === "g") setGridOn((on) => !on);
+    else if (key === "d") setDimsOn((on) => !on);
+    else return false;
+    return true;
+  };
+
+  // The keys. Escape: an edge's menu closed, the number or length being typed let go, a measurement cleared, back to
+  // Select, a field left — else the editor closed. Ctrl/⌘ Z / Y: undo, redo. A number key while a line's being drawn: its length typed
   // (Backspace takes the last digit off, Enter puts the point there) — not while something else is being typed in.
   const onWindowKeyDown = useEffectEvent((event: KeyboardEvent) => {
     const target = event.target instanceof HTMLElement ? event.target : null;
@@ -1594,6 +1895,8 @@ function ShapeEditorBody({
       event.stopPropagation();
       if (confirmClose) {
         setConfirmClose(false);
+      } else if (confirmClear) {
+        setConfirmClear(false);
       } else if (edgeMenu) {
         setEdgeMenu(null);
       } else if (heightText !== null) {
@@ -1606,10 +1909,14 @@ function ShapeEditorBody({
       } else if (lengthText !== null) {
         setLengthText(null);
         lengthInputRef.current?.blur();
+      } else if (shortcutsOpen) {
+        setShortcutsOpen(false);
+      } else if (measureOn) {
+        // (Back to Select — or a drawing still open, its Line — the measurement cleared.)
+        pickTool(drawing ? "line" : "select");
       } else if (lineMode) {
-        // (Add line put away — any line being drawn let go.)
-        setLineStart(null);
-        setLineMode(false);
+        // (Back to Select — any line being drawn let go.)
+        pickTool("select");
       } else if (inField && target) {
         target.blur();
       } else {
@@ -1617,20 +1924,20 @@ function ShapeEditorBody({
       }
       return;
     }
-    if (
-      (event.ctrlKey || event.metaKey) &&
-      !event.shiftKey &&
-      event.key.toLowerCase() === "z" &&
-      isCustom &&
-      !editing &&
-      heightText === null &&
-      !inField &&
-      !inLengthBox &&
-      !readOnly
-    ) {
+    // Ctrl/⌘ Z: undo; Ctrl/⌘ Y, or Ctrl/⌘ Shift Z: redo.
+    const key = event.key.toLowerCase();
+    if ((event.ctrlKey || event.metaKey) && (key === "z" || key === "y") && !editing && heightText === null && !inField && !inLengthBox && !readOnly) {
       event.preventDefault();
       event.stopPropagation();
-      undo();
+      if (key === "y" || event.shiftKey) redo();
+      else undo();
+      return;
+    }
+    // The tools' own keys (not while typing anything — a field, a number, a length).
+    const free = !inField && !inLengthBox && !editing && heightText === null && lengthText === null && !menuOpen && !confirmClose && !confirmClear && !event.ctrlKey && !event.metaKey && !event.altKey;
+    if (free && runShortcut(event.key, event.shiftKey)) {
+      event.preventDefault();
+      event.stopPropagation();
       return;
     }
     const canType = ((drawing && points.length > 0) || lineDrawing) && !readOnly && view === "2d" && !editing && heightText === null && !edgeMenu && !menuOpen;
@@ -1915,7 +2222,7 @@ function ShapeEditorBody({
     const hit = coarse ? 22 : 14;
     // The 100mm grid behind a Custom outline (500mm when 100 would be too close together).
     const grid = (() => {
-      if (!isCustom || size.width <= 0) return null;
+      if (!gridOn || size.width <= 0) return null;
       const step = 100 * s >= 7 ? 100 : 500;
       const from = toMm(0, 0);
       const to = toMm(size.width, size.height);
@@ -1947,6 +2254,14 @@ function ShapeEditorBody({
         // (A long press on a cabinet's edge is its menu — not the phone's own callout. Fingers on it are the drawing's —
         // a pinch zooms it — not the page's to scroll or zoom.)
         style={{ touchAction: "none", WebkitTouchCallout: "none" }}
+        onPointerMove={(event) => {
+          const box = event.currentTarget.getBoundingClientRect();
+          const [x, y] = toMm(event.clientX - box.left, event.clientY - box.top);
+          if (statusAtRef.current) statusAtRef.current.textContent = `X ${formatShapeMm(x)}  Y ${formatShapeMm(y)}`;
+        }}
+        onPointerLeave={() => {
+          if (statusAtRef.current) statusAtRef.current.textContent = "";
+        }}
       >
         {/* The drawing's empty space: dragged, the view moves. */}
         {!(drawing && !readOnly) ? (
@@ -1956,7 +2271,7 @@ function ShapeEditorBody({
             width={size.width}
             height={size.height}
             fill="transparent"
-            style={{ cursor: "grab" }}
+            style={{ cursor: panning ? "grabbing" : "grab" }}
             onPointerDown={startPan}
             onPointerMove={movePan}
             onPointerUp={endPan}
@@ -1970,7 +2285,8 @@ function ShapeEditorBody({
             width={size.width}
             height={size.height}
             fill="transparent"
-            style={{ cursor: "crosshair" }}
+            // (The closed hand while the middle button moves it.)
+            style={{ cursor: panning ? "grabbing" : "crosshair" }}
             onPointerDown={onDrawPointerDown}
             onPointerMove={onDrawPointerMove}
             onPointerUp={onDrawPointerUp}
@@ -2201,7 +2517,7 @@ function ShapeEditorBody({
           </g>
         ) : null}
         {/* A template's dimension lines. */}
-        {dimLines.map((dim) => {
+        {(dimsOn ? dimLines : []).map((dim) => {
           const long = Math.hypot(dim.b[0] - dim.a[0], dim.b[1] - dim.a[1]) > 18;
           const mid = v.mid(dim.a, dim.b);
           return (
@@ -2292,7 +2608,7 @@ function ShapeEditorBody({
             })
           : null}
         {/* Each angle's arc, between its two edges. */}
-        {angleArcs.length ? (
+        {dimsOn && angleArcs.length ? (
           <g fill="none" stroke="var(--text-main)" strokeWidth={1.5} strokeLinecap="round" pointerEvents="none">
             {angleArcs.map((arc) => (
               <path key={arc.key} d={arc.d} />
@@ -2397,6 +2713,83 @@ function ShapeEditorBody({
           : null}
         {/* Add line: its own layer over everything else, so a press is a line's (not an edge's or a number's) — its
             right-click the menu of what's under it, or a run of lines ended. */}
+        {/* The measurement: a dashed line through its points, each leg's length (mm) — and, three points, the angle at the
+            middle one, with a little arc. */}
+        {measurePoints.length ? (
+          (() => {
+            const screen = measurePoints.map(toScreen);
+            const pill = (key: string, text: string, at: ShapePoint) => {
+              const width = text.length * 6.8 + 16;
+              const x = Math.min(Math.max(4, at[0] - width / 2), Math.max(4, size.width - width - 4));
+              const y = Math.min(Math.max(4, at[1] - 11), Math.max(4, size.height - 26));
+              return (
+                <g key={key}>
+                  <rect x={x} y={y} width={width} height={22} rx={11} fill="var(--panel-bg)" fillOpacity={0.96} stroke="var(--brand)" strokeWidth={1} />
+                  <text x={x + width / 2} y={y + 11} dy="0.35em" textAnchor="middle" fontSize={12} fontWeight={500} fill="var(--text-main)">
+                    {text}
+                  </text>
+                </g>
+              );
+            };
+            const legs = screen.slice(1).map((b, i) => {
+              const a = screen[i];
+              const normal = v.unit([a[1] - b[1], b[0] - a[0]]);
+              return pill(`leg${i}`, formatShapeMm(distanceBetween(measurePoints[i], measurePoints[i + 1])), v.add(v.mid(a, b), v.mul(normal, 16)));
+            });
+            let angle: ReactNode = null;
+            if (screen.length === 3) {
+              const [a, b, c] = screen;
+              const toA = v.unit(v.sub(a, b));
+              const toC = v.unit(v.sub(c, b));
+              const degrees = (Math.acos(Math.max(-1, Math.min(1, v.dot(toA, toC)))) * 180) / Math.PI;
+              const r = 22;
+              const p = v.add(b, v.mul(toA, r));
+              const q = v.add(b, v.mul(toC, r));
+              const sweep = toA[0] * toC[1] - toA[1] * toC[0] > 0 ? 1 : 0;
+              const between = v.unit(v.add(toA, toC));
+              angle = (
+                <g>
+                  <path d={`M ${p[0]} ${p[1]} A ${r} ${r} 0 0 ${sweep} ${q[0]} ${q[1]}`} fill="none" stroke="var(--brand-strong)" strokeWidth={1.5} />
+                  {pill("angle", `${formatShapeMm(degrees)}°`, v.add(b, v.mul(Math.hypot(between[0], between[1]) > 1e-6 ? between : [0, -1], r + 18)))}
+                </g>
+              );
+            }
+            return (
+              <g pointerEvents="none">
+                {screen.length >= 2 ? <polyline points={pts(screen)} fill="none" stroke="var(--brand-strong)" strokeWidth={1.5} strokeDasharray="5 4" /> : null}
+                {screen.map((at, i) => (
+                  <circle key={`m${i}`} cx={at[0]} cy={at[1]} r={4} fill="var(--panel-bg)" stroke="var(--brand-strong)" strokeWidth={1.5} />
+                ))}
+                {angle}
+                {legs}
+              </g>
+            );
+          })()
+        ) : null}
+        {measureStartAt ? (
+          <circle cx={toScreen(measureStartAt)[0]} cy={toScreen(measureStartAt)[1]} r={5} fill="none" stroke="var(--brand)" strokeWidth={1.5} pointerEvents="none" />
+        ) : null}
+        {measureOn ? (
+          <rect
+            x={0}
+            y={0}
+            width={size.width}
+            height={size.height}
+            fill="transparent"
+            style={{ cursor: panning ? "grabbing" : "crosshair" }}
+            onPointerDown={onMeasurePointerDown}
+            onPointerMove={(event) => {
+              if (movePan(event) || pinchRef.current) return;
+              setPointer(localPoint(event));
+            }}
+            onPointerUp={onMeasurePointerUp}
+            onContextMenu={onMeasureContextMenu}
+            onPointerCancel={() => setPointer(null)}
+            onPointerLeave={(event) => {
+              if (event.pointerType === "mouse") setPointer(null);
+            }}
+          />
+        ) : null}
         {lineMode && live && !readOnly ? (
           <rect
             x={0}
@@ -2404,7 +2797,8 @@ function ShapeEditorBody({
             width={size.width}
             height={size.height}
             fill="transparent"
-            style={{ cursor: "crosshair" }}
+            // (The closed hand while the middle button moves it.)
+            style={{ cursor: panning ? "grabbing" : "crosshair" }}
             onPointerDown={onLinePointerDown}
             onPointerMove={onLinePointerMove}
             onPointerUp={onLinePointerUp}
@@ -2424,14 +2818,75 @@ function ShapeEditorBody({
   // (components/cutlist-cabinet-3d.tsx: dragged to move it, right-dragged to turn it, the wheel to zoom), its banded
   // sides in the banding's colour (lib/cutlist-cabinet-shape.ts's flatPieceModel).
   const flat = useMemo(() => (live && !cabinetMode ? flatPieceModel(shown, boardMm) : null), [boardMm, cabinetMode, live, shown]);
+  // In 3D, an edge's face clicked sets that edge as a click on it in 2D does — a flat piece's side, its run's banding; a
+  // cabinet's back, end or door panel, its edge's role (on round) — and the one under the pointer's picked out (a flat
+  // piece's whole run, as in 2D).
+  const edgeOf3dFace = (face: Cabinet3dFace | null): number | null => {
+    if (!face) return null;
+    if (cabinetMode) {
+      const match = face.part.match(/^(?:back|end|door):(\d+)$/);
+      return match ? Number(match[1]) : null;
+    }
+    return flat?.sideEdges.get(face.key) ?? null;
+  };
+  const tapFace3d = (face: Cabinet3dFace) => {
+    const edge = edgeOf3dFace(face);
+    if (edge === null || readOnly || !live) return;
+    if (cabinetMode) tapCabinetEdge(edge);
+    else commitShape(toggleShapeRunBanding(shape, edge));
+  };
+  const litFaces3d = useMemo(() => {
+    if (!hover3d || !flat || !live || cabinetMode) return undefined;
+    const edge = flat.sideEdges.get(hover3d.key);
+    const run = edge === undefined ? undefined : live.edges[edge]?.run;
+    if (run === undefined) return undefined;
+    return new Set([...flat.sideEdges].filter(([, e]) => live.edges[e]?.run === run).map(([key]) => key));
+  }, [cabinetMode, flat, hover3d, live]);
+  const hoverPart3d = cabinetMode && hover3d && /^(?:back|end|door):\d+$/.test(hover3d.part) ? hover3d.part : null;
+
+  // ---- Export: the 2D drawing with all its numbers, or the 3D view as it's seen with its overall sizes — as a PNG or a
+  // PDF (lib/cutlist-shape-export.ts), named after it.
+  const exportTitle = { name: fields.name, partType, room, board: boardOption?.label || fields.board };
+  const build2d: ShapeDrawingBuilder = (size2d) => {
+    if (cabinetMode && cabShape) return cabinetPlanDrawingOps(withWhatItIs(cabShape), { ...size2d, thicknessMm: boardMm, background: "#FFFFFF" });
+    return shapeDrawingOps(isCustom ? normalizeCustomShape(shape).shape : shape, { ...size2d, background: "#FFFFFF" });
+  };
+  const build3d: ShapeDrawingBuilder = (size3d) =>
+    cabinetMode && model
+      ? cabinet3dDrawingOps(model, view3d, { ...size3d, color: wash, showRoles: rolesShown })
+      : cabinet3dDrawingOps(flat?.model ?? { prisms: [], height: 0, thicknessMm: 0, bounds: { minX: 0, minY: 0, minZ: 0, maxX: 0, maxY: 0, maxZ: 0 } }, view3d, {
+          ...size3d,
+          color: wash,
+          bandedFaces: flat?.bandedFaces,
+          bandColor: CUTLIST_SHAPE_BAND_COLOR,
+          axisLabels: { x: "W", y: "H", z: "T" },
+        });
+  const exportItems = [
+    { key: "2d-png", label: "2D drawing", detail: "PNG", icon: <ImageIcon size={14} />, onSelect: () => downloadShapeDrawingPng(build2d, shapeExportFileName(exportTitle, "2D", "png")) },
+    { key: "2d-pdf", label: "2D drawing", detail: "PDF", icon: <FileText size={14} />, onSelect: () => void downloadShapeDrawingPdf(build2d, exportTitle, shapeExportFileName(exportTitle, "2D", "pdf")) },
+    { key: "3d-png", label: "3D view", detail: "PNG", icon: <ImageIcon size={14} />, onSelect: () => downloadShapeDrawingPng(build3d, shapeExportFileName(exportTitle, "3D", "png")) },
+    { key: "3d-pdf", label: "3D view", detail: "PDF", icon: <FileText size={14} />, onSelect: () => void downloadShapeDrawingPdf(build3d, exportTitle, shapeExportFileName(exportTitle, "3D", "pdf")) },
+  ];
 
   // ---- The pop-up: the drawing, and beside it — under it, on a phone — its panel, Save at the panel's foot (always in
   // sight). The panel's sections each under a small heading, its fields laid out as the app's other pop-ups lay theirs.
-  const toolButtonClass =
-    "glass-shine glass-shine-neutral inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-[12px] font-medium text-[var(--text-main)] transition hover:brightness-[0.97] disabled:opacity-45";
-  // (The view's − / + and Fit: a size up from the tools, so they're easy to hit.)
+  // The shapes it can be, each with its little picture — big in the menu and the trigger (most of their height).
+  const kindGlyph = (kind: CutlistShapeKind, sizePx: number) => (
+    <svg width={sizePx} height={sizePx} viewBox="0 0 16 16" aria-hidden="true" className="shrink-0">
+      <polygon points={KIND_GLYPHS[kind]} fill="currentColor" fillOpacity={0.18} stroke="currentColor" strokeWidth={1.2} strokeLinejoin="round" />
+    </svg>
+  );
+  // (A plain rectangle isn't offered — a row without a shape still opens on one, rectShapeFromSize: then it's there too,
+  // for what it is now.)
+  const shapeKindOptions = CUTLIST_SHAPE_KINDS.filter((option) => option.kind !== "rect" || shape.kind === "rect").map((option) => ({ value: option.kind, label: option.label, icon: kindGlyph(option.kind, 22) }));
+  // (Every tool the same size — the shape's dropdown too.)
+  // (On — Snap, Add line, Close shape: the brand glass, white text; else the plain glass.)
+  const toolBaseClass =
+    "glass-shine inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full border px-3.5 text-[12.5px] font-medium transition hover:brightness-[0.97] disabled:opacity-45";
+  const toolOnClass = `${toolBaseClass} text-white`;
+  // (The view's + / − / Fit, stacked over the drawing's bottom right.)
   const zoomButtonClass =
-    "glass-shine glass-shine-neutral inline-flex h-9 shrink-0 items-center rounded-full border text-[12.5px] font-medium text-[var(--text-main)] transition hover:brightness-[0.97] disabled:opacity-45";
+    "inline-flex h-9 w-9 items-center justify-center text-[var(--text-main)] transition hover:bg-[color-mix(in_srgb,var(--text-main)_8%,transparent)] disabled:opacity-40";
   const subtitle = [partType, room].map((part) => String(part || "").trim()).filter(Boolean).join(" · ");
   // A piece that picks what it is: its fields wait until it's picked.
   const needsBase = Boolean(baseOptions?.length) && !base;
@@ -2441,7 +2896,7 @@ function ShapeEditorBody({
   const mainText = { color: "var(--text-main)" } as const;
   const lineColor = { borderColor: "var(--glass-border)" } as const;
   const showGrain = shows("grain") && grained;
-  const showPiece = shows("name") || shows("board") || shows("quantity") || shows("information") || showGrain;
+  const showPiece = shows("name") || shows("board") || shows("quantity") || shows("information") || showGrain || cabinetMode;
   const needed = (on: boolean) =>
     on ? (
       <span className="ml-1.5" style={{ color: "var(--danger-strong)" }}>
@@ -2450,9 +2905,11 @@ function ShapeEditorBody({
     ) : null;
   const saveBlocked = !live || drawing || crosses || fieldsMissing;
   // 2D or 3D — the switch over the drawing's top right corner (3D's Reset view is over its top left).
-  const changeView = (next: "2d" | "3d") => {
+  const changeView = (next: "2d" | "3d", turn: View3dTurnStart | null = null) => {
     if (next === view) return;
     setView(next);
+    setTurnStart(next === "3d" ? turn : null);
+    setHover3d(null);
     setEditing(null);
     setHoverRun(null);
     setHoverEdge(null);
@@ -2460,6 +2917,8 @@ function ShapeEditorBody({
     setLengthText(null);
     setLineMode(false);
     setLineStart(null);
+    setMeasureOn(false);
+    setMeasure(null);
   };
   const menuEdgeIndex = menuEdge?.edge ?? null;
   const menuGuide = menuEdge?.guide ?? null;
@@ -2487,104 +2946,92 @@ function ShapeEditorBody({
             own.) */}
         <div className="glass-scroll min-h-0 flex-1 overflow-y-auto md:contents">
           <div className="flex flex-col gap-2 px-5 pb-3 pt-3 max-md:px-4 md:col-start-1 md:row-span-2 md:row-start-1 md:min-h-0 md:min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              {EDITOR_KINDS.map((option) => {
-                const active = option.kind === shape.kind;
-                return (
-                  <button
-                    key={option.kind}
-                    type="button"
-                    disabled={readOnly && !active}
-                    aria-pressed={active}
-                    onClick={() => switchKind(option.kind)}
-                    className={`glass-shine inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-[12px] font-medium transition hover:brightness-[0.97] disabled:opacity-45 ${
-                      active ? "text-white" : "glass-shine-neutral text-[var(--text-main)]"
-                    }`}
-                    style={active ? glassShineStyle("var(--brand)") : undefined}
+            {/* The toolbar, one row, always the same tools (those that don't apply greyed, never gone): its shape | Select,
+                Line, Measure | Undo, Redo, Clear | Rotate 90°, Flip horizontal, Flip vertical | Snap, Grid, Dimensions |
+                Export, and the keys' list. View only: the view's own — Measure, the toggles, Export. One row in the
+                pop-up's drawing column (about 660px of ~720: the shape 120, four groups of three 34px buttons, Export
+                and ? 36 each, 6px between); narrower, the groups wrap whole onto a second row — on a phone, it scrolls
+                sideways instead. (The zoom is over the drawing's bottom right; 2D / 3D its top right.) */}
+            <div
+              className="glass-scroll -mx-1 flex items-center gap-1.5 px-1 pb-0.5 max-md:overflow-x-auto md:flex-wrap"
+              role="toolbar"
+              aria-label="Drawing tools"
+            >
+              {/* Its shape: one dropdown of them (L corner, U shape, Notch, Angled, Custom), each with its picture. */}
+              <GlassDropdown
+                value={shape.kind}
+                options={shapeKindOptions}
+                onChange={(kind) => switchKind(kind as CutlistShapeKind)}
+                ariaLabel="Shape"
+                disabled={readOnly}
+                menuMinWidth={190}
+                triggerClassName="glass-shine glass-shine-neutral h-9 min-w-[120px] shrink-0 rounded-full border pl-1.5 pr-2 text-[12px] font-medium text-[var(--text-main)]"
+              />
+              <ToolGroup
+                label="Tools"
+                tools={[
+                  ...(readOnly ? [] : [{ key: "select", name: "Select", keys: "V", icon: <MousePointer2 size={16} />, on: activeTool === "select", disabled: drawing || view !== "2d", onClick: () => pickTool("select") }]),
+                  ...(readOnly ? [] : [{ key: "line", name: "Line", keys: "L", icon: <PenLine size={16} />, on: activeTool === "line", disabled: view !== "2d" || (!drawing && !live), onClick: () => pickTool(activeTool === "line" && !drawing ? "select" : "line") }]),
+                  { key: "measure", name: "Measure", keys: "M", icon: <Ruler size={16} />, on: activeTool === "measure", disabled: view !== "2d", onClick: () => pickTool(measureOn ? (drawing ? "line" : "select") : "measure") },
+                ]}
+              />
+              {!readOnly ? (
+                <ToolGroup
+                  label="Edit"
+                  tools={[
+                    { key: "undo", name: "Undo", keys: "Ctrl Z", icon: <Undo2 size={16} />, disabled: !history.length, onClick: undo },
+                    { key: "redo", name: "Redo", keys: "Ctrl Y", icon: <Redo2 size={16} />, disabled: !future.length, onClick: redo },
+                    { key: "clear", name: "Clear", keys: "", icon: <Eraser size={16} />, disabled: !isCustom || !points.length, onClick: requestClear },
+                  ]}
+                />
+              ) : null}
+              {!readOnly ? (
+                <ToolGroup
+                  label="Turn and flip"
+                  tools={[
+                    { key: "rotate", name: "Rotate 90°", keys: "R", icon: <RotateCw size={16} />, disabled: !live || drawing || view !== "2d", onClick: () => transformBy("rotate") },
+                    { key: "flip-h", name: "Flip horizontal", keys: "H", icon: <FlipHorizontal2 size={16} />, disabled: !live || drawing || view !== "2d", onClick: () => transformBy("flipH") },
+                    { key: "flip-v", name: "Flip vertical", keys: "Shift H", icon: <FlipVertical2 size={16} />, disabled: !live || drawing || view !== "2d", onClick: () => transformBy("flipV") },
+                  ]}
+                />
+              ) : null}
+              <ToolGroup
+                label="Show"
+                tools={[
+                  ...(readOnly ? [] : [{ key: "snap", name: "Snap", keys: "S", icon: <Magnet size={16} />, on: snapOn, onClick: () => setSnapOn((on) => !on) }]),
+                  { key: "grid", name: "Grid", keys: "G", icon: <Grid3x3 size={16} />, on: gridOn, disabled: view !== "2d", onClick: () => setGridOn((on) => !on) },
+                  { key: "dims", name: "Dimensions", keys: "D", icon: <RulerDimensionLine size={16} />, on: dimsOn, disabled: view !== "2d", onClick: () => setDimsOn((on) => !on) },
+                ]}
+              />
+              <div className="ml-auto flex shrink-0 items-center gap-1.5">
+                {/* (Its icon alone — its name in its tooltip — so the row fits.) */}
+                <span title="Export" className="inline-flex">
+                  <GlassActionMenu
+                    items={exportItems}
+                    ariaLabel="Export"
+                    openWithOneItem
+                    menuMinWidth={200}
+                    triggerClassName={`glass-shine glass-shine-neutral inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-[var(--text-main)] transition hover:brightness-[0.97] ${!live || drawing ? "pointer-events-none opacity-45" : ""}`}
                   >
-                    <svg width={14} height={14} viewBox="0 0 16 16" aria-hidden="true">
-                      <polygon points={KIND_GLYPHS[option.kind]} fill="currentColor" fillOpacity={0.18} stroke="currentColor" strokeWidth={1.4} strokeLinejoin="round" />
-                    </svg>
-                    {option.label}
+                    <Download size={16} />
+                  </GlassActionMenu>
+                </span>
+                <div className="relative">
+                  <button
+                    type="button"
+                    aria-expanded={shortcutsOpen}
+                    onClick={() => setShortcutsOpen((open) => !open)}
+                    className="glass-shine glass-shine-neutral inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-[var(--text-main)] transition hover:brightness-[0.97]"
+                    title="Keyboard shortcuts (?)"
+                    aria-label="Keyboard shortcuts"
+                  >
+                    <CircleHelp size={16} />
                   </button>
-                );
-              })}
-              <div className="ml-auto flex items-center gap-1.5">
-                <button
-                  type="button"
-                  disabled={view !== "2d"}
-                  onClick={() => zoomAt(size.width / 2, size.height / 2, 1 / 1.25)}
-                  className={`${zoomButtonClass} w-9 justify-center`}
-                  aria-label="Zoom out"
-                  title="Zoom out (or the mouse wheel, or pinch)"
-                >
-                  <Minus size={17} strokeWidth={2.2} />
-                </button>
-                <button
-                  type="button"
-                  disabled={view !== "2d"}
-                  onClick={() => zoomAt(size.width / 2, size.height / 2, 1.25)}
-                  className={`${zoomButtonClass} w-9 justify-center`}
-                  aria-label="Zoom in"
-                  title="Zoom in (or the mouse wheel, or pinch)"
-                >
-                  <Plus size={17} strokeWidth={2.2} />
-                </button>
-                <button type="button" disabled={view !== "2d"} onClick={fitView} className={`${zoomButtonClass} gap-1.5 px-3.5`} title="Fit the drawing to the view">
-                  <Maximize2 size={16} strokeWidth={2.2} />
-                  Fit
-                </button>
+                </div>
               </div>
             </div>
-            {!readOnly && (isCustom || live) ? (
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  aria-pressed={snapOn}
-                  onClick={() => setSnapOn((on) => !on)}
-                  className={`glass-shine inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-[12px] font-medium transition hover:brightness-[0.97] ${
-                    snapOn ? "text-white" : "glass-shine-neutral text-[var(--text-main)]"
-                  }`}
-                  style={snapOn ? glassShineStyle("var(--brand)") : undefined}
-                  title="Snap to points, 45° and 10mm"
-                >
-                  <Magnet size={13} />
-                  Snap {snapOn ? "on" : "off"}
-                </button>
-                {isCustom ? (
-                  <>
-                    <button type="button" disabled={!history.length} onClick={undo} className={toolButtonClass}>
-                      <Undo2 size={13} />
-                      Undo
-                    </button>
-                    <button type="button" disabled={!points.length} onClick={clearDrawing} className={toolButtonClass}>
-                      <Eraser size={13} />
-                      Clear
-                    </button>
-                    <button type="button" disabled={!canClose} onClick={closeOutline} className={toolButtonClass}>
-                      <Check size={13} />
-                      Close shape
-                    </button>
-                  </>
-                ) : null}
-                {live && !drawing ? (
-                  <button
-                    type="button"
-                    aria-pressed={lineMode}
-                    disabled={view !== "2d"}
-                    onClick={toggleLineMode}
-                    className={`glass-shine inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-[12px] font-medium transition hover:brightness-[0.97] disabled:opacity-45 ${
-                      lineMode ? "text-white" : "glass-shine-neutral text-[var(--text-main)]"
-                    }`}
-                    style={lineMode ? glassShineStyle("var(--brand)") : undefined}
-                    title="Draw lines on the shape (on till it's pressed again) — then right-click a piece of the outline to cut away what they close off"
-                  >
-                    <Slash size={13} />
-                    Add line
-                  </button>
-                ) : null}
-              </div>
-            ) : null}
+            {/* The keys, listed (? — closed by Escape, or a click anywhere else). */}
+            {shortcutsOpen ? <ShortcutsPopover list={shortcutList} onClose={() => setShortcutsOpen(false)} /> : null}
 
             <div
               ref={stageRef}
@@ -2604,7 +3051,14 @@ function ShapeEditorBody({
                       width={size.width}
                       height={size.height}
                       color={wash}
-                      highlight={hoverPart}
+                      highlight={hoverPart ?? hoverPart3d}
+                      showRoles={rolesShown}
+                      setShowRoles={setRolesShown}
+                      view={view3d}
+                      setView={setView3d}
+                      startTurn={turnStart}
+                      onFaceTap={readOnly ? undefined : tapFace3d}
+                      onFaceHover={readOnly ? undefined : setHover3d}
                     />
                   ) : (
                     <CutlistCabinet3d
@@ -2614,7 +3068,12 @@ function ShapeEditorBody({
                       color={wash}
                       bandedFaces={flat?.bandedFaces}
                       bandColor={CUTLIST_SHAPE_BAND_COLOR}
-                      hint={` · ${formatShapeMm(boardMm)}mm thick`}
+                      litFaces={litFaces3d}
+                      view={view3d}
+                      setView={setView3d}
+                      startTurn={turnStart}
+                      onFaceTap={readOnly ? undefined : tapFace3d}
+                      onFaceHover={readOnly ? undefined : setHover3d}
                     />
                   )
                 ) : (
@@ -2640,10 +3099,30 @@ function ShapeEditorBody({
                   onChange={changeView}
                 />
               </div>
+              {/* Zoom in and out, and Fit — 2D (3D has its own: the wheel, a pinch, Reset view). (Its own presses: never a
+                  point or a drag on the drawing under it.) */}
+              {view === "2d" ? (
+                <div
+                  className="glass-shine glass-shine-neutral absolute bottom-3 right-3 z-10 flex flex-col overflow-hidden rounded-[14px] border"
+                  onPointerDown={(event) => event.stopPropagation()}
+                >
+                  <button type="button" onClick={() => zoomAt(size.width / 2, size.height / 2, 1.25)} className={zoomButtonClass} aria-label="Zoom in" title="Zoom in (or the mouse wheel, or pinch)">
+                    <Plus size={17} strokeWidth={2.2} />
+                  </button>
+                  <span aria-hidden="true" className="mx-2 h-px" style={{ backgroundColor: "var(--glass-border)" }} />
+                  <button type="button" onClick={() => zoomAt(size.width / 2, size.height / 2, 1 / 1.25)} className={zoomButtonClass} aria-label="Zoom out" title="Zoom out (or the mouse wheel, or pinch)">
+                    <Minus size={17} strokeWidth={2.2} />
+                  </button>
+                  <span aria-hidden="true" className="mx-2 h-px" style={{ backgroundColor: "var(--glass-border)" }} />
+                  <button type="button" onClick={fitView} className={zoomButtonClass} aria-label="Fit" title="Fit the drawing to the view">
+                    <Maximize2 size={16} strokeWidth={2.2} />
+                  </button>
+                </div>
+              ) : null}
               {/* A cabinet's roles, what colour each is (and every edge back as it started). */}
               {cabinetMode && view === "2d" && live ? (
                 <div
-                  className="absolute bottom-3 left-3 z-10 flex max-w-[calc(100%-24px)] flex-wrap items-center gap-x-3 gap-y-1 rounded-full border px-3 py-1 text-[11.5px] font-medium"
+                  className="absolute bottom-3 left-3 z-10 flex max-w-[calc(100%-80px)] flex-wrap items-center gap-x-3 gap-y-1 rounded-full border px-3 py-1 text-[11.5px] font-medium"
                   style={{ ...lineColor, backgroundColor: "color-mix(in srgb, var(--panel-bg) 88%, transparent)", color: "var(--text-main)" }}
                 >
                   {CABINET_EDGE_ROLES.map((role) => (
@@ -2666,6 +3145,21 @@ function ShapeEditorBody({
                   ) : null}
                 </div>
               ) : null}
+              {/* Close shape, while a Custom outline's being drawn: by the drawing's bottom left (the toolbar stays put). */}
+              {drawing && !readOnly && view === "2d" ? (
+                <button
+                  type="button"
+                  disabled={!canClose}
+                  onClick={closeOutline}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  className={`${toolOnClass} absolute bottom-3 left-3 z-10`}
+                  style={glassShineStyle("var(--brand)")}
+                  title="Join the last point back to the first"
+                >
+                  <Check size={15} strokeWidth={2.4} />
+                  Close shape
+                </button>
+              ) : null}
               {/* A change that would make the outline cross itself (not made), or an outline that does (Save's off). */}
               {message && view === "2d" ? (
                 <div
@@ -2679,15 +3173,19 @@ function ShapeEditorBody({
                 </div>
               ) : null}
             </div>
-            {hint ? (
-              <p className="text-[11.5px] font-medium" style={mainText}>
-                {hint}
+            {/* The status bar: what the tool does, on the left; on the right, where the pointer is and the line being drawn's
+                length and angle. */}
+            <div className="flex min-h-[22px] items-center justify-between gap-3 text-[11.5px] font-medium" style={mainText} aria-live="polite">
+              <p className="min-w-0 truncate">{hint}</p>
+              <p className="flex shrink-0 items-center gap-3 tabular-nums">
+                {boxTo && boxTo.length > 0 ? <span>{`L ${formatShapeMm(boxTo.length)}  ∠ ${formatShapeMm(boxTo.angle)}°`}</span> : null}
+                {view === "2d" ? <span ref={statusAtRef} /> : null}
               </p>
-            ) : null}
+            </div>
           </div>
 
           <div className="md:glass-scroll md:col-start-2 md:row-start-1 md:min-h-0 md:overflow-y-auto md:border-l" style={lineColor}>
-            {/* What it is — and, a cabinet, how tall and its shelves. */}
+            {/* What it is — and, a cabinet, how tall (its shelves are on the Piece's Quantity row). */}
             {baseOptions?.length ? (
               <section className={sectionClass} style={lineColor} aria-label="What is it?">
                 <p className={headingClass} style={mainText}>
@@ -2707,7 +3205,7 @@ function ShapeEditorBody({
                   <div className="grid gap-2.5">
                     <label className="flex items-center justify-between gap-3 text-[12px] font-medium" style={mainText}>
                       Height
-                      {/* (Its "mm" inside the box, so it lines up with the shelf counters under it.) */}
+                      {/* (Its "mm" inside the box.) */}
                       <span className="relative inline-flex w-[100px] items-center">
                         <input
                           inputMode="decimal"
@@ -2741,39 +3239,6 @@ function ShapeEditorBody({
                         </span>
                       </span>
                     </label>
-                    {(
-                      [
-                        { key: "fixedShelves", label: "Fixed shelves" },
-                        { key: "adjustableShelves", label: "Adjustable shelves" },
-                      ] as const
-                    ).map((counter) => (
-                      <div key={counter.key} className="flex items-center justify-between gap-3 text-[12px] font-medium" style={mainText}>
-                        {counter.label}
-                        <div className="cs-glass-field inline-flex h-9 w-[100px] items-center justify-between rounded-[11px] border">
-                          <button
-                            type="button"
-                            aria-label={`One fewer ${counter.label.toLowerCase()}`}
-                            disabled={readOnly || cabinet[counter.key] <= 0}
-                            onClick={() => stepShelves(counter.key, -1)}
-                            className="inline-flex h-9 w-8 items-center justify-center rounded-[11px] text-[var(--text-main)] transition hover:brightness-90 disabled:opacity-35"
-                          >
-                            <Minus size={12} />
-                          </button>
-                          <span className="min-w-[20px] flex-1 text-center text-[12.5px] font-medium" style={mainText}>
-                            {cabinet[counter.key]}
-                          </span>
-                          <button
-                            type="button"
-                            aria-label={`One more ${counter.label.toLowerCase().replace(/s$/, "")}`}
-                            disabled={readOnly || cabinet[counter.key] >= 20}
-                            onClick={() => stepShelves(counter.key, 1)}
-                            className="inline-flex h-9 w-8 items-center justify-center rounded-[11px] text-[var(--text-main)] transition hover:brightness-90 disabled:opacity-35"
-                          >
-                            <Plus size={12} />
-                          </button>
-                        </div>
-                      </div>
-                    ))}
                   </div>
                 ) : null}
               </section>
@@ -2831,7 +3296,72 @@ function ShapeEditorBody({
                     )}
                   </div>
                 ) : null}
-                {shows("quantity") || showGrain ? (
+                {cabinetMode ? (
+                  <>
+                    {/* A cabinet: its count and its shelves side by side (the shelves even with Quantity hidden). */}
+                    <div className="flex items-start gap-2">
+                      {shows("quantity") ? (
+                        <label className={`${fieldClass} w-[86px] shrink-0 justify-items-stretch`} style={mainText}>
+                          <span className="block w-full whitespace-nowrap text-center">
+                            Qty
+                            {needed(missing.quantity)}
+                          </span>
+                          <input
+                            value={fields.quantity}
+                            readOnly={readOnly}
+                            inputMode="numeric"
+                            onChange={(event) => setField("quantity", event.target.value.replace(/\D/g, "").slice(0, 5))}
+                            placeholder="0"
+                            aria-invalid={missing.quantity || undefined}
+                            aria-label="Quantity"
+                            className={`${glassFieldClass} w-full! text-center`}
+                          />
+                        </label>
+                      ) : null}
+                      {(
+                        [
+                          { key: "fixedShelves", label: "Fixed shelves", short: "Fixed shelves" },
+                          { key: "adjustableShelves", label: "Adjustable shelves", short: "Adj. shelves" },
+                        ] as const
+                      ).map((counter) => (
+                        <div key={counter.key} className={`${fieldClass} w-[86px] shrink-0 justify-items-stretch`} style={mainText}>
+                          <span className="block w-full whitespace-nowrap text-center" title={counter.label}>
+                            {counter.short}
+                          </span>
+                          <div className="cs-glass-field inline-flex h-9 w-full items-center justify-between rounded-[11px] border">
+                            <button
+                              type="button"
+                              aria-label={`One fewer ${counter.label.toLowerCase()}`}
+                              disabled={readOnly || cabinet[counter.key] <= 0}
+                              onClick={() => stepShelves(counter.key, -1)}
+                              className="inline-flex h-9 w-6 shrink-0 items-center justify-center rounded-[11px] text-[var(--text-main)] transition hover:brightness-90 disabled:opacity-35"
+                            >
+                              <Minus size={11} />
+                            </button>
+                            <span className="min-w-0 flex-1 text-center text-[12.5px] font-medium" style={mainText}>
+                              {cabinet[counter.key]}
+                            </span>
+                            <button
+                              type="button"
+                              aria-label={`One more ${counter.label.toLowerCase().replace(/s$/, "")}`}
+                              disabled={readOnly || cabinet[counter.key] >= 20}
+                              onClick={() => stepShelves(counter.key, 1)}
+                              className="inline-flex h-9 w-6 shrink-0 items-center justify-center rounded-[11px] text-[var(--text-main)] transition hover:brightness-90 disabled:opacity-35"
+                            >
+                              <Plus size={11} />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {showGrain ? (
+                      <div className={fieldClass} style={mainText}>
+                        Grain
+                        <GrainToggle choices={grainChoices} index={grainIndex} disabled={readOnly} onChange={(axis) => setField("grain", axis)} />
+                      </div>
+                    ) : null}
+                  </>
+                ) : shows("quantity") || showGrain ? (
                   <div className="flex items-start gap-3">
                     {shows("quantity") ? (
                       <label className={`${fieldClass} w-[96px] shrink-0`} style={mainText}>
@@ -2892,14 +3422,43 @@ function ShapeEditorBody({
 
             {/* A cabinet's parts, worked out as it's drawn (hovered: picked out on the drawing). */}
             {cabinetMode ? (
-              <section className={sectionClass} style={lineColor} aria-label="Cabinet parts">
-                <p className={headingClass} style={mainText}>
-                  Cabinet parts
-                </p>
+              <section className={`${sectionClass} ${partsOpen ? "" : "gap-0!"}`} style={lineColor} aria-label="Cabinet parts">
+                <button
+                  type="button"
+                  onClick={togglePartsOpen}
+                  aria-expanded={partsOpen}
+                  aria-controls="shape-editor-cabinet-parts"
+                  className="-mx-1 flex items-center gap-2 rounded-[8px] px-1 py-0.5 text-left transition hover:bg-[color-mix(in_srgb,var(--text-main)_6%,transparent)]"
+                >
+                  <span className={headingClass} style={mainText}>
+                    Cabinet parts
+                  </span>
+                  <span
+                    className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full border px-1.5 text-[10.5px] font-medium"
+                    style={{ ...lineColor, ...mainText }}
+                    title={`${parts.reduce((sum, item) => sum + item.quantity, 0)} parts`}
+                  >
+                    {parts.reduce((sum, item) => sum + item.quantity, 0)}
+                  </span>
+                  <ChevronDown
+                    size={15}
+                    aria-hidden="true"
+                    className={`ml-auto shrink-0 transition-transform duration-200 ${partsOpen ? "rotate-180" : ""}`}
+                    style={mainText}
+                  />
+                </button>
+                {/* (Its height eased open and shut; shut, it can't be pointed at or tabbed into.) */}
+                <div
+                  id="shape-editor-cabinet-parts"
+                  className={`grid transition-[grid-template-rows] duration-200 ease-out ${partsOpen ? "grid-rows-[1fr]" : "grid-rows-[0fr]"}`}
+                  inert={!partsOpen}
+                >
+                <div className="min-h-0 overflow-hidden">
                 <div className="overflow-hidden rounded-[12px] border" style={lineColor} onPointerLeave={() => setHoverPart(null)}>
-                  <div className="flex items-center justify-between gap-3 border-b px-3 py-1.5 text-[11px] font-medium" style={{ ...lineColor, ...mainText }}>
-                    <span>Part · size (H × W)</span>
-                    <span>Qty</span>
+                  <div className="flex items-center gap-2.5 border-b px-3 py-1.5 text-[11px] font-medium" style={{ ...lineColor, ...mainText }}>
+                    <span className="min-w-0 flex-1">Part · size (H × W)</span>
+                    <span className="w-[74px] shrink-0 text-center">Clashing</span>
+                    <span className="w-[28px] shrink-0 text-right">Qty</span>
                   </div>
                   {parts.length ? (
                     parts.map((item) => {
@@ -2930,15 +3489,25 @@ function ShapeEditorBody({
                             ) : (
                               <span className="flex items-center gap-1.5 whitespace-nowrap text-[11.5px]">
                                 {formatShapeMm(item.height ?? 0)} × {formatShapeMm(item.width ?? 0)}
-                                {item.kind === "shape" ? (
-                                  <span className="shrink-0 rounded-full border px-1.5 text-[10.5px] font-medium" style={{ ...lineColor, ...mainText }}>
-                                    shaped
+                                {/* (A panel mitred at a corner that isn't square — a very sharp one in red.) */}
+                                {item.note ? (
+                                  <span
+                                    className="shrink-0 rounded-full border px-1.5 text-[10.5px] font-medium"
+                                    style={{
+                                      ...lineColor,
+                                      color: item.mitres?.some((mitre) => mitre.sharp) ? "var(--danger-strong)" : "var(--text-main)",
+                                    }}
+                                    title={item.note}
+                                  >
+                                    {item.note.replace(/^Mitres? /, "mitre ")}
                                   </span>
                                 ) : null}
                               </span>
                             )}
                           </span>
-                          <span className="shrink-0">×{item.quantity}</span>
+                          {/* (Its Clashing as its row in the cutlist has it: 1L / 2L / 1S / 2S, a shaped part's banding.) */}
+                          <span className="w-[74px] shrink-0 text-center text-[11.5px] leading-tight">{customCabinetPartClashingText(item)}</span>
+                          <span className="w-[28px] shrink-0 text-right">×{item.quantity}</span>
                         </div>
                       );
                     })
@@ -2947,6 +3516,8 @@ function ShapeEditorBody({
                       {drawing ? "Close the outline to work out its parts." : "Nothing to make yet."}
                     </p>
                   )}
+                </div>
+                </div>
                 </div>
               </section>
             ) : null}
@@ -3024,54 +3595,194 @@ function ShapeEditorBody({
       ) : null}
       {/* Closed with changes not saved: Are you sure? — over the whole pop-up. */}
       {confirmClose ? (
-        <div className="absolute inset-0 z-[60] flex items-center justify-center p-4" data-swipe-close="off">
-          <button type="button" aria-label="Keep editing" onClick={() => setConfirmClose(false)} className="glass-modal-backdrop absolute inset-0" />
-          <div role="alertdialog" aria-modal="true" aria-label="Are you sure?" data-phone-keep-box="true" className="glass-modal-panel relative w-[min(380px,100%)] p-5">
-            <p className="text-[15px] font-medium" style={mainText}>
-              Are you sure?
-            </p>
-            <p className="mt-1.5 text-[13px] font-medium" style={mainText}>
-              {isNew ? "This piece hasn't been added yet — the drawing will be lost." : "Your changes haven't been saved — they'll be lost."}
-            </p>
-            <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
+        <EditorConfirm
+          title="Are you sure?"
+          text={isNew ? "This piece hasn't been added yet — the drawing will be lost." : "Your changes haven't been saved — they'll be lost."}
+          cancelLabel="Keep editing"
+          onCancel={() => setConfirmClose(false)}
+          actions={[
+            {
+              label: "Discard",
+              tone: "danger",
+              onClick: () => {
+                setConfirmClose(false);
+                onClose();
+              },
+            },
+            // (Saved as Save would — not while it can't be: an outline not closed, crossing itself, a field missing.)
+            {
+              label: "Save & close",
+              tone: "primary",
+              disabled: !live || drawing || crosses || fieldsMissing,
+              onClick: () => {
+                setConfirmClose(false);
+                save();
+              },
+            },
+          ]}
+        />
+      ) : null}
+      {/* Clear, with the drawing changed: asked first. */}
+      {confirmClear ? (
+        <EditorConfirm
+          title="Clear the drawing?"
+          text="Everything drawn will be removed."
+          cancelLabel="Cancel"
+          onCancel={() => setConfirmClear(false)}
+          actions={[
+            {
+              label: "Clear",
+              tone: "danger",
+              onClick: () => {
+                setConfirmClear(false);
+                clearDrawing();
+              },
+            },
+          ]}
+        />
+      ) : null}
+    </>
+  );
+}
+
+// A group of the toolbar's tools: icon buttons in one glass pill, a thin line between each — the one on (a tool in use,
+// a toggle on) in the brand blue; one that doesn't apply now greyed. Each one's tooltip its name and its key.
+function ToolGroup({
+  label,
+  tools,
+}: {
+  label: string;
+  tools: Array<{ key: string; name: string; keys: string; icon: ReactNode; on?: boolean; disabled?: boolean; onClick: () => void }>;
+}) {
+  if (!tools.length) return null;
+  return (
+    <div role="group" aria-label={label} className="glass-shine glass-shine-neutral inline-flex h-9 shrink-0 items-stretch overflow-hidden rounded-full border">
+      {tools.map((tool, i) => (
+        <span key={tool.key} className="flex items-stretch">
+          {i > 0 ? <span aria-hidden="true" className="my-2 w-px" style={{ backgroundColor: "var(--glass-border)" }} /> : null}
+          <button
+            type="button"
+            aria-pressed={tool.on === undefined ? undefined : tool.on}
+            aria-label={tool.name}
+            title={tool.keys ? `${tool.name} (${tool.keys})` : tool.name}
+            disabled={tool.disabled}
+            onClick={tool.onClick}
+            className={`inline-flex w-[34px] items-center justify-center transition disabled:opacity-35 ${tool.on ? "text-white" : "text-[var(--text-main)] hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)]"}`}
+            style={tool.on ? { backgroundImage: "var(--brand-gradient)" } : undefined}
+          >
+            {tool.icon}
+          </button>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// The keys, listed — a small glass panel under the toolbar's ?, closed by a press anywhere else (or Escape, in the
+// editor's keys).
+function ShortcutsPopover({ list, onClose }: { list: Array<{ keys: string; what: string }>; onClose: () => void }) {
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const close = useEffectEvent(() => onClose());
+  useEffect(() => {
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.target instanceof Node && panelRef.current?.contains(event.target)) return;
+      if (event.target instanceof Element && event.target.closest('[aria-label="Keyboard shortcuts"]')) return;
+      close();
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  }, []);
+  return (
+    <div className="relative z-30 h-0">
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-label="Keyboard shortcuts"
+        className="absolute right-0 top-1 w-[min(300px,calc(100vw-48px))] rounded-[14px] border p-3 shadow-[var(--shadow-md)]"
+        style={{ ...GLASS_MENU_STYLE, position: "absolute" }}
+      >
+        <p className="mb-2 text-[11px] font-medium uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
+          Keyboard shortcuts
+        </p>
+        <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-[12px] font-medium" style={{ color: "var(--text-main)" }}>
+          {list.map((item) => (
+            <span key={item.keys} className="contents">
+              <span className="whitespace-nowrap rounded-[6px] border px-1.5 text-center" style={{ borderColor: "var(--glass-border)" }}>
+                {item.keys}
+              </span>
+              <span className="truncate">{item.what}</span>
+            </span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// The editor's own "Are you sure?" — over the whole pop-up (its backdrop, or its first button, cancels; Escape does too,
+// in the editor's keys): a title, a line saying what'll happen, and what can be done — a danger one in red, the main one
+// in the brand's glass.
+function EditorConfirm({
+  title,
+  text,
+  cancelLabel,
+  onCancel,
+  actions,
+}: {
+  title: string;
+  text: string;
+  cancelLabel: string;
+  onCancel: () => void;
+  actions: Array<{ label: string; tone: "danger" | "primary"; disabled?: boolean; onClick: () => void }>;
+}) {
+  return (
+    <div className="absolute inset-0 z-[60] flex items-center justify-center p-4" data-swipe-close="off">
+      <button type="button" aria-label={cancelLabel} onClick={onCancel} className="glass-modal-backdrop absolute inset-0" />
+      <div role="alertdialog" aria-modal="true" aria-label={title} data-phone-keep-box="true" className="glass-modal-panel relative w-[min(380px,100%)] p-5">
+        <p className="text-[15px] font-medium" style={{ color: "var(--text-main)" }}>
+          {title}
+        </p>
+        <p className="mt-1.5 text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
+          {text}
+        </p>
+        <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
+          <button
+            type="button"
+            autoFocus
+            onClick={onCancel}
+            className="glass-shine glass-shine-neutral inline-flex h-9 items-center rounded-full border px-4 text-[13px] font-medium text-[var(--text-main)] transition hover:brightness-[0.97]"
+          >
+            {cancelLabel}
+          </button>
+          {actions.map((action) =>
+            action.tone === "danger" ? (
               <button
+                key={action.label}
                 type="button"
-                autoFocus
-                onClick={() => setConfirmClose(false)}
-                className="glass-shine glass-shine-neutral inline-flex h-9 items-center rounded-full border px-4 text-[13px] font-medium text-[var(--text-main)] transition hover:brightness-[0.97]"
-              >
-                Keep editing
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setConfirmClose(false);
-                  onClose();
-                }}
-                className="inline-flex h-9 items-center rounded-full border px-4 text-[13px] font-medium transition hover:brightness-95"
+                disabled={action.disabled}
+                onClick={action.onClick}
+                className="inline-flex h-9 items-center rounded-full border px-4 text-[13px] font-medium transition hover:brightness-95 disabled:opacity-50"
                 style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
               >
-                Discard
+                {action.label}
               </button>
-              {/* (Saved as Save would — not while it can't be: an outline not closed, crossing itself, a field missing.) */}
+            ) : (
               <button
+                key={action.label}
                 type="button"
-                disabled={!live || drawing || crosses || fieldsMissing}
-                onClick={() => {
-                  setConfirmClose(false);
-                  save();
-                }}
+                disabled={action.disabled}
+                onClick={action.onClick}
                 className="glass-shine inline-flex h-9 items-center gap-1.5 rounded-full border px-4 text-[13px] font-medium text-white transition hover:brightness-95 disabled:opacity-50"
                 style={glassShineStyle("var(--brand)")}
               >
                 <Check size={14} strokeWidth={2.6} />
-                Save &amp; close
+                {action.label}
               </button>
-            </div>
-          </div>
+            ),
+          )}
         </div>
-      ) : null}
-    </>
+      </div>
+    </div>
   );
 }
 

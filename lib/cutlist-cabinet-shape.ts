@@ -15,6 +15,11 @@
 //    (At an inside corner nothing butts — the panels don't reach each other there: the back that runs through is t
 //    longer instead, to close the corner, and nothing's taken off the other. Where two edges meet in a straight line
 //    they just meet end to end: nothing either way.)
+//  - Where two panels (backs, or a back and an end) meet at a corner that isn't square — both edges straight — they're
+//    mitred instead: each runs into the corner up to the line halving its angle, outside to the corner itself, inside
+//    to where their inside faces meet, so they close it evenly. Each is its long point's length (its longer face), its
+//    end bevelled (half of what the corner's off straight: 22.5° at a 135° corner); a very sharp one (under 30°) is
+//    flagged.
 //  - Top and bottom: the drawing with every back and end edge moved in by t; the doors edges, curves and all, as drawn.
 //    A fixed shelf is the same shape. (As many fixed shelves as the cabinet says — none unless set.)
 //  - Adjustable shelf: every back and end edge moved in by t + 1, and the doors run moved back 10 as a group. (One
@@ -41,6 +46,7 @@ import {
   normalizeCustomShape,
   sampleShapeOutline,
   segmentTangents,
+  shapeBandingSummary,
   shapeChainPoints,
   shapeGeometry,
   shapeOuterSize,
@@ -223,6 +229,37 @@ export function resetCabinetEdgeRoles(shape: CutlistShape): CutlistShape {
   return withCabinetSettings(shape, { roles: {}, throughBacks: {} });
 }
 
+// ---- Mitred corners.
+
+// A corner two panels meet at that isn't square (both its edges straight, neither doors): mitred — where their inside
+// faces meet (`inner`), each panel's end's bevel off square (degrees), and whether it's very sharp.
+export type CabinetMitre = { corner: number; inner: ShapePoint; bevel: number; sharp: boolean };
+function mitresFor(geometry: ShapeGeometry, roles: CabinetEdgeRole[], t: number): Map<number, CabinetMitre> {
+  const n = geometry.edges.length;
+  const out = new Map<number, CabinetMitre>();
+  for (const corner of geometry.corners) {
+    if (corner.smooth) continue;
+    const before = geometry.edges[(corner.index - 1 + n) % n];
+    const after = geometry.edges[corner.index];
+    if (!before || !after || before === after || before.curve || after.curve) continue;
+    if (roles[before.index] === "doors" || roles[after.index] === "doors") continue;
+    const degrees = (corner.angle * 180) / Math.PI;
+    if (Math.abs(degrees - 90) < 0.5 || degrees > 179.5) continue;
+    // (Where the two edges' lines, each moved in by t, meet.)
+    const d1 = unit(sub(before.endVertex, before.startVertex));
+    const d2 = unit(sub(after.endVertex, after.startVertex));
+    const denom = cross(d1, d2);
+    if (Math.abs(denom) < 1e-9) continue;
+    const p1 = add(before.startVertex, mul(before.normal, -t));
+    const p2 = add(after.startVertex, mul(after.normal, -t));
+    const inner = add(p1, mul(d1, cross(sub(p2, p1), d2) / denom));
+    const inside = cornerIsInside(geometry, corner.index);
+    out.set(corner.index, { corner: corner.index, inner: [roundFine(inner[0]), roundFine(inner[1])], bevel: roundTenth(Math.abs(180 - degrees) / 2), sharp: !inside && degrees < 30 });
+  }
+  return out;
+}
+const roundTenth = (value: number) => Math.round(value * 10) / 10;
+
 // ---- Where two backs meet.
 
 export type CabinetBackCorner = {
@@ -245,9 +282,11 @@ function backCornersFor(shape: CutlistShape, geometry: ShapeGeometry, roles: Cab
   const n = geometry.edges.length;
   const flips = shape.cabinet?.throughBacks ?? {};
   const out: CabinetBackCorner[] = [];
+  const mitred = mitresFor(geometry, roles, 1);
   for (const corner of geometry.corners) {
-    // (Meeting in a straight line, they only meet end to end.)
-    if (corner.smooth) continue;
+    // (Meeting in a straight line, they only meet end to end; at a corner that isn't square, mitred — neither runs
+    // through.)
+    if (corner.smooth || mitred.has(corner.index)) continue;
     const incoming = (corner.index - 1 + n) % n;
     const outgoing = corner.index;
     if (incoming === outgoing || roles[incoming] !== "back" || roles[outgoing] !== "back") continue;
@@ -605,6 +644,13 @@ export type CabinetPart = {
   edges?: number[];
   // A shaped part: where its own 0, 0 sits on the drawing (mm).
   origin?: ShapePoint;
+  // A Back or an End mitred at a corner that isn't square: each mitred end's bevel off square (degrees) — "Mitre
+  // 22.5° both ends" (`note`) — and whether one's very sharp.
+  mitres?: Array<{ bevel: number; sharp: boolean }>;
+  note?: string;
+  // An End: how many of its upright edges (the cabinet's height long) are edge taped — its front, as a cabinet's sides'
+  // is, whether or not it's beside the doors; both, between two doors runs. (1 or 2; a Back: none.)
+  frontEdges?: number;
   // Why there isn't one (its edges moved in so far there's nothing left, or it'd cross itself): no shape then.
   problem?: string;
 };
@@ -616,6 +662,8 @@ export type CabinetOptions = {
   height?: number;
   fixedShelves?: number;
   adjustableShelves?: number;
+  // The gap between two doors where they meet (mm — the project's Vertical gap between doors / panels). Default none.
+  doorGapMm?: number;
 };
 
 type CabinetWork = {
@@ -626,6 +674,8 @@ type CabinetWork = {
   settings: CabinetSettings;
   // By edge: how much shorter its panel is at its start and its end (− : longer).
   trims: Array<{ start: number; end: number }>;
+  // By corner: those mitred.
+  mitres: Map<number, CabinetMitre>;
   // The top / bottom (and fixed shelf), and the adjustable shelf, moved in.
   plate: OffsetOutline | null;
   adjustable: OffsetOutline | null;
@@ -652,10 +702,12 @@ function workCabinet(shape: CutlistShape, options: CabinetOptions): CabinetWork 
   const backCorners = backCornersFor(shape, geometry, roles);
   const throughAt = new Map(backCorners.map((corner) => [corner.corner, corner]));
 
-  // How much a back is cut back at corner `c`, where it meets edge `other`.
+  const mitres = mitresFor(geometry, roles, t);
+  // How much a back is cut back at corner `c`, where it meets edge `other`. (Mitred: not at all — it meets the other
+  // on the mitre.)
   const trimAt = (self: number, c: number, other: number): number => {
     const corner = geometry.corners[c];
-    if (!corner || corner.smooth || roles[other] === "doors") return 0;
+    if (!corner || corner.smooth || roles[other] === "doors" || mitres.has(c)) return 0;
     const inside = cornerIsInside(geometry, c);
     if (roles[other] === "end") return inside ? -t : t;
     const meeting = throughAt.get(c);
@@ -671,7 +723,100 @@ function workCabinet(shape: CutlistShape, options: CabinetOptions): CabinetWork 
 
   const plate = offsetShapeOutline(shape, (edge) => (roles[edge] === "doors" ? 0 : t));
   const adjustable = offsetShapeOutline(shape, (edge) => (roles[edge] === "doors" ? ADJUSTABLE_SHELF_SETBACK_MM : t + ADJUSTABLE_SHELF_CLEARANCE_MM));
-  return { geometry, roles, backCorners, t, settings, trims, plate, adjustable };
+  return { geometry, roles, backCorners, t, settings, trims, mitres, plate, adjustable };
+}
+
+// A back's or an end's plan: t deep along its edge, cut back (or on) as its trims say — and, at a mitred corner, run on
+// to the corner outside and to where the inside faces meet inside. Its length: its long point's (its longer face).
+function panelPlan(work: CabinetWork, edge: ShapeEdge): { polygon: ShapePoint[]; length: number; mitres: CabinetMitre[] } {
+  const n = work.geometry.edges.length;
+  const trim = work.trims[edge.index];
+  const atStart = work.mitres.get(edge.index) ?? null;
+  const atEnd = work.mitres.get((edge.index + 1) % n) ?? null;
+  if (edge.curve || (!atStart && !atEnd)) {
+    const polygon = edgeStrip(edge, trim.start, trim.end, work.t);
+    return { polygon, length: Math.max(0, edgeFullLength(edge) - trim.start - trim.end), mitres: [] };
+  }
+  const strip = edgeStrip(edge, atStart ? 0 : trim.start, atEnd ? 0 : trim.end, work.t);
+  if (strip.length < 4) return { polygon: [], length: 0, mitres: [] };
+  const [a, b, bInner, aInner] = strip;
+  const innerStart = atStart ? atStart.inner : aInner;
+  const innerEnd = atEnd ? atEnd.inner : bInner;
+  const length = Math.max(distanceBetween(a, b), distanceBetween(innerStart, innerEnd));
+  return { polygon: [a, b, innerEnd, innerStart], length, mitres: [atStart, atEnd].filter((m): m is CabinetMitre => Boolean(m)) };
+}
+
+// How far each of two doors meeting at a corner is stopped short of it (along its own edge — round a curve, along that),
+// the same for both, so their nearest corners are `gap` apart — straight across, corner to corner — and they don't
+// overlap: each a slab `depth` thick outside its edge, taken straight on from the corner along its edge's way there (a
+// curve's, its tangent). The least that does it, found by halving.
+function doorDoorCutBack(geometry: ShapeGeometry, before: ShapeEdge, after: ShapeEdge, depth: number, gap: number): number {
+  const corner = before.endVertex;
+  const tangentIn = unit(segmentTangents(before.startVertex, before.endVertex, before.curve).end);
+  const tangentOut = unit(segmentTangents(after.startVertex, after.endVertex, after.curve).start);
+  // (Out of the material at the corner — each edge's own side.)
+  const outward = (edge: ShapeEdge, tangent: ShapePoint): ShapePoint => {
+    const side = dot(edge.normal, [tangent[1], -tangent[0]]) >= 0 ? 1 : -1;
+    return [tangent[1] * side, -tangent[0] * side];
+  };
+  const nIn = outward(before, tangentIn);
+  const nOut = outward(after, tangentOut);
+  const lengthIn = before.curve ? before.curve.length : before.vertexLength;
+  const lengthOut = after.curve ? after.curve.length : after.vertexLength;
+  const most = Math.max(0, Math.min(lengthIn, lengthOut) - 1);
+  const slabs = (a: number): [ShapePoint[], ShapePoint[]] => {
+    const endIn = sub(corner, mul(tangentIn, a));
+    const startIn = sub(corner, mul(tangentIn, Math.max(a + 1, lengthIn)));
+    const startOut = add(corner, mul(tangentOut, a));
+    const endOut = add(corner, mul(tangentOut, Math.max(a + 1, lengthOut)));
+    return [
+      [startIn, endIn, add(endIn, mul(nIn, depth)), add(startIn, mul(nIn, depth))],
+      [startOut, endOut, add(endOut, mul(nOut, depth)), add(startOut, mul(nOut, depth))],
+    ];
+  };
+  const apart = (a: number) => {
+    const [one, two] = slabs(a);
+    if (convexGap(one, two) < 0) return -1;
+    return Math.min(...one.flatMap((p) => two.map((q) => len(sub(p, q)))));
+  };
+  if (apart(0) >= gap - 1e-9) return 0;
+  let lo = 0;
+  let hi = most;
+  if (apart(hi) < gap) return hi;
+  for (let i = 0; i < 50; i += 1) {
+    const mid = (lo + hi) / 2;
+    if (apart(mid) >= gap) hi = mid;
+    else lo = mid;
+  }
+  void geometry;
+  return roundFine(hi);
+}
+
+// The nearest two convex polygons come (0 or less: they touch or overlap — −1 overlapping).
+function convexGap(a: ShapePoint[], b: ShapePoint[]): number {
+  const axes = (poly: ShapePoint[]) => poly.map((p, i) => {
+    const q = poly[(i + 1) % poly.length];
+    return unit([q[1] - p[1], p[0] - q[0]]);
+  });
+  const overlap = [...axes(a), ...axes(b)].every((axis) => {
+    const pa = a.map((p) => dot(p, axis));
+    const pb = b.map((p) => dot(p, axis));
+    return Math.min(...pa) < Math.max(...pb) - 1e-9 && Math.min(...pb) < Math.max(...pa) - 1e-9;
+  });
+  if (overlap) return -1;
+  const toSegment = (p: ShapePoint, s: ShapePoint, e: ShapePoint) => {
+    const d = sub(e, s);
+    const k = Math.min(1, Math.max(0, dot(sub(p, s), d) / Math.max(dot(d, d), 1e-12)));
+    return len(sub(p, add(s, mul(d, k))));
+  };
+  let best = Infinity;
+  for (const [from, to] of [
+    [a, b],
+    [b, a],
+  ]) {
+    for (const p of from) for (let i = 0; i < to.length; i += 1) best = Math.min(best, toSegment(p, to[i], to[(i + 1) % to.length]));
+  }
+  return best;
 }
 
 // An edge's full length: corner to corner, or round its curve.
@@ -682,13 +827,22 @@ const edgeFullLength = (edge: ShapeEdge) => (edge.curve ? edge.curve.length : ed
 export function customCabinetParts(shape: CutlistShape, options: CabinetOptions): CabinetPart[] {
   const work = workCabinet(shape, options);
   if (!work) return [];
-  const { geometry, roles, trims, settings, plate, adjustable } = work;
+  const { geometry, roles, settings, plate, adjustable } = work;
   const parts: CabinetPart[] = [];
   for (const role of ["back", "end"] as const) {
     for (const edge of geometry.edges) {
       if (roles[edge.index] !== role) continue;
-      const trim = trims[edge.index];
-      const length = Math.max(0, edgeFullLength(edge) - trim.start - trim.end);
+      const plan = panelPlan(work, edge);
+      const length = plan.length;
+      const mitres = plan.mitres.map((mitre) => ({ bevel: mitre.bevel, sharp: mitre.sharp }));
+      const bevels = [...new Set(mitres.map((mitre) => mitre.bevel))];
+      const note = !mitres.length
+        ? undefined
+        : bevels.length === 1
+          ? `Mitre ${formatShapeMm(bevels[0])}° ${mitres.length === 2 ? "both ends" : "one end"}${mitres.some((m) => m.sharp) ? " (very sharp)" : ""}`
+          : `Mitres ${bevels.map((bevel) => `${formatShapeMm(bevel)}°`).join(" and ")}${mitres.some((m) => m.sharp) ? " (very sharp)" : ""}`;
+      const n = geometry.edges.length;
+      const facingDoors = role === "end" ? [(edge.index - 1 + n) % n, (edge.index + 1) % n].filter((other) => other !== edge.index && roles[other] === "doors").length : 0;
       parts.push({
         key: `${role}:${edge.index}`,
         name: role === "back" ? "Back" : "End",
@@ -697,6 +851,8 @@ export function customCabinetParts(shape: CutlistShape, options: CabinetOptions)
         width: roundFine(length),
         height: roundFine(settings.height),
         edges: [edge.index],
+        ...(role === "end" ? { frontEdges: Math.max(1, facingDoors) } : {}),
+        ...(mitres.length ? { mitres, note } : {}),
       });
     }
   }
@@ -786,7 +942,7 @@ export function customCabinetModel(shape: CutlistShape, options: CabinetOptions)
   const work = workCabinet(shape, options);
   const empty: CabinetModel = { prisms: [], height: 0, thicknessMm: 0, bounds: { minX: 0, minY: 0, minZ: 0, maxX: 0, maxY: 0, maxZ: 0 } };
   if (!work) return empty;
-  const { geometry, roles, trims, t, settings, plate, adjustable } = work;
+  const { geometry, roles, t, settings, plate, adjustable } = work;
   const H = settings.height;
   const prisms: CabinetPrism[] = [];
   const push = (prism: Omit<CabinetPrism, "polygon"> & { polygon: ShapePoint[] }) => {
@@ -797,8 +953,7 @@ export function customCabinetModel(shape: CutlistShape, options: CabinetOptions)
   for (const edge of geometry.edges) {
     const role = roles[edge.index];
     if (role === "doors") continue;
-    const trim = trims[edge.index];
-    push({ key: `${role}:${edge.index}`, part: `${role}:${edge.index}`, kind: role, polygon: edgeStrip(edge, trim.start, trim.end, t), z0: 0, z1: H, translucent: false });
+    push({ key: `${role}:${edge.index}`, part: `${role}:${edge.index}`, kind: role, polygon: panelPlan(work, edge).polygon, z0: 0, z1: H, translucent: false });
   }
   // Top and bottom between them; the shelves evenly up the inside.
   const platePlan = plate ? outlinePolygon(plate) : [];
@@ -816,10 +971,22 @@ export function customCabinetModel(shape: CutlistShape, options: CabinetOptions)
     const z0 = board + (j + 1) * gap + j * board;
     push({ key: `${shelf.kind}#${j + 1}`, part: shelf.kind, kind: shelf.kind, polygon: shelf.plan, z0, z1: z0 + board, translucent: false });
   });
-  // The doors: see-through, a board thick, just outside the doors edges, the full height.
+  // The doors: see-through, a board thick, just outside the doors edges, the full height — each edge its own door (a
+  // curved one too), and where two meet, each stopped short of the corner by the same so they're the project's gap
+  // apart there (doorDoorCutBack — whatever the corner's angle), never into each other.
+  const doorT = Math.max(t, 1);
+  const doorGap = Math.max(0, Number(options.doorGapMm) || 0);
+  const n = geometry.edges.length;
+  const cutBack = geometry.corners.map((corner) => {
+    const before = geometry.edges[(corner.index - 1 + n) % n];
+    const after = geometry.edges[corner.index];
+    if (n < 2 || roles[before.index] !== "doors" || roles[after.index] !== "doors") return 0;
+    return doorDoorCutBack(geometry, before, after, doorT, doorGap);
+  });
   for (const edge of geometry.edges) {
     if (roles[edge.index] !== "doors") continue;
-    push({ key: `door:${edge.index}`, part: `door:${edge.index}`, kind: "door", polygon: edgeStrip(edge, 0, 0, -Math.max(t, 1)), z0: 0, z1: H, translucent: true });
+    const polygon = edgeStrip(edge, cutBack[edge.index], cutBack[(edge.index + 1) % n], -doorT);
+    push({ key: `door:${edge.index}`, part: `door:${edge.index}`, kind: "door", polygon, z0: 0, z1: H, translucent: true });
   }
   if (!prisms.length) return empty;
   const xs = prisms.flatMap((prism) => prism.polygon.map((p) => p[0]));
@@ -856,12 +1023,17 @@ export type CabinetFace = {
 // left and in front).
 //
 // Back to front: no one depth for a face does it for thin boards (a tall end's middle is behind a shelf's edge it hides;
-// a big L-shaped shelf's nearest corner is in front of the end it's behind). So any two that overlap on the screen are
-// put in order by their planes — one wholly behind the other's plane (or the other wholly in front of its) is drawn
-// first — and the rest by their middles.
+// a big L-shaped shelf's nearest corner is in front of the end it's behind). So only two that really overlap on the
+// screen (their outlines, not just the boxes round them — an L shelf's included; only touching, not) are put in order:
+// one wholly behind the other's plane first, else by how far each is at a point where they overlap — the nearer after;
+// as near (touching, in one plane), the smaller after, the panel it's on behind. A loop left over is broken at its
+// least sure link (one decided by depth, a see-through door's first); all sure (faces that really go through each
+// other), at its face furthest back where it overlaps the next. (Checked against a z-buffer over many views.)
 export type CabinetView = { yaw: number; pitch: number };
 export type CabinetScreenFace = CabinetFace & { screen: Array<[number, number]>; depth: number; light: number };
-export function projectCabinetFaces(model: CabinetModel, faces: CabinetFace[], view: CabinetView, size: { width: number; height: number }): CabinetScreenFace[] {
+// Where a point of the model (mm) is seen from a view, in that box (px, y down) — the turn, the middle it turns round,
+// and the px per mm it's drawn at.
+export function cabinetViewProjector(model: CabinetModel, view: CabinetView, size: { width: number; height: number }) {
   const b = model.bounds;
   const centre: CabinetPoint3 = [(b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2, (b.minZ + b.maxZ) / 2];
   const reach = Math.max(1, Math.hypot(b.maxX - b.minX, b.maxY - b.minY, b.maxZ - b.minZ) / 2);
@@ -876,9 +1048,24 @@ export function projectCabinetFaces(model: CabinetModel, faces: CabinetFace[], v
     return [x1, z * cp - z1 * sp, z * sp + z1 * cp];
   };
   const k = (Math.min(size.width, size.height) * 0.44) / reach;
+  const project = (p: CabinetPoint3): [number, number] => {
+    const [x, y] = turn(p[0] - centre[0], p[1] - centre[1], p[2] - centre[2]);
+    return [size.width / 2 + x * k, size.height / 2 - y * k];
+  };
+  return { turn, centre, k, project };
+}
+
+export function projectCabinetFaces(model: CabinetModel, faces: CabinetFace[], view: CabinetView, size: { width: number; height: number }): CabinetScreenFace[] {
+  const { turn, centre, k } = cabinetViewProjector(model, view, size);
   const light: CabinetPoint3 = [-0.35, 0.78, 0.52];
   const lightLength = Math.hypot(light[0], light[1], light[2]);
-  type Seen = CabinetScreenFace & { box: { left: number; top: number; right: number; bottom: number } };
+  type Seen = CabinetScreenFace & {
+    box: { left: number; top: number; right: number; bottom: number };
+    // Its plane as seen — depth at a point of the screen — and its size on it.
+    plane: { nx: number; ny: number; nz: number; p0: CabinetPoint3 };
+    area: number;
+    convex: boolean;
+  };
   const seen: Seen[] = [];
   for (const face of faces) {
     const n = turn(face.normal[0], face.normal[1], face.normal[2]);
@@ -886,8 +1073,10 @@ export function projectCabinetFaces(model: CabinetModel, faces: CabinetFace[], v
     if (n[2] <= 1e-6 || !face.points.length) continue;
     let middle = 0;
     const box = { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity };
+    const viewPoints: CabinetPoint3[] = [];
     const screen = face.points.map((p) => {
       const [x, y, z] = turn(p[0] - centre[0], p[1] - centre[1], p[2] - centre[2]);
+      viewPoints.push([x, y, z]);
       middle += z;
       const at: [number, number] = [size.width / 2 + x * k, size.height / 2 - y * k];
       box.left = Math.min(box.left, at[0]);
@@ -897,8 +1086,155 @@ export function projectCabinetFaces(model: CabinetModel, faces: CabinetFace[], v
       return at;
     });
     const lit = Math.max(0, (n[0] * light[0] + n[1] * light[1] + n[2] * light[2]) / lightLength);
-    seen.push({ ...face, screen, depth: middle / face.points.length, light: lit, box });
+    // (Its plane's normal as seen — Newell's, so a many-sided face's is right too.)
+    let nx = 0;
+    let ny = 0;
+    let nz = 0;
+    for (let i = 0; i < viewPoints.length; i += 1) {
+      const a = viewPoints[i];
+      const b = viewPoints[(i + 1) % viewPoints.length];
+      nx += (a[1] - b[1]) * (a[2] + b[2]);
+      ny += (a[2] - b[2]) * (a[0] + b[0]);
+      nz += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    // (Convex on the screen: no corner turning the other way.)
+    let turns = 0;
+    let convex = true;
+    for (let i = 0; i < screen.length && convex; i += 1) {
+      const p = screen[i];
+      const q = screen[(i + 1) % screen.length];
+      const r = screen[(i + 2) % screen.length];
+      const c = (q[0] - p[0]) * (r[1] - q[1]) - (q[1] - p[1]) * (r[0] - q[0]);
+      if (Math.abs(c) < 1e-6) continue;
+      if (turns && Math.sign(c) !== turns) convex = false;
+      turns = Math.sign(c);
+    }
+    seen.push({ ...face, screen, depth: middle / face.points.length, light: lit, box, plane: { nx, ny, nz, p0: viewPoints[0] }, area: Math.abs(signedPolygonArea(screen)), convex });
   }
+  // How far towards the eye a face is at a point of the screen (its plane there).
+  const depthAt = (face: Seen, at: [number, number]) => {
+    const { nx, ny, nz, p0 } = face.plane;
+    if (Math.abs(nz) < 1e-12) return face.depth;
+    const x = (at[0] - size.width / 2) / k;
+    const y = (size.height / 2 - at[1]) / k;
+    return p0[2] - (nx * (x - p0[0]) + ny * (y - p0[1])) / nz;
+  };
+  const inPolygon = (point: [number, number], polygon: Array<[number, number]>) => {
+    let hit = false;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
+      const a = polygon[i];
+      const b = polygon[j];
+      if (a[1] > point[1] !== b[1] > point[1] && point[0] < ((b[0] - a[0]) * (point[1] - a[1])) / (b[1] - a[1]) + a[0]) hit = !hit;
+    }
+    return hit;
+  };
+  const OVERLAP_PX = 0.05;
+  const NUDGE_PX = 0.02;
+  const inBox = (p: [number, number], face: Seen, slack: number) => p[0] > face.box.left - slack && p[0] < face.box.right + slack && p[1] > face.box.top - slack && p[1] < face.box.bottom + slack;
+  // A point inside both outlines on the screen, or null — they don't overlap (or only touch). A corner of one just in
+  // from its own edges inside the other; else where their edges cross, a hair to each side.
+  const overlapPoint = (a: Seen, b: Seen): [number, number] | null => {
+    const both = (p: [number, number]) => inBox(p, a, 0) && inBox(p, b, 0) && inPolygon(p, a.screen) && inPolygon(p, b.screen);
+    for (let side = 0; side < 2; side += 1) {
+      const one = side ? b : a;
+      const other = side ? a : b;
+      const pts = one.screen;
+      const n = pts.length;
+      for (let i = 0; i < n; i += 1) {
+        const p = pts[i];
+        if (!inBox(p, other, NUDGE_PX)) continue;
+        const prev = pts[(i - 1 + n) % n];
+        const next = pts[(i + 1) % n];
+        let ux = prev[0] - p[0];
+        let uy = prev[1] - p[1];
+        let length = Math.hypot(ux, uy) || 1;
+        ux /= length;
+        uy /= length;
+        let vx = next[0] - p[0];
+        let vy = next[1] - p[1];
+        length = Math.hypot(vx, vy) || 1;
+        vx /= length;
+        vy /= length;
+        // (In along the corner's own halfway line — either way, for a corner that turns in; straight on, square off it.)
+        let dx = ux + vx;
+        let dy = uy + vy;
+        length = Math.hypot(dx, dy);
+        if (length < 1e-9) {
+          dx = -uy;
+          dy = ux;
+          length = 1;
+        }
+        for (const sign of [1, -1]) {
+          const q: [number, number] = [p[0] + (dx / length) * NUDGE_PX * sign, p[1] + (dy / length) * NUDGE_PX * sign];
+          if (both(q)) return q;
+        }
+      }
+    }
+    const A = a.screen;
+    const B = b.screen;
+    for (let i = 0; i < A.length; i += 1) {
+      const p = A[i];
+      const p2 = A[(i + 1) % A.length];
+      if (Math.max(p[0], p2[0]) < b.box.left || Math.min(p[0], p2[0]) > b.box.right || Math.max(p[1], p2[1]) < b.box.top || Math.min(p[1], p2[1]) > b.box.bottom) continue;
+      const r = sub(p2, p);
+      for (let j = 0; j < B.length; j += 1) {
+        const q = B[j];
+        const s = sub(B[(j + 1) % B.length], q);
+        const denom = cross(r, s);
+        if (Math.abs(denom) < 1e-12) continue;
+        const t = cross(sub(q, p), s) / denom;
+        const u = cross(sub(q, p), r) / denom;
+        if (t <= 0 || t >= 1 || u <= 0 || u >= 1) continue;
+        const x = add(p, mul(r, t));
+        for (const [ox, oy] of [
+          [1, 1],
+          [1, -1],
+          [-1, 1],
+          [-1, -1],
+          [1, 0],
+          [-1, 0],
+          [0, 1],
+          [0, -1],
+        ]) {
+          const at: [number, number] = [x[0] + ox * NUDGE_PX, x[1] + oy * NUDGE_PX];
+          if (both(at)) return at;
+        }
+      }
+    }
+    return null;
+  };
+  // Two outlines apart (or only touching): a line between them, square to an edge of a convex one of them — for two
+  // convex ones, the only lines there can be; for one, a quick look before a point in both's looked for.
+  const apart = (a: Seen, b: Seen) => {
+    for (let side = 0; side < 2; side += 1) {
+      if (!(side ? b : a).convex) continue;
+      const pts = side ? b.screen : a.screen;
+      for (let i = 0; i < pts.length; i += 1) {
+        const p = pts[i];
+        const q = pts[(i + 1) % pts.length];
+        const length = Math.hypot(q[0] - p[0], q[1] - p[1]);
+        if (length < 1e-9) continue;
+        const ax = (p[1] - q[1]) / length;
+        const ay = (q[0] - p[0]) / length;
+        let aMin = Infinity;
+        let aMax = -Infinity;
+        let bMin = Infinity;
+        let bMax = -Infinity;
+        for (const v of a.screen) {
+          const d = v[0] * ax + v[1] * ay;
+          if (d < aMin) aMin = d;
+          if (d > aMax) aMax = d;
+        }
+        for (const v of b.screen) {
+          const d = v[0] * ax + v[1] * ay;
+          if (d < bMin) bMin = d;
+          if (d > bMax) bMax = d;
+        }
+        if (aMax <= bMin + OVERLAP_PX || bMax <= aMin + OVERLAP_PX) return true;
+      }
+    }
+    return false;
+  };
 
   // Which side of face `plane`'s plane each point of `face` is (model space — the same whichever way it's turned):
   // all behind it (−), or all in front (+).
@@ -913,45 +1249,334 @@ export function projectCabinetFaces(model: CabinetModel, faces: CabinetFace[], v
     const nn = plane.normal;
     return face.points.every((p) => (p[0] - o[0]) * nn[0] + (p[1] - o[1]) * nn[1] + (p[2] - o[2]) * nn[2] >= -PLANE_SLACK_MM);
   };
+  // "This one before that one", for each two that really overlap — and how sure (0 by their planes; 1 that, with a
+  // see-through door in it; 2 by depth where they overlap; 3 that, with a door): what a loop's broken at.
   const m = seen.length;
-  const before: number[][] = seen.map(() => []);
+  const from: number[] = [];
+  const to: number[] = [];
+  const sure: number[] = [];
+  const alive: boolean[] = [];
+  const outEdges: number[][] = seen.map(() => []);
+  const inEdges: number[][] = seen.map(() => []);
   const waiting = new Array<number>(m).fill(0);
-  const OVERLAP_PX = 0.5;
+  const link = (first: number, after: number, how: number) => {
+    const e = from.length;
+    from.push(first);
+    to.push(after);
+    sure.push(how);
+    alive.push(true);
+    outEdges[first].push(e);
+    inEdges[after].push(e);
+    waiting[after] += 1;
+  };
+  const SAME_DEPTH_MM = 0.05;
   for (let i = 0; i < m; i += 1) {
     const a = seen[i];
     for (let j = i + 1; j < m; j += 1) {
       const c = seen[j];
       if (a.box.right <= c.box.left + OVERLAP_PX || c.box.right <= a.box.left + OVERLAP_PX || a.box.bottom <= c.box.top + OVERLAP_PX || c.box.bottom <= a.box.top + OVERLAP_PX) continue;
-      const aFirst = allBehind(a, c) || allInFront(c, a);
-      const cFirst = allBehind(c, a) || allInFront(a, c);
-      if (aFirst && !cFirst) {
-        before[i].push(j);
-        waiting[j] += 1;
-      } else if (cFirst && !aFirst) {
-        before[j].push(i);
-        waiting[i] += 1;
+      if (apart(a, c)) continue;
+      let at: [number, number] | null = null;
+      if (!a.convex || !c.convex) {
+        at = overlapPoint(a, c);
+        if (!at) continue;
       }
+      const door = a.translucent || c.translucent ? 1 : 0;
+      // One wholly behind the other's plane (or the other wholly in front of its): that first — exact, for flat faces
+      // that don't go through each other.
+      const planeFirst = allBehind(a, c) || allInFront(c, a);
+      const planeAfter = allBehind(c, a) || allInFront(a, c);
+      if (planeFirst !== planeAfter) {
+        if (planeFirst) link(i, j, door);
+        else link(j, i, door);
+        continue;
+      }
+      // Else by how far each is where they overlap: the nearer after; as near (touching, in one plane), the smaller
+      // after — the panel it's on behind.
+      at ??= overlapPoint(a, c);
+      if (!at) continue;
+      const za = depthAt(a, at);
+      const zc = depthAt(c, at);
+      const aFirst = Math.abs(za - zc) <= SAME_DEPTH_MM ? a.area >= c.area : za < zc;
+      if (aFirst) link(i, j, 2 + door);
+      else link(j, i, 2 + door);
     }
   }
-  // Drawn in that order — of those free to go next, the furthest back first (a loop, if any: the furthest of it).
   const done = new Array<boolean>(m).fill(false);
+  // A loop (nothing's free to go next): walked back from one still waiting, along what it waits for, till one comes
+  // round again. Its least sure link's let go; all sure (faces that really go through each other, or that overlap
+  // three ways round), the one of it furthest back where it overlaps the next goes now.
+  const breakLoop = () => {
+    let x = done.indexOf(false);
+    const place = new Map<number, number>();
+    const path: number[] = [];
+    while (!place.has(x)) {
+      place.set(x, path.length);
+      const e = inEdges[x].find((edge) => alive[edge] && !done[from[edge]]);
+      if (e === undefined) {
+        waiting[x] = 0;
+        return;
+      }
+      path.push(e);
+      x = from[e];
+    }
+    const loop = path.slice(place.get(x));
+    let least = loop[0];
+    for (const e of loop) if (sure[e] > sure[least]) least = e;
+    if (sure[least] > 0) {
+      alive[least] = false;
+      waiting[to[least]] -= 1;
+      return;
+    }
+    let back = from[loop[0]];
+    let backDepth = Infinity;
+    for (const e of loop) {
+      const at = overlapPoint(seen[from[e]], seen[to[e]]);
+      const z = at ? depthAt(seen[from[e]], at) : seen[from[e]].depth;
+      if (z < backDepth) {
+        backDepth = z;
+        back = from[e];
+      }
+    }
+    for (const e of inEdges[back]) {
+      if (!alive[e] || done[from[e]]) continue;
+      alive[e] = false;
+      waiting[back] -= 1;
+    }
+  };
+  // Drawn in that order — of those free to go next, the furthest back first.
   const out: CabinetScreenFace[] = [];
-  for (let step = 0; step < m; step += 1) {
+  while (out.length < m) {
     let pick = -1;
     for (let i = 0; i < m; i += 1) {
       if (done[i] || waiting[i] > 0) continue;
       if (pick < 0 || seen[i].depth < seen[pick].depth) pick = i;
     }
     if (pick < 0) {
-      for (let i = 0; i < m; i += 1) if (!done[i] && (pick < 0 || seen[i].depth < seen[pick].depth)) pick = i;
+      breakLoop();
+      continue;
     }
     done[pick] = true;
-    for (const next of before[pick]) waiting[next] -= 1;
-    const { box, ...face } = seen[pick];
+    for (const e of outEdges[pick]) if (alive[e]) waiting[to[e]] -= 1;
+    const { box, plane, area, convex, ...face } = seen[pick];
     void box;
+    void plane;
+    void area;
+    void convex;
     out.push(face);
   }
   return out;
+}
+
+// ---- How the 3D view looks (components/cutlist-cabinet-3d.tsx, and cabinet3dDrawingOps for its export).
+
+// A colour ("#RRGGBB") mixed towards another (0: as it is, 1: all the other).
+export function mixCabinetColor(hex: string, other: string, amount: number): string {
+  const parse = (value: string) => {
+    const raw = value.trim().replace(/^#/, "");
+    const full = raw.length === 3 ? raw.split("").map((ch) => ch + ch).join("") : raw;
+    return /^[0-9a-f]{6}$/i.test(full) ? [0, 2, 4].map((i) => Number.parseInt(full.slice(i, i + 2), 16)) : null;
+  };
+  const a = parse(hex) ?? [203, 213, 225];
+  const b = parse(other) ?? [255, 255, 255];
+  const t = Math.min(1, Math.max(0, amount));
+  return `#${a.map((c, i) => Math.round(c + (b[i] - c) * t).toString(16).padStart(2, "0")).join("")}`;
+}
+
+// A face's look: a back's or an end's in its role's colour (CABINET_EDGE_ROLE_COLORS — as its edge is in 2D), a door's
+// see-through in the doors' colour, a flat piece's banded side in the banding's, the rest in the board's — each shaded
+// by how it's lit, so it reads as 3D. (`roles` false: a plain cabinet — its backs and ends in the board's colour too.)
+export function cabinetFaceLook(
+  face: Pick<CabinetScreenFace, "key" | "kind" | "translucent" | "light">,
+  color: string,
+  opts: { bandedFaces?: Set<string>; bandColor?: string; roles?: boolean } = {},
+): { fill: string; fillOpacity: number; stroke: string } {
+  const door = CABINET_EDGE_ROLE_COLORS.doors;
+  const dark = mixCabinetColor(color, "#0F172A", 0.5);
+  if (face.translucent) return { fill: mixCabinetColor(door, "#FFFFFF", 0.35 * face.light), fillOpacity: 0.2, stroke: door };
+  const role = opts.roles === false ? null : face.kind === "back" ? CABINET_EDGE_ROLE_COLORS.back : face.kind === "end" ? CABINET_EDGE_ROLE_COLORS.end : null;
+  if (role) {
+    return {
+      fill: mixCabinetColor(mixCabinetColor(role, "#0F172A", 0.35), mixCabinetColor(role, "#FFFFFF", 0.5), face.light),
+      fillOpacity: 1,
+      stroke: mixCabinetColor(role, "#0F172A", 0.5),
+    };
+  }
+  const band = opts.bandColor ?? door;
+  const fill = opts.bandedFaces?.has(face.key)
+    ? mixCabinetColor(mixCabinetColor(band, "#0F172A", 0.25), mixCabinetColor(band, "#FFFFFF", 0.35), face.light)
+    : mixCabinetColor(dark, mixCabinetColor(color, "#FFFFFF", 0.62), 0.25 + 0.75 * face.light);
+  return { fill, fillOpacity: 1, stroke: mixCabinetColor(dark, "#0F172A", 0.35) };
+}
+
+// What each back, end and door is, labelled on it: at the middle of its biggest face that's seen (`place`: where a
+// point of the view's goes — zoomed, moved), only where that face is the one in front there (not hidden behind
+// another), and none on top of another (the nearer kept). `measure`: a label's size (px).
+export type CabinetRoleLabel = { part: string; role: CabinetEdgeRole; text: string; x: number; y: number; width: number; height: number };
+export function cabinetRoleLabels(
+  faces: CabinetScreenFace[],
+  measure: (text: string) => { width: number; height: number },
+  place: (p: [number, number]) => [number, number] = (p) => p,
+): CabinetRoleLabel[] {
+  const roleOf = (kind: CabinetPrismKind): CabinetEdgeRole | null => (kind === "back" ? "back" : kind === "end" ? "end" : kind === "door" ? "doors" : null);
+  const area = (points: Array<[number, number]>) => Math.abs(signedPolygonArea(points));
+  const placed = faces.map((face) => face.screen.map(place));
+  const best = new Map<string, { index: number; area: number }>();
+  faces.forEach((face, index) => {
+    if (!roleOf(face.kind)) return;
+    const a = area(placed[index]);
+    const known = best.get(face.part);
+    if (!known || a > known.area) best.set(face.part, { index, area: a });
+  });
+  const inPolygon = (point: [number, number], polygon: Array<[number, number]>) => {
+    let hit = false;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
+      const a = polygon[i];
+      const b = polygon[j];
+      if (a[1] > point[1] !== b[1] > point[1] && point[0] < ((b[0] - a[0]) * (point[1] - a[1])) / (b[1] - a[1]) + a[0]) hit = !hit;
+    }
+    return hit;
+  };
+  const candidates: Array<CabinetRoleLabel & { depth: number }> = [];
+  for (const [part, { index, area: a }] of best) {
+    const face = faces[index];
+    const role = roleOf(face.kind);
+    if (!role || a < 150) continue;
+    const points = placed[index];
+    const at: [number, number] = [points.reduce((sum, p) => sum + p[0], 0) / points.length, points.reduce((sum, p) => sum + p[1], 0) / points.length];
+    // (The face in front there: its own — else it's hidden.)
+    let front = -1;
+    for (let i = faces.length - 1; i >= 0; i -= 1) {
+      if (inPolygon(at, placed[i])) {
+        front = i;
+        break;
+      }
+    }
+    if (front < 0 || faces[front].part !== part) continue;
+    const text = CABINET_EDGE_ROLE_LABELS[role];
+    const size = measure(text);
+    candidates.push({ part, role, text, x: at[0], y: at[1], width: size.width, height: size.height, depth: face.depth });
+  }
+  const kept: CabinetRoleLabel[] = [];
+  for (const label of candidates.sort((x, y) => y.depth - x.depth)) {
+    const clash = kept.some((other) => Math.abs(other.x - label.x) * 2 < other.width + label.width + 4 && Math.abs(other.y - label.y) * 2 < other.height + label.height + 4);
+    if (!clash) kept.push({ part: label.part, role: label.role, text: label.text, x: label.x, y: label.y, width: label.width, height: label.height });
+  }
+  return kept;
+}
+
+// ---- The 3D view as a drawing (lib/cutlist-shape-render.ts's steps — for a PNG or a PDF, on white paper): the model
+// seen from `view`, shaded as on the screen (components/cutlist-cabinet-3d.tsx), and its overall sizes dimensioned
+// along the edges of the box round it — Width across, Depth front to back, Height up (a flat piece's: its Width, its
+// Height down the drawing, and its Thickness — `axisLabels`).
+export type Cabinet3dDrawingOptions = {
+  width: number;
+  height: number;
+  color: string;
+  bandedFaces?: Set<string>;
+  bandColor?: string;
+  fontSize?: number;
+  axisLabels?: { x: string; y: string; z: string };
+  // A cabinet's roles shown — its backs and ends in their colours, each labelled (as the 3D view shows them). Default on.
+  showRoles?: boolean;
+};
+export function cabinet3dDrawingOps(model: CabinetModel, view: CabinetView, opts: Cabinet3dDrawingOptions): ShapeDrawing {
+  const width = Math.max(16, opts.width);
+  const height = Math.max(16, opts.height);
+  const fontSize = Math.max(4, opts.fontSize ?? 10);
+  const ops: ShapeDrawingOp[] = [{ kind: "rect", x: 0, y: 0, w: width, h: height, r: 0, fill: "#FFFFFF" }];
+  const drawing: ShapeDrawing = { width, height, scale: 1, toPx: (p) => p, ops, labels: [], arrows: [] };
+  if (!model.prisms.length) return drawing;
+  // (Drawn a little in from the edges — room round it for the dimensions.)
+  const inset = Math.min(width, height) * 0.1 + fontSize * 2;
+  const inner = { width: Math.max(16, width - 2 * inset), height: Math.max(16, height - 2 * inset) };
+  const projector = cabinetViewProjector(model, view, inner);
+  const project = (p: CabinetPoint3): ShapePoint => {
+    const [x, y] = projector.project(p);
+    return [x + inset, y + inset];
+  };
+  const seen = projectCabinetFaces(model, cabinetModelFaces(model), view, inner);
+  for (const face of seen) {
+    const look = cabinetFaceLook(face, opts.color, { bandedFaces: opts.bandedFaces, bandColor: opts.bandColor, roles: opts.showRoles !== false });
+    ops.push({
+      kind: "path",
+      points: face.screen.map((p) => [p[0] + inset, p[1] + inset] as ShapePoint),
+      closed: true,
+      fill: look.fill,
+      fillOpacity: look.fillOpacity,
+      stroke: look.stroke,
+      lineWidth: 0.6,
+      lineJoin: "round",
+    });
+  }
+  // (Each back, end and door's role on it, as on the screen.)
+  for (const label of opts.showRoles === false ? [] : cabinetRoleLabels(seen, (text) => ({ width: text.length * fontSize * 0.56 + 10 * (fontSize / 10), height: fontSize + 5 * (fontSize / 10) }), (p) => [p[0] + inset, p[1] + inset])) {
+    ops.push({ kind: "rect", x: label.x - label.width / 2, y: label.y - label.height / 2, w: label.width, h: label.height, r: label.height / 2, fill: CABINET_EDGE_ROLE_COLORS[label.role] });
+    ops.push({ kind: "text", x: label.x, y: label.y + fontSize * 0.35, text: label.text, size: fontSize, color: "#FFFFFF", align: "center" });
+  }
+  // The box round it: of each direction's four edges, the one furthest out on the page (Width and Depth along its
+  // bottom, Height up its left), dimensioned just outside it.
+  const box = model.bounds;
+  const labels = opts.axisLabels ?? { x: "W", y: "D", z: "H" };
+  const k = fontSize / 10;
+  const soft = "#64748B";
+  const ink = "#0F172A";
+  const screenCentre = project(projector.centre);
+  const edgesAlong = (axis: 0 | 1 | 2): Array<[CabinetPoint3, CabinetPoint3]> => {
+    const out: Array<[CabinetPoint3, CabinetPoint3]> = [];
+    for (const u of [0, 1]) {
+      for (const w of [0, 1]) {
+        const x = [box.minX, box.maxX];
+        const y = [box.minY, box.maxY];
+        const z = [box.minZ, box.maxZ];
+        if (axis === 0) out.push([[box.minX, y[u], z[w]], [box.maxX, y[u], z[w]]]);
+        else if (axis === 1) out.push([[x[u], box.minY, z[w]], [x[u], box.maxY, z[w]]]);
+        else out.push([[x[u], y[w], box.minZ], [x[u], y[w], box.maxZ]]);
+      }
+    }
+    return out;
+  };
+  const sizes = [box.maxX - box.minX, box.maxY - box.minY, box.maxZ - box.minZ];
+  const names = [labels.x, labels.y, labels.z];
+  const head = (tip: ShapePoint, from: ShapePoint): ShapePoint[] => {
+    const d = unit(sub(tip, from));
+    const n: ShapePoint = [-d[1], d[0]];
+    const base = sub(tip, mul(d, 4.5 * k));
+    return [tip, add(base, mul(n, 1.9 * k)), sub(base, mul(n, 1.9 * k))];
+  };
+  for (const axis of [0, 1, 2] as const) {
+    if (!(sizes[axis] > 0)) continue;
+    // (Height: the leftmost edge; Width and Depth: the lowest.)
+    const score = ([p3, q3]: [CabinetPoint3, CabinetPoint3]) => {
+      const m = midpoint(project(p3), project(q3));
+      return axis === 2 ? -m[0] : m[1];
+    };
+    const [p3, q3] = edgesAlong(axis).reduce((best, edge) => (score(edge) > score(best) ? edge : best));
+    const p = project(p3);
+    const q = project(q3);
+    if (!(len(sub(q, p)) > 1)) continue;
+    const dir = unit(sub(q, p));
+    let normal: ShapePoint = [-dir[1], dir[0]];
+    if (dot(sub(midpoint(p, q), screenCentre), normal) < 0) normal = mul(normal, -1);
+    const offset = 14 * k;
+    const a = add(p, mul(normal, offset));
+    const z = add(q, mul(normal, offset));
+    ops.push({ kind: "path", points: [add(p, mul(normal, 3 * k)), add(a, mul(normal, 3 * k))], closed: false, stroke: soft, lineWidth: 0.5 * k });
+    ops.push({ kind: "path", points: [add(q, mul(normal, 3 * k)), add(z, mul(normal, 3 * k))], closed: false, stroke: soft, lineWidth: 0.5 * k });
+    ops.push({ kind: "path", points: [a, z], closed: false, stroke: soft, lineWidth: 0.6 * k });
+    const m = midpoint(a, z);
+    if (len(sub(z, a)) > 12 * k) {
+      ops.push({ kind: "path", points: head(a, m), closed: true, fill: soft });
+      ops.push({ kind: "path", points: head(z, m), closed: true, fill: soft });
+    }
+    const text = `${names[axis]} ${formatShapeMm(sizes[axis])}`;
+    const w = text.length * fontSize * 0.56 + 6 * k;
+    const h = fontSize + 5 * k;
+    const at = add(m, mul(normal, h / 2 + 2 * k));
+    ops.push({ kind: "rect", x: at[0] - w / 2, y: at[1] - h / 2, w, h, r: 2 * k, fill: "#FFFFFF" });
+    ops.push({ kind: "text", x: at[0], y: at[1] + fontSize * 0.35, text, size: fontSize, color: ink, align: "center" });
+  }
+  return drawing;
 }
 
 export function cabinetModelFaces(model: CabinetModel): CabinetFace[] {
@@ -985,15 +1610,15 @@ export function cabinetModelFaces(model: CabinetModel): CabinetFace[] {
 // A flat piece as a model the same 3D view draws (components/cutlist-cabinet-3d.tsx — turned, moved and zoomed as a
 // cabinet is): one slab of its outline (its curves and rounded corners sampled), `thicknessMm` thick, lying flat.
 // `bandedFaces`: its sides along banded edges (their faces' keys, as cabinetModelFaces makes them), for the banding's
-// colour.
-export function flatPieceModel(shape: CutlistShape, thicknessMm: number): { model: CabinetModel; bandedFaces: Set<string> } {
+// colour; `sideEdges`: each side face's edge of the outline (by its key — a rounded corner's: none), for a click on one.
+export function flatPieceModel(shape: CutlistShape, thicknessMm: number): { model: CabinetModel; bandedFaces: Set<string>; sideEdges: Map<string, number> } {
   const t = Math.max(0.1, Number(thicknessMm) || 0);
   const geometry = shapeGeometry(shape);
   const empty: CabinetModel = { prisms: [], height: t, thicknessMm: t, bounds: { minX: 0, minY: 0, minZ: 0, maxX: 0, maxY: 0, maxZ: t } };
-  if (!geometry.valid) return { model: empty, bandedFaces: new Set() };
+  if (!geometry.valid) return { model: empty, bandedFaces: new Set(), sideEdges: new Map() };
   const n = geometry.edges.length;
   const samples = sampleShapeOutline(geometry, PLAN_SAMPLING);
-  if (samples.length < 3) return { model: empty, bandedFaces: new Set() };
+  if (samples.length < 3) return { model: empty, bandedFaces: new Set(), sideEdges: new Map() };
   // (Each sample's way on to the next: along an edge — banded or not — or round a rounded corner, banded where both its
   // edges are, as a run of banding goes round it.)
   let polygon = samples.map((sample) => sample.point);
@@ -1004,11 +1629,13 @@ export function flatPieceModel(shape: CutlistShape, thicknessMm: number): { mode
         ? geometry.edges[(sample.corner - 1 + n) % n].banded && geometry.edges[sample.corner].banded
         : false,
   );
+  let edgeOf = samples.map((sample) => sample.edge);
   // (Wound clockwise on the screen, as a cabinet's prisms are: the other way round, its sides' bandings go with them.)
   if (signedPolygonArea(polygon) < 0) {
     const m = polygon.length;
     polygon = [...polygon].reverse();
     banded = polygon.map((_, i) => banded[(2 * m - 2 - i) % m]);
+    edgeOf = polygon.map((_, i) => edgeOf[(2 * m - 2 - i) % m]);
   }
   const xs = polygon.map((p) => p[0]);
   const ys = polygon.map((p) => p[1]);
@@ -1018,7 +1645,11 @@ export function flatPieceModel(shape: CutlistShape, thicknessMm: number): { mode
     thicknessMm: t,
     bounds: { minX: Math.min(...xs), minY: Math.min(...ys), minZ: 0, maxX: Math.max(...xs), maxY: Math.max(...ys), maxZ: t },
   };
-  return { model, bandedFaces: new Set(banded.flatMap((on, i) => (on ? [`piece:side${i}`] : []))) };
+  const sideEdges = new Map<string, number>();
+  edgeOf.forEach((edge, i) => {
+    if (edge !== null) sideEdges.set(`piece:side${i}`, edge);
+  });
+  return { model, bandedFaces: new Set(banded.flatMap((on, i) => (on ? [`piece:side${i}`] : []))), sideEdges };
 }
 
 // ---- The cabinet everywhere else: the cutlists, the CNC Cutlist, nesting, prints, labels and Excel (the project page,
@@ -1027,7 +1658,7 @@ export function flatPieceModel(shape: CutlistShape, thicknessMm: number): { mode
 // Its parts and its model worked out once for each shape and board thickness — the same shape (the same object, as a
 // row keeps it) at the same thickness: the same ones.
 const partsCache = new WeakMap<CutlistShape, Map<number, CabinetPart[]>>();
-const modelCache = new WeakMap<CutlistShape, Map<number, CabinetModel>>();
+const modelCache = new WeakMap<CutlistShape, Map<string, CabinetModel>>();
 const thicknessKey = (thicknessMm: number) => {
   const t = Number(thicknessMm);
   return Number.isFinite(t) && t > 0 ? Math.round(t * 1000) / 1000 : 0;
@@ -1046,17 +1677,19 @@ export function cachedCustomCabinetParts(shape: CutlistShape, thicknessMm: numbe
   }
   return parts;
 }
-export function cachedCustomCabinetModel(shape: CutlistShape, thicknessMm: number): CabinetModel {
+export function cachedCustomCabinetModel(shape: CutlistShape, thicknessMm: number, doorGapMm = 0): CabinetModel {
   const key = thicknessKey(thicknessMm);
+  const gap = Math.max(0, Math.round((Number(doorGapMm) || 0) * 1000) / 1000);
+  const cacheKey = `${key}|${gap}`;
   let byThickness = modelCache.get(shape);
   if (!byThickness) {
     byThickness = new Map();
     modelCache.set(shape, byThickness);
   }
-  let model = byThickness.get(key);
+  let model = byThickness.get(cacheKey);
   if (!model) {
-    model = customCabinetModel(shape, { thicknessMm: key });
-    byThickness.set(key, model);
+    model = customCabinetModel(shape, { thicknessMm: key, doorGapMm: gap });
+    byThickness.set(cacheKey, model);
   }
   return model;
 }
@@ -1095,16 +1728,48 @@ export function customCabinetPartLines(parts: CabinetPart[], options: { mergeTop
     .map((line) => (line === top ? { ...top, key: "top-bottom", label: "Top / Bottom", quantity: top.quantity + bottom.quantity, parts: [top.part, bottom.part] } : line));
 }
 
-// How much of its parts is edge banded (mm, for one cabinet): its shaped parts' doors edges, each as many times as it's
-// made. (Its ends' front edges are taped too — as a cabinet's sides are, by their clashing: the project page adds them.)
-export function customCabinetBandedLengthMm(parts: CabinetPart[]): number {
+// What's edge banded: its top, bottom and shelves along their doors edges, and every end's front edge (each the
+// cabinet's height long — both, between two doors runs). Its backs never are.
+// How much of its parts is banded (mm, for one cabinet), each as many times as it's made — and in how many strips (each
+// a length of tape: its two ends trimmed — the excess per end, Company Settings › Machining).
+export function customCabinetBanding(parts: CabinetPart[]): { mm: number; strips: number } {
   let mm = 0;
+  let strips = 0;
   for (const part of parts) {
-    if (part.kind !== "shape" || !part.shape) continue;
-    mm += shapeGeometry(part.shape).bandedLengthMm * Math.max(0, part.quantity);
+    const quantity = Math.max(0, part.quantity);
+    if (part.kind === "shape" && part.shape) {
+      const geometry = shapeGeometry(part.shape);
+      mm += geometry.bandedLengthMm * quantity;
+      strips += geometry.bandedStrips * quantity;
+    } else if (part.name === "End" && part.frontEdges && Number(part.height) > 0) {
+      mm += Number(part.height) * part.frontEdges * quantity;
+      strips += part.frontEdges * quantity;
+    }
   }
-  return mm;
+  return { mm, strips };
 }
+export function customCabinetBandedLengthMm(parts: CabinetPart[]): number {
+  return customCabinetBanding(parts).mm;
+}
+// A Back's or an End's Clashing as the cutlist writes it (1L / 2L / 1S / 2S): an End's front edge, on its Long side or
+// its Short — whichever its height is, as a cabinet's sides' are — both (2), between two doors runs; a Back's none.
+// (Its piece's row in the cutlist is given exactly this.)
+export function customCabinetPanelClash(part: CabinetPart): { clashLeft: string; clashRight: string } {
+  const fronts = part.kind === "panel" && part.name === "End" ? Math.max(1, Math.min(2, part.frontEdges ?? 1)) : 0;
+  const height = Number(part.height);
+  const width = Number(part.width);
+  if (!fronts || !(height > 0) || !(width > 0)) return { clashLeft: "", clashRight: "" };
+  return height > width ? { clashLeft: `${fronts}L`, clashRight: "" } : { clashLeft: "", clashRight: `${fronts}S` };
+}
+// A part's Clashing as its row in the cutlist reads: a panel's 1L / 2S, a shaped part's banding ("1.2 m banded", "No
+// banding"); "" — none (a Back), or nothing to make.
+export function customCabinetPartClashingText(part: CabinetPart): string {
+  if (part.problem) return "";
+  if (part.kind === "shape") return part.shape ? shapeBandingSummary(part.shape) : "";
+  const { clashLeft, clashRight } = customCabinetPanelClash(part);
+  return [clashLeft, clashRight].filter(Boolean).join(" ");
+}
+
 // "2.84 m banded" — a custom cabinet's Clashing cell: its shaped parts' banding, all of them.
 export function customCabinetBandingSummary(parts: CabinetPart[]): string {
   const mm = customCabinetBandedLengthMm(parts);

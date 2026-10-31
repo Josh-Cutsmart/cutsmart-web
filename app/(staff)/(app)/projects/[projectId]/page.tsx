@@ -165,8 +165,9 @@ import type { ChecklistTemplate, Cutlist, Project, ProjectChange, ProjectCheckli
 import { storage, auth } from "@/lib/firebase";
 import { blobToDataUrl, resolveProjectImageDataUrl, resolveProjectImageUrl } from "@/lib/project-image-data";
 import { summarizeCutlistRowsByPartType, type CutlistDraftRow, type CutlistRow, type DoorModeValue, type ProductComparison } from "@/lib/cutlist-types";
-import { createTemplateShape, cutlistShapeForStorage, describeCutlistShape, formatShapeMm, isCabinetShape, normalizeCutlistShape, shapeBandingSummary, shapeForCutlistRow, shapeGeometry, shapeOuterSize, type CutlistShape, type ShapePoint } from "@/lib/cutlist-shape";
-import { cabinetPlanDrawingOps, cabinetPlanPngDataUrl, cabinetSettings, cachedCustomCabinetParts, customCabinetPartLines, customCabinetSize, customCabinetSizeText, type CabinetPart } from "@/lib/cutlist-cabinet-shape";
+import { createTemplateShape, cutlistShapeForStorage, describeCutlistShape, formatShapeMm, isCabinetShape, normalizeCutlistShape, sampleShapeOutline, shapeBandingSummary, shapeBounds, shapeForCutlistRow, shapeGeometry, shapeOuterSize, type CutlistShape, type ShapeBounds, type ShapePoint } from "@/lib/cutlist-shape";
+import { largestInsideRect, packTrueShapes, polygonArea, turnOutline, type TrueShapeItem, type TrueShapePlacement, type TrueShapeUnit } from "@/lib/nesting-true-shape";
+import { cabinetPlanDrawingOps, cabinetPlanPngDataUrl, cabinetSettings, cachedCustomCabinetParts, customCabinetPanelClash, customCabinetPartLines, customCabinetSize, customCabinetSizeText, type CabinetPart } from "@/lib/cutlist-cabinet-shape";
 import {
   CutlistShapeEditor,
   type CutlistShapeEditorBoardOption,
@@ -1372,8 +1373,9 @@ const cutlistGroupTitle = (group: { partType: string; custom?: boolean }) => (gr
 // pieces, from lib/cutlist-cabinet-shape.ts' customCabinetParts at its board's thickness, as a cabinet's own are
 // (CabinetryDerivedPiece) — each across the row's quantity. Worked out from its shape wherever they're needed, never kept
 // on the row (so nothing's left of them once it's flat again, or no longer Custom).
-//  - Its backs and ends: panels, Height × Width (along their edge) — an end's front edge taped, as a cabinet's sides'
-//    are (autoClashByDominant: its long or short side, whichever its height is).
+//  - Its backs and ends: panels, Height × Width (along their edge) — every end's front edge taped (both, between two
+//    doors runs), as a cabinet's sides' are (autoClashByDominant: its long or short side, whichever its height is). A
+//    back never is.
 //  - Its top, bottom and shelves: cut to their own shapes (`shape`, banded along their doors edges), Width × Depth —
 //    the box round them, from above (no Height, as a cabinet's top and shelves).
 // A part there's nothing left of (its problem) isn't one. Keyed "custom_<part>" — `<row>__cab__custom_<part>` as a row.
@@ -1409,7 +1411,8 @@ function customCabinetDerivedPieces(row: Partial<CutlistRow>, shape: CutlistShap
     if (part.kind === "panel") {
       const height = formatShapeMm(h);
       const width = formatShapeMm(w);
-      const clash = part.name === "End" ? autoClashByDominant(h, w) : { clashLeft: "", clashRight: "" };
+      // (1L / 2L / 1S / 2S — the shape editor's parts list says the same: lib/cutlist-cabinet-shape.ts.)
+      const clash = customCabinetPanelClash(part);
       const grainValue = !axis ? "" : axis === "height" ? `H:${height}` : `W:${width}`;
       out.push({ key, partName: line.label, label: line.label, part, height, width, depth: "", quantity, ...clash, grainValue });
       continue;
@@ -1456,7 +1459,8 @@ function customCabinetRowsFromPieces(row: CutlistRow, pieces: CustomCabinetDeriv
     clashing: joinClashing(piece.clashLeft, piece.clashRight),
     clashLeft: piece.clashLeft,
     clashRight: piece.clashRight,
-    information: String(row.information || ""),
+    // (A panel mitred at a corner that isn't square: its mitre noted for the workshop — "Mitre 22.5° both ends".)
+    information: [String(row.information || ""), piece.part.note ?? ""].filter((line) => line.trim()).join("\n"),
     grainValue: piece.grainValue ?? "",
     shape: piece.shape,
   }));
@@ -1501,7 +1505,8 @@ type SheetPackPlacement<T> = { piece: T; x: number; y: number; w: number; h: num
 // first (longest edge, then area — the same order as Production's Nesting), each one going into whichever gap it
 // fits best on ANY sheet already started (the tightest fit; on a tie, the earliest sheet) — so small pieces fill in
 // the space left on sheet 1, 2, … before a new sheet is started. A gap is any free rectangle of the sheet (MaxRects —
-// the same as Production's Nesting on a CNC); each piece keeps a kerf-wide gap from the next. A non-grain-locked piece
+// Production's Nesting on a CNC packs by the pieces' real shapes instead, so it can take fewer sheets than this
+// estimate when there are shaped pieces); each piece keeps a kerf-wide gap from the next. A non-grain-locked piece
 // may be turned 90° when that fits better. How many sheets it takes is what the quote charges for
 // (packPiecesOntoSheets); the placements themselves are what the Design tab's Nesting view draws.
 function layoutPiecesOntoSheets<T extends PackablePiece>(
@@ -2807,6 +2812,15 @@ const GLASS_DROPDOWN_MENU_STYLE: React.CSSProperties = {
   backdropFilter: "blur(12px) saturate(220%)",
   WebkitBackdropFilter: "blur(12px) saturate(220%)",
   boxShadow: "inset 0 0 0 999px color-mix(in srgb, var(--panel-bg) 22%, transparent), var(--shadow-glass)",
+};
+
+// A box typed into in place in the project page's own (not full-screen) Production cutlist list: white, edged in
+// slate, dark words — the same colours its dropdowns are given (bg="#FFFFFF" border="#94A3B8" text="#0F172A"), and
+// set inline as theirs are, so dark mode's .bg-white / text-[#0F172A] overrides don't turn just the text boxes grey.
+const CUTLIST_LIST_EDIT_FIELD_STYLE: React.CSSProperties = {
+  backgroundColor: "#FFFFFF",
+  borderColor: "#94A3B8",
+  color: "#0F172A",
 };
 
 // .glass-modal-panel's look (app/globals.css), for a picker that's pinned to the button that opened it
@@ -4623,6 +4637,9 @@ type NestingSheetPlacement = {
   w: number;
   h: number;
   rotated: boolean;
+  // Quarter turns (clockwise) it lies on the sheet at: true-shape nesting turns a piece any of the four ways (a grained
+  // one only half way round); the rectangle packers only ever a quarter (rotated). Left out: rotated's.
+  turns?: number;
 };
 
 // Whether a placed piece is below the machine's cutting minimum, and — if so — the true (real)
@@ -4638,40 +4655,127 @@ function nestingPlacementTrueSize(piece: NestingFlatPiece, rotated: boolean, min
   return { trueOnSheetW, trueOnSheetH, hitMin };
 }
 
-// A Custom piece placed on a nesting sheet (it's packed by the box round it): its true outline (lib/cutlist-shape-render.ts),
-// fitted to its true size on the sheet (w × h, mm, from the box's top left) — turned a quarter when it lies on the sheet
-// the other way round to how it's drawn: the packer turning it (rotated), or its grain having it go on Height first
-// (computeNestingSheetLayouts), but not both. null: not a shaped piece.
-const nestingShapeOutlineCache = new WeakMap<CutlistShape, ShapePoint[]>();
+// A Custom piece on a nesting sheet: its outline (lib/cutlist-shape-render.ts's, sampled to print — or, to pack it by,
+// nestingPackOutline's coarser one) fitted to its own box at no turn (its true Width × Height, mm, from the box's top
+// left) — turned a quarter when its grain has it go on Height first (computeNestingSheetLayouts swaps its Width and
+// Height then). `bounds`: the shape's own box, curves and all.
+function nestingPieceOutline(piece: NestingFlatPiece, outline: ShapePoint[], bounds: ShapeBounds): ShapePoint[] | null {
+  if (outline.length < 3) return null;
+  const bw = Math.max(bounds.width, 1e-6);
+  const bh = Math.max(bounds.height, 1e-6);
+  const w = piece.trueWidth;
+  const h = piece.trueHeight;
+  const grainTurned = Math.abs(w - bw) > 0.5 && Math.abs(w - bh) <= 0.5;
+  return outline.map(([x, y]): ShapePoint => {
+    const u = (x - bounds.minX) / bw;
+    const v = (y - bounds.minY) / bh;
+    // (A quarter turn clockwise: its left edge along the top.)
+    return grainTurned ? [(1 - v) * w, u * h] : [u * w, v * h];
+  });
+}
+const nestingPlacementTurns = (placement: NestingSheetPlacement) => (placement.turns ?? (placement.rotated ? 1 : 0)) % 4;
+
+// That outline as it lies on the sheet: turned as the packer turned it, fitted to its true size there (w × h, mm,
+// from its box's top left). null: not a shaped piece.
+const nestingShapeOutlineCache = new WeakMap<CutlistShape, { outline: ShapePoint[]; bounds: ShapeBounds }>();
 function nestingPlacementOutline(placement: NestingSheetPlacement, w: number, h: number): ShapePoint[] | null {
   const shape = placement.piece.row.shape;
   if (!shape || !(w > 0) || !(h > 0)) return null;
-  let outline = nestingShapeOutlineCache.get(shape);
-  if (!outline) {
-    outline = shapeOutlinePolyline(shape);
-    nestingShapeOutlineCache.set(shape, outline);
+  let cached = nestingShapeOutlineCache.get(shape);
+  if (!cached) {
+    cached = { outline: shapeOutlinePolyline(shape), bounds: shapeBounds(shape) };
+    nestingShapeOutlineCache.set(shape, cached);
   }
-  if (outline.length < 3) return null;
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  for (const [x, y] of outline) {
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x);
-    maxY = Math.max(maxY, y);
+  const base = nestingPieceOutline(placement.piece, cached.outline, cached.bounds);
+  if (!base) return null;
+  const turns = nestingPlacementTurns(placement);
+  const turned = turnOutline(base, placement.piece.trueWidth, placement.piece.trueHeight, turns);
+  const boxW = turns % 2 ? placement.piece.trueHeight : placement.piece.trueWidth;
+  const boxH = turns % 2 ? placement.piece.trueWidth : placement.piece.trueHeight;
+  const sx = w / Math.max(boxW, 1e-6);
+  const sy = h / Math.max(boxH, 1e-6);
+  return turned.map(([x, y]): ShapePoint => [x * sx, y * sy]);
+}
+
+// Where a shaped piece's name, numbers and buttons go (mm, in its box): the biggest box wholly inside its outline —
+// on the piece, not in an L's empty corner (where another piece may be sitting). Any other piece: its whole box.
+const nestingLabelBoxCache = new WeakMap<NestingSheetPlacement, { x: number; y: number; w: number; h: number }>();
+function nestingPlacementLabelBox(placement: NestingSheetPlacement, outline: ShapePoint[] | null, w: number, h: number) {
+  if (!outline) return { x: 0, y: 0, w, h };
+  let box = nestingLabelBoxCache.get(placement);
+  if (!box) {
+    box = largestInsideRect(outline, w, h) ?? { x: 0, y: 0, w, h };
+    nestingLabelBoxCache.set(placement, box);
   }
-  const bw = Math.max(maxX - minX, 1e-6);
-  const bh = Math.max(maxY - minY, 1e-6);
-  const grainTurned = Math.abs(placement.piece.trueWidth - bw) > 0.5 && Math.abs(placement.piece.trueWidth - bh) <= 0.5;
-  const turned = grainTurned !== placement.rotated;
-  return outline.map(([x, y]): ShapePoint => {
-    const u = (x - minX) / bw;
-    const v = (y - minY) / bh;
-    // (A quarter turn clockwise: its left edge along the top.)
-    return turned ? [(1 - v) * w, u * h] : [u * w, v * h];
-  });
+  return box;
+}
+// ...as CSS, a share of its box (boxW × boxH, mm) — for the wrapper its name and numbers sit in on the sheet previews.
+const nestingLabelBoxStyle = (box: { x: number; y: number; w: number; h: number }, boxW: number, boxH: number) => ({
+  left: `${(box.x / Math.max(boxW, 1e-6)) * 100}%`,
+  top: `${(box.y / Math.max(boxH, 1e-6)) * 100}%`,
+  width: `${(box.w / Math.max(boxW, 1e-6)) * 100}%`,
+  height: `${(box.h / Math.max(boxH, 1e-6)) * 100}%`,
+});
+
+// How much of the sheet a piece takes (mm²): a shaped one its outline's area; any other its box (an undersize piece's
+// whole reserved footprint, as it always counted).
+function nestingPlacementArea(placement: NestingSheetPlacement, minPieceMm: number): number {
+  const { trueOnSheetW, trueOnSheetH, hitMin } = nestingPlacementTrueSize(placement.piece, placement.rotated, minPieceMm);
+  const outline = hitMin ? null : nestingPlacementOutline(placement, trueOnSheetW, trueOnSheetH);
+  return outline ? polygonArea(outline) : Math.max(0, placement.w * placement.h);
+}
+
+// A shaped piece's outline to pack by (true-shape nesting): its curves sampled to within NESTING_PACK_TOLERANCE_MM, and
+// that much more kept clear round it when it has any (a sampled curve's straight bits cut inside it) — so the real
+// curve never comes closer than the kerf. Coarser than the print outline: fewer points, faster to pack.
+const NESTING_PACK_TOLERANCE_MM = 0.2;
+const nestingPackOutlineCache = new WeakMap<CutlistShape, { outline: ShapePoint[]; bounds: ShapeBounds; pad: number; key: string }>();
+function nestingPackOutline(shape: CutlistShape) {
+  let cached = nestingPackOutlineCache.get(shape);
+  if (!cached) {
+    const geometry = shapeGeometry(shape);
+    const outline = geometry.valid
+      ? sampleShapeOutline(geometry, { toleranceMm: NESTING_PACK_TOLERANCE_MM, stepRadians: Math.PI / 8 }).map((sample) => sample.point)
+      : [];
+    const curved = geometry.corners.some((corner) => corner.radius > 0) || geometry.edges.some((edge) => edge.curve);
+    cached = {
+      outline,
+      bounds: shapeBounds(shape),
+      pad: curved ? NESTING_PACK_TOLERANCE_MM : 0,
+      key: outline.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" "),
+    };
+    nestingPackOutlineCache.set(shape, cached);
+  }
+  return cached;
+}
+
+// True-shape layouts already worked out, by what went into them (the pieces' shapes, sizes, turns and order, the sheet
+// and the kerf) — Nesting's sheets and the sheet counts (Board Settings, Order) pack the same pieces, and an edit that
+// doesn't change any piece's shape or size (a name, a room) changes nothing here.
+const trueShapeNestingCache = new Map<string, TrueShapePlacement[][]>();
+function cachedPackTrueShapes(units: TrueShapeUnit[], sheetW: number, sheetH: number, gap: number): TrueShapePlacement[][] {
+  const key = [
+    `${sheetW}x${sheetH}|${gap}`,
+    ...units.map((unit) =>
+      unit.locked
+        ? `L${unit.locked.w}x${unit.locked.h}:${unit.locked.offsets.map((o) => `${o.x},${o.y}`).join(";")}`
+        : unit.items.map((item) => `${item.shapeKey}`).join("+"),
+    ),
+  ].join("\n");
+  const hit = trueShapeNestingCache.get(key);
+  if (hit) {
+    trueShapeNestingCache.delete(key);
+    trueShapeNestingCache.set(key, hit);
+    return hit;
+  }
+  const result = packTrueShapes(units, { sheetW, sheetH, gap });
+  trueShapeNestingCache.set(key, result);
+  while (trueShapeNestingCache.size > 12) {
+    const oldest = trueShapeNestingCache.keys().next().value;
+    if (oldest === undefined) break;
+    trueShapeNestingCache.delete(oldest);
+  }
+  return result;
 }
 
 // That outline on a sheet's preview: filled and edged as any piece is, over its packed box's top left at its true size
@@ -4684,6 +4788,7 @@ function NestingShapeOutline({
   boxH,
   fill,
   stroke,
+  highlighted = false,
 }: {
   points: ShapePoint[];
   trueW: number;
@@ -4692,6 +4797,7 @@ function NestingShapeOutline({
   boxH: number;
   fill: string;
   stroke: string;
+  highlighted?: boolean;
 }) {
   return (
     <svg
@@ -4701,13 +4807,15 @@ function NestingShapeOutline({
       viewBox={`0 0 ${trueW} ${trueH}`}
       preserveAspectRatio="none"
     >
+      {/* (Its outline takes the pointer, not the box round it — the box can reach over a piece in its empty corner.) */}
       <polygon
         points={points.map(([x, y]) => `${x.toFixed(2)},${y.toFixed(2)}`).join(" ")}
         fill={fill}
-        stroke={stroke}
-        strokeWidth={1}
+        stroke={highlighted ? "rgba(15,23,42,0.75)" : stroke}
+        strokeWidth={highlighted ? 2.5 : 1}
         strokeLinejoin="round"
         vectorEffect="non-scaling-stroke"
+        style={{ pointerEvents: "visiblePainted" }}
       />
     </svg>
   );
@@ -4730,13 +4838,20 @@ type NestingSheetLayout = {
 // a guillotine cut would have sealed off, packing tighter and sometimes needing fewer sheets. Every
 // other part of this function (piece flattening, grain-locked bundle handling, scoring) is identical
 // either way — only how a committed placement updates the free-rect list differs.
+//
+// "true-shape" (a CNC too — what Nesting uses for one now) packs every piece by its real outline instead
+// (lib/nesting-true-shape.ts): a small piece can go in an L's empty corner or a U's middle, shapes interlock,
+// and a piece can lie any of the four ways round (a grained one only either way up — its grain still runs
+// along the sheet). Rectangles go through it too, as four-cornered outlines. The same pieces in the same order
+// (and grain-locked sets laid out the same) — and it's checked against the "maxrects" layout of them: if that
+// takes fewer sheets (it can, with only rectangles), that's the one used, so it never takes more than it did.
 function computeNestingSheetLayouts(
   rows: CutlistRow[],
   innerW: number,
   innerH: number,
   kerf: number,
   minPieceMm: number = NESTING_MACHINE_MIN_MM,
-  placementMode: "guillotine" | "maxrects" = "guillotine",
+  placementMode: "guillotine" | "maxrects" | "true-shape" = "guillotine",
 ): NestingSheetLayout[] {
   const toPositiveNum = (v: unknown) => {
     const n = Number.parseFloat(String(v ?? "").replace(/[^\d.-]/g, ""));
@@ -4904,6 +5019,53 @@ function computeNestingSheetLayouts(
     };
   };
 
+  if (placementMode === "true-shape") {
+    // Each piece as an outline in its box: a shaped one its own (not one below the machine's minimum — that's packed by
+    // its reserved box, as it always was), anything else a rectangle.
+    const itemFor = (piece: NestingFlatPiece): TrueShapeItem => {
+      const grainLocked = toPositiveNum(piece.row.grainValue) > 0;
+      const hitMin = piece.trueWidth < minPieceMm - 0.001 || piece.trueHeight < minPieceMm - 0.001;
+      const shape = piece.row.shape;
+      const pack = shape && !hitMin ? nestingPackOutline(shape) : null;
+      const outline = pack ? nestingPieceOutline(piece, pack.outline, pack.bounds) : null;
+      if (pack && outline) {
+        const turns = grainLocked ? [0, 2] : [0, 1, 2, 3];
+        return { w: piece.width, h: piece.height, outline, pad: pack.pad, turns, shapeKey: `s:${pack.key}:${piece.width}x${piece.height}:${turns.join("")}` };
+      }
+      const turns = grainLocked ? [0] : [0, 1];
+      return { w: piece.width, h: piece.height, outline: null, pad: 0, turns, shapeKey: `r:${piece.width}x${piece.height}:${turns.join("")}` };
+    };
+    const units: TrueShapeUnit[] = bundles.map((bundle) => {
+      const locked = getLockedConfiguredBundleLayout(bundle);
+      if (locked) {
+        return {
+          items: bundle.pieces.map((piece) => ({ w: piece.width, h: piece.height, outline: null, pad: 0, turns: [0], shapeKey: `r:${piece.width}x${piece.height}:0` })),
+          locked: { w: locked.footprintW, h: locked.footprintH, offsets: locked.placements.map((placement) => ({ x: placement.x, y: placement.y })) },
+        };
+      }
+      return { items: bundle.pieces.map(itemFor) };
+    });
+    const packed = cachedPackTrueShapes(units, innerW, innerH, kerf);
+    const trueShapeLayouts: NestingSheetLayout[] = packed.map((sheet, sheetIdx) => ({
+      index: sheetIdx + 1,
+      placements: sheet.map((placed) => {
+        const piece = bundles[placed.unit].pieces[placed.item];
+        const turned = placed.turn % 2 === 1;
+        return {
+          piece,
+          x: placed.x,
+          y: placed.y,
+          w: turned ? piece.height : piece.width,
+          h: turned ? piece.width : piece.height,
+          rotated: turned,
+          turns: placed.turn,
+        };
+      }),
+    }));
+    const rectLayouts = computeNestingSheetLayouts(rows, innerW, innerH, kerf, minPieceMm, "maxrects");
+    return rectLayouts.length < trueShapeLayouts.length ? rectLayouts : trueShapeLayouts;
+  }
+
   const pruneFreeRects = (rects: FreeRect[]) => {
     const normalized = rects
       .filter((rect) => rect.w > 0.001 && rect.h > 0.001)
@@ -4926,10 +5088,14 @@ function computeNestingSheetLayouts(
     });
   };
 
+  // MaxRects: every piece takes its kerf past its right and bottom (its occupied footprint, below) — so it has to fit
+  // a free rect that much bigger too, or one put in the gap left of or above a placed piece would end up touching it.
+  // The sheet is that much bigger to match (a piece's own kerf can run off its far edge). Guillotine: as it always was.
+  const fitPad = placementMode === "maxrects" ? kerf : 0;
   const createSheet = (): SheetState => ({
     index: sheets.length + 1,
     placements: [],
-    freeRects: [{ x: 0, y: 0, w: innerW, h: innerH }],
+    freeRects: [{ x: 0, y: 0, w: innerW + fitPad, h: innerH + fitPad }],
   });
 
   const placeOnSheet = (
@@ -4951,9 +5117,9 @@ function computeNestingSheetLayouts(
       for (const orientation of orientations) {
         const w = orientation.w;
         const h = orientation.h;
-        if (w > rect.w + 0.001 || h > rect.h + 0.001) continue;
-        const leftoverW = rect.w - w;
-        const leftoverH = rect.h - h;
+        if (w + fitPad > rect.w + 0.001 || h + fitPad > rect.h + 0.001) continue;
+        const leftoverW = rect.w - w - fitPad;
+        const leftoverH = rect.h - h - fitPad;
         const score: [number, number, number, number] = [
           Math.min(leftoverW, leftoverH),
           leftoverW * leftoverH,
@@ -5079,9 +5245,9 @@ function computeNestingSheetLayouts(
       let best: CompositeBundlePlacement | null = null;
       for (let rectIdx = 0; rectIdx < sheet.freeRects.length; rectIdx += 1) {
         const rect = sheet.freeRects[rectIdx];
-        if (lockedLayout.footprintW > rect.w + 0.001 || lockedLayout.footprintH > rect.h + 0.001) continue;
-        const leftoverW = rect.w - lockedLayout.footprintW;
-        const leftoverH = rect.h - lockedLayout.footprintH;
+        if (lockedLayout.footprintW + fitPad > rect.w + 0.001 || lockedLayout.footprintH + fitPad > rect.h + 0.001) continue;
+        const leftoverW = rect.w - lockedLayout.footprintW - fitPad;
+        const leftoverH = rect.h - lockedLayout.footprintH - fitPad;
         const score: [number, number, number, number] = [
           Math.min(leftoverW, leftoverH),
           leftoverW * leftoverH,
@@ -6703,10 +6869,11 @@ function CompactPlainDropdown({
             onCancel?.();
           }
         }}
-        className="pointer-events-auto h-6 w-full rounded-[4px] border border-[#94A3B8] bg-white px-1 pr-5 text-left text-[11px] text-[#0F172A] disabled:opacity-70"
+        // (The lists' look — as their board dropdowns and the boxes typed into beside it.)
+        className="pointer-events-auto h-6 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-1 pr-5 text-left text-[11px] text-[var(--text-main)] disabled:opacity-70"
       >
         <span className="truncate">{selected || placeholder}</span>
-        <ChevronDown size={12} className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-[#0F172A]" />
+        <ChevronDown size={12} className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-[var(--text-main)]" />
       </button>
       {open && rect && !disabled && typeof document !== "undefined" && createPortal(
         <div className="fixed inset-0 pointer-events-auto" style={{ zIndex: 2147483647 }}>
@@ -7539,7 +7706,7 @@ function PartNameSuggestionInput({
             onCancel?.();
           }
         }}
-        className={`block w-full min-w-0 ${className ?? ""}`}
+        className={`cutlist-field block w-full min-w-0 ${className ?? ""}`}
         style={style}
       />
       {open && filteredOptions.length > 0 && rect && !disabled && typeof document !== "undefined" && createPortal(
@@ -13432,6 +13599,20 @@ export default function ProjectDetailsPage() {
   const isCustomCutlistRow = (row: Partial<CutlistRow>) => Boolean(row.shape) || isCustomPartType(String(row.partType || ""));
   // A custom cabinet's board thickness (mm) — what its parts are worked out at and its top view drawn with: its board's
   // (Board Settings), else what its name says ("18mm"), else 18. (An Initial Measure row's board is a product: by name.)
+  // A custom cabinet's doors' gap where two meet (mm): the project's Vertical gap between doors / panels, as its real
+  // doors take it (Project Details › Settings) — a tall cabinet's (1400 or more high) the tall one — else the company's.
+  const customCabinetDoorGaps = () => {
+    const company = normalizeGapAllowancesSettings((companyDoc as Record<string, unknown> | null)?.gapAllowancesSettings);
+    const gap = (value: string, fallback: string) => Math.max(0, toNum(String(value || "").trim() || fallback));
+    return {
+      base: gap(projectGapAllowancesDraft.baseVerticalGapDoorsPanels, company.baseVerticalGapDoorsPanels),
+      tall: gap(projectGapAllowancesDraft.tallVerticalGapDoorsPanels, company.tallVerticalGapDoorsPanels),
+    };
+  };
+  const customCabinetDoorGapFor = (shape: CutlistShape | null | undefined) => {
+    const gaps = customCabinetDoorGaps();
+    return shape && isCabinetShape(shape) && cabinetSettings(shape).height >= 1400 ? gaps.tall : gaps.base;
+  };
   const customCabinetThicknessForBoard = useCallback(
     (boardValue: unknown) => {
       const raw = String(boardValue ?? "").trim();
@@ -26969,7 +27150,7 @@ export default function ProjectDetailsPage() {
                 value={value}
                 onChange={(e) => onValueChange(index, e.target.value)}
                 onBlur={() => onValueBlur(index)}
-                className={`${compact ? "h-6 text-[10px]" : "h-8 text-[11px]"} w-full rounded-[6px] border bg-transparent px-1 text-center cs-frontbank-ghost`}
+                className={`cutlist-field ${compact ? "h-6 text-[10px]" : "h-8 text-[11px]"} w-full rounded-[8px] border bg-transparent px-1 text-center cs-frontbank-ghost`}
                 style={{ backgroundColor: fieldBg, borderColor: fieldBorder, color: fieldText, ...(isGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }}
               />
             </div>
@@ -28568,7 +28749,7 @@ export default function ProjectDetailsPage() {
                   disabled={disabled}
                   value={topGap}
                   onChange={(e) => onTopGapChange(e.target.value)}
-                  className="rounded-[8px] border px-1 text-center text-[12px]"
+                  className="cutlist-field rounded-[8px] border px-1 text-center text-[12px]"
                   style={{ width: svgGapInputWidth, height: svgGapInputHeight, fontSize: svgGapInputFontSize, borderColor, backgroundColor: fieldBg, color: fieldText }}
                 />
               </div>
@@ -28590,7 +28771,7 @@ export default function ProjectDetailsPage() {
                     disabled={disabled}
                     value={betweenGap}
                     onChange={(e) => onBetweenGapChange(e.target.value)}
-                    className="rounded-[8px] border px-1 text-center text-[12px]"
+                    className="cutlist-field rounded-[8px] border px-1 text-center text-[12px]"
                     style={{ width: svgGapInputWidth, height: svgGapInputHeight, fontSize: svgGapInputFontSize, borderColor, backgroundColor: fieldBg, color: fieldText }}
                   />
                 </div>
@@ -28607,7 +28788,7 @@ export default function ProjectDetailsPage() {
                         e.target.value,
                       )
                     }
-                    className="rounded-[8px] border px-1 text-center text-[12px]"
+                    className="cutlist-field rounded-[8px] border px-1 text-center text-[12px]"
                     style={{ width: svgGapInputWidth, height: svgGapInputHeight, fontSize: svgGapInputFontSize, borderColor, backgroundColor: fieldBg, color: fieldText }}
                   />
                 </div>
@@ -28622,7 +28803,7 @@ export default function ProjectDetailsPage() {
                       value={overlay.heightValue}
                       onChange={(e) => onFrontHeightChange(index, e.target.value)}
                       onBlur={() => onFrontHeightBlur?.(index)}
-                      className="rounded-[8px] border px-1 text-center text-[12px]"
+                      className="cutlist-field rounded-[8px] border px-1 text-center text-[12px]"
                       style={{ width: svgInputWidth, height: svgInputHeight, fontSize: svgInputFontSize, borderColor, backgroundColor: fieldBg, color: fieldText }}
                     />
                   </div>
@@ -28641,7 +28822,7 @@ export default function ProjectDetailsPage() {
                         value={overlay.widthValue}
                         onChange={(e) => onFrontWidthChange(index, e.target.value)}
                         onBlur={() => onFrontWidthBlur?.(index)}
-                        className="rounded-[8px] border px-1 text-center text-[12px]"
+                        className="cutlist-field rounded-[8px] border px-1 text-center text-[12px]"
                         style={{ width: svgInputWidth, height: svgInputHeight, fontSize: svgInputFontSize, borderColor, backgroundColor: fieldBg, color: fieldText }}
                       />
                     </div>
@@ -29331,7 +29512,7 @@ export default function ProjectDetailsPage() {
                   }
                   if (e.key === "Escape") setEditingDrawerDepth(null);
                 }}
-                className={`${compact ? "h-8 text-[12px]" : "h-6 text-[11px]"} w-full rounded-[6px] border border-[var(--glass-border)] bg-[var(--panel-bg)] pl-6 pr-1 text-center text-[var(--text-main)]`}
+                className={`cutlist-field ${compact ? "h-8 text-[12px]" : "h-6 text-[11px]"} w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] pl-6 pr-1 text-center text-[var(--text-main)]`}
               />
             </div>
           );
@@ -30389,7 +30570,7 @@ export default function ProjectDetailsPage() {
                 onCommit?.();
               }
             }}
-            className={`${sizeClassName} shrink-0 border bg-transparent px-0 text-center ${warningClassForCell(rowKey, fieldKey)}`}
+            className={`cutlist-field ${sizeClassName} shrink-0 border bg-transparent px-0 text-center ${warningClassForCell(rowKey, fieldKey)}`}
             style={warningStyleForCell(rowKey, fieldKey, { backgroundColor: bg, borderColor: border, color: text })}
           />
         );
@@ -30526,7 +30707,7 @@ export default function ProjectDetailsPage() {
             setEditingHingeCell(null);
           }
         }}
-        className="h-[24px] w-[52px] shrink-0 rounded-[7px] border border-[#94A3B8] bg-white px-0 text-center text-[12.5px] font-semibold text-[#0F172A]"
+        className="cutlist-field h-[24px] w-[52px] shrink-0 rounded-[7px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-0 text-center text-[12.5px] font-semibold text-[var(--text-main)]"
       />
     );
     const renderGroup = (direction: "up" | "down", values: string[]) => {
@@ -31336,6 +31517,11 @@ export default function ProjectDetailsPage() {
       // thickness, the project's Base Cab Height tall to start with.)
       baseOptions={shapeBaseOptions}
       defaultCabinetHeightMm={Number.parseFloat(resolvedProductionBaseCabHeight) || undefined}
+      // (Its Edge banding figure with the excess per end on each length, as the edge tape totals have it.)
+      // (A custom cabinet's doors the project's gap apart where they meet.)
+      doorGapMm={customCabinetDoorGaps().base}
+      tallDoorGapMm={customCabinetDoorGaps().tall}
+      bandingExcessPerEndMm={Math.max(0, Number.parseFloat(String(edgebandingSettings.excessPerEndMm || "").replace(/,/g, ".")) || 0)}
       isNew={shapeEditor.target.mode === "new"}
       origin={shapeEditorOrigin}
       originElRef={shapeEditorOriginElRef}
@@ -31343,6 +31529,32 @@ export default function ProjectDetailsPage() {
       onClose={() => setIsShapeEditorOpen(false)}
     />
   ) : null;
+  // An empty Project Cutlist (nothing in any room yet, nothing searched for): the project's rooms as buttons under its "No
+  // cutlist rows yet", each going to that room's cutlist — as its button in the Rooms column does.
+  const renderEmptyProjectCutlistRooms = (kind: "initial" | "production") => {
+    const initial = kind === "initial";
+    const roomFilter = initial ? initialCutlistRoomFilter : cutlistRoomFilter;
+    const search = initial ? initialCutlistSearch : cutlistSearch;
+    const rooms = initial ? initialCutlistAddedRoomTabs : cutlistAddedRoomTabs;
+    if (roomFilter !== "Project Cutlist" || search.trim() || !rooms.length) return null;
+    return (
+      <div className="mt-1 flex flex-wrap items-center justify-center gap-2 px-3 pb-4">
+        {rooms.map((roomTab) => (
+          <button
+            key={roomTab.filter}
+            type="button"
+            onClick={() => (initial ? setInitialCutlistRoomFilter(roomTab.filter) : setCutlistRoomFilter(roomTab.filter))}
+            // (Blue, as "Add your first piece"'s Add a piece — EmptyState's own button.)
+            className="glass-shine inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full pl-4 pr-3 text-[12.5px] font-semibold text-white transition hover:brightness-105"
+            style={glassShineStyle("var(--brand)")}
+          >
+            {roomTab.label}
+            <ChevronRight size={14} />
+          </button>
+        ))}
+      </div>
+    );
+  };
   // "Add your first piece" (an empty room): the page's icon, and Add a piece — which opens the cutlist's part types in a
   // strip under it, the Cutlist Entry's own pills; one picked adds the first row, as they do there.
   const renderFirstPiecePrompt = (kind: "initial" | "production") => {
@@ -32825,7 +33037,8 @@ export default function ProjectDetailsPage() {
       ? selectedNestingMachineIdRaw
       : (nestingEligibleMachines.find((m) => m.isDefaultForType) ?? nestingEligibleMachines[0])?.id ?? null;
   const selectedNestingMachine = nestingEligibleMachines.find((m) => m.id === selectedNestingMachineId) ?? null;
-  const nestingPlacementMode: "guillotine" | "maxrects" = selectedNestingMachine?.type === "cnc" ? "maxrects" : "guillotine";
+  // (A CNC cuts any outline: its pieces are packed by their real shapes — see computeNestingSheetLayouts.)
+  const nestingPlacementMode: "guillotine" | "true-shape" = selectedNestingMachine?.type === "cnc" ? "true-shape" : "guillotine";
   // Button + dropdown menu for picking the nesting machine (replaces a plain <select> so it can
   // match the app's other top-bar menu buttons, e.g. CNC's own Export button/menu).
   const [nestingMachineMenuOpen, setNestingMachineMenuOpen] = useState(false);
@@ -32934,8 +33147,8 @@ export default function ProjectDetailsPage() {
       const visible = typeof nestingVisibilityMap[row.id] === "boolean" ? nestingVisibilityMap[row.id] : row.includeInNesting !== false;
       if (!visible) continue;
 
-      // A custom cabinet (one row in the list, shown or hidden as one): its pieces — its shaped ones packed by the box
-      // round them, their outlines drawn on the sheets (nestingPlacementOutline, from each piece's own shape).
+      // A custom cabinet (one row in the list, shown or hidden as one): its pieces — its shaped ones packed by their real
+      // outlines on a CNC (by the box round them on a table saw), drawn on the sheets (nestingPlacementOutline).
       const customCabinet = customCabinetOf(row);
       if (customCabinet) {
         for (const nestedRow of customCabinetRowsFromPieces(row, customCabinet.pieces)) {
@@ -40751,12 +40964,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   const selectedNestingSheetStats = (() => {
     if (!selectedNestingSheet) return null;
     const sheetAreaMm2 = Math.max(1, selectedNestingSheet.group.sheetWidth * selectedNestingSheet.group.sheetHeight);
-    const usedAreaMm2 = selectedNestingSheet.sheet.placements.reduce((sum, p) => sum + Math.max(0, p.w * p.h), 0);
+    // (A shaped piece counts its outline's area — the rest of its box is still sheet, something else may be in it.)
+    const areaOf = (p: NestingSheetPlacement) => nestingPlacementArea(p, nestingSettings.minPieceSize);
+    const usedAreaMm2 = selectedNestingSheet.sheet.placements.reduce((sum, p) => sum + areaOf(p), 0);
     const usedPct = Math.max(0, Math.min(100, (usedAreaMm2 / sheetAreaMm2) * 100));
     const wastagePct = Math.max(0, 100 - usedPct);
     const largest = selectedNestingSheet.sheet.placements.reduce((best, p) => {
       if (!best) return p;
-      return p.w * p.h > best.w * best.h ? p : best;
+      return areaOf(p) > areaOf(best) ? p : best;
     }, null as (typeof selectedNestingSheet.sheet.placements)[number] | null);
     return {
       usedPct,
@@ -40791,6 +41006,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           const { trueOnSheetW, trueOnSheetH, hitMin } = nestingPlacementTrueSize(placement.piece, placement.rotated, nestingSettings.minPieceSize);
           // (A Custom piece: its true outline, in place of the box it's packed by.)
           const shapeOutline = nestingPlacementOutline(placement, trueOnSheetW, trueOnSheetH);
+          // (Its sizes, name and Edit button inside its outline, not over an L's empty corner.)
+          const labelBox = shapeOutline ? nestingPlacementLabelBox(placement, shapeOutline, trueOnSheetW, trueOnSheetH) : null;
+          const hovered = nestingPreviewHoverPieceId === hoverPlacementKey;
           return (
             <div
               key={`preview_${placement.piece.id}_${placement.x}_${placement.y}`}
@@ -40837,15 +41055,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 borderColor: shapeOutline && !hitMin ? "transparent" : darkenHex(c, 0.22),
                 borderStyle: hitMin ? "dashed" : "solid",
                 color: t,
-                zIndex: nestingPreviewHoverPieceId === hoverPlacementKey ? 20 : 10,
+                zIndex: hovered ? 20 : 10,
+                // (A shaped piece: hovered by its outline, which is what's picked out — not the box round it.)
                 boxShadow:
-                  nestingPreviewHoverPieceId === hoverPlacementKey
+                  hovered && !shapeOutline
                     ? "0 0 0 2px rgba(15,23,42,0.55), 0 0 0 3px rgba(255,255,255,0.9)"
                     : "none",
+                pointerEvents: shapeOutline ? "none" : undefined,
               }}
             >
               {shapeOutline ? (
-                <NestingShapeOutline points={shapeOutline} trueW={trueOnSheetW} trueH={trueOnSheetH} boxW={placement.w} boxH={placement.h} fill={lightenHex(c, 0.18)} stroke={darkenHex(c, 0.22)} />
+                <NestingShapeOutline points={shapeOutline} trueW={trueOnSheetW} trueH={trueOnSheetH} boxW={placement.w} boxH={placement.h} fill={lightenHex(c, 0.18)} stroke={darkenHex(c, 0.22)} highlighted={hovered} />
               ) : null}
               {!shapeOutline && hitMin && (
                 <div
@@ -40860,66 +41080,70 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   title="Actual piece size — surrounding area is trimmed after cutting"
                 />
               )}
-              <div
-                className="absolute inset-0 z-[120] items-center justify-center"
-                style={{ display: nestingPreviewHoverPieceId === hoverPlacementKey ? "flex" : "none" }}
-              >
-                <button
-                  type="button"
-                  onMouseEnter={() => setNestingPreviewHoverPieceId(hoverPlacementKey)}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    jumpToCutlistFromDerivedRowId(String(placement.piece.row.id || ""));
-                  }}
-                  className="inline-flex h-6 min-w-[48px] px-2 items-center justify-center rounded-[6px] text-[10px] font-semibold shadow-sm backdrop-blur-[1px]"
-                  style={{
-                    backgroundColor: lightenHex(c, 0.52),
-                    border: `1px solid ${darkenHex(c, 0.2)}`,
-                    color: "#000000",
-                  }}
-                  title="Edit in cutlist"
+              <div className={labelBox ? "absolute px-[7px] py-[2px]" : "contents"} style={labelBox ? nestingLabelBoxStyle(labelBox, placement.w, placement.h) : undefined}>
+                <div
+                  className="absolute inset-0 z-[120] items-center justify-center"
+                  style={{ display: nestingPreviewHoverPieceId === hoverPlacementKey ? "flex" : "none" }}
                 >
-                  Edit
-                </button>
-              </div>
-              {showWidthDimension && nestingPreviewHoverPieceId !== hoverPlacementKey && (
-                <span
-                  className="pointer-events-none absolute"
-                  style={{ left: "50%", top: "2px", transform: "translateX(-50%)", zIndex: 40 }}
-                >
-                  <span
-                    className="inline-block rounded-[4px] px-1 text-[10px] font-bold"
-                    style={{ color: t, backgroundColor: "rgba(15,23,42,0.18)" }}
+                  <button
+                    type="button"
+                    onMouseEnter={() => setNestingPreviewHoverPieceId(hoverPlacementKey)}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      jumpToCutlistFromDerivedRowId(String(placement.piece.row.id || ""));
+                    }}
+                    className="inline-flex h-6 min-w-[48px] px-2 items-center justify-center rounded-[6px] text-[10px] font-semibold shadow-sm backdrop-blur-[1px]"
+                    style={{
+                      backgroundColor: lightenHex(c, 0.52),
+                      border: `1px solid ${darkenHex(c, 0.2)}`,
+                      color: "#000000",
+                      // (On a shaped piece its box doesn't take the pointer — this does.)
+                      pointerEvents: "auto",
+                    }}
+                    title="Edit in cutlist"
                   >
-                    {formatMm(placement.w)}
+                    Edit
+                  </button>
+                </div>
+                {showWidthDimension && nestingPreviewHoverPieceId !== hoverPlacementKey && (
+                  <span
+                    className="pointer-events-none absolute"
+                    style={{ left: "50%", top: "2px", transform: "translateX(-50%)", zIndex: 40 }}
+                  >
+                    <span
+                      className="inline-block rounded-[4px] px-1 text-[10px] font-bold"
+                      style={{ color: t, backgroundColor: "rgba(15,23,42,0.18)" }}
+                    >
+                      {formatMm(placement.w)}
+                    </span>
                   </span>
-                </span>
-              )}
-              {showHeightDimension && nestingPreviewHoverPieceId !== hoverPlacementKey && (
-                <span
-                  className="pointer-events-none absolute top-1/2 rounded-[4px] px-1 text-[10px] font-bold"
-                  style={{
-                    color: t,
-                    backgroundColor: "rgba(15,23,42,0.18)",
-                    left: "-2px",
-                    transform: "translateY(-50%) rotate(270deg)",
-                    transformOrigin: "center",
-                  }}
-                >
-                  {formatMm(placement.h)}
-                </span>
-              )}
-              {(isCabinetryPartType(placement.piece.partType) || isDrawerPartType(placement.piece.partType)) && placement.piece.row.parentName ? (
-                <span className="block truncate" style={{ marginTop: showWidthDimension ? 12 : 0 }}>
-                  <span className="block truncate text-[10px] leading-tight opacity-85" style={{ paddingLeft: 4 }}>{placement.piece.row.parentName}</span>
-                  <span className="block truncate text-[10px] leading-tight" style={{ paddingLeft: 4 }}>{placement.piece.name}</span>
-                </span>
-              ) : (
-                <span className="block truncate" style={{ marginTop: showWidthDimension ? 12 : 0, paddingLeft: 4 }}>
-                  {placement.piece.name}
-                </span>
-              )}
+                )}
+                {showHeightDimension && nestingPreviewHoverPieceId !== hoverPlacementKey && (
+                  <span
+                    className="pointer-events-none absolute top-1/2 rounded-[4px] px-1 text-[10px] font-bold"
+                    style={{
+                      color: t,
+                      backgroundColor: "rgba(15,23,42,0.18)",
+                      left: "-2px",
+                      transform: "translateY(-50%) rotate(270deg)",
+                      transformOrigin: "center",
+                    }}
+                  >
+                    {formatMm(placement.h)}
+                  </span>
+                )}
+                {(isCabinetryPartType(placement.piece.partType) || isDrawerPartType(placement.piece.partType)) && placement.piece.row.parentName ? (
+                  <span className="block truncate" style={{ marginTop: showWidthDimension ? 12 : 0 }}>
+                    <span className="block truncate text-[10px] leading-tight opacity-85" style={{ paddingLeft: 4 }}>{placement.piece.row.parentName}</span>
+                    <span className="block truncate text-[10px] leading-tight" style={{ paddingLeft: 4 }}>{placement.piece.name}</span>
+                  </span>
+                ) : (
+                  <span className="block truncate" style={{ marginTop: showWidthDimension ? 12 : 0, paddingLeft: 4 }}>
+                    {placement.piece.name}
+                  </span>
+                )}
+              </div>
             </div>
           );
         })}
@@ -42598,6 +42822,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             // that covers the rest of the reserved box, matching the on-screen sheet preview.
             const trueBoxW = hitMin ? Math.min(pieceW, trueOnSheetW * previewScale) : pieceW;
             const trueBoxH = hitMin ? Math.min(pieceH, trueOnSheetH * previewScale) : pieceH;
+            // Where its ID goes: the whole box — or, a shaped piece, the biggest box inside its outline (on the piece,
+            // not in an L's empty corner, where another piece may be).
+            const labelBox = shapeOutline ? nestingPlacementLabelBox(placement, shapeOutline, trueOnSheetW, trueOnSheetH) : null;
+            const idBoxX = labelBox ? pieceX + labelBox.x * previewScale : pieceX;
+            const idBoxY = labelBox ? pieceY + labelBox.y * previewScale : pieceY;
+            const idBoxW = labelBox ? labelBox.w * previewScale : pieceW;
+            const idBoxH = labelBox ? labelBox.h * previewScale : pieceH;
+            const idTrueBoxW = labelBox ? idBoxW : trueBoxW;
+            const idTrueBoxH = labelBox ? idBoxH : trueBoxH;
             if (hitMin) {
               drawPrintHatchRect(pieceX, pieceY, pieceW, pieceH, hatchRgb);
               doc.setDrawColor(stroke[0], stroke[1], stroke[2]);
@@ -42640,7 +42873,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               const textH = fontSize * 0.3528;
               const h = textH + 1.3;
               const w = Math.max(h, textW + 2.1);
-              if (pieceW >= w && pieceH >= h) {
+              if (idBoxW >= w && idBoxH >= h) {
                 chosenBubble = { fontSize, w, h };
                 break;
               }
@@ -42649,8 +42882,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             if (chosenBubble) {
               deferredIdBubbles.push({
                 text: idText,
-                x: pieceX + pieceW / 2,
-                y: pieceY + pieceH / 2,
+                x: idBoxX + idBoxW / 2,
+                y: idBoxY + idBoxH / 2,
                 w: chosenBubble.w,
                 h: chosenBubble.h,
                 fontSize: chosenBubble.fontSize,
@@ -42658,12 +42891,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               return;
             }
             const insidePadding = 0;
-            const fitsInside = trueBoxW >= idTextW + insidePadding * 2 && trueBoxH >= idTextH + insidePadding * 2;
+            const fitsInside = idTrueBoxW >= idTextW + insidePadding * 2 && idTrueBoxH >= idTextH + insidePadding * 2;
             if (fitsInside) {
               deferredInsideLabels.push({
                 text: idText,
-                x: pieceX + trueBoxW / 2,
-                y: pieceY + trueBoxH / 2 + idTextH * 0.34,
+                x: idBoxX + idTrueBoxW / 2,
+                y: idBoxY + idTrueBoxH / 2 + idTextH * 0.34,
                 color: insideLabelColor,
               });
               return;
@@ -46757,7 +46990,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     value={draft.name}
                                     onChange={(e) => updateInitialDraftCutlistRow(draft.id, { name: e.target.value })}
                                     title={warningForCell(draft.id, "name") || undefined}
-                                    className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell(draft.id, "name")}`}
+                                    className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell(draft.id, "name")}`}
                                     style={warningStyleForCell(draft.id, "name", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
                                   />
                                 </div>
@@ -46790,7 +47023,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                           tabIndex={-1}
                                           value={field === "height" ? draft.height : draft.width}
                                           title="Set by the shape — Edit shape to change it"
-                                          className={`h-8 w-full cursor-default rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, field)}`}
+                                          className={`cutlist-field h-8 w-full cursor-default rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, field)}`}
                                           style={{
                                             ...warningStyleForCell(draft.id, field, { backgroundColor: "transparent", borderColor: draftFieldBorder, color: draftTextColor }),
                                             ...(matchesGrainDimension(String(draft.grainValue ?? ""), field === "height" ? draft.height : draft.width, field)
@@ -46829,7 +47062,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         value={draft.height}
                                         onChange={(e) => updateInitialDraftCutlistRow(draft.id, { height: numericDimensionText(e.target.value) })}
                                         title={warningForCell(draft.id, "height") || undefined}
-                                        className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`}
+                                        className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`}
                                         style={warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
                                       />
                                     )}
@@ -46844,7 +47077,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       value={draft.width}
                                       onChange={(e) => updateInitialDraftCutlistRow(draft.id, { width: numericDimensionText(e.target.value) })}
                                       title={warningForCell(draft.id, "width") || undefined}
-                                      className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`}
+                                      className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`}
                                       style={warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
                                     />
                                   </div>
@@ -46858,7 +47091,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       value={draft.depth}
                                       onChange={(e) => updateInitialDraftCutlistRow(draft.id, { depth: numericDimensionText(e.target.value) })}
                                       title={warningForCell(draft.id, "depth") || undefined}
-                                      className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "depth")}`}
+                                      className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "depth")}`}
                                       style={warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
                                     />
                                   </div>
@@ -46875,7 +47108,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       value={draft.quantity}
                                       onChange={(e) => updateInitialDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })}
                                       title={warningForCell(draft.id, "quantity") || undefined}
-                                      className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`}
+                                      className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`}
                                       style={warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
                                     />
                                   </div>
@@ -46947,14 +47180,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     <div className="grid gap-2">
                                       <div className="space-y-1">
                                         <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Fixed Shelf</p>
-                                        <input inputMode="numeric" disabled={salesReadOnly} value={draft.fixedShelf ?? ""} onChange={(e) => updateInitialDraftCutlistRow(draft.id, { fixedShelf: numericOnlyText(e.target.value) })} className="h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
+                                        <input inputMode="numeric" disabled={salesReadOnly} value={draft.fixedShelf ?? ""} onChange={(e) => updateInitialDraftCutlistRow(draft.id, { fixedShelf: numericOnlyText(e.target.value) })} className="cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
                                         {hasShelfQuantity(draft.fixedShelf) ? (
                                           <BoardPillDropdown value={normalizeDrillingValue(draft.fixedShelfDrilling)} options={DRILLING_OPTIONS} disabled={salesReadOnly} bg={draftFieldBg} border={draftFieldBorder} text={draftTextColor} size="compact" getSize={() => ""} getLabel={(v) => v} onChange={(v) => updateInitialDraftCutlistRow(draft.id, { fixedShelfDrilling: normalizeDrillingValue(v) })} />
                                         ) : null}
                                       </div>
                                       <div className="space-y-1">
                                         <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Adjustable Shelf</p>
-                                        <input inputMode="numeric" disabled={salesReadOnly} value={draft.adjustableShelf ?? ""} onChange={(e) => updateInitialDraftCutlistRow(draft.id, { adjustableShelf: numericOnlyText(e.target.value) })} className="h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
+                                        <input inputMode="numeric" disabled={salesReadOnly} value={draft.adjustableShelf ?? ""} onChange={(e) => updateInitialDraftCutlistRow(draft.id, { adjustableShelf: numericOnlyText(e.target.value) })} className="cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
                                         {hasShelfQuantity(draft.adjustableShelf) ? (
                                           <BoardPillDropdown value={normalizeDrillingValue(draft.adjustableShelfDrilling)} options={DRILLING_OPTIONS} disabled={salesReadOnly} bg={draftFieldBg} border={draftFieldBorder} text={draftTextColor} size="compact" getSize={() => ""} getLabel={(v) => v} onChange={(v) => updateInitialDraftCutlistRow(draft.id, { adjustableShelfDrilling: normalizeDrillingValue(v) })} />
                                         ) : null}
@@ -46980,7 +47213,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         value={line}
                                         onChange={(e) => onInitialDraftInformationLineChange(draft.id, idx, e.target.value)}
                                         placeholder="Information"
-                                        className="h-8 flex-1 rounded-[8px] border bg-transparent px-2 text-[12px]"
+                                        className="cutlist-field h-8 flex-1 rounded-[8px] border bg-transparent px-2 text-[12px]"
                                         style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
                                       />
                                     </div>
@@ -47018,7 +47251,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                   />
                   {groupedInitialCutlistRows.length === 0 && (
-                    <EmptyState compact icon={<Ruler size={16} />} title="No cutlist rows yet" hint="Parts added to the cutlist show here, grouped by part type." />
+                    <>
+                      <EmptyState compact icon={<Ruler size={16} />} title="No cutlist rows yet" hint="Parts added to the cutlist show here, grouped by part type." />
+                      {renderEmptyProjectCutlistRooms("initial")}
+                    </>
                   )}
                   <div className="-mx-3">
                     {groupedInitialCutlistRows.map((group) => {
@@ -47198,7 +47434,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       }
                                       if (e.key === "Escape") cancelInitialCellEdit();
                                     }}
-                                    className="h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px] text-[var(--text-main)]"
+                                    className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px] text-[var(--text-main)]"
                                   />
                                 ) : (
                                   <button
@@ -47227,7 +47463,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         }
                                         if (e.key === "Escape") cancelInitialCellEdit();
                                       }}
-                                      className="h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px] text-[var(--text-main)]"
+                                      className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px] text-[var(--text-main)]"
                                     >
                                       {initialCutlistEntryRoomOptions.map((opt) => (
                                         <option key={`im_popup_room_${opt}`} value={opt}>{opt}</option>
@@ -47265,7 +47501,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     }
                                     if (e.key === "Escape") cancelInitialCellEdit();
                                   }}
-                                  className="h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px] text-[var(--text-main)]"
+                                  className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px] text-[var(--text-main)]"
                                 >
                                   {Array.from(new Set([row.board, ...initialMeasureBoardOptions].filter(Boolean))).map((opt) => (
                                     <option key={`im_popup_board_${opt}`} value={opt}>{boardDisplayLabel(opt)}</option>
@@ -47302,6 +47538,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     stacked
                                     textColor={detailPalette.text}
                                     boardThicknessMm={customCabinetThicknessForBoard(row.board)}
+                                    doorGapMm={customCabinetDoorGapFor(rowShape)}
                                     color={partTypeColors[String(row.partType || "Unassigned")] ?? "#CBD5E1"}
                                     quantity={row.quantity}
                                   />
@@ -47331,7 +47568,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       }
                                       if (e.key === "Escape") cancelInitialCellEdit();
                                     }}
-                                    className="h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
+                                    className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
                                   />
                                 ) : (
                                   <button
@@ -47361,7 +47598,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       }
                                       if (e.key === "Escape") cancelInitialCellEdit();
                                     }}
-                                    className="h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
+                                    className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
                                   />
                                 ) : (
                                   <button
@@ -47391,7 +47628,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       }
                                       if (e.key === "Escape") cancelInitialCellEdit();
                                     }}
-                                    className="h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
+                                    className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
                                   />
                                 ) : (
                                   <button
@@ -47429,7 +47666,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       }
                                       if (e.key === "Escape") cancelInitialCellEdit();
                                     }}
-                                    className="h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
+                                    className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
                                   />
                                 ) : (
                                   <button
@@ -47457,7 +47694,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       }
                                       if (e.key === "Escape") cancelInitialCellEdit();
                                     }}
-                                    className="h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
+                                    className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
                                   />
                                 ) : (
                                   <button
@@ -47503,7 +47740,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     }
                                     if (e.key === "Escape") cancelInitialCellEdit();
                                   }}
-                                  className="h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px] text-[var(--text-main)]"
+                                  className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px] text-[var(--text-main)]"
                                 />
                               ) : (
                                 <button
@@ -47969,7 +48206,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               value={draft.name}
                               onChange={(e) => updateInitialDraftCutlistRow(draft.id, { name: e.target.value })}
                               title={warningForCell(draft.id, "name") || undefined}
-                              className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell(draft.id, "name")}`}
+                              className={`cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell(draft.id, "name")}`}
                               style={{ ...warningStyleForCell(draft.id, "name", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...initialCutlistEntryCellStyle("name") }}
                             />
                             {/* (A Custom piece's Height and Width: its shape's outer size — not typed.) */}
@@ -47980,7 +48217,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 readOnly
                                 tabIndex={-1}
                                 title="Set by the shape — Edit shape to change it"
-                                className={`h-8 cursor-default rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`}
+                                className={`cutlist-field h-8 cursor-default rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`}
                                 style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: "transparent", borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...initialCutlistEntryCellStyle("height") }}
                               />
                             ) : isDrawerPartType(draft.partType) ? (
@@ -48005,7 +48242,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 value={draft.height}
                                 onChange={(e) => updateInitialDraftCutlistRow(draft.id, { height: numericDimensionText(e.target.value) })}
                                 title={warningForCell(draft.id, "height") || undefined}
-                                className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`}
+                                className={`cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`}
                                 style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...initialCutlistEntryCellStyle("height") }}
                               />
                             )}
@@ -48016,7 +48253,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 readOnly
                                 tabIndex={-1}
                                 title="Set by the shape — Edit shape to change it"
-                                className={`h-8 cursor-default rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`}
+                                className={`cutlist-field h-8 cursor-default rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`}
                                 style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: "transparent", borderColor: draftFieldBorder, color: draftTextColor }), ...(draftWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...initialCutlistEntryCellStyle("width") }}
                               />
                             ) : (
@@ -48028,7 +48265,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               value={draft.width}
                               onChange={(e) => updateInitialDraftCutlistRow(draft.id, { width: numericDimensionText(e.target.value) })}
                               title={warningForCell(draft.id, "width") || undefined}
-                              className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`}
+                              className={`cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`}
                               style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...initialCutlistEntryCellStyle("width") }}
                             />
                             )}
@@ -48059,7 +48296,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               value={draft.depth}
                               onChange={(e) => updateInitialDraftCutlistRow(draft.id, { depth: numericDimensionText(e.target.value) })}
                               title={warningForCell(draft.id, "depth") || undefined}
-                              className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "depth")}`}
+                              className={`cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "depth")}`}
                               style={{ ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...initialCutlistEntryCellStyle("depth") }}
                             />
                             )}
@@ -48071,7 +48308,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               value={draft.quantity}
                               onChange={(e) => updateInitialDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })}
                               title={warningForCell(draft.id, "quantity") || undefined}
-                              className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`}
+                              className={`cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`}
                               style={{ ...warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...initialCutlistEntryCellStyle("quantity") }}
                             />
                             {draftShape ? (
@@ -48102,7 +48339,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       disabled={salesReadOnly}
                                       value={draft.fixedShelf ?? ""}
                                       onChange={(e) => updateInitialDraftCutlistRow(draft.id, { fixedShelf: numericOnlyText(e.target.value) })}
-                                      className="h-[18px] w-full min-w-0 rounded-[5px] border bg-transparent px-1 text-[9px]"
+                                      className="cutlist-field h-[18px] w-full min-w-0 rounded-[5px] border bg-transparent px-1 text-[9px]"
                                       style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
                                     />
                                   </div>
@@ -48137,7 +48374,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       disabled={salesReadOnly}
                                       value={draft.adjustableShelf ?? ""}
                                       onChange={(e) => updateInitialDraftCutlistRow(draft.id, { adjustableShelf: numericOnlyText(e.target.value) })}
-                                      className="h-[18px] w-full min-w-0 rounded-[5px] border bg-transparent px-1 text-[9px]"
+                                      className="cutlist-field h-[18px] w-full min-w-0 rounded-[5px] border bg-transparent px-1 text-[9px]"
                                       style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
                                     />
                                   </div>
@@ -48219,7 +48456,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     value={line}
                                     onChange={(e) => onInitialDraftInformationLineChange(draft.id, idx, e.target.value)}
                                     placeholder="Information"
-                                    className="h-8 flex-1 rounded-[8px] border bg-transparent px-2 text-[12px]"
+                                    className="cutlist-field h-8 flex-1 rounded-[8px] border bg-transparent px-2 text-[12px]"
                                     style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
                                   />
                                 </div>
@@ -48301,7 +48538,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 <div className="flex flex-col space-y-2 px-0 pb-0">
                   <div ref={initialCutlistListWrapRef} className="overflow-visible bg-transparent">
                     {groupedInitialCutlistRows.length === 0 && (
-                      <EmptyState compact icon={<Ruler size={16} />} title="No cutlist rows yet" hint="Parts added to the cutlist show here, grouped by part type." />
+                      <>
+                        <EmptyState compact icon={<Ruler size={16} />} title="No cutlist rows yet" hint="Parts added to the cutlist show here, grouped by part type." />
+                        {renderEmptyProjectCutlistRooms("initial")}
+                      </>
                     )}
                     {groupedInitialCutlistRows.map((group) => {
                       const color = cutlistGroupColor(group);
@@ -48539,7 +48779,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                               }
                                               if (e.key === "Escape") cancelInitialCellEdit();
                                             }}
-                                            className="h-6 w-full min-w-0 max-w-full rounded-[6px] border px-1 text-[11px]"
+                                            className="cutlist-field h-6 w-full min-w-0 max-w-full rounded-[8px] border px-1 text-[11px]"
                                             style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                                           >
                                             {initialCutlistEntryRoomOptions.map((opt) => (
@@ -48614,7 +48854,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                   }
                                                   if (e.key === "Escape") cancelInitialCellEdit();
                                                 }}
-                                                className="h-6 w-full min-w-0 max-w-full rounded-[6px] border px-1 text-[11px]"
+                                                className="cutlist-field h-6 w-full min-w-0 max-w-full rounded-[8px] border px-1 text-[11px]"
                                                 style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                                               >
                                                 <option value=""></option>
@@ -48663,7 +48903,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                   }
                                                   if (e.key === "Escape") cancelInitialCellEdit();
                                                 }}
-                                                className="h-6 w-full min-w-0 max-w-full rounded-[6px] border px-1 text-[11px]"
+                                                className="cutlist-field h-6 w-full min-w-0 max-w-full rounded-[8px] border px-1 text-[11px]"
                                                 style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                                               >
                                                 {options.map((opt) => (
@@ -48781,7 +49021,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                 }
                                                 if (e.key === "Escape") cancelInitialCellEdit();
                                               }}
-                                              className={`h-6 w-full min-w-0 max-w-full rounded-[6px] border px-1 text-[11px] ${cutlistCellAlignClass(key) === "text-center" ? "text-center" : "text-left"}`}
+                                              className={`cutlist-field h-6 w-full min-w-0 max-w-full rounded-[8px] border px-1 text-[11px] ${cutlistCellAlignClass(key) === "text-center" ? "text-center" : "text-left"}`}
                                               style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                                             />
                                           ) : (
@@ -48809,6 +49049,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                           fontSize={12}
                                           textColor={groupTextColor}
                                           boardThicknessMm={customCabinetThicknessForBoard(row.board)}
+                                          doorGapMm={customCabinetDoorGapFor(rowShape)}
                                           color={rowPartColor}
                                           quantity={row.quantity}
                                         />
@@ -49357,15 +49598,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                           <div className="grid grid-cols-5 gap-2">
                                             <div className="space-y-1">
                                               <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Height</p>
-                                              <input ref={registerCutlistWarnCellRef(draft.id, "height")} disabled={productionReadOnly} inputMode="decimal" title={heightWarn || undefined} value={draft.height} onChange={(e) => updateDraftCutlistRow(draft.id, { height: numericDimensionText(e.target.value) })} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`} style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                                              <input ref={registerCutlistWarnCellRef(draft.id, "height")} disabled={productionReadOnly} inputMode="decimal" title={heightWarn || undefined} value={draft.height} onChange={(e) => updateDraftCutlistRow(draft.id, { height: numericDimensionText(e.target.value) })} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`} style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
                                             </div>
                                             <div className="space-y-1">
                                               <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Width</p>
-                                              <input ref={registerCutlistWarnCellRef(draft.id, "width")} disabled={productionReadOnly} inputMode="decimal" title={widthWarn || undefined} value={draft.width} onChange={(e) => onDraftDoorOverallWidthChange(draft.id, e.target.value)} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`} style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                                              <input ref={registerCutlistWarnCellRef(draft.id, "width")} disabled={productionReadOnly} inputMode="decimal" title={widthWarn || undefined} value={draft.width} onChange={(e) => onDraftDoorOverallWidthChange(draft.id, e.target.value)} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`} style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
                                             </div>
                                             <div className="space-y-1">
                                               <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Quantity</p>
-                                              <input ref={registerCutlistWarnCellRef(draft.id, "quantity")} disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "quantity")}`} style={warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
+                                              <input ref={registerCutlistWarnCellRef(draft.id, "quantity")} disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "quantity")}`} style={warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
                                             </div>
                                             <div className="space-y-1 col-span-2">
                                               <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Clashing</p>
@@ -49435,7 +49676,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                     value={line}
                                                     onChange={(e) => onDraftInformationLineChange(draft.id, idx, e.target.value)}
                                                     placeholder="Information"
-                                                    className="h-8 flex-1 rounded-[8px] border bg-transparent px-2 text-[12px]"
+                                                    className="cutlist-field h-8 flex-1 rounded-[8px] border bg-transparent px-2 text-[12px]"
                                                     style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
                                                   />
                                                 </div>
@@ -49524,7 +49765,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                           tabIndex={-1}
                                           value={field === "height" ? draft.height : draft.width}
                                           title="Set by the shape — Edit shape to change it"
-                                          className={`h-8 w-full cursor-default rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, field)}`}
+                                          className={`cutlist-field h-8 w-full cursor-default rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, field)}`}
                                           style={{
                                             ...warningStyleForCell(draft.id, field, { backgroundColor: "transparent", borderColor: draftFieldBorder, color: draftTextColor }),
                                             ...((field === "height" ? draftHeightGrainMatch : draftWidthGrainMatch) ? { fontWeight: 700, textDecoration: "underline" } : {}),
@@ -49613,7 +49854,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                             value={frontHeightValue}
                                             placeholder={heightManualArr[index] ? draft.height : undefined}
                                             onChange={(e) => onDraftFrontHeightChange(draft.id, index, e.target.value)}
-                                            className="h-8 w-full rounded-[6px] border bg-transparent px-1 pr-5 text-[11px] text-center cs-frontbank-ghost"
+                                            className="cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-1 pr-5 text-[11px] text-center cs-frontbank-ghost"
                                             style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor, ...(grainAxisSelected(String(draft.grainValue ?? ""), "height", draftBoardAllowsGrain ? grainDimensionChoicesForRow(draft) : undefined) ? { fontWeight: 700, textDecoration: "underline" } : {}) }}
                                           />
                                           );
@@ -49629,7 +49870,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         title={heightWarn || undefined}
                                         value={draft.height}
                                         onChange={(e) => updateDraftCutlistRow(draft.id, { height: numericDimensionText(e.target.value) })}
-                                        className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`}
+                                        className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`}
                                         style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }}
                                       />
                                     )}
@@ -49697,7 +49938,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                             value={frontWidthValue}
                                             placeholder={widthManualArr[index] ? draft.width : undefined}
                                             onChange={(e) => onDraftFrontWidthChange(draft.id, index, e.target.value)}
-                                            className="h-8 w-full rounded-[6px] border bg-transparent px-1 pr-5 text-[11px] text-center cs-frontbank-ghost"
+                                            className="cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-1 pr-5 text-[11px] text-center cs-frontbank-ghost"
                                             style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor, ...(grainAxisSelected(String(draft.grainValue ?? ""), "width", draftBoardAllowsGrain ? grainDimensionChoicesForRow(draft) : undefined) ? { fontWeight: 700, textDecoration: "underline" } : {}) }}
                                           />
                                           );
@@ -49713,7 +49954,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         title={widthWarn || undefined}
                                         value={draft.width}
                                         onChange={(e) => onDraftDoorOverallWidthChange(draft.id, e.target.value)}
-                                        className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`}
+                                        className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`}
                                         style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }}
                                       />
                                     )}
@@ -49731,7 +49972,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                           )}
                                         </div>
                                       ) : (
-                                        <input ref={registerCutlistWarnCellRef(draft.id, "depth")} disabled={productionReadOnly} inputMode="decimal" title={depthWarn || undefined} value={draft.depth} onChange={(e) => updateDraftCutlistRow(draft.id, { depth: numericDimensionText(e.target.value) })} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "depth")}`} style={{ ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                                        <input ref={registerCutlistWarnCellRef(draft.id, "depth")} disabled={productionReadOnly} inputMode="decimal" title={depthWarn || undefined} value={draft.depth} onChange={(e) => updateDraftCutlistRow(draft.id, { depth: numericDimensionText(e.target.value) })} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "depth")}`} style={{ ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
                                       )}
                                     </div>
                                   )}
@@ -49757,13 +49998,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                             value={quantityManualArr[index] ? quantityValuesArr[index] : quantityValuesArr[index] || draft.quantity}
                                             placeholder={quantityManualArr[index] ? draft.quantity : undefined}
                                             onChange={(e) => onDraftFrontQuantityChange(draft.id, index, e.target.value)}
-                                            className="h-8 w-full rounded-[6px] border bg-transparent px-1 pr-5 text-[11px] text-center cs-frontbank-ghost"
+                                            className="cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-1 pr-5 text-[11px] text-center cs-frontbank-ghost"
                                             style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
                                           />
                                         ),
                                       );
                                     })() : (
-                                      <input ref={registerCutlistWarnCellRef(draft.id, "quantity")} disabled={productionReadOnly || (isDrawerPartType(draft.partType) && !draftIsDoor)} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`} style={warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
+                                      <input ref={registerCutlistWarnCellRef(draft.id, "quantity")} disabled={productionReadOnly || (isDrawerPartType(draft.partType) && !draftIsDoor)} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`} style={warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
                                     )}
                                   </div>
                                   {!draftIsCabinetry ? (
@@ -49904,14 +50145,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   <div className={`grid gap-2 ${isTabletProjectViewport ? "sm:grid-cols-2" : ""}`}>
                                     <div className="space-y-1">
                                       <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Fixed Shelf</p>
-                                      <input inputMode="numeric" disabled={productionReadOnly} value={draft.fixedShelf ?? ""} onChange={(e) => updateDraftCutlistRow(draft.id, { fixedShelf: numericOnlyText(e.target.value) })} className="h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
+                                      <input inputMode="numeric" disabled={productionReadOnly} value={draft.fixedShelf ?? ""} onChange={(e) => updateDraftCutlistRow(draft.id, { fixedShelf: numericOnlyText(e.target.value) })} className="cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
                                       {hasShelfQuantity(draft.fixedShelf) ? (
                                         <BoardPillDropdown value={normalizeDrillingValue(draft.fixedShelfDrilling)} options={drillingOptionsForShelfQuantity(draft.fixedShelf)} disabled={productionReadOnly} bg={draftFieldBg} border={draftFieldBorder} text={draftTextColor} size="compact" hideBlankOption getSize={() => ""} getLabel={(v) => v} onChange={(v) => updateDraftCutlistRow(draft.id, { fixedShelfDrilling: normalizeDrillingValue(v) })} />
                                       ) : null}
                                     </div>
                                     <div className="space-y-1">
                                       <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Adjustable Shelf</p>
-                                      <input inputMode="numeric" disabled={productionReadOnly} value={draft.adjustableShelf ?? ""} onChange={(e) => updateDraftCutlistRow(draft.id, { adjustableShelf: numericOnlyText(e.target.value) })} className="h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
+                                      <input inputMode="numeric" disabled={productionReadOnly} value={draft.adjustableShelf ?? ""} onChange={(e) => updateDraftCutlistRow(draft.id, { adjustableShelf: numericOnlyText(e.target.value) })} className="cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
                                       {hasShelfQuantity(draft.adjustableShelf) ? (
                                         <BoardPillDropdown value={normalizeDrillingValue(draft.adjustableShelfDrilling)} options={drillingOptionsForShelfQuantity(draft.adjustableShelf)} disabled={productionReadOnly} bg={draftFieldBg} border={draftFieldBorder} text={draftTextColor} size="compact" hideBlankOption getSize={() => ""} getLabel={(v) => v} onChange={(v) => updateDraftCutlistRow(draft.id, { adjustableShelfDrilling: normalizeDrillingValue(v) })} />
                                       ) : null}
@@ -49958,7 +50199,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       value={line}
                                       onChange={(e) => onDraftInformationLineChange(draft.id, idx, e.target.value)}
                                       placeholder="Information"
-                                      className="h-8 flex-1 rounded-[8px] border bg-transparent px-2 text-[12px]"
+                                      className="cutlist-field h-8 flex-1 rounded-[8px] border bg-transparent px-2 text-[12px]"
                                       style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
                                     />
                                   </div>
@@ -49999,7 +50240,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                   />
                   {groupedCutlistRows.length === 0 && (
-                    <EmptyState compact icon={<Scissors size={16} />} title="No cutlist rows yet" hint="Parts added to the cutlist show here, grouped by part type." />
+                    <>
+                      <EmptyState compact icon={<Scissors size={16} />} title="No cutlist rows yet" hint="Parts added to the cutlist show here, grouped by part type." />
+                      {renderEmptyProjectCutlistRooms("production")}
+                    </>
                   )}
                   {/* -mx-3: cancels this page's own px-3 so these full-width part-type title bars
                       reach the true screen edges (unlike CNC's own board-type sections, which stay
@@ -50282,6 +50526,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     stacked
                                     textColor={detailPalette.text}
                                     boardThicknessMm={customCabinetThicknessForBoard(row.board)}
+                                    doorGapMm={customCabinetDoorGapFor(rowShape)}
                                     color={partTypeColors[String(row.partType || "Unassigned")] ?? "#CBD5E1"}
                                     quantity={row.quantity}
                                   />
@@ -50337,7 +50582,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                             }
                                             if (e.key === "Escape") cancelCellEdit();
                                           }}
-                                          className="h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
+                                          className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
                                         />
                                       )
                                     ) : (
@@ -50372,7 +50617,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                           }
                                           if (e.key === "Escape") cancelCellEdit();
                                         }}
-                                        className="h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
+                                        className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
                                       />
                                     ) : (
                                       <button
@@ -50408,7 +50653,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                           }
                                           if (e.key === "Escape") cancelCellEdit();
                                         }}
-                                        className="h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
+                                        className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
                                       />
                                     ) : (
                                       <button
@@ -50450,7 +50695,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                           }
                                           if (e.key === "Escape") cancelCellEdit();
                                         }}
-                                        className="h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
+                                        className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
                                       />
                                     ) : (
                                       <button
@@ -50674,7 +50919,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                           if (e.key === "Escape") cancelShelfFieldEdit();
                                         }}
                                         data-cutlist-shelf-field-edit={`${row.id}-fixed-value`}
-                                        className="h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
+                                        className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
                                       />
                                     ) : (
                                       <button
@@ -50746,7 +50991,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                           if (e.key === "Escape") cancelShelfFieldEdit();
                                         }}
                                         data-cutlist-shelf-field-edit={`${row.id}-adjustable-value`}
-                                        className="h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
+                                        className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
                                       />
                                     ) : (
                                       <button
@@ -50876,7 +51121,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                           }
                                           if (e.key === "Escape") cancelCellEdit();
                                         }}
-                                        className="h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px] text-[var(--text-main)]"
+                                        className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px] text-[var(--text-main)]"
                                       />
                                     </div>
                                   ))}
@@ -50994,7 +51239,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     onKeyDown={(e) => {
                                       if (e.key === "Enter") confirmDrawerCount();
                                     }}
-                                    className="h-9 w-16 rounded-[8px] border bg-transparent text-center text-[13px] font-medium"
+                                    className="cutlist-field h-9 w-16 rounded-[8px] border bg-transparent text-center text-[13px] font-medium"
                                     style={pickerColors.field}
                                   />
                                   <button
@@ -51673,15 +51918,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 <div className="grid grid-cols-5 gap-2">
                                   <div className="space-y-1">
                                     <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Height</p>
-                                    <input disabled={productionReadOnly} inputMode="decimal" title={heightWarn || undefined} value={draft.height} onChange={(e) => updateDraftCutlistRow(draft.id, { height: numericDimensionText(e.target.value) })} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`} style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                                    <input disabled={productionReadOnly} inputMode="decimal" title={heightWarn || undefined} value={draft.height} onChange={(e) => updateDraftCutlistRow(draft.id, { height: numericDimensionText(e.target.value) })} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`} style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
                                   </div>
                                   <div className="space-y-1">
                                     <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Width</p>
-                                    <input disabled={productionReadOnly} inputMode="decimal" title={widthWarn || undefined} value={draft.width} onChange={(e) => onDraftDoorOverallWidthChange(draft.id, e.target.value)} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`} style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                                    <input disabled={productionReadOnly} inputMode="decimal" title={widthWarn || undefined} value={draft.width} onChange={(e) => onDraftDoorOverallWidthChange(draft.id, e.target.value)} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`} style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
                                   </div>
                                   <div className="space-y-1">
                                     <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Quantity</p>
-                                    <input disabled={productionReadOnly || (isDrawerPartType(draft.partType) && !draftIsDoor)} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`} style={{ ...warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }) }} />
+                                    <input disabled={productionReadOnly || (isDrawerPartType(draft.partType) && !draftIsDoor)} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`} style={{ ...warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }) }} />
                                   </div>
                                   <div className="space-y-1 col-span-2">
                                     <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Clashing</p>
@@ -51736,7 +51981,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                           value={line}
                                           onChange={(e) => onDraftInformationLineChange(draft.id, idx, e.target.value)}
                                           placeholder="Information"
-                                          className="h-8 flex-1 rounded-[8px] border bg-transparent px-2 text-[12px]"
+                                          className="cutlist-field h-8 flex-1 rounded-[8px] border bg-transparent px-2 text-[12px]"
                                           style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
                                         />
                                       </div>
@@ -51939,7 +52184,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     title="Fixed Shelf"
                                     value={draft.fixedShelf ?? ""}
                                     onChange={(e) => updateDraftCutlistRow(draft.id, { fixedShelf: numericOnlyText(e.target.value) })}
-                                    className={`${isSubPartDraft ? "h-6" : "h-8"} w-[36px] rounded-[7px] border bg-transparent px-1 text-center text-[11px]`}
+                                    className={`cutlist-field ${isSubPartDraft ? "h-6" : "h-8"} w-[36px] rounded-[7px] border bg-transparent px-1 text-center text-[11px]`}
                                     style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
                                   />
                                   {hasShelfQuantity(draft.fixedShelf) && (
@@ -51972,7 +52217,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     title="Adjustable Shelf"
                                     value={draft.adjustableShelf ?? ""}
                                     onChange={(e) => updateDraftCutlistRow(draft.id, { adjustableShelf: numericOnlyText(e.target.value) })}
-                                    className={`${isSubPartDraft ? "h-6" : "h-8"} w-[36px] rounded-[7px] border bg-transparent px-1 text-center text-[11px]`}
+                                    className={`cutlist-field ${isSubPartDraft ? "h-6" : "h-8"} w-[36px] rounded-[7px] border bg-transparent px-1 text-center text-[11px]`}
                                     style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
                                   />
                                   {hasShelfQuantity(draft.adjustableShelf) && (
@@ -52127,7 +52372,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           </div>
                           {/* (A Custom piece's Height and Width: its shape's outer size — not typed.) */}
                           {draftShape ? (
-                            <input ref={registerCutlistWarnCellRef(draft.id, "height")} value={draft.height} readOnly tabIndex={-1} title="Set by the shape — Edit shape to change it" className={`${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} w-full cursor-default rounded-[8px] border bg-transparent px-2 text-center ${warningClassForCell(draft.id, "height")}`} style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: "transparent", borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("height"), marginLeft: isSubPartDraft ? -4 : undefined }} />
+                            <input ref={registerCutlistWarnCellRef(draft.id, "height")} value={draft.height} readOnly tabIndex={-1} title="Set by the shape — Edit shape to change it" className={`cutlist-field ${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} w-full cursor-default rounded-[8px] border bg-transparent px-2 text-center ${warningClassForCell(draft.id, "height")}`} style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: "transparent", borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("height"), marginLeft: isSubPartDraft ? -4 : undefined }} />
                           ) : isDrawerPartType(draft.partType) ? (
                             <div ref={registerCutlistWarnCellRef(draft.id, "height")} style={{ ...cutlistEntryCellStyle("height"), display: "flex", alignItems: "center", marginLeft: isSubPartDraft ? -4 : undefined, width: isSubPartDraft ? "100%" : undefined }}>
                             <DrawerHeightDropdown
@@ -52207,7 +52452,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         value={frontHeightValue}
                                         placeholder={heightManualArr[index] ? draft.height : undefined}
                                         onChange={(e) => onDraftFrontHeightChange(draft.id, index, e.target.value)}
-                                        className={`${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[11px]"} w-full rounded-[6px] border bg-transparent px-1 pr-5 text-center cs-frontbank-ghost`}
+                                        className={`cutlist-field ${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[11px]"} w-full rounded-[8px] border bg-transparent px-1 pr-5 text-center cs-frontbank-ghost`}
                                         style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor, ...(grainAxisSelected(String(draft.grainValue ?? ""), "height", draftBoardAllowsGrain ? grainDimensionChoicesForRow(draft) : undefined) ? { fontWeight: 700, textDecoration: "underline" } : {}) }}
                                       />
                                       );
@@ -52217,11 +52462,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               );
                             })()
                           ) : (
-                            <input ref={registerCutlistWarnCellRef(draft.id, "height")} disabled={productionReadOnly} inputMode="decimal" title={heightWarn || undefined} value={draft.height} onChange={(e) => updateDraftCutlistRow(draft.id, { height: numericDimensionText(e.target.value) })} className={`${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} w-full rounded-[8px] border bg-transparent px-2 text-center ${warningClassForCell(draft.id, "height")}`} style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("height"), marginLeft: isSubPartDraft ? -4 : undefined }} />
+                            <input ref={registerCutlistWarnCellRef(draft.id, "height")} disabled={productionReadOnly} inputMode="decimal" title={heightWarn || undefined} value={draft.height} onChange={(e) => updateDraftCutlistRow(draft.id, { height: numericDimensionText(e.target.value) })} className={`cutlist-field ${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} w-full rounded-[8px] border bg-transparent px-2 text-center ${warningClassForCell(draft.id, "height")}`} style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("height"), marginLeft: isSubPartDraft ? -4 : undefined }} />
                           )}
                           <div ref={registerCutlistWarnCellRef(draft.id, "width")} style={{ ...cutlistEntryCellStyle("width"), ...subCellCenterStyle }}>
                             {draftShape ? (
-                              <input value={draft.width} readOnly tabIndex={-1} title="Set by the shape — Edit shape to change it" className={`${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} w-full cursor-default rounded-[8px] border bg-transparent px-2 text-center ${warningClassForCell(draft.id, "width")}`} style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: "transparent", borderColor: draftFieldBorder, color: draftTextColor }), ...(draftWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                              <input value={draft.width} readOnly tabIndex={-1} title="Set by the shape — Edit shape to change it" className={`cutlist-field ${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} w-full cursor-default rounded-[8px] border bg-transparent px-2 text-center ${warningClassForCell(draft.id, "width")}`} style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: "transparent", borderColor: draftFieldBorder, color: draftTextColor }), ...(draftWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
                             ) : isFrontBankRow && draftDoorMode === "door" ? (() => {
                               const frontWidths = normalizeDoorFrontWidths(draft.doorFrontWidths, frontBankCount);
                               const frontWidthManual = normalizeDoorFrontWidthManual(draft.doorFrontWidthManual, frontBankCount);
@@ -52275,7 +52520,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     value={frontWidthValue}
                                     placeholder={widthManualArr[index] ? draft.width : undefined}
                                     onChange={(e) => onDraftFrontWidthChange(draft.id, index, e.target.value)}
-                                    className={`${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[11px]"} w-full rounded-[6px] border bg-transparent px-1 pr-5 text-center cs-frontbank-ghost`}
+                                    className={`cutlist-field ${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[11px]"} w-full rounded-[8px] border bg-transparent px-1 pr-5 text-center cs-frontbank-ghost`}
                                     style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor, ...(grainAxisSelected(String(draft.grainValue ?? ""), "width", draftBoardAllowsGrain ? grainDimensionChoicesForRow(draft) : undefined) ? { fontWeight: 700, textDecoration: "underline" } : {}) }}
                                   />
                                   );
@@ -52284,7 +52529,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 isSubPartDraft,
                               );
                             })() : (
-                              <input disabled={productionReadOnly} inputMode="decimal" title={widthWarn || undefined} value={draft.width} onChange={(e) => onDraftDoorOverallWidthChange(draft.id, e.target.value)} className={`${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} w-full rounded-[8px] border bg-transparent px-2 text-center ${warningClassForCell(draft.id, "width")}`} style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                              <input disabled={productionReadOnly} inputMode="decimal" title={widthWarn || undefined} value={draft.width} onChange={(e) => onDraftDoorOverallWidthChange(draft.id, e.target.value)} className={`cutlist-field ${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} w-full rounded-[8px] border bg-transparent px-2 text-center ${warningClassForCell(draft.id, "width")}`} style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
                             )}
                           </div>
                           <div ref={registerCutlistWarnCellRef(draft.id, "depth")} style={{ ...cutlistEntryCellStyle("depth"), ...subCellCenterStyle }}>
@@ -52315,7 +52560,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 70,
                               )
                             ) : (
-                              <input disabled={productionReadOnly} inputMode="decimal" title={depthWarn || undefined} value={draft.depth} onChange={(e) => updateDraftCutlistRow(draft.id, { depth: numericDimensionText(e.target.value) })} className={`${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} w-full rounded-[8px] border bg-transparent px-2 text-center ${warningClassForCell(draft.id, "depth")}`} style={{ ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                              <input disabled={productionReadOnly} inputMode="decimal" title={depthWarn || undefined} value={draft.depth} onChange={(e) => updateDraftCutlistRow(draft.id, { depth: numericDimensionText(e.target.value) })} className={`cutlist-field ${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} w-full rounded-[8px] border bg-transparent px-2 text-center ${warningClassForCell(draft.id, "depth")}`} style={{ ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
                             )}
                           </div>
                           <div ref={registerCutlistWarnCellRef(draft.id, "quantity")} style={{ ...cutlistEntryCellStyle("quantity"), ...subCellCenterStyle }}>
@@ -52336,7 +52581,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     value={quantityManualArr[index] ? quantityValuesArr[index] : quantityValuesArr[index] || draft.quantity}
                                     placeholder={quantityManualArr[index] ? draft.quantity : undefined}
                                     onChange={(e) => onDraftFrontQuantityChange(draft.id, index, e.target.value)}
-                                    className={`${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[11px]"} w-full rounded-[6px] border bg-transparent px-1 pr-5 text-center cs-frontbank-ghost`}
+                                    className={`cutlist-field ${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[11px]"} w-full rounded-[8px] border bg-transparent px-1 pr-5 text-center cs-frontbank-ghost`}
                                     style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
                                   />
                                 ),
@@ -52344,7 +52589,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 isSubPartDraft,
                               );
                             })() : (
-                              <input disabled={productionReadOnly || (isDrawerPartType(draft.partType) && !draftIsDoor)} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })} className={`${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} w-full rounded-[8px] border bg-transparent px-2 text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`} style={warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
+                              <input disabled={productionReadOnly || (isDrawerPartType(draft.partType) && !draftIsDoor)} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })} className={`cutlist-field ${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} w-full rounded-[8px] border bg-transparent px-2 text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`} style={warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
                             )}
                           </div>
                           {draftShape ? (
@@ -52436,7 +52681,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   value={line}
                                   onChange={(e) => onDraftInformationLineChange(draft.id, idx, e.target.value)}
                                   placeholder="Information"
-                                  className={`${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} flex-1 rounded-[8px] border bg-transparent px-2`}
+                                  className={`cutlist-field ${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} flex-1 rounded-[8px] border bg-transparent px-2`}
                                   style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
                                 />
                               </div>
@@ -52592,7 +52837,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 <div className="flex flex-col space-y-2 px-0 pb-0">
                   <div ref={cutlistListWrapRef} className="overflow-visible bg-transparent">
                     {groupedCutlistRows.length === 0 && (
-                      <EmptyState compact icon={<Scissors size={16} />} title="No cutlist rows yet" hint="Parts added to the cutlist show here, grouped by part type." />
+                      <>
+                        <EmptyState compact icon={<Scissors size={16} />} title="No cutlist rows yet" hint="Parts added to the cutlist show here, grouped by part type." />
+                        {renderEmptyProjectCutlistRooms("production")}
+                      </>
                     )}
                     {groupedCutlistRows.map((group) => {
                       const color = cutlistGroupColor(group);
@@ -53191,7 +53439,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                   }
                                                   if (e.key === "Escape") cancelCellEdit();
                                                 }}
-                                                className={`h-6 w-full rounded-[6px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-1 text-[11px] text-[var(--text-main)] ${alignClass}`}
+                                                className={`cutlist-field h-6 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-1 text-[11px] text-[var(--text-main)] ${alignClass}`}
                                               />
                                             )
                                           ) : (
@@ -53340,7 +53588,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                       }
                                                       if (e.key === "Escape") cancelCellEdit();
                                                     }}
-                                                    className="h-7 w-full rounded-[6px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[11px] text-[var(--text-main)]"
+                                                    className="cutlist-field h-7 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[11px] text-[var(--text-main)]"
                                                   />
                                                 </div>
                                               ))}
@@ -53411,7 +53659,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                               if (e.key === "Escape") cancelCellEdit();
                                             }}
                                             style={drawerTextboxLift ? { transform: "translateY(-2px)" } : undefined}
-                                            className={`h-6 w-full rounded-[6px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-1 text-[11px] text-[var(--text-main)] ${alignClass}`}
+                                            className={`cutlist-field h-6 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-1 text-[11px] text-[var(--text-main)] ${alignClass}`}
                                           />
                                         ) : (
                                           isGrainMatchedDimension ? (
@@ -53492,8 +53740,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                               if (e.key === "Escape") cancelShelfFieldEdit();
                                             }}
                                             data-cutlist-shelf-field-edit={`${row.id}-fixed-value`}
-                                            className="h-6 w-[36px] rounded-[7px] border bg-transparent px-1 text-center text-[11px]"
-                                            style={{ borderColor: palette.divider, color: groupTextColor }}
+                                            className="cutlist-field h-6 w-[36px] rounded-[7px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-1 text-center text-[11px] text-[var(--text-main)]"
                                           />
                                         ) : (
                                           <span
@@ -53565,8 +53812,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                               if (e.key === "Escape") cancelShelfFieldEdit();
                                             }}
                                             data-cutlist-shelf-field-edit={`${row.id}-adjustable-value`}
-                                            className="h-6 w-[36px] rounded-[7px] border bg-transparent px-1 text-center text-[11px]"
-                                            style={{ borderColor: palette.divider, color: groupTextColor }}
+                                            className="cutlist-field h-6 w-[36px] rounded-[7px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-1 text-center text-[11px] text-[var(--text-main)]"
                                           />
                                         ) : (
                                           <span
@@ -53659,6 +53905,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         fontSize={12}
                                         textColor={groupTextColor}
                                         boardThicknessMm={customCabinetThicknessForBoard(row.board)}
+                                        doorGapMm={customCabinetDoorGapFor(rowShape)}
                                         color={rowColor}
                                         quantity={row.quantity}
                                       />
@@ -54143,7 +54390,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   onKeyDown={(e) => {
                                     if (e.key === "Enter") confirmDrawerCount();
                                   }}
-                                  className="h-8 w-16 rounded-[8px] border bg-transparent text-center text-[13px] font-medium"
+                                  className="cutlist-field h-8 w-16 rounded-[8px] border bg-transparent text-center text-[13px] font-medium"
                                   style={pickerColors.field}
                                 />
                                 <button
@@ -60772,6 +61019,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       const { trueOnSheetW, trueOnSheetH, hitMin } = nestingPlacementTrueSize(placement.piece, placement.rotated, nestingSettings.minPieceSize);
                                       // (A Custom piece: its true outline, in place of the box it's packed by.)
                                       const shapeOutline = nestingPlacementOutline(placement, trueOnSheetW, trueOnSheetH);
+                                      // (Its name inside its outline, not over an L's empty corner.)
+                                      const labelBox = shapeOutline ? nestingPlacementLabelBox(placement, shapeOutline, trueOnSheetW, trueOnSheetH) : null;
                                       return (
                                         <div
                                           key={`${placement.piece.id}_compact`}
@@ -60814,6 +61063,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                             borderColor: shapeOutline && !hitMin ? "transparent" : darkenHex(c, 0.22),
                                             borderStyle: hitMin ? "dashed" : "solid",
                                             color: t,
+                                            // (A shaped piece is hovered by its outline, not the box round it.)
+                                            pointerEvents: shapeOutline ? "none" : undefined,
                                           }}
                                         >
                                           {shapeOutline ? (
@@ -60831,14 +61082,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                               }}
                                             />
                                           )}
-                                          {(isCabinetryPartType(placement.piece.partType) || isDrawerPartType(placement.piece.partType)) && placement.piece.row.parentName ? (
-                                            <>
-                                              <span className="block truncate text-[10px] leading-tight opacity-85" style={{ paddingLeft: 4 }}>{placement.piece.row.parentName}</span>
-                                              <span className="block truncate text-[10px] leading-tight" style={{ paddingLeft: 4 }}>{placement.piece.name}</span>
-                                            </>
-                                          ) : (
-                                            <span className="block truncate" style={{ paddingLeft: 4 }}>{placement.piece.name}</span>
-                                          )}
+                                          <div className={labelBox ? "absolute overflow-hidden px-[6px] py-[1px]" : "contents"} style={labelBox ? nestingLabelBoxStyle(labelBox, placement.w, placement.h) : undefined}>
+                                            {(isCabinetryPartType(placement.piece.partType) || isDrawerPartType(placement.piece.partType)) && placement.piece.row.parentName ? (
+                                              <>
+                                                <span className="block truncate text-[10px] leading-tight opacity-85" style={{ paddingLeft: 4 }}>{placement.piece.row.parentName}</span>
+                                                <span className="block truncate text-[10px] leading-tight" style={{ paddingLeft: 4 }}>{placement.piece.name}</span>
+                                              </>
+                                            ) : (
+                                              <span className="block truncate" style={{ paddingLeft: 4 }}>{placement.piece.name}</span>
+                                            )}
+                                          </div>
                                         </div>
                                       );
                                     })}
@@ -61170,6 +61423,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       const { trueOnSheetW, trueOnSheetH, hitMin } = nestingPlacementTrueSize(placement.piece, placement.rotated, nestingSettings.minPieceSize);
                                       // (A Custom piece: its true outline, in place of the box it's packed by.)
                                       const shapeOutline = nestingPlacementOutline(placement, trueOnSheetW, trueOnSheetH);
+                                      // (Its name inside its outline, not over an L's empty corner.)
+                                      const labelBox = shapeOutline ? nestingPlacementLabelBox(placement, shapeOutline, trueOnSheetW, trueOnSheetH) : null;
                                       return (
                                         <div
                                           key={placement.piece.id}
@@ -61212,6 +61467,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                             borderColor: shapeOutline && !hitMin ? "transparent" : darkenHex(c, 0.22),
                                             borderStyle: hitMin ? "dashed" : "solid",
                                             color: t,
+                                            // (A shaped piece is hovered by its outline, not the box round it.)
+                                            pointerEvents: shapeOutline ? "none" : undefined,
                                           }}
                                         >
                                           {shapeOutline ? (
@@ -61229,14 +61486,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                               }}
                                             />
                                           )}
-                                          {(isCabinetryPartType(placement.piece.partType) || isDrawerPartType(placement.piece.partType)) && placement.piece.row.parentName ? (
-                                            <>
-                                              <span className="block truncate text-[10px] leading-tight opacity-85" style={{ paddingLeft: 4 }}>{placement.piece.row.parentName}</span>
-                                              <span className="block truncate text-[10px] leading-tight" style={{ paddingLeft: 4 }}>{placement.piece.name}</span>
-                                            </>
-                                          ) : (
-                                            <span className="block truncate" style={{ paddingLeft: 4 }}>{placement.piece.name}</span>
-                                          )}
+                                          <div className={labelBox ? "absolute overflow-hidden px-[6px] py-[1px]" : "contents"} style={labelBox ? nestingLabelBoxStyle(labelBox, placement.w, placement.h) : undefined}>
+                                            {(isCabinetryPartType(placement.piece.partType) || isDrawerPartType(placement.piece.partType)) && placement.piece.row.parentName ? (
+                                              <>
+                                                <span className="block truncate text-[10px] leading-tight opacity-85" style={{ paddingLeft: 4 }}>{placement.piece.row.parentName}</span>
+                                                <span className="block truncate text-[10px] leading-tight" style={{ paddingLeft: 4 }}>{placement.piece.name}</span>
+                                              </>
+                                            ) : (
+                                              <span className="block truncate" style={{ paddingLeft: 4 }}>{placement.piece.name}</span>
+                                            )}
+                                          </div>
                                         </div>
                                       );
                                     })}
@@ -64635,18 +64894,18 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   onChange={onInitialCutlistEntryBoardChange}
                                 />
                               </div>
-                              <input disabled={salesReadOnly} value={initialCutlistEntry.name} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, name: e.target.value }))} className="h-8 rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("name") }} />
-                              <input disabled={salesReadOnly} inputMode="decimal" value={initialCutlistEntry.height} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, height: numericDimensionText(e.target.value) }))} className="h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("height") }} />
-                              <input disabled={salesReadOnly} inputMode="decimal" value={initialCutlistEntry.width} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, width: numericDimensionText(e.target.value) }))} className="h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("width") }} />
-                              <input disabled={salesReadOnly} inputMode="decimal" value={initialCutlistEntry.depth} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, depth: numericDimensionText(e.target.value) }))} className="h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("depth") }} />
-                              <input disabled={salesReadOnly} inputMode="numeric" pattern="[0-9]*" value={initialCutlistEntry.quantity} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, quantity: numericOnlyText(e.target.value) }))} className="h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("quantity") }} />
+                              <input disabled={salesReadOnly} value={initialCutlistEntry.name} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, name: e.target.value }))} className="cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("name") }} />
+                              <input disabled={salesReadOnly} inputMode="decimal" value={initialCutlistEntry.height} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, height: numericDimensionText(e.target.value) }))} className="cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("height") }} />
+                              <input disabled={salesReadOnly} inputMode="decimal" value={initialCutlistEntry.width} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, width: numericDimensionText(e.target.value) }))} className="cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("width") }} />
+                              <input disabled={salesReadOnly} inputMode="decimal" value={initialCutlistEntry.depth} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, depth: numericDimensionText(e.target.value) }))} className="cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("depth") }} />
+                              <input disabled={salesReadOnly} inputMode="numeric" pattern="[0-9]*" value={initialCutlistEntry.quantity} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, quantity: numericOnlyText(e.target.value) }))} className="cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("quantity") }} />
                               <div style={initialCutlistEntrySubCellStyle("clashing", 0)}>
                                 <BoardPillDropdown value={initialCutlistEntry.clashLeft ?? ""} options={CLASH_LEFT_OPTIONS} disabled={salesReadOnly} bg={activeInitialCutlistEntryFieldBg} border={activeInitialCutlistEntryFieldBorder} text={activeInitialCutlistEntryTextColor} size="default" getSize={() => ""} getLabel={(v) => v} onChange={(v) => setInitialCutlistEntry((prev) => ({ ...prev, clashLeft: v }))} />
                               </div>
                               <div style={initialCutlistEntrySubCellStyle("clashing", 1)}>
                                 <BoardPillDropdown value={initialCutlistEntry.clashRight ?? ""} options={CLASH_RIGHT_OPTIONS} disabled={salesReadOnly} bg={activeInitialCutlistEntryFieldBg} border={activeInitialCutlistEntryFieldBorder} text={activeInitialCutlistEntryTextColor} size="default" getSize={() => ""} getLabel={(v) => v} onChange={(v) => setInitialCutlistEntry((prev) => ({ ...prev, clashRight: v }))} />
                               </div>
-                              <input disabled={salesReadOnly} value={initialCutlistEntry.information} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, information: e.target.value }))} className="h-8 rounded-[8px] border bg-transparent px-2 text-[12px]" placeholder="Information" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("information") }} />
+                              <input disabled={salesReadOnly} value={initialCutlistEntry.information} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, information: e.target.value }))} className="cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-[12px]" placeholder="Information" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("information") }} />
                               {showInitialCutlistGrainColumn && (
                                 initialMeasureBoardGrainFor(String(initialCutlistEntry.board ?? "").trim()) ? (
                                   <div style={initialCutlistEntryCellStyle("grain")}>
@@ -65528,15 +65787,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   <div className="grid grid-cols-5 gap-2">
                                     <div className="space-y-1">
                                       <p className="text-center text-[11px] font-bold" style={{ color: "#111111" }}>Height</p>
-                                      <input ref={registerCutlistWarnCellRef("single", "height")} disabled={productionReadOnly} inputMode="decimal" title={singleEntrySuppressConfiguredHeightWarning ? undefined : (warningForCell("single", "height") || undefined)} value={cutlistEntry.height} onChange={(e) => onCutlistEntryDoorOverallHeightChange(e.target.value)} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${singleEntrySuppressConfiguredHeightWarning ? "" : warningClassForCell("single", "height")}`} style={{ ...(singleEntrySuppressConfiguredHeightWarning ? { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor } : warningStyleForCell("single", "height", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor })), ...(singleEntryHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                                      <input ref={registerCutlistWarnCellRef("single", "height")} disabled={productionReadOnly} inputMode="decimal" title={singleEntrySuppressConfiguredHeightWarning ? undefined : (warningForCell("single", "height") || undefined)} value={cutlistEntry.height} onChange={(e) => onCutlistEntryDoorOverallHeightChange(e.target.value)} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${singleEntrySuppressConfiguredHeightWarning ? "" : warningClassForCell("single", "height")}`} style={{ ...(singleEntrySuppressConfiguredHeightWarning ? { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor } : warningStyleForCell("single", "height", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor })), ...(singleEntryHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
                                     </div>
                                     <div className="space-y-1">
                                       <p className="text-center text-[11px] font-bold" style={{ color: "#111111" }}>Width</p>
-                                      <input ref={registerCutlistWarnCellRef("single", "width")} disabled={productionReadOnly} inputMode="decimal" title={warningForCell("single", "width") || undefined} value={cutlistEntry.width} onChange={(e) => onCutlistEntryDoorOverallWidthChange(e.target.value)} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "width")}`} style={{ ...warningStyleForCell("single", "width", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                                      <input ref={registerCutlistWarnCellRef("single", "width")} disabled={productionReadOnly} inputMode="decimal" title={warningForCell("single", "width") || undefined} value={cutlistEntry.width} onChange={(e) => onCutlistEntryDoorOverallWidthChange(e.target.value)} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "width")}`} style={{ ...warningStyleForCell("single", "width", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
                                     </div>
                                     <div className="space-y-1">
                                       <p className="text-center text-[11px] font-bold" style={{ color: "#111111" }}>Quantity</p>
-                                      <input ref={registerCutlistWarnCellRef("single", "quantity")} disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={warningForCell("single", "quantity") || undefined} value={cutlistEntry.quantity} onChange={(e) => { const nextQuantity = numericOnlyText(e.target.value); setCutlistEntry((prev) => ({ ...prev, quantity: nextQuantity, hingeSide: deriveDoorHingeSideForQuantity(prev.partType, nextQuantity) ?? prev.hingeSide })); }} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell("single", "quantity")}`} style={{ ...warningStyleForCell("single", "quantity", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }) }} />
+                                      <input ref={registerCutlistWarnCellRef("single", "quantity")} disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={warningForCell("single", "quantity") || undefined} value={cutlistEntry.quantity} onChange={(e) => { const nextQuantity = numericOnlyText(e.target.value); setCutlistEntry((prev) => ({ ...prev, quantity: nextQuantity, hingeSide: deriveDoorHingeSideForQuantity(prev.partType, nextQuantity) ?? prev.hingeSide })); }} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell("single", "quantity")}`} style={{ ...warningStyleForCell("single", "quantity", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }) }} />
                                     </div>
                                     <div className="space-y-1 col-span-2">
                                       <p className="text-center text-[11px] font-bold" style={{ color: "#111111" }}>Clashing</p>
@@ -65591,7 +65850,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                             value={line}
                                             onChange={(e) => onCutlistEntryInformationLineChange(idx, e.target.value)}
                                             placeholder="Information"
-                                            className="h-8 flex-1 rounded-[8px] border bg-transparent px-2 text-[12px]"
+                                            className="cutlist-field h-8 flex-1 rounded-[8px] border bg-transparent px-2 text-[12px]"
                                             style={{ backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }}
                                           />
                                         </div>
@@ -65796,15 +66055,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 />
                               </div>
                             ) : (
-                            <input ref={registerCutlistWarnCellRef("single", "height")} disabled={productionReadOnly} inputMode="decimal" title={singleEntrySuppressConfiguredHeightWarning ? undefined : (warningForCell("single", "height") || undefined)} value={cutlistEntry.height} onChange={(e) => onCutlistEntryDoorOverallHeightChange(e.target.value)} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${singleEntrySuppressConfiguredHeightWarning ? "" : warningClassForCell("single", "height")}`} style={{ ...(singleEntrySuppressConfiguredHeightWarning ? { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor } : warningStyleForCell("single", "height", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor })), ...(singleEntryHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("height") }} />
+                            <input ref={registerCutlistWarnCellRef("single", "height")} disabled={productionReadOnly} inputMode="decimal" title={singleEntrySuppressConfiguredHeightWarning ? undefined : (warningForCell("single", "height") || undefined)} value={cutlistEntry.height} onChange={(e) => onCutlistEntryDoorOverallHeightChange(e.target.value)} className={`cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${singleEntrySuppressConfiguredHeightWarning ? "" : warningClassForCell("single", "height")}`} style={{ ...(singleEntrySuppressConfiguredHeightWarning ? { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor } : warningStyleForCell("single", "height", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor })), ...(singleEntryHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("height") }} />
                             )}
-                            <input ref={registerCutlistWarnCellRef("single", "width")} disabled={productionReadOnly} inputMode="decimal" title={warningForCell("single", "width") || undefined} value={cutlistEntry.width} onChange={(e) => onCutlistEntryDoorOverallWidthChange(e.target.value)} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "width")}`} style={{ ...warningStyleForCell("single", "width", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("width") }} />
+                            <input ref={registerCutlistWarnCellRef("single", "width")} disabled={productionReadOnly} inputMode="decimal" title={warningForCell("single", "width") || undefined} value={cutlistEntry.width} onChange={(e) => onCutlistEntryDoorOverallWidthChange(e.target.value)} className={`cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "width")}`} style={{ ...warningStyleForCell("single", "width", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("width") }} />
                             {isDoorPartType(cutlistEntry.partType) ? (
                               <div style={cutlistEntryCellStyle("depth")} />
                             ) : (
-                              <input ref={registerCutlistWarnCellRef("single", "depth")} disabled={productionReadOnly} inputMode="decimal" title={warningForCell("single", "depth") || undefined} value={cutlistEntry.depth} onChange={(e) => setCutlistEntry((prev) => autoSelectGrainValueForRow({ ...prev, depth: numericDimensionText(e.target.value) }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "depth")}`} style={{ ...warningStyleForCell("single", "depth", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("depth") }} />
+                              <input ref={registerCutlistWarnCellRef("single", "depth")} disabled={productionReadOnly} inputMode="decimal" title={warningForCell("single", "depth") || undefined} value={cutlistEntry.depth} onChange={(e) => setCutlistEntry((prev) => autoSelectGrainValueForRow({ ...prev, depth: numericDimensionText(e.target.value) }))} className={`cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "depth")}`} style={{ ...warningStyleForCell("single", "depth", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("depth") }} />
                             )}
-                              <input ref={registerCutlistWarnCellRef("single", "quantity")} disabled={productionReadOnly || (isDrawerPartType(cutlistEntry.partType) && !isDoorPartType(cutlistEntry.partType))} inputMode="numeric" pattern="[0-9]*" title={warningForCell("single", "quantity") || undefined} value={cutlistEntry.quantity} onChange={(e) => { const nextQuantity = numericOnlyText(e.target.value); setCutlistEntry((prev) => ({ ...prev, quantity: nextQuantity, hingeSide: deriveDoorHingeSideForQuantity(prev.partType, nextQuantity) ?? prev.hingeSide })); }} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell("single", "quantity")}`} style={{ ...warningStyleForCell("single", "quantity", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...cutlistEntryCellStyle("quantity") }} />
+                              <input ref={registerCutlistWarnCellRef("single", "quantity")} disabled={productionReadOnly || (isDrawerPartType(cutlistEntry.partType) && !isDoorPartType(cutlistEntry.partType))} inputMode="numeric" pattern="[0-9]*" title={warningForCell("single", "quantity") || undefined} value={cutlistEntry.quantity} onChange={(e) => { const nextQuantity = numericOnlyText(e.target.value); setCutlistEntry((prev) => ({ ...prev, quantity: nextQuantity, hingeSide: deriveDoorHingeSideForQuantity(prev.partType, nextQuantity) ?? prev.hingeSide })); }} className={`cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell("single", "quantity")}`} style={{ ...warningStyleForCell("single", "quantity", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...cutlistEntryCellStyle("quantity") }} />
                             <>
                               <div style={cutlistEntrySubCellStyle("clashing", 0)}>
                                 <BoardPillDropdown
@@ -65856,7 +66115,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     value={line}
                                     onChange={(e) => onCutlistEntryInformationLineChange(idx, e.target.value)}
                                     placeholder="Information"
-                                    className="h-8 flex-1 rounded-[8px] border bg-transparent px-2 text-[12px]"
+                                    className="cutlist-field h-8 flex-1 rounded-[8px] border bg-transparent px-2 text-[12px]"
                                     style={{ backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }}
                                   />
                                 </div>
@@ -66179,7 +66438,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                         }
                                                         if (e.key === "Escape") cancelCellEdit();
                                                       }}
-                                                    className="h-[18px] w-full min-w-0 rounded-[5px] border border-[#94A3B8] bg-white px-1 text-[9px] text-[#0F172A]"
+                                                    className="cutlist-field h-[18px] w-full min-w-0 rounded-[5px] border px-1 text-[9px]"
+                                                    style={CUTLIST_LIST_EDIT_FIELD_STYLE}
                                                     />
                                                   </div>
                                                   <div className="-mt-[2px] grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
@@ -66245,7 +66505,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                         }
                                                         if (e.key === "Escape") cancelCellEdit();
                                                       }}
-                                                    className="h-[18px] w-full min-w-0 rounded-[5px] border border-[#94A3B8] bg-white px-1 text-[9px] text-[#0F172A]"
+                                                    className="cutlist-field h-[18px] w-full min-w-0 rounded-[5px] border px-1 text-[9px]"
+                                                    style={CUTLIST_LIST_EDIT_FIELD_STYLE}
                                                     />
                                                   </div>
                                                   <div className="-mt-[2px] grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
@@ -66392,7 +66653,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                         }
                                                         if (e.key === "Escape") cancelCellEdit();
                                                       }}
-                                                      className="h-7 w-full rounded-[6px] border border-[#94A3B8] bg-white px-2 text-[11px] text-[#0F172A]"
+                                                      className="cutlist-field h-7 w-full rounded-[8px] border px-2 text-[11px]"
+                                                      style={CUTLIST_LIST_EDIT_FIELD_STYLE}
                                                     />
                                                   </div>
                                                 ))}
@@ -66463,8 +66725,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                   }
                                                   if (e.key === "Escape") cancelCellEdit();
                                                 }}
-                                                style={drawerTextboxLift ? { transform: "translateY(-2px)" } : undefined}
-                                                className={`h-6 w-full rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A] ${alignClass}`}
+                                                style={{ ...CUTLIST_LIST_EDIT_FIELD_STYLE, ...(drawerTextboxLift ? { transform: "translateY(-2px)" } : {}) }}
+                                                className={`cutlist-field h-6 w-full rounded-[8px] border px-1 text-[11px] ${alignClass}`}
                                               />
                                             )
                                           ) : (

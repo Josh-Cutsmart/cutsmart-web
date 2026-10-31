@@ -1304,6 +1304,137 @@ export function shapeSelfIntersects(shape: CutlistShape): boolean {
   return customOutlineSelfIntersects(shape.points ?? [], shapeBulges(shape), true);
 }
 
+// ---- Turning and flipping a shape (the shape editor's Rotate 90°, Flip horizontal and Flip vertical): its corner
+// points turned a quarter turn clockwise on the screen, or mirrored left to right or top to bottom — and everything on
+// them going with them: each corner's radius, each edge's curve (a mirror's edges run the other way round, so a curve's
+// bow stays on its own side), its banding, and a cabinet's edge roles and which back runs through at each corner. A
+// template stays one where what it's turned into still is (a rectangle turned, a U flipped left to right); else it's a
+// Custom outline — which goes back to being that template (`backTo`: the template it was before these turns and flips)
+// when it's turned back to match it. A drawn Custom outline always stays one. `mapPoint`: where any point of the old drawing goes (the lines drawn on it, with it).
+export type ShapeTransform = "rotate" | "flipH" | "flipV";
+export function transformShape(
+  shape: CutlistShape,
+  how: ShapeTransform,
+  options: { backTo?: CutlistShapeTemplateKind | null } = {},
+): { shape: CutlistShape; mapPoint: (p: ShapePoint) => ShapePoint } {
+  const V = shapeVertices(shape);
+  const n = V.length;
+  if (n < 3) return { shape, mapPoint: (p) => p };
+  const bounds = shapeBounds(shape);
+  // (Turned or mirrored in the box round it, so it stays where it was — at 0, 0 again.)
+  const raw = (p: ShapePoint): ShapePoint =>
+    how === "rotate" ? [bounds.maxY - p[1], p[0] - bounds.minX] : how === "flipH" ? [bounds.maxX - p[0], p[1] - bounds.minY] : [p[0] - bounds.minX, bounds.maxY - p[1]];
+  const mapPoint = (p: ShapePoint): ShapePoint => {
+    const q = raw(p);
+    return [roundFine(q[0]), roundFine(q[1])];
+  };
+  const mirror = how !== "rotate";
+  // Its corners in their new order: a mirror's the other way round (so it's wound as it was), each with where it came
+  // from; edge k runs from new corner k to k + 1 — a mirror's from old edge (n − 2 − k).
+  const oldCorner = (k: number) => (mirror ? (n - 1 - k + n) % n : k);
+  const oldEdge = (k: number) => (mirror ? (2 * n - 2 - k) % n : k);
+  const points = V.map((_, k) => mapPoint(V[oldCorner(k)]));
+  const bulges = shapeBulges(shape);
+  const nextBulges: Record<number, number> = {};
+  const radii: Record<number, number> = {};
+  const banded: number[] = [];
+  const bandedBefore = new Set(shape.banded ?? []);
+  for (let k = 0; k < n; k += 1) {
+    const corner = oldCorner(k);
+    const edge = oldEdge(k);
+    if (shape.radii?.[corner] !== undefined) radii[k] = shape.radii[corner];
+    if (bulges[edge]) nextBulges[k] = bulges[edge];
+    if (bandedBefore.has(edge)) banded.push(k);
+  }
+  const out: CutlistShape = { version: 1, kind: "custom", params: {}, points, radii, banded };
+  if (Object.keys(nextBulges).length) out.bulges = nextBulges;
+  if (shape.base) out.base = shape.base;
+  if (shape.cabinet) {
+    const cabinet: CutlistShapeCabinet = { ...shape.cabinet };
+    delete cabinet.roles;
+    delete cabinet.throughBacks;
+    if (shape.cabinet.roles) {
+      const roles: Record<number, CabinetEdgeRole> = {};
+      for (let k = 0; k < n; k += 1) {
+        const role = shape.cabinet.roles[oldEdge(k)];
+        if (role) roles[k] = role;
+      }
+      cabinet.roles = roles;
+    }
+    // Which back runs through where two meet: the one coming into the corner unless it's flagged. A mirror swaps
+    // which is coming in, so — where its roles say two backs meet — the flag's turned over, to stay the same panel.
+    const old = shape.cabinet.throughBacks ?? {};
+    const roles = shape.cabinet.roles ?? {};
+    const throughBacks: Record<number, boolean> = {};
+    for (let k = 0; k < n; k += 1) {
+      const c = oldCorner(k);
+      if (!mirror) {
+        if (old[c]) throughBacks[k] = true;
+      } else if (roles[(c - 1 + n) % n] === "back" && roles[c] === "back" && !old[c]) {
+        throughBacks[k] = true;
+      }
+    }
+    if (Object.keys(throughBacks).length) cabinet.throughBacks = throughBacks;
+    out.cabinet = cabinet;
+  }
+  const kind = isTemplateShapeKind(shape.kind) ? shape.kind : (options.backTo ?? null);
+  return { shape: (kind && asTemplateIfOne(out, kind)) || out, mapPoint };
+}
+
+// A Custom outline that's exactly the template `only` — the same corners, in the same order from one of them: that
+// template (its radii, banding, roles and through backs moved round to its own corners). Not it: null.
+function asTemplateIfOne(shape: CutlistShape, only: CutlistShapeTemplateKind): CutlistShape | null {
+  if (Object.keys(shapeBulges(shape)).length) return null;
+  const P = shape.points ?? [];
+  const n = P.length;
+  const guesses: Partial<Record<CutlistShapeTemplateKind, (q: ShapePoint[]) => Record<string, number>>> = {
+    rect: (q) => ({ W: q[1][0], H: q[2][1] }),
+    L: (q) => ({ W: q[1][0], H: q[4][1], A: q[2][1], B: q[3][0] }),
+    U: (q) => ({ W: q[1][0], H: q[2][1], A: q[4][1], B: q[5][0], C: q[1][0] - q[3][0] }),
+    notch: (q) => ({ W: q[3][0], H: q[4][1], nw: q[3][0] - q[1][0], nh: q[2][1] }),
+    angled: (q) => ({ W: q[1][0], H: q[3][1], cx: q[1][0] - q[3][0], cy: q[3][1] - q[2][1] }),
+  };
+  const counts: Record<CutlistShapeTemplateKind, number> = { rect: 4, L: 6, U: 8, notch: 6, angled: 5 };
+  for (const kind of Object.keys(guesses) as CutlistShapeTemplateKind[]) {
+    if (kind !== only || counts[kind] !== n) continue;
+    for (let s = 0; s < n; s += 1) {
+      const q = P.map((_, i) => P[(i + s) % n]);
+      const o = q[0];
+      const local = q.map((p) => [roundFine(p[0] - o[0]), roundFine(p[1] - o[1])] as ShapePoint);
+      const params = guesses[kind]!(local);
+      if (Object.values(params).some((value) => !(value > 0))) continue;
+      const template = createTemplateShape(kind, params);
+      const check = shapeVertices(template);
+      if (check.length !== n || check.some((p, i) => distanceBetween(p, local[i]) > 1e-6)) continue;
+      // (Its corner i is the outline's i + s.)
+      const from = (i: number) => (i + s) % n;
+      const radii: Record<number, number> = {};
+      for (let i = 0; i < n; i += 1) if (shape.radii[from(i)] !== undefined) radii[i] = shape.radii[from(i)];
+      const banded = (shape.banded ?? []).map((edge) => (edge - s + n) % n).sort((a, b) => a - b);
+      const out: CutlistShape = { ...template, radii, banded };
+      if (shape.base) out.base = shape.base;
+      if (shape.cabinet) {
+        const cabinet: CutlistShapeCabinet = { ...shape.cabinet };
+        if (shape.cabinet.roles) {
+          const roles: Record<number, CabinetEdgeRole> = {};
+          for (let i = 0; i < n; i += 1) if (shape.cabinet.roles[from(i)]) roles[i] = shape.cabinet.roles[from(i)];
+          cabinet.roles = roles;
+        }
+        if (shape.cabinet.throughBacks) {
+          const throughBacks: Record<number, boolean> = {};
+          for (let i = 0; i < n; i += 1) if (shape.cabinet.throughBacks[from(i)]) throughBacks[i] = true;
+          cabinet.throughBacks = throughBacks;
+        }
+        out.cabinet = cabinet;
+      }
+      // (Every template starts at its box's top left — so matching it, the outline's where its box is: at 0, 0.)
+      if (distanceBetween(o, [0, 0]) > 1e-6) continue;
+      return out;
+    }
+  }
+  return null;
+}
+
 // ---- Cutting shapes out of a shape (the shape editor's Add line, then Delete line). Lines drawn on it (`lines` —
 // straight pieces, each from a point to a point, mm) and its outline (its corner points' outline — a rounded corner's
 // at its corner point, a curve by the straight line across it) are taken as one drawing: every piece split wherever it

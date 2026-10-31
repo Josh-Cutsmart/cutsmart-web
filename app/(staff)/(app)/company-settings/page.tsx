@@ -80,13 +80,14 @@ import {
   activeDateTime,
 } from "@/lib/company-formats";
 import { NZ_HOLIDAY_REGION_OPTIONS, normalizeNzHolidayRegion, nzPublicHolidays, type NzHolidayRegion } from "@/lib/nz-public-holidays";
-import { CompanyJoinCodesModal } from "@/components/company-join-codes-modal";
+import { AccessCodesList, CompanyJoinCodesModal } from "@/components/company-join-codes-modal";
 import { BONUS_PAID_OPTIONS, BONUS_PERIOD_MONTH_OPTIONS, completionBonusSettingsFrom } from "@/lib/completion-bonus";
 import { LeadFormsPanel, LeadInboxPanel } from "@/components/lead-forms-settings";
 import { normalizeLeadForms, type LeadForm } from "@/lib/lead-forms";
 import {
   cancelCompanyInvite,
   createTemporaryJoinCode,
+  linkJoinCodeToInvite,
   revokeJoinCodesForInvite,
   fetchCompanyInvites,
   fetchJoinCodes,
@@ -2481,6 +2482,19 @@ export default function CompanySettingsPage() {
     quoteTemplateFooterPinBottom: false,
   });
   const [isInvitingStaff, setIsInvitingStaff] = useState(false);
+  // The Add staff pop-up: who (email), which access code they'll have (one of the company's waiting ones, or "" for a
+  // new one), and the role they start in. It grows out of the Add staff button, and back into it.
+  const [addStaffOpen, setAddStaffOpen] = useState(false);
+  const [addStaffEmail, setAddStaffEmail] = useState("");
+  const [addStaffEmailTouched, setAddStaffEmailTouched] = useState(false);
+  const [addStaffCodeKey, setAddStaffCodeKey] = useState("");
+  // A new code's name — null: it follows the email typed (the default), till it's typed over.
+  const [addStaffCodeName, setAddStaffCodeName] = useState<string | null>(null);
+  const [addStaffRoleId, setAddStaffRoleId] = useState("");
+  const [addStaffError, setAddStaffError] = useState("");
+  const [addStaffOrigin, setAddStaffOrigin] = useState<GlassModalOrigin>(null);
+  const addStaffPanelRef = useRef<HTMLDivElement | null>(null);
+  const addStaffOriginElRef = useRef<HTMLElement | null>(null);
   const [savingStaffRoleUid, setSavingStaffRoleUid] = useState("");
   const [openStaffRoleUid, setOpenStaffRoleUid] = useState("");
   const [pendingOwnerTransfer, setPendingOwnerTransfer] = useState<PendingOwnerTransferState | null>(null);
@@ -3000,7 +3014,7 @@ export default function CompanySettingsPage() {
     if (!key) return { code: "", kind: isOwnerRow ? "Created the company" : "—" };
     const record = joinCodesByKey.get(key);
     if (joinCodes?.masterKey && key === joinCodes.masterKey) return { code: joinCodes.masterCode, kind: "Master code" };
-    if (record?.kind === "temporary") return { code: record.code, kind: "Temporary code" };
+    if (record?.kind === "temporary") return { code: record.code, kind: "Access code" };
     if (record?.kind === "master") return { code: record.code, kind: "Old master code" };
     return { code: key.toUpperCase(), kind: "Code" };
   };
@@ -3035,7 +3049,7 @@ export default function CompanySettingsPage() {
     });
   };
 
-  // Revoking a temporary code someone has already joined with: remove them first (Staff's Remove
+  // Revoking an access code (a temporary code) someone has already joined with: remove them first (Staff's Remove
   // pop-up, with the hand-over of their data), then the code is revoked. If they've already left,
   // it's just revoked.
   const revokeUsedJoinCode = async (record: JoinCodeRecord) => {
@@ -3127,37 +3141,111 @@ export default function CompanySettingsPage() {
     });
   }, [pendingStaffRemoval?.uid, staff]);
 
-  const inviteStaffFromTopBar = async () => {
-    if (!activeCompanyId || !canAddStaff || !canEditCompanySettings || isInvitingStaff) {
+  // Add staff's Access code: the company's codes still waiting for someone (active, not used, not an invite's already).
+  const linkableAccessCodes = useMemo(
+    () => (joinCodes?.codes ?? []).filter((row) => row.kind === "temporary" && row.status === "active" && !row.usedByUid && !row.inviteId),
+    [joinCodes],
+  );
+  // Add staff's Role: the Staff table's roles and colours, without Owner, and with Admin only for an owner or admin —
+  // the server checks the same (lib/company-join-code-role.ts). It starts on Staff, what everyone joining gets otherwise.
+  const inviteRoleOptions = useMemo<GlassDropdownOption[]>(
+    () =>
+      staffRoleOptions
+        .filter((role) => {
+          const key = normalizeRoleKey(role.id || role.name);
+          return key !== "owner" && (key !== "admin" || isOwnerOrAdmin(currentMemberRole));
+        })
+        .map((role) => ({ value: normalizeRoleKey(role.id || role.name), label: toStr(role.name, role.id), color: toStr(role.color, "#7D99B3") })),
+    [currentMemberRole, staffRoleOptions],
+  );
+  const defaultInviteRoleId = inviteRoleOptions.some((role) => role.value === "staff") ? "staff" : inviteRoleOptions[0]?.value ?? "staff";
+  // The Access codes list's role pills: the role's name and colour, as the Staff table has them.
+  const accessCodeRoleFor = (roleId: string) => {
+    const key = normalizeRoleKey(roleId);
+    const name = roleNameById.get(key);
+    return name ? { name, color: roleColorById.get(key) || "#7D99B3" } : null;
+  };
+  const addStaffEmailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(addStaffEmail.trim());
+
+  const openAddStaff = () => {
+    if (!activeCompanyId || !canAddStaff || !canEditCompanySettings || isInvitingStaff) return;
+    setAddStaffEmail("");
+    setAddStaffEmailTouched(false);
+    setAddStaffCodeKey("");
+    setAddStaffCodeName(null);
+    setAddStaffRoleId(defaultInviteRoleId);
+    setAddStaffError("");
+    setAddStaffOpen(true);
+  };
+  const closeAddStaff = () => {
+    if (isInvitingStaff) return;
+    setAddStaffOpen(false);
+  };
+
+  // Escape closes it too (a dropdown open in it closes first: GlassDropdown keeps that Escape to itself).
+  useEffect(() => {
+    if (!addStaffOpen || isInvitingStaff) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setAddStaffOpen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [addStaffOpen, isInvitingStaff]);
+
+  const sendStaffInvite = async () => {
+    const cleanEmail = addStaffEmail.trim();
+    if (!activeCompanyId || !canAddStaff || !canEditCompanySettings || isInvitingStaff) return;
+    if (!addStaffEmailValid) {
+      setAddStaffEmailTouched(true);
       return;
     }
-    const email = await ask.prompt({ title: "Add staff", label: "Email address", placeholder: "name@company.co.nz", confirmLabel: "Send invite", inputMode: "email" });
-    const cleanEmail = String(email || "").trim();
-    if (!cleanEmail) return;
-    if (!cleanEmail.includes("@")) {
-      setSaveLabel("Invite failed (invalid email)");
+    const pickedCode = addStaffCodeKey ? linkableAccessCodes.find((row) => row.key === addStaffCodeKey) : null;
+    if (addStaffCodeKey && !pickedCode) {
+      setAddStaffError("That access code can't be used any more. Pick another one.");
       return;
     }
+    // Without a say over roles, no role is sent: they join as Staff (and the server would refuse any other).
+    const roleId = canChangeStaffRole ? normalizeRoleKey(addStaffRoleId) : "";
+    const invitedBefore = pendingInvites.some((invite) => invite.email.toLowerCase() === cleanEmail.toLowerCase());
 
     setIsInvitingStaff(true);
+    setAddStaffError("");
     const result = await createCompanyInviteDetailed(activeCompanyId, cleanEmail, {
       companyName: toStr(form.name || company?.name || company?.companyName || activeCompanyId),
       invitedByUid: String(user?.uid || ""),
       invitedByName: String(user?.displayName || user?.email || ""),
     });
-    if (result.ok) {
-      // A one-person join code for them too, linked to the invite (Join key > Temporary codes): accepting
-      // the invite uses it up, so they show as having joined with it, and revoking it removes them.
-      const code = result.inviteId
-        ? await createTemporaryJoinCode(activeCompanyId, cleanEmail, { inviteId: result.inviteId, invitedEmail: cleanEmail })
-        : null;
-      setSaveLabel(code?.ok && code.code ? `Invite sent: ${cleanEmail} · join code ${code.code}` : `Invite sent: ${cleanEmail}`);
+    if (!result.ok || !result.inviteId) {
+      const why = result.error || "unknown";
+      setSaveLabel(`Invite failed (${why})`);
+      setAddStaffError(`The invite couldn't be sent (${why}).`);
+      setIsInvitingStaff(false);
+      return;
+    }
+    // Their Access code (a one-person join code), linked to the invite (the one picked, or a new one), with the role
+    // they start in. They never type it: accepting the invite uses it up, so they show as having joined with it, in that
+    // role. Revoking it removes them.
+    const invite = { inviteId: result.inviteId, invitedEmail: cleanEmail, ...(roleId ? { roleId } : {}) };
+    const code = pickedCode
+      ? await linkJoinCodeToInvite(activeCompanyId, pickedCode.key, invite)
+      : await createTemporaryJoinCode(activeCompanyId, (addStaffCodeName ?? cleanEmail).trim() || cleanEmail, invite);
+    if (!code.ok) {
+      // Without its code, accepting the invite would make them Staff whatever role was picked, so a new invite is taken
+      // back and the pop-up stays open to try again. (One sent before stays as it was.)
+      if (!invitedBefore) await cancelCompanyInvite(activeCompanyId, result.inviteId);
+      setSaveLabel(`Invite failed (${code.error})`);
+      setAddStaffError(code.error);
       setInvitesReloadTick((tick) => tick + 1);
       setJoinCodesReloadTick((tick) => tick + 1);
-    } else {
-      setSaveLabel(`Invite failed (${result.error || "unknown"})`);
+      setIsInvitingStaff(false);
+      return;
     }
+    const codeText = code.code || pickedCode?.code || "";
+    setSaveLabel(codeText ? `Invite sent: ${cleanEmail} · access code ${codeText}` : `Invite sent: ${cleanEmail}`);
+    setInvitesReloadTick((tick) => tick + 1);
+    setJoinCodesReloadTick((tick) => tick + 1);
     setIsInvitingStaff(false);
+    setAddStaffOpen(false);
   };
 
   const persistStaffDisplayName = async (row: CompanyMemberOption) => {
@@ -3840,6 +3928,7 @@ export default function CompanySettingsPage() {
     undefined,
     staffRemovalOriginElRef,
   );
+  const shouldRenderAddStaffModal = useGlassModalPopOrigin(addStaffOpen, addStaffOrigin, addStaffPanelRef, undefined, addStaffOriginElRef);
   const shouldRenderItemCategoriesModal = useGlassModalPopOrigin(
     isItemCategoriesModalOpen,
     itemCategoriesModalOrigin,
@@ -5394,7 +5483,7 @@ export default function CompanySettingsPage() {
                         {toStr(company?.planName, "Free")}
                       </span>
                     </FieldRow>
-                    <FieldRow label="Join key" hint="The master code people join with, and one-person temporary codes you can revoke.">
+                    <FieldRow label="Join key" hint="The master code people join with, and one-person Access codes you can revoke.">
                       <button
                         type="button"
                         onClick={() => setJoinCodesOpen(true)}
@@ -5416,6 +5505,7 @@ export default function CompanySettingsPage() {
                       onReload={() => setJoinCodesReloadTick((tick) => tick + 1)}
                       onClose={() => setJoinCodesOpen(false)}
                       onRevokeUsedCode={(record) => void revokeUsedJoinCode(record)}
+                      roleFor={accessCodeRoleFor}
                     />
                   ) : null}
                   <Panel title="Brand" icon={Palette} description="How your company appears on quotes, documents and across the app.">
@@ -6641,7 +6731,7 @@ export default function CompanySettingsPage() {
               )}
 
               {active === "staff" && (
-                <div className="grid gap-[18px] max-lg:grid-cols-1 xl:grid-cols-[minmax(0,1fr)_340px]">
+                <div className="grid gap-[18px] max-lg:grid-cols-1 xl:grid-flow-row-dense xl:grid-cols-[minmax(0,1fr)_340px]">
                   <Panel
                     title="Staff"
                     icon={Users}
@@ -6651,7 +6741,11 @@ export default function CompanySettingsPage() {
                       canAddStaff ? (
                         <button
                           type="button"
-                          onClick={() => void inviteStaffFromTopBar()}
+                          onClick={(e) => {
+                            addStaffOriginElRef.current = e.currentTarget;
+                            setAddStaffOrigin(captureGlassModalOrigin(e));
+                            openAddStaff();
+                          }}
                           disabled={isInvitingStaff || isLoading || !activeCompanyId}
                           className={primaryButtonClass}
                           style={primaryButtonStyle}
@@ -6800,10 +6894,10 @@ export default function CompanySettingsPage() {
                                 .join(" ")}
                             </span>
                             {(() => {
-                              // The join code made for this invite (Join key > Temporary codes).
+                              // The Access code made for this invite (Access codes, below).
                               const code = joinCodes?.codes.find((row) => row.inviteId === invite.id && row.status === "active");
                               return code ? (
-                                <span className="font-mono text-[12px] font-semibold tracking-[1px]" style={{ color: "var(--text-main)" }} title="Their join code">
+                                <span className="font-mono text-[12px] font-semibold tracking-[1px]" style={{ color: "var(--text-main)" }} title="Their access code">
                                   {code.code}
                                 </span>
                               ) : null;
@@ -6828,6 +6922,34 @@ export default function CompanySettingsPage() {
                       </div>
                     ) : null}
                   </Panel>
+                  {/* Access codes: one-person codes to join with — made here, or for someone invited with Add staff. */}
+                  {canManageJoinCodes ? (
+                    <Panel
+                      title="Access codes"
+                      icon={KeyRound}
+                      description="A code for one person to join with. Revoke one any time — once used, that removes them."
+                      className="xl:col-start-1"
+                    >
+                      {joinCodes ? (
+                        <AccessCodesList
+                          companyId={activeCompanyId}
+                          data={joinCodes}
+                          onReload={() => setJoinCodesReloadTick((tick) => tick + 1)}
+                          onRevokeUsedCode={(record) => void revokeUsedJoinCode(record)}
+                          roleFor={accessCodeRoleFor}
+                        />
+                      ) : joinCodesError ? (
+                        <p className="text-[13px] font-medium" style={{ color: "var(--danger)" }}>
+                          {joinCodesError}
+                        </p>
+                      ) : (
+                        <SkeletonGroup label="Loading access codes" className="space-y-2">
+                          <Skeleton className="h-9 w-full rounded-[12px]" />
+                          <Skeleton className="h-11 w-full rounded-[12px]" />
+                        </SkeletonGroup>
+                      )}
+                    </Panel>
+                  ) : null}
                   <Panel title="Roles" icon={Shield} description="Click a role to edit what it can do. Drag to reorder.">
                     <div className="space-y-1.5">
                       {roles.map((row, idx) => {
@@ -6916,7 +7038,8 @@ export default function CompanySettingsPage() {
                       {roleAuditLog.length === 0 ? (
                         <EmptyState compact icon={<History size={16} />} title="No changes yet" hint="Changing someone's role, or what a role can do, is noted here." />
                       ) : (
-                        <div>
+                        // (Its own scroll past a few dozen lines, so the page doesn't keep growing.)
+                        <div className="glass-scroll -mr-2 max-h-[420px] overflow-y-auto pr-2">
                           {roleAuditLog.slice(0, roleAuditShown).map((entry) => (
                             <div key={entry.id} className="flex items-start gap-3 border-b border-[var(--glass-border)] py-2.5 last:border-b-0">
                               <span className="mt-[5px] h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: "var(--brand)" }} />
@@ -7120,6 +7243,131 @@ export default function CompanySettingsPage() {
                     </div>
                     </ModalPortal>
                   ) : null}
+                  {shouldRenderAddStaffModal ? (
+                    <ModalPortal>
+                    <div className="fixed inset-0 z-[1700] flex items-center justify-center px-4 py-4">
+                      <button type="button" aria-label="Close add staff popup" onClick={closeAddStaff} className="glass-modal-backdrop absolute inset-0" />
+                      <div
+                        ref={addStaffPanelRef}
+                        role="dialog"
+                        aria-label="Add staff"
+                        className="glass-modal-panel relative z-[1701] flex max-h-[calc(100svh-32px)] w-full max-w-[480px] flex-col overflow-hidden"
+                      >
+                        <GlassModalHeader title="Add staff" icon={<UserPlus size={16} />} onClose={closeAddStaff} closeDisabled={isInvitingStaff} />
+                        <form
+                          className="flex min-h-0 flex-1 flex-col"
+                          onSubmit={(e) => {
+                            e.preventDefault();
+                            void sendStaffInvite();
+                          }}
+                        >
+                          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
+                            <div className="space-y-1.5">
+                              <label htmlFor="add-staff-email" className="block text-[12px] font-medium" style={{ color: "var(--text-main)" }}>
+                                Email
+                              </label>
+                              <input
+                                id="add-staff-email"
+                                type="email"
+                                inputMode="email"
+                                value={addStaffEmail}
+                                onChange={(e) => {
+                                  setAddStaffEmail(e.target.value);
+                                  setAddStaffError("");
+                                }}
+                                onBlur={() => setAddStaffEmailTouched(true)}
+                                placeholder="name@company.co.nz"
+                                className={glassFieldClass}
+                                autoComplete="off"
+                                autoFocus
+                                disabled={isInvitingStaff}
+                                data-1p-ignore=""
+                                data-lpignore="true"
+                              />
+                              {addStaffEmailTouched && addStaffEmail.trim() && !addStaffEmailValid ? (
+                                <p className="text-[11.5px] font-medium" style={{ color: "var(--danger-strong)" }}>
+                                  Enter a full email address, like name@company.co.nz.
+                                </p>
+                              ) : null}
+                            </div>
+                            <div className="space-y-1.5">
+                              <p className="text-[12px] font-medium" style={{ color: "var(--text-main)" }}>Access code</p>
+                              {/* The code, and a new one's name beside it. */}
+                              <div className="flex items-center gap-2 max-sm:flex-col max-sm:items-stretch">
+                                <GlassDropdown
+                                  value={addStaffCodeKey}
+                                  options={[
+                                    { value: "", label: "Create a new code" },
+                                    ...linkableAccessCodes.map((row) => ({ value: row.key, label: row.label ? `${row.code} · ${row.label}` : row.code })),
+                                  ]}
+                                  onChange={(key) => {
+                                    setAddStaffCodeKey(toStr(key));
+                                    setAddStaffError("");
+                                  }}
+                                  disabled={isInvitingStaff}
+                                  ariaLabel="Access code"
+                                  triggerClassName={`${fieldInputClass} min-w-0 flex-1 justify-between`}
+                                />
+                                {/* A new code: its name, their email unless it's typed over (empty again: back to the email). */}
+                                {!addStaffCodeKey ? (
+                                  <input
+                                    value={addStaffCodeName ?? addStaffEmail}
+                                    onChange={(event) => setAddStaffCodeName(event.target.value || null)}
+                                    placeholder="Code name (their email if left blank)"
+                                    aria-label="New code's name"
+                                    maxLength={80}
+                                    disabled={isInvitingStaff}
+                                    className={`${fieldInputClass} min-w-0 flex-1`}
+                                    autoComplete="off"
+                                    data-1p-ignore=""
+                                    data-lpignore="true"
+                                  />
+                                ) : null}
+                              </div>
+                            </div>
+                            <div className="space-y-1.5">
+                              <p className="text-[12px] font-medium" style={{ color: "var(--text-main)" }}>Role to start in</p>
+                              {canChangeStaffRole ? (
+                                <GlassDropdown
+                                  value={addStaffRoleId}
+                                  options={inviteRoleOptions}
+                                  onChange={(roleId) => {
+                                    setAddStaffRoleId(toStr(roleId));
+                                    setAddStaffError("");
+                                  }}
+                                  disabled={isInvitingStaff || !inviteRoleOptions.length}
+                                  ariaLabel="Role to start in"
+                                  triggerClassName={`${fieldInputClass} justify-between`}
+                                />
+                              ) : (
+                                <>
+                                  <span className={`${fieldInputClass} inline-flex items-center gap-2`}>
+                                    <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: roleColorById.get("staff") || "#7D99B3" }} />
+                                    {roleNameById.get("staff") || "Staff"}
+                                  </span>
+                                  <p className="text-[11.5px] leading-[1.45]" style={{ color: "var(--text-muted)" }}>
+                                    New staff start as {roleNameById.get("staff") || "Staff"}. Someone who can change staff roles can change it once they&apos;ve joined.
+                                  </p>
+                                </>
+                              )}
+                            </div>
+                            {addStaffError ? (
+                              <p className="text-[12.5px] font-medium" style={{ color: "var(--danger)" }}>{addStaffError}</p>
+                            ) : null}
+                          </div>
+                          <div className="flex items-center justify-end gap-2 border-t px-4 py-3" style={{ borderColor: "var(--glass-border)" }}>
+                            <button type="button" onClick={closeAddStaff} disabled={isInvitingStaff} className={secondaryButtonClass}>
+                              Cancel
+                            </button>
+                            <button type="submit" disabled={isInvitingStaff || !addStaffEmailValid} className={primaryButtonClass} style={primaryButtonStyle}>
+                              <UserPlus size={15} /> {isInvitingStaff ? "Sending…" : "Send invite"}
+                            </button>
+                          </div>
+                        </form>
+                      </div>
+                    </div>
+                    </ModalPortal>
+                  ) : null}
                   {shouldRenderStaffRemovalModal ? (
                     <ModalPortal>
                     <div className="fixed inset-0 z-[1725] flex items-center justify-center px-4 py-4">
@@ -7163,7 +7411,7 @@ export default function CompanySettingsPage() {
                                 </p>
                                 {pendingStaffRemoval?.revokeCode ? (
                                   <p className="text-[12.5px] leading-[1.5]" style={{ color: "var(--text-main)" }}>
-                                    Their temporary code{" "}
+                                    Their access code{" "}
                                     <span className="font-mono font-semibold">{pendingStaffRemoval.revokeCode.code}</span>
                                     {" "}is revoked once they&apos;re removed.
                                   </p>

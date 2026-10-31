@@ -1,6 +1,7 @@
 import { randomInt } from "crypto";
-import { FieldValue, type Firestore } from "firebase-admin/firestore";
+import { FieldValue, type DocumentReference, type Firestore, type Transaction } from "firebase-admin/firestore";
 import { hasPermissionKey, resolveMemberAccess } from "@/lib/company-access-server";
+import { checkJoinCodeRole, companyRoleIdsOf, joinRoleIdFor, type JoinRoleSetter } from "@/lib/company-join-code-role";
 
 // A company's join codes (Company Settings > Company > Join key), handled server-side only.
 //
@@ -20,7 +21,13 @@ import { hasPermissionKey, resolveMemberAccess } from "@/lib/company-access-serv
 // Inviting someone (Company Settings > Staff > Add staff) makes them a temporary code too, linked to the
 // invite (inviteId, invitedEmail): accepting the invite uses it up, the same as joining with it, so they
 // show as having joined with it — and joining with it accepts the invite. Cancelling the invite revokes
-// it. A revoked code can then be deleted from the list.
+// it. A revoked code can then be deleted from the list. Add staff can also link one of the company's waiting codes
+// to the invite instead of making a new one (linkCodeToInvite).
+//
+// A temporary code can carry the role its person starts in (roleId — Add staff's Role), checked here when it's set
+// (lib/company-join-code-role.ts: one of the company's roles, never Owner, Admin only from an owner or admin, and
+// anything but Staff only from someone who can change staff roles). Joining with it — or accepting its invite — gives
+// them that role, checked again then (deleted since: Staff). Without one, and with the master code, it's Staff.
 
 export type JoinCodeKind = "master" | "temporary";
 export type JoinCodeStatus = "active" | "used" | "revoked" | "replaced";
@@ -42,6 +49,8 @@ export type JoinCodeRecord = {
   // Made for an invite: which one, and who it was sent to.
   inviteId: string;
   invitedEmail: string;
+  // The role its person starts in ("" — Staff). Temporary codes only.
+  roleId: string;
 };
 
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -88,19 +97,30 @@ function recordFrom(key: string, data: Record<string, unknown>): JoinCodeRecord 
     revokedAtIso: toStr(data.revokedAtIso),
     inviteId: toStr(data.inviteId),
     invitedEmail: toStr(data.invitedEmail),
+    roleId: toStr(data.roleId),
   };
 }
 
-// Owners, and anyone who can add staff or change company settings.
-export async function canManageJoinCodes(companyId: string, uid: string): Promise<{ ok: boolean; name: string }> {
+// Owners, and anyone who can add staff or change company settings. Also what roles they can put on a code (`setter`,
+// for checkCodeRole): the same as the Staff table lets them give (owner, or staff.change.role).
+export async function canManageJoinCodes(companyId: string, uid: string): Promise<{ ok: boolean; name: string; setter: JoinRoleSetter }> {
   const access = await resolveMemberAccess(companyId, uid);
-  if (!access.exists) return { ok: false, name: "" };
+  if (!access.exists) return { ok: false, name: "", setter: { isOwnerOrAdmin: false, canChangeRoles: false } };
+  const isOwnerOrAdmin = access.roleId === "owner" || access.roleId === "admin";
   const ok =
-    access.roleId === "owner" ||
-    access.roleId === "admin" ||
+    isOwnerOrAdmin ||
     hasPermissionKey(access.permissionKeys, "staff.add") ||
     hasPermissionKey(access.permissionKeys, "company.settings");
-  return { ok, name: access.displayName };
+  const canChangeRoles = access.roleId === "owner" || hasPermissionKey(access.permissionKeys, "staff.change.role");
+  return { ok, name: access.displayName, setter: { isOwnerOrAdmin, canChangeRoles } };
+}
+
+// Whether this role can go on one of this company's codes, from this person (lib/company-join-code-role.ts), against
+// the company's roles as they are now. `roleId` back: "" when none was asked for.
+export async function checkCodeRole(db: Firestore, companyId: string, setter: JoinRoleSetter, roleIdRaw: unknown) {
+  if (!toStr(roleIdRaw)) return { ok: true as const, roleId: "" };
+  const companyData = ((await db.collection("companies").doc(companyId).get()).data() ?? {}) as Record<string, unknown>;
+  return checkJoinCodeRole(roleIdRaw, companyRoleIdsOf(companyData), setter);
 }
 
 export async function listJoinCodes(db: Firestore, companyId: string) {
@@ -119,6 +139,8 @@ export async function createTemporaryCode(
   by: { uid: string; name: string },
   label: string,
   invite?: { inviteId: string; invitedEmail: string },
+  // Already checked (checkCodeRole).
+  roleId = "",
 ) {
   const companyRef = db.collection("companies").doc(companyId);
   const companyName = toStr(((await companyRef.get()).data() ?? {}).name);
@@ -139,6 +161,7 @@ export async function createTemporaryCode(
         createdByUid: by.uid,
         createdByName: by.name,
         ...(invite?.inviteId ? { inviteId: invite.inviteId, invitedEmail: invite.invitedEmail.toLowerCase() } : {}),
+        ...(roleId ? { roleId } : {}),
       });
       return true;
     });
@@ -223,8 +246,57 @@ export async function revokeTemporaryCode(db: Firestore, companyId: string, key:
   return { ok: true as const };
 }
 
-// Cancelling an invite: revokes the code made for it, if it hasn't been used.
-export async function revokeCodesForInvite(db: Firestore, companyId: string, inviteId: string) {
+// An access code's name (its label — "For Sam"), changed: any temporary code, used or not. (Its code itself never changes —
+// it may already be written down or sent.) Up to 80 characters; empty takes the name off.
+export async function renameTemporaryCode(db: Firestore, companyId: string, key: string, labelRaw: string) {
+  const recordRef = db.collection("companies").doc(companyId).collection("joinCodes").doc(key);
+  const recordSnap = await recordRef.get();
+  if (!recordSnap.exists) return { ok: false as const, error: "not-found" };
+  const record = recordFrom(key, (recordSnap.data() ?? {}) as Record<string, unknown>);
+  if (record.kind !== "temporary") return { ok: false as const, error: "not-temporary" };
+  await recordRef.set({ label: toStr(labelRaw).slice(0, 80) }, { merge: true });
+  return { ok: true as const };
+}
+
+// Add staff with one of the company's codes: links that code to the invite, as if it had been made for it, with the
+// role picked if there was one (already checked, checkCodeRole). Only a temporary code that's still waiting: not used,
+// revoked, or some other invite's already. Its label stays.
+export async function linkCodeToInvite(
+  db: Firestore,
+  companyId: string,
+  key: string,
+  invite: { inviteId: string; invitedEmail: string },
+  roleId = "",
+) {
+  if (!key || !invite.inviteId) return { ok: false as const, error: "missing-invite" };
+  const recordRef = db.collection("companies").doc(companyId).collection("joinCodes").doc(key);
+  const lookupRef = db.collection("companyJoinCodes").doc(key);
+  return db.runTransaction(async (tx) => {
+    const [recordSnap, lookup] = await Promise.all([tx.get(recordRef), tx.get(lookupRef)]);
+    if (!recordSnap.exists) return { ok: false as const, error: "code-not-available" };
+    const record = recordFrom(key, (recordSnap.data() ?? {}) as Record<string, unknown>);
+    const lookupData = (lookup.data() ?? {}) as Record<string, unknown>;
+    const waiting =
+      record.kind === "temporary" &&
+      record.status === "active" &&
+      !record.usedByUid &&
+      !record.inviteId &&
+      lookup.exists &&
+      lookupData.active !== false &&
+      toStr(lookupData.companyId) === companyId;
+    if (!waiting) return { ok: false as const, error: "code-not-available" };
+    tx.set(
+      recordRef,
+      { inviteId: invite.inviteId, invitedEmail: invite.invitedEmail.toLowerCase(), ...(roleId ? { roleId } : {}) },
+      { merge: true },
+    );
+    return { ok: true as const, code: record.code, key };
+  });
+}
+
+// Cancelling an invite: revokes the code made for it, if it hasn't been used. `exceptKey`: one to leave alone (the
+// code just linked to it, inviting the same person again).
+export async function revokeCodesForInvite(db: Firestore, companyId: string, inviteId: string, exceptKey = "") {
   if (!inviteId) return { ok: false as const, error: "missing-invite" };
   const companyRef = db.collection("companies").doc(companyId);
   const linked = await companyRef.collection("joinCodes").where("inviteId", "==", inviteId).get();
@@ -232,6 +304,7 @@ export async function revokeCodesForInvite(db: Firestore, companyId: string, inv
   const batch = db.batch();
   let revoked = 0;
   for (const doc of linked.docs) {
+    if (exceptKey && doc.id === exceptKey) continue;
     const record = recordFrom(doc.id, (doc.data() ?? {}) as Record<string, unknown>);
     if (record.status !== "active" || record.usedByUid) continue;
     const lookupRef = db.collection("companyJoinCodes").doc(doc.id);
@@ -258,6 +331,17 @@ export async function deleteRevokedCode(db: Firestore, companyId: string, key: s
   batch.delete(recordRef);
   await batch.commit();
   return { ok: true as const };
+}
+
+// Someone joining who was in the company before: a role the Staff table gave them back then (the company's
+// staffRoleIdsByUid) would still win over the one they're joining with, so it goes. Removing someone clears it
+// already; this is for anyone who left some other way.
+function clearOldRoleOverride(tx: Transaction, companyRef: DocumentReference, companyData: Record<string, unknown>, uid: string) {
+  const overrides =
+    companyData.staffRoleIdsByUid && typeof companyData.staffRoleIdsByUid === "object"
+      ? (companyData.staffRoleIdsByUid as Record<string, unknown>)
+      : {};
+  if (toStr(overrides[uid])) tx.update(companyRef, { [`staffRoleIdsByUid.${uid}`]: FieldValue.delete() });
 }
 
 // Joins a company with a code (master or temporary). A temporary code is used up by this join.
@@ -288,12 +372,15 @@ export async function joinWithCode(
     if (membershipSnap.exists) return { ok: true as const, companyId };
     const nowIso = new Date().toISOString();
     const companyName = toStr(companyData.name ?? companyData.companyName ?? lookupData.companyName);
+    // A temporary code's role (checked again: deleted since, Staff). The master code's is always Staff.
+    const roleId = joinRoleIdFor(isTemporary ? record?.roleId : "", companyRoleIdsOf(companyData));
+    clearOldRoleOverride(tx, companyRef, companyData, user.uid);
     tx.set(membershipRef, {
       uid: user.uid,
       email: user.email,
       displayName: user.name || user.email || "User",
-      role: "staff",
-      roleId: "staff",
+      role: roleId,
+      roleId,
       joinCodeKey: key,
       joinedVia: isTemporary ? "temporary-code" : "master-code",
       companyName,
@@ -350,12 +437,16 @@ export async function joinWithInvite(
     const nowIso = new Date().toISOString();
     if (!membershipSnap.exists) {
       const companyData = (companySnap.data() ?? {}) as Record<string, unknown>;
+      // Its code's role (checked again: deleted since, Staff). No code waiting, Staff.
+      const linkedRoleId = linkedCode ? recordFrom(linkedCode.id, (linkedCode.data() ?? {}) as Record<string, unknown>).roleId : "";
+      const roleId = joinRoleIdFor(linkedRoleId, companyRoleIdsOf(companyData));
+      clearOldRoleOverride(tx, companyRef, companyData, user.uid);
       tx.set(companyRef.collection("memberships").doc(user.uid), {
         uid: user.uid,
         email: user.email,
         displayName: user.name || user.email || "User",
-        role: "staff",
-        roleId: "staff",
+        role: roleId,
+        roleId,
         joinedVia: "invite",
         ...(linkedCode ? { joinCodeKey: linkedCode.id } : {}),
         companyName: toStr(companyData.name ?? companyData.companyName),
