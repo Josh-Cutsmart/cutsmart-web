@@ -243,7 +243,7 @@ export function CutlistCabinet3d({
         </g>
         {roleLabels.map((label) => (
           <g key={`role${label.part}`} pointerEvents="none">
-            <rect x={label.x - label.width / 2} y={label.y - label.height / 2} width={label.width} height={label.height} rx={label.height / 2} fill={CABINET_EDGE_ROLE_COLORS[label.role]} />
+            <rect x={label.x - label.width / 2} y={label.y - label.height / 2} width={label.width} height={label.height} rx={label.height / 2} fill={label.fill} />
             <text x={label.x} y={label.y} dy="0.35em" textAnchor="middle" fontSize={11} fontWeight={500} fill="#FFFFFF" style={{ userSelect: "none" }}>
               {label.text}
             </text>

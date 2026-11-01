@@ -230,12 +230,14 @@ function notifToastPathToBell(el: HTMLElement, bell: HTMLElement | null): { dx: 
 // One pop-up: its icon, title and message, like its row in the list. Clicking it opens what it's about; its X
 // (shown on hover) just closes it. It pops out of the bell (bellRef), and when it's done shrinks back into it,
 // the bell giving a little nudge as it lands — like the app's other pop-ups and the buttons they open from.
+// `dismiss`: the list opened — it goes back into the bell straight away (it's in the list now).
 function NotifToast({
   icon: Icon,
   color,
   title,
   message,
   bellRef,
+  dismiss = false,
   onOpen,
   onDone,
 }: {
@@ -245,11 +247,13 @@ function NotifToast({
   title: string;
   message: string;
   bellRef: RefObject<HTMLElement | null>;
+  dismiss?: boolean;
   onOpen: () => void;
   onDone: () => void;
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const [leaving, setLeaving] = useState(false);
+  const [closing, setLeaving] = useState(false);
+  const leaving = closing || dismiss;
   const [hovered, setHovered] = useState(false);
   // The time it has left — kept across hovering, so the pointer resting on it pauses it rather than restarting it.
   const remainingMsRef = useRef(NOTIF_TOAST_MS);
@@ -2087,6 +2091,7 @@ export function GlobalAppTabsBar() {
                   title={notifTitleOf(row)}
                   message={row.type === "app_version" ? "" : row.message || ""}
                   bellRef={notifBtnRef}
+                  dismiss={isNotifOpen}
                   onOpen={() => {
                     if (row.testUrl) router.push(row.testUrl);
                     else openNotification(row);

@@ -109,6 +109,9 @@ export type ShapeDrawingOptions = {
   background?: string;
   // The banding's colour (default #D97706).
   bandColor?: string;
+  // Narrower than `width` if it doesn't need it all: only as wide as the shape and its numbers come out at `height` —
+  // no empty space either side (a print's box). Its width is the drawing's.
+  trimWidth?: boolean;
 };
 
 // One step of a drawing (px, y down). A path's points in order (closed: back to its first); a box (r: its corners'
@@ -201,7 +204,7 @@ function boxAround(points: ShapePoint[], pad: number): ShapeLabelBox {
 }
 
 export function shapeDrawingOps(shape: CutlistShape, opts: ShapeDrawingOptions = {}): ShapeDrawing {
-  const width = Math.max(16, opts.width ?? 360);
+  let width = Math.max(16, opts.width ?? 360);
   const height = Math.max(16, opts.height ?? 240);
   const fontSize = Math.max(4, opts.fontSize ?? 10);
   const k = fontSize / 10;
@@ -261,6 +264,10 @@ export function shapeDrawingOps(shape: CutlistShape, opts: ShapeDrawingOptions =
   // ---- Fitted and centred.
   const b = geometry.bounds;
   const scale = Math.max(1e-6, Math.min(Math.max(4, width - 2 * padX) / Math.max(b.width, 1e-6), Math.max(4, height - 2 * padY) / Math.max(b.height, 1e-6)));
+  if (opts.trimWidth) {
+    width = Math.min(width, Math.max(16, b.width * scale + 2 * padX));
+    if (opts.background && ops[0]?.kind === "rect") ops[0] = { ...ops[0], w: width };
+  }
   const ox = width / 2 - (b.minX + b.width / 2) * scale;
   const oy = height / 2 - (b.minY + b.height / 2) * scale;
   const toPx = (p: ShapePoint): ShapePoint => [ox + p[0] * scale, oy + p[1] * scale];
@@ -541,6 +548,70 @@ export function paintShapeDrawingOps(ctx: CanvasRenderingContext2D, ops: ShapeDr
       ctx.textBaseline = "alphabetic";
       ctx.fillText(op.text, op.x, op.y);
     }
+  }
+}
+
+// A titled block of drawings (the Old Layout CNC Excel's Drawings section's): its header bar across the top — `title` on
+// `headerFill` — and the drawings under it side by side, `gap` apart, centred across and down in the room under the header
+// (`inset` round them); on white, a thin border round it all and under its header. Its steps, `width` x `height` px.
+export function shapeDrawingBlock(opts: {
+  title: string;
+  headerFill: string;
+  headerHeight: number;
+  width: number;
+  height: number;
+  drawings: Array<Pick<ShapeDrawing, "width" | "height" | "ops">>;
+  inset?: number;
+  gap?: number;
+  fontSize?: number;
+}): Pick<ShapeDrawing, "width" | "height" | "ops"> {
+  const width = Math.max(16, opts.width);
+  const height = Math.max(opts.headerHeight + 16, opts.height);
+  const inset = opts.inset ?? 10;
+  const gap = opts.gap ?? 24;
+  const border = "#000000";
+  // (Its title smaller if it'd run past the bar's end — roughly: Arial's bold characters about 0.6 of its size wide.)
+  const roomW = Math.max(10, width - 12);
+  const baseSize = opts.fontSize ?? 13;
+  const fontSize = Math.max(7, Math.min(baseSize, roomW / Math.max(1, opts.title.length * 0.6)));
+  const shift = (op: ShapeDrawingOp, dx: number, dy: number): ShapeDrawingOp =>
+    op.kind === "path" ? { ...op, points: op.points.map((p) => [p[0] + dx, p[1] + dy] as ShapePoint) } : { ...op, x: op.x + dx, y: op.y + dy };
+  const ops: ShapeDrawingOp[] = [
+    { kind: "rect", x: 0, y: 0, w: width, h: height, r: 0, fill: "#FFFFFF" },
+    { kind: "rect", x: 0, y: 0, w: width, h: opts.headerHeight, r: 0, fill: opts.headerFill },
+    { kind: "text", x: 6, y: opts.headerHeight / 2 + fontSize * 0.35, text: opts.title, size: fontSize, color: "#000000", align: "left", bold: true },
+  ];
+  const roomH = height - opts.headerHeight - inset * 2;
+  const totalW = opts.drawings.reduce((sum, drawing) => sum + drawing.width, 0) + gap * Math.max(0, opts.drawings.length - 1);
+  let x = inset + Math.max(0, (width - inset * 2 - totalW) / 2);
+  for (const drawing of opts.drawings) {
+    const y = opts.headerHeight + inset + Math.max(0, (roomH - drawing.height) / 2);
+    for (const op of drawing.ops) ops.push(shift(op, x, y));
+    x += drawing.width + gap;
+  }
+  ops.push(
+    { kind: "path", points: [[0, opts.headerHeight], [width, opts.headerHeight]], closed: false, stroke: border, lineWidth: 1 },
+    { kind: "path", points: [[0.5, 0.5], [width - 0.5, 0.5], [width - 0.5, height - 0.5], [0.5, height - 0.5]], closed: true, stroke: border, lineWidth: 1 },
+  );
+  return { width, height, ops };
+}
+
+// Any drawing's ops (a flat piece's, a cabinet's top view or 3D view) as a PNG — a browser only (a canvas): its width x
+// height at `pixelRatio`.
+export function shapeDrawingOpsPngDataUrl(drawing: Pick<ShapeDrawing, "width" | "height" | "ops">, pixelRatio = 2): Promise<string> {
+  if (typeof document === "undefined") return Promise.resolve("");
+  try {
+    const ratio = Math.max(0.25, pixelRatio);
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(drawing.width * ratio));
+    canvas.height = Math.max(1, Math.round(drawing.height * ratio));
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return Promise.resolve("");
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    paintShapeDrawingOps(ctx, drawing.ops);
+    return Promise.resolve(canvas.toDataURL("image/png"));
+  } catch (error) {
+    return Promise.reject(error);
   }
 }
 

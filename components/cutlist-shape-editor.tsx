@@ -253,6 +253,10 @@ export type CutlistShapeEditorFields = {
   quantity: string;
   information: string;
   grain: CutlistShapeGrainAxis;
+  // A custom cabinet's Base / Wall and Full Top — its row's cabinetryKind and cabinetryFullTop, as a Cabinetry row's
+  // (not given: Base, no full top — its rails). Saved with what's set here (kept on its shape too: shape.cabinet).
+  cabinetryKind?: "base" | "wall";
+  cabinetryFullTop?: boolean;
 };
 // A board it can be cut from, as its cutlist's Board cell shows it (its sheet's length in metres, `sheet`, then its
 // name); its thickness (mm — the 3D slab's, and what a cabinet's parts are worked out at); whether it has a grain.
@@ -367,6 +371,37 @@ type EdgeHold = { pointerId: number; x: number; y: number; timer: number };
 // A line drawn on the shape (Add line): one straight piece, from a point to a point (mm). The editor's own — never saved.
 type GuideLine = { id: number; a: ShapePoint; b: ShapePoint };
 
+// A cabinet's Base / Wall: a two-way toggle — as its row's in the cutlist (the page's CabinetryKindToggle): one click
+// target, a click anywhere switching to the other.
+function CabinetKindToggle({ value, disabled, onChange }: { value: "base" | "wall"; disabled?: boolean; onChange: (value: "base" | "wall") => void }) {
+  const activeIndex = value === "wall" ? 1 : 0;
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => onChange(activeIndex === 0 ? "wall" : "base")}
+      aria-label={`Cabinet: ${value === "wall" ? "Wall" : "Base"} — switch to ${value === "wall" ? "Base" : "Wall"}`}
+      className="relative inline-flex h-8 items-stretch overflow-hidden rounded-full border disabled:opacity-60"
+      style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}
+    >
+      <span
+        aria-hidden="true"
+        className="absolute inset-y-0 rounded-full"
+        style={{ left: activeIndex === 0 ? "0%" : "50%", width: "50%", backgroundImage: "var(--brand-gradient)", transition: "left 180ms cubic-bezier(0.34, 1.56, 0.64, 1)" }}
+      />
+      {(["Base", "Wall"] as const).map((label, index) => (
+        <span
+          key={label}
+          className="relative z-[1] flex min-w-[40px] items-center justify-center whitespace-nowrap px-2.5 text-[12px] font-semibold"
+          style={{ color: activeIndex === index ? "#ffffff" : "var(--text-main)" }}
+        >
+          {label}
+        </span>
+      ))}
+    </button>
+  );
+}
+
 // What's been done in the editor, as one string — compared with how it was opened, to know if there's anything to lose.
 function editorStateKey(shape: CutlistShape, base: CutlistShapeBase | null, cabinet: CabinetSettings, fields: CutlistShapeEditorFields, closed: boolean): string {
   return JSON.stringify([cutlistShapeForStorage(shape), base, cabinet, fields, closed]);
@@ -404,7 +439,11 @@ function ShapeEditorBody({
   // go with its edges, in `shape`.) Made a cabinet for the first time, it's the project's Base Cab Height tall.
   const [base, setBase] = useState<CutlistShapeBase | null>(() => openedShape?.base ?? null);
   const [cabinet, setCabinet] = useState<CabinetSettings>(() => {
-    const settings = cabinetSettings(openedShape ?? createTemplateShape("L"));
+    const own = cabinetSettings(openedShape ?? createTemplateShape("L"));
+    // (Its Base / Wall and Full Top: its shape's, else its row's — a new one Base, no full top, as a Cabinetry row.)
+    const settings: CabinetSettings = openedShape?.cabinet?.kind
+      ? own
+      : { ...own, kind: openedFields.cabinetryKind === "wall" ? "wall" : "base", fullTop: openedFields.cabinetryFullTop === true };
     if (Number(openedShape?.cabinet?.height) > 0) return settings;
     const start = Number(defaultCabinetHeightMm);
     return { ...settings, height: Number.isFinite(start) && start > 0 ? Math.min(4000, start) : DEFAULT_CABINET_HEIGHT };
@@ -433,6 +472,8 @@ function ShapeEditorBody({
     if (!open) setHoverPart(null);
     rememberCabinetPartsOpen(open);
   };
+  // A cabinet's Sizes: shut till it's opened, as its parts are. (A flat piece's are always shown.)
+  const [sizesOpen, setSizesOpen] = useState(false);
   // With lines drawn: where on the outline the pointer is (mm), the line under it (and where on it), and Delete line
   // pointed at in a menu — what's picked out is just the piece between crossings, and what Delete line would cut away.
   const [hoverAt, setHoverAt] = useState<ShapePoint | null>(null);
@@ -585,7 +626,14 @@ function ShapeEditorBody({
     return {
       ...shown,
       base,
-      cabinet: { ...(shown.cabinet ?? {}), height: cabinet.height, fixedShelves: cabinet.fixedShelves, adjustableShelves: cabinet.adjustableShelves },
+      cabinet: {
+        ...(shown.cabinet ?? {}),
+        height: cabinet.height,
+        fixedShelves: cabinet.fixedShelves,
+        adjustableShelves: cabinet.adjustableShelves,
+        kind: cabinet.kind,
+        fullTop: cabinet.fullTop,
+      },
     };
   }, [base, cabinet, cabinetMode, shown]);
   const cabinetLive = cabShape && live ? cabShape : null;
@@ -1022,7 +1070,14 @@ function ShapeEditorBody({
     if (!base) return out;
     out.base = base;
     if (isCabinetShape(out)) {
-      out.cabinet = { ...(next.cabinet ?? {}), height: cabinet.height, fixedShelves: cabinet.fixedShelves, adjustableShelves: cabinet.adjustableShelves };
+      out.cabinet = {
+        ...(next.cabinet ?? {}),
+        height: cabinet.height,
+        fixedShelves: cabinet.fixedShelves,
+        adjustableShelves: cabinet.adjustableShelves,
+        kind: cabinet.kind,
+        fullTop: cabinet.fullTop,
+      };
     }
     return out;
   };
@@ -1213,6 +1268,17 @@ function ShapeEditorBody({
     if (readOnly) return;
     record();
     setCabinet((prev) => ({ ...prev, [key]: Math.min(20, Math.max(0, prev[key] + by)) }));
+  };
+  // Base or Wall, and a Base's Full Top (without it, rails along its front and one at its back, in place of its top).
+  const setCabinetKind = (kind: "base" | "wall") => {
+    if (readOnly || kind === cabinet.kind) return;
+    record();
+    setCabinet((prev) => ({ ...prev, kind }));
+  };
+  const setCabinetFullTop = (fullTop: boolean) => {
+    if (readOnly || cabinet.kind !== "base" || fullTop === cabinet.fullTop) return;
+    record();
+    setCabinet((prev) => ({ ...prev, fullTop }));
   };
 
   // ---- Add line (pressed: on till it's pressed again, or Escape): lines drawn on the shape, one after another — each
@@ -1795,7 +1861,8 @@ function ShapeEditorBody({
     if (!final) return;
     // (Its grain only on a board that has one, and only a way it can run now — the rest's checked as its rows are.)
     const grain = grained && grainChoices.some((choice) => choice.axis === fields.grain) ? fields.grain : "";
-    onSave(final, { ...fields, grain });
+    // (A cabinet: its Base / Wall and Full Top as set here — its row's too.)
+    onSave(final, { ...fields, grain, ...(isCabinetShape(final) ? { cabinetryKind: cabinet.kind, cabinetryFullTop: cabinet.kind === "base" && cabinet.fullTop } : {}) });
   };
 
   // Closed: straight away if nothing's changed since it was opened (or it's view only); else Are you sure? first.
@@ -3354,6 +3421,27 @@ function ShapeEditorBody({
                         </div>
                       ))}
                     </div>
+                    {/* A cabinet: Base or Wall, and a Base's Full Top (without it, rails in place of its top) — as its row has them. */}
+                    <div className={fieldClass} style={mainText}>
+                      <span>Cabinet</span>
+                      <div className="flex h-9 items-center gap-3">
+                        <CabinetKindToggle value={cabinet.kind} disabled={readOnly} onChange={setCabinetKind} />
+                        <label
+                          className={`inline-flex items-center gap-1.5 text-[12.5px] font-medium ${cabinet.kind === "base" ? "" : "opacity-50"}`}
+                          style={mainText}
+                          title="Force a full Top instead of Rails on this Base cabinet"
+                        >
+                          <input
+                            type="checkbox"
+                            disabled={readOnly || cabinet.kind !== "base"}
+                            checked={cabinet.kind === "base" && cabinet.fullTop}
+                            onChange={(event) => setCabinetFullTop(event.target.checked)}
+                            className="h-3.5 w-3.5"
+                          />
+                          Full Top
+                        </label>
+                      </div>
+                    </div>
                     {showGrain ? (
                       <div className={fieldClass} style={mainText}>
                         Grain
@@ -3481,7 +3569,7 @@ function ShapeEditorBody({
                             </span>
                           )}
                           <span className="min-w-0 flex-1">
-                            <span className="block truncate">{item.name}</span>
+                            <span className="block truncate">{item.label ?? item.name}</span>
                             {item.problem ? (
                               <span className="block truncate text-[11.5px]" style={{ color: "var(--danger-strong)" }}>
                                 {item.problem}
@@ -3522,22 +3610,50 @@ function ShapeEditorBody({
               </section>
             ) : null}
 
-            {/* Its sizes. */}
-            <section className={sectionClass} style={lineColor} aria-label="Sizes">
-              <p className={headingClass} style={mainText}>
-                Sizes
-              </p>
-              <div className="grid grid-cols-2 gap-x-4 gap-y-3">
-                {summary.map((item) => (
-                  <div key={item.label} className="min-w-0">
-                    <p className="text-[11px] font-medium" style={mainText}>
-                      {item.label}
-                    </p>
-                    <p className="truncate text-[14px] font-medium" style={mainText}>
-                      {item.value}
-                    </p>
+            {/* Its sizes — a cabinet's in a section that opens and shuts (shut to start), as its parts are. */}
+            <section className={`${sectionClass} ${cabinetMode && !sizesOpen ? "gap-0!" : ""}`} style={lineColor} aria-label="Sizes">
+              {cabinetMode ? (
+                <button
+                  type="button"
+                  onClick={() => setSizesOpen((open) => !open)}
+                  aria-expanded={sizesOpen}
+                  aria-controls="shape-editor-sizes"
+                  className="-mx-1 flex items-center gap-2 rounded-[8px] px-1 py-0.5 text-left transition hover:bg-[color-mix(in_srgb,var(--text-main)_6%,transparent)]"
+                >
+                  <span className={headingClass} style={mainText}>
+                    Sizes
+                  </span>
+                  <ChevronDown
+                    size={15}
+                    aria-hidden="true"
+                    className={`ml-auto shrink-0 transition-transform duration-200 ${sizesOpen ? "rotate-180" : ""}`}
+                    style={mainText}
+                  />
+                </button>
+              ) : (
+                <p className={headingClass} style={mainText}>
+                  Sizes
+                </p>
+              )}
+              <div
+                id="shape-editor-sizes"
+                className={`grid transition-[grid-template-rows] duration-200 ease-out ${!cabinetMode || sizesOpen ? "grid-rows-[1fr]" : "grid-rows-[0fr]"}`}
+                inert={cabinetMode && !sizesOpen}
+              >
+                <div className="min-h-0 overflow-hidden">
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-3">
+                    {summary.map((item) => (
+                      <div key={item.label} className="min-w-0">
+                        <p className="text-[11px] font-medium" style={mainText}>
+                          {item.label}
+                        </p>
+                        <p className="truncate text-[14px] font-medium" style={mainText}>
+                          {item.value}
+                        </p>
+                      </div>
+                    ))}
                   </div>
-                ))}
+                </div>
               </div>
             </section>
           </div>

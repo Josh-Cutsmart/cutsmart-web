@@ -22,6 +22,14 @@
 //    flagged.
 //  - Top and bottom: the drawing with every back and end edge moved in by t; the doors edges, curves and all, as drawn.
 //    A fixed shelf is the same shape. (As many fixed shelves as the cabinet says — none unless set.)
+//  - A Base cabinet (its `kind` — Base unless it says Wall) without a full top (`fullTop`) has rails along its front in
+//    place of its top, as a Cabinetry row's Base cabinet has — CABINET_RAIL_DEPTH_MM deep into it, t thick, at its top:
+//    along each straight doors edge, between the panels at its ends. Where a doors run turns a corner, the first rail
+//    (in the outline's order) runs on past the corner through to the back's inside face; the next runs from its end up
+//    to it, butting into it (and on through the next corner to the back, if there's another after it — a U's middle
+//    rail). None along a curve — a rail beside one stops where the curve starts. And one back rail, as a Cabinetry
+//    row's Base cabinet has: the same way as the first rail, against the inside face of what's straight behind it (its
+//    back), between the inside faces of whatever it meets at each end. (rails)
 //  - Adjustable shelf: every back and end edge moved in by t + 1, and the doors run moved back 10 as a group. (One
 //    unless set.)
 //  - The shaped parts (top, bottom, shelves) are edge banded along their doors edges.
@@ -89,6 +97,11 @@ export const CABINET_EDGE_ROLE_LABELS: Record<CabinetEdgeRole, string> = { doors
 export const CABINET_EDGE_ROLE_COLORS: Record<CabinetEdgeRole, string> = { doors: "#2563EB", back: "#8B5CF6", end: "#10B981" };
 export const DEFAULT_FIXED_SHELVES = 0;
 export const DEFAULT_ADJUSTABLE_SHELVES = 1;
+// A Base cabinet's rails: how deep into the cabinet they are (mm) — a Cabinetry row's rails' (the page's
+// buildCabinetryDerivedPieces: 100).
+export const CABINET_RAIL_DEPTH_MM = 100;
+// A rail's label in the 3D view (Labels on): on this, as the backs', ends' and doors' are on their colours.
+export const CABINET_RAIL_LABEL_COLOR = "#475569";
 // An adjustable shelf: how much more than t its back and end edges come in (room to tip it in), and how far its doors
 // edges go back.
 export const ADJUSTABLE_SHELF_CLEARANCE_MM = 1;
@@ -96,8 +109,9 @@ export const ADJUSTABLE_SHELF_SETBACK_MM = 10;
 
 const isRole = (value: unknown): value is CabinetEdgeRole => value === "back" || value === "end" || value === "doors";
 
-export type CabinetSettings = { height: number; fixedShelves: number; adjustableShelves: number };
-// A cabinet's height and shelf counts, what's not set at its default (720, no fixed shelves, one adjustable).
+export type CabinetSettings = { height: number; fixedShelves: number; adjustableShelves: number; kind: "base" | "wall"; fullTop: boolean };
+// A cabinet's height, shelf counts, Base / Wall and full top, what's not set at its default (720, no fixed shelves, one
+// adjustable, Base, no full top — its rails).
 export function cabinetSettings(shape: CutlistShape): CabinetSettings {
   const cabinet = shape.cabinet;
   const height = Number(cabinet?.height);
@@ -109,6 +123,8 @@ export function cabinetSettings(shape: CutlistShape): CabinetSettings {
     height: Number.isFinite(height) && height > 0 ? height : DEFAULT_CABINET_HEIGHT,
     fixedShelves: count(cabinet?.fixedShelves, DEFAULT_FIXED_SHELVES),
     adjustableShelves: count(cabinet?.adjustableShelves, DEFAULT_ADJUSTABLE_SHELVES),
+    kind: cabinet?.kind === "wall" ? "wall" : "base",
+    fullTop: cabinet?.fullTop === true,
   };
 }
 
@@ -625,16 +641,17 @@ function templateFromOutline(kind: CutlistShapeTemplateKind, outline: OffsetOutl
 
 // ---- The cabinet worked out.
 
-export type CabinetPartName = "Back" | "End" | "Top" | "Bottom" | "Fixed shelf" | "Adjustable shelf";
+export type CabinetPartName = "Back" | "End" | "Rail" | "Top" | "Bottom" | "Fixed shelf" | "Adjustable shelf";
 export type CabinetPart = {
-  // "back:<edge>", "end:<edge>", "top", "bottom", "fixed-shelf", "adjustable-shelf".
+  // "back:<edge>", "end:<edge>", "rail:<edge>", "top", "bottom", "fixed-shelf", "adjustable-shelf".
   key: string;
   name: CabinetPartName;
   quantity: number;
   // A panel: a plain rectangle. A shape: cut to its own outline (`shape`).
   kind: "panel" | "shape";
-  // A panel: Height — the cabinet's — and Width (along its edge). A shaped part: the box round it (Width across the
-  // drawing, Height down it — shapeOuterSize).
+  // A panel: Height — the cabinet's — and Width (along its edge); a Rail: Width its length, Height how deep into the
+  // cabinet it is (its Width × Depth in the cutlist, as a Cabinetry row's rails). A shaped part: the box round it (Width
+  // across the drawing, Height down it — shapeOuterSize).
   width?: number;
   height?: number;
   // A shaped part's outline (at 0, 0), banded along its doors edges.
@@ -649,10 +666,16 @@ export type CabinetPart = {
   mitres?: Array<{ bevel: number; sharp: boolean }>;
   note?: string;
   // An End: how many of its upright edges (the cabinet's height long) are edge taped — its front, as a cabinet's sides'
-  // is, whether or not it's beside the doors; both, between two doors runs. (1 or 2; a Back: none.)
+  // is, whether or not it's beside the doors; both, between two doors runs. (1 or 2; a Back: none.) A Rail: 1 — its
+  // front edge, its length.
   frontEdges?: number;
   // Why there isn't one (its edges moved in so far there's nothing left, or it'd cross itself): no shape then.
   problem?: string;
+  // How it's listed (customCabinetPartLines — the parts list, the cutlist's sub-rows, nesting, labels, the CNC Cutlist):
+  // a Back, End or Rail with others of its kind, by its side as you stand at the doors looking in — "Back (Left Hand)",
+  // "Back (Right Hand)" (three: "Back (Centre)" between them; more: "Back (2)", "Back (3)"… between them, left to right).
+  // Not set: its name.
+  label?: string;
 };
 
 export type CabinetOptions = {
@@ -662,6 +685,9 @@ export type CabinetOptions = {
   height?: number;
   fixedShelves?: number;
   adjustableShelves?: number;
+  // Override the cabinet's own Base / Wall and full top (shape.cabinet: Base, no full top).
+  kind?: "base" | "wall";
+  fullTop?: boolean;
   // The gap between two doors where they meet (mm — the project's Vertical gap between doors / panels). Default none.
   doorGapMm?: number;
 };
@@ -679,7 +705,12 @@ type CabinetWork = {
   // The top / bottom (and fixed shelf), and the adjustable shelf, moved in.
   plate: OffsetOutline | null;
   adjustable: OffsetOutline | null;
+  // A Base cabinet without a full top: its rails (in place of its top) — none otherwise.
+  rails: CabinetRail[];
 };
+// A rail: along a doors edge (`edge`) — or the back rail (`back`), behind the first — its plan at the top of the cabinet
+// (its front edge first) and its length (mm).
+type CabinetRail = { key: string; edge: number; polygon: ShapePoint[]; length: number; back?: boolean };
 
 function workCabinet(shape: CutlistShape, options: CabinetOptions): CabinetWork | null {
   const geometry = shapeGeometry(shape);
@@ -697,6 +728,8 @@ function workCabinet(shape: CutlistShape, options: CabinetOptions): CabinetWork 
     height: Number.isFinite(height) && height > 0 ? height : own.height,
     fixedShelves: count(options.fixedShelves, own.fixedShelves),
     adjustableShelves: count(options.adjustableShelves, own.adjustableShelves),
+    kind: options.kind === "wall" || options.kind === "base" ? options.kind : own.kind,
+    fullTop: typeof options.fullTop === "boolean" ? options.fullTop : own.fullTop,
   };
   const roles = rolesFor(shape, geometry);
   const backCorners = backCornersFor(shape, geometry, roles);
@@ -723,7 +756,136 @@ function workCabinet(shape: CutlistShape, options: CabinetOptions): CabinetWork 
 
   const plate = offsetShapeOutline(shape, (edge) => (roles[edge] === "doors" ? 0 : t));
   const adjustable = offsetShapeOutline(shape, (edge) => (roles[edge] === "doors" ? ADJUSTABLE_SHELF_SETBACK_MM : t + ADJUSTABLE_SHELF_CLEARANCE_MM));
-  return { geometry, roles, backCorners, t, settings, trims, mitres, plate, adjustable };
+  const rails = settings.kind === "base" && !settings.fullTop && plate ? railsFor(geometry, roles, plate) : [];
+  return { geometry, roles, backCorners, t, settings, trims, mitres, plate, adjustable, rails };
+}
+
+// A Base cabinet's rails (see the top of the file), worked out on its top's plan (`plate` — inside its ends and backs,
+// its doors edges as drawn). Each doors run (the doors edges one after another round the outline) in the outline's
+// order, split where it curves: along each straight stretch of it (edges in a straight line one stretch), a rail
+// CABINET_RAIL_DEPTH_MM deep behind it — from where the stretch begins (a panel's inside face, or where a curve ends)
+// to where it's stopped going on along its line (through an inside corner to the back's inside face; at an outside
+// corner, the corner; a curve: where it starts). Each after the first in a run starts where it meets the one before
+// it — that rail's nearer face.
+function railsFor(geometry: ShapeGeometry, roles: CabinetEdgeRole[], plate: OffsetOutline): CabinetRail[] {
+  const n = geometry.edges.length;
+  const polygon = outlinePolygon(plate);
+  if (polygon.length < 3 || n < 3) return [];
+  const doorsAt = (i: number) => roles[((i % n) + n) % n] === "doors";
+  if (geometry.edges.every((edge) => doorsAt(edge.index))) return [];
+  // The doors runs, each from the edge after a non-doors one.
+  const runs: number[][] = [];
+  for (let i = 0; i < n; i += 1) {
+    if (!doorsAt(i) || doorsAt(i - 1)) continue;
+    const run: number[] = [];
+    for (let j = i; doorsAt(j) && run.length < n; j += 1) run.push(j % n);
+    runs.push(run);
+  }
+  // How far along a ray (from `from`, the way `u` goes) it first meets the top's outline — Infinity: never.
+  const hit = (from: ShapePoint, u: ShapePoint): number => {
+    let best = Infinity;
+    for (let i = 0; i < polygon.length; i += 1) {
+      const p = polygon[i];
+      const q = polygon[(i + 1) % polygon.length];
+      const d = sub(q, p);
+      const denom = cross(u, d);
+      if (Math.abs(denom) < 1e-12) continue;
+      const w = sub(p, from);
+      const s = cross(w, d) / denom;
+      const k = cross(w, u) / denom;
+      if (s > 1e-6 && k >= -1e-9 && k <= 1 + 1e-9) best = Math.min(best, s);
+    }
+    return best;
+  };
+  // Where a line (point, way) meets another — how far along the first; null: they don't (parallel).
+  const meetAlong = (p: ShapePoint, u: ShapePoint, q: ShapePoint, v: ShapePoint): number | null => {
+    const denom = cross(u, v);
+    return Math.abs(denom) < 1e-12 ? null : cross(sub(q, p), v) / denom;
+  };
+  const rails: CabinetRail[] = [];
+  const NUDGE = 1e-3;
+  for (const run of runs) {
+    // Its straight stretches: edges in a straight line (a smooth join, both straight) one stretch; a curve between them.
+    const stretches: Array<{ edges: number[]; afterCurve: boolean; beforeCurve: boolean }> = [];
+    let current: number[] = [];
+    let afterCurve = false;
+    run.forEach((index, at) => {
+      const edge = geometry.edges[index];
+      if (edge.curve) {
+        if (current.length) stretches.push({ edges: current, afterCurve, beforeCurve: true });
+        current = [];
+        afterCurve = true;
+        return;
+      }
+      const last = current.length ? geometry.edges[current[current.length - 1]] : null;
+      const straightOn = last && Math.abs(cross(unit(sub(last.endVertex, last.startVertex)), unit(sub(edge.endVertex, edge.startVertex)))) < 1e-9 && dot(sub(last.endVertex, last.startVertex), sub(edge.endVertex, edge.startVertex)) > 0;
+      if (last && !straightOn) {
+        stretches.push({ edges: current, afterCurve, beforeCurve: false });
+        current = [];
+        afterCurve = false;
+      }
+      current.push(index);
+      if (at === run.length - 1) stretches.push({ edges: current, afterCurve, beforeCurve: false });
+    });
+    // Each stretch's rail, in order — each after the first (with no curve between) starting at the one before.
+    let previous: { a: ShapePoint; u: ShapePoint; inward: ShapePoint } | null = null;
+    for (const stretch of stretches) {
+      const first = geometry.edges[stretch.edges[0]];
+      const lastEdge = geometry.edges[stretch.edges[stretch.edges.length - 1]];
+      const a = first.startVertex;
+      const b = lastEdge.endVertex;
+      const along = len(sub(b, a));
+      if (!(along > 1e-6)) continue;
+      const u = mul(sub(b, a), 1 / along);
+      const inward = mul(first.normal, -1);
+      const mid = mul(add(a, b), 0.5);
+      const probe = add(mid, mul(inward, NUDGE));
+      // (Positions along the stretch's line, from its middle.)
+      let start = -hit(probe, mul(u, -1));
+      let end = hit(probe, u);
+      if (stretch.afterCurve) start = Math.max(start, -along / 2);
+      if (stretch.beforeCurve) end = Math.min(end, along / 2);
+      if (previous && !stretch.afterCurve) {
+        const front = meetAlong(mid, u, previous.a, previous.u);
+        const back = meetAlong(mid, u, add(previous.a, mul(previous.inward, CABINET_RAIL_DEPTH_MM)), previous.u);
+        const butt = [front, back].filter((value): value is number => value !== null);
+        if (butt.length) start = Math.max(...butt);
+      }
+      if (!Number.isFinite(start) || !Number.isFinite(end)) {
+        previous = null;
+        continue;
+      }
+      const length = end - start;
+      previous = { a: add(mid, mul(u, start)), u, inward };
+      if (!(length > 1)) continue;
+      const s0 = add(mid, mul(u, start));
+      const s1 = add(mid, mul(u, end));
+      const depth = mul(inward, CABINET_RAIL_DEPTH_MM);
+      rails.push({ key: `rail:${first.index}`, edge: first.index, polygon: [s0, s1, add(s1, depth), add(s0, depth)], length: roundFine(length) });
+    }
+  }
+  // The back rail: straight behind the first rail (from its middle, square to it) to the inside face of what's there,
+  // and against it, the same way as the first — between the inside faces of whatever it meets at each end.
+  const lead = rails[0];
+  if (lead) {
+    const [f0, f1, b1] = lead.polygon;
+    const u = unit(sub(f1, f0));
+    const inward = unit(sub(b1, f1));
+    const reach = hit(add(mul(add(f0, f1), 0.5), mul(u, NUDGE)), inward);
+    if (Number.isFinite(reach) && reach > 2 * CABINET_RAIL_DEPTH_MM) {
+      const behind = add(mul(add(f0, f1), 0.5), mul(inward, reach - NUDGE));
+      const start = -hit(behind, mul(u, -1));
+      const end = hit(behind, u);
+      if (Number.isFinite(start) && Number.isFinite(end) && end - start > 1) {
+        const face = add(behind, mul(inward, NUDGE));
+        const p0 = add(face, mul(u, start));
+        const p1 = add(face, mul(u, end));
+        const depth = mul(inward, -CABINET_RAIL_DEPTH_MM);
+        rails.push({ key: "rail:back", edge: lead.edge, polygon: [add(p0, depth), add(p1, depth), p1, p0], length: roundFine(end - start), back: true });
+      }
+    }
+  }
+  return rails;
 }
 
 // A back's or an end's plan: t deep along its edge, cut back (or on) as its trims say — and, at a mitred corner, run on
@@ -827,11 +989,20 @@ const edgeFullLength = (edge: ShapeEdge) => (edge.curve ? edge.curve.length : ed
 export function customCabinetParts(shape: CutlistShape, options: CabinetOptions): CabinetPart[] {
   const work = workCabinet(shape, options);
   if (!work) return [];
-  const { geometry, roles, settings, plate, adjustable } = work;
+  const { geometry, roles, settings, plate, adjustable, rails } = work;
   const parts: CabinetPart[] = [];
+  // As you stand at its doors looking in: the way you face (into it, square to its doors edges — their inward normals, by
+  // length) and your right hand (on the drawing, y down the page). Each Back's and End's place along it, by its edge's
+  // middle — how they're named left to right (sideLabels). No doors: no left or right.
+  const facing = geometry.edges.reduce<ShapePoint>((sum, edge) => (roles[edge.index] === "doors" ? add(sum, mul(edge.normal, -edgeFullLength(edge))) : sum), [0, 0]);
+  const rightHand: ShapePoint = [-facing[1], facing[0]];
+  const hasFront = Math.hypot(facing[0], facing[1]) > 1e-9;
+  const across = new Map<string, number>();
   for (const role of ["back", "end"] as const) {
     for (const edge of geometry.edges) {
       if (roles[edge.index] !== role) continue;
+      const middle = mul(add(edge.startVertex, edge.endVertex), 0.5);
+      across.set(`${role}:${edge.index}`, middle[0] * rightHand[0] + middle[1] * rightHand[1]);
       const plan = panelPlan(work, edge);
       const length = plan.length;
       const mitres = plan.mitres.map((mitre) => ({ bevel: mitre.bevel, sharp: mitre.sharp }));
@@ -863,7 +1034,28 @@ export function customCabinetParts(shape: CutlistShape, options: CabinetOptions)
     const size = shapeOuterSize(partShape);
     return { key, name, quantity, kind: "shape", width: size.width, height: size.height, shape: partShape, edges: doorEdges, origin };
   };
-  parts.push(shaped("top", "Top", 1, plate));
+  // (A Base cabinet without a full top: its rails in place of its top — each its front edge banded, as a Cabinetry row's
+  // rails are.)
+  if (rails.length) {
+    for (const rail of rails) {
+      const middle = mul(add(rail.polygon[0], rail.polygon[1]), 0.5);
+      across.set(rail.key, middle[0] * rightHand[0] + middle[1] * rightHand[1]);
+      parts.push({
+        key: rail.key,
+        name: "Rail",
+        quantity: 1,
+        kind: "panel",
+        width: rail.length,
+        height: CABINET_RAIL_DEPTH_MM,
+        edges: [rail.edge],
+        frontEdges: 1,
+        ...(rail.back ? { label: "Rail (Back)" } : {}),
+      });
+    }
+  } else {
+    parts.push(shaped("top", "Top", 1, plate));
+  }
+  if (hasFront) sideLabels(parts, across);
   parts.push(shaped("bottom", "Bottom", 1, plate));
   if (settings.fixedShelves > 0) parts.push(shaped("fixed-shelf", "Fixed shelf", settings.fixedShelves, plate));
   if (settings.adjustableShelves > 0) parts.push(shaped("adjustable-shelf", "Adjustable shelf", settings.adjustableShelves, adjustable));
@@ -873,7 +1065,7 @@ export function customCabinetParts(shape: CutlistShape, options: CabinetOptions)
 // ---- The 3D model: each panel a prism — its plan (mm, the drawing's own x and y, y down the page) stood up from z0 to
 // z1 (mm, up). The doors (see-through) stand just outside the doors edges.
 
-export type CabinetPrismKind = "back" | "end" | "top" | "bottom" | "fixed-shelf" | "adjustable-shelf" | "door";
+export type CabinetPrismKind = "back" | "end" | "rail" | "top" | "bottom" | "fixed-shelf" | "adjustable-shelf" | "door";
 export type CabinetPrism = {
   key: string;
   // The part it's one of (customCabinetParts' key; a door: "door:<edge>").
@@ -942,7 +1134,7 @@ export function customCabinetModel(shape: CutlistShape, options: CabinetOptions)
   const work = workCabinet(shape, options);
   const empty: CabinetModel = { prisms: [], height: 0, thicknessMm: 0, bounds: { minX: 0, minY: 0, minZ: 0, maxX: 0, maxY: 0, maxZ: 0 } };
   if (!work) return empty;
-  const { geometry, roles, t, settings, plate, adjustable } = work;
+  const { geometry, roles, t, settings, plate, adjustable, rails } = work;
   const H = settings.height;
   const prisms: CabinetPrism[] = [];
   const push = (prism: Omit<CabinetPrism, "polygon"> & { polygon: ShapePoint[] }) => {
@@ -960,7 +1152,12 @@ export function customCabinetModel(shape: CutlistShape, options: CabinetOptions)
   const shelfPlan = adjustable ? outlinePolygon(adjustable) : [];
   const board = Math.min(t, H / 2);
   push({ key: "bottom", part: "bottom", kind: "bottom", polygon: platePlan, z0: 0, z1: board, translucent: false });
-  push({ key: "top", part: "top", kind: "top", polygon: platePlan, z0: H - board, z1: H, translucent: false });
+  // (A Base cabinet without a full top: its rails, at the top, in place of it.)
+  if (rails.length) {
+    for (const rail of rails) push({ key: rail.key, part: rail.key, kind: "rail", polygon: rail.polygon, z0: H - board, z1: H, translucent: false });
+  } else {
+    push({ key: "top", part: "top", kind: "top", polygon: platePlan, z0: H - board, z1: H, translucent: false });
+  }
   const shelves: Array<{ kind: "fixed-shelf" | "adjustable-shelf"; plan: ShapePoint[] }> = [
     ...Array.from({ length: settings.fixedShelves }, () => ({ kind: "fixed-shelf" as const, plan: platePlan })),
     ...Array.from({ length: settings.adjustableShelves }, () => ({ kind: "adjustable-shelf" as const, plan: shelfPlan })),
@@ -1409,16 +1606,18 @@ export function cabinetFaceLook(
   return { fill, fillOpacity: 1, stroke: mixCabinetColor(dark, "#0F172A", 0.35) };
 }
 
-// What each back, end and door is, labelled on it: at the middle of its biggest face that's seen (`place`: where a
+// What each back, end, door and rail is, labelled on it (`fill`: its label's colour — its role's, a rail's
+// CABINET_RAIL_LABEL_COLOR): at the middle of its biggest face that's seen (`place`: where a
 // point of the view's goes — zoomed, moved), only where that face is the one in front there (not hidden behind
 // another), and none on top of another (the nearer kept). `measure`: a label's size (px).
-export type CabinetRoleLabel = { part: string; role: CabinetEdgeRole; text: string; x: number; y: number; width: number; height: number };
+export type CabinetRoleLabel = { part: string; role: CabinetEdgeRole | "rail"; text: string; fill: string; x: number; y: number; width: number; height: number };
 export function cabinetRoleLabels(
   faces: CabinetScreenFace[],
   measure: (text: string) => { width: number; height: number },
   place: (p: [number, number]) => [number, number] = (p) => p,
 ): CabinetRoleLabel[] {
-  const roleOf = (kind: CabinetPrismKind): CabinetEdgeRole | null => (kind === "back" ? "back" : kind === "end" ? "end" : kind === "door" ? "doors" : null);
+  const roleOf = (kind: CabinetPrismKind): CabinetEdgeRole | "rail" | null =>
+    kind === "back" ? "back" : kind === "end" ? "end" : kind === "door" ? "doors" : kind === "rail" ? "rail" : null;
   const area = (points: Array<[number, number]>) => Math.abs(signedPolygonArea(points));
   const placed = faces.map((face) => face.screen.map(place));
   const best = new Map<string, { index: number; area: number }>();
@@ -1453,14 +1652,15 @@ export function cabinetRoleLabels(
       }
     }
     if (front < 0 || faces[front].part !== part) continue;
-    const text = CABINET_EDGE_ROLE_LABELS[role];
+    const text = role === "rail" ? "Rail" : CABINET_EDGE_ROLE_LABELS[role];
+    const fill = role === "rail" ? CABINET_RAIL_LABEL_COLOR : CABINET_EDGE_ROLE_COLORS[role];
     const size = measure(text);
-    candidates.push({ part, role, text, x: at[0], y: at[1], width: size.width, height: size.height, depth: face.depth });
+    candidates.push({ part, role, text, fill, x: at[0], y: at[1], width: size.width, height: size.height, depth: face.depth });
   }
   const kept: CabinetRoleLabel[] = [];
   for (const label of candidates.sort((x, y) => y.depth - x.depth)) {
     const clash = kept.some((other) => Math.abs(other.x - label.x) * 2 < other.width + label.width + 4 && Math.abs(other.y - label.y) * 2 < other.height + label.height + 4);
-    if (!clash) kept.push({ part: label.part, role: label.role, text: label.text, x: label.x, y: label.y, width: label.width, height: label.height });
+    if (!clash) kept.push({ part: label.part, role: label.role, text: label.text, fill: label.fill, x: label.x, y: label.y, width: label.width, height: label.height });
   }
   return kept;
 }
@@ -1479,28 +1679,58 @@ export type Cabinet3dDrawingOptions = {
   axisLabels?: { x: string; y: string; z: string };
   // A cabinet's roles shown — its backs and ends in their colours, each labelled (as the 3D view shows them). Default on.
   showRoles?: boolean;
+  // Narrower than `width` if it doesn't need it all: the drawing only as wide as the cabinet (and room for its
+  // dimensions) comes out at `height` — no empty space either side (a print's box). Its width is the drawing's.
+  trimWidth?: boolean;
+  // Its dimensions just the numbers ("720"), not "H 720".
+  bareNumbers?: boolean;
 };
 export function cabinet3dDrawingOps(model: CabinetModel, view: CabinetView, opts: Cabinet3dDrawingOptions): ShapeDrawing {
-  const width = Math.max(16, opts.width);
+  let width = Math.max(16, opts.width);
   const height = Math.max(16, opts.height);
   const fontSize = Math.max(4, opts.fontSize ?? 10);
   const ops: ShapeDrawingOp[] = [{ kind: "rect", x: 0, y: 0, w: width, h: height, r: 0, fill: "#FFFFFF" }];
   const drawing: ShapeDrawing = { width, height, scale: 1, toPx: (p) => p, ops, labels: [], arrows: [] };
   if (!model.prisms.length) return drawing;
-  // (Drawn a little in from the edges — room round it for the dimensions.)
-  const inset = Math.min(width, height) * 0.1 + fontSize * 2;
-  const inner = { width: Math.max(16, width - 2 * inset), height: Math.max(16, height - 2 * inset) };
-  const projector = cabinetViewProjector(model, view, inner);
-  const project = (p: CabinetPoint3): ShapePoint => {
-    const [x, y] = projector.project(p);
-    return [x + inset, y + inset];
-  };
-  const seen = projectCabinetFaces(model, cabinetModelFaces(model), view, inner);
+  // Fitted to the page as it's seen from this way round (not the room it'd need turned any way at all, as on the
+  // screen): the faces as the screen projects them, then scaled up and centred to fill it — room left round it for the
+  // dimensions.
+  const k = fontSize / 10;
+  const margin = 22 * k + fontSize * 1.8;
+  const projector = cabinetViewProjector(model, view, { width, height });
+  const seen = projectCabinetFaces(model, cabinetModelFaces(model), view, { width, height });
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const face of seen) {
+    for (const [x, y] of face.screen) {
+      minX = Math.min(minX, x);
+      maxX = Math.max(maxX, x);
+      minY = Math.min(minY, y);
+      maxY = Math.max(maxY, y);
+    }
+  }
+  // (Just a little room above it — its dimensions go along its bottom and up its side — and it starts there, any room
+  // left over going under it.)
+  const top = 10 * k;
+  const room = { width: Math.max(16, width - 2 * margin), height: Math.max(16, height - top - margin) };
+  const fit = Number.isFinite(minX) ? Math.min(room.width / Math.max(1e-6, maxX - minX), room.height / Math.max(1e-6, maxY - minY)) : 1;
+  if (opts.trimWidth && Number.isFinite(minX)) {
+    width = Math.min(width, Math.max(16, (maxX - minX) * fit + 2 * margin));
+    room.width = Math.max(16, width - 2 * margin);
+    drawing.width = width;
+    ops[0] = { kind: "rect", x: 0, y: 0, w: width, h: height, r: 0, fill: "#FFFFFF" };
+  }
+  const shiftX = margin + (room.width - (maxX - minX) * fit) / 2 - minX * fit;
+  const shiftY = top - minY * fit;
+  const place = (p: [number, number]): ShapePoint => [p[0] * fit + shiftX, p[1] * fit + shiftY];
+  const project = (p: CabinetPoint3): ShapePoint => place(projector.project(p));
   for (const face of seen) {
     const look = cabinetFaceLook(face, opts.color, { bandedFaces: opts.bandedFaces, bandColor: opts.bandColor, roles: opts.showRoles !== false });
     ops.push({
       kind: "path",
-      points: face.screen.map((p) => [p[0] + inset, p[1] + inset] as ShapePoint),
+      points: face.screen.map(place),
       closed: true,
       fill: look.fill,
       fillOpacity: look.fillOpacity,
@@ -1510,15 +1740,16 @@ export function cabinet3dDrawingOps(model: CabinetModel, view: CabinetView, opts
     });
   }
   // (Each back, end and door's role on it, as on the screen.)
-  for (const label of opts.showRoles === false ? [] : cabinetRoleLabels(seen, (text) => ({ width: text.length * fontSize * 0.56 + 10 * (fontSize / 10), height: fontSize + 5 * (fontSize / 10) }), (p) => [p[0] + inset, p[1] + inset])) {
-    ops.push({ kind: "rect", x: label.x - label.width / 2, y: label.y - label.height / 2, w: label.width, h: label.height, r: label.height / 2, fill: CABINET_EDGE_ROLE_COLORS[label.role] });
+  for (const label of opts.showRoles === false ? [] : cabinetRoleLabels(seen, (text) => ({ width: text.length * fontSize * 0.56 + 10 * (fontSize / 10), height: fontSize + 5 * (fontSize / 10) }), place)) {
+    ops.push({ kind: "rect", x: label.x - label.width / 2, y: label.y - label.height / 2, w: label.width, h: label.height, r: label.height / 2, fill: label.fill });
     ops.push({ kind: "text", x: label.x, y: label.y + fontSize * 0.35, text: label.text, size: fontSize, color: "#FFFFFF", align: "center" });
   }
   // The box round it: of each direction's four edges, the one furthest out on the page (Width and Depth along its
-  // bottom, Height up its left), dimensioned just outside it.
+  // bottom, Height up its left), dimensioned just outside it — stepped out along one of the cabinet's own directions
+  // (the one of the other two that leaves the box there, and goes most across the line on the page), so the lines lie
+  // in its angle, as a drawing's would.
   const box = model.bounds;
   const labels = opts.axisLabels ?? { x: "W", y: "D", z: "H" };
-  const k = fontSize / 10;
   const soft = "#64748B";
   const ink = "#0F172A";
   const screenCentre = project(projector.centre);
@@ -1556,9 +1787,26 @@ export function cabinet3dDrawingOps(model: CabinetModel, view: CabinetView, opts
     const q = project(q3);
     if (!(len(sub(q, p)) > 1)) continue;
     const dir = unit(sub(q, p));
-    let normal: ShapePoint = [-dir[1], dir[0]];
+    // (Which way is out from this edge, along each of the other two directions: towards whichever side of the box
+    // it's on.)
+    const centre3 = projector.centre;
+    // (Width and Depth stepped out along the floor — each along the other; Height along whichever of the two goes most
+    // across it on the page.)
+    const outward: ShapePoint[] = (axis === 0 ? ([1] as const) : axis === 1 ? ([0] as const) : ([0, 1] as const))
+      .map((other) => {
+        const step: CabinetPoint3 = [0, 0, 0];
+        step[other] = p3[other] >= centre3[other] ? 1 : -1;
+        const from = project(p3);
+        const to = project([p3[0] + step[0] * 100, p3[1] + step[1] * 100, p3[2] + step[2] * 100]);
+        return unit(sub(to, from));
+      })
+      .filter((d) => len(d) > 0 && Math.abs(dot(d, dir)) < 0.97);
+    let normal: ShapePoint =
+      outward.reduce<ShapePoint | null>((best, d) => (!best || Math.abs(dot(d, dir)) < Math.abs(dot(best, dir)) ? d : best), null) ?? [-dir[1], dir[0]];
     if (dot(sub(midpoint(p, q), screenCentre), normal) < 0) normal = mul(normal, -1);
-    const offset = 14 * k;
+    // (How far out across the line on the page, kept the same whatever the slant.)
+    const across = Math.max(0.35, Math.abs(normal[0] * -dir[1] + normal[1] * dir[0]));
+    const offset = (14 * k) / across;
     const a = add(p, mul(normal, offset));
     const z = add(q, mul(normal, offset));
     ops.push({ kind: "path", points: [add(p, mul(normal, 3 * k)), add(a, mul(normal, 3 * k))], closed: false, stroke: soft, lineWidth: 0.5 * k });
@@ -1569,7 +1817,7 @@ export function cabinet3dDrawingOps(model: CabinetModel, view: CabinetView, opts
       ops.push({ kind: "path", points: head(a, m), closed: true, fill: soft });
       ops.push({ kind: "path", points: head(z, m), closed: true, fill: soft });
     }
-    const text = `${names[axis]} ${formatShapeMm(sizes[axis])}`;
+    const text = opts.bareNumbers ? formatShapeMm(sizes[axis]) : `${names[axis]} ${formatShapeMm(sizes[axis])}`;
     const w = text.length * fontSize * 0.56 + 6 * k;
     const h = fontSize + 5 * k;
     const at = add(m, mul(normal, h / 2 + 2 * k));
@@ -1706,9 +1954,28 @@ export function customCabinetSizeText(shape: CutlistShape): string {
   return `H ${formatShapeMm(size.height)} × W ${formatShapeMm(size.width)} × D ${formatShapeMm(size.depth)}`;
 }
 
-// Its parts as they're listed: each Back and End numbered when it has more than one ("Back 1", "Back 2" — in the
-// outline's order), the rest by name; with mergeTopBottom, its Top and Bottom one line ("Top / Bottom", both of them —
-// they're the same shape), as the cabinets' own breakdown has them.
+// Its Backs, Ends and Rails named by their sides (CabinetPart's `label`), left to right as you stand at its doors
+// (`across`: each one's place that way, by its key) — only where there's more than one of a kind. (One named already —
+// the back rail, "Rail (Back)" — left as it is, and not counted.)
+function sideLabels(parts: CabinetPart[], across: Map<string, number>): void {
+  for (const name of ["Back", "End", "Rail"] as const) {
+    const ordered = parts
+      .map((part, index) => ({ part, index }))
+      .filter((entry) => entry.part.name === name && !entry.part.label)
+      .sort((a, b) => (across.get(a.part.key) ?? 0) - (across.get(b.part.key) ?? 0) || a.index - b.index)
+      .map((entry) => entry.part);
+    if (ordered.length < 2) continue;
+    const last = ordered.length - 1;
+    ordered.forEach((part, i) => {
+      part.label = `${name} (${i === 0 ? "Left Hand" : i === last ? "Right Hand" : ordered.length === 3 ? "Centre" : i + 1})`;
+    });
+  }
+}
+
+// Its parts as they're listed: each by its `label` — a Back or End by its side (sideLabels); one without (no doors to
+// stand at) numbered when it has more than one ("Back 1", "Back 2" — in the outline's order) — the rest by name; with
+// mergeTopBottom, its Top and Bottom one line ("Top / Bottom", both of them — they're the same shape), as the cabinets'
+// own breakdown has them.
 export type CabinetPartLine = { key: string; label: string; quantity: number; part: CabinetPart; parts: CabinetPart[] };
 export function customCabinetPartLines(parts: CabinetPart[], options: { mergeTopBottom?: boolean } = {}): CabinetPartLine[] {
   const count = (name: CabinetPartName) => parts.filter((part) => part.name === name).length;
@@ -1717,7 +1984,7 @@ export function customCabinetPartLines(parts: CabinetPart[], options: { mergeTop
   for (const part of parts) {
     const nth = (seen[part.name] = (seen[part.name] ?? 0) + 1);
     const numbered = (part.name === "Back" || part.name === "End") && count(part.name) > 1;
-    lines.push({ key: part.key, label: numbered ? `${part.name} ${nth}` : part.name, quantity: part.quantity, part, parts: [part] });
+    lines.push({ key: part.key, label: part.label ?? (numbered ? `${part.name} ${nth}` : part.name), quantity: part.quantity, part, parts: [part] });
   }
   if (!options.mergeTopBottom) return lines;
   const top = lines.find((line) => line.part.name === "Top");
@@ -1728,8 +1995,8 @@ export function customCabinetPartLines(parts: CabinetPart[], options: { mergeTop
     .map((line) => (line === top ? { ...top, key: "top-bottom", label: "Top / Bottom", quantity: top.quantity + bottom.quantity, parts: [top.part, bottom.part] } : line));
 }
 
-// What's edge banded: its top, bottom and shelves along their doors edges, and every end's front edge (each the
-// cabinet's height long — both, between two doors runs). Its backs never are.
+// What's edge banded: its top, bottom and shelves along their doors edges, every end's front edge (each the cabinet's
+// height long — both, between two doors runs), and each rail's front edge (its length). Its backs never are.
 // How much of its parts is banded (mm, for one cabinet), each as many times as it's made — and in how many strips (each
 // a length of tape: its two ends trimmed — the excess per end, Company Settings › Machining).
 export function customCabinetBanding(parts: CabinetPart[]): { mm: number; strips: number } {
@@ -1744,6 +2011,9 @@ export function customCabinetBanding(parts: CabinetPart[]): { mm: number; strips
     } else if (part.name === "End" && part.frontEdges && Number(part.height) > 0) {
       mm += Number(part.height) * part.frontEdges * quantity;
       strips += part.frontEdges * quantity;
+    } else if (part.name === "Rail" && Number(part.width) > 0) {
+      mm += Number(part.width) * quantity;
+      strips += quantity;
     }
   }
   return { mm, strips };
@@ -1751,17 +2021,21 @@ export function customCabinetBanding(parts: CabinetPart[]): { mm: number; strips
 export function customCabinetBandedLengthMm(parts: CabinetPart[]): number {
   return customCabinetBanding(parts).mm;
 }
-// A Back's or an End's Clashing as the cutlist writes it (1L / 2L / 1S / 2S): an End's front edge, on its Long side or
-// its Short — whichever its height is, as a cabinet's sides' are — both (2), between two doors runs; a Back's none.
-// (Its piece's row in the cutlist is given exactly this.)
+// A Back's, End's or Rail's Clashing as the cutlist writes it (1L / 2L / 1S / 2S): an End's front edge, on its Long side
+// or its Short — whichever its height is, as a cabinet's sides' are — both (2), between two doors runs; a Rail's front
+// edge, its length (1L — as a Cabinetry row's rails: autoClashByDominant); a Back's none. (Its piece's row in the cutlist
+// is given exactly this.)
 export function customCabinetPanelClash(part: CabinetPart): { clashLeft: string; clashRight: string } {
-  const fronts = part.kind === "panel" && part.name === "End" ? Math.max(1, Math.min(2, part.frontEdges ?? 1)) : 0;
+  const rail = part.name === "Rail";
+  const fronts = part.kind !== "panel" ? 0 : part.name === "End" ? Math.max(1, Math.min(2, part.frontEdges ?? 1)) : rail ? 1 : 0;
   const height = Number(part.height);
   const width = Number(part.width);
   if (!fronts || !(height > 0) || !(width > 0)) return { clashLeft: "", clashRight: "" };
-  return height > width ? { clashLeft: `${fronts}L`, clashRight: "" } : { clashLeft: "", clashRight: `${fronts}S` };
+  const banded = rail ? width : height;
+  const other = rail ? height : width;
+  return banded > other ? { clashLeft: `${fronts}L`, clashRight: "" } : { clashLeft: "", clashRight: `${fronts}S` };
 }
-// A part's Clashing as its row in the cutlist reads: a panel's 1L / 2S, a shaped part's banding ("1.2 m banded", "No
+// A part's Clashing as its row in the cutlist reads: a panel's 1L / 2S, a shaped part's banded length ("1.2m", or nothing —
 // banding"); "" — none (a Back), or nothing to make.
 export function customCabinetPartClashingText(part: CabinetPart): string {
   if (part.problem) return "";
@@ -1770,10 +2044,10 @@ export function customCabinetPartClashingText(part: CabinetPart): string {
   return [clashLeft, clashRight].filter(Boolean).join(" ");
 }
 
-// "2.84 m banded" — a custom cabinet's Clashing cell: its shaped parts' banding, all of them.
+// "2.84m" — a custom cabinet's Clashing: its shaped parts' banded length, all of them (nothing, none).
 export function customCabinetBandingSummary(parts: CabinetPart[]): string {
   const mm = customCabinetBandedLengthMm(parts);
-  return mm > 0 ? `${formatShapeMetres(mm)} m banded` : "No banding";
+  return mm > 0 ? `${formatShapeMetres(mm)}m` : "";
 }
 
 // ---- Its top view as a drawing (lib/cutlist-shape-render.ts's steps — on white paper): its outline and dimensions as a

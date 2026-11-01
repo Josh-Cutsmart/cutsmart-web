@@ -59,6 +59,7 @@ whatsNew: [
 <ul>
 <li><b>Custom shapes</b>: set a part type to Custom in Company Settings and its pieces are drawn — an L corner, a U, a notch, an angled corner, or any shape you draw line by line (snapping to 45° and 90°). Tap any size to change it, any corner to round it, any edge to band it</li>
 <li>A shaped piece's cut size, banding and drawing go on its cutlist row, and its banding counts in the board's edge tape</li>
+<li>A Custom piece sits in the table of what it is — a custom cabinet at the bottom of Cabinetry, under <b>Custom</b> — with its sizes in their columns and its drawing in its drop-down</li>
 <li>Round a corner into a curve by dragging its handle, and a shape can't be drawn crossing itself</li>
 <li>Shaped pieces have a <b>Custom</b> table of their own — open one for a large drawing, <b>Edit shape</b> and <b>Download DXF</b> for the CNC</li>
 <li>Shaped pieces show as drawings in the CNC Cutlist, on the Nesting sheets, on labels and in the printed cutlist and Excel — with lacquer worked out from their true area</li>
@@ -73,6 +74,7 @@ whatsNew: [
 <li><b>True-shape nesting</b> on a CNC: pieces are laid out by their real outline, so smaller pieces fill an L's corner or a U's middle and shapes fit into each other — never more sheets than before</li>
 <li><b>Export</b> a shape's drawing — 2D or 3D, as a PNG or PDF, with its sizes</li>
 <li>In 3D, click an edge to band it (a cabinet's to make it doors, a back or an end); right-drag in 2D turns straight into 3D</li>
+<li>Custom cabinets are <b>Base</b> or <b>Wall</b>, with <b>Full Top</b>, fixed and adjustable shelves — on their row and in the drawing. A Base one without a full top gets rails: one end to back, the other up to it, and a back rail</li>
 <li>A custom cabinet's doors edges are taped on every part along them — top, bottom and shelves — and every end's front</li>
 <li>A Custom piece goes into Cutlist Entry as soon as it's picked, and closing its drawing with changes asks first, with <b>Save &amp; close</b></li>
 <li>A room with nothing in its cutlist yet shows <b>Add your first piece</b> — press it and pick the part type (Initial Measure and Production)</li>

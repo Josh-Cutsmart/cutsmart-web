@@ -52,6 +52,11 @@ export type CutlistShapeCabinet = {
   // How many shelves of each (defaults: 0 fixed, 1 adjustable).
   fixedShelves?: number;
   adjustableShelves?: number;
+  // Base or Wall, as a Cabinetry row's Base / Wall (its row's cabinetryKind says the same) — not set: Base. A Base
+  // without a full top (`fullTop` — its row's cabinetryFullTop) has rails along its front instead of a top
+  // (lib/cutlist-cabinet-shape.ts); a Wall always has its top.
+  kind?: "base" | "wall";
+  fullTop?: boolean;
 };
 
 // A cabinet's height when it's not been set.
@@ -2069,10 +2074,10 @@ export function formatShapeMm(value: number): string {
 export function formatShapeMetres(mm: number): string {
   return (Math.max(0, mm) / 1000).toFixed(2);
 }
-// "1.84 m banded" — a Custom row's Clashing cell.
+// "1.84m" — a Custom row's Clashing: just how much of it's banded (nothing, none).
 export function shapeBandingSummary(shape: CutlistShape): string {
   const geometry = shapeGeometry(shape);
-  return geometry.bandedLengthMm > 0 ? `${formatShapeMetres(geometry.bandedLengthMm)} m banded` : "No banding";
+  return geometry.bandedLengthMm > 0 ? `${formatShapeMetres(geometry.bandedLengthMm)}m` : "";
 }
 export function describeCutlistShape(shape: CutlistShape): string {
   const size = shapeOuterSize(shape);
@@ -2126,6 +2131,8 @@ function cabinetForStorage(cabinet: CutlistShapeCabinet): Record<string, unknown
     const count = Number(cabinet[key]);
     if (cabinet[key] !== undefined && Number.isFinite(count) && count >= 0) out[key] = Math.round(count);
   }
+  if (cabinet.kind === "base" || cabinet.kind === "wall") out.kind = cabinet.kind;
+  if (cabinet.fullTop === true) out.fullTop = true;
   return out;
 }
 
@@ -2166,6 +2173,8 @@ function readShapeCabinet(raw: unknown, count: number): CutlistShapeCabinet | un
     const n = Number(item[key]);
     if (item[key] !== undefined && item[key] !== null && Number.isFinite(n) && n >= 0) out[key] = Math.round(n);
   }
+  if (item.kind === "base" || item.kind === "wall") out.kind = item.kind;
+  if (item.fullTop === true) out.fullTop = true;
   return out;
 }
 

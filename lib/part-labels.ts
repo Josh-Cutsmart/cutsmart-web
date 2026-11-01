@@ -335,7 +335,7 @@ function drawOutline(ops: LabelOp[], label: PartLabel, box: { x: number; y: numb
     }
   }
   const shaped = labelShapeLines(label.shape);
-  const clashCode = shaped ? (shaped.bandedMm > 0 ? `Banded ${formatShapeMetres(shaped.bandedMm)} m` : "") : label.clashCode;
+  const clashCode = shaped ? (shaped.bandedMm > 0 ? `${formatShapeMetres(shaped.bandedMm)}m` : "") : label.clashCode;
   const caption = clashCode || hinges?.tag ? captionSize * LABEL_PT * 1.35 : 0;
   const availW = box.w - reserve.left - reserve.right;
   const availH = box.h - reserve.top - reserve.bottom - caption;

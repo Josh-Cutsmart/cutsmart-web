@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo, useState, type MouseEvent as ReactMouseEvent } from "react";
-import { Download, Pencil } from "lucide-react";
+import { useMemo, type MouseEvent as ReactMouseEvent } from "react";
+import { Pencil } from "lucide-react";
 import {
   formatShapeMm,
   isCabinetShape,
@@ -17,14 +17,12 @@ import { shapeDrawingSvg } from "@/lib/cutlist-shape-render";
 import { shapeDxfFileName, shapeToDxf } from "@/lib/cutlist-shape-dxf";
 import {
   CABINET_EDGE_ROLE_COLORS,
-  CABINET_EDGE_ROLE_LABELS,
   cabinetEdgeRoles,
   cabinetPlanSvg,
   cabinetRoleChains,
   cachedCustomCabinetModel,
   cachedCustomCabinetParts,
   customCabinetBandingSummary,
-  customCabinetPartClashingText,
   customCabinetPartLines,
   customCabinetSize,
   customCabinetSizeText,
@@ -40,7 +38,8 @@ import { glassShineStyle } from "@/lib/glass-shine";
 //
 // A custom cabinet (isCabinetShape — its drawing its top view, lib/cutlist-cabinet-shape.ts): its top view with its
 // backs and ends drawn a board thick (`boardThicknessMm`, 18 unless given), its Height × Width × Depth under the small
-// one; opened, how it's built — its top view with dimensions, a small 3D view, and its parts — and its shaped parts' DXFs.
+// one; opened, how it's built — its top view with dimensions and a small 3D view (its parts: the page's sub-rows) — and
+// its shaped parts' DXFs.
 
 // The board thickness a cabinet's drawn and worked out at when none's given.
 const DEFAULT_BOARD_MM = 18;
@@ -293,8 +292,8 @@ export function customCabinetPartSizeText(part: CabinetPart): string {
     : `W ${formatShapeMm(Number(part.width))} × D ${formatShapeMm(Number(part.height))}`;
 }
 
-// What a row opens to (its drop-down arrow, or its popup on a phone): the drawing big enough to read, its outer size and
-// banding, Edit shape (View shape, read only) and Download DXF. A custom cabinet's: how it's built (CutlistCabinetDetail).
+// What a row opens to (its drop-down arrow, or its popup on a phone): the drawing big enough to read, with Edit shape (View
+// shape, read only) over its top left corner. A custom cabinet's: how it's built (CutlistCabinetDetail).
 export function CutlistShapeDetail({
   shape,
   name,
@@ -347,58 +346,35 @@ export function CutlistShapeDetail({
     );
   }
   return (
-    <div className={`flex gap-4 ${stacked ? "flex-col items-stretch" : "flex-wrap items-center"}`}>
-      <CutlistShapeDrawing shape={shape} width={drawingWidth} height={drawingHeight} fontSize={fontSize} className={stacked ? "mx-auto w-full" : "min-w-0 flex-1"} />
-      <div className={`flex shrink-0 gap-2 ${stacked ? "flex-col items-stretch" : "flex-col items-start"}`}>
-        <p className="text-[12px] font-medium" style={{ color: textColor }}>
-          {cutlistShapeSizeText(shape)}
-        </p>
-        <p className="text-[12px] font-medium" style={{ color: textColor }}>
-          {shapeBandingSummary(shape)}
-        </p>
-        <div className={`flex gap-2 ${stacked ? "flex-row" : "flex-col items-start"}`}>
-          <button
-            type="button"
-            onClick={onEdit}
-            className={`glass-shine inline-flex h-8 items-center justify-center gap-1.5 rounded-full border px-3.5 text-[12px] font-medium text-white hover:brightness-95 ${stacked ? "flex-1" : ""}`}
-            style={glassShineStyle("var(--brand)")}
-          >
-            <Pencil size={13} />
-            {readOnly ? "View shape" : "Edit shape"}
-          </button>
-          <button
-            type="button"
-            onClick={() => downloadCutlistShapeDxf(shape, name || "Shape")}
-            className={`glass-shine glass-shine-neutral inline-flex h-8 items-center justify-center gap-1.5 rounded-full border px-3.5 text-[12px] font-medium hover:brightness-95 ${stacked ? "flex-1" : ""}`}
-            style={{ color: "var(--text-main)" }}
-            title={`Download ${shapeDxfFileName(name || "Shape")}`}
-          >
-            <Download size={13} />
-            Download DXF
-          </button>
-        </div>
-      </div>
+    <div className="relative">
+      <CutlistShapeDrawing shape={shape} width={drawingWidth} height={drawingHeight} fontSize={fontSize} className={stacked ? "mx-auto w-full" : "w-full"} />
+      {/* Edit shape, over the drawing's top left corner. */}
+      <button
+        type="button"
+        onClick={onEdit}
+        className="glass-shine absolute left-2 top-2 z-[1] inline-flex h-8 items-center justify-center gap-1.5 rounded-full border px-3.5 text-[12px] font-medium text-white hover:brightness-95"
+        style={glassShineStyle("var(--brand)")}
+      >
+        <Pencil size={13} />
+        {readOnly ? "View shape" : "Edit shape"}
+      </button>
     </div>
   );
 }
 
-// A custom cabinet opened: its top view with its dimensions, a small 3D view (dragged to turn it — a part hovered in the
-// list picked out in it), its parts (each one's quantity across the row, its size, and a shaped one's outline), its
-// height, size and banding, Edit shape and its shaped parts' DXFs.
+// A custom cabinet opened: its top view with its dimensions, Edit shape over its top left corner, and a small 3D view
+// (dragged to turn it). Its parts are the cutlist's own sub-rows under it, in the List's columns (the page lays them out).
 export function CutlistCabinetDetail({
   shape,
-  name,
   readOnly,
   onEdit,
   drawingWidth = 560,
   drawingHeight = 280,
   fontSize = 11,
   stacked = false,
-  textColor = "var(--text-main)",
   boardThicknessMm,
   doorGapMm,
   color = "#CBD5E1",
-  quantity,
 }: {
   shape: CutlistShape;
   name: string;
@@ -415,124 +391,30 @@ export function CutlistCabinetDetail({
   quantity?: number | string;
 }) {
   const thicknessMm = boardMmOf(boardThicknessMm);
-  const [hoverPart, setHoverPart] = useState<string | null>(null);
-  const parts = cachedCustomCabinetParts(shape, thicknessMm);
   const model = cachedCustomCabinetModel(shape, thicknessMm, doorGapMm);
-  const lines = useMemo(() => customCabinetPartLines(parts), [parts]);
-  const each = Math.max(1, Number.parseInt(String(quantity ?? "1"), 10) || 1);
-  const hasShapedParts = parts.some((part) => part.kind === "shape" && part.shape);
   const view3d = stacked ? { width: 320, height: 220 } : { width: Math.min(340, Math.round(drawingHeight * 1.15)), height: drawingHeight };
-  const muted = { color: textColor, opacity: 0.75 } as const;
   return (
     <div className="flex flex-col gap-3">
       <div className={`flex gap-3 ${stacked ? "flex-col items-stretch" : "flex-wrap items-stretch"}`}>
-        <CutlistCabinetPlanDrawing
-          shape={shape}
-          boardThicknessMm={thicknessMm}
-          width={drawingWidth}
-          height={drawingHeight}
-          fontSize={fontSize}
-          className={stacked ? "mx-auto w-full" : "min-w-0 flex-1"}
-        />
+        {/* (Its own width, not stretched — the 3D view right beside it.) */}
+        <div className={`relative ${stacked ? "w-full" : "min-w-0 shrink"}`} style={stacked ? undefined : { width: drawingWidth, maxWidth: "100%" }}>
+          <CutlistCabinetPlanDrawing shape={shape} boardThicknessMm={thicknessMm} width={drawingWidth} height={drawingHeight} fontSize={fontSize} className="w-full" />
+        {/* Edit shape, over the drawing's top left corner. */}
+        <button
+          type="button"
+          onClick={onEdit}
+          className="glass-shine absolute left-2 top-2 z-[1] inline-flex h-8 items-center justify-center gap-1.5 rounded-full border px-3.5 text-[12px] font-medium text-white hover:brightness-95"
+          style={glassShineStyle("var(--brand)")}
+        >
+          <Pencil size={13} />
+          {readOnly ? "View shape" : "Edit shape"}
+        </button>
+        </div>
         <div
           className={`relative shrink-0 overflow-hidden rounded-[12px] border ${stacked ? "mx-auto" : ""}`}
           style={{ width: view3d.width, height: view3d.height, maxWidth: "100%", borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}
         >
-          <CutlistCabinet3d model={model} width={view3d.width} height={view3d.height} color={color} highlight={hoverPart} />
-        </div>
-      </div>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-        <p className="text-[12px] font-medium" style={{ color: textColor }}>
-          {customCabinetSizeText(shape)}
-        </p>
-        <p className="text-[12px] font-medium" style={{ color: textColor }}>
-          {formatShapeMm(thicknessMm)} mm board
-        </p>
-        <p className="text-[12px] font-medium" style={{ color: textColor }}>
-          {customCabinetBandingSummary(parts)} (each)
-        </p>
-        <span className="inline-flex items-center gap-3 text-[11px] font-medium" style={{ color: textColor }}>
-          {(["back", "end", "doors"] as const).map((role) => (
-            <span key={role} className="inline-flex items-center gap-1">
-              <span className="inline-block h-2.5 w-2.5 rounded-[3px]" style={{ backgroundColor: CABINET_EDGE_ROLE_COLORS[role] }} />
-              {CABINET_EDGE_ROLE_LABELS[role]}
-            </span>
-          ))}
-        </span>
-      </div>
-      <div className={`flex gap-3 ${stacked ? "flex-col items-stretch" : "flex-wrap items-start"}`}>
-        <div className="min-w-0 flex-1 overflow-x-auto rounded-[12px] border" style={{ borderColor: "var(--glass-border)" }}>
-          <table className="w-full border-collapse text-[12px] font-medium" style={{ color: textColor }}>
-            <thead>
-              <tr className="text-left">
-                <th className="px-3 py-1.5 font-medium" style={muted}>
-                  Part
-                </th>
-                <th className="px-3 py-1.5 text-center font-medium" style={muted}>
-                  Qty
-                </th>
-                <th className="px-3 py-1.5 font-medium" style={muted}>
-                  Size
-                </th>
-                <th className="px-3 py-1.5 font-medium" style={muted}>
-                  Clashing
-                </th>
-                <th className="px-3 py-1.5 text-center font-medium" style={muted}>
-                  Shape
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {lines.map((line) => {
-                const part = line.part;
-                return (
-                  <tr
-                    key={line.key}
-                    className="border-t transition-colors"
-                    style={{ borderColor: "var(--glass-border)", backgroundColor: hoverPart === part.key ? "color-mix(in srgb, var(--brand) 10%, transparent)" : undefined }}
-                    onMouseEnter={() => setHoverPart(part.key)}
-                    onMouseLeave={() => setHoverPart((prev) => (prev === part.key ? null : prev))}
-                  >
-                    <td className="whitespace-nowrap px-3 py-1">{line.label}</td>
-                    <td className="px-3 py-1 text-center">{part.problem ? "-" : part.quantity * each}</td>
-                    <td className="whitespace-nowrap px-3 py-1">{part.problem ? part.problem : customCabinetPartSizeText(part)}</td>
-                    <td className="whitespace-nowrap px-3 py-1">
-                      {customCabinetPartClashingText(part)}
-                    </td>
-                    <td className="px-3 py-1">
-                      {part.kind === "shape" && part.shape ? (
-                        <span className="flex justify-center">
-                          <CutlistShapeThumbnail shape={part.shape} color={color} width={48} height={26} strokeColor={textColor} title={line.label} />
-                        </span>
-                      ) : null}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-        <div className={`flex shrink-0 gap-2 ${stacked ? "flex-row" : "flex-col items-start"}`}>
-          <button
-            type="button"
-            onClick={onEdit}
-            className={`glass-shine inline-flex h-8 items-center justify-center gap-1.5 rounded-full border px-3.5 text-[12px] font-medium text-white hover:brightness-95 ${stacked ? "flex-1" : ""}`}
-            style={glassShineStyle("var(--brand)")}
-          >
-            <Pencil size={13} />
-            {readOnly ? "View shape" : "Edit shape"}
-          </button>
-          <button
-            type="button"
-            disabled={!hasShapedParts}
-            onClick={() => void downloadCustomCabinetDxfs(shape, thicknessMm, name || "Cabinet")}
-            className={`glass-shine glass-shine-neutral inline-flex h-8 items-center justify-center gap-1.5 rounded-full border px-3.5 text-[12px] font-medium hover:brightness-95 disabled:opacity-50 ${stacked ? "flex-1" : ""}`}
-            style={{ color: "var(--text-main)" }}
-            title="Download its top, bottom and shelves as DXFs (a zip)"
-          >
-            <Download size={13} />
-            Download DXF
-          </button>
+          <CutlistCabinet3d model={model} width={view3d.width} height={view3d.height} color={color} />
         </div>
       </div>
     </div>
