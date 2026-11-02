@@ -3474,15 +3474,18 @@ export function AppShell({
     resetProjectForm();
   };
   const newProjectAccent = newProjectIsSmallJob ? SMALL_JOB_COLOR : "var(--brand)";
-  // Its cards: the app's neutral glass (as the project page's and other pop-ups' containers). Not clipped: the menus
-  // opened in them — Assign to, tag suggestions, the notes toolbar's — reach out past them.
-  const newProjectCardClass = "glass-shine glass-shine-neutral rounded-[16px]";
+  // Its cards: see-through glass (the pop-up's own glass, and what's behind it, showing through), with the Nesting's
+  // cards' soft edge, top highlight and shadow. Not clipped: the menus opened in them — Assign to, tag suggestions, the
+  // notes toolbar's — reach out past them.
+  const newProjectCardClass =
+    "rounded-[18px] border border-[var(--glass-border)] bg-[var(--glass-bg)] shadow-[inset_0_1px_0_rgba(255,255,255,0.55),var(--shadow-glass)]";
   const newProjectCardHeaderClass = "flex min-h-[44px] items-center gap-2 border-b border-[var(--glass-border)] px-4 py-1.5";
   const newProjectCardTitleClass = "text-[12px] font-medium uppercase tracking-[0.9px] text-[var(--text-main)]";
   const newProjectLabelClass = "mb-1.5 block text-[12px] font-medium text-[var(--text-main)]";
+  // Its text boxes (and Assign to): as the cutlist's — solid white, a thin border, 8px corners, no shadow.
   const newProjectFieldClass = (invalid = false) =>
     cn(
-      "h-10 w-full rounded-[10px] border bg-[var(--panel-bg)] px-3 text-[13px] text-[var(--text-main)] outline-none transition placeholder:text-[var(--text-muted)]",
+      "h-10 w-full rounded-[8px] border bg-[var(--panel-bg)] px-3 text-[13px] text-[var(--text-main)] outline-none transition placeholder:text-[var(--text-muted)]",
       invalid ? "border-[var(--danger)]" : "border-[var(--panel-border)] focus:border-[var(--brand)]",
     );
   const newProjectFieldIconClass = "pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]";
@@ -4684,10 +4687,16 @@ export function AppShell({
                   "inline-flex h-9 shrink-0 items-center gap-2 rounded-full border pl-3 pr-1.5 text-[13px] font-medium transition",
                   newProjectIsSmallJob ? "glass-shine text-white hover:brightness-105" : "hover:bg-[var(--panel-muted)]",
                 )}
+                // (Off: the same see-through glass as its cards.)
                 style={
                   newProjectIsSmallJob
                     ? glassShineStyle(SMALL_JOB_COLOR)
-                    : { borderColor: "var(--panel-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }
+                    : {
+                        borderColor: "var(--glass-border)",
+                        backgroundColor: "var(--glass-bg)",
+                        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.55), var(--shadow-glass)",
+                        color: "var(--text-main)",
+                      }
                 }
               >
                 <Hammer size={14} className="shrink-0" />

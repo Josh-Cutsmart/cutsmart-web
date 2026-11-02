@@ -5,10 +5,10 @@ import { GlassModalHeader } from "@/components/glass-modal-header";
 import { CopyButton, CopyListButton } from "@/components/copy-button";
 import { glassShineStyle } from "@/lib/glass-shine";
 import { haptic } from "@/lib/haptics";
-import { createPortal } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Great_Vibes } from "next/font/google";
-import { AlertTriangle, ArrowLeft, ArrowLeftRight, ArrowRight, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, CloudCheck, CloudOff, CloudUpload, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, File as FileIcon, FileSpreadsheet, FileUp, FileText, FolderSearch, GitBranch, Eraser, GripVertical, HardHat, History as HistoryIcon, Image as ImageIcon, ImagePlus, Import as ImportIcon, Inbox, Info, Layers, Link2, ListChecks, Lock, Mail, MapPin, Maximize2, Minimize2, Minus, Package, PanelRightClose, MoreHorizontal, NotebookPen, Pencil, Phone, Plus, Printer, QrCode, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, Unlock, User, UserPlus, Users, Wrench, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowLeftRight, ArrowRight, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, CloudCheck, CloudOff, CloudUpload, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, EyeOff, File as FileIcon, FileSpreadsheet, FileUp, FileText, FolderSearch, GitBranch, Eraser, GripVertical, HardHat, History as HistoryIcon, Image as ImageIcon, ImagePlus, Import as ImportIcon, Inbox, Info, Layers, Link2, ListChecks, Lock, Mail, MapPin, Maximize2, Minimize2, Minus, Package, PanelRightClose, MoreHorizontal, NotebookPen, Pencil, Phone, Plus, Printer, QrCode, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, Unlock, User, UserPlus, Users, Wrench, X } from "lucide-react";
 import type { DecoupledEditor, ModelWriter } from "ckeditor5";
 import type { RichText as ExcelRichText } from "exceljs";
 import type JSZip from "jszip";
@@ -52,7 +52,7 @@ import { useKeepMenuInView } from "@/lib/use-keep-menu-in-view";
 import { RoomNameCombobox } from "@/components/room-name-combobox";
 import { contrastTextForFill } from "@/lib/user-profile-format";
 import { DEFAULT_CART_COPY_FORMAT, drawerHeightItemNumber, formatCartCopyLine, hardwareItemNumber, normalizeBoardFinishes, normalizeHardwareRows, normalizeMmOptions, normalizeSheetSizes, type HardwareTypeRow } from "@/lib/production-hardware";
-import { GlassSwitch, modalCloseButtonClass } from "@/components/settings-ui";
+import { GlassSwitch, modalCloseButtonClass, Segmented } from "@/components/settings-ui";
 import { normalizeSmallJobStatuses } from "@/lib/small-jobs";
 import { ContactCardPopup } from "@/components/contact-card-popup";
 import { UploadDropZone } from "@/components/upload-drop-zone";
@@ -183,6 +183,12 @@ import { formatLacquerSqm, LACQUER_EDGE_THICKNESS_MM, lacquerPieceAreaMm2, lacqu
 import { isProjectArchived, projectArchivedAtIso, PROJECTS_ARCHIVED_EVENT, type ProjectsArchivedDetail } from "@/lib/project-archive";
 import { Skeleton, SkeletonGroup, SkeletonLines, SkeletonRows } from "@/components/skeleton";
 import { EmptyState } from "@/components/empty-state";
+import { CutlistSheet } from "@/components/cutlist-mobile/cutlist-sheet";
+import { ContractorIcon, normalizeContractorIcons } from "@/components/contractor-icon";
+import { CutlistMixBar, CutlistRoomBar, CutlistRoomRail, CutlistRoomSlide, CutlistRoomsSheet, formatPartsLabel, type CutlistRoomItem } from "@/components/cutlist-mobile/cutlist-rooms";
+import { CutlistEntryCard, CutlistHwdSize, CutlistNotesButton, CutlistViewSwitch, useAutoFoldDrafts, type CutlistCardTone } from "@/components/cutlist-mobile/cutlist-entry";
+import { CutlistListToolbar, CutlistListView, type CutlistListCardData, type CutlistListGroupData } from "@/components/cutlist-mobile/cutlist-list";
+import { CutlistIssuesSheet, CutlistNotesEditor, CutlistNotesSheet, type CutlistIssueItem } from "@/components/cutlist-mobile/cutlist-sheets";
 import { StatusPanel } from "@/components/status-screen";
 import { holdDocumentTitle, useDocumentTitle } from "@/lib/use-document-title";
 import Link from "next/link";
@@ -1387,6 +1393,16 @@ const cutlistGroupTableParts = (group: CutlistRowGroup): Array<{ group: CutlistR
 };
 // A row shown as a Custom piece: in the Custom table, or in a table's Custom area.
 const cutlistRowShownAsCustom = (group: CutlistRowGroup, row: CutlistRow) => Boolean(group.custom || group.customArea?.includes(row));
+// The phone / tablet cutlist's Edit sheet: the part being edited held as a draft of the Cutlist Entry's (so the entry's
+// own fields and handlers edit it), under an id of its own — kept out of the entry itself, its counts, its Add to
+// cutlist and what's saved on this device.
+const CUTLIST_LIST_EDIT_PREFIX = "listedit_";
+const isCutlistListEditDraftId = (id: unknown) => String(id ?? "").startsWith(CUTLIST_LIST_EDIT_PREFIX);
+// The Cutlist Entry's card folds to save: only those of the rows still being entered.
+const keepFoldsOf = (folded: Record<string, boolean>, drafts: Array<{ id: string }>) => {
+  const ids = new Set(drafts.map((row) => row.id));
+  return Object.fromEntries(Object.entries(folded).filter(([id, on]) => on && ids.has(id)));
+};
 // How many parts rows come to (their quantities added up) — a table's, or its Custom area's.
 const cutlistRowsPartCount = (rows: CutlistRow[]) =>
   rows.reduce((sum, row) => {
@@ -3689,6 +3705,7 @@ function CutlistSideDrawer({
 // (pulled to pop the drawer out; the editor's toolbar; close) and its editor — or, read-only, just the notes.
 function ContractorNotesDrawerBody({
   name,
+  icon,
   initialValue,
   savedHtml,
   readOnly,
@@ -3696,6 +3713,8 @@ function ContractorNotesDrawerBody({
   onClose,
 }: {
   name: string;
+  // The contractor's own icon (Company Settings — components/contractor-icon.tsx).
+  icon: ReactNode;
   initialValue: string;
   savedHtml: string;
   readOnly: boolean;
@@ -3707,7 +3726,7 @@ function ContractorNotesDrawerBody({
     <>
       <CutlistDrawerHeader
         title={name}
-        icon={<HardHat size={15} />}
+        icon={icon}
         onClose={onClose}
         toolbarHostRef={readOnly ? undefined : setToolbarHost}
         style={{
@@ -5568,12 +5587,59 @@ function drawerWeightOptions(breakdown: DrawerBreakdown, height: string, runner:
 // How much wider the Cutlist Entry's Depth column goes with a drawer box opened out (cutlistEntryGridTemplateFor) — room for
 // its letter, the depth with a little room, and its weight.
 const DRAWER_BOX_OPEN_EXTRA = 64;
+// A drawer weight's pill or bubble, tinted from the text colour round it (its row's): made solid at that tint over what's
+// behind it, with its text black or white against it (contrastTextForFill) — so on a dark tint its weight goes white.
+// Written straight onto the element (after React's own style), as it's only known once it's on the page.
+function applyDrawerWeightTint(el: HTMLElement | null, own: boolean) {
+  if (!el) return;
+  const parse = (value: string) => {
+    const m = value.match(/rgba?\(([^)]+)\)/);
+    if (!m) return null;
+    const [r, g, b, a = 1] = m[1].split(/[\s,/]+/).filter(Boolean).map(Number);
+    return { r, g, b, a };
+  };
+  const base = parse(getComputedStyle(el.parentElement ?? el).color);
+  let behind: { r: number; g: number; b: number; a: number } | null = null;
+  for (let node = el.parentElement; node && !behind; node = node.parentElement) {
+    const bg = parse(getComputedStyle(node).backgroundColor);
+    if (bg && bg.a > 0.5) behind = bg;
+  }
+  if (!base || !behind) return;
+  const toHex = (amount: number) =>
+    `#${[base.r * amount + behind.r * (1 - amount), base.g * amount + behind.g * (1 - amount), base.b * amount + behind.b * (1 - amount)]
+      .map((v) => Math.round(v).toString(16).padStart(2, "0"))
+      .join("")}`;
+  const fill = toHex(own ? 0.22 : 0.08);
+  el.style.backgroundColor = fill;
+  el.style.borderColor = toHex(own ? 0.55 : 0.3);
+  el.style.color = contrastTextForFill(fill);
+}
+// The Cutlist Entry's closed drawer box's weight: its number in a bubble — faint at its Auto weight, solid at one of its
+// own, as its pill is opened out (DrawerWeightPill); kg in its title.
+function DrawerWeightBubble({ weight, own }: { weight: number; own: boolean }) {
+  const ref = useRef<HTMLSpanElement | null>(null);
+  useLayoutEffect(() => applyDrawerWeightTint(ref.current, own), [own, weight]);
+  return (
+    <span
+      ref={ref}
+      className={`inline-flex h-[15px] min-w-[15px] shrink-0 items-center justify-center rounded-full border px-[3px] text-[9px] leading-none ${own ? "font-semibold" : "font-normal"}`}
+      style={{
+        backgroundColor: `color-mix(in srgb, currentColor ${own ? 22 : 8}%, transparent)`,
+        borderColor: `color-mix(in srgb, currentColor ${own ? 55 : 30}%, transparent)`,
+      }}
+      title={`${weight}kg${own ? "" : " (Auto)"}`}
+      data-drawer-weight-bubble=""
+    >
+      {weight}
+    </span>
+  );
+}
 // A drawer's runner weight pill (drawerWeightPill): its weight — faint when it's Auto, solid when it's its own — pressed
-// for the next it comes in. `wheel` (the Cutlist Entry's open drawer box): hovered, the pill itself stretches up and down
-// (.drawer-weight-wheel, globals.css) to every weight its drawer type has, in their Company Settings order — its own
-// staying where it was, the rest above and below as a wheel's rows, those it doesn't come in at its height and runner
-// length struck through (still shown) — one clicked to pick it. Pressing in it keeps the cursor where it was (the box
-// stays open); scrolling, or leaving it, shrinks it back.
+// for the next it comes in. `wheel` (the Cutlist Entry's open drawer box): pressed, the pill itself stretches down
+// (.drawer-weight-wheel, globals.css) to every weight its drawer type has — its own staying where it was, at the top, the
+// rest under it in their Company Settings order, those it doesn't come in at its height and runner length struck through
+// (still shown) — one clicked to pick it. Pressing in it keeps the cursor where it was (the box stays open); pressing it
+// again or anywhere else, or scrolling, shrinks it back.
 function DrawerWeightPill({
   weights,
   options,
@@ -5584,6 +5650,7 @@ function DrawerWeightPill({
   editable,
   size,
   wheel,
+  openWheel = false,
   onSet,
 }: {
   // Its drawer type's weights, in their Company Settings order — and those it comes in at its height and runner length.
@@ -5596,18 +5663,32 @@ function DrawerWeightPill({
   editable: boolean;
   size: "small" | "large";
   wheel: boolean;
+  // Its wheel opened as soon as it's shown (its box opened from its weight).
+  openWheel?: boolean;
   onSet: (weight: number) => void;
 }) {
   // (Where the stretched pill goes: over the pill, its own row level with it — the pill's size and text colour.)
-  const [wheelAt, setWheelAt] = useState<{ left: number; top: number; width: number; rowH: number; color: string } | null>(null);
+  const [wheelAt, setWheelAt] = useState<{ left: number; top: number; width: number; rowH: number; color: string; fill: string; border: string } | null>(
+    null,
+  );
+  const pillRef = useRef<HTMLButtonElement | null>(null);
+  const wheelRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!wheelAt) return;
     const close = () => setWheelAt(null);
+    // (A press anywhere else closes it too — on a touch screen there's no leaving it.)
+    const onDown = (e: PointerEvent) => {
+      const target = e.target as Node | null;
+      if (target && (wheelRef.current?.contains(target) || pillRef.current?.contains(target))) return;
+      close();
+    };
     window.addEventListener("scroll", close, true);
     window.addEventListener("resize", close);
+    document.addEventListener("pointerdown", onDown, true);
     return () => {
       window.removeEventListener("scroll", close, true);
       window.removeEventListener("resize", close);
+      document.removeEventListener("pointerdown", onDown, true);
     };
   }, [wheelAt]);
   const own = weight !== autoWeight;
@@ -5615,30 +5696,54 @@ function DrawerWeightPill({
   const next = options[(options.indexOf(weight) + 1) % options.length];
   const at = Math.max(0, weights.indexOf(weight));
   const showWheel = wheel && weights.length > 1;
+  // The wheel over the pill — once the pill's finished growing in (its box opening: .drawer-box-weight), so it's made at the
+  // pill's full size, not the size it had part-way.
+  const openWheelOver = async (el: HTMLButtonElement) => {
+    await Promise.all(el.getAnimations().map((animation) => animation.finished.catch(() => undefined)));
+    if (!el.isConnected) return;
+    const rect = el.getBoundingClientRect();
+    setWheelAt(
+      (prev) =>
+        prev ?? {
+          left: rect.left,
+          top: rect.top,
+          width: rect.width,
+          rowH: rect.height,
+          // (The pill's own colours — applyDrawerWeightTint's.)
+          color: getComputedStyle(el).color,
+          fill: getComputedStyle(el).backgroundColor,
+          border: getComputedStyle(el).borderColor,
+        },
+    );
+  };
+  useLayoutEffect(() => applyDrawerWeightTint(pillRef.current, own), [own, weight, size]);
+  const openWheelOverRef = useRef(openWheelOver);
+  useEffect(() => {
+    openWheelOverRef.current = openWheelOver;
+  });
+  useEffect(() => {
+    if (openWheel && showWheel && pillRef.current) void openWheelOverRef.current(pillRef.current);
+  }, [openWheel, showWheel]);
   return (
     <>
       <button
+        ref={pillRef}
         type="button"
         // (Not disabled when there's nothing else to pick — a disabled button isn't hovered, and its wheel still shows the
         // weights it doesn't come in, struck through.)
         disabled={!canPick && !showWheel}
         aria-disabled={!canPick}
+        aria-haspopup={showWheel ? "listbox" : undefined}
+        aria-expanded={showWheel ? Boolean(wheelAt) : undefined}
         onClick={(e) => {
           e.stopPropagation();
-          if (canPick) onSet(next);
+          // (With its wheel: pressed, the wheel — pressed again, shut. Without: the next weight.)
+          if (showWheel) {
+            if (wheelAt) setWheelAt(null);
+            else void openWheelOver(e.currentTarget);
+          } else if (canPick) onSet(next);
         }}
         onDoubleClick={(e) => e.stopPropagation()}
-        onMouseEnter={(e) => {
-          if (!showWheel || wheelAt) return;
-          const rect = e.currentTarget.getBoundingClientRect();
-          setWheelAt({
-            left: rect.left,
-            top: rect.top - at * rect.height,
-            width: rect.width,
-            rowH: rect.height,
-            color: getComputedStyle(e.currentTarget).color,
-          });
-        }}
         title={
           showWheel
             ? `${weight}kg${own ? "" : " (Auto)"}`
@@ -5660,27 +5765,29 @@ function DrawerWeightPill({
       {wheelAt && typeof document !== "undefined"
         ? createPortal(
             <div
+              ref={wheelRef}
               role="listbox"
               aria-label={`${height} drawer weight`}
-              className="drawer-weight-wheel fixed overflow-hidden rounded-[12px] border leading-none"
+              className="drawer-weight-wheel fixed overflow-hidden rounded-[12px] leading-none"
               style={{
                 zIndex: 2147483000,
                 left: wheelAt.left,
                 top: wheelAt.top,
                 width: wheelAt.width,
                 color: wheelAt.color,
-                // (The pill's own look, made solid over what's behind it.)
+                // (The pill's own look, solid — over a panel, should it be see-through.)
                 backgroundColor: "var(--panel-bg)",
-                backgroundImage: `linear-gradient(color-mix(in srgb, ${wheelAt.color} ${own ? 22 : 8}%, transparent), color-mix(in srgb, ${wheelAt.color} ${own ? 22 : 8}%, transparent))`,
-                borderColor: `color-mix(in srgb, ${wheelAt.color} ${own ? 55 : 30}%, transparent)`,
-                // (Opening out from its own row — .drawer-weight-wheel.)
-                ["--wheel-top" as string]: `${at * wheelAt.rowH}px`,
-                ["--wheel-bottom" as string]: `${(weights.length - at - 1) * wheelAt.rowH}px`,
+                backgroundImage: `linear-gradient(${wheelAt.fill}, ${wheelAt.fill})`,
+                // (Its outline drawn inside it, not a border — a border would push its rows down off the pill's, and its weight
+                // with them: this way its own row's weight stays exactly where the pill's was.)
+                boxShadow: `inset 0 0 0 1px ${wheelAt.border}`,
+                // (Opening down from its own row, at its top — .drawer-weight-wheel.)
+                ["--wheel-top" as string]: "0px",
+                ["--wheel-bottom" as string]: `${(weights.length - 1) * wheelAt.rowH}px`,
               }}
-              onMouseLeave={() => setWheelAt(null)}
               onMouseDown={(e) => e.preventDefault()}
             >
-              {weights.map((item) => {
+              {[weights[at], ...weights.filter((_, index) => index !== at)].map((item) => {
                 const ok = options.includes(item);
                 const current = item === weight;
                 return (
@@ -5948,11 +6055,6 @@ function cutlistPartMixByRoom(rows: CutlistRow[], partTypeOrder: string[]) {
 // and as far off its bottom as the Rooms container and the Cutlist Entry's held top are off it (8px).
 const CUTLIST_FEED_BAND_HEIGHT = 13 + 32 + 8;
 const CUTLIST_FEED_BAND_BOTTOM = 56 + CUTLIST_FEED_BAND_HEIGHT;
-
-// A part's size as the mobile cutlist lists show it: its Height × Width (× Depth), those it has.
-function mobileListSizeText(row: { height?: unknown; width?: unknown; depth?: unknown }) {
-  return [row.height, row.width, row.depth].filter((dim) => String(dim || "").trim()).join(" × ");
-}
 
 // The mobile cutlists' band under their title bar (the rooms — on the glass over the page): its height, with the title
 // bar's 56px, kept as --cutlist-compact-top on the page around it as it changes.
@@ -7069,12 +7171,46 @@ function numericDimensionText(value: unknown): string {
   return numericDecimalText(value, 1);
 }
 
+// What can be typed in a Height / Width / Depth box: numbers (a decimal place each) and, for a sum, + - * x / between them
+// ("50-16") — worked out as the box is left (evaluateDimensionMath).
+function dimensionMathText(value: unknown): string {
+  const raw = String(value ?? "")
+    .replace(/[×X]/g, "x")
+    .replace(/[^\d.+\-*/x]/g, "");
+  return raw
+    .split(/([+\-*/x])/)
+    .map((part, index) => (index % 2 ? part : numericDecimalText(part, 1)))
+    .join("");
+}
+// A sum typed in one of those boxes, worked out as a calculator does: left to right, each step on the total so far
+// ("300-2-2-2/2" is 147, not 295) — * and x multiply, / divides — to 1 decimal place, never below 0. null when it isn't a
+// whole sum (just a number, one still being typed, or a divide by 0).
+function evaluateDimensionMath(text: string): string | null {
+  const t = String(text ?? "").replace(/\s/g, "").replace(/[×X]/g, "x");
+  if (!/^\d*\.?\d+(?:[+\-*/x]\d*\.?\d+)+$/.test(t)) return null;
+  const tokens = t.split(/([+\-*/x])/);
+  let total = Number.parseFloat(tokens[0]);
+  for (let i = 1; i < tokens.length; i += 2) {
+    const op = tokens[i];
+    const n = Number.parseFloat(tokens[i + 1]);
+    if (op === "+") total += n;
+    else if (op === "-") total -= n;
+    else if (op === "*" || op === "x") total *= n;
+    else {
+      if (n === 0) return null;
+      total /= n;
+    }
+  }
+  if (!Number.isFinite(total)) return null;
+  return String(Math.max(0, Math.round(total * 10) / 10));
+}
+
 function isNumericCutlistInputKey(key: string): boolean {
   return key === "height" || key === "width" || key === "depth" || key === "quantity";
 }
 
 function sanitizeCutlistNumericInput(key: string, value: unknown): string {
-  if (key === "height" || key === "width" || key === "depth") return numericDimensionText(value);
+  if (key === "height" || key === "width" || key === "depth") return dimensionMathText(value);
   return numericOnlyText(value);
 }
 
@@ -10137,30 +10273,15 @@ export default function ProjectDetailsPage() {
         : {};
   const cutlistRoomListRef = useRef<HTMLDivElement | null>(null);
   const cutlistRoomButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
-  // Singleton row-detail popup — mirrors CNC's own cncMobileRowDetail/isCncMobileRowDetailOpen
-  // pattern (a single popup driven by "which row", not a per-row expanded-map) so it can use the
-  // shared useGlassModalPopOrigin FLIP-from-tapped-row animation, which requires calling the hook
-  // once at the top level rather than per row inside a .map(). Only rowId+partType are kept (not a
-  // frozen snapshot of the row's fields) so the popup always reflects live edits via startCellEdit.
-  const [productionMobileRowDetailKey, setProductionMobileRowDetailKey] = useState<{ rowId: string; partType: string } | null>(null);
-  const [isProductionMobileRowDetailOpen, setIsProductionMobileRowDetailOpen] = useState(false);
-  const [productionMobileRowDetailOrigin, setProductionMobileRowDetailOrigin] = useState<GlassModalOrigin>(null);
-  const productionMobileRowDetailPanelRef = useRef<HTMLDivElement | null>(null);
-  const productionMobileRowDetailOriginElRef = useRef<HTMLElement | null>(null);
-  const shouldRenderProductionMobileRowDetail = useGlassModalPopOrigin(
-    isProductionMobileRowDetailOpen,
-    productionMobileRowDetailOrigin,
-    productionMobileRowDetailPanelRef,
-    undefined,
-    productionMobileRowDetailOriginElRef,
-  );
   const [cutlistCompactDoorHingeEnabledRows, setCutlistCompactDoorHingeEnabledRows] = useState<Record<string, boolean>>({});
   const [cutlistCompactConfiguredEntryPanel, setCutlistCompactConfiguredEntryPanel] = useState<"fields" | "drawing">("fields");
   const [cutlistCompactConfiguredDraftPanels, setCutlistCompactConfiguredDraftPanels] = useState<Record<string, "fields" | "drawing">>({});
-  // The mobile cutlist entries' rows folded shut (a tap of their header) — just their part type and name showing.
-  const [cutlistCompactFoldedDraftRows, setCutlistCompactFoldedDraftRows] = useState<Record<string, boolean>>({});
-  const toggleCutlistCompactDraftRowFolded = (rowId: string) =>
-    setCutlistCompactFoldedDraftRows((prev) => ({ ...prev, [rowId]: !prev[rowId] }));
+  // The phone / tablet cutlists (components/cutlist-mobile): which of Entry and List has the screen (Production's,
+  // Initial Measure's), and whether the Rooms sheet is up. (Its Entry cards' folding: productionEntryFold /
+  // initialEntryFold, below.)
+  const [cutlistMobileView, setCutlistMobileView] = useState<"entry" | "list">("entry");
+  const [initialCutlistMobileView, setInitialCutlistMobileView] = useState<"entry" | "list">("entry");
+  const [isCutlistMobileRoomsOpen, setIsCutlistMobileRoomsOpen] = useState(false);
   const [initialCutlistRows, setInitialCutlistRows] = useState<CutlistRow[]>([]);
   // Close-summary popups — see saveAndBackFromInitialMeasure/onSaveAndBackFromCutlist. Shown
   // non-blocking, on top of the nav change that already happens immediately (not gating it), same
@@ -10329,39 +10450,6 @@ export default function ProjectDetailsPage() {
     lastT: 0,
     velocity: 0,
   });
-  // Desktop-only toggle for the floating "Edit Visibility" sidebar — mirrors CNC's own
-  // toggleCncVisibilityPanel exactly (see its own comment for why "closing" stays mounted one more
-  // frame). Mobile has its own isNestingMobileVisibilityOpen overlay above and ignores this.
-  const [isNestingVisibilityPanelOpen, setIsNestingVisibilityPanelOpen] = useState(true);
-  const [isNestingVisibilityPanelClosing, setIsNestingVisibilityPanelClosing] = useState(false);
-  const [isNestingVisibilityPanelJustOpened, setIsNestingVisibilityPanelJustOpened] = useState(false);
-  const nestingVisibilityPanelCloseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const nestingVisibilityPanelOpenTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const toggleNestingVisibilityPanel = useCallback(() => {
-    if (nestingVisibilityPanelCloseTimeoutRef.current) {
-      clearTimeout(nestingVisibilityPanelCloseTimeoutRef.current);
-      nestingVisibilityPanelCloseTimeoutRef.current = null;
-    }
-    setIsNestingVisibilityPanelOpen((wasOpen) => {
-      if (!wasOpen) {
-        setIsNestingVisibilityPanelClosing(false);
-        setIsNestingVisibilityPanelJustOpened(true);
-        if (nestingVisibilityPanelOpenTimeoutRef.current) clearTimeout(nestingVisibilityPanelOpenTimeoutRef.current);
-        nestingVisibilityPanelOpenTimeoutRef.current = setTimeout(() => {
-          setIsNestingVisibilityPanelJustOpened(false);
-          nestingVisibilityPanelOpenTimeoutRef.current = null;
-        }, 800);
-        return true;
-      }
-      setIsNestingVisibilityPanelClosing(true);
-      nestingVisibilityPanelCloseTimeoutRef.current = setTimeout(() => {
-        setIsNestingVisibilityPanelOpen(false);
-        setIsNestingVisibilityPanelClosing(false);
-        nestingVisibilityPanelCloseTimeoutRef.current = null;
-      }, 360);
-      return true;
-    });
-  }, []);
   const wasNestingFullscreenRef = useRef(false);
   const [isCompactProjectViewport, setIsCompactProjectViewport] = useState(false);
   const [projectViewportWidth, setProjectViewportWidth] = useState(0);
@@ -10384,14 +10472,59 @@ export default function ProjectDetailsPage() {
   const MOBILE_ACTIONS_SHEET_CLOSED_OFFSET_PX = 68;
   const quoteMobileActionsSheet = useMobileFloatingActionSheet(isCompactProjectViewport, MOBILE_ACTIONS_SHEET_CLOSED_OFFSET_PX);
   const specsMobileActionsSheet = useMobileFloatingActionSheet(isCompactProjectViewport, MOBILE_ACTIONS_SHEET_CLOSED_OFFSET_PX);
-  // The Production tab's Notes bar on a phone / tablet: its sheet of trades (as the Quote's Actions).
-  const productionNotesMobileSheet = useMobileFloatingActionSheet(isCompactProjectViewport, MOBILE_ACTIONS_SHEET_CLOSED_OFFSET_PX);
   // Mobile-only long-press-to-delete for Quote/Specs' own Version History rows — see
   // useLongPress's own comment for why desktop's hover-revealed delete icon doesn't carry over to
   // touch, and why one hook call per list (not per row) is safe here.
   const quoteVersionLongPress = useLongPress();
   const specsVersionLongPress = useLongPress();
   const [nestingCompactBoardKey, setNestingCompactBoardKey] = useState("");
+  // The computer's Nesting: the board picked in its Boards rail (none yet: the first), and whether the middle shows its
+  // sheets or every part on them. The sheet open on the right is nestingSheetPreview's (as the phone's pop-up's).
+  const [nestingDesktopBoardKey, setNestingDesktopBoardKey] = useState("");
+  const [nestingDesktopView, setNestingDesktopView] = useState<"sheets" | "parts">("sheets");
+  // A piece on its big sheet right-clicked: its menu (Edit in cutlist, Leave out…), where it was clicked.
+  const [nestingPieceMenu, setNestingPieceMenu] = useState<{
+    x: number;
+    y: number;
+    rowId: string;
+    partType: string;
+    title: string;
+    subtitle: string;
+    size: string;
+  } | null>(null);
+  const nestingPieceMenuRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!nestingPieceMenu) return;
+    const close = () => setNestingPieceMenu(null);
+    const onDown = (e: PointerEvent) => {
+      if (nestingPieceMenuRef.current?.contains(e.target as Node)) return;
+      close();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
+    document.addEventListener("pointerdown", onDown, true);
+    document.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    return () => {
+      document.removeEventListener("pointerdown", onDown, true);
+      document.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+    };
+  }, [nestingPieceMenu]);
+  // Its board header's height — the sheets under it scroll up behind it (glass), so they start that far down.
+  const [nestingDesktopHeaderH, setNestingDesktopHeaderH] = useState(0);
+  const nestingDesktopHeaderObserverRef = useRef<ResizeObserver | null>(null);
+  const nestingDesktopHeaderRef = useCallback((el: HTMLDivElement | null) => {
+    nestingDesktopHeaderObserverRef.current?.disconnect();
+    nestingDesktopHeaderObserverRef.current = null;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => setNestingDesktopHeaderH(el.offsetHeight));
+    observer.observe(el);
+    nestingDesktopHeaderObserverRef.current = observer;
+  }, []);
   // Mobile-only board-type pager (one board type per page, native horizontal scroll-snap) — same
   // shape as CNC's own cncTableScrollRef/cncBoardSectionRefs, see scrollToNestingBoard's own
   // comment further down for the full reasoning.
@@ -10588,19 +10721,10 @@ export default function ProjectDetailsPage() {
     // from this map (the default for every group) reads as collapsed.
     const [cutlistMobileExpandedGroups, setCutlistMobileExpandedGroups] = useState<Record<string, boolean>>({});
     const [initialCutlistMobileExpandedGroups, setInitialCutlistMobileExpandedGroups] = useState<Record<string, boolean>>({});
-    // Singleton row-detail popup — mirrors productionMobileRowDetailKey (see its own comment).
-    const [initialMobileRowDetailKey, setInitialMobileRowDetailKey] = useState<{ rowId: string; partType: string } | null>(null);
-    const [isInitialMobileRowDetailOpen, setIsInitialMobileRowDetailOpen] = useState(false);
-    const [initialMobileRowDetailOrigin, setInitialMobileRowDetailOrigin] = useState<GlassModalOrigin>(null);
-    const initialMobileRowDetailPanelRef = useRef<HTMLDivElement | null>(null);
-    const initialMobileRowDetailOriginElRef = useRef<HTMLElement | null>(null);
-    const shouldRenderInitialMobileRowDetail = useGlassModalPopOrigin(
-      isInitialMobileRowDetailOpen,
-      initialMobileRowDetailOrigin,
-      initialMobileRowDetailPanelRef,
-      undefined,
-      initialMobileRowDetailOriginElRef,
-    );
+    // The phone / tablet Cutlist Entry's cards folded to a line (by draft row id) — useAutoFoldDrafts' — kept here to be
+    // saved with the rest, so they're as left after a reload.
+    const [cutlistEntryFolded, setCutlistEntryFolded] = useState<Record<string, boolean>>({});
+    const [initialCutlistEntryFolded, setInitialCutlistEntryFolded] = useState<Record<string, boolean>>({});
     const [pendingDeleteRowsByGroup, setPendingDeleteRowsByGroup] = useState<Record<string, string[]>>({});
     const [deleteConfirmArmedGroups, setDeleteConfirmArmedGroups] = useState<Record<string, boolean>>({});
     const [initialPendingDeleteRowsByGroup, setInitialPendingDeleteRowsByGroup] = useState<Record<string, string[]>>({});
@@ -11102,7 +11226,8 @@ export default function ProjectDetailsPage() {
   // typed: kept as typed, even empty (a drawer after the first with no depth of its own is the row's — its box filling
   // straight back in with that as the last digit went). Closed, it shows the one it's at. And the one sliding back closed,
   // for a moment — at the same time as another sliding open, when one's clicked straight from another.
-  const [openDrawerDepthBox, setOpenDrawerDepthBox] = useState<{ rowId: string; key: string; value: string } | null>(null);
+  // (`wheel`: opened from its weight — its weights' wheel opening once it's open.)
+  const [openDrawerDepthBox, setOpenDrawerDepthBox] = useState<{ rowId: string; key: string; value: string; wheel?: boolean } | null>(null);
   const [closingDrawerDepthBox, setClosingDrawerDepthBox] = useState<{ rowId: string; key: string } | null>(null);
   const [editingHingeCellDraft, setEditingHingeCellDraft] = useState("");
   const editingFixedShelfRef = useRef("");
@@ -12690,9 +12815,10 @@ export default function ProjectDetailsPage() {
   );
 
   const resolvedTab = (() => {
-    // A small job (lib/small-jobs.ts) is just its General tab — its client details, notes and images.
+    // A small job (lib/small-jobs.ts) is just its General tab — its client details, notes and images — and its cutlist:
+    // Production's own cutlist screen, opened from its Cutlist side button (back to General with Save & Back).
     if (project?.isSmallJob) {
-      return "general";
+      return tab === "production" && productionAccess.view && productionNav === "cutlist" ? "production" : "general";
     }
     if (tab === "sales" && !salesAccess.view) {
       return "general";
@@ -13093,6 +13219,8 @@ export default function ProjectDetailsPage() {
   // contractor) on top of the real, company-configured list — kept separate from
   // contractorOptions itself so anything else reading that memo still sees only real contractors.
   const contractorTabOptions = useMemo(() => [...contractorOptions, "Other"], [contractorOptions]);
+  // Each contractor's icon, as picked in Company Settings (ContractorIcon guesses one for those not picked).
+  const contractorIcons = useMemo(() => normalizeContractorIcons(companyDoc?.contractorIcons), [companyDoc?.contractorIcons]);
   const initialMeasurePartTypeOptions = useMemo(() => {
     const raw = Array.isArray(companyDoc?.partTypes) ? companyDoc?.partTypes : [];
     const parsed = raw
@@ -13170,7 +13298,7 @@ export default function ProjectDetailsPage() {
       cutlistEntryRoom,
       activeCutlistPartType,
       cutlistEntry,
-      cutlistDraftRows,
+      cutlistDraftRows: cutlistDraftRows.filter((row) => !isCutlistListEditDraftId(row.id)),
       subPartDraftRowIds: Array.from(subPartDraftRowIds),
       initialCutlistRoomFilter,
       initialCutlistPartTypeFilter,
@@ -13178,7 +13306,7 @@ export default function ProjectDetailsPage() {
       initialCutlistEntryRoom,
       initialActiveCutlistPartType,
       initialCutlistEntry,
-      initialCutlistDraftRows,
+      initialCutlistDraftRows: initialCutlistDraftRows.filter((row) => !isCutlistListEditDraftId(row.id)),
       nestingSearch,
       nestingVisibilityMap,
       nestingCollapsedGroups,
@@ -13475,6 +13603,34 @@ export default function ProjectDetailsPage() {
     if (snapshot.expandedDoorRows && typeof snapshot.expandedDoorRows === "object") {
       setExpandedDoorRows(snapshot.expandedDoorRows);
     }
+  }, []);
+  // A sum typed in a Height / Width / Depth box ("50-16" — dimensionMathText) put in as its answer as the box is left, or
+  // on Enter: written into the box as if typed (its onChange), and the page brought up to date with it at once
+  // (flushSync), so the box's own blur / Enter — saving it, closing it — has the answer, not the sum. (Only boxes taking
+  // numbers can hold one: the rest's filters take out + - * x /.)
+  useEffect(() => {
+    const workOut = (target: EventTarget | null) => {
+      if (!(target instanceof HTMLInputElement)) return;
+      if (target.inputMode !== "decimal" && target.inputMode !== "numeric") return;
+      const answer = evaluateDimensionMath(target.value);
+      if (answer == null || answer === target.value) return;
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      if (!setValue) return;
+      flushSync(() => {
+        setValue.call(target, answer);
+        target.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    };
+    const onFocusOut = (event: FocusEvent) => workOut(event.target);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Enter") workOut(event.target);
+    };
+    document.addEventListener("focusout", onFocusOut, true);
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      document.removeEventListener("focusout", onFocusOut, true);
+      document.removeEventListener("keydown", onKeyDown, true);
+    };
   }, []);
   const cutlistUiStateStorageKey = useMemo(() => {
     if (!project?.id) return "";
@@ -14089,18 +14245,34 @@ export default function ProjectDetailsPage() {
         normalizeDoorModeValue(row.doorMode) === "manual"
           ? []
           : buildConfiguredDoorListSubrows(row).map((piece) => ({ name: piece.partName, height: piece.height, width: piece.width, quantity: piece.quantity })),
-      // A drawer: its bottom and backs (as the list breaks it down), printed under its name instead of its own row.
+      // A drawer: its bottom and backs (as the list breaks it down), printed under its name instead of its own row — its
+      // backs with their drawers' runner weight after them ("Back (B) · 30kg"), those of a height at different weights
+      // apart, the same together.
       piecesOf: (row) =>
         isDrawerPartType(row.partType)
-          ? buildDrawerDerivedPieces(row).map((piece) => ({
-              name: piece.partName,
-              height: piece.height,
-              width: piece.width,
-              depth: piece.depth,
-              quantity: piece.quantity,
-              clashLeft: piece.clashLeft,
-              clashRight: piece.clashRight,
-            }))
+          ? buildDrawerDerivedPieces(row).flatMap((piece) => {
+              const printed = {
+                name: piece.partName,
+                height: piece.height,
+                width: piece.width,
+                depth: piece.depth,
+                quantity: piece.quantity,
+                clashLeft: piece.clashLeft,
+                clashRight: piece.clashRight,
+              };
+              if (!piece.key.startsWith("drawer_back_")) return [printed];
+              const height = piece.key.slice("drawer_back_".length).toUpperCase();
+              const byWeight = new Map<number, number>();
+              for (const key of drawerDepthKeys(row)) {
+                if (drawerDepthLabel(key) !== height) continue;
+                const weight = drawerWeightOf(row, key);
+                byWeight.set(weight, (byWeight.get(weight) ?? 0) + 1);
+              }
+              if (!byWeight.size || byWeight.has(0)) return [printed];
+              return Array.from(byWeight.entries())
+                .sort((a, b) => a[0] - b[0])
+                .map(([weight, count]) => ({ ...printed, name: `${piece.partName} · ${weight}kg`, quantity: String(count) }));
+            })
           : [],
       hingeTypeOf: (row) => {
         const hardware = hardwareForRoom(row.room);
@@ -16420,17 +16592,27 @@ export default function ProjectDetailsPage() {
   );
   // A cutlist with only the one room opens on that room, not on Project Cutlist — each time it's opened (or its one room
   // changes), once its rows are in. Keyed on the room's name, not the rows, so picking Project Cutlist after that stays
-  // put while editing.
+  // put while editing. Not when it's open because of a reload, though: then it stays on the room it was on (the restore
+  // below sets these).
+  const keepRestoredCutlistRoomRef = useRef({ production: false, initial: false });
   const productionCutlistOpen = resolvedTab === "production" && productionAccess.view && productionNav === "cutlist";
   const productionOnlyRoom = cutlistAddedRoomTabs.length === 1 ? cutlistAddedRoomTabs[0].filter : "";
   useEffect(() => {
     if (!productionCutlistOpen || productionCutlistState.status !== "ready" || !productionOnlyRoom) return;
+    if (keepRestoredCutlistRoomRef.current.production) {
+      keepRestoredCutlistRoomRef.current.production = false;
+      return;
+    }
     setCutlistRoomFilter(productionOnlyRoom);
   }, [productionCutlistOpen, productionCutlistState.status, productionOnlyRoom]);
   const initialCutlistOpen = resolvedTab === "sales" && salesAccess.view && salesNav === "initial";
   const initialOnlyRoom = initialCutlistAddedRoomTabs.length === 1 ? initialCutlistAddedRoomTabs[0].filter : "";
   useEffect(() => {
     if (!initialCutlistOpen || initialCutlistState.status !== "ready" || !initialOnlyRoom) return;
+    if (keepRestoredCutlistRoomRef.current.initial) {
+      keepRestoredCutlistRoomRef.current.initial = false;
+      return;
+    }
     setInitialCutlistRoomFilter(initialOnlyRoom);
   }, [initialCutlistOpen, initialCutlistState.status, initialOnlyRoom]);
 
@@ -16622,6 +16804,21 @@ export default function ProjectDetailsPage() {
     if (!key || !productionForm.roomHardware[key]) return selectedDrawerBreakdown;
     const hardware = productionForm.roomHardware[key];
     return drawerBreakdownForDrawer(hardwareRows, categoryOfHardware(hardware), hardware.newDrawerType);
+  };
+  // A Drawer row's drawers as they're listed (its Depth column, its heights beside them, the Cutlist Entry's depth boxes):
+  // lowest height at the top, highest at the bottom — by each height's mm in its room's drawer hardware (or the height
+  // itself, typed in mm); those it doesn't know last, as they come.
+  const drawerKeysInHeightOrder = (row: { room?: unknown; height?: string }): string[] => {
+    const keys = drawerDepthKeys(row);
+    const mmByLetter = drawerBreakdownForRoom(row.room).letterValueMap;
+    const mmOf = (key: string) => {
+      const label = drawerDepthLabel(key);
+      return toNum(mmByLetter[label.toLowerCase()] ?? label);
+    };
+    return keys
+      .map((key, index) => ({ key, index, mm: mmOf(key) }))
+      .sort((a, b) => (a.mm > 0 && b.mm > 0 ? a.mm - b.mm : a.mm > 0 ? -1 : b.mm > 0 ? 1 : 0) || a.index - b.index)
+      .map((item) => item.key);
   };
   const drawerHeightLetterOptionsForRoom = (room: unknown): string[] => {
     const key = String(room ?? "").trim();
@@ -21873,6 +22070,13 @@ export default function ProjectDetailsPage() {
           nestingCollapsedGroups?: Record<string, boolean>;
           cncCollapsedGroups?: Record<string, boolean>;
           collapsedCutlistGroups?: Record<string, boolean>;
+          initialCollapsedCutlistGroups?: Record<string, boolean>;
+          cutlistMobileExpandedGroups?: Record<string, boolean>;
+          initialCutlistMobileExpandedGroups?: Record<string, boolean>;
+          cutlistEntryFolded?: Record<string, boolean>;
+          initialCutlistEntryFolded?: Record<string, boolean>;
+          cutlistMobileView?: "entry" | "list";
+          initialCutlistMobileView?: "entry" | "list";
           expandedCabinetryRows?: Record<string, boolean>;
           expandedDrawerRows?: Record<string, boolean>;
           expandedDoorRows?: Record<string, boolean>;
@@ -21894,6 +22098,10 @@ export default function ProjectDetailsPage() {
         if (typeof parsed.productionNav === "string") {
           setProductionNav(parsed.productionNav as ProductionNav);
         }
+        keepRestoredCutlistRoomRef.current = {
+          production: parsed.productionNav === "cutlist" && typeof parsed.cutlistRoomFilter === "string" && Boolean(parsed.cutlistRoomFilter),
+          initial: parsed.salesNav === "initial" && typeof parsed.initialCutlistRoomFilter === "string" && Boolean(parsed.initialCutlistRoomFilter),
+        };
         if (typeof parsed.nestingFullscreen === "boolean") {
           setNestingFullscreen(parsed.nestingFullscreen);
         }
@@ -22088,6 +22296,27 @@ export default function ProjectDetailsPage() {
         if (parsed.collapsedCutlistGroups && typeof parsed.collapsedCutlistGroups === "object") {
           setCollapsedCutlistGroups(parsed.collapsedCutlistGroups);
         }
+        if (parsed.initialCollapsedCutlistGroups && typeof parsed.initialCollapsedCutlistGroups === "object") {
+          setInitialCollapsedCutlistGroups(parsed.initialCollapsedCutlistGroups);
+        }
+        if (parsed.cutlistMobileExpandedGroups && typeof parsed.cutlistMobileExpandedGroups === "object") {
+          setCutlistMobileExpandedGroups(parsed.cutlistMobileExpandedGroups);
+        }
+        if (parsed.initialCutlistMobileExpandedGroups && typeof parsed.initialCutlistMobileExpandedGroups === "object") {
+          setInitialCutlistMobileExpandedGroups(parsed.initialCutlistMobileExpandedGroups);
+        }
+        if (parsed.cutlistEntryFolded && typeof parsed.cutlistEntryFolded === "object") {
+          setCutlistEntryFolded(parsed.cutlistEntryFolded);
+        }
+        if (parsed.initialCutlistEntryFolded && typeof parsed.initialCutlistEntryFolded === "object") {
+          setInitialCutlistEntryFolded(parsed.initialCutlistEntryFolded);
+        }
+        if (parsed.cutlistMobileView === "entry" || parsed.cutlistMobileView === "list") {
+          setCutlistMobileView(parsed.cutlistMobileView);
+        }
+        if (parsed.initialCutlistMobileView === "entry" || parsed.initialCutlistMobileView === "list") {
+          setInitialCutlistMobileView(parsed.initialCutlistMobileView);
+        }
         if (parsed.expandedCabinetryRows && typeof parsed.expandedCabinetryRows === "object") {
           setExpandedCabinetryRows(parsed.expandedCabinetryRows);
         }
@@ -22141,7 +22370,7 @@ export default function ProjectDetailsPage() {
       cutlistEntryRoom,
       activeCutlistPartType,
       cutlistEntry,
-      cutlistDraftRows,
+      cutlistDraftRows: cutlistDraftRows.filter((row) => !isCutlistListEditDraftId(row.id)),
       subPartDraftRowIds: Array.from(subPartDraftRowIds),
       initialCutlistRoomFilter,
       initialCutlistPartTypeFilter,
@@ -22149,12 +22378,23 @@ export default function ProjectDetailsPage() {
       initialCutlistEntryRoom,
       initialActiveCutlistPartType,
       initialCutlistEntry,
-      initialCutlistDraftRows,
+      initialCutlistDraftRows: initialCutlistDraftRows.filter((row) => !isCutlistListEditDraftId(row.id)),
       nestingSearch,
       nestingVisibilityMap,
       nestingCollapsedGroups,
       cncCollapsedGroups,
       collapsedCutlistGroups,
+      // (Which part-type groups are folded — Initial Measure's on a computer, and both cutlists' on a phone — kept as the
+      // Production cutlist's on a computer already were, so they're as left after a reload.)
+      initialCollapsedCutlistGroups,
+      cutlistMobileExpandedGroups,
+      initialCutlistMobileExpandedGroups,
+      // (...the Entry's cards folded to a line — those still being entered...)
+      cutlistEntryFolded: keepFoldsOf(cutlistEntryFolded, cutlistDraftRows),
+      initialCutlistEntryFolded: keepFoldsOf(initialCutlistEntryFolded, initialCutlistDraftRows),
+      // (...and, on a phone, whether each cutlist was on its Entry or its List.)
+      cutlistMobileView,
+      initialCutlistMobileView,
       expandedCabinetryRows,
       expandedDrawerRows,
       expandedDoorRows,
@@ -22190,6 +22430,13 @@ export default function ProjectDetailsPage() {
     nestingCollapsedGroups,
     cncCollapsedGroups,
     collapsedCutlistGroups,
+    initialCollapsedCutlistGroups,
+    cutlistMobileExpandedGroups,
+    initialCutlistMobileExpandedGroups,
+    cutlistEntryFolded,
+    initialCutlistEntryFolded,
+    cutlistMobileView,
+    initialCutlistMobileView,
     expandedCabinetryRows,
     expandedDrawerRows,
     expandedDoorRows,
@@ -22303,6 +22550,12 @@ export default function ProjectDetailsPage() {
 
   useEffect(() => {
     const filters = cutlistRoomTabs.map((tab) => tab.filter);
+    // (Still loading, with only Project Cutlist to go on: a room brought back from before the reload is kept till its
+    // rooms are in — as Initial Measure's is — rather than put back to the first.)
+    const onlyProjectCutlistAvailable = filters.length === 1 && filters[0] === "Project Cutlist";
+    if (isLoading && onlyProjectCutlistAvailable && cutlistRoomFilter && cutlistRoomFilter !== "Project Cutlist") {
+      return;
+    }
     if (!filters.includes(cutlistRoomFilter)) {
       setCutlistRoomFilter(defaultCutlistRoom);
     }
@@ -22310,7 +22563,7 @@ export default function ProjectDetailsPage() {
       const fallback = defaultCutlistRoom;
       setCutlistEntryRoom(fallback);
     }
-  }, [cutlistEntryRoom, cutlistRoomFilter, cutlistRoomTabs, cutlistEntryRoomOptions, defaultCutlistRoom]);
+  }, [cutlistEntryRoom, cutlistRoomFilter, cutlistRoomTabs, cutlistEntryRoomOptions, defaultCutlistRoom, isLoading]);
 
   useEffect(() => {
     if (!cutlistRoomFilter || cutlistRoomFilter === "Project Cutlist") {
@@ -23398,7 +23651,7 @@ export default function ProjectDetailsPage() {
         label={drawer.name}
         storageKey={`${String(user?.uid || "").trim()}:contractor:${drawer.name}`}
         isDarkMode={isDarkMode}
-        icon={<HardHat size={14} />}
+        icon={<ContractorIcon name={drawer.name} icons={contractorIcons} size={14} />}
         onClose={() => closeContractorNotes(drawer.name)}
         onDock={() => closeOtherCutlistDrawersInTheSide(`contractor:${drawer.name}`)}
         barButtonIds={[`contractor:${drawer.name}`, "contractors"]}
@@ -23409,6 +23662,7 @@ export default function ProjectDetailsPage() {
       >
         <ContractorNotesDrawerBody
           name={drawer.name}
+          icon={<ContractorIcon name={drawer.name} icons={contractorIcons} size={15} />}
           initialValue={contractorNotesInitialByName[drawer.name] ?? ""}
           savedHtml={notesToDisplayHtml(project?.contractorNotes?.[drawer.name] || "")}
           readOnly={productionReadOnly}
@@ -23443,7 +23697,7 @@ export default function ProjectDetailsPage() {
     setIsCutlistCabinetryOpen(false);
     dropCutlistDrawerFromStack("cabinetry");
   };
-  const renderCutlistCabinetryDrawer = () => {
+  const cutlistCabinetrySections = () => {
     const unit = activeUnitLabel();
     // Lengths in the company's unit — "-" for one not set.
     const length = (value: unknown) => {
@@ -23474,6 +23728,33 @@ export default function ProjectDetailsPage() {
         ],
       },
     ];
+    return sections;
+  };
+  // Its sections (Existing Cabinetry, Cabinetry): the drawer's body — and the phone / tablet Notes sheet's Cabinetry.
+  const renderCutlistCabinetrySections = () => (
+    <div className="glass-scroll min-h-0 flex-1 overflow-auto pb-4" style={{ color: "var(--text-main)" }}>
+      {cutlistCabinetrySections().map((section) => (
+        <div key={section.title}>
+          <p className="px-4 pb-1.5 pt-4 text-[11px] font-bold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
+            {section.title}
+          </p>
+          <div className="border-y" style={{ borderColor: "var(--glass-border)" }}>
+            {section.rows.map(([label, value], index) => (
+              <div
+                key={label}
+                className={`flex items-center justify-between gap-3 px-4 py-2.5 text-[13px] ${index > 0 ? "border-t" : ""}`}
+                style={{ borderColor: "var(--glass-border)" }}
+              >
+                <span className="font-medium" style={{ color: "var(--text-main)" }}>{label}</span>
+                <span className="font-medium" style={{ color: "var(--text-main)" }}>{value}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+  const renderCutlistCabinetryDrawer = () => {
     return (
       <CutlistSideDrawer
         open={isCutlistCabinetryOpen}
@@ -23501,27 +23782,7 @@ export default function ProjectDetailsPage() {
           }}
         />
         {/* Each section's rows the drawer's full width — lines between them, none down the sides. */}
-        <div className="glass-scroll min-h-0 flex-1 overflow-auto pb-4" style={{ color: "var(--text-main)" }}>
-          {sections.map((section) => (
-            <div key={section.title}>
-              <p className="px-4 pb-1.5 pt-4 text-[11px] font-bold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
-                {section.title}
-              </p>
-              <div className="border-y" style={{ borderColor: "var(--glass-border)" }}>
-                {section.rows.map(([label, value], index) => (
-                  <div
-                    key={label}
-                    className={`flex items-center justify-between gap-3 px-4 py-2.5 text-[13px] ${index > 0 ? "border-t" : ""}`}
-                    style={{ borderColor: "var(--glass-border)" }}
-                  >
-                    <span className="font-medium" style={{ color: "var(--text-main)" }}>{label}</span>
-                    <span className="font-medium" style={{ color: "var(--text-main)" }}>{value}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
+        {renderCutlistCabinetrySections()}
       </CutlistSideDrawer>
     );
   };
@@ -23768,7 +24029,7 @@ export default function ProjectDetailsPage() {
                   className={buttonClass(open)}
                   style={buttonStyle(open)}
                 >
-                  <HardHat size={14} className="shrink-0" />
+                  <ContractorIcon name={name} icons={contractorIcons} size={14} className="shrink-0" />
                   <span className="max-w-[140px] truncate">{name}</span>
                   {!open && contractorHasNotes(name) ? (
                     <span title="Has notes" className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: "var(--brand)" }} />
@@ -26915,7 +27176,7 @@ export default function ProjectDetailsPage() {
     const count = Math.max(1, Number.parseInt(existing.doorFrontCount || "1", 10) || 1);
     const nextWidths = normalizeDoorFrontWidths(existing.doorFrontWidths, count);
     const nextManual = normalizeDoorFrontWidthManual(existing.doorFrontWidthManual, count);
-    const nextValue = numericDimensionText(value);
+    const nextValue = dimensionMathText(value);
     nextWidths[index] = nextValue;
     const broadcast = !nextManual[index];
     if (broadcast) {
@@ -26956,7 +27217,7 @@ export default function ProjectDetailsPage() {
     const count = Math.max(1, Number.parseInt(existing.doorFrontCount || "1", 10) || 1);
     const nextHeights = normalizeDoorFrontHeights(existing.doorFrontHeights, count);
     const nextManual = normalizeDoorFrontHeightManual(existing.doorFrontHeightManual, count);
-    const nextValue = numericDimensionText(value);
+    const nextValue = dimensionMathText(value);
     nextHeights[index] = nextValue;
     const broadcast = !nextManual[index];
     if (broadcast) {
@@ -26995,7 +27256,7 @@ export default function ProjectDetailsPage() {
     const count = Math.max(1, Number.parseInt(existing.doorFrontCount || "1", 10) || 1);
     const nextWidths = normalizeDoorFrontWidths(existing.doorFrontWidths, count);
     const nextManual = normalizeDoorFrontWidthManual(existing.doorFrontWidthManual, count);
-    const nextValue = numericDimensionText(value);
+    const nextValue = dimensionMathText(value);
     nextWidths[index] = nextValue;
     // Always pin on ANY edit (typing OR clearing) — even a front that started
     // out "auto" with a real baked-in value (from the initial even split)
@@ -27618,7 +27879,7 @@ export default function ProjectDetailsPage() {
   };
 
   const onCutlistEntryDoorFrontHeightChange = (index: number, value: string) => {
-    const nextValue = numericDimensionText(value);
+    const nextValue = dimensionMathText(value);
     setCutlistEntry((prev) => {
       const count = Number.parseInt(prev.doorFrontCount || "", 10) || 0;
       const nextHeights = normalizeDoorFrontHeights(prev.doorFrontHeights, count);
@@ -27669,7 +27930,7 @@ export default function ProjectDetailsPage() {
   };
 
   const onCutlistEntryDoorOverallHeightChange = (value: string) => {
-    const nextHeight = numericDimensionText(value);
+    const nextHeight = dimensionMathText(value);
     setCutlistEntry((prev) => {
       if (normalizeDoorModeValue(prev.doorMode) !== "drawer") {
         return autoSelectGrainValueForRow({ ...prev, height: nextHeight });
@@ -27692,7 +27953,7 @@ export default function ProjectDetailsPage() {
   };
 
   const onCutlistEntryDoorOverallWidthChange = (value: string) => {
-    const nextWidth = numericDimensionText(value);
+    const nextWidth = dimensionMathText(value);
     setCutlistEntry((prev) => {
       if (normalizeDoorModeValue(prev.doorMode) !== "door") {
         return autoSelectGrainValueForRow({ ...prev, width: nextWidth });
@@ -27833,7 +28094,7 @@ export default function ProjectDetailsPage() {
   };
 
   const onCutlistEntryDoorFrontWidthChange = (index: number, value: string) => {
-    const nextValue = numericDimensionText(value);
+    const nextValue = dimensionMathText(value);
     setCutlistEntry((prev) => {
       const count = Number.parseInt(prev.doorFrontCount || "", 10) || 0;
       const nextWidths = normalizeDoorFrontWidths(prev.doorFrontWidths, count);
@@ -27888,7 +28149,7 @@ export default function ProjectDetailsPage() {
   const onDraftDoorFrontWidthChange = (id: string, index: number, value: string) => {
     const existing = cutlistDraftRows.find((row) => row.id === id);
     if (!existing) return;
-    const nextValue = numericDimensionText(value);
+    const nextValue = dimensionMathText(value);
     const nextWidths = normalizeDoorFrontWidths(
       existing.doorFrontWidths,
       Number.parseInt(existing.doorFrontCount || "", 10) || 0,
@@ -27956,7 +28217,7 @@ export default function ProjectDetailsPage() {
   const onDraftDoorFrontHeightChange = (id: string, index: number, value: string) => {
     const existing = cutlistDraftRows.find((row) => row.id === id);
     if (!existing) return;
-    const nextValue = numericDimensionText(value);
+    const nextValue = dimensionMathText(value);
     const nextHeights = normalizeDoorFrontHeights(
       existing.doorFrontHeights,
       Number.parseInt(existing.doorFrontCount || "", 10) || 0,
@@ -28020,7 +28281,7 @@ export default function ProjectDetailsPage() {
 
   const onDraftDoorOverallWidthChange = (id: string, value: string) => {
     const existing = cutlistDraftRows.find((row) => row.id === id);
-    const nextWidth = numericDimensionText(value);
+    const nextWidth = dimensionMathText(value);
     if (!existing) return;
     if (normalizeDoorModeValue(existing.doorMode) !== "door") {
       updateDraftCutlistRow(id, { width: nextWidth });
@@ -29404,14 +29665,9 @@ export default function ProjectDetailsPage() {
     return merged;
   };
 
-  const addDraftRowsToCutlist = async () => {
-    const sourceDraftRows =
-      cutlistRoomFilter === "Project Cutlist" ? cutlistDraftRows : visibleCutlistDraftRows;
-    const sourceDraftRowIds = new Set(sourceDraftRows.map((row) => row.id));
-    const rejectedIds = new Set<string>();
-    const nextWarnings: Record<string, Record<string, string>> = {};
-    const checkedRows = sourceDraftRows
-      .map((row, idx) => {
+  // A Cutlist Entry row as Add to cutlist takes it: its fields tidied up as the cutlist keeps them, and what's wrong with
+  // it (validateCutlistRowInput). Also the phone / tablet Edit sheet's Save.
+  const checkProductionDraftForCutlist = (row: CutlistDraftRow, idx: number) => {
           const partType = String(row.partType || activeCutlistPartType || "").trim();
           const isCabinetry = isCabinetryPartType(partType);
           const doorMode = normalizeDoorModeValue(row.doorMode);
@@ -29471,6 +29727,18 @@ export default function ProjectDetailsPage() {
             includeInNesting: row.includeInNesting !== false,
           };
         const rowErrors = validateCutlistRowInput(normalizedRow, partType, cutlistRowLabelFor(normalizedRow, `Row ${idx + 1}`));
+    return { normalizedRow, rowErrors, partType };
+  };
+
+  const addDraftRowsToCutlist = async () => {
+    const sourceDraftRows =
+      cutlistRoomFilter === "Project Cutlist" ? cutlistDraftRows.filter((row) => !isCutlistListEditDraftId(row.id)) : visibleCutlistDraftRows;
+    const sourceDraftRowIds = new Set(sourceDraftRows.map((row) => row.id));
+    const rejectedIds = new Set<string>();
+    const nextWarnings: Record<string, Record<string, string>> = {};
+    const checkedRows = sourceDraftRows
+      .map((row, idx) => {
+        const { normalizedRow, rowErrors } = checkProductionDraftForCutlist(row, idx);
         if (rowErrors.length) {
           // Same as Initial Measure: rely solely on the cell-anchored glass bubbles
           // (flashCutlistWarningCells, called once below for the whole batch) — no per-row
@@ -29495,7 +29763,7 @@ export default function ProjectDetailsPage() {
     const accepted = checkedRows.filter((row, index): row is NonNullable<typeof row> => Boolean(row) && !heldGroups.has(groupOfIndex[index])) as CutlistDraftRow[];
     setCutlistCellWarnings(nextWarnings);
     flashCutlistWarningCells(nextWarnings);
-    if (!accepted.length) return;
+    if (!accepted.length) return nextWarnings;
     const nextRows: CutlistRow[] = [...cutlistRows, ...accepted.flatMap((row) => expandAcceptedRowForCutlist(row))];
     for (const row of accepted) {
       logCutlistActivity(`${row.name || "Part"} added to ${row.room || "Project Cutlist"}`, {
@@ -29505,6 +29773,7 @@ export default function ProjectDetailsPage() {
     setCutlistRows(nextRows);
     setCutlistDraftRows((prev) => prev.filter((row) => !sourceDraftRowIds.has(row.id) || heldIds.has(row.id)));
     await persistCutlistRows(nextRows);
+    return nextWarnings;
   };
 
   // `force` bypasses the guard below — wired to a double-click on the row's own X button, same as
@@ -29575,6 +29844,14 @@ export default function ProjectDetailsPage() {
     const runner = drawerRunnerLength(breakdown, toNum(drawerDepthFor(row, key)), height);
     return drawerWeightFor(breakdown, height, runner, String(row.drawerWeights?.[key] ?? ""));
   };
+  // Whether that's a weight of its own, not its Auto one (its pill solid, not faint — open or closed).
+  const drawerWeightIsOwn = (row: CutlistRow, key: string): boolean => {
+    const breakdown = drawerBreakdownForRoom(row.room);
+    if (!breakdown.hardwareWeights.length) return false;
+    const height = drawerDepthLabel(key);
+    const runner = drawerRunnerLength(breakdown, toNum(drawerDepthFor(row, key)), height);
+    return drawerWeightOf(row, key) !== drawerWeightFor(breakdown, height, runner, "");
+  };
   // A drawer's runner weight, beside its depth (when its drawer type has weights) — DrawerWeightPill: faint when it's Auto
   // (its drawer type's default, or the one its height and length come in), solid when it's its own; pressed, the next its
   // height and length come in (back at the Auto one, Auto again). Coming in just the one: shown, not pressed.
@@ -29583,8 +29860,10 @@ export default function ProjectDetailsPage() {
     key: string,
     onPick: (weights: Record<string, string> | undefined) => void,
     size: "small" | "large",
-    // (The hover wheel — the Cutlist Entry's open drawer box.)
+    // (The hover wheel — the Cutlist Entry's open drawer box. `openWheel`: open it straight away — the box opened from its
+    // weight.)
     wheel = false,
+    openWheel = false,
   ) => {
     const breakdown = drawerBreakdownForRoom(row.room);
     if (!breakdown.hardwareWeights.length) return null;
@@ -29605,6 +29884,7 @@ export default function ProjectDetailsPage() {
         editable={!productionReadOnly}
         size={size}
         wheel={wheel}
+        openWheel={openWheel}
         onSet={(next) => {
           // (Back at its Auto weight: Auto again.)
           const weights = { ...(row.drawerWeights ?? {}) };
@@ -29619,7 +29899,7 @@ export default function ProjectDetailsPage() {
   const commitDrawerDepth = async (rowId: string, key: string, value: string) => {
     const row = cutlistRows.find((r) => r.id === rowId);
     if (!row) return;
-    const next = withDrawerDepth(row, key, numericDimensionText(value));
+    const next = withDrawerDepth(row, key, numericDimensionText(evaluateDimensionMath(value) ?? value));
     if (next.depth === row.depth && JSON.stringify(next.drawerDepths ?? {}) === JSON.stringify(row.drawerDepths ?? {})) return;
     const nextRows = cutlistRows.map((r) => (r.id === rowId ? next : r));
     setCutlistRows(nextRows);
@@ -29652,7 +29932,7 @@ export default function ProjectDetailsPage() {
                 inputMode="decimal"
                 title={`Depth for this ${drawerDepthLabel(key)} drawer`}
                 value={editingDrawerDepth.value}
-                onChange={(e) => setEditingDrawerDepth({ rowId: row.id, key, value: numericDimensionText(e.target.value) })}
+                onChange={(e) => setEditingDrawerDepth({ rowId: row.id, key, value: dimensionMathText(e.target.value) })}
                 onBlur={() => {
                   setEditingDrawerDepth(null);
                   void commitDrawerDepth(row.id, key, editingDrawerDepth.value);
@@ -29702,7 +29982,7 @@ export default function ProjectDetailsPage() {
   // ...its heights the same way, a line each, each level with its own drawer's depth (the lines the same height as the
   // depths' — their letter pills' — whatever the font). Its height in mm on hover.
   const renderDrawerHeightLines = (row: CutlistRow) => {
-    const keys = drawerDepthKeys(row);
+    const keys = drawerKeysInHeightOrder(row);
     if (!keys.length) return String(row.height ?? "");
     const mmByLetter = drawerBreakdownForRoom(row.room).letterValueMap;
     return (
@@ -29727,8 +30007,10 @@ export default function ProjectDetailsPage() {
   // those under it open out over the room beside them. Clicked away from (or Enter / Escape), it slides back closed to the
   // short form — at the same time as another sliding open, when one's clicked straight from it. Red, saying why, at a depth
   // no runner of its room's drawer hardware fits — as the list's.
-  const openDrawerBox = (rowId: string, key: string, value: string) => {
-    setOpenDrawerDepthBox({ rowId, key, value });
+  const openDrawerBox = (rowId: string, key: string, value: string, wheel = false) => {
+    setOpenDrawerDepthBox((prev) =>
+      prev && prev.rowId === rowId && prev.key === key ? (wheel && !prev.wheel ? { ...prev, wheel } : prev) : { rowId, key, value, wheel },
+    );
     setClosingDrawerDepthBox((prev) => (prev && prev.rowId === rowId && prev.key === key ? null : prev));
   };
   // Slides it back closed (.drawer-box-close / -shrink, globals.css), then shows its short form — at once, with reduced
@@ -29754,21 +30036,11 @@ export default function ProjectDetailsPage() {
           ? { ...style, borderColor: "var(--danger)", color: "var(--danger-strong)", boxShadow: "0 0 0 2px var(--danger-ring)" }
           : style;
         const weight = drawerWeightOf(draft, key);
+        const ownWeight = drawerWeightIsOwn(draft, key);
         const isOpen = openDrawerDepthBox?.rowId === draft.id && openDrawerDepthBox.key === key;
         const isClosing = !isOpen && closingDrawerDepthBox?.rowId === draft.id && closingDrawerDepthBox.key === key;
-        // (In short, its weight's number — kg in its title — in a bubble as its letter's.)
-        const weightBubble = (
-          <span
-            className="inline-flex h-[15px] min-w-[15px] shrink-0 items-center justify-center rounded-full px-[3px] text-[9px] font-normal leading-none"
-            style={{
-              backgroundColor: "color-mix(in srgb, currentColor 12%, transparent)",
-              border: "1px solid color-mix(in srgb, currentColor 35%, transparent)",
-            }}
-            title={`${weight}kg`}
-          >
-            {weight}
-          </span>
-        );
+        // (In short, its weight's number in a bubble as its letter's — DrawerWeightBubble.)
+        const weightBubble = <DrawerWeightBubble weight={weight} own={ownWeight} />;
         // (Its height's letter in its circle — small in short, and opened out, round at its weight's height: growing to it as
         // the box opens and shrinking back as it closes — .drawer-box-letter, globals.css.)
         const letterBubble = (big: boolean) => (
@@ -29790,7 +30062,8 @@ export default function ProjectDetailsPage() {
             disabled={productionReadOnly}
             tabIndex={isOpen || isClosing ? -1 : undefined}
             aria-hidden={isOpen || isClosing ? true : undefined}
-            onClick={() => openDrawerBox(draft.id, key, depth)}
+            // (Its weight's bubble pressed: open, then its weights' wheel — at its full size, once it's grown in.)
+            onClick={(e) => openDrawerBox(draft.id, key, depth, Boolean((e.target as HTMLElement).closest("[data-drawer-weight-bubble]")))}
             onFocus={() => openDrawerBox(draft.id, key, depth)}
             title={issue || `This ${drawerDepthLabel(key)} drawer's depth${weight ? " and weight" : ""} — click to change`}
             className={`${className} relative flex items-center justify-center disabled:cursor-default ${isOpen || isClosing ? "invisible" : ""}`}
@@ -29815,7 +30088,14 @@ export default function ProjectDetailsPage() {
             </div>
           );
         }
-        const weightPill = drawerWeightPill(draft, key, (weights) => updateDraftCutlistRow(draft.id, { drawerWeights: weights }), "large", isOpen);
+        const weightPill = drawerWeightPill(
+          draft,
+          key,
+          (weights) => updateDraftCutlistRow(draft.id, { drawerWeights: weights }),
+          "large",
+          isOpen,
+          isOpen && Boolean(openDrawerDepthBox?.wheel),
+        );
         // (The top one: its column's width, the column itself sliding wider. Those under it: sliding out from the column's
         // own width over the room beside them — .drawer-box-grow / -shrink.)
         const ownsWidth = Boolean(closedWidth) && keyIndex > 0;
@@ -29872,7 +30152,7 @@ export default function ProjectDetailsPage() {
                 value={isOpen ? (openDrawerDepthBox?.value ?? depth) : depth}
                 onChange={(e) => {
                   if (!isOpen) return;
-                  const typed = numericDimensionText(e.target.value);
+                  const typed = dimensionMathText(e.target.value);
                   setOpenDrawerDepthBox((prev) => (prev ? { ...prev, value: typed } : prev));
                   const next = withDrawerDepth(draft, key, typed);
                   updateDraftCutlistRow(draft.id, { depth: next.depth, drawerDepths: next.drawerDepths });
@@ -30188,184 +30468,6 @@ export default function ProjectDetailsPage() {
           </>
         )}
       </div>
-  );
-  // ...and in its pop-up on a phone: its Fixed Shelf and Adjustable Shelf (with their drilling), then its Cabinet Type.
-  const renderCabinetryPopupFields = (row: CutlistRow, opts: { readOnly: boolean; textColor: string; barBg: string; labelClass: string }) => (
-    <>
-      <div className="mt-4 grid grid-cols-2 gap-4 rounded-[8px] px-3 py-1.5 text-center" style={{ backgroundColor: opts.barBg }}>
-        <p className={opts.labelClass} style={{ color: opts.textColor }}>Fixed Shelf</p>
-        <p className={opts.labelClass} style={{ color: opts.textColor }}>Adjustable Shelf</p>
-      </div>
-      <div className="grid grid-cols-2 gap-4 px-3 pt-1.5 text-center">
-        <div>
-          {editingShelfField?.rowId === row.id && editingShelfField.field === "fixed" && editingShelfField.part === "value" ? (
-            <input
-              autoFocus
-              disabled={opts.readOnly}
-              value={editingFixedShelf}
-              inputMode="numeric"
-              pattern="[0-9]*"
-              onChange={(e) => {
-                const next = sanitizeCutlistNumericInput("fixedShelf", e.target.value);
-                editingFixedShelfRef.current = next;
-                setEditingFixedShelf(next);
-              }}
-              onBlur={(e) => onShelfFieldInputBlur(e, row.id, "fixed", "value")}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  void commitShelfFieldEdit();
-                }
-                if (e.key === "Escape") cancelShelfFieldEdit();
-              }}
-              data-cutlist-shelf-field-edit={`${row.id}-fixed-value`}
-              className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
-            />
-          ) : (
-            <button
-              type="button"
-              disabled={opts.readOnly}
-              onClick={() => startShelfFieldEdit(row, "fixed", "value")}
-              className="min-w-0 rounded-[6px] px-1 py-[2px] disabled:opacity-100"
-              style={{ color: opts.textColor }}
-            >
-              {row.fixedShelf || "0"}
-            </button>
-          )}
-          {hasShelfQuantity(row.fixedShelf) ? (
-            <div className="mt-1">
-              {editingShelfField?.rowId === row.id && editingShelfField.field === "fixed" && editingShelfField.part === "drilling" ? (
-                <BoardPillDropdown
-                  value={editingFixedShelfDrilling}
-                  options={drillingOptionsForShelfQuantity(row.fixedShelf)}
-                  hideBlankOption
-                  disabled={opts.readOnly}
-                  bg="var(--panel-bg)"
-                  border="var(--glass-border)"
-                  text="var(--text-main)"
-                  size="compact"
-                  getSize={() => ""}
-                  getLabel={(v) => v}
-                  onChange={(v) => {
-                    const next = normalizeDrillingValue(v);
-                    editingFixedShelfDrillingRef.current = next;
-                    setEditingFixedShelfDrilling(next);
-                    window.setTimeout(() => {
-                      void commitShelfFieldEdit();
-                    }, 0);
-                  }}
-                />
-              ) : (
-                <button
-                  type="button"
-                  disabled={opts.readOnly}
-                  onClick={() => startShelfFieldEdit(row, "fixed", "drilling")}
-                  className="min-w-0 text-[11px] disabled:opacity-100"
-                  style={{ color: opts.textColor }}
-                >
-                  {normalizeDrillingValue(row.fixedShelfDrilling)}
-                </button>
-              )}
-            </div>
-          ) : null}
-        </div>
-        <div>
-          {editingShelfField?.rowId === row.id && editingShelfField.field === "adjustable" && editingShelfField.part === "value" ? (
-            <input
-              autoFocus
-              disabled={opts.readOnly}
-              value={editingAdjustableShelf}
-              inputMode="numeric"
-              pattern="[0-9]*"
-              onChange={(e) => {
-                const next = sanitizeCutlistNumericInput("adjustableShelf", e.target.value);
-                editingAdjustableShelfRef.current = next;
-                setEditingAdjustableShelf(next);
-              }}
-              onBlur={(e) => onShelfFieldInputBlur(e, row.id, "adjustable", "value")}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  void commitShelfFieldEdit();
-                }
-                if (e.key === "Escape") cancelShelfFieldEdit();
-              }}
-              data-cutlist-shelf-field-edit={`${row.id}-adjustable-value`}
-              className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
-            />
-          ) : (
-            <button
-              type="button"
-              disabled={opts.readOnly}
-              onClick={() => startShelfFieldEdit(row, "adjustable", "value")}
-              className="min-w-0 rounded-[6px] px-1 py-[2px] disabled:opacity-100"
-              style={{ color: opts.textColor }}
-            >
-              {row.adjustableShelf || "0"}
-            </button>
-          )}
-          {hasShelfQuantity(row.adjustableShelf) ? (
-            <div className="mt-1">
-              {editingShelfField?.rowId === row.id && editingShelfField.field === "adjustable" && editingShelfField.part === "drilling" ? (
-                <BoardPillDropdown
-                  value={editingAdjustableShelfDrilling}
-                  options={drillingOptionsForShelfQuantity(row.adjustableShelf)}
-                  hideBlankOption
-                  disabled={opts.readOnly}
-                  bg="var(--panel-bg)"
-                  border="var(--glass-border)"
-                  text="var(--text-main)"
-                  size="compact"
-                  getSize={() => ""}
-                  getLabel={(v) => v}
-                  onChange={(v) => {
-                    const next = normalizeDrillingValue(v);
-                    editingAdjustableShelfDrillingRef.current = next;
-                    setEditingAdjustableShelfDrilling(next);
-                    window.setTimeout(() => {
-                      void commitShelfFieldEdit();
-                    }, 0);
-                  }}
-                />
-              ) : (
-                <button
-                  type="button"
-                  disabled={opts.readOnly}
-                  onClick={() => startShelfFieldEdit(row, "adjustable", "drilling")}
-                  className="min-w-0 text-[11px] disabled:opacity-100"
-                  style={{ color: opts.textColor }}
-                >
-                  {normalizeDrillingValue(row.adjustableShelfDrilling)}
-                </button>
-              )}
-            </div>
-          ) : null}
-        </div>
-      </div>
-
-      <div className="mt-4 rounded-[8px] px-3 py-1.5" style={{ backgroundColor: opts.barBg }}>
-        <p className={opts.labelClass} style={{ color: opts.textColor }}>Cabinet Type</p>
-      </div>
-      <div className="flex items-center gap-2 px-3 pt-1.5">
-        <CabinetryKindToggle
-          value={row.cabinetryKind || "base"}
-          disabled={opts.readOnly}
-          onChange={(next) => void setCutlistRowCabinetryKind(row.id, next)}
-        />
-        {(row.cabinetryKind || "base") === "base" ? (
-          <label className="inline-flex items-center gap-1" title="Force a full Top instead of Rails on this Base cabinet">
-            <input
-              type="checkbox"
-              disabled={opts.readOnly}
-              checked={Boolean(row.cabinetryFullTop)}
-              onChange={(e) => void setCutlistRowFullTop(row.id, e.target.checked)}
-              className="h-3.5 w-3.5"
-            />
-            <span className="whitespace-nowrap text-[11px] font-medium" style={{ color: opts.textColor }}>Full Top</span>
-          </label>
-        ) : null}
-      </div>
-    </>
   );
   const onShelfFieldInputBlur = (
     event: ReactFocusEvent<HTMLInputElement>,
@@ -30922,14 +31024,9 @@ export default function ProjectDetailsPage() {
     setInitialCutlistEntryRoom(firstRoom);
   }, []);
 
-  const addInitialDraftRowsToCutlist = async () => {
-    if (!project || !salesAccess.edit) return;
-    const nextWarnings: Record<string, Record<string, string>> = {};
-    const nonBlockingSheetIssues: Array<{ issues: CutlistValidationIssue[]; partType: string }> = [];
-    const accepted = initialCutlistDraftRows
-      .map((row, idx) => {
-        const partType = String(row.partType || initialActiveCutlistPartType || "").trim();
-        if (!partType) return null;
+  // An Initial Measure entry row as Add to cutlist takes it (and the phone / tablet Edit sheet's Save): its fields tidied
+  // up as the cutlist keeps them, and what's wrong with it — what holds it back, and the sheet sizes it only notes.
+  const checkInitialDraftForCutlist = (row: CutlistDraftRow, idx: number, partType: string) => {
         const isCabinetry = isCabinetryPartType(partType);
         const isDrawer = isClassicDrawerRowLike({ partType, doorMode: row.doorMode });
         const drawerTokens = parseDrawerHeightTokens(String(row.height ?? ""));
@@ -30967,6 +31064,19 @@ export default function ProjectDetailsPage() {
         );
         const blockingRowErrors = rowErrors.filter((issue) => !isSheetSizeIssue(issue));
         const sheetRowIssues = rowErrors.filter((issue) => isSheetSizeIssue(issue));
+    return { normalizedRow, blockingRowErrors, sheetRowIssues };
+  };
+
+  const addInitialDraftRowsToCutlist = async () => {
+    if (!project || !salesAccess.edit) return;
+    const nextWarnings: Record<string, Record<string, string>> = {};
+    const nonBlockingSheetIssues: Array<{ issues: CutlistValidationIssue[]; partType: string }> = [];
+    const accepted = initialCutlistDraftRows
+      .filter((row) => !isCutlistListEditDraftId(row.id))
+      .map((row, idx) => {
+        const partType = String(row.partType || initialActiveCutlistPartType || "").trim();
+        if (!partType) return null;
+        const { normalizedRow, blockingRowErrors, sheetRowIssues } = checkInitialDraftForCutlist(row, idx, partType);
         if (sheetRowIssues.length) {
           nonBlockingSheetIssues.push({ issues: sheetRowIssues, partType });
         }
@@ -30980,11 +31090,11 @@ export default function ProjectDetailsPage() {
       .filter(Boolean) as CutlistRow[];
     setCutlistCellWarnings(nextWarnings);
     flashCutlistWarningCells(nextWarnings);
-    if (!accepted.length) return;
+    if (!accepted.length) return nextWarnings;
     const next = [...initialCutlistRows, ...accepted];
     setInitialCutlistRows(next);
     // (The ones not finished stay in the Cutlist Entry, flagged — not cleared away with the ones that went in.)
-    setInitialCutlistDraftRows((prev) => prev.filter((row) => Boolean(nextWarnings[row.id])));
+    setInitialCutlistDraftRows((prev) => prev.filter((row) => Boolean(nextWarnings[row.id]) || isCutlistListEditDraftId(row.id)));
     for (const item of nonBlockingSheetIssues) {
       logCutlistValidationIssues(item.issues, item.partType, "initial");
     }
@@ -30993,7 +31103,413 @@ export default function ProjectDetailsPage() {
       logCutlistActivity(`${row.name || "Part"} added to ${row.room || "Project Cutlist"}`, { partType: row.partType, scope: "initial" });
     }
     await persistInitialCutlistRows(next);
+    return nextWarnings;
   };
+
+  // ---- The phone / tablet cutlists (Production's and Initial Measure's — components/cutlist-mobile). ----
+  // A Cutlist Entry card's Duplicate: a copy of it straight after it (after its sub parts, a main row's) — a sub part's
+  // copy one too, under the same main row.
+  const duplicateDraftCutlistRow = (id: string) => {
+    if (productionReadOnly) return;
+    const index = cutlistDraftRows.findIndex((row) => row.id === id);
+    if (index < 0) return;
+    const source = cutlistDraftRows[index];
+    const isSub = subPartDraftRowIds.has(id);
+    let insertAt = index + 1;
+    if (!isSub) while (insertAt < cutlistDraftRows.length && subPartDraftRowIds.has(cutlistDraftRows[insertAt].id)) insertAt += 1;
+    const copy: CutlistDraftRow = { ...source, id: `draft_${Date.now()}_${Math.random().toString(36).slice(2, 7)}` };
+    setCutlistDraftRows((prev) => {
+      const at = prev.findIndex((row) => row.id === id);
+      if (at < 0) return prev;
+      let to = at + 1;
+      if (!isSub) while (to < prev.length && subPartDraftRowIds.has(prev[to].id)) to += 1;
+      return [...prev.slice(0, to), copy, ...prev.slice(to)];
+    });
+    if (isSub) setSubPartDraftRowIds((prev) => new Set(prev).add(copy.id));
+  };
+  const duplicateInitialDraftCutlistRow = (id: string) => {
+    if (salesReadOnly) return;
+    const source = initialCutlistDraftRows.find((row) => row.id === id);
+    if (!source) return;
+    const copy: CutlistDraftRow = { ...source, id: `draft_${Date.now()}_${Math.random().toString(36).slice(2, 7)}` };
+    setInitialCutlistDraftRows((prev) => {
+      const at = prev.findIndex((row) => row.id === id);
+      return at < 0 ? prev : [...prev.slice(0, at + 1), copy, ...prev.slice(at + 1)];
+    });
+  };
+  // A Cabinetry card's Add doors / Add drawers: the entry's own sub part flow — its doors a Fronts row under it
+  // (addSubPartDraftRow), its drawers the Doors or Drawers picker's drawer count, as a cabinet's (a bank of drawer fronts).
+  const cutlistSubPartDoorType = partTypeOptions.find((option) => isDoorPartType(option)) ?? "";
+  const addCutlistCabinetDrawers = (e: ReactMouseEvent<HTMLButtonElement>, mainRowId: string) => {
+    if (!cutlistSubPartDoorType) return;
+    const mainRow = cutlistDraftRows.find((row) => row.id === mainRowId);
+    const drawerCountMatch = String(mainRow?.name || "").match(/(\d+)\s*Drawers?\b/i);
+    doorDrawerPickerModalOriginElRef.current = e.currentTarget;
+    setDoorDrawerPickerMainRowId(mainRowId);
+    setDoorDrawerPickerPartType(cutlistSubPartDoorType);
+    setDoorDrawerPickerOrigin(captureGlassModalOrigin(e));
+    setDrawerBankCountDraft(drawerCountMatch ? drawerCountMatch[1] : "3");
+    setDoorDrawerPickerStep("drawerCount");
+    setDoorDrawerPickerSuggestedMode("");
+  };
+  // A part's line in the List (and a folded Entry card's): its clashing — a Cabinetry part's Base / Wall and shelves.
+  const cutlistMobileExtraFor = (row: CutlistRow) => {
+    if (isCabinetryPartType(row.partType)) {
+      const fixed = Number.parseInt(String(row.fixedShelf || "0"), 10) || 0;
+      const adjustable = Number.parseInt(String(row.adjustableShelf || "0"), 10) || 0;
+      return [
+        normalizeCabinetryKindValue(row.cabinetryKind) === "wall" ? "Wall" : "Base",
+        fixed ? `${fixed} fixed` : "",
+        adjustable ? `${adjustable} adj` : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+    }
+    const shape = cutlistRowShape(row);
+    if (shape) return cutlistRowBandedLengthText(row, shape);
+    return joinClashing(String(row.clashLeft ?? ""), String(row.clashRight ?? "")) || String(row.clashing || "");
+  };
+  const cutlistMobileGrainOf = (row: CutlistRow): "height" | "width" | "depth" | null => {
+    const grainValue = String(row.grainValue ?? "").trim();
+    if (!grainValue) return null;
+    if (matchesGrainDimension(grainValue, String(row.height ?? ""), "height")) return "height";
+    if (matchesGrainDimension(grainValue, String(row.width ?? ""), "width")) return "width";
+    if (matchesGrainDimension(grainValue, String(row.depth ?? ""), "depth")) return "depth";
+    return null;
+  };
+  // A part type's colours for an Entry card and the Edit sheet (cutlistTablePalette, as the computer's entry rows).
+  const cutlistMobileCardTone = (partType: string): CutlistCardTone => {
+    const palette = cutlistTablePalette(partTypeColors[partType] ?? "#CBD5E1");
+    return { barBg: palette.titleBarBg, barText: palette.titleText, bodyBg: palette.rowBg, border: palette.border, text: palette.text };
+  };
+  // A folded Entry card's line: its board, its clashing (a cabinet's Base / shelves), its size and how many.
+  const renderCutlistMobileDraftSummary = (draft: CutlistDraftRow, scope: "production" | "initial") => {
+    const shape = cutlistRowShape(draft);
+    return (
+      <span className="flex min-w-0 flex-1 items-center gap-2">
+        <span className="min-w-0 flex-1 truncate">
+          {[(scope === "production" ? boardDisplayLabel(String(draft.board || "")) : String(draft.board || "")) || "No board", cutlistMobileExtraFor(draft)]
+            .filter(Boolean)
+            .join(" · ")}
+        </span>
+        <CutlistHwdSize
+          className="shrink-0 text-[13px]"
+          height={String(draft.height ?? "")}
+          width={String(draft.width ?? "")}
+          depth={shape ? String(cutlistShapeRowDepth(draft, shape)) : String(draft.depth ?? "")}
+          captions
+          grain={cutlistMobileGrainOf(draft)}
+        />
+        {String(draft.quantity ?? "").trim() ? (
+          <span className="min-w-[32px] shrink-0 rounded-full bg-white/60 px-2.5 py-1 text-center text-[13px] font-semibold leading-none">×{String(draft.quantity)}</span>
+        ) : null}
+      </span>
+    );
+  };
+  // A List part as its card shows it.
+  const cutlistMobileCardFor = (group: CutlistRowGroup, row: CutlistRow, scope: "production" | "initial"): CutlistListCardData => {
+    const shownAsCustom = cutlistRowShownAsCustom(group, row);
+    const shape = cutlistRowShape(row);
+    const ownColor = partTypeColors[String(row.partType || "Unassigned")] ?? cutlistGroupColor(group);
+    const isConfiguredDoor = isDoorPartType(row.partType) && normalizeDoorModeValue(row.doorMode) !== "manual";
+    const area = group.customArea ?? [];
+    return {
+      id: row.id,
+      name: String(row.name || ""),
+      pill: shownAsCustom ? { label: String(row.partType || "Unassigned"), bg: ownColor, text: isLightHex(ownColor) ? "#1F2937" : "#F8FAFC" } : null,
+      board: scope === "production" ? boardDisplayLabel(String(row.board || "")) : String(row.board || ""),
+      extra: cutlistMobileExtraFor(row),
+      height: String(row.height ?? ""),
+      width: String(row.width ?? ""),
+      depth: shape ? String(cutlistShapeRowDepth(row, shape)) : String(row.depth ?? ""),
+      captions: true,
+      grain: cutlistMobileGrainOf(row),
+      qty: String(row.quantity || ""),
+      clashing: isCabinetryPartType(row.partType) ? String(row.cabinetryClashBottom || "") : cutlistMobileExtraFor(row),
+      info: informationLinesFromValue(String(row.information ?? "")).map((line) => line.trim()).filter(Boolean).join(" · "),
+      room: String(row.room || ""),
+      // (A cabinet's breakdown isn't shown on a phone / tablet — a Cabinetry part's, nor a custom cabinet's.)
+      expandable:
+        !isCabinetryPartType(row.partType) &&
+        ((Boolean(shape) && !customCabinetOf(row)) || (scope === "production" && (isDrawerPartType(row.partType) || isConfiguredDoor))),
+      customAreaStart: area.length && row === area[0] && !group.custom ? { label: CUSTOM_CUTLIST_GROUP_TITLE, count: formatPartCount(cutlistRowsPartCount(area)) } : null,
+      stripColor: shownAsCustom ? ownColor : undefined,
+    };
+  };
+  // A List table as the phone / tablet list has it. (Its fold kept in the mobile groups' state — folded when set.)
+  const cutlistMobileGroupFor = (group: CutlistRowGroup, scope: "production" | "initial", folded: Record<string, boolean>): CutlistListGroupData => {
+    const color = cutlistGroupColor(group);
+    const palette = cutlistTablePalette(color);
+    return {
+      key: group.partType,
+      title: cutlistGroupTitle(group),
+      tone: {
+        barBg: palette.titleBarBg,
+        barText: palette.titleText,
+        chipBg: palette.countChipBg,
+        headerBg: palette.headerBg,
+        headerText: palette.headerText,
+        rowBg: palette.rowBg,
+        subRowBg: palette.subRowBg,
+        divider: palette.divider,
+        border: palette.border,
+        text: palette.text,
+        strip: color,
+      },
+      countLabel: formatPartCount(cutlistRowsPartCount(group.rows)),
+      collapsed: Boolean(folded[group.partType]),
+      cards: group.rows.map((row) => cutlistMobileCardFor(group, row, scope)),
+    };
+  };
+  // A List part's arrow: its pieces under it — a cabinet's, a drawer's, a door set up as doors or drawers' fronts, a
+  // custom cabinet's — and a Custom piece's drawing.
+  const renderCutlistMobileRowDetails = (row: CutlistRow | undefined, scope: "production" | "initial") => {
+    if (!row) return null;
+    const shape = cutlistRowShape(row);
+    const cabinet = shape ? customCabinetOf(row) : null;
+    const pieces: Array<{ key: string; name: string; height: string; width: string; depth: string; quantity: string }> = cabinet
+      ? customCabinetRowsFromPieces(row, cabinet.pieces).map((piece) => ({ key: piece.id, name: piece.name, height: piece.height, width: piece.width, depth: piece.depth, quantity: piece.quantity }))
+      : scope !== "production"
+        ? []
+        : isCabinetryPartType(row.partType)
+          ? buildCabinetryDerivedPieces(row).map((piece) => ({ key: piece.key, name: piece.partName, height: piece.height, width: piece.width, depth: piece.depth, quantity: piece.quantity }))
+          : isDrawerPartType(row.partType)
+            ? buildDrawerDerivedPieces(row).map((piece) => ({ key: piece.key, name: piece.partName, height: piece.height, width: piece.width, depth: piece.depth, quantity: piece.quantity }))
+            : isDoorPartType(row.partType) && normalizeDoorModeValue(row.doorMode) !== "manual"
+              ? buildConfiguredDoorListSubrows(row).map((piece) => ({ key: piece.key, name: piece.partName, height: piece.height, width: piece.width, depth: piece.depth, quantity: piece.quantity }))
+              : [];
+    return (
+      <div className="space-y-1">
+        {shape ? (
+          <div className="flex justify-center py-1">
+            <CutlistShapeDrawing shape={shape} width={300} height={170} fontSize={10} />
+          </div>
+        ) : null}
+        {pieces.filter((piece) => String(piece.quantity ?? "").trim() !== "0").map((piece) => (
+          <div key={piece.key} className="flex items-center gap-2 py-1">
+            <span className="min-w-0 flex-1 truncate">{piece.name || "-"}</span>
+            <CutlistHwdSize className="shrink-0" height={piece.height} width={piece.width} depth={piece.depth} captions={false} />
+            <span className="w-9 shrink-0 text-right font-semibold">×{piece.quantity || "0"}</span>
+          </div>
+        ))}
+        {!shape && !pieces.length ? <p className="py-1 opacity-70">Nothing more to show.</p> : null}
+      </div>
+    );
+  };
+  // Add to cutlist held back: its problems in a sheet (cutlistMobileIssuesFor), tapped to go to them.
+  const [cutlistMobileIssuesScope, setCutlistMobileIssuesScope] = useState<"" | "production" | "initial">("");
+  // (Each part's problems once — "Fill at least 2 dimensions" is on all three of its sizes — without the "Row 2:" the
+  // computer's bubbles start with: the part's own name and number say which.)
+  const cutlistMobileIssuesFor = (drafts: CutlistDraftRow[]): CutlistIssueItem[] =>
+    drafts.flatMap((draft, index) => {
+      const seen = new Set<string>();
+      const name = String(draft.name || "").trim();
+      return Object.entries(cutlistCellWarnings[draft.id] ?? {}).flatMap(([field, raw]) => {
+        let message = String(raw || "").trim().replace(/^Row \d+\s*[:|]\s*/i, "");
+        if (name && message.startsWith(`${name}: `)) message = message.slice(name.length + 2);
+        else if (name && message.startsWith(`${name} | `)) message = message.slice(name.length + 3);
+        if (!message || seen.has(message)) return [];
+        seen.add(message);
+        return [
+          {
+            key: `${draft.id}::${field}`,
+            title: `${index + 1}. ${[draft.partType, name].filter(Boolean).join(" · ") || "Part"}`,
+            color: partTypeColors[draft.partType] ?? "#CBD5E1",
+            textColor: "",
+            message,
+          },
+        ];
+      });
+    });
+  const addCutlistMobileDrafts = async (scope: "production" | "initial") => {
+    const warnings = scope === "production" ? await addDraftRowsToCutlist() : await addInitialDraftRowsToCutlist();
+    if (warnings && Object.keys(warnings).length) setCutlistMobileIssuesScope(scope);
+  };
+  // One picked in that sheet: its card opened, scrolled to and its field focused.
+  const focusCutlistMobileIssue = (item: CutlistIssueItem, scope: "production" | "initial") => {
+    const [rowId, field] = item.key.split("::");
+    setCutlistMobileIssuesScope("");
+    if (scope === "production") {
+      setCutlistMobileView("entry");
+      productionEntryFold.setFolded(rowId, false);
+    } else {
+      setInitialCutlistMobileView("entry");
+      initialEntryFold.setFolded(rowId, false);
+    }
+    window.setTimeout(() => {
+      const el = cutlistWarnCellElRefs.current[`${rowId}::${field}`];
+      if (!el) return;
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      const target = el.matches("input, textarea, button") ? el : el.querySelector<HTMLElement>("input:not([readonly]), textarea, button");
+      target?.focus({ preventScroll: true });
+    }, 300);
+  };
+  // A List part tapped: its Edit sheet — the part held as a draft (its id CUTLIST_LIST_EDIT_PREFIX's), edited with the
+  // entry's own fields; Save puts it back over the part, Close lets it go.
+  const [cutlistListEdit, setCutlistListEdit] = useState<{ scope: "production" | "initial"; rowId: string; draftId: string; open: boolean } | null>(null);
+  const [cutlistListEditDeleteArmed, setCutlistListEditDeleteArmed] = useState(false);
+  const openCutlistListEdit = (scope: "production" | "initial", rowId: string) => {
+    const row = (scope === "production" ? cutlistRows : initialCutlistRows).find((item) => item.id === rowId);
+    if (!row) return;
+    const draftId = `${CUTLIST_LIST_EDIT_PREFIX}${row.id}_${Date.now().toString(36)}`;
+    const draft: CutlistDraftRow = { ...row, id: draftId };
+    if (scope === "production") setCutlistDraftRows((prev) => [...prev.filter((item) => !isCutlistListEditDraftId(item.id)), draft]);
+    else setInitialCutlistDraftRows((prev) => [...prev.filter((item) => !isCutlistListEditDraftId(item.id)), draft]);
+    setCutlistListEditDeleteArmed(false);
+    setCutlistListEdit({ scope, rowId, draftId, open: true });
+  };
+  const closeCutlistListEdit = () => {
+    const edit = cutlistListEdit;
+    if (!edit) return;
+    setCutlistListEdit({ ...edit, open: false });
+    setCutlistListEditDeleteArmed(false);
+    dismissAllWarningsForRow(edit.draftId);
+    // (Once it's slid away — what's in it there till then.)
+    window.setTimeout(() => {
+      const keep = (prev: CutlistDraftRow[]) => prev.filter((item) => item.id !== edit.draftId);
+      if (edit.scope === "production") setCutlistDraftRows(keep);
+      else setInitialCutlistDraftRows(keep);
+      setCutlistListEdit((current) => (current?.draftId === edit.draftId ? null : current));
+    }, 240);
+  };
+  // What a Save changed, in the feed of changes — as a List cell's own edit notes it (commitCellEdit).
+  const logCutlistListEditChanges = (before: CutlistRow, after: CutlistRow, scope: "production" | "initial") => {
+    const name = String(after.name || before.name || "Unnamed Row").trim();
+    const scopeOpt = scope === "initial" ? { scope: "initial" as const } : {};
+    if (before.partType !== after.partType) {
+      logCutlistActivity(`${name} | Part Type:`, { partType: before.partType, partTypeTo: after.partType, ...scopeOpt });
+    }
+    const keys: CutlistEditableField[] = ["board", "name", "height", "width", "depth", "quantity", "clashing", "grain"];
+    for (const key of keys) {
+      const from = cutlistValueForActivity(before, key);
+      const to = cutlistValueForActivity(after, key);
+      if (from === to) continue;
+      logCutlistActivity(`${name} | ${cutlistFieldLabel(key)}:`, {
+        partType: after.partType || before.partType,
+        valueFrom: from,
+        valueTo: to,
+        dedupeKey: `change:${after.id}:${key}:${from}->${to}`,
+        ...scopeOpt,
+      });
+    }
+  };
+  const saveCutlistListEdit = async () => {
+    const edit = cutlistListEdit;
+    if (!edit?.open) return;
+    if (edit.scope === "production") {
+      if (productionReadOnly) return;
+      const draft = cutlistDraftRows.find((row) => row.id === edit.draftId);
+      const before = cutlistRows.find((row) => row.id === edit.rowId);
+      if (!draft || !before) return;
+      const { normalizedRow, rowErrors } = checkProductionDraftForCutlist(draft, 0);
+      if (rowErrors.length) {
+        const warnings = { [draft.id]: makeWarningMapForRow(rowErrors) };
+        setCutlistCellWarnings((prev) => ({ ...prev, ...warnings }));
+        flashCutlistWarningCells(warnings);
+        return;
+      }
+      // (A door set up as drawers is split into its fronts, as Add to cutlist does — the first keeping the part's id.)
+      const made = expandAcceptedRowForCutlist({ ...normalizedRow, id: before.id });
+      const replacement = made.length === 1 ? [{ ...made[0], id: before.id }] : made;
+      const at = cutlistRows.findIndex((row) => row.id === before.id);
+      const next = [...cutlistRows.slice(0, at), ...replacement, ...cutlistRows.slice(at + 1)];
+      logCutlistListEditChanges(before, replacement[0], "production");
+      setCutlistRows(next);
+      closeCutlistListEdit();
+      await persistCutlistRows(next);
+      return;
+    }
+    if (salesReadOnly) return;
+    const draft = initialCutlistDraftRows.find((row) => row.id === edit.draftId);
+    const before = initialCutlistRows.find((row) => row.id === edit.rowId);
+    if (!draft || !before) return;
+    const partType = String(draft.partType || before.partType || "").trim();
+    const { normalizedRow, blockingRowErrors } = checkInitialDraftForCutlist(draft, 0, partType);
+    if (blockingRowErrors.length) {
+      const warnings = { [draft.id]: makeWarningMapForRow(blockingRowErrors) };
+      setCutlistCellWarnings((prev) => ({ ...prev, ...warnings }));
+      flashCutlistWarningCells(warnings);
+      return;
+    }
+    const updated: CutlistRow = { ...normalizedRow, id: before.id, includeInNesting: before.includeInNesting };
+    const next = initialCutlistRows.map((row) => (row.id === before.id ? updated : row));
+    logCutlistListEditChanges(before, updated, "initial");
+    setInitialCutlistRows(next);
+    closeCutlistListEdit();
+    await persistInitialCutlistRows(next);
+  };
+  // The Edit sheet's Duplicate: a copy of the part as it's saved, straight after it.
+  const duplicateCutlistListRow = async (scope: "production" | "initial", rowId: string) => {
+    const rows = scope === "production" ? cutlistRows : initialCutlistRows;
+    const at = rows.findIndex((row) => row.id === rowId);
+    if (at < 0 || (scope === "production" ? productionReadOnly : salesReadOnly)) return;
+    const source = rows[at];
+    const copy: CutlistRow = { ...source, id: `${scope === "initial" ? "im_" : ""}${Date.now()}_${Math.random().toString(36).slice(2, 7)}` };
+    const next = [...rows.slice(0, at + 1), copy, ...rows.slice(at + 1)];
+    logCutlistActivity(`${copy.name || "Part"} added to ${copy.room || "Project Cutlist"}`, { partType: copy.partType, ...(scope === "initial" ? { scope: "initial" as const } : {}) });
+    if (scope === "production") {
+      setCutlistRows(next);
+      await persistCutlistRows(next);
+    } else {
+      setInitialCutlistRows(next);
+      await persistInitialCutlistRows(next);
+    }
+  };
+  // ...and its Delete (tapped twice — Delete, then Confirm): the part gone, as the List's own delete does it (Undo too).
+  const deleteCutlistListRow = async (scope: "production" | "initial", rowId: string) => {
+    if (!cutlistListEditDeleteArmed) {
+      setCutlistListEditDeleteArmed(true);
+      return;
+    }
+    closeCutlistListEdit();
+    if (scope === "production") {
+      await removeCutlistRow(rowId, true);
+      return;
+    }
+    if (salesReadOnly) return;
+    const removed = initialCutlistRows.find((row) => row.id === rowId);
+    if (!removed) return;
+    const taken = takenOutOf(initialCutlistRows, (row) => row.id === rowId);
+    const next = initialCutlistRows.filter((row) => row.id !== rowId);
+    setInitialCutlistRows(next);
+    logCutlistActivity(`${removed.name || "Part"} removed`, { partType: removed.partType, scope: "initial" });
+    offerCutlistRowsUndo("initialMeasure", taken);
+    await persistInitialCutlistRows(next);
+  };
+  // The Notes sheet (the production cutlist's — in place of its bottom Notes bar): which of its chips is showing ("" —
+  // shut), what its editor started with, and what's been typed since (null — nothing). Leaving one (another chip, or
+  // shutting the sheet) saves what was typed in it, as its drawer did on closing.
+  const [cutlistNotesSheetTab, setCutlistNotesSheetTab] = useState("");
+  const [cutlistNotesSheetInitial, setCutlistNotesSheetInitial] = useState("");
+  const cutlistNotesSheetDraftRef = useRef<string | null>(null);
+  const leaveCutlistNotesSheetTab = (tab: string) => {
+    const typed = cutlistNotesSheetDraftRef.current;
+    cutlistNotesSheetDraftRef.current = null;
+    if (typed === null || !project || productionReadOnly) return;
+    if (tab === "notes") {
+      if (typed !== String(project.productionNotes ?? "")) void saveGeneralDetailsPatch({ productionNotes: typed });
+    } else if (tab.startsWith("contractor:")) {
+      void commitContractorNoteForTab(tab.slice("contractor:".length), typed);
+    }
+  };
+  const openCutlistNotesSheetTab = (tab: string) => {
+    if (tab === cutlistNotesSheetTab) return;
+    if (cutlistNotesSheetTab) leaveCutlistNotesSheetTab(cutlistNotesSheetTab);
+    setCutlistNotesSheetInitial(
+      tab === "notes"
+        ? notesToDisplayHtml(project?.productionNotes || "")
+        : tab.startsWith("contractor:")
+          ? notesToDisplayHtml(project?.contractorNotes?.[tab.slice("contractor:".length)] || "")
+          : "",
+    );
+    setCutlistNotesSheetTab(tab);
+  };
+  const closeCutlistNotesSheet = () => {
+    leaveCutlistNotesSheetTab(cutlistNotesSheetTab);
+    setCutlistNotesSheetTab("");
+  };
+  const productionNotesHasText = Boolean(String(project?.productionNotes ?? "").replace(/<[^>]*>/g, "").replace(/&nbsp;/g, " ").trim());
+  const cutlistNotesWithTextCount = (productionNotesHasText ? 1 : 0) + contractorTabOptions.filter((name) => contractorHasNotes(name)).length;
 
   const onCutlistEntryInformationLineChange = (index: number, value: string) => {
     setCutlistEntry((prev) => {
@@ -31392,9 +31908,18 @@ export default function ProjectDetailsPage() {
   const visibleCutlistDraftRows = useMemo(
     () =>
       cutlistDraftRows.filter((row) =>
-        cutlistRoomFilter === "Project Cutlist" ? true : row.room === cutlistRoomFilter,
+        !isCutlistListEditDraftId(row.id) && (cutlistRoomFilter === "Project Cutlist" ? true : row.room === cutlistRoomFilter),
       ),
     [cutlistDraftRows, cutlistRoomFilter],
+  );
+  // The phone / tablet Cutlist Entry's cards folded to a line: a new one added, the ones before it fold away.
+  const productionEntryFold = useAutoFoldDrafts(
+    cutlistDraftRows.filter((row) => !isCutlistListEditDraftId(row.id)).map((row) => row.id),
+    [cutlistEntryFolded, setCutlistEntryFolded],
+  );
+  const initialEntryFold = useAutoFoldDrafts(
+    initialCutlistDraftRows.filter((row) => !isCutlistListEditDraftId(row.id)).map((row) => row.id),
+    [initialCutlistEntryFolded, setInitialCutlistEntryFolded],
   );
   // Groups each main draft row with any sub parts spliced in directly after
   // it (addSubPartDraftRow always inserts right after its main row, so
@@ -31721,14 +32246,18 @@ export default function ProjectDetailsPage() {
   // its Cutlist Entry and its (empty) Cutlist List (renderFirstPiecePrompt). Not Project Cutlist (every room — no entry).
   const initialRoomIsEmpty =
     initialCutlistRoomFilter !== "Project Cutlist" &&
-    initialCutlistDraftRows.length === 0 &&
+    !initialCutlistDraftRows.some((row) => !isCutlistListEditDraftId(row.id)) &&
     !initialCutlistRows.some((row) => row.room === initialCutlistRoomFilter);
   const productionRoomIsEmpty =
     cutlistRoomFilter !== "Project Cutlist" &&
     visibleCutlistDraftRows.length === 0 &&
     !cutlistRows.some((row) => row.room === cutlistRoomFilter);
   // Its Add a piece pressed: the cutlist's part types in a strip under it (in which cutlist), to pick the first piece's.
+  // Open until a piece is in the room — not shut as one's picked: a part type with a choice to make (Front's Doors or
+  // Drawers) opens its menu from its pill, which has to still be there.
   const [firstPieceStrip, setFirstPieceStrip] = useState<"" | "initial" | "production">("");
+  if (firstPieceStrip === "production" && !productionRoomIsEmpty) setFirstPieceStrip("");
+  if (firstPieceStrip === "initial" && !initialRoomIsEmpty) setFirstPieceStrip("");
   // A row's grain as the shape editor has it: the side it runs along — Production's "H:1200" by its letter, an Initial
   // Measure row's plain size by which of its sizes that is ("" — none set).
   const shapeEditorGrainAxis = (row: CutlistRow, initial: boolean): CutlistShapeGrainAxis => {
@@ -32182,7 +32711,6 @@ export default function ProjectDetailsPage() {
                   type="button"
                   disabled={readOnly}
                   onClick={(e) => {
-                    setFirstPieceStrip("");
                     if (kind === "initial") pickInitialEntryPartType(e, v);
                     else pickProductionEntryPartType(e, v);
                   }}
@@ -34944,12 +35472,13 @@ export default function ProjectDetailsPage() {
   const cutlistEntryGridTemplate = useMemo(() => cutlistEntryGridTemplateFor(0), [cutlistEntryGridTemplateFor]);
   // The Entry row whose top drawer's box is opened out — the only one squeezing the columns either side of it (they're level
   // with it; its drawers under it open out over the room beside them).
-  const squeezedDrawerRowId = useMemo(() => {
+  // (Its top drawer as listed — drawerKeysInHeightOrder.)
+  const squeezedDrawerRowId = (() => {
     const box = openDrawerDepthBox;
     if (!box) return null;
     const draft = cutlistDraftRows.find((row) => row.id === box.rowId);
-    return draft && drawerDepthKeys(draft)[0] === box.key ? box.rowId : null;
-  }, [openDrawerDepthBox, cutlistDraftRows]);
+    return draft && drawerKeysInHeightOrder(draft)[0] === box.key ? box.rowId : null;
+  })();
   // Its columns sliding open (and the last one's back closed), frame by frame — each frame's columns straight onto the row
   // (its columns won't take a CSS transition); React has the end ones on it already.
   const squeezedDrawerRowRef = useRef<string | null>(null);
@@ -35074,42 +35603,6 @@ export default function ProjectDetailsPage() {
         })}
       </tr>
     ));
-  // ...and on a phone (its row's pop-up): a "Pieces" heading, then each piece on a card — as a door bank's pieces show there.
-  const renderCustomCabinetPieceCards = (row: CutlistRow, opts: { barBg: string; labelClass: string; textColor: string }) => {
-    const pieces = customCabinetSubRows(row);
-    if (!pieces.length) return null;
-    return (
-      <>
-        <div className="mt-4 rounded-[8px] px-3 py-1.5" style={{ backgroundColor: opts.barBg }}>
-          <p className={opts.labelClass} style={{ color: opts.textColor }}>Pieces</p>
-        </div>
-        <div className="space-y-2 px-3 pt-1.5 text-left">
-          {pieces.map((piece) => (
-            <div key={`${row.id}_compact_custom_piece_${piece.key}`} className="rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-muted)] px-2 py-2">
-              <p className="break-words font-semibold text-[var(--text-main)]">{piece.partName}</p>
-              <p className="mt-1 break-words text-[var(--text-muted)]">
-                {(["height", "width", "depth"] as const)
-                  .filter((key) => String(piece[key] || "").trim())
-                  .map((key, idx) => (
-                    <Fragment key={key}>
-                      {idx > 0 ? " x " : ""}
-                      <span style={matchesGrainDimension(piece.grainValue, piece[key], key) ? { fontWeight: 700, textDecoration: "underline" } : undefined}>
-                        {piece[key]} {key === "height" ? "H" : key === "width" ? "W" : "D"}
-                      </span>
-                    </Fragment>
-                  ))}
-              </p>
-              <p className="mt-1 text-[var(--text-muted)]">
-                Qty {piece.quantity || "1"}
-                {piece.clashing ? ` · ${piece.clashing}` : ""}
-              </p>
-              {piece.information ? <p className="mt-1 break-words text-[var(--text-muted)]">{piece.information}</p> : null}
-            </div>
-          ))}
-        </div>
-      </>
-    );
-  };
   // A Custom piece's Entry row's second row, under the first, left to right from its start: what it is (its "What is it?"
   // part type's pill — renderCustomPieceBasePill; none yet: it starts with Edit), its Edit (View) shape button — as tall and
   // round-ended as the row's own + and X — then its drawing (it opens the shape editor too), all three as tall. On a
@@ -35824,8 +36317,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       if (!target) return false;
 
       target.scrollIntoView({ behavior: "smooth", block: "center" });
-      target.classList.add("ring-2", "ring-[#3B82F6]");
-      window.setTimeout(() => target.classList.remove("ring-2", "ring-[#3B82F6]"), 1400);
+      // (The whole row lit up in the brand blue, then fading back — .cutlist-jump-highlight, globals.css.)
+      target.classList.remove("cutlist-jump-highlight");
+      void target.offsetWidth;
+      target.classList.add("cutlist-jump-highlight");
+      window.setTimeout(() => target.classList.remove("cutlist-jump-highlight"), 2800);
       return true;
     };
 
@@ -35998,18 +36494,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   const isSalesCompareFullscreen = resolvedTab === "sales" && salesAccess.view && salesNav === "compare";
   const isNestingFullscreen =
     resolvedTab === "production" && productionAccess.view && productionNav === "nesting";
-  // Same "play the entrance animation only when this view is freshly entered" effect as CNC's own
-  // (see isCncFullscreen's own effect above) — fires unconditionally on fresh entry; harmless while
-  // isNestingVisibilityPanelOpen is false since a closed panel renders no bubbles for the flag to
-  // affect. Covers both a fresh page load landing directly here and navigating away and back.
+  // On a fresh entry (a page load landing here, or coming back to it):
   useEffect(() => {
     if (isNestingFullscreen && !wasNestingFullscreenRef.current) {
-      setIsNestingVisibilityPanelJustOpened(true);
-      if (nestingVisibilityPanelOpenTimeoutRef.current) clearTimeout(nestingVisibilityPanelOpenTimeoutRef.current);
-      nestingVisibilityPanelOpenTimeoutRef.current = setTimeout(() => {
-        setIsNestingVisibilityPanelJustOpened(false);
-        nestingVisibilityPanelOpenTimeoutRef.current = null;
-      }, 800);
       // This whole page component stays mounted across leaving/re-entering Nesting fullscreen
       // (it's just a conditional render, not a remount), so isNestingMobileVisibilityOpen would
       // otherwise still be true here if it was left open on a previous visit — e.g. tapping "Save
@@ -41215,6 +41702,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   // project made from one), its Specifications (Production's), and its Schedule (Design's — for those who can see the
   // Calendar). None for someone who can see none of them: no side column then.
   const generalSideTabs = [
+    // A small job's cutlist: Production's own cutlist screen (its General tab is all a small job has otherwise).
+    ...(project?.isSmallJob && productionAccess.view ? [{ label: "Cutlist", icon: Scissors, key: "cutlist" as const }] : []),
     ...(project?.sourceLeadId ? [{ label: "Lead", icon: Inbox, key: "lead" as const }] : []),
     ...(productionAccess.view || salesAccess.view ? [{ label: "Specifications", icon: ClipboardList, key: "specifications" as const }] : []),
     ...(projectScheduleViewer.canViewCalendar ? [{ label: "Schedule", icon: CalendarDays, key: "schedule" as const }] : []),
@@ -41862,6 +42351,27 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 setNestingPreviewHoverPieceId(null);
                 setNestingTooltip(null);
               }}
+              // (A computer: right-clicked, its menu — Edit in cutlist, Leave out and more — rather than buttons over every
+              // piece on hover. A phone's pop-up keeps its buttons: there's no right-click.)
+              onContextMenu={
+                isCompactProjectViewport
+                  ? undefined
+                  : (e) => {
+                      e.preventDefault();
+                      setNestingTooltip(null);
+                      setNestingPieceMenu({
+                        x: e.clientX,
+                        y: e.clientY,
+                        rowId: String(placement.piece.row.id || ""),
+                        partType: String(placement.piece.partType || ""),
+                        title: placement.piece.row.parentName
+                          ? `${placement.piece.row.parentName} · ${placement.piece.name || "Part"}`
+                          : String(placement.piece.name || "Part"),
+                        subtitle: String(placement.piece.room || placement.piece.row.room || ""),
+                        size: `${formatMm(hitMin ? trueOnSheetW : placement.w)} × ${formatMm(hitMin ? trueOnSheetH : placement.h)}`,
+                      });
+                    }
+              }
               style={{
                 left: `${((marginX + placement.x) / selectedNestingSheet.group.sheetWidth) * 100}%`,
                 top: `${((marginY + placement.y) / selectedNestingSheet.group.sheetHeight) * 100}%`,
@@ -41901,8 +42411,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               )}
               <div className={labelBox ? "absolute px-[7px] py-[2px]" : "contents"} style={labelBox ? nestingLabelBoxStyle(labelBox, placement.w, placement.h) : undefined}>
                 <div
-                  className="absolute inset-0 z-[120] items-center justify-center"
-                  style={{ display: nestingPreviewHoverPieceId === hoverPlacementKey ? "flex" : "none" }}
+                  className="absolute inset-0 z-[120] items-center justify-center gap-1"
+                  style={{ display: isCompactProjectViewport && nestingPreviewHoverPieceId === hoverPlacementKey ? "flex" : "none" }}
                 >
                   <button
                     type="button"
@@ -41925,7 +42435,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     Edit
                   </button>
                 </div>
-                {showWidthDimension && nestingPreviewHoverPieceId !== hoverPlacementKey && (
+                {showWidthDimension && (!isCompactProjectViewport || nestingPreviewHoverPieceId !== hoverPlacementKey) && (
                   <span
                     className="pointer-events-none absolute"
                     style={{ left: "50%", top: "2px", transform: "translateX(-50%)", zIndex: 40 }}
@@ -41938,7 +42448,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     </span>
                   </span>
                 )}
-                {showHeightDimension && nestingPreviewHoverPieceId !== hoverPlacementKey && (
+                {showHeightDimension && (!isCompactProjectViewport || nestingPreviewHoverPieceId !== hoverPlacementKey) && (
                   <span
                     className="pointer-events-none absolute top-1/2 rounded-[4px] px-1 text-[10px] font-bold"
                     style={{
@@ -43131,15 +43641,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               onClick={() => {
                 closeScannedPart();
                 openProjectLiveView("production", { productionNav: "cutlist", nestingFullscreen: false });
-                // A phone: its row's pop-up, over the cutlist (the phone's list finds it from Project Cutlist, all rooms).
+                // A phone / tablet: its List, and the part's Edit sheet over it.
                 if (isCompactProjectViewport) {
                   window.setTimeout(() => {
                     setCutlistSearch("");
                     setCutlistPartTypeFilter("All Part Types");
-                    productionMobileRowDetailOriginElRef.current = null;
-                    setProductionMobileRowDetailOrigin(null);
-                    setProductionMobileRowDetailKey({ rowId: row.id, partType: String(row.partType || "Unassigned") });
-                    setIsProductionMobileRowDetailOpen(true);
+                    setCutlistMobileView("list");
+                    openCutlistListEdit("production", row.id);
                   }, 350);
                   return;
                 }
@@ -47848,23 +48356,424 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           [...initialCutlistAddedRoomTabs, ...initialCutlistRoomTabs.filter((tab) => tab.filter === "Project Cutlist")].map((tab) => [tab.filter, tab]),
         ).values(),
       );
+      // As the production cutlist's phone / tablet layout (components/cutlist-mobile) — Initial Measure's own fields,
+      // products and columns; no Notes, Select or Import here (it never had them).
+      const mobileWide = projectViewportWidth >= 1024;
+      const mobileTwoAcross = isTabletProjectViewport;
+      const onProjectCutlist = initialCutlistRoomFilter === "Project Cutlist";
+      const mobileView: "entry" | "list" = onProjectCutlist ? "list" : initialCutlistMobileView;
+      const showEntry = !onProjectCutlist && (mobileWide || mobileView === "entry");
+      const showList = mobileWide || mobileView === "list";
+      const entryDrafts = initialCutlistDraftRows.filter((row) => !isCutlistListEditDraftId(row.id));
+      const roomPartCount = cutlistRowsPartCount(onProjectCutlist ? initialCutlistRows : initialCutlistRows.filter((row) => row.room === initialCutlistRoomFilter));
+      const roomItems: CutlistRoomItem[] = compactInitialCutlistRoomTabs.map((tab) => ({
+        key: tab.filter,
+        label: tab.label,
+        isProject: tab.filter === "Project Cutlist",
+        partCount: cutlistRowsPartCount(tab.filter === "Project Cutlist" ? initialCutlistRows : initialCutlistRows.filter((row) => row.room === tab.filter)),
+        mix: (initialCutlistRoomPartMix.get(tab.filter) ?? []).map((item) => ({ ...item, color: partTypeColors[item.partType] ?? "#CBD5E1" })),
+      }));
+      const openAddRoom = (el: HTMLElement) => {
+        addRoomPilotOriginElRef.current = el;
+        addRoomFullscreenOriginElRef.current = el;
+        const rect = el.getBoundingClientRect();
+        setRoomModalOrigin({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+        setIsCutlistMobileRoomsOpen(false);
+        void onAddCutlistRoom();
+      };
+      // An Initial Measure entry row's fields (as they were on a phone) — its card's, and a List part's Edit sheet's.
+      const renderInitialDraftFields = (draft: CutlistDraftRow) => {
+        const color = partTypeColors[draft.partType] ?? "#CBD5E1";
+        // (A pale wash of its part type, edged in it, words in a dark shade of it, white fields edged
+        // in it — as the desktop entry's rows.)
+        const draftPalette = cutlistTablePalette(color);
+        const draftTextColor = draftPalette.text;
+        const draftFieldBg = "#FFFFFF";
+        const draftFieldBorder = draftPalette.fieldBorder;
+        const draftIsCabinetry = isCabinetryPartType(draft.partType);
+        const draftBoardAllowsGrain = initialMeasureBoardGrainFor(String(draft.board ?? "").trim());
+        const mutedLabelColor = draftTextColor;
+        // (A Custom piece: its shape — its Height and Width the shape's, its banding drawn on it — as Production's.)
+        const draftShape = cutlistRowShape(draft);
+        return (
+          <div className="grid gap-3 pt-2">
+            <div className="space-y-1">
+              <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Board</p>
+              <div ref={registerCutlistWarnCellRef(draft.id, "board")} className="relative z-[120] pointer-events-auto">
+                <BoardPillDropdown
+                  value={draft.board}
+                  options={initialMeasureBoardOptions}
+                  disabled={salesReadOnly}
+                  title={warningForCell(draft.id, "board") || undefined}
+                  className={warningClassForCell(draft.id, "board")}
+                  bg={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).backgroundColor ?? draftFieldBg}
+                  border={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).borderColor ?? draftFieldBorder}
+                  text={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).color ?? draftTextColor}
+                  getSize={boardSizeFor}
+                  getLabel={boardDisplayLabel}
+                  onChange={(next) => onInitialDraftBoardChange(draft.id, next)}
+                />
+              </div>
+            </div>
+            <div className="space-y-1">
+              <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Part Name</p>
+              <input
+                ref={registerCutlistWarnCellRef(draft.id, "name")}
+                disabled={salesReadOnly}
+                value={draft.name}
+                onChange={(e) => updateInitialDraftCutlistRow(draft.id, { name: e.target.value })}
+                title={warningForCell(draft.id, "name") || undefined}
+                className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell(draft.id, "name")}`}
+                style={warningStyleForCell(draft.id, "name", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
+              />
+            </div>
+            {/* (A Custom piece: its Height, Width and Depth — the shape's, not typed — then what it is, Edit and its drawing.) */}
+            {draftShape ? (
+              <>
+              <div className="grid grid-cols-3 items-end gap-2">
+                {(["height", "width", "depth"] as const).map((field) => (
+                  <div key={field} className="space-y-1 text-center">
+                    <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>{field === "height" ? "Height" : field === "width" ? "Width" : "Depth"}</p>
+                    <input
+                      ref={registerCutlistWarnCellRef(draft.id, field)}
+                      readOnly
+                      tabIndex={-1}
+                      value={field === "height" ? draft.height : field === "width" ? draft.width : cutlistShapeRowDepth(draft, draftShape)}
+                      title="Set by the shape — Edit shape to change it"
+                      className={`cutlist-field h-8 w-full cursor-default rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, field)}`}
+                      style={{
+                        ...warningStyleForCell(draft.id, field, { backgroundColor: "transparent", borderColor: draftFieldBorder, color: draftTextColor }),
+                        ...(matchesGrainDimension(String(draft.grainValue ?? ""), field === "height" ? draft.height : field === "width" ? draft.width : cutlistShapeRowDepth(draft, draftShape), field)
+                          ? { fontWeight: 700, textDecoration: "underline" }
+                          : {}),
+                      }}
+                    />
+                  </div>
+                ))}
+              </div>
+              {renderCustomEntrySecondRow({
+                shape: draftShape,
+                board: draft.board,
+                color,
+                readOnly: salesReadOnly,
+                phone: true,
+                onEdit: (e) => openCutlistShapeEditor(e, { mode: "draft", rowId: draft.id, scope: "initial" }),
+                extra: isCabinetShape(draftShape)
+                  ? renderCustomCabinetDraftFields(draft, draftShape, { readOnly: salesReadOnly, textColor: draftTextColor, fieldBg: draftFieldBg, fieldBorder: draftFieldBorder, onPatch: (patch) => updateInitialDraftCutlistRow(draft.id, patch) })
+                  : null,
+              })}
+              </>
+            ) : (
+            <div className="grid grid-cols-3 gap-2">
+              <div className="space-y-1 text-center">
+                <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Height</p>
+                {isDrawerPartType(draft.partType) ? (
+                  <div ref={registerCutlistWarnCellRef(draft.id, "height")}>
+                    <DrawerHeightDropdown
+                      value={String(draft.height || "")}
+                      options={drawerHeightLetterOptions}
+                      disabled={salesReadOnly}
+                      title={warningForCell(draft.id, "height") || undefined}
+                      className={warningClassForCell(draft.id, "height")}
+                      bg={warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).backgroundColor ?? draftFieldBg}
+                      border={warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).borderColor ?? draftFieldBorder}
+                      text={warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).color ?? draftTextColor}
+                      onAdd={(token) => addInitialDraftDrawerHeightToken(draft.id, token)}
+                      onRemove={(token) => removeInitialDraftDrawerHeightToken(draft.id, token)}
+                    />
+                  </div>
+                ) : (
+                  <input
+                    ref={registerCutlistWarnCellRef(draft.id, "height")}
+                    disabled={salesReadOnly}
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    value={draft.height}
+                    onChange={(e) => updateInitialDraftCutlistRow(draft.id, { height: dimensionMathText(e.target.value) })}
+                    title={warningForCell(draft.id, "height") || undefined}
+                    className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`}
+                    style={warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
+                  />
+                )}
+              </div>
+              <div className="space-y-1 text-center">
+                <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Width</p>
+                <input
+                  ref={registerCutlistWarnCellRef(draft.id, "width")}
+                  disabled={salesReadOnly}
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  value={draft.width}
+                  onChange={(e) => updateInitialDraftCutlistRow(draft.id, { width: dimensionMathText(e.target.value) })}
+                  title={warningForCell(draft.id, "width") || undefined}
+                  className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`}
+                  style={warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
+                />
+              </div>
+              <div className="space-y-1 text-center">
+                <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Depth</p>
+                <input
+                  ref={registerCutlistWarnCellRef(draft.id, "depth")}
+                  disabled={salesReadOnly}
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  value={draft.depth}
+                  onChange={(e) => updateInitialDraftCutlistRow(draft.id, { depth: dimensionMathText(e.target.value) })}
+                  title={warningForCell(draft.id, "depth") || undefined}
+                  className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "depth")}`}
+                  style={warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
+                />
+              </div>
+            </div>
+            )}
+            <div className={`grid gap-2 ${draftIsCabinetry ? "grid-cols-1" : showInitialCutlistGrainColumn && draftBoardAllowsGrain ? "grid-cols-3" : "grid-cols-2"}`}>
+              <div className="space-y-1 text-center">
+                <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Quantity</p>
+                <input
+                  ref={registerCutlistWarnCellRef(draft.id, "quantity")}
+                  disabled={salesReadOnly || isDrawerPartType(draft.partType)}
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  value={draft.quantity}
+                  onChange={(e) => updateInitialDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })}
+                  title={warningForCell(draft.id, "quantity") || undefined}
+                  className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`}
+                  style={warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
+                />
+              </div>
+              {!draftIsCabinetry ? (
+                <div className="space-y-1">
+                  <p className="text-center text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Clashing</p>
+                  {draftShape ? (
+                    <div className="flex h-8 items-center justify-center text-[12px]" style={{ color: draftTextColor }} title="Clashing — set on the shape">
+                      {cutlistRowBandedLengthText(draft, draftShape)}
+                    </div>
+                  ) : (
+                  <div className="grid grid-cols-2 gap-2">
+                    <BoardPillDropdown
+                      value={draft.clashLeft ?? ""}
+                      options={CLASH_LEFT_OPTIONS}
+                      disabled={salesReadOnly || isDrawerPartType(draft.partType)}
+                      bg={draftFieldBg}
+                      border={draftFieldBorder}
+                      text={draftTextColor}
+                      size="default"
+                      getSize={() => ""}
+                      getLabel={(v) => v}
+                      onChange={(v) => updateInitialDraftCutlistRow(draft.id, { clashLeft: v })}
+                    />
+                    <BoardPillDropdown
+                      value={draft.clashRight ?? ""}
+                      options={CLASH_RIGHT_OPTIONS}
+                      disabled={salesReadOnly || isDrawerPartType(draft.partType)}
+                      bg={draftFieldBg}
+                      border={draftFieldBorder}
+                      text={draftTextColor}
+                      size="default"
+                      getSize={() => ""}
+                      getLabel={(v) => v}
+                      onChange={(v) => updateInitialDraftCutlistRow(draft.id, { clashRight: v })}
+                    />
+                  </div>
+                  )}
+                </div>
+              ) : null}
+              {showInitialCutlistGrainColumn && draftBoardAllowsGrain ? (
+                <div className="space-y-1 text-center">
+                  <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Grain</p>
+                  <GrainDimensionToggle
+                    value={String(draft.grainValue ?? "")}
+                    options={initialMeasureGrainDimensionChoicesForRow(draft)}
+                    disabled={salesReadOnly}
+                    onChange={(v) => applyInitialDraftRowGrainValue(draft, v)}
+                  />
+                </div>
+              ) : null}
+            </div>
+            {draftIsCabinetry ? (
+              <div className="space-y-2 rounded-[10px] border p-2" style={{ borderColor: draftFieldBorder, backgroundColor: draftFieldBg }}>
+                <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Shelves</p>
+                <div className="grid gap-2">
+                  <div className="space-y-1">
+                    <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Fixed Shelf</p>
+                    <input inputMode="numeric" disabled={salesReadOnly} value={draft.fixedShelf ?? ""} onChange={(e) => updateInitialDraftCutlistRow(draft.id, { fixedShelf: numericOnlyText(e.target.value) })} className="cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
+                    {hasShelfQuantity(draft.fixedShelf) ? (
+                      <BoardPillDropdown value={normalizeDrillingValue(draft.fixedShelfDrilling)} options={DRILLING_OPTIONS} disabled={salesReadOnly} bg={draftFieldBg} border={draftFieldBorder} text={draftTextColor} size="compact" getSize={() => ""} getLabel={(v) => v} onChange={(v) => updateInitialDraftCutlistRow(draft.id, { fixedShelfDrilling: normalizeDrillingValue(v) })} />
+                    ) : null}
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Adjustable Shelf</p>
+                    <input inputMode="numeric" disabled={salesReadOnly} value={draft.adjustableShelf ?? ""} onChange={(e) => updateInitialDraftCutlistRow(draft.id, { adjustableShelf: numericOnlyText(e.target.value) })} className="cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
+                    {hasShelfQuantity(draft.adjustableShelf) ? (
+                      <BoardPillDropdown value={normalizeDrillingValue(draft.adjustableShelfDrilling)} options={DRILLING_OPTIONS} disabled={salesReadOnly} bg={draftFieldBg} border={draftFieldBorder} text={draftTextColor} size="compact" getSize={() => ""} getLabel={(v) => v} onChange={(v) => updateInitialDraftCutlistRow(draft.id, { adjustableShelfDrilling: normalizeDrillingValue(v) })} />
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            ) : null}
+            <div className="space-y-1">
+              <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Information</p>
+              {informationLinesFromValue(draft.information).map((line, idx) => (
+                <div key={`${draft.id}_im_mobile_info_${idx}`} className="flex items-center gap-[6px]">
+                  <button
+                    type="button"
+                    disabled={salesReadOnly}
+                    onClick={() => (idx === 0 ? onInitialDraftAddInformationLine(draft.id) : onInitialDraftRemoveInformationLine(draft.id, idx))}
+                    className="glass-shine inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border font-semibold text-white hover:brightness-95 disabled:opacity-55"
+                    style={glassShineStyle(idx === 0 ? "#16A34A" : "var(--danger)")}
+                  >
+                    {idx === 0 ? <Plus size={16} className="mx-auto" strokeWidth={2.8} /> : <X size={15} className="mx-auto" strokeWidth={2.8} />}
+                  </button>
+                  <input
+                    disabled={salesReadOnly}
+                    value={line}
+                    onChange={(e) => onInitialDraftInformationLineChange(draft.id, idx, e.target.value)}
+                    placeholder="Information"
+                    className="cutlist-field h-8 flex-1 rounded-[8px] border bg-transparent px-2 text-[12px]"
+                    style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      };
+      const issueItems = cutlistMobileIssuesFor(entryDrafts);
+      const listEditDraft = cutlistListEdit?.scope === "initial" ? initialCutlistDraftRows.find((row) => row.id === cutlistListEdit.draftId) : undefined;
+      const listEditTone = listEditDraft ? cutlistTablePalette(partTypeColors[listEditDraft.partType] ?? "#CBD5E1") : null;
+      const addBarShown = showEntry && !mobileWide && !initialRoomIsEmpty;
+      const partTypePills = (
+        <div
+          data-horizontal-swipe-scroll={mobileWide ? undefined : "true"}
+          className={mobileWide ? "flex flex-wrap gap-2" : "hide-native-scrollbar -mx-3 flex gap-2 overflow-x-auto px-3 py-0.5"}
+        >
+          {initialMeasurePartTypeOptions.map((v) => {
+            const color = partTypeColors[v] ?? "#CBD5E1";
+            return (
+              <button
+                key={`im_mobile_entry_${v}`}
+                type="button"
+                disabled={salesReadOnly}
+                onClick={(e) => pickInitialEntryPartType(e, v)}
+                style={glassShineStyle(color, { color: isLightHex(color) ? "#1F2937" : "#F8FAFC" })}
+                className="glass-shine relative h-9 shrink-0 whitespace-nowrap rounded-full border px-4 text-[13px] font-medium transition-transform active:scale-95 disabled:opacity-55"
+              >
+                {v}
+              </button>
+            );
+          })}
+        </div>
+      );
+      const entrySection = (
+        <section className="space-y-3">
+          {initialRoomIsEmpty ? (
+            renderFirstPiecePrompt("initial")
+          ) : (
+            <>
+              {mobileWide ? partTypePills : null}
+              {entryDrafts.length === 0 ? (
+                <p className="px-1 py-6 text-center text-[13px] font-medium" style={{ color: "var(--text-muted)" }}>
+                  Pick a part type above to start a piece.
+                </p>
+              ) : (
+                <div className={`isolate ${mobileTwoAcross ? "grid grid-cols-2 items-start gap-3" : "-mx-3 space-y-3"}`}>
+                  {entryDrafts.map((draft) => (
+                    <CutlistEntryCard
+                      key={`im_mobile_draft_${draft.id}`}
+                      tone={cutlistMobileCardTone(draft.partType)}
+                      partType={draft.partType}
+                      name={String(draft.name || "")}
+                      boxed={mobileTwoAcross}
+                      folded={Boolean(initialEntryFold.folded[draft.id])}
+                      onToggleFold={() => initialEntryFold.toggle(draft.id)}
+                      onDuplicate={() => duplicateInitialDraftCutlistRow(draft.id)}
+                      onRemove={() => removeInitialDraftCutlistRow(draft.id)}
+                      readOnly={salesReadOnly}
+                      summary={renderCutlistMobileDraftSummary(draft, "initial")}
+                    >
+                      {renderInitialDraftFields(draft)}
+                    </CutlistEntryCard>
+                  ))}
+                </div>
+              )}
+              {mobileWide && entryDrafts.length ? (
+                <button
+                  type="button"
+                  disabled={salesReadOnly}
+                  onClick={() => void addCutlistMobileDrafts("initial")}
+                  className="glass-shine inline-flex h-12 w-full items-center justify-center rounded-full border text-[16px] font-medium text-white hover:brightness-95 disabled:opacity-55"
+                  style={glassShineStyle("var(--brand)")}
+                >
+                  Add {entryDrafts.length} to cutlist
+                </button>
+              ) : null}
+            </>
+          )}
+        </section>
+      );
+      // The List's search, part type and Select (and more): in the top bar's glass, in the Entry's part types' place.
+      const listToolbar = (
+        <CutlistListToolbar
+          search={initialCutlistSearch}
+          onSearch={onInitialCutlistSearchChange}
+          filter={
+            <GlassSelectDropdown
+              value={initialCutlistPartTypeFilter}
+              options={["All Part Types", ...initialMeasurePartTypeOptions]}
+              getLabel={(value) => (value === "All Part Types" ? "All types" : value)}
+              // (Each part type with its colour line, as the computer's.)
+              getOptionColor={(opt) => partTypeColors[opt]}
+              onChange={onInitialCutlistPartTypeFilterChange}
+              title="Show one part type"
+              className="h-9 max-w-[130px] rounded-full border border-[var(--glass-border)] bg-[color-mix(in_srgb,var(--panel-bg)_55%,transparent)] px-3 text-[13px] font-medium text-[var(--text-main)]"
+            />
+          }
+        />
+      );
+      const listSection = (
+        <section className={`space-y-3 ${initialRoomIsEmpty && !mobileWide ? "hidden" : ""}`}>
+          {mobileWide ? listToolbar : null}
+          <div className={mobileWide ? "" : "-mx-3"}>
+            <CutlistListView
+              groups={groupedInitialCutlistRows.map((group) => cutlistMobileGroupFor(group, "initial", initialCutlistMobileExpandedGroups))}
+              layout={mobileWide ? "table" : "cards"}
+              columns={{
+                room: showRoomColumnInInitialList,
+                clashing: initialCutlistColumnDefs.some((col) => col.key === "clashing"),
+                info: initialCutlistColumnDefs.some((col) => col.key === "information"),
+              }}
+              onToggleGroup={(key) => setInitialCutlistMobileExpandedGroups((prev) => ({ ...prev, [key]: !prev[key] }))}
+              onOpen={(id) => openCutlistListEdit("initial", id)}
+              renderDetails={(id) => renderCutlistMobileRowDetails(initialCutlistRows.find((row) => row.id === id), "initial")}
+              empty={
+                <>
+                  <EmptyState compact icon={<Ruler size={16} />} title="No cutlist rows yet" hint="Parts added to the cutlist show here, grouped by part type." />
+                  {renderEmptyProjectCutlistRooms("initial")}
+                </>
+              }
+            />
+          </div>
+        </section>
+      );
       return (
         <ProtectedRoute>
-          <div className="relative flex h-[100svh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
+          <div
+            className="relative flex h-[100svh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]"
+            style={mobileWide ? ({ "--cutlist-compact-top": "56px" } as React.CSSProperties) : undefined}
+          >
             {/* Split into a fixed backdrop + content pair (was a single "glass-page-header sticky"
                 div) so the app-shell's pulldown-nav gesture — which needs a marked element to
                 grow/fade, see Quote's own identical data-app-top-bar comment — can find something
                 here; a sticky element would also reflow the content below it as the gesture grows
                 the bar's height, where a fixed one just overlays. Same var(--glass-modal-bg)/
-                blur(12px) saturate(220%) look .glass-page-header already gave this bar. The plain
-                h-[56px] spacer right after it stands in for the flow space the sticky div used to
-                reserve on its own — simpler than adding paddingTop to the (several) stacked bars
-                that used to sit directly below it in normal flow. */}
+                blur(12px) saturate(220%) look .glass-page-header already gave this bar. The
+                spacer at the top of the scrolling page stands in for the flow space the sticky div
+                used to reserve on its own. */}
             <div
               data-app-top-bar="true"
               className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
               style={{
-                // (Down over the bands below the title bar too — one glass, so the three read as one bar.)
+                // (Down over the bands below the title bar too — one glass, so they read as one bar.)
                 height: "var(--cutlist-compact-top, 150px)",
                 backgroundColor: "var(--glass-bg-strong)",
                 backdropFilter: "blur(14px) saturate(220%)",
@@ -47889,992 +48798,178 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 {renderSaveAndBackButton(() => void saveAndBackFromInitialMeasure(), true)}
               </div>
             </div>
-            {/* The band under the title bar (the rooms — no feed of changes on a phone, a computer's only): over the glass
-                the page scrolls up behind, as the CNC Cutlist's. Its height (with the title bar's) kept as
-                --cutlist-compact-top: the page's spacer at its top, and its part type bar's sticky top. */}
-            <div ref={trackCompactCutlistTopBands} data-title-bar="true" className="absolute inset-x-0 z-[92]" style={{ top: 56 }}>
+            {/* The band under the title bar — the room bar, then Entry / List — over the glass the page scrolls up behind
+                (its height, with the title bar's, kept as --cutlist-compact-top). A wide tablet: the rail instead. */}
+            {!mobileWide ? (
+              <div ref={trackCompactCutlistTopBands} data-title-bar="true" className="absolute inset-x-0 z-[92] border-b" style={{ top: 56, borderColor: "var(--glass-border)" }}>
+                <div className={`space-y-2 px-3 pb-2.5 pt-1 ${mobileTwoAcross ? "mx-auto max-w-[1100px]" : ""}`}>
+                  <CutlistRoomBar rooms={roomItems} activeKey={initialCutlistRoomFilter} onSelect={setInitialCutlistRoomFilter} onOpenRooms={() => setIsCutlistMobileRoomsOpen(true)} />
+                  <CutlistViewSwitch
+                    view={mobileView}
+                    onChange={(view) => {
+                      setInitialCutlistMobileView(view);
+                      initialMeasureCompactScrollRef.current?.scrollTo({ top: 0 });
+                    }}
+                    entryCount={entryDrafts.length}
+                    listPartCount={roomPartCount}
+                    entryDisabled={onProjectCutlist}
+                  />
+                  {showEntry && !initialRoomIsEmpty ? (
+                    <div className="pt-0.5">{partTypePills}</div>
+                  ) : showList && !initialRoomIsEmpty ? (
+                    <div className="pb-0.5 pt-1">{listToolbar}</div>
+                  ) : null}
+                </div>
+              </div>
+            ) : (
+              <div className="fixed bottom-0 left-0 z-[92] w-[236px] p-3" style={{ top: 56 }}>
+                <CutlistRoomRail
+                  rooms={roomItems}
+                  activeKey={initialCutlistRoomFilter}
+                  onSelect={setInitialCutlistRoomFilter}
+                  onAddRoom={openAddRoom}
+                  canAddRoom={salesAccess.edit && !isSavingSalesRooms}
+                />
+              </div>
+            )}
+            <GlassScrollbarThumb scrollRef={initialMeasureCompactScrollRef} />
             <div
-              className="relative shrink-0 overflow-hidden border-b"
-              style={{ borderColor: "var(--glass-border)" }}
+              ref={initialMeasureCompactScrollRef}
+              className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-0 py-0 hide-native-scrollbar"
+              style={{ paddingBottom: addBarShown ? 96 : 24, paddingLeft: mobileWide ? 236 : 0 }}
             >
+              <div className="shrink-0" style={{ height: "var(--cutlist-compact-top, 150px)" }} />
+              {/* (Another room, or Project cutlist: the cutlist slides in from the way it went — CutlistRoomSlide.) */}
+              <CutlistRoomSlide
+                index={roomItems.findIndex((room) => room.key === initialCutlistRoomFilter)}
+                className={`space-y-5 px-3 pb-3 pt-3 ${mobileTwoAcross && !mobileWide ? "mx-auto max-w-[1100px]" : ""}`}
+              >
+                {mobileWide ? (
+                  <div className="flex items-center justify-between gap-3 px-1">
+                    <p className="min-w-0 truncate text-[18px] font-semibold" style={{ color: "var(--text-main)" }}>
+                      {String(initialCutlistRoomFilter || "Project Cutlist")}
+                    </p>
+                    <span className="shrink-0 text-[13px] font-medium" style={{ color: "var(--text-muted)" }}>
+                      {formatPartsLabel(roomPartCount)}
+                    </span>
+                  </div>
+                ) : null}
+                {showEntry ? entrySection : null}
+                {showList ? listSection : null}
+              </CutlistRoomSlide>
+            </div>
+            {addBarShown ? (
               <div
-                data-horizontal-swipe-scroll="true"
-                className="overflow-x-auto overscroll-x-contain snap-x snap-mandatory"
-                // A fresh mount always starts at native scrollLeft 0 (the first tab), regardless
-                // of what initialCutlistRoomFilter already is (e.g. restored from localStorage) —
-                // without this, the strip visually shows one room while the state (and the
-                // "Cutlist Entry" part-type buttons gated on it below) reflects another, including
-                // the buttons silently not rendering at all if state is still "Project Cutlist".
-                // Jump the strip to match state instead of the other way around, so a legitimately
-                // restored filter isn't discarded just because the scroll position reset.
-                ref={(el) => {
-                  if (!el) return;
-                  const index = compactInitialCutlistRoomTabs.findIndex((tab) => tab.filter === initialCutlistRoomFilter);
-                  // (Only when it's showing another room — not mid-slide to this one, its < > or a swipe, which it'd cut short.)
-                  if (index >= 0 && Math.round(el.scrollLeft / (el.clientWidth || 1)) !== index) {
-                    el.scrollLeft = index * (el.clientWidth || 1);
-                  }
-                }}
-                onScroll={(e) => {
-                  const container = e.currentTarget;
-                  const pageWidth = container.clientWidth || 1;
-                  const index = Math.round(container.scrollLeft / pageWidth);
-                  const nextTab = compactInitialCutlistRoomTabs[index];
-                  if (nextTab && nextTab.filter !== initialCutlistRoomFilter) {
-                    setInitialCutlistRoomFilter(nextTab.filter);
-                  }
+                className="fixed inset-x-0 bottom-0 z-[95] border-t px-3 pt-2.5"
+                style={{
+                  borderColor: "var(--glass-border)",
+                  // (The app's glass, as its other bars: see-through, the cutlist scrolling softly under it.)
+                  backgroundColor: "var(--glass-bg)",
+                  backdropFilter: "blur(16px) saturate(200%)",
+                  WebkitBackdropFilter: "blur(16px) saturate(200%)",
+                  boxShadow: "inset 0 1px 0 var(--glass-highlight), 0 -6px 24px rgba(15, 23, 42, 0.08)",
+                  paddingBottom: "calc(10px + env(safe-area-inset-bottom, 0px))",
                 }}
               >
-                <div className="flex min-w-full">
-                  {compactInitialCutlistRoomTabs.map((roomTab) => {
-                    const active = initialCutlistRoomFilter === roomTab.filter;
-                    return (
-                      <button
-                        key={`im_fullscreen_mobile_room_swipe_${roomTab.label}_${roomTab.filter}`}
-                        type="button"
-                        onClick={(e) => {
-                          setInitialCutlistRoomFilter(roomTab.filter);
-                          e.currentTarget.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "start" });
-                        }}
-                        className="min-w-full snap-start px-4 py-3 text-center text-[17px] font-semibold"
-                        style={{
-                          color: active ? "var(--brand-strong)" : "var(--text-main)",
-                        }}
-                      >
-                        {roomTab.label}
-                      </button>
-                    );
-                  })}
-                </div>
+                <button
+                  type="button"
+                  disabled={salesReadOnly || entryDrafts.length === 0}
+                  onClick={() => void addCutlistMobileDrafts("initial")}
+                  className="glass-shine mx-auto flex h-12 w-full max-w-[640px] items-center justify-center rounded-full border text-[16px] font-medium text-white hover:brightness-95 disabled:opacity-55"
+                  style={glassShineStyle("var(--brand)")}
+                >
+                  {entryDrafts.length ? `Add ${entryDrafts.length} to cutlist` : "Add to cutlist"}
+                </button>
               </div>
-              {/* < > either side, as the CNC Cutlist's: the strip slides to the room before / after (its onScroll then
-                  picks it). */}
-              {(() => {
-                const roomIndex = Math.max(0, compactInitialCutlistRoomTabs.findIndex((tab) => tab.filter === initialCutlistRoomFilter));
-                const slideTo = (button: HTMLElement, next: number) => {
-                  const strip = button.parentElement?.querySelector<HTMLElement>('[data-horizontal-swipe-scroll="true"]');
-                  strip?.scrollTo({ left: next * (strip.clientWidth || 1), behavior: "smooth" });
-                };
-                return (
-                  <>
-                    <button
-                      type="button"
-                      disabled={roomIndex <= 0}
-                      onClick={(e) => slideTo(e.currentTarget, roomIndex - 1)}
-                      className="absolute left-3 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-[7px] disabled:opacity-30"
-                      style={{ color: "var(--text-main)" }}
-                      aria-label="Previous room"
-                    >
-                      <ChevronLeft size={18} strokeWidth={2.5} />
-                    </button>
-                    <button
-                      type="button"
-                      disabled={roomIndex >= compactInitialCutlistRoomTabs.length - 1}
-                      onClick={(e) => slideTo(e.currentTarget, roomIndex + 1)}
-                      className="absolute right-3 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-[7px] disabled:opacity-30"
-                      style={{ color: "var(--text-main)" }}
-                      aria-label="Next room"
-                    >
-                      <ChevronRight size={18} strokeWidth={2.5} />
-                    </button>
-                  </>
-                );
-              })()}
-            </div>
-            </div>
-            <GlassScrollbarThumb scrollRef={initialMeasureCompactScrollRef} />
-            <div ref={initialMeasureCompactScrollRef} className="min-h-0 flex-1 overflow-auto px-0 py-0 hide-native-scrollbar">
-              <div className="shrink-0" style={{ height: "var(--cutlist-compact-top, 150px)" }} />
-              <div className={`space-y-3 px-3 pb-3 pt-3 ${isTabletProjectViewport ? "mx-auto max-w-[1100px]" : ""}`}>
-                {initialCutlistRoomFilter !== "Project Cutlist" && (
-                  <section className="-mt-3 overflow-visible px-3 pb-3 pt-0">
-                    {initialRoomIsEmpty ? (
-                      renderFirstPiecePrompt("initial")
-                    ) : (
-                    <div className="space-y-3 pt-3">
-                      <div className="glass-page-header sticky top-[var(--cutlist-compact-top,0px)] z-30 -mx-6 flex flex-wrap items-center gap-1 px-3 py-2">
-                        {initialMeasurePartTypeOptions.map((v) => {
-                          const color = partTypeColors[v] ?? "#CBD5E1";
-                          return (
-                            <button
-                              key={`im_fullscreen_mobile_entry_${v}`}
-                              type="button"
-                              disabled={salesReadOnly}
-                              onClick={(e) => pickInitialEntryPartType(e, v)}
-                              // (Round-ended, with the glass shine in its colour.)
-                              style={glassShineStyle(color, { color: isLightHex(color) ? "#1F2937" : "#F8FAFC" })}
-                              className="glass-shine relative rounded-full border px-3 py-1 text-[11px] font-medium transition-[transform,box-shadow] duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:z-10 hover:scale-110 hover:shadow-lg disabled:opacity-55 disabled:hover:scale-100 disabled:hover:shadow-none"
-                            >
-                              {v}
-                            </button>
-                          );
-                        })}
-                      </div>
-
-                      {/* (Its rows the screen's full width, edge to edge — isolated, so no field's own z-index lifts it over the sticky
-                          part type bar.) */}
-                      <div className="isolate -mx-6 space-y-3">
-                        {initialCutlistDraftRows.map((draft) => {
-                          const color = partTypeColors[draft.partType] ?? "#CBD5E1";
-                          // (A pale wash of its part type, edged in it, words in a dark shade of it, white fields edged
-                          // in it — as the desktop entry's rows.)
-                          const draftPalette = cutlistTablePalette(color);
-                          const draftTextColor = draftPalette.text;
-                          const draftFieldBg = "#FFFFFF";
-                          const draftFieldBorder = draftPalette.fieldBorder;
-                          const draftFolded = Boolean(cutlistCompactFoldedDraftRows[draft.id]);
-                          const draftIsCabinetry = isCabinetryPartType(draft.partType);
-                          const draftBoardAllowsGrain = initialMeasureBoardGrainFor(String(draft.board ?? "").trim());
-                          const mutedLabelColor = draftTextColor;
-                          // (A Custom piece: its shape — its Height and Width the shape's, its banding drawn on it — as Production's.)
-                          const draftShape = cutlistRowShape(draft);
-                          return (
-                            <div
-                              key={draft.id}
-                              className="overflow-visible border-y px-6 pb-3 pt-3"
-                              style={{ backgroundColor: draftPalette.rowBg, borderColor: draftPalette.border, color: draftTextColor }}
-                            >
-                              {/* (The whole top bar — out to the card's edges — folds it.) */}
-                              <div
-                                className="-mx-6 -mt-3 flex cursor-pointer select-none items-center justify-between gap-3 px-6 pt-3"
-                                role="button"
-                                tabIndex={0}
-                                aria-expanded={!draftFolded}
-                                title={draftFolded ? "Show this row" : "Fold this row away"}
-                                onClick={() => toggleCutlistCompactDraftRowFolded(draft.id)}
-                                onKeyDown={(e) => {
-                                  if (e.key !== "Enter" && e.key !== " ") return;
-                                  e.preventDefault();
-                                  toggleCutlistCompactDraftRowFolded(draft.id);
-                                }}
-                              >
-                                <div className="min-w-0 flex flex-1 items-center gap-3">
-                                  <ChevronDown
-                                    size={16}
-                                    className="-mr-1 shrink-0 transition-transform duration-200"
-                                    style={{ color: draftTextColor, transform: draftFolded ? "rotate(-90deg)" : undefined }}
-                                  />
-                                  <p className="shrink-0 text-[13px] font-bold tracking-[1px]" style={{ color: mutedLabelColor }}>
-                                    {draft.partType}
-                                  </p>
-                                  {String(draft.name || "").trim() ? (
-                                    <p className="min-w-0 flex-1 truncate text-right text-[13px] font-bold" style={{ color: mutedLabelColor }}>
-                                      {draft.name}
-                                    </p>
-                                  ) : null}
-                                </div>
-                                <button
-                                  type="button"
-                                  disabled={salesReadOnly}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    removeInitialDraftCutlistRow(draft.id);
-                                  }}
-                                  // (Round, with the glass shine — red — as the desktop entry's.)
-                                  className="glass-shine h-8 w-8 shrink-0 rounded-full border text-[11px] font-semibold text-white hover:brightness-95 disabled:opacity-55"
-                                  style={glassShineStyle("var(--danger)")}
-                                >
-                                  <X size={15} className="mx-auto" strokeWidth={2.8} />
-                                </button>
-                              </div>
-                              {/* Folds shut and open (0fr/1fr, slid) — its fields kept, so nothing typed is lost while it's shut. */}
-                              <div style={{ display: "grid", gridTemplateRows: draftFolded ? "0fr" : "1fr", transition: "grid-template-rows 220ms ease" }}>
-                              <div className="min-h-0 overflow-hidden">
-                              <div className="grid gap-3 pt-2">
-                                <div className="space-y-1">
-                                  <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Board</p>
-                                  <div ref={registerCutlistWarnCellRef(draft.id, "board")} className="relative z-[120] pointer-events-auto">
-                                    <BoardPillDropdown
-                                      value={draft.board}
-                                      options={initialMeasureBoardOptions}
-                                      disabled={salesReadOnly}
-                                      title={warningForCell(draft.id, "board") || undefined}
-                                      className={warningClassForCell(draft.id, "board")}
-                                      bg={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).backgroundColor ?? draftFieldBg}
-                                      border={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).borderColor ?? draftFieldBorder}
-                                      text={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).color ?? draftTextColor}
-                                      getSize={boardSizeFor}
-                                      getLabel={boardDisplayLabel}
-                                      onChange={(next) => onInitialDraftBoardChange(draft.id, next)}
-                                    />
-                                  </div>
-                                </div>
-                                <div className="space-y-1">
-                                  <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Part Name</p>
-                                  <input
-                                    ref={registerCutlistWarnCellRef(draft.id, "name")}
-                                    disabled={salesReadOnly}
-                                    value={draft.name}
-                                    onChange={(e) => updateInitialDraftCutlistRow(draft.id, { name: e.target.value })}
-                                    title={warningForCell(draft.id, "name") || undefined}
-                                    className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell(draft.id, "name")}`}
-                                    style={warningStyleForCell(draft.id, "name", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
-                                  />
-                                </div>
-                                {/* (A Custom piece: its Height, Width and Depth — the shape's, not typed — then what it is, Edit and its drawing.) */}
-                                {draftShape ? (
-                                  <>
-                                  <div className="grid grid-cols-3 items-end gap-2">
-                                    {(["height", "width", "depth"] as const).map((field) => (
-                                      <div key={field} className="space-y-1 text-center">
-                                        <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>{field === "height" ? "Height" : field === "width" ? "Width" : "Depth"}</p>
-                                        <input
-                                          ref={registerCutlistWarnCellRef(draft.id, field)}
-                                          readOnly
-                                          tabIndex={-1}
-                                          value={field === "height" ? draft.height : field === "width" ? draft.width : cutlistShapeRowDepth(draft, draftShape)}
-                                          title="Set by the shape — Edit shape to change it"
-                                          className={`cutlist-field h-8 w-full cursor-default rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, field)}`}
-                                          style={{
-                                            ...warningStyleForCell(draft.id, field, { backgroundColor: "transparent", borderColor: draftFieldBorder, color: draftTextColor }),
-                                            ...(matchesGrainDimension(String(draft.grainValue ?? ""), field === "height" ? draft.height : field === "width" ? draft.width : cutlistShapeRowDepth(draft, draftShape), field)
-                                              ? { fontWeight: 700, textDecoration: "underline" }
-                                              : {}),
-                                          }}
-                                        />
-                                      </div>
-                                    ))}
-                                  </div>
-                                  {renderCustomEntrySecondRow({
-                                    shape: draftShape,
-                                    board: draft.board,
-                                    color,
-                                    readOnly: salesReadOnly,
-                                    phone: true,
-                                    onEdit: (e) => openCutlistShapeEditor(e, { mode: "draft", rowId: draft.id, scope: "initial" }),
-                                    extra: isCabinetShape(draftShape)
-                                      ? renderCustomCabinetDraftFields(draft, draftShape, { readOnly: salesReadOnly, textColor: draftTextColor, fieldBg: draftFieldBg, fieldBorder: draftFieldBorder, onPatch: (patch) => updateInitialDraftCutlistRow(draft.id, patch) })
-                                      : null,
-                                  })}
-                                  </>
-                                ) : (
-                                <div className="grid grid-cols-3 gap-2">
-                                  <div className="space-y-1 text-center">
-                                    <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Height</p>
-                                    {isDrawerPartType(draft.partType) ? (
-                                      <div ref={registerCutlistWarnCellRef(draft.id, "height")}>
-                                        <DrawerHeightDropdown
-                                          value={String(draft.height || "")}
-                                          options={drawerHeightLetterOptions}
-                                          disabled={salesReadOnly}
-                                          title={warningForCell(draft.id, "height") || undefined}
-                                          className={warningClassForCell(draft.id, "height")}
-                                          bg={warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).backgroundColor ?? draftFieldBg}
-                                          border={warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).borderColor ?? draftFieldBorder}
-                                          text={warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).color ?? draftTextColor}
-                                          onAdd={(token) => addInitialDraftDrawerHeightToken(draft.id, token)}
-                                          onRemove={(token) => removeInitialDraftDrawerHeightToken(draft.id, token)}
-                                        />
-                                      </div>
-                                    ) : (
-                                      <input
-                                        ref={registerCutlistWarnCellRef(draft.id, "height")}
-                                        disabled={salesReadOnly}
-                                        inputMode="numeric"
-                                        pattern="[0-9]*"
-                                        value={draft.height}
-                                        onChange={(e) => updateInitialDraftCutlistRow(draft.id, { height: numericDimensionText(e.target.value) })}
-                                        title={warningForCell(draft.id, "height") || undefined}
-                                        className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`}
-                                        style={warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
-                                      />
-                                    )}
-                                  </div>
-                                  <div className="space-y-1 text-center">
-                                    <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Width</p>
-                                    <input
-                                      ref={registerCutlistWarnCellRef(draft.id, "width")}
-                                      disabled={salesReadOnly}
-                                      inputMode="numeric"
-                                      pattern="[0-9]*"
-                                      value={draft.width}
-                                      onChange={(e) => updateInitialDraftCutlistRow(draft.id, { width: numericDimensionText(e.target.value) })}
-                                      title={warningForCell(draft.id, "width") || undefined}
-                                      className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`}
-                                      style={warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
-                                    />
-                                  </div>
-                                  <div className="space-y-1 text-center">
-                                    <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Depth</p>
-                                    <input
-                                      ref={registerCutlistWarnCellRef(draft.id, "depth")}
-                                      disabled={salesReadOnly}
-                                      inputMode="numeric"
-                                      pattern="[0-9]*"
-                                      value={draft.depth}
-                                      onChange={(e) => updateInitialDraftCutlistRow(draft.id, { depth: numericDimensionText(e.target.value) })}
-                                      title={warningForCell(draft.id, "depth") || undefined}
-                                      className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "depth")}`}
-                                      style={warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
-                                    />
-                                  </div>
-                                </div>
-                                )}
-                                <div className={`grid gap-2 ${draftIsCabinetry ? "grid-cols-1" : showInitialCutlistGrainColumn && draftBoardAllowsGrain ? "grid-cols-3" : "grid-cols-2"}`}>
-                                  <div className="space-y-1 text-center">
-                                    <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Quantity</p>
-                                    <input
-                                      ref={registerCutlistWarnCellRef(draft.id, "quantity")}
-                                      disabled={salesReadOnly || isDrawerPartType(draft.partType)}
-                                      inputMode="numeric"
-                                      pattern="[0-9]*"
-                                      value={draft.quantity}
-                                      onChange={(e) => updateInitialDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })}
-                                      title={warningForCell(draft.id, "quantity") || undefined}
-                                      className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`}
-                                      style={warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
-                                    />
-                                  </div>
-                                  {!draftIsCabinetry ? (
-                                    <div className="space-y-1">
-                                      <p className="text-center text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Clashing</p>
-                                      {draftShape ? (
-                                        <div className="flex h-8 items-center justify-center text-[12px]" style={{ color: draftTextColor }} title="Clashing — set on the shape">
-                                          {cutlistRowBandedLengthText(draft, draftShape)}
-                                        </div>
-                                      ) : (
-                                      <div className="grid grid-cols-2 gap-2">
-                                        <BoardPillDropdown
-                                          value={draft.clashLeft ?? ""}
-                                          options={CLASH_LEFT_OPTIONS}
-                                          disabled={salesReadOnly || isDrawerPartType(draft.partType)}
-                                          bg={draftFieldBg}
-                                          border={draftFieldBorder}
-                                          text={draftTextColor}
-                                          size="default"
-                                          getSize={() => ""}
-                                          getLabel={(v) => v}
-                                          onChange={(v) => updateInitialDraftCutlistRow(draft.id, { clashLeft: v })}
-                                        />
-                                        <BoardPillDropdown
-                                          value={draft.clashRight ?? ""}
-                                          options={CLASH_RIGHT_OPTIONS}
-                                          disabled={salesReadOnly || isDrawerPartType(draft.partType)}
-                                          bg={draftFieldBg}
-                                          border={draftFieldBorder}
-                                          text={draftTextColor}
-                                          size="default"
-                                          getSize={() => ""}
-                                          getLabel={(v) => v}
-                                          onChange={(v) => updateInitialDraftCutlistRow(draft.id, { clashRight: v })}
-                                        />
-                                      </div>
-                                      )}
-                                    </div>
-                                  ) : null}
-                                  {showInitialCutlistGrainColumn && draftBoardAllowsGrain ? (
-                                    <div className="space-y-1 text-center">
-                                      <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Grain</p>
-                                      <GrainDimensionToggle
-                                        value={String(draft.grainValue ?? "")}
-                                        options={initialMeasureGrainDimensionChoicesForRow(draft)}
-                                        disabled={salesReadOnly}
-                                        onChange={(v) => applyInitialDraftRowGrainValue(draft, v)}
-                                      />
-                                    </div>
-                                  ) : null}
-                                </div>
-                                {draftIsCabinetry ? (
-                                  <div className="space-y-2 rounded-[10px] border p-2" style={{ borderColor: draftFieldBorder, backgroundColor: draftFieldBg }}>
-                                    <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Shelves</p>
-                                    <div className="grid gap-2">
-                                      <div className="space-y-1">
-                                        <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Fixed Shelf</p>
-                                        <input inputMode="numeric" disabled={salesReadOnly} value={draft.fixedShelf ?? ""} onChange={(e) => updateInitialDraftCutlistRow(draft.id, { fixedShelf: numericOnlyText(e.target.value) })} className="cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
-                                        {hasShelfQuantity(draft.fixedShelf) ? (
-                                          <BoardPillDropdown value={normalizeDrillingValue(draft.fixedShelfDrilling)} options={DRILLING_OPTIONS} disabled={salesReadOnly} bg={draftFieldBg} border={draftFieldBorder} text={draftTextColor} size="compact" getSize={() => ""} getLabel={(v) => v} onChange={(v) => updateInitialDraftCutlistRow(draft.id, { fixedShelfDrilling: normalizeDrillingValue(v) })} />
-                                        ) : null}
-                                      </div>
-                                      <div className="space-y-1">
-                                        <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Adjustable Shelf</p>
-                                        <input inputMode="numeric" disabled={salesReadOnly} value={draft.adjustableShelf ?? ""} onChange={(e) => updateInitialDraftCutlistRow(draft.id, { adjustableShelf: numericOnlyText(e.target.value) })} className="cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
-                                        {hasShelfQuantity(draft.adjustableShelf) ? (
-                                          <BoardPillDropdown value={normalizeDrillingValue(draft.adjustableShelfDrilling)} options={DRILLING_OPTIONS} disabled={salesReadOnly} bg={draftFieldBg} border={draftFieldBorder} text={draftTextColor} size="compact" getSize={() => ""} getLabel={(v) => v} onChange={(v) => updateInitialDraftCutlistRow(draft.id, { adjustableShelfDrilling: normalizeDrillingValue(v) })} />
-                                        ) : null}
-                                      </div>
-                                    </div>
-                                  </div>
-                                ) : null}
-                                <div className="space-y-1">
-                                  <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Information</p>
-                                  {informationLinesFromValue(draft.information).map((line, idx) => (
-                                    <div key={`${draft.id}_im_mobile_info_${idx}`} className="flex items-center gap-[6px]">
-                                      <button
-                                        type="button"
-                                        disabled={salesReadOnly}
-                                        onClick={() => (idx === 0 ? onInitialDraftAddInformationLine(draft.id) : onInitialDraftRemoveInformationLine(draft.id, idx))}
-                                        className="glass-shine inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border font-semibold text-white hover:brightness-95 disabled:opacity-55"
-                                        style={glassShineStyle(idx === 0 ? "#16A34A" : "var(--danger)")}
-                                      >
-                                        {idx === 0 ? <Plus size={16} className="mx-auto" strokeWidth={2.8} /> : <X size={15} className="mx-auto" strokeWidth={2.8} />}
-                                      </button>
-                                      <input
-                                        disabled={salesReadOnly}
-                                        value={line}
-                                        onChange={(e) => onInitialDraftInformationLineChange(draft.id, idx, e.target.value)}
-                                        placeholder="Information"
-                                        className="cutlist-field h-8 flex-1 rounded-[8px] border bg-transparent px-2 text-[12px]"
-                                        style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
-                                      />
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                              </div>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-
-                      <button
+            ) : null}
+            <CutlistRoomsSheet
+              open={isCutlistMobileRoomsOpen}
+              onClose={() => setIsCutlistMobileRoomsOpen(false)}
+              rooms={roomItems}
+              activeKey={initialCutlistRoomFilter}
+              onSelect={setInitialCutlistRoomFilter}
+              onAddRoom={openAddRoom}
+              canAddRoom={salesAccess.edit && !isSavingSalesRooms}
+            />
+            <CutlistIssuesSheet
+              open={cutlistMobileIssuesScope === "initial" && issueItems.length > 0}
+              onClose={() => setCutlistMobileIssuesScope("")}
+              issues={issueItems}
+              onGo={(item) => focusCutlistMobileIssue(item, "initial")}
+            />
+            <CutlistSheet
+              open={Boolean(cutlistListEdit?.open && cutlistListEdit.scope === "initial" && listEditDraft)}
+              onClose={closeCutlistListEdit}
+              title={String(listEditDraft?.name || "").trim() || listEditDraft?.partType || "Part"}
+              subtitle={listEditDraft ? [listEditDraft.partType, listEditDraft.room].filter(Boolean).join(" · ") : undefined}
+              tint={listEditTone ? { panelBg: hexToRgba(listEditTone.rowBg, 0.82), headerBg: hexToRgba(listEditTone.headerBg, 0.7), text: listEditTone.text } : undefined}
+              maxWidth={760}
+              headerActions={
+                <button
+                  type="button"
+                  disabled={salesReadOnly || !cutlistListEdit}
+                  onClick={() => cutlistListEdit && void duplicateCutlistListRow("initial", cutlistListEdit.rowId)}
+                  className="glass-shine glass-shine-neutral inline-flex h-9 w-9 items-center justify-center rounded-full border disabled:opacity-55"
+                  style={{ color: "var(--text-main)" }}
+                  aria-label="Duplicate"
+                  title="Duplicate"
+                >
+                  <Copy size={15} />
+                </button>
+              }
+              footer={
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={salesReadOnly}
+                    onClick={() => cutlistListEdit && void deleteCutlistListRow("initial", cutlistListEdit.rowId)}
+                    className="glass-shine inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full border px-4 text-[14px] font-medium text-white disabled:opacity-55"
+                    style={glassShineStyle(cutlistListEditDeleteArmed ? "#16A34A" : "var(--danger)")}
+                  >
+                    <Trash2 size={15} />
+                    {cutlistListEditDeleteArmed ? "Confirm" : "Delete"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={closeCutlistListEdit}
+                    className="glass-shine glass-shine-neutral inline-flex h-11 min-w-0 flex-1 items-center justify-center rounded-full border px-4 text-[14px] font-medium"
+                    style={{ color: "var(--text-main)" }}
+                  >
+                    Close
+                  </button>
+                  <button
+                    type="button"
+                    disabled={salesReadOnly}
+                    onClick={() => void saveCutlistListEdit()}
+                    className="glass-shine inline-flex h-11 min-w-0 flex-1 items-center justify-center rounded-full border px-4 text-[14px] font-medium text-white disabled:opacity-55"
+                    style={glassShineStyle("var(--brand)")}
+                  >
+                    Save
+                  </button>
+                </div>
+              }
+            >
+              {listEditDraft ? (
+                <div className="cutlist-touch space-y-3 px-4 pb-4 pt-1">
+                  {showRoomColumnInInitialList ? (
+                    <div className="space-y-1">
+                      <p className="text-[10px] font-bold uppercase tracking-[1px]">Room</p>
+                      <GlassSelectDropdown
+                        fullWidth
+                        value={String(listEditDraft.room || "")}
+                        options={initialCutlistEntryRoomOptions}
                         disabled={salesReadOnly}
-                        onClick={() => void addInitialDraftRowsToCutlist()}
-                        // (Round-ended, with the glass shine — the brand blue; as wide as the search under it — out past the entry's own
-                        // 12px either side.)
-                        className="glass-shine -mx-3 inline-flex h-[44px] w-[calc(100%+24px)] items-center justify-center rounded-full border text-[18px] font-normal text-white hover:brightness-95 disabled:opacity-55"
-                        style={glassShineStyle("var(--brand)")}
-                      >
-                        Add to Cutlist
-                      </button>
+                        onChange={(next) => updateInitialDraftCutlistRow(listEditDraft.id, { room: next })}
+                        className="h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-left text-[12px] text-[var(--text-main)]"
+                      />
                     </div>
-                    )}
-                  </section>
-                )}
-
-                <div className={`mt-3 ${initialRoomIsEmpty ? "hidden" : ""}`}>
-                  <input
-                    value={initialCutlistSearch}
-                    onChange={(e) => onInitialCutlistSearchChange(e.target.value)}
-                    placeholder="Search cutlist..."
-                    className="mb-3 h-9 w-full rounded-full border px-4 text-[12px] outline-none"
-                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                  />
-                  {groupedInitialCutlistRows.length === 0 && (
-                    <>
-                      <EmptyState compact icon={<Ruler size={16} />} title="No cutlist rows yet" hint="Parts added to the cutlist show here, grouped by part type." />
-                      {renderEmptyProjectCutlistRooms("initial")}
-                    </>
-                  )}
-                  <div className="-mx-3">
-                    {groupedInitialCutlistRows.map((group) => {
-                      const color = cutlistGroupColor(group);
-                      // (Its part type's colours as the desktop list's: the colour itself along its title bar, a lighter wash of it
-                      // over the headings, a pale one over the rows, words in a dark shade of it.)
-                      const palette = cutlistTablePalette(color);
-                      const collapsed = !initialCutlistMobileExpandedGroups[group.partType];
-                      const rowCount = group.rows.length;
-                      // (Its Size column as wide as its longest size — right beside Qty, Part taking what's between it and Board.)
-                      const sizeCh = Math.max(4, ...group.rows.map((row) => mobileListSizeText(row).length));
-                      return (
-                        <section
-                          key={`im_fullscreen_mobile_group_${group.partType}`}
-                          className="mb-3 border-b"
-                          style={{ borderColor: palette.border }}
-                        >
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setInitialCutlistMobileExpandedGroups((prev) => ({ ...prev, [group.partType]: !prev[group.partType] }))
-                            }
-                            className="relative flex w-full cursor-pointer items-center justify-between gap-3 px-3 py-2 text-left text-[16px] font-semibold"
-                            style={{ backgroundColor: palette.titleBarBg, color: palette.titleText }}
-                          >
-                            <span className="min-w-0 truncate">{cutlistGroupTitle(group)}</span>
-                            <span className="flex shrink-0 items-center gap-2">
-                              <span className="text-[11px] font-bold" style={{ color: palette.titleText }}>
-                                {rowCount} {rowCount === 1 ? "Row" : "Rows"}
-                              </span>
-                              <TintedAngleDownIcon color={palette.titleText} size={12} expanded={!collapsed} />
-                            </span>
-                          </button>
-                          {/* Grid-rows accordion trick (0fr/1fr, transitioned) instead of an
-                              unmount/remount toggle — same technique desktop's own group collapse
-                              uses, so the section slides open/shut instead of snapping. */}
-                          <div
-                            style={{
-                              display: "grid",
-                              gridTemplateRows: collapsed ? "0fr" : "1fr",
-                              transition: "grid-template-rows 220ms ease",
-                            }}
-                          >
-                            <div className="overflow-hidden">
-                              <div
-                                className="flex items-center gap-2 border-b px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.4px]"
-                                style={{ backgroundColor: palette.headerBg, color: palette.headerText, borderColor: palette.divider }}
-                              >
-                                <span className="w-[96px] shrink-0">Board</span>
-                                <span className="min-w-0 flex-1 truncate text-[12px] font-semibold normal-case tracking-normal">Part</span>
-                                <span className="shrink-0 text-center text-[11px]" style={{ width: `${sizeCh}ch` }}>
-                                  <span className="text-[10px]">Size</span>
-                                </span>
-                                <span className="mr-2 w-[28px] shrink-0 text-center">Qty</span>
-                              </div>
-                              {group.rows.map((row, rowIndex) => {
-                                // (A part type's table's Custom area: a slim "Custom" heading over its first piece.)
-                                const rowShownAsCustom = cutlistRowShownAsCustom(group, row);
-                                const startsCustomArea = Boolean(group.customArea?.length) && row === group.customArea?.[0];
-                                return (
-                                  <Fragment key={`im_fullscreen_mobile_${group.partType}_${row.id}`}>
-                                  {startsCustomArea ? (
-                                    <div
-                                      className="flex items-center gap-2 px-3 py-1 text-[11px] font-medium"
-                                      style={{ backgroundColor: palette.titleBarBg, color: palette.titleText, borderTop: rowIndex > 0 ? `1px solid ${palette.border}` : undefined }}
-                                    >
-                                      <span>{CUSTOM_CUTLIST_GROUP_TITLE}</span>
-                                      <span className="rounded-full px-2 py-[2px] text-[10px] font-medium leading-none" style={{ backgroundColor: palette.countChipBg }}>
-                                        {formatPartCount(cutlistRowsPartCount(group.customArea ?? []))}
-                                      </span>
-                                    </div>
-                                  ) : null}
-                                  <article
-                                    className="bg-transparent"
-                                    style={rowIndex > 0 && !startsCustomArea ? { borderTop: `1px solid ${palette.divider}` } : undefined}
-                                  >
-                                    <button
-                                      type="button"
-                                      onClick={(e) => {
-                                        initialMobileRowDetailOriginElRef.current = e.currentTarget;
-                                        setInitialMobileRowDetailOrigin(captureGlassModalOrigin(e));
-                                        setInitialMobileRowDetailKey({ rowId: row.id, partType: group.partType });
-                                        setIsInitialMobileRowDetailOpen(true);
-                                      }}
-                                      className="flex w-full items-center gap-2 px-3 py-2 text-left active:brightness-95"
-                                      style={{ backgroundColor: palette.rowBg, color: palette.text }}
-                                    >
-                                      <span className="w-[96px] shrink-0 truncate text-[11px] font-medium">
-                                        {boardDisplayLabel(row.board) || "-"}
-                                      </span>
-                                      <span className="flex min-w-0 flex-1 items-center gap-1.5">
-                                        {/* (The Custom table, or a table's Custom area: each piece its own part type's pill.) */}
-                                        {rowShownAsCustom ? (
-                                          <span
-                                            className="inline-block max-w-[72px] shrink-0 truncate rounded-full px-2 py-[1px] text-[10px] font-medium"
-                                            style={{ backgroundColor: partTypeColors[row.partType || "Unassigned"] ?? color, color: isLightHex(partTypeColors[row.partType || "Unassigned"] ?? color) ? "#1F2937" : "#F8FAFC" }}
-                                          >
-                                            {row.partType || "Unassigned"}
-                                          </span>
-                                        ) : null}
-                                        <span className="min-w-0 truncate text-[12px] font-semibold">
-                                          {row.name || "-"}
-                                        </span>
-                                      </span>
-                                      {(() => {
-                                        // (A Custom piece: its size as the others' — set by the shape, a flat piece's without a Depth.)
-                                        const rowShape = rowShownAsCustom ? cutlistRowShape(row) : null;
-                                        return (
-                                          <span className="shrink-0 whitespace-nowrap text-right text-[11px] font-medium" style={{ width: `${sizeCh}ch` }}>
-                                            {mobileListSizeText(rowShape ? { ...row, depth: cutlistShapeRowDepth(row, rowShape) } : row)}
-                                          </span>
-                                        );
-                                      })()}
-                                      <span className="mr-2 w-[28px] shrink-0 text-center text-[12px] font-medium">
-                                        {row.quantity || ""}
-                                      </span>
-                                    </button>
-                                  </article>
-                                  </Fragment>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        </section>
-                      );
-                    })}
-                  </div>
+                  ) : null}
+                  {renderInitialDraftFields(listEditDraft)}
                 </div>
-
-                {shouldRenderInitialMobileRowDetail && initialMobileRowDetailKey && (() => {
-                  const group = groupedInitialCutlistRows.find((g) => g.partType === initialMobileRowDetailKey.partType);
-                  const row = group?.rows.find((r) => r.id === initialMobileRowDetailKey.rowId);
-                  if (!group || !row) return null;
-                  // (A Custom piece: its shape, and the banding drawn on it in place of its clashing.)
-                  const rowShape = cutlistRowShape(row);
-                  const clashingValue = rowShape
-                    ? cutlistRowBandedLengthText(row, rowShape)
-                    : joinClashing(String(row.clashLeft ?? ""), String(row.clashRight ?? "")) || row.clashing || "-";
-                  const rowBoardAllowsGrain = initialMeasureBoardGrainFor(String(row.board ?? "").trim());
-                  const closeInitialMobileRowDetail = () => setIsInitialMobileRowDetailOpen(false);
-                  // (The Custom table's, or a table's Custom area's: its own part type's colour.)
-                  const detailColor = partTypeColors[cutlistRowShownAsCustom(group, row) ? String(row.partType || "Unassigned") : group.partType] ?? "#CBD5E1";
-                  const detailPalette = groupColorPalette(detailColor);
-                  const detailBarBg = detailPalette.headerBg;
-                  // Same reference size/weight as CNC's own popup (see its own "label" comment) —
-                  // just without the uppercase transform, per feedback that title-case reads better.
-                  const detailLabel = "text-[13px] font-bold tracking-[0.6px]";
-                  return createPortal(
-                    <div
-                      className="glass-modal-backdrop fixed inset-0 z-[200] flex items-center justify-center p-4"
-                      style={{ color: "var(--text-main)" }}
-                      onClick={closeInitialMobileRowDetail}
-                    >
-                      <div
-                        ref={initialMobileRowDetailPanelRef}
-                        className="glass-modal-panel flex w-fit min-w-[340px] max-w-[94vw] flex-col overflow-hidden"
-                        style={{ maxHeight: "calc(100svh - 32px)", backgroundColor: hexToRgba(detailPalette.rowBg, 0.55) }}
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <div className="flex min-h-0 flex-1 flex-col">
-                          <div className="glass-modal-header relative flex h-[56px] shrink-0 items-center justify-between gap-3 px-5" style={{ backgroundColor: hexToRgba(detailPalette.titleBarBg, 0.6) }}>
-                            <div className="min-w-0">
-                              <p className="truncate text-[14px] font-bold uppercase tracking-[1px]" style={{ color: detailPalette.text }}>{row.name || "Part"}</p>
-                              <p className="truncate text-[12px] font-medium" style={{ color: detailPalette.text }}>{cutlistRowShownAsCustom(group, row) ? row.partType : group.partType}</p>
-                            </div>
-                            <button type="button" onClick={closeInitialMobileRowDetail} className={modalCloseButtonClass} style={{ color: detailPalette.text }} aria-label="Close">
-                              <X size={16} />
-                            </button>
-                          </div>
-                          <div className="min-h-0 flex-1 overflow-auto p-4 text-[15px]" style={{ color: detailPalette.text }}>
-                            <div className="grid w-full gap-x-4 gap-y-1.5" style={{ gridTemplateColumns: showRoomColumnInInitialList ? "max-content minmax(max-content, 1fr)" : "minmax(max-content, 1fr)" }}>
-                              <div className="rounded-[8px]" style={{ gridColumn: "1 / -1", gridRow: 1, backgroundColor: detailBarBg }} />
-                              <p className={`${detailLabel} whitespace-nowrap px-3 py-1.5`} style={{ gridColumn: 1, gridRow: 1, color: detailPalette.text }}>Part Name</p>
-                              {showRoomColumnInInitialList ? (
-                                <p className={`${detailLabel} whitespace-nowrap px-3 py-1.5`} style={{ gridColumn: 2, gridRow: 1, color: detailPalette.text }}>Room</p>
-                              ) : null}
-                              <div className="whitespace-nowrap px-3" style={{ gridColumn: 1, gridRow: 2 }}>
-                                {isInitialEditing(row.id, "name") ? (
-                                  <input
-                                    autoFocus
-                                    value={initialEditingCellValue}
-                                    onChange={(e) => setInitialEditingCellValue(e.target.value)}
-                                    onBlur={() => void commitInitialCellEdit()}
-                                    onKeyDown={(e) => {
-                                      if (e.key === "Enter") {
-                                        e.preventDefault();
-                                        void commitInitialCellEdit();
-                                      }
-                                      if (e.key === "Escape") cancelInitialCellEdit();
-                                    }}
-                                    className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px] text-[var(--text-main)]"
-                                  />
-                                ) : (
-                                  <button
-                                    type="button"
-                                    disabled={salesReadOnly}
-                                    onClick={() => startInitialCellEdit(row, "name")}
-                                    className="min-w-0 break-words rounded-[6px] px-1 py-[2px] text-left disabled:opacity-100"
-                                    style={{ color: detailPalette.text }}
-                                  >
-                                    {row.name || "-"}
-                                  </button>
-                                )}
-                              </div>
-                              {showRoomColumnInInitialList ? (
-                                <div className="whitespace-nowrap px-3" style={{ gridColumn: 2, gridRow: 2 }}>
-                                  {isInitialEditing(row.id, "room") ? (
-                                    <select
-                                      autoFocus
-                                      value={initialEditingCellValue}
-                                      onChange={(e) => setInitialEditingCellValue(e.target.value)}
-                                      onBlur={() => void commitInitialCellEdit()}
-                                      onKeyDown={(e) => {
-                                        if (e.key === "Enter") {
-                                          e.preventDefault();
-                                          void commitInitialCellEdit();
-                                        }
-                                        if (e.key === "Escape") cancelInitialCellEdit();
-                                      }}
-                                      className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px] text-[var(--text-main)]"
-                                    >
-                                      {initialCutlistEntryRoomOptions.map((opt) => (
-                                        <option key={`im_popup_room_${opt}`} value={opt}>{opt}</option>
-                                      ))}
-                                    </select>
-                                  ) : (
-                                    <button
-                                      type="button"
-                                      disabled={salesReadOnly}
-                                      onClick={() => startInitialCellEdit(row, "room")}
-                                      className="min-w-0 break-words rounded-[6px] px-1 py-[2px] text-left disabled:opacity-100"
-                                      style={{ color: detailPalette.text }}
-                                    >
-                                      {row.room || "-"}
-                                    </button>
-                                  )}
-                                </div>
-                              ) : null}
-                            </div>
-
-                            <div className="mt-4 rounded-[8px] px-3 py-1.5" style={{ backgroundColor: detailBarBg }}>
-                              <p className={detailLabel} style={{ color: detailPalette.text }}>Board</p>
-                            </div>
-                            <div className="px-3 pt-1.5">
-                              {isInitialEditing(row.id, "board") ? (
-                                <select
-                                  autoFocus
-                                  value={initialEditingCellValue}
-                                  onChange={(e) => setInitialEditingCellValue(e.target.value)}
-                                  onBlur={() => void commitInitialCellEdit()}
-                                  onKeyDown={(e) => {
-                                    if (e.key === "Enter") {
-                                      e.preventDefault();
-                                      void commitInitialCellEdit();
-                                    }
-                                    if (e.key === "Escape") cancelInitialCellEdit();
-                                  }}
-                                  className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px] text-[var(--text-main)]"
-                                >
-                                  {Array.from(new Set([row.board, ...initialMeasureBoardOptions].filter(Boolean))).map((opt) => (
-                                    <option key={`im_popup_board_${opt}`} value={opt}>{boardDisplayLabel(opt)}</option>
-                                  ))}
-                                </select>
-                              ) : (
-                                <button
-                                  type="button"
-                                  disabled={salesReadOnly}
-                                  onClick={() => startInitialCellEdit(row, "board")}
-                                  className="min-w-0 break-words rounded-[6px] px-1 py-[2px] text-left disabled:opacity-100"
-                                  style={{ color: detailPalette.text }}
-                                >
-                                  {boardDisplayLabel(row.board) || "-"}
-                                </button>
-                              )}
-                            </div>
-
-                            {rowShape ? (
-                              <>
-                                <div className="mt-4 rounded-[8px] px-3 py-1.5" style={{ backgroundColor: detailBarBg }}>
-                                  <p className={detailLabel} style={{ color: detailPalette.text }}>Shape</p>
-                                </div>
-                                {/* (Its drawing big enough to read, Edit shape and its DXF under it — as Production's.) */}
-                                <div className="px-3 pt-2">
-                                  <CutlistShapeDetail
-                                    shape={rowShape}
-                                    name={String(row.name || row.partType || "Shape")}
-                                    readOnly={salesReadOnly}
-                                    onEdit={(e) => openCutlistShapeEditor(e, { mode: "row", rowId: row.id, scope: "initial" })}
-                                    drawingWidth={360}
-                                    drawingHeight={230}
-                                    fontSize={11}
-                                    stacked
-                                    textColor={detailPalette.text}
-                                    boardThicknessMm={customCabinetThicknessForBoard(row.board)}
-                                    doorGapMm={customCabinetDoorGapFor(rowShape)}
-                                    color={partTypeColors[String(row.partType || "Unassigned")] ?? "#CBD5E1"}
-                                    quantity={row.quantity}
-                                  />
-                                </div>
-                                {renderCustomCabinetPieceCards(row, { barBg: detailBarBg, labelClass: detailLabel, textColor: detailPalette.text })}
-                                {customCabinetOf(row) ? renderCabinetryPopupFields(customCabinetFieldsRow(row, rowShape), { readOnly: salesReadOnly, textColor: detailPalette.text, barBg: detailBarBg, labelClass: detailLabel }) : null}
-                              </>
-                            ) : null}
-
-                            <div className="mt-4 grid grid-cols-3 gap-4 rounded-[8px] px-3 py-1.5 text-center" style={{ backgroundColor: detailBarBg }}>
-                              <p className={detailLabel} style={{ color: detailPalette.text }}>Height</p>
-                              <p className={detailLabel} style={{ color: detailPalette.text }}>Width</p>
-                              <p className={detailLabel} style={{ color: detailPalette.text }}>Depth</p>
-                            </div>
-                            <div className="grid grid-cols-3 gap-4 px-3 pt-1.5 text-center">
-                              <div>
-                                {isInitialEditing(row.id, "height") ? (
-                                  <input
-                                    autoFocus
-                                    value={initialEditingCellValue}
-                                    inputMode="numeric"
-                                    pattern="[0-9]*"
-                                    onChange={(e) => setInitialEditingCellValue(sanitizeCutlistNumericInput("height", e.target.value))}
-                                    onBlur={() => void commitInitialCellEdit()}
-                                    onKeyDown={(e) => {
-                                      if (e.key === "Enter") {
-                                        e.preventDefault();
-                                        void commitInitialCellEdit();
-                                      }
-                                      if (e.key === "Escape") cancelInitialCellEdit();
-                                    }}
-                                    className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
-                                  />
-                                ) : (
-                                  <button
-                                    type="button"
-                                    disabled={salesReadOnly}
-                                    onClick={() => startInitialCellEdit(row, "height")}
-                                    className="min-w-0 rounded-[6px] px-1 py-[2px] disabled:opacity-100"
-                                    style={{ color: detailPalette.text }}
-                                  >
-                                    {row.height || "-"}
-                                  </button>
-                                )}
-                              </div>
-                              <div>
-                                {isInitialEditing(row.id, "width") ? (
-                                  <input
-                                    autoFocus
-                                    value={initialEditingCellValue}
-                                    inputMode="numeric"
-                                    pattern="[0-9]*"
-                                    onChange={(e) => setInitialEditingCellValue(sanitizeCutlistNumericInput("width", e.target.value))}
-                                    onBlur={() => void commitInitialCellEdit()}
-                                    onKeyDown={(e) => {
-                                      if (e.key === "Enter") {
-                                        e.preventDefault();
-                                        void commitInitialCellEdit();
-                                      }
-                                      if (e.key === "Escape") cancelInitialCellEdit();
-                                    }}
-                                    className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
-                                  />
-                                ) : (
-                                  <button
-                                    type="button"
-                                    disabled={salesReadOnly}
-                                    onClick={() => startInitialCellEdit(row, "width")}
-                                    className="min-w-0 rounded-[6px] px-1 py-[2px] disabled:opacity-100"
-                                    style={{ color: detailPalette.text }}
-                                  >
-                                    {row.width || "-"}
-                                  </button>
-                                )}
-                              </div>
-                              <div>
-                                {isInitialEditing(row.id, "depth") ? (
-                                  <input
-                                    autoFocus
-                                    value={initialEditingCellValue}
-                                    inputMode="numeric"
-                                    pattern="[0-9]*"
-                                    onChange={(e) => setInitialEditingCellValue(sanitizeCutlistNumericInput("depth", e.target.value))}
-                                    onBlur={() => void commitInitialCellEdit()}
-                                    onKeyDown={(e) => {
-                                      if (e.key === "Enter") {
-                                        e.preventDefault();
-                                        void commitInitialCellEdit();
-                                      }
-                                      if (e.key === "Escape") cancelInitialCellEdit();
-                                    }}
-                                    className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
-                                  />
-                                ) : (
-                                  <button
-                                    type="button"
-                                    disabled={salesReadOnly}
-                                    onClick={() => startInitialCellEdit(row, "depth")}
-                                    className="min-w-0 rounded-[6px] px-1 py-[2px] disabled:opacity-100"
-                                    style={{ color: detailPalette.text }}
-                                  >
-                                    {row.depth || "-"}
-                                  </button>
-                                )}
-                              </div>
-                            </div>
-
-                            <div className="mt-4 grid grid-cols-3 gap-4 rounded-[8px] px-3 py-1.5 text-center" style={{ backgroundColor: detailBarBg }}>
-                              <p className={detailLabel} style={{ color: detailPalette.text }}>Quantity</p>
-                              <p className={detailLabel} style={{ color: detailPalette.text }}>{isCabinetryPartType(row.partType) ? "Shelves" : "Clashing"}</p>
-                              <p className={detailLabel} style={{ color: detailPalette.text }}>Grain</p>
-                            </div>
-                            <div className="grid grid-cols-3 gap-4 px-3 pt-1.5 text-center">
-                              <div>
-                                {isInitialEditing(row.id, "quantity") ? (
-                                  <input
-                                    autoFocus
-                                    value={initialEditingCellValue}
-                                    inputMode="numeric"
-                                    pattern="[0-9]*"
-                                    onChange={(e) => setInitialEditingCellValue(sanitizeCutlistNumericInput("quantity", e.target.value))}
-                                    onBlur={() => void commitInitialCellEdit()}
-                                    onKeyDown={(e) => {
-                                      if (e.key === "Enter") {
-                                        e.preventDefault();
-                                        void commitInitialCellEdit();
-                                      }
-                                      if (e.key === "Escape") cancelInitialCellEdit();
-                                    }}
-                                    className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
-                                  />
-                                ) : (
-                                  <button
-                                    type="button"
-                                    disabled={salesReadOnly}
-                                    onClick={() => startInitialCellEdit(row, "quantity")}
-                                    className="min-w-0 rounded-[6px] px-1 py-[2px] disabled:opacity-100"
-                                    style={{ color: detailPalette.text }}
-                                  >
-                                    {row.quantity || "1"}
-                                  </button>
-                                )}
-                              </div>
-                              <div>
-                                {isInitialEditing(row.id, "clashing") ? (
-                                  <input
-                                    autoFocus
-                                    value={initialEditingCellValue}
-                                    onChange={(e) => setInitialEditingCellValue(e.target.value)}
-                                    onBlur={() => void commitInitialCellEdit()}
-                                    onKeyDown={(e) => {
-                                      if (e.key === "Enter") {
-                                        e.preventDefault();
-                                        void commitInitialCellEdit();
-                                      }
-                                      if (e.key === "Escape") cancelInitialCellEdit();
-                                    }}
-                                    className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
-                                  />
-                                ) : (
-                                  <button
-                                    type="button"
-                                    disabled={salesReadOnly}
-                                    onClick={() => startInitialCellEdit(row, "clashing")}
-                                    className="min-w-0 break-words rounded-[6px] px-1 py-[2px] disabled:opacity-100"
-                                    style={{ color: detailPalette.text }}
-                                  >
-                                    {clashingValue}
-                                  </button>
-                                )}
-                              </div>
-                              <div>
-                                {rowBoardAllowsGrain ? (
-                                  <GrainDimensionToggle
-                                    value={String(row.grainValue ?? "")}
-                                    options={initialMeasureGrainDimensionChoicesForRow(row)}
-                                    disabled={salesReadOnly}
-                                    onChange={(nextValue) => void applyInitialRowGrainValue(row, nextValue)}
-                                    size="compact"
-                                  />
-                                ) : (
-                                  <p className="min-w-0 break-words" style={{ color: detailPalette.text }}>-</p>
-                                )}
-                              </div>
-                            </div>
-
-                            <div className="mt-4 rounded-[8px] px-3 py-1.5" style={{ backgroundColor: detailBarBg }}>
-                              <p className={detailLabel} style={{ color: detailPalette.text }}>Information</p>
-                            </div>
-                            <div className="px-3 pt-1.5">
-                              {isInitialEditing(row.id, "information") ? (
-                                <input
-                                  autoFocus
-                                  value={initialEditingCellValue}
-                                  onChange={(e) => setInitialEditingCellValue(e.target.value)}
-                                  onBlur={() => void commitInitialCellEdit()}
-                                  onKeyDown={(e) => {
-                                    if (e.key === "Enter") {
-                                      e.preventDefault();
-                                      void commitInitialCellEdit();
-                                    }
-                                    if (e.key === "Escape") cancelInitialCellEdit();
-                                  }}
-                                  className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px] text-[var(--text-main)]"
-                                />
-                              ) : (
-                                <button
-                                  type="button"
-                                  disabled={salesReadOnly}
-                                  onClick={() => startInitialCellEdit(row, "information")}
-                                  className="w-full break-words rounded-[6px] px-1 py-[2px] text-left disabled:opacity-100"
-                                  style={{ color: detailPalette.text }}
-                                >
-                                  {row.information || "-"}
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  , document.body);
-                })()}
-              </div>
-            </div>
+              ) : null}
+            </CutlistSheet>
+            {cutlistShapeEditorPortal}
+            {addRoomModalPortal}
           </div>
         </ProtectedRoute>
       );
@@ -49353,7 +49448,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 inputMode="numeric"
                                 pattern="[0-9]*"
                                 value={draft.height}
-                                onChange={(e) => updateInitialDraftCutlistRow(draft.id, { height: numericDimensionText(e.target.value) })}
+                                onChange={(e) => updateInitialDraftCutlistRow(draft.id, { height: dimensionMathText(e.target.value) })}
                                 title={warningForCell(draft.id, "height") || undefined}
                                 className={`cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`}
                                 style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...initialCutlistEntryCellStyle("height") }}
@@ -49376,7 +49471,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               inputMode="numeric"
                               pattern="[0-9]*"
                               value={draft.width}
-                              onChange={(e) => updateInitialDraftCutlistRow(draft.id, { width: numericDimensionText(e.target.value) })}
+                              onChange={(e) => updateInitialDraftCutlistRow(draft.id, { width: dimensionMathText(e.target.value) })}
                               title={warningForCell(draft.id, "width") || undefined}
                               className={`cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`}
                               style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...initialCutlistEntryCellStyle("width") }}
@@ -49404,7 +49499,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               inputMode="numeric"
                               pattern="[0-9]*"
                               value={draft.depth}
-                              onChange={(e) => updateInitialDraftCutlistRow(draft.id, { depth: numericDimensionText(e.target.value) })}
+                              onChange={(e) => updateInitialDraftCutlistRow(draft.id, { depth: dimensionMathText(e.target.value) })}
                               title={warningForCell(draft.id, "depth") || undefined}
                               className={`cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "depth")}`}
                               style={{ ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...initialCutlistEntryCellStyle("depth") }}
@@ -50238,9 +50333,1069 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           [...cutlistAddedRoomTabs, ...cutlistRoomTabs.filter((tab) => tab.filter === "Project Cutlist")].map((tab) => [tab.filter, tab]),
         ).values(),
       );
+      // The phone / tablet cutlist (components/cutlist-mobile): under its top bar (as it was), the room bar and Entry /
+      // List — each the screen below it — or, on a landscape / wide tablet (1024px up), the rooms down a rail on the left
+      // and the entry (two across) above its list's columns.
+      const mobileWide = projectViewportWidth >= 1024;
+      const mobileTwoAcross = isTabletProjectViewport;
+      const onProjectCutlist = cutlistRoomFilter === "Project Cutlist";
+      const mobileView: "entry" | "list" = onProjectCutlist ? "list" : cutlistMobileView;
+      const showEntry = !onProjectCutlist && (mobileWide || mobileView === "entry");
+      const showList = mobileWide || mobileView === "list";
+      const entryDrafts = visibleCutlistDraftRows;
+      const roomPartCount = cutlistRowsPartCount(onProjectCutlist ? cutlistRows : cutlistRows.filter((row) => row.room === cutlistRoomFilter));
+      const roomItems: CutlistRoomItem[] = compactFullscreenCutlistRoomTabs.map((tab) => ({
+        key: tab.filter,
+        label: tab.label,
+        isProject: tab.filter === "Project Cutlist",
+        partCount: cutlistRowsPartCount(tab.filter === "Project Cutlist" ? cutlistRows : cutlistRows.filter((row) => row.room === tab.filter)),
+        mix: (cutlistRoomPartMix.get(tab.filter) ?? []).map((item) => ({ ...item, color: partTypeColors[item.partType] ?? "#CBD5E1" })),
+      }));
+      const openAddRoom = (el: HTMLElement) => {
+        addRoomPilotOriginElRef.current = el;
+        addRoomFullscreenOriginElRef.current = el;
+        const rect = el.getBoundingClientRect();
+        setRoomModalOrigin({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+        setIsCutlistMobileRoomsOpen(false);
+        void onAddCutlistRoom();
+      };
+      // A Cutlist Entry row's fields (as they were on a phone) — its card's, and a List part's Edit sheet's. `wide`: room
+      // for two columns of them (the Edit sheet on a tablet).
+      const renderProductionDraftFields = (draft: CutlistDraftRow, wide: boolean) => {
+        const color = partTypeColors[draft.partType] ?? "#CBD5E1";
+        // (A pale wash of its part type, edged in it, words in a dark shade of it, white fields edged
+        // in it — as the desktop entry's rows.)
+        const draftPalette = cutlistTablePalette(color);
+        const draftTextColor = draftPalette.text;
+        const draftFieldBg = "#FFFFFF";
+        const draftFieldBorder = draftPalette.fieldBorder;
+          const draftIsCabinetry = isCabinetryPartType(draft.partType);
+          // (A Custom piece: its shape — its Height and Width the shape's, its banding drawn on it.)
+          const draftShape = cutlistRowShape(draft);
+          const draftIsDoor = isDoorPartType(draft.partType);
+          const draftDoorMode = selectedDoorModeValue(draft.doorMode);
+          const draftIsConfiguredDoor =
+            draftIsDoor && !manualCutlistUsesPlainDoorRows && draftDoorMode !== "" && draftDoorMode !== "manual";
+          const draftCompactConfiguredPanel = cutlistCompactConfiguredDraftPanels[draft.id] ?? "fields";
+          const draftBoardAllowsGrain = productionBoardAllowsGrainForValue(String(draft.board ?? "").trim());
+        const draftGrainValue = String(draft.grainValue ?? "").trim();
+        const draftHeightGrainMatch = matchesGrainDimension(draftGrainValue, draft.height, "height");
+        const draftWidthGrainMatch = matchesGrainDimension(draftGrainValue, draft.width, "width");
+        const draftDepthGrainMatch = matchesGrainDimension(draftGrainValue, draft.depth, "depth");
+        const draftHasDoorHinges =
+          normalizeDoorHingeValues(draft.hingesUp).length > 0 ||
+          normalizeDoorHingeValues(draft.hingesDown).length > 0;
+        const draftDoorHingesEnabled = cutlistCompactDoorHingeEnabledRows[draft.id] ?? draftHasDoorHinges;
+        const isFrontBankRow = draftIsDoor && (draftDoorMode === "drawer" || draftDoorMode === "door");
+        const frontBankCount = isFrontBankRow ? Math.max(1, Number.parseInt(draft.doorFrontCount || "1", 10) || 1) : 0;
+        const frontBankTopGapValue = isFrontBankRow ? String(draft.doorTopGap ?? "") : "";
+        // Always shown for a front-bank row — a cleared gap displays
+        // as "0" inside the bubble instead of the bubble disappearing.
+        const frontBankHasTopGapLabel = isFrontBankRow;
+        const frontBankHasBetweenGapLabel = isFrontBankRow;
+        // A front bank's (each front's fields linked) Board and Part Name side by side, at the top.
+        const draftBoardNameSideBySide = isFrontBankRow && !draftIsConfiguredDoor;
+        const boardWarn = warningForCell(draft.id, "board");
+        const nameWarn = warningForCell(draft.id, "name");
+        const heightWarn = warningForCell(draft.id, "height");
+        const widthWarn = warningForCell(draft.id, "width");
+        const depthWarn = warningForCell(draft.id, "depth");
+        const quantityWarn = warningForCell(draft.id, "quantity");
+        return (
+          <div className={`grid gap-3 ${wide ? "sm:grid-cols-2" : ""}`}>
+            {/* (A front bank's Board and Part Name: one row, side by side — the rest, as they were.) */}
+            <div className={draftBoardNameSideBySide ? `grid grid-cols-2 items-start gap-2 ${wide ? "sm:col-span-2" : ""}` : "contents"}>
+            {!draftIsConfiguredDoor ? (
+            <div className="min-w-0 space-y-1">
+              <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Board</p>
+              {isFrontBankRow ? (() => {
+                const boardManualArr = normalizeDoorFrontBoardManual(draft.doorFrontBoardManual, frontBankCount);
+                const boardValuesArr = normalizeDoorFrontBoards(draft.doorFrontBoards, frontBankCount);
+                return renderFrontFieldStack(
+                  frontBankCount,
+                  boardManualArr,
+                  "Linked board — untick to give this front its own board",
+                  (index, linked) => onDraftFrontBoardLinkToggle(draft.id, index, linked),
+                  (index) => (
+                    <BoardPillDropdown
+                      value={boardManualArr[index] ? boardValuesArr[index] : boardValuesArr[index] || draft.board}
+                      options={cutlistBoardOptions}
+                      disabled={productionReadOnly}
+                      bg={draftFieldBg}
+                      border={draftFieldBorder}
+                      text={draftTextColor}
+                      size="compact"
+                      className="!h-8 !text-[11px]"
+                      reserveRightIcon
+                      getSize={boardSizeFor}
+                      getLabel={boardDisplayLabel}
+                      onChange={(next) => onDraftFrontBoardChange(draft.id, index, next)}
+                    />
+                  ),
+                );
+              })() : (
+                <div ref={registerCutlistWarnCellRef(draft.id, "board")} className="relative z-[120] pointer-events-auto">
+                  <BoardPillDropdown
+                    value={draft.board}
+                    options={cutlistBoardOptions}
+                    disabled={productionReadOnly}
+                    title={boardWarn || undefined}
+                    className={warningClassForCell(draft.id, "board")}
+                    bg={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).backgroundColor ?? draftFieldBg}
+                    border={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).borderColor ?? draftFieldBorder}
+                    text={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).color ?? draftTextColor}
+                    getSize={boardSizeFor}
+                    getLabel={boardDisplayLabel}
+                    onChange={(next) => onDraftBoardChange(draft.id, next)}
+                  />
+                </div>
+              )}
+            </div>
+            ) : null}
+            <div className={`min-w-0 space-y-1 ${wide && !draftBoardNameSideBySide ? "sm:col-span-2" : ""}`}>
+              {!draftIsConfiguredDoor ? (
+                <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Part Name</p>
+              ) : null}
+              <div ref={registerCutlistWarnCellRef(draft.id, "name")} className="relative z-[20] grid gap-[4px] overflow-visible">
+                  {!draftIsConfiguredDoor ? (
+                    isFrontBankRow ? (() => {
+                      const nameManualArr = normalizeDoorFrontManualArray(draft.doorFrontNameManual, frontBankCount);
+                      const nameValuesArr = normalizeDoorFrontTextArray(draft.doorFrontNames, frontBankCount);
+                      return renderFrontFieldStack(
+                        frontBankCount,
+                        nameManualArr,
+                        "Linked name — untick to give this front its own name",
+                        (index, linked) => onDraftFrontNameLinkToggle(draft.id, index, linked),
+                        (index) => (
+                          <PartNameSuggestionInput
+                            disabled={productionReadOnly}
+                            value={nameManualArr[index] ? nameValuesArr[index] : nameValuesArr[index] || draft.name}
+                            placeholder={nameManualArr[index] ? draft.name : undefined}
+                            options={productionPartNameSuggestionsForRoom(draft.room, draft.name)}
+                            matchPartType={draft.partType}
+                            onChange={(next) => onDraftFrontNameChange(draft.id, index, next)}
+                            className="h-8 rounded-[6px] border bg-transparent px-1 pr-5 text-[11px] cs-frontbank-ghost"
+                            style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
+                          />
+                        ),
+                      );
+                    })() : (
+                      <PartNameSuggestionInput
+                        disabled={productionReadOnly}
+                        title={nameWarn || undefined}
+                        value={draft.name}
+                        options={productionPartNameSuggestionsForRoom(draft.room, draft.name)}
+                            matchPartType={draft.partType}
+                        onChange={(next) => updateDraftCutlistRow(draft.id, { name: next })}
+                        className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell(draft.id, "name")}`}
+                        style={warningStyleForCell(draft.id, "name", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
+                      />
+                    )
+                  ) : null}
+                  {draftIsDoor && !manualCutlistUsesPlainDoorRows
+                    ? renderDoorModeConfigurator({
+                        mode: draftDoorMode,
+                        frontCount: normalizeDoorFrontCountValue(draft.doorFrontCount),
+                        onModeChange: (mode) => onDraftDoorModeChange(draft.id, mode),
+                        onFrontCountChange: (count) => onDraftDoorFrontCountChange(draft.id, count),
+                        disabled: productionReadOnly,
+                        textColor: draftTextColor,
+                        borderColor: draftFieldBorder,
+                        fieldBg: draftFieldBg,
+                        fieldText: draftTextColor,
+                      })
+                    : null}
+                  {draftIsDoor && !manualCutlistUsesPlainDoorRows && !draftIsConfiguredDoor && draftDoorMode !== "" && draftDoorMode !== "manual"
+                    ? renderDoorSetupDesigner({
+                        mode: draftDoorMode === "drawer" ? "drawer" : "door",
+                        frontCount: normalizeDoorFrontCountValue(draft.doorFrontCount),
+                        overallHeight: String(draft.height ?? ""),
+                      overallWidth: String(draft.width ?? ""),
+                      topGap: String(draft.doorTopGap ?? ""),
+                      betweenGap: String(draft.doorBetweenGap ?? ""),
+                      sideLeft: normalizeDoorSideValue(draft.doorSideLeft),
+                      sideRight: normalizeDoorSideValue(draft.doorSideRight),
+                      sideLeftGap: String(draft.doorSideLeftGap ?? ""),
+                      sideRightGap: String(draft.doorSideRightGap ?? ""),
+                      frontWidths: normalizeDoorFrontWidths(
+                        draft.doorFrontWidths,
+                        Number.parseInt(draft.doorFrontCount || "", 10) || 0,
+                      ),
+                      frontWidthManual: normalizeDoorFrontWidthManual(
+                        draft.doorFrontWidthManual,
+                        Number.parseInt(draft.doorFrontCount || "", 10) || 0,
+                      ),
+                      frontHeights: normalizeDoorFrontHeights(
+                        draft.doorFrontHeights,
+                        Number.parseInt(draft.doorFrontCount || "", 10) || 0,
+                      ),
+                        frontHeightManual: normalizeDoorFrontHeightManual(
+                          draft.doorFrontHeightManual,
+                          Number.parseInt(draft.doorFrontCount || "", 10) || 0,
+                        ),
+                      onTopGapChange: (value) => onDraftDoorGapChange(draft.id, "doorTopGap", value),
+                      onBetweenGapChange: (value) => onDraftDoorGapChange(draft.id, "doorBetweenGap", value),
+                      onSideChange: (key, value) => onDraftDoorSideChange(draft.id, key, value),
+                      onSideGapChange: (key, value) => onDraftDoorSideGapChange(draft.id, key, value),
+                      onFrontWidthChange: (index, value) => onDraftDoorFrontWidthChange(draft.id, index, value),
+                      onFrontHeightChange: (index, value) => onDraftDoorFrontHeightChange(draft.id, index, value),
+                      onFrontWidthBlur: (index) => onDraftDoorFrontWidthBlur(draft.id, index),
+                      onFrontHeightBlur: (index) => onDraftDoorFrontHeightBlur(draft.id, index),
+                      disabled: productionReadOnly,
+                      textColor: draftTextColor,
+                      borderColor: draftFieldBorder,
+                        fieldBg: draftFieldBg,
+                        fieldText: draftTextColor,
+                      })
+                    : null}
+                </div>
+              </div>
+            </div>
+            {draftIsConfiguredDoor ? (
+              <div className={wide ? "sm:col-span-2" : ""}>
+                {!wide ? (
+                  <div className="mb-3 inline-flex rounded-[10px] border p-[2px]" style={{ borderColor: draftFieldBorder, backgroundColor: "rgba(255,255,255,0.14)" }}>
+                    {(["fields", "drawing"] as const).map((panel) => {
+                      const active = draftCompactConfiguredPanel === panel;
+                      return (
+                        <button
+                          key={`${draft.id}_${panel}`}
+                          type="button"
+                          onClick={() =>
+                            setCutlistCompactConfiguredDraftPanels((prev) => ({
+                              ...prev,
+                              [draft.id]: panel,
+                            }))
+                          }
+                          className="min-w-[94px] rounded-[8px] px-3 py-[7px] text-[11px] font-semibold uppercase tracking-[1px]"
+                          style={{
+                            backgroundColor: active ? draftFieldBg : "transparent",
+                            color: draftTextColor,
+                          }}
+                        >
+                          {panel}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+                <div className={`grid items-start gap-3 ${wide ? "sm:grid-cols-[minmax(0,340px)_minmax(0,1fr)]" : ""}`}>
+                  {(wide || draftCompactConfiguredPanel === "fields") ? (
+                    <div className="space-y-3">
+                      <div className="space-y-1">
+                        <p className="text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Board Type</p>
+                        <div className="relative z-[120] pointer-events-auto">
+                          <BoardPillDropdown
+                            value={draft.board}
+                            options={cutlistBoardOptions}
+                            disabled={productionReadOnly}
+                            title={boardWarn || undefined}
+                            className={warningClassForCell(draft.id, "board")}
+                            bg={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).backgroundColor ?? draftFieldBg}
+                            border={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).borderColor ?? draftFieldBorder}
+                            text={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).color ?? draftTextColor}
+                            getSize={boardSizeFor}
+                            getLabel={boardDisplayLabel}
+                            onChange={(next) => onDraftBoardChange(draft.id, next)}
+                          />
+                        </div>
+                      </div>
+                      <div className={`grid gap-2 ${showCutlistGrainColumn && draftBoardAllowsGrain ? "grid-cols-[minmax(0,1fr)_112px]" : "grid-cols-1"}`}>
+                        <div className="space-y-1">
+                          <p className="text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Part Name</p>
+                          <PartNameSuggestionInput
+                            disabled={productionReadOnly}
+                            title={nameWarn || undefined}
+                            value={draft.name}
+                            options={productionPartNameSuggestionsForRoom(draft.room, draft.name)}
+                            matchPartType={draft.partType}
+                            onChange={(next) => updateDraftCutlistRow(draft.id, { name: next })}
+                            className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell(draft.id, "name")}`}
+                            style={warningStyleForCell(draft.id, "name", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
+                          />
+                        </div>
+                        {showCutlistGrainColumn && draftBoardAllowsGrain ? (
+                          <div className="space-y-1">
+                            <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Grain</p>
+                            <GrainDimensionToggle
+                              value={String(draft.grainValue ?? "")}
+                              options={grainDimensionChoicesForRow(draft)}
+                              disabled={productionReadOnly}
+                              onChange={(v) => applyDraftRowGrainValue(draft, v)}
+                            />
+                          </div>
+                        ) : null}
+                      </div>
+                      <div className="grid grid-cols-5 gap-2">
+                        <div className="space-y-1">
+                          <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Height</p>
+                          <input ref={registerCutlistWarnCellRef(draft.id, "height")} disabled={productionReadOnly} inputMode="decimal" title={heightWarn || undefined} value={draft.height} onChange={(e) => updateDraftCutlistRow(draft.id, { height: dimensionMathText(e.target.value) })} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`} style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Width</p>
+                          <input ref={registerCutlistWarnCellRef(draft.id, "width")} disabled={productionReadOnly} inputMode="decimal" title={widthWarn || undefined} value={draft.width} onChange={(e) => onDraftDoorOverallWidthChange(draft.id, e.target.value)} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`} style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Quantity</p>
+                          <input ref={registerCutlistWarnCellRef(draft.id, "quantity")} disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "quantity")}`} style={warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
+                        </div>
+                        <div className="space-y-1 col-span-2">
+                          <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Clashing</p>
+                          <div className="grid grid-cols-2 gap-2">
+                            <BoardPillDropdown
+                              value={draft.clashLeft ?? ""}
+                              options={CLASH_LEFT_OPTIONS}
+                              disabled={productionReadOnly}
+                              bg={draftFieldBg}
+                              border={draftFieldBorder}
+                              text={draftTextColor}
+                              size="default"
+                              getSize={() => ""}
+                              getLabel={(v) => v}
+                              onChange={(v) => updateDraftCutlistRow(draft.id, { clashLeft: v })}
+                            />
+                            <BoardPillDropdown
+                              value={draft.clashRight ?? ""}
+                              options={CLASH_RIGHT_OPTIONS}
+                              disabled={productionReadOnly}
+                              bg={draftFieldBg}
+                              border={draftFieldBorder}
+                              text={draftTextColor}
+                              size="default"
+                              getSize={() => ""}
+                              getLabel={(v) => v}
+                              onChange={(v) => updateDraftCutlistRow(draft.id, { clashRight: v })}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                      {draftDoorMode === "door" ? (
+                        <div className="space-y-1">
+                          {renderDoorHingeEditor({
+                            upValues: normalizeDoorHingeValues(draft.hingesUp),
+                            downValues: normalizeDoorHingeValues(draft.hingesDown),
+                            onChange: (direction, index, value) => onDraftCutlistHingeChange(draft.id, direction, index, value),
+                            disabled: productionReadOnly,
+                            bg: draftFieldBg,
+                            border: draftFieldBorder,
+                            text: draftTextColor,
+                            rowKey: draft.id,
+                            rowLabel: cutlistRowLabelFor(draft, "Entry"),
+                            maxValue: maxDoorHingeValueForRowLike(draft),
+                            tall: true,
+                            hingeSide: draft.hingeSide,
+                            onHingeSideChange: (v) => updateDraftCutlistRow(draft.id, { hingeSide: v }),
+                          })}
+                        </div>
+                      ) : null}
+                      <div className="space-y-1">
+                        <p className="text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Information</p>
+                        <div className="grid gap-[6px]">
+                          {informationLinesFromValue(draft.information).map((line, idx) => (
+                            <div key={`${draft.id}_configured_mobile_info_${idx}`} className="flex items-center gap-[6px]">
+                              <button
+                                type="button"
+                                disabled={productionReadOnly}
+                                onClick={() => (idx === 0 ? onDraftAddInformationLine(draft.id) : onDraftRemoveInformationLine(draft.id, idx))}
+                                className="glass-shine inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border font-semibold text-white hover:brightness-95 disabled:opacity-55"
+                                style={glassShineStyle(idx === 0 ? "#16A34A" : "var(--danger)")}
+                              >
+                                {idx === 0 ? <Plus size={16} className="mx-auto" strokeWidth={2.8} /> : <X size={15} className="mx-auto" strokeWidth={2.8} />}
+                              </button>
+                              <input
+                                disabled={productionReadOnly}
+                                value={line}
+                                onChange={(e) => onDraftInformationLineChange(draft.id, idx, e.target.value)}
+                                placeholder="Information"
+                                className="cutlist-field h-8 flex-1 rounded-[8px] border bg-transparent px-2 text-[12px]"
+                                style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+                  {(wide || draftCompactConfiguredPanel === "drawing") ? (
+                    <div className="self-stretch">
+                      {renderDoorSetupDesigner({
+                        mode: draftDoorMode === "drawer" ? "drawer" : "door",
+                        frontCount: normalizeDoorFrontCountValue(draft.doorFrontCount),
+                        overallHeight: String(draft.height ?? ""),
+                        overallWidth: String(draft.width ?? ""),
+                        topGap: String(draft.doorTopGap ?? ""),
+                        betweenGap: String(draft.doorBetweenGap ?? ""),
+                        sideLeft: normalizeDoorSideValue(draft.doorSideLeft),
+                        sideRight: normalizeDoorSideValue(draft.doorSideRight),
+                        sideLeftGap: String(draft.doorSideLeftGap ?? ""),
+                        sideRightGap: String(draft.doorSideRightGap ?? ""),
+                        frontWidths: normalizeDoorFrontWidths(
+                          draft.doorFrontWidths,
+                          Number.parseInt(draft.doorFrontCount || "", 10) || 0,
+                        ),
+                        frontWidthManual: normalizeDoorFrontWidthManual(
+                          draft.doorFrontWidthManual,
+                          Number.parseInt(draft.doorFrontCount || "", 10) || 0,
+                        ),
+                        frontHeights: normalizeDoorFrontHeights(
+                          draft.doorFrontHeights,
+                          Number.parseInt(draft.doorFrontCount || "", 10) || 0,
+                        ),
+                        frontHeightManual: normalizeDoorFrontHeightManual(
+                          draft.doorFrontHeightManual,
+                          Number.parseInt(draft.doorFrontCount || "", 10) || 0,
+                        ),
+                        onTopGapChange: (value) => onDraftDoorGapChange(draft.id, "doorTopGap", value),
+                        onBetweenGapChange: (value) => onDraftDoorGapChange(draft.id, "doorBetweenGap", value),
+                        onSideChange: (key, value) => onDraftDoorSideChange(draft.id, key, value),
+                        onSideGapChange: (key, value) => onDraftDoorSideGapChange(draft.id, key, value),
+                        onFrontWidthChange: (index, value) => onDraftDoorFrontWidthChange(draft.id, index, value),
+                        onFrontHeightChange: (index, value) => onDraftDoorFrontHeightChange(draft.id, index, value),
+                        onFrontWidthBlur: (index) => onDraftDoorFrontWidthBlur(draft.id, index),
+                        onFrontHeightBlur: (index) => onDraftDoorFrontHeightBlur(draft.id, index),
+                        disabled: productionReadOnly,
+                        textColor: draftTextColor,
+                        borderColor: draftFieldBorder,
+                        fieldBg: draftFieldBg,
+                        fieldText: draftTextColor,
+                      })}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+            {!draftIsConfiguredDoor ? (
+            <>
+            {/* (Height, Width and Depth in thirds — or, for a front (no Depth), Height and Width in halves. A Custom
+                piece: its Height, Width and Depth the shape's, not typed — then what it is, Edit and its drawing.) */}
+            {draftShape ? (
+              <>
+              <div className={`grid grid-cols-3 items-end gap-2 ${wide ? "sm:col-span-2" : ""}`}>
+                {(["height", "width", "depth"] as const).map((field) => (
+                  <div key={field} className="space-y-1 text-center">
+                    <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>{field === "height" ? "Height" : field === "width" ? "Width" : "Depth"}</p>
+                    <input
+                      ref={registerCutlistWarnCellRef(draft.id, field)}
+                      readOnly
+                      tabIndex={-1}
+                      value={field === "height" ? draft.height : field === "width" ? draft.width : cutlistShapeRowDepth(draft, draftShape)}
+                      title="Set by the shape — Edit shape to change it"
+                      className={`cutlist-field h-8 w-full cursor-default rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, field)}`}
+                      style={{
+                        ...warningStyleForCell(draft.id, field, { backgroundColor: "transparent", borderColor: draftFieldBorder, color: draftTextColor }),
+                        ...(matchesGrainDimension(draftGrainValue, field === "height" ? draft.height : field === "width" ? draft.width : cutlistShapeRowDepth(draft, draftShape), field)
+                          ? { fontWeight: 700, textDecoration: "underline" }
+                          : {}),
+                      }}
+                    />
+                  </div>
+                ))}
+              </div>
+              {renderCustomEntrySecondRow({
+                shape: draftShape,
+                board: draft.board,
+                color,
+                readOnly: productionReadOnly,
+                phone: true,
+                className: wide ? "sm:col-span-2" : "",
+                onEdit: (e) => openCutlistShapeEditor(e, { mode: "draft", rowId: draft.id }),
+                extra: isCabinetShape(draftShape)
+                  ? renderCustomCabinetDraftFields(draft, draftShape, { readOnly: productionReadOnly, textColor: draftTextColor, fieldBg: draftFieldBg, fieldBorder: draftFieldBorder, onPatch: (patch) => updateDraftCutlistRow(draft.id, patch) })
+                  : null,
+              })}
+              </>
+            ) : (
+            <div className={`grid ${isFrontBankRow || draftIsDoor ? "grid-cols-2" : "grid-cols-3"} gap-2 ${wide ? "sm:col-span-2" : ""}`}>
+              <div className="space-y-1 text-center">
+                <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Height</p>
+                {isDrawerPartType(draft.partType) ? (
+                  <div ref={registerCutlistWarnCellRef(draft.id, "height")}>
+                  <DrawerHeightDropdown
+                    value={String(draft.height || "")}
+                    options={drawerHeightLetterOptionsForRoom(draft.room)}
+                    optionValues={drawerBreakdownForRoom(draft.room).letterValueMap}
+                    disabled={productionReadOnly}
+                    title={heightWarn || undefined}
+                    className={warningClassForCell(draft.id, "height")}
+                    bg={warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).backgroundColor ?? draftFieldBg}
+                    border={warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).borderColor ?? draftFieldBorder}
+                    text={warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).color ?? draftTextColor}
+                    onAdd={(token) => addDraftDrawerHeightToken(draft.id, token)}
+                    onRemove={(token) => removeDraftDrawerHeightToken(draft.id, token)}
+                  />
+                  </div>
+                ) : isFrontBankRow && draftDoorMode === "drawer" ? (
+                  (() => {
+                    const frontHeights = normalizeDoorFrontHeights(draft.doorFrontHeights, frontBankCount);
+                    const frontHeightManual = normalizeDoorFrontHeightManual(draft.doorFrontHeightManual, frontBankCount);
+                    const seamCount = Math.max(0, frontBankCount - 1);
+                    const frontBetweenGaps = resolveDrawerBankBetweenGaps(draft, seamCount);
+                    const resolvedFrontHeights = resolveDrawerBankFrontHeights(
+                      frontHeights,
+                      String(draft.height ?? ""),
+                      frontBankTopGapValue,
+                      frontBetweenGaps,
+                      frontHeightManual,
+                    ).heights;
+                    return (
+                      <div ref={registerCutlistWarnCellRef(draft.id, "height")}>
+                        {renderFrontSplitStack({
+                          count: frontBankCount,
+                          values: frontHeights,
+                          resolvedValues: resolvedFrontHeights,
+                          topGapValue: frontBankTopGapValue,
+                          betweenGaps: frontBetweenGaps,
+                          hasTopGapLabel: frontBankHasTopGapLabel,
+                          hasBetweenGapLabel: frontBankHasBetweenGapLabel,
+                          onValueChange: (index, value) => onDraftDoorFrontHeightChange(draft.id, index, value),
+                          onValueBlur: (index) => onDraftDoorFrontHeightBlur(draft.id, index),
+                          onTopGapChange: (next) => onDraftDoorGapChange(draft.id, "doorTopGap", next),
+                          onBetweenGapChange: (index, next) => onDraftFrontBetweenGapChange(draft.id, index, next),
+                          topGapTitle: "Below bench to top of door/drawer — editing this stops it following the settings default",
+                          betweenGapTitle: "Horizontal gap between drawers — editing this stops it following the settings default",
+                          fieldLabel: "height",
+                          fieldBg: draftFieldBg,
+                          fieldBorder: draftFieldBorder,
+                          fieldText: draftTextColor,
+                          gapKey: draft.id,
+                          grainValue: draft.grainValue,
+                          grainCandidates: draftBoardAllowsGrain ? grainDimensionChoicesForRow(draft) : undefined,
+                        })}
+                      </div>
+                    );
+                  })()
+                ) : isFrontBankRow ? (() => {
+                  const heightManualArr = normalizeDoorFrontHeightManual(draft.doorFrontHeightManual, frontBankCount);
+                  const heightValuesArr = normalizeDoorFrontHeights(draft.doorFrontHeights, frontBankCount);
+                  return (
+                    <div ref={registerCutlistWarnCellRef(draft.id, "height")}>
+                      {renderFrontFieldStack(
+                    frontBankCount,
+                    heightManualArr,
+                    "Linked height — untick to give this front its own height",
+                    (index, linked) => onDraftFrontHeightLinkToggle(draft.id, index, linked),
+                    (index) => {
+                      const frontHeightValue = heightManualArr[index] ? heightValuesArr[index] : heightValuesArr[index] || draft.height;
+                      return (
+                      <input
+                        disabled={productionReadOnly}
+                        inputMode="decimal"
+                        title={`Front ${index + 1} height`}
+                        value={frontHeightValue}
+                        placeholder={heightManualArr[index] ? draft.height : undefined}
+                        onChange={(e) => onDraftFrontHeightChange(draft.id, index, e.target.value)}
+                        className="cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-1 pr-5 text-[11px] text-center cs-frontbank-ghost"
+                        style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor, ...(grainAxisSelected(String(draft.grainValue ?? ""), "height", draftBoardAllowsGrain ? grainDimensionChoicesForRow(draft) : undefined) ? { fontWeight: 700, textDecoration: "underline" } : {}) }}
+                      />
+                      );
+                    },
+                  )}
+                    </div>
+                  );
+                })() : (
+                  <input
+                    ref={registerCutlistWarnCellRef(draft.id, "height")}
+                    disabled={productionReadOnly}
+                    inputMode="decimal"
+                    title={heightWarn || undefined}
+                    value={draft.height}
+                    onChange={(e) => updateDraftCutlistRow(draft.id, { height: dimensionMathText(e.target.value) })}
+                    className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`}
+                    style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }}
+                  />
+                )}
+                {isFrontBankRow && resolvedProductionBaseCabHeight ? (
+                  <p className="text-[9px] font-semibold" style={{ color: "var(--text-muted)" }}>Base: {resolvedProductionBaseCabHeight}</p>
+                ) : null}
+              </div>
+              <div className="space-y-1 text-center">
+                <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Width</p>
+                {isFrontBankRow && draftDoorMode === "door" ? (() => {
+                  const frontWidths = normalizeDoorFrontWidths(draft.doorFrontWidths, frontBankCount);
+                  const frontWidthManual = normalizeDoorFrontWidthManual(draft.doorFrontWidthManual, frontBankCount);
+                  const seamCount = Math.max(0, frontBankCount - 1);
+                  const frontBetweenGaps = resolveDrawerBankBetweenGaps(draft, seamCount);
+                  const resolvedFrontWidths = resolveDrawerBankFrontHeights(
+                    frontWidths,
+                    String(draft.width ?? ""),
+                    "0",
+                    frontBetweenGaps,
+                    frontWidthManual,
+                  ).heights;
+                  return (
+                    <div ref={registerCutlistWarnCellRef(draft.id, "width")}>
+                      {renderFrontSplitStack({
+                        count: frontBankCount,
+                        values: frontWidths,
+                        resolvedValues: resolvedFrontWidths,
+                        topGapValue: "0",
+                        betweenGaps: frontBetweenGaps,
+                        hasTopGapLabel: false,
+                        hasBetweenGapLabel: frontBankHasBetweenGapLabel,
+                        onValueChange: (index, value) => onDraftFrontWidthSplitChange(draft.id, index, value),
+                        onValueBlur: (index) => onDraftFrontWidthSplitBlur(draft.id, index),
+                        onTopGapChange: () => {},
+                        onBetweenGapChange: (index, next) => onDraftFrontBetweenGapChange(draft.id, index, next),
+                        topGapTitle: "",
+                        betweenGapTitle: "Vertical gap between doors — editing this stops it following the settings default",
+                        fieldLabel: "width",
+                        fieldBg: draftFieldBg,
+                        fieldBorder: draftFieldBorder,
+                        fieldText: draftTextColor,
+                        gapKey: `${draft.id}:w`,
+                        grainValue: draft.grainValue,
+                        grainCandidates: draftBoardAllowsGrain ? grainDimensionChoicesForRow(draft) : undefined,
+                      })}
+                    </div>
+                  );
+                })() : isFrontBankRow ? (() => {
+                  const widthManualArr = normalizeDoorFrontWidthManual(draft.doorFrontWidthManual, frontBankCount);
+                  const widthValuesArr = normalizeDoorFrontWidths(draft.doorFrontWidths, frontBankCount);
+                  return (
+                    <div ref={registerCutlistWarnCellRef(draft.id, "width")}>
+                      {renderFrontFieldStack(
+                    frontBankCount,
+                    widthManualArr,
+                    "Linked width — untick to give this front its own width",
+                    (index, linked) => onDraftFrontWidthLinkToggle(draft.id, index, linked),
+                    (index) => {
+                      const frontWidthValue = widthManualArr[index] ? widthValuesArr[index] : widthValuesArr[index] || draft.width;
+                      return (
+                      <input
+                        disabled={productionReadOnly}
+                        inputMode="decimal"
+                        title={`Front ${index + 1} width`}
+                        value={frontWidthValue}
+                        placeholder={widthManualArr[index] ? draft.width : undefined}
+                        onChange={(e) => onDraftFrontWidthChange(draft.id, index, e.target.value)}
+                        className="cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-1 pr-5 text-[11px] text-center cs-frontbank-ghost"
+                        style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor, ...(grainAxisSelected(String(draft.grainValue ?? ""), "width", draftBoardAllowsGrain ? grainDimensionChoicesForRow(draft) : undefined) ? { fontWeight: 700, textDecoration: "underline" } : {}) }}
+                      />
+                      );
+                    },
+                  )}
+                    </div>
+                  );
+                })() : (
+                  <input
+                    ref={registerCutlistWarnCellRef(draft.id, "width")}
+                    disabled={productionReadOnly}
+                    inputMode="decimal"
+                    title={widthWarn || undefined}
+                    value={draft.width}
+                    onChange={(e) => onDraftDoorOverallWidthChange(draft.id, e.target.value)}
+                    className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`}
+                    style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }}
+                  />
+                )}
+              </div>
+              {isFrontBankRow || draftIsDoor ? null : (
+                <div className="space-y-1 text-center">
+                  <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Depth</p>
+                  {isDrawerPartType(draft.partType) && drawerDepthKeys(draft).length > 0 ? (
+                    <div ref={registerCutlistWarnCellRef(draft.id, "depth")}>
+                      {renderDrawerDepthBoxes(
+                        draft,
+                        drawerKeysInHeightOrder(draft),
+                        `h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "depth")}`,
+                        { ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) },
+                      )}
+                    </div>
+                  ) : (
+                    <input ref={registerCutlistWarnCellRef(draft.id, "depth")} disabled={productionReadOnly} inputMode="decimal" title={depthWarn || undefined} value={draft.depth} onChange={(e) => updateDraftCutlistRow(draft.id, { depth: dimensionMathText(e.target.value) })} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "depth")}`} style={{ ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                  )}
+                </div>
+              )}
+            </div>
+            )}
+            <div className={`grid gap-2 ${draftIsCabinetry ? "grid-cols-2" : draftBoardAllowsGrain && showCutlistGrainColumn ? "grid-cols-4" : "grid-cols-3"} ${wide ? "sm:col-span-2" : ""}`}>
+              <div className="space-y-1 text-center">
+                <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Quantity</p>
+                {isFrontBankRow ? (() => {
+                  const quantityManualArr = normalizeDoorFrontManualArray(draft.doorFrontQuantityManual, frontBankCount);
+                  const quantityValuesArr = normalizeDoorFrontTextArray(draft.doorFrontQuantities, frontBankCount);
+                  return renderFrontFieldStack(
+                    frontBankCount,
+                    quantityManualArr,
+                    "Linked quantity — untick to give this front its own quantity",
+                    (index, linked) => onDraftFrontQuantityLinkToggle(draft.id, index, linked),
+                    (index) => (
+                      <input
+                        disabled={productionReadOnly}
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        title={`Front ${index + 1} quantity`}
+                        value={quantityManualArr[index] ? quantityValuesArr[index] : quantityValuesArr[index] || draft.quantity}
+                        placeholder={quantityManualArr[index] ? draft.quantity : undefined}
+                        onChange={(e) => onDraftFrontQuantityChange(draft.id, index, e.target.value)}
+                        className="cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-1 pr-5 text-[11px] text-center cs-frontbank-ghost"
+                        style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
+                      />
+                    ),
+                  );
+                })() : (
+                  <input ref={registerCutlistWarnCellRef(draft.id, "quantity")} disabled={productionReadOnly || (isDrawerPartType(draft.partType) && !draftIsDoor)} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`} style={warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
+                )}
+              </div>
+              {!draftIsCabinetry ? (
+                <>
+                  <div className="space-y-1 col-span-2">
+                    <p className="text-center text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Clashing</p>
+                    {draftShape ? (
+                      <div className="flex h-8 items-center justify-center text-[12px]" style={{ color: draftTextColor }} title="Clashing — set on the shape">
+                        {cutlistRowBandedLengthText(draft, draftShape)}
+                      </div>
+                    ) : (
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <BoardPillDropdown
+                          value={draft.clashLeft ?? ""}
+                          options={CLASH_LEFT_OPTIONS}
+                          disabled={productionReadOnly || isDrawerPartType(draft.partType)}
+                          bg={draftFieldBg}
+                          border={draftFieldBorder}
+                          text={draftTextColor}
+                          size="default"
+                          getSize={() => ""}
+                          getLabel={(v) => v}
+                          onChange={(v) => updateDraftCutlistRow(draft.id, { clashLeft: v })}
+                        />
+                      </div>
+                      <div>
+                        <BoardPillDropdown
+                          value={draft.clashRight ?? ""}
+                          options={CLASH_RIGHT_OPTIONS}
+                          disabled={productionReadOnly || isDrawerPartType(draft.partType)}
+                          bg={draftFieldBg}
+                          border={draftFieldBorder}
+                          text={draftTextColor}
+                          size="default"
+                          getSize={() => ""}
+                          getLabel={(v) => v}
+                          onChange={(v) => updateDraftCutlistRow(draft.id, { clashRight: v })}
+                        />
+                      </div>
+                    </div>
+                    )}
+                  </div>
+                  {showCutlistGrainColumn && draftBoardAllowsGrain ? (
+                    <div className="space-y-1 text-center">
+                      <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Grain</p>
+                      <GrainDimensionToggle
+                        value={String(draft.grainValue ?? "")}
+                        options={grainDimensionChoicesForRow(draft)}
+                        disabled={productionReadOnly}
+                        onChange={(v) => applyDraftRowGrainValue(draft, v)}
+                      />
+                    </div>
+                  ) : null}
+                </>
+              ) : (
+                <div className="space-y-1">
+                  <p className="text-center text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Clashing</p>
+                  <BoardPillDropdown
+                    value={draft.cabinetryClashBottom || ""}
+                    options={CLASH_BOTTOM_OPTIONS}
+                    disabled={productionReadOnly}
+                    bg={draftFieldBg}
+                    border={draftFieldBorder}
+                    text={draftTextColor}
+                    size="default"
+                    getSize={() => ""}
+                    getLabel={(v) => v}
+                    onChange={(v) => {
+                      updateDraftCutlistRow(draft.id, { cabinetryClashBottom: v, cabinetryClashBottomManual: Boolean(v) });
+                    }}
+                  />
+                </div>
+              )}
+            </div>
+            {draftIsDoor && !draftIsConfiguredDoor && draftDoorMode !== "drawer" ? (
+              <div className={`space-y-1 ${wide ? "sm:col-span-2" : ""}`}>
+                <label className="inline-flex items-center gap-2 text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>
+                  <input
+                    type="checkbox"
+                    checked={draftDoorHingesEnabled}
+                    disabled={productionReadOnly}
+                    className="h-4 w-4 accent-[var(--brand-strong)]"
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setCutlistCompactDoorHingeEnabledRows((prev) => ({
+                        ...prev,
+                        [draft.id]: checked,
+                      }));
+                      if (!checked) {
+                        updateDraftCutlistRow(draft.id, {
+                          hingesUp: [],
+                          hingesDown: [],
+                        });
+                      }
+                    }}
+                  />
+                  Hinges
+                </label>
+                <div className="relative overflow-visible">
+                  <div className="pointer-events-auto">
+                  {draftDoorHingesEnabled ? renderDoorHingeEditor({
+                      upValues: normalizeDoorHingeValues(draft.hingesUp),
+                      downValues: normalizeDoorHingeValues(draft.hingesDown),
+                      onChange: (direction, index, value) => onDraftCutlistHingeChange(draft.id, direction, index, value),
+                      disabled: productionReadOnly,
+                      bg: draftFieldBg,
+                      border: draftFieldBorder,
+                      text: draftTextColor,
+                      rowKey: draft.id,
+                      rowLabel: cutlistRowLabelFor(draft, "Entry"),
+                      maxValue: maxDoorHingeValueForRowLike(draft),
+                      tall: true,
+                      hideGroupLabel: true,
+                      hingeSide: draft.hingeSide,
+                      onHingeSideChange: (v) => updateDraftCutlistRow(draft.id, { hingeSide: v }),
+                    }) : null}
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          {draftIsCabinetry ? (
+            <div className={`space-y-2 rounded-[10px] border p-2 ${wide ? "sm:col-span-2" : ""}`} style={{ borderColor: draftFieldBorder, backgroundColor: draftFieldBg }}>
+              <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Shelves</p>
+              <div className={`grid gap-2 ${wide ? "sm:grid-cols-2" : ""}`}>
+                <div className="space-y-1">
+                  <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Fixed Shelf</p>
+                  <input inputMode="numeric" disabled={productionReadOnly} value={draft.fixedShelf ?? ""} onChange={(e) => updateDraftCutlistRow(draft.id, { fixedShelf: numericOnlyText(e.target.value) })} className="cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
+                  {hasShelfQuantity(draft.fixedShelf) ? (
+                    <BoardPillDropdown value={normalizeDrillingValue(draft.fixedShelfDrilling)} options={drillingOptionsForShelfQuantity(draft.fixedShelf)} disabled={productionReadOnly} bg={draftFieldBg} border={draftFieldBorder} text={draftTextColor} size="compact" hideBlankOption getSize={() => ""} getLabel={(v) => v} onChange={(v) => updateDraftCutlistRow(draft.id, { fixedShelfDrilling: normalizeDrillingValue(v) })} />
+                  ) : null}
+                </div>
+                <div className="space-y-1">
+                  <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Adjustable Shelf</p>
+                  <input inputMode="numeric" disabled={productionReadOnly} value={draft.adjustableShelf ?? ""} onChange={(e) => updateDraftCutlistRow(draft.id, { adjustableShelf: numericOnlyText(e.target.value) })} className="cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
+                  {hasShelfQuantity(draft.adjustableShelf) ? (
+                    <BoardPillDropdown value={normalizeDrillingValue(draft.adjustableShelfDrilling)} options={drillingOptionsForShelfQuantity(draft.adjustableShelf)} disabled={productionReadOnly} bg={draftFieldBg} border={draftFieldBorder} text={draftTextColor} size="compact" hideBlankOption getSize={() => ""} getLabel={(v) => v} onChange={(v) => updateDraftCutlistRow(draft.id, { adjustableShelfDrilling: normalizeDrillingValue(v) })} />
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          ) : null}
+          {draftIsCabinetry ? (
+            <div className="flex items-center gap-2">
+              <CabinetryKindToggle
+                value={draft.cabinetryKind || "base"}
+                disabled={productionReadOnly}
+                onChange={(next) => updateDraftCutlistRow(draft.id, cabinetryKindChangePatch(draft, next))}
+              />
+              {(draft.cabinetryKind || "base") === "base" ? (
+                <label className="inline-flex items-center gap-1" title="Force a full Top instead of Rails on this Base cabinet">
+                  <input
+                    type="checkbox"
+                    disabled={productionReadOnly}
+                    checked={Boolean(draft.cabinetryFullTop)}
+                    onChange={(e) => updateDraftCutlistRow(draft.id, { cabinetryFullTop: e.target.checked })}
+                    className="h-3.5 w-3.5"
+                  />
+                  <span className="whitespace-nowrap text-[11px] font-medium" style={{ color: draftTextColor }}>Full Top</span>
+                </label>
+              ) : null}
+            </div>
+          ) : null}
+          <div className={`grid gap-1 ${wide ? "sm:col-span-2" : ""}`}>
+            <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Information</p>
+            {informationLinesFromValue(draft.information).map((line, idx) => (
+              <div key={`${draft.id}_fullscreen_mobile_info_${idx}`} className="flex items-center gap-[6px]">
+                <button
+                  type="button"
+                  disabled={productionReadOnly}
+                  onClick={() => (idx === 0 ? onDraftAddInformationLine(draft.id) : onDraftRemoveInformationLine(draft.id, idx))}
+                  className="glass-shine inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border font-semibold text-white hover:brightness-95 disabled:opacity-55"
+                  style={glassShineStyle(idx === 0 ? "#16A34A" : "var(--danger)")}
+                >
+                  {idx === 0 ? <Plus size={16} className="mx-auto" strokeWidth={2.8} /> : <X size={15} className="mx-auto" strokeWidth={2.8} />}
+                </button>
+                <input
+                  disabled={productionReadOnly}
+                  value={line}
+                  onChange={(e) => onDraftInformationLineChange(draft.id, idx, e.target.value)}
+                  placeholder="Information"
+                  className="cutlist-field h-8 flex-1 rounded-[8px] border bg-transparent px-2 text-[12px]"
+                  style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
+                />
+              </div>
+            ))}
+          </div>
+          </>
+          ) : null}
+          </div>
+        );
+      };
+      const notesButton = <CutlistNotesButton count={cutlistNotesWithTextCount} label={mobileWide} onClick={() => openCutlistNotesSheetTab("notes")} />;
+      const issueItems = cutlistMobileIssuesFor(entryDrafts);
+      const listEditDraft = cutlistListEdit?.scope === "production" ? cutlistDraftRows.find((row) => row.id === cutlistListEdit.draftId) : undefined;
+      const listEditTone = listEditDraft ? cutlistTablePalette(partTypeColors[listEditDraft.partType] ?? "#CBD5E1") : null;
+      const pickedCount = pickedCutlistRowIds.length;
+      const bulkDeleteArmed = Boolean(pickedCount) && cutlistBulkDeleteArmedFor === pickedCutlistRowIds.join(",");
+      const selectBarShown = showList && isCutlistSelectMode;
+      const addBarShown = showEntry && !mobileWide && !productionRoomIsEmpty && !selectBarShown;
+      const partTypePills = (
+        <div
+          data-horizontal-swipe-scroll={mobileWide ? undefined : "true"}
+          className={mobileWide ? "flex flex-wrap gap-2" : "hide-native-scrollbar -mx-3 flex gap-2 overflow-x-auto px-3 py-0.5"}
+        >
+          {partTypeOptions.map((v) => {
+            const color = partTypeColors[v] ?? "#CBD5E1";
+            return (
+              <button
+                key={`cutlist_mobile_entry_${v}`}
+                type="button"
+                disabled={productionReadOnly}
+                onClick={(e) => pickProductionEntryPartType(e, v)}
+                // (Round-ended, with the glass shine in its colour — the same pills, and what they do, as before.)
+                style={glassShineStyle(color, { color: isLightHex(color) ? "#1F2937" : "#F8FAFC" })}
+                className="glass-shine relative h-9 shrink-0 whitespace-nowrap rounded-full border px-4 text-[13px] font-medium transition-transform active:scale-95 disabled:opacity-55"
+              >
+                {v}
+              </button>
+            );
+          })}
+        </div>
+      );
+      const entrySection = (
+        <section className="space-y-3">
+          {productionRoomIsEmpty ? (
+            renderFirstPiecePrompt("production")
+          ) : (
+            <>
+              {mobileWide ? partTypePills : null}
+              {entryDrafts.length === 0 ? (
+                <p className="px-1 py-6 text-center text-[13px] font-medium" style={{ color: "var(--text-muted)" }}>
+                  Pick a part type above to start a piece.
+                </p>
+              ) : (
+                <div className={`isolate ${mobileTwoAcross ? "grid grid-cols-2 items-start gap-3" : "-mx-3 space-y-3"}`}>
+                  {entryDrafts.map((draft) => {
+                    const isSub = subPartDraftRowIds.has(draft.id);
+                    const isCabinet = isCabinetryPartType(draft.partType) && !isSub;
+                    return (
+                      <CutlistEntryCard
+                        key={`cutlist_mobile_draft_${draft.id}`}
+                        tone={cutlistMobileCardTone(draft.partType)}
+                        partType={draft.partType}
+                        name={String(draft.name || "")}
+                        subPart={isSub}
+                        boxed={mobileTwoAcross}
+                        folded={Boolean(productionEntryFold.folded[draft.id])}
+                        onToggleFold={() => productionEntryFold.toggle(draft.id)}
+                        onDuplicate={() => duplicateDraftCutlistRow(draft.id)}
+                        onRemove={() => removeDraftCutlistRow(draft.id)}
+                        onForceRemove={() => removeDraftCutlistRow(draft.id, true)}
+                        readOnly={productionReadOnly}
+                        summary={renderCutlistMobileDraftSummary(draft, "production")}
+                      >
+                        {renderProductionDraftFields(draft, false)}
+                        {isCabinet && cutlistSubPartDoorType ? (
+                          <div className="mt-3 grid grid-cols-2 gap-2">
+                            <button
+                              type="button"
+                              disabled={productionReadOnly}
+                              onClick={() => addSubPartDraftRow(draft.id, cutlistSubPartDoorType)}
+                              className="glass-shine inline-flex h-10 items-center justify-center gap-1.5 rounded-full border text-[13px] font-medium text-white hover:brightness-95 disabled:opacity-55"
+                              style={glassShineStyle("#16A34A")}
+                            >
+                              <Plus size={16} strokeWidth={2.8} />
+                              Add doors
+                            </button>
+                            <button
+                              type="button"
+                              disabled={productionReadOnly}
+                              onClick={(e) => addCutlistCabinetDrawers(e, draft.id)}
+                              className="glass-shine inline-flex h-10 items-center justify-center gap-1.5 rounded-full border text-[13px] font-medium text-white hover:brightness-95 disabled:opacity-55"
+                              style={glassShineStyle("#16A34A")}
+                            >
+                              <Plus size={16} strokeWidth={2.8} />
+                              Add drawers
+                            </button>
+                          </div>
+                        ) : null}
+                      </CutlistEntryCard>
+                    );
+                  })}
+                </div>
+              )}
+              {mobileWide && entryDrafts.length ? (
+                <button
+                  type="button"
+                  disabled={productionReadOnly}
+                  onClick={() => void addCutlistMobileDrafts("production")}
+                  className="glass-shine inline-flex h-12 w-full items-center justify-center rounded-full border text-[16px] font-medium text-white hover:brightness-95 disabled:opacity-55"
+                  style={glassShineStyle("var(--brand)")}
+                >
+                  Add {entryDrafts.length} to cutlist
+                </button>
+              ) : null}
+            </>
+          )}
+        </section>
+      );
+      // The List's search, part type and Select (and more): in the top bar's glass, in the Entry's part types' place.
+      const listToolbar = (
+        <CutlistListToolbar
+          search={cutlistSearch}
+          onSearch={onCutlistSearchChange}
+          filter={
+            <GlassSelectDropdown
+              value={cutlistPartTypeFilter}
+              options={["All Part Types", ...partTypeOptions]}
+              getLabel={(value) => (value === "All Part Types" ? "All types" : value)}
+              // (Each part type with its colour line, as the computer's.)
+              getOptionColor={(opt) => partTypeColors[opt]}
+              onChange={onCutlistPartTypeFilterChange}
+              title="Show one part type"
+              className="h-9 max-w-[130px] rounded-full border border-[var(--glass-border)] bg-[color-mix(in_srgb,var(--panel-bg)_55%,transparent)] px-3 text-[13px] font-medium text-[var(--text-main)]"
+            />
+          }
+          select={{ active: isCutlistSelectMode, onToggle: toggleCutlistSelectMode, disabled: productionReadOnly }}
+        />
+      );
+      const listSection = (
+        <section className={`space-y-3 ${productionRoomIsEmpty && !mobileWide ? "hidden" : ""}`}>
+          {mobileWide ? listToolbar : null}
+          <div className={mobileWide ? "" : "-mx-3"}>
+            <CutlistListView
+              groups={groupedCutlistRows.map((group) => cutlistMobileGroupFor(group, "production", cutlistMobileExpandedGroups))}
+              layout={mobileWide ? "table" : "cards"}
+              columns={{
+                room: showRoomColumnInList,
+                clashing: cutlistColumnDefs.some((col) => col.key === "clashing"),
+                info: cutlistColumnDefs.some((col) => col.key === "information"),
+              }}
+              onToggleGroup={(key) => setCutlistMobileExpandedGroups((prev) => ({ ...prev, [key]: !prev[key] }))}
+              onOpen={(id) => openCutlistListEdit("production", id)}
+              select={
+                isCutlistSelectMode
+                  ? {
+                      active: true,
+                      selected: new Set(pickedCutlistRowIds),
+                      onToggle: toggleCutlistRowSelected,
+                      onToggleGroup: toggleCutlistGroupSelected,
+                    }
+                  : null
+              }
+              renderDetails={(id) => renderCutlistMobileRowDetails(cutlistRows.find((row) => row.id === id), "production")}
+              empty={
+                <>
+                  <EmptyState compact icon={<Scissors size={16} />} title="No cutlist rows yet" hint="Parts added to the cutlist show here, grouped by part type." />
+                  {renderEmptyProjectCutlistRooms("production")}
+                </>
+              }
+            />
+          </div>
+        </section>
+      );
       return (
         <ProtectedRoute>
-          <div className="relative flex h-[100svh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
+          <div
+            className="relative flex h-[100svh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]"
+            style={mobileWide ? ({ "--cutlist-compact-top": "56px" } as React.CSSProperties) : undefined}
+          >
             {renderCutlistImportUi()}
             {/* Split into a fixed backdrop + content pair — see Initial Measure's own identical
                 mobile-branch comment for the full reasoning. */}
@@ -50248,7 +51403,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               data-app-top-bar="true"
               className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
               style={{
-                // (Down over the bands below the title bar too — one glass, so the three read as one bar.)
+                // (Down over the bands below the title bar too — one glass, so they read as one bar.)
                 height: "var(--cutlist-compact-top, 150px)",
                 backgroundColor: "var(--glass-bg-strong)",
                 backdropFilter: "blur(14px) saturate(220%)",
@@ -50273,1858 +51428,269 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 {renderSaveAndBackButton(() => void onSaveAndBackFromCutlist(), true)}
               </div>
             </div>
-            {/* The band under the title bar (the rooms — no feed of changes on a phone, a computer's only): over the glass
-                the page scrolls up behind, as the CNC Cutlist's. Its height (with the title bar's) kept as
-                --cutlist-compact-top: the page's spacer at its top, and its part type bar's sticky top. */}
-            <div ref={trackCompactCutlistTopBands} data-title-bar="true" className="absolute inset-x-0 z-[92]" style={{ top: 56 }}>
+            {/* The band under the title bar — the room bar, then Entry / List (and Notes) — over the glass the page scrolls
+                up behind. Its height (with the title bar's) kept as --cutlist-compact-top: the page's spacer at its top,
+                and the part type strip's sticky top. A wide tablet: the rail instead. */}
+            {!mobileWide ? (
+              <div ref={trackCompactCutlistTopBands} data-title-bar="true" className="absolute inset-x-0 z-[92] border-b" style={{ top: 56, borderColor: "var(--glass-border)" }}>
+                <div className={`space-y-2 px-3 pb-2.5 pt-1 ${mobileTwoAcross ? "mx-auto max-w-[1100px]" : ""}`}>
+                  <CutlistRoomBar rooms={roomItems} activeKey={cutlistRoomFilter} onSelect={setCutlistRoomFilter} onOpenRooms={() => setIsCutlistMobileRoomsOpen(true)} />
+                  <CutlistViewSwitch
+                    view={mobileView}
+                    onChange={(view) => {
+                      setCutlistMobileView(view);
+                      productionCutlistCompactScrollRef.current?.scrollTo({ top: 0 });
+                    }}
+                    entryCount={entryDrafts.length}
+                    listPartCount={roomPartCount}
+                    entryDisabled={onProjectCutlist}
+                    trailing={notesButton}
+                  />
+                  {/* (The Entry's part types too — in the same glass as the rest of the bar, the entry scrolling under it.) */}
+                  {showEntry && !productionRoomIsEmpty ? (
+                    <div className="pt-0.5">{partTypePills}</div>
+                  ) : showList && !productionRoomIsEmpty ? (
+                    <div className="pb-0.5 pt-1">{listToolbar}</div>
+                  ) : null}
+                </div>
+              </div>
+            ) : (
+              <div className="fixed bottom-0 left-0 z-[92] w-[236px] p-3" style={{ top: 56 }}>
+                <CutlistRoomRail
+                  rooms={roomItems}
+                  activeKey={cutlistRoomFilter}
+                  onSelect={setCutlistRoomFilter}
+                  onAddRoom={openAddRoom}
+                  canAddRoom={salesAccess.edit && !isSavingSalesRooms}
+                  footer={notesButton}
+                />
+              </div>
+            )}
+            <GlassScrollbarThumb scrollRef={productionCutlistCompactScrollRef} />
             <div
-              className="relative shrink-0 overflow-hidden border-b"
-              style={{ borderColor: "var(--glass-border)" }}
+              ref={productionCutlistCompactScrollRef}
+              className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-0 pt-0 hide-native-scrollbar"
+              style={{ paddingBottom: addBarShown || selectBarShown ? 96 : 24, paddingLeft: mobileWide ? 236 : 0 }}
             >
+              <div className="shrink-0" style={{ height: "var(--cutlist-compact-top, 150px)" }} />
+              {/* (Another room, or Project cutlist: the cutlist slides in from the way it went — CutlistRoomSlide.) */}
+              <CutlistRoomSlide
+                index={roomItems.findIndex((room) => room.key === cutlistRoomFilter)}
+                className={`space-y-5 px-3 pb-3 pt-3 ${mobileTwoAcross && !mobileWide ? "mx-auto max-w-[1100px]" : ""}`}
+              >
+                {mobileWide ? (
+                  <div className="flex items-center justify-between gap-3 px-1">
+                    <p className="min-w-0 truncate text-[18px] font-semibold" style={{ color: "var(--text-main)" }}>
+                      {String(cutlistRoomFilter || "Project Cutlist")}
+                    </p>
+                    <span className="shrink-0 text-[13px] font-medium" style={{ color: "var(--text-muted)" }}>
+                      {formatPartsLabel(roomPartCount)}
+                    </span>
+                  </div>
+                ) : null}
+                {showEntry ? entrySection : null}
+                {showList ? listSection : null}
+              </CutlistRoomSlide>
+            </div>
+            {/* Add N to cutlist, held along the bottom (the Entry's — its checks as ever; held back, what to fix). */}
+            {addBarShown ? (
               <div
-                data-horizontal-swipe-scroll="true"
-                className="overflow-x-auto overscroll-x-contain snap-x snap-mandatory"
-                // A fresh mount always starts at native scrollLeft 0 (the first tab), regardless
-                // of what cutlistRoomFilter already is (e.g. restored from localStorage) —
-                // without this, the strip visually shows one room while the state (and the
-                // "Cutlist Entry" part-type buttons gated on it below) reflects another, including
-                // the buttons silently not rendering at all if state is still "Project Cutlist".
-                // Jump the strip to match state instead of the other way around, so a legitimately
-                // restored filter isn't discarded just because the scroll position reset.
-                ref={(el) => {
-                  if (!el) return;
-                  const index = compactFullscreenCutlistRoomTabs.findIndex((tab) => tab.filter === cutlistRoomFilter);
-                  // (Only when it's showing another room — not mid-slide to this one, its < > or a swipe, which it'd cut short.)
-                  if (index >= 0 && Math.round(el.scrollLeft / (el.clientWidth || 1)) !== index) {
-                    el.scrollLeft = index * (el.clientWidth || 1);
-                  }
-                }}
-                onScroll={(e) => {
-                  const container = e.currentTarget;
-                  const pageWidth = container.clientWidth || 1;
-                  const index = Math.round(container.scrollLeft / pageWidth);
-                  const nextTab = compactFullscreenCutlistRoomTabs[index];
-                  if (nextTab && nextTab.filter !== cutlistRoomFilter) {
-                    setCutlistRoomFilter(nextTab.filter);
-                  }
+                className="fixed inset-x-0 bottom-0 z-[95] border-t px-3 pt-2.5"
+                style={{
+                  borderColor: "var(--glass-border)",
+                  // (The app's glass, as its other bars: see-through, the cutlist scrolling softly under it.)
+                  backgroundColor: "var(--glass-bg)",
+                  backdropFilter: "blur(16px) saturate(200%)",
+                  WebkitBackdropFilter: "blur(16px) saturate(200%)",
+                  boxShadow: "inset 0 1px 0 var(--glass-highlight), 0 -6px 24px rgba(15, 23, 42, 0.08)",
+                  paddingBottom: "calc(10px + env(safe-area-inset-bottom, 0px))",
                 }}
               >
-                <div className="flex min-w-full">
-                  {compactFullscreenCutlistRoomTabs.map((roomTab) => {
-                    const active = cutlistRoomFilter === roomTab.filter;
-                    return (
-                      <button
-                        key={`fullscreen_mobile_cutlist_room_swipe_${roomTab.label}_${roomTab.filter}`}
-                        type="button"
-                        onClick={(e) => {
-                          setCutlistRoomFilter(roomTab.filter);
-                          e.currentTarget.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "start" });
-                        }}
-                        className="min-w-full snap-start px-4 py-3 text-center text-[17px] font-semibold"
-                        style={{
-                          color: active ? "var(--brand-strong)" : "var(--text-main)",
-                        }}
-                      >
-                        {roomTab.label}
-                      </button>
-                    );
-                  })}
-                </div>
+                <button
+                  type="button"
+                  disabled={productionReadOnly || entryDrafts.length === 0}
+                  onClick={() => void addCutlistMobileDrafts("production")}
+                  className="glass-shine mx-auto flex h-12 w-full max-w-[640px] items-center justify-center rounded-full border text-[16px] font-medium text-white hover:brightness-95 disabled:opacity-55"
+                  style={glassShineStyle("var(--brand)")}
+                >
+                  {entryDrafts.length ? `Add ${entryDrafts.length} to cutlist` : "Add to cutlist"}
+                </button>
               </div>
-              {/* < > either side, as the CNC Cutlist's: the strip slides to the room before / after (its onScroll then
-                  picks it). */}
-              {(() => {
-                const roomIndex = Math.max(0, compactFullscreenCutlistRoomTabs.findIndex((tab) => tab.filter === cutlistRoomFilter));
-                const slideTo = (button: HTMLElement, next: number) => {
-                  const strip = button.parentElement?.querySelector<HTMLElement>('[data-horizontal-swipe-scroll="true"]');
-                  strip?.scrollTo({ left: next * (strip.clientWidth || 1), behavior: "smooth" });
-                };
-                return (
-                  <>
+            ) : null}
+            {/* Select's bar: how many are picked, a board and an edging for them all, Delete (then Confirm). */}
+            {selectBarShown ? (
+              <div
+                role="toolbar"
+                aria-label="Change the picked parts"
+                className="fixed inset-x-0 bottom-0 z-[96] border-t px-3 pt-2.5"
+                style={{
+                  borderColor: "var(--glass-border)",
+                  // (The app's glass, as its other bars: see-through, the cutlist scrolling softly under it.)
+                  backgroundColor: "var(--glass-bg)",
+                  backdropFilter: "blur(16px) saturate(200%)",
+                  WebkitBackdropFilter: "blur(16px) saturate(200%)",
+                  boxShadow: "inset 0 1px 0 var(--glass-highlight), 0 -6px 24px rgba(15, 23, 42, 0.08)",
+                  paddingBottom: "calc(10px + env(safe-area-inset-bottom, 0px))",
+                  paddingLeft: mobileWide ? 248 : undefined,
+                  color: "var(--text-main)",
+                }}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="min-w-0 shrink truncate text-[13px] font-semibold">{pickedCount ? `${pickedCount} selected` : "Tap parts to pick them"}</span>
+                  <div className="ml-auto flex shrink-0 items-center gap-1.5">
+                    <GlassSelectDropdown
+                      value=""
+                      options={cutlistBoardOptions}
+                      getLabel={(value) => (value ? boardDisplayLabel(value) : "Board")}
+                      onChange={(value) => void applyCutlistBulkEdit({ board: value })}
+                      disabled={!pickedCount}
+                      title="Change the board on the picked parts"
+                      className="h-10 max-w-[96px] rounded-full border border-[var(--glass-border)] bg-[var(--panel-bg)] px-3 text-[13px] font-medium text-[var(--text-main)] disabled:opacity-50"
+                    />
+                    <GlassSelectDropdown
+                      value=""
+                      options={["L:1L", "L:2L", "L:", "S:1S", "S:2S", "S:"]}
+                      getLabel={(value) =>
+                        value === "" ? "Edging" : value === "L:" ? "No long edging" : value === "S:" ? "No short edging" : `${value.slice(2)} edging`
+                      }
+                      onChange={(value) =>
+                        void applyCutlistBulkEdit(value.startsWith("L:") ? { clashLeft: value.slice(2) } : { clashRight: value.slice(2) })
+                      }
+                      disabled={!pickedCount}
+                      title="Change the edging on the picked parts"
+                      className="h-10 max-w-[96px] rounded-full border border-[var(--glass-border)] bg-[var(--panel-bg)] px-3 text-[13px] font-medium text-[var(--text-main)] disabled:opacity-50"
+                    />
                     <button
                       type="button"
-                      disabled={roomIndex <= 0}
-                      onClick={(e) => slideTo(e.currentTarget, roomIndex - 1)}
-                      className="absolute left-3 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-[7px] disabled:opacity-30"
-                      style={{ color: "var(--text-main)" }}
-                      aria-label="Previous room"
+                      disabled={!pickedCount}
+                      onClick={() => void deletePickedCutlistRows()}
+                      className="glass-shine inline-flex h-10 shrink-0 items-center gap-1.5 rounded-full border px-3 text-[13px] font-medium text-white disabled:opacity-45"
+                      style={glassShineStyle(bulkDeleteArmed ? "#16A34A" : "var(--danger)")}
                     >
-                      <ChevronLeft size={18} strokeWidth={2.5} />
+                      <Trash2 size={14} />
+                      {bulkDeleteArmed ? `Confirm (${pickedCount})` : "Delete"}
                     </button>
-                    <button
-                      type="button"
-                      disabled={roomIndex >= compactFullscreenCutlistRoomTabs.length - 1}
-                      onClick={(e) => slideTo(e.currentTarget, roomIndex + 1)}
-                      className="absolute right-3 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-[7px] disabled:opacity-30"
-                      style={{ color: "var(--text-main)" }}
-                      aria-label="Next room"
-                    >
-                      <ChevronRight size={18} strokeWidth={2.5} />
-                    </button>
-                  </>
-                );
-              })()}
-            </div>
-            </div>
-            <GlassScrollbarThumb scrollRef={productionCutlistCompactScrollRef} />
-            {/* (Room at its end for the Notes bar along the bottom — below.) */}
-            <div ref={productionCutlistCompactScrollRef} className="min-h-0 flex-1 overflow-auto px-0 pb-[56px] pt-0 hide-native-scrollbar">
-              <div className="shrink-0" style={{ height: "var(--cutlist-compact-top, 150px)" }} />
-              <div className={`space-y-3 px-3 pb-3 pt-3 ${isTabletProjectViewport ? "mx-auto max-w-[1100px]" : ""}`}>
-                {cutlistRoomFilter !== "Project Cutlist" && (
-                  <section
-                    className="-mt-3 overflow-visible px-3 pb-3 pt-0"
-                  >
-                    {productionRoomIsEmpty ? (
-                      renderFirstPiecePrompt("production")
-                    ) : (
-                    <div className="space-y-3 pt-3">
-                      {(
-                        <div className="glass-page-header sticky top-[var(--cutlist-compact-top,0px)] z-30 -mx-6 flex flex-wrap items-center gap-1 px-3 py-2">
-                          {partTypeOptions.map((v) => {
-                            const color = partTypeColors[v] ?? "#CBD5E1";
-                            return (
-                              <button
-                                key={`cutlist_fullscreen_mobile_entry_${v}`}
-                                type="button"
-                                disabled={productionReadOnly}
-                                onClick={(e) => pickProductionEntryPartType(e, v)}
-                                // (Round-ended, with the glass shine in its colour.)
-                                style={glassShineStyle(color, { color: isLightHex(color) ? "#1F2937" : "#F8FAFC" })}
-                                className="glass-shine relative rounded-full border px-3 py-1 text-[11px] font-medium transition-[transform,box-shadow] duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:z-10 hover:scale-110 hover:shadow-lg disabled:opacity-55 disabled:hover:scale-100 disabled:hover:shadow-none"
-                              >
-                                {v}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      )}
-
-                      {/* (Its rows the screen's full width, edge to edge — isolated, so no field's own z-index lifts it over the sticky
-                          part type bar.) */}
-                      {(
-                      <div className="isolate -mx-6 space-y-3">
-                        {visibleCutlistDraftRows.map((draft) => {
-                          const color = partTypeColors[draft.partType] ?? "#CBD5E1";
-                          // (A pale wash of its part type, edged in it, words in a dark shade of it, white fields edged
-                          // in it — as the desktop entry's rows.)
-                          const draftPalette = cutlistTablePalette(color);
-                          const draftTextColor = draftPalette.text;
-                          const draftFieldBg = "#FFFFFF";
-                          const draftFieldBorder = draftPalette.fieldBorder;
-                          const draftFolded = Boolean(cutlistCompactFoldedDraftRows[draft.id]);
-                            const draftIsCabinetry = isCabinetryPartType(draft.partType);
-                            // (A Custom piece: its shape — its Height and Width the shape's, its banding drawn on it.)
-                            const draftShape = cutlistRowShape(draft);
-                            const draftIsDoor = isDoorPartType(draft.partType);
-                            const draftDoorMode = selectedDoorModeValue(draft.doorMode);
-                            const draftIsConfiguredDoor =
-                              draftIsDoor && !manualCutlistUsesPlainDoorRows && draftDoorMode !== "" && draftDoorMode !== "manual";
-                            const draftCompactConfiguredPanel = cutlistCompactConfiguredDraftPanels[draft.id] ?? "fields";
-                            const draftBoardAllowsGrain = productionBoardAllowsGrainForValue(String(draft.board ?? "").trim());
-                          const draftGrainValue = String(draft.grainValue ?? "").trim();
-                          const draftHeightGrainMatch = matchesGrainDimension(draftGrainValue, draft.height, "height");
-                          const draftWidthGrainMatch = matchesGrainDimension(draftGrainValue, draft.width, "width");
-                          const draftDepthGrainMatch = matchesGrainDimension(draftGrainValue, draft.depth, "depth");
-                          const draftHasDoorHinges =
-                            normalizeDoorHingeValues(draft.hingesUp).length > 0 ||
-                            normalizeDoorHingeValues(draft.hingesDown).length > 0;
-                          const draftDoorHingesEnabled = cutlistCompactDoorHingeEnabledRows[draft.id] ?? draftHasDoorHinges;
-                          const isSubPartDraft = subPartDraftRowIds.has(draft.id);
-                          const isFrontBankRow = draftIsDoor && (draftDoorMode === "drawer" || draftDoorMode === "door");
-                          const frontBankCount = isFrontBankRow ? Math.max(1, Number.parseInt(draft.doorFrontCount || "1", 10) || 1) : 0;
-                          const frontBankTopGapValue = isFrontBankRow ? String(draft.doorTopGap ?? "") : "";
-                          // Always shown for a front-bank row — a cleared gap displays
-                          // as "0" inside the bubble instead of the bubble disappearing.
-                          const frontBankHasTopGapLabel = isFrontBankRow;
-                          const frontBankHasBetweenGapLabel = isFrontBankRow;
-                          // A front bank's (each front's fields linked) Board and Part Name side by side, at the top.
-                          const draftBoardNameSideBySide = isFrontBankRow && !draftIsConfiguredDoor;
-                          const boardWarn = warningForCell(draft.id, "board");
-                          const nameWarn = warningForCell(draft.id, "name");
-                          const heightWarn = warningForCell(draft.id, "height");
-                          const widthWarn = warningForCell(draft.id, "width");
-                          const depthWarn = warningForCell(draft.id, "depth");
-                          const quantityWarn = warningForCell(draft.id, "quantity");
-                          return (
-                            <div
-                              key={`cutlist_fullscreen_mobile_draft_${draft.id}`}
-                              className={`overflow-visible border-y px-6 pt-2 transition-[padding] duration-200 ${draftFolded ? "pb-2" : "pb-3"} ${isSubPartDraft ? "ml-4" : ""}`}
-                              style={{
-                                backgroundColor: draftPalette.rowBg,
-                                borderColor: draftPalette.border,
-                                color: draftTextColor,
-                                boxShadow: isSubPartDraft ? "inset 3px 0 0 var(--brand-strong)" : undefined,
-                              }}
-                            >
-                              {/* (The whole top bar — out to the card's edges — folds it.) */}
-                              <div
-                                className="-mx-6 -mt-2 flex cursor-pointer select-none items-center justify-between gap-3 px-6 pt-2"
-                                role="button"
-                                tabIndex={0}
-                                aria-expanded={!draftFolded}
-                                title={draftFolded ? "Show this row" : "Fold this row away"}
-                                onClick={() => toggleCutlistCompactDraftRowFolded(draft.id)}
-                                onKeyDown={(e) => {
-                                  if (e.key !== "Enter" && e.key !== " ") return;
-                                  e.preventDefault();
-                                  toggleCutlistCompactDraftRowFolded(draft.id);
-                                }}
-                              >
-                                <div className="min-w-0 flex flex-1 items-center gap-3">
-                                  <ChevronDown
-                                    size={16}
-                                    className="-mr-1 shrink-0 transition-transform duration-200"
-                                    style={{ color: draftTextColor, transform: draftFolded ? "rotate(-90deg)" : undefined }}
-                                  />
-                                  {isSubPartDraft ? (
-                                    <span
-                                      className="shrink-0 rounded-[6px] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.5px]"
-                                      style={{ backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
-                                    >
-                                      ↳ Sub part
-                                    </span>
-                                  ) : null}
-                                  <p
-                                    className="shrink-0 text-[13px] font-bold tracking-[1px]"
-                                    style={{ color: draftTextColor }}
-                                  >
-                                    {draft.partType}
-                                  </p>
-                                  {String(draft.name || "").trim() ? (
-                                    <p
-                                      className="min-w-0 flex-1 truncate text-right text-[13px] font-bold"
-                                      style={{ color: draftTextColor }}
-                                    >
-                                      {draft.name}
-                                    </p>
-                                  ) : null}
-                                </div>
-                                {/* Mobile only: no "Add sub part" entry point here — sub parts
-                                    aren't offered on mobile part types, unlike desktop. */}
-                                <div className="flex shrink-0 items-center gap-1">
-                                  <button
-                                    type="button"
-                                    disabled={productionReadOnly}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      removeDraftCutlistRow(draft.id);
-                                    }}
-                                    // (Round, with the glass shine — red — as the desktop entry's.)
-                                    className="glass-shine h-8 w-8 shrink-0 rounded-full border text-[11px] font-semibold text-white hover:brightness-95 disabled:opacity-55"
-                                    style={glassShineStyle("var(--danger)")}
-                                  >
-                                    <X size={15} className="mx-auto" strokeWidth={2.8} />
-                                  </button>
-                                </div>
-                              </div>
-                              {/* Folds shut and open (0fr/1fr, slid) — its fields kept, so nothing typed is lost while it's shut. */}
-                              <div style={{ display: "grid", gridTemplateRows: draftFolded ? "0fr" : "1fr", transition: "grid-template-rows 220ms ease" }}>
-                              <div className="min-h-0 overflow-hidden">
-                              <div className={`grid gap-3 ${isTabletProjectViewport ? "sm:grid-cols-2" : ""}`}>
-                                {/* (A front bank's Board and Part Name: one row, side by side — the rest, as they were.) */}
-                                <div className={draftBoardNameSideBySide ? `grid grid-cols-2 items-start gap-2 ${isTabletProjectViewport ? "sm:col-span-2" : ""}` : "contents"}>
-                                {!draftIsConfiguredDoor ? (
-                                <div className="min-w-0 space-y-1">
-                                  <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Board</p>
-                                  {isFrontBankRow ? (() => {
-                                    const boardManualArr = normalizeDoorFrontBoardManual(draft.doorFrontBoardManual, frontBankCount);
-                                    const boardValuesArr = normalizeDoorFrontBoards(draft.doorFrontBoards, frontBankCount);
-                                    return renderFrontFieldStack(
-                                      frontBankCount,
-                                      boardManualArr,
-                                      "Linked board — untick to give this front its own board",
-                                      (index, linked) => onDraftFrontBoardLinkToggle(draft.id, index, linked),
-                                      (index) => (
-                                        <BoardPillDropdown
-                                          value={boardManualArr[index] ? boardValuesArr[index] : boardValuesArr[index] || draft.board}
-                                          options={cutlistBoardOptions}
-                                          disabled={productionReadOnly}
-                                          bg={draftFieldBg}
-                                          border={draftFieldBorder}
-                                          text={draftTextColor}
-                                          size="compact"
-                                          className="!h-8 !text-[11px]"
-                                          reserveRightIcon
-                                          getSize={boardSizeFor}
-                                          getLabel={boardDisplayLabel}
-                                          onChange={(next) => onDraftFrontBoardChange(draft.id, index, next)}
-                                        />
-                                      ),
-                                    );
-                                  })() : (
-                                    <div ref={registerCutlistWarnCellRef(draft.id, "board")} className="relative z-[120] pointer-events-auto">
-                                      <BoardPillDropdown
-                                        value={draft.board}
-                                        options={cutlistBoardOptions}
-                                        disabled={productionReadOnly}
-                                        title={boardWarn || undefined}
-                                        className={warningClassForCell(draft.id, "board")}
-                                        bg={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).backgroundColor ?? draftFieldBg}
-                                        border={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).borderColor ?? draftFieldBorder}
-                                        text={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).color ?? draftTextColor}
-                                        getSize={boardSizeFor}
-                                        getLabel={boardDisplayLabel}
-                                        onChange={(next) => onDraftBoardChange(draft.id, next)}
-                                      />
-                                    </div>
-                                  )}
-                                </div>
-                                ) : null}
-                                <div className={`min-w-0 space-y-1 ${isTabletProjectViewport && !draftBoardNameSideBySide ? "sm:col-span-2" : ""}`}>
-                                  {!draftIsConfiguredDoor ? (
-                                    <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Part Name</p>
-                                  ) : null}
-                                  <div ref={registerCutlistWarnCellRef(draft.id, "name")} className="relative z-[20] grid gap-[4px] overflow-visible">
-                                      {!draftIsConfiguredDoor ? (
-                                        isFrontBankRow ? (() => {
-                                          const nameManualArr = normalizeDoorFrontManualArray(draft.doorFrontNameManual, frontBankCount);
-                                          const nameValuesArr = normalizeDoorFrontTextArray(draft.doorFrontNames, frontBankCount);
-                                          return renderFrontFieldStack(
-                                            frontBankCount,
-                                            nameManualArr,
-                                            "Linked name — untick to give this front its own name",
-                                            (index, linked) => onDraftFrontNameLinkToggle(draft.id, index, linked),
-                                            (index) => (
-                                              <PartNameSuggestionInput
-                                                disabled={productionReadOnly}
-                                                value={nameManualArr[index] ? nameValuesArr[index] : nameValuesArr[index] || draft.name}
-                                                placeholder={nameManualArr[index] ? draft.name : undefined}
-                                                options={productionPartNameSuggestionsForRoom(draft.room, draft.name)}
-                                                matchPartType={draft.partType}
-                                                onChange={(next) => onDraftFrontNameChange(draft.id, index, next)}
-                                                className="h-8 rounded-[6px] border bg-transparent px-1 pr-5 text-[11px] cs-frontbank-ghost"
-                                                style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
-                                              />
-                                            ),
-                                          );
-                                        })() : (
-                                          <PartNameSuggestionInput
-                                            disabled={productionReadOnly}
-                                            title={nameWarn || undefined}
-                                            value={draft.name}
-                                            options={productionPartNameSuggestionsForRoom(draft.room, draft.name)}
-                                                matchPartType={draft.partType}
-                                            onChange={(next) => updateDraftCutlistRow(draft.id, { name: next })}
-                                            className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell(draft.id, "name")}`}
-                                            style={warningStyleForCell(draft.id, "name", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
-                                          />
-                                        )
-                                      ) : null}
-                                      {draftIsDoor && !manualCutlistUsesPlainDoorRows
-                                        ? renderDoorModeConfigurator({
-                                            mode: draftDoorMode,
-                                            frontCount: normalizeDoorFrontCountValue(draft.doorFrontCount),
-                                            onModeChange: (mode) => onDraftDoorModeChange(draft.id, mode),
-                                            onFrontCountChange: (count) => onDraftDoorFrontCountChange(draft.id, count),
-                                            disabled: productionReadOnly,
-                                            textColor: draftTextColor,
-                                            borderColor: draftFieldBorder,
-                                            fieldBg: draftFieldBg,
-                                            fieldText: draftTextColor,
-                                          })
-                                        : null}
-                                      {draftIsDoor && !manualCutlistUsesPlainDoorRows && !draftIsConfiguredDoor && draftDoorMode !== "" && draftDoorMode !== "manual"
-                                        ? renderDoorSetupDesigner({
-                                            mode: draftDoorMode === "drawer" ? "drawer" : "door",
-                                            frontCount: normalizeDoorFrontCountValue(draft.doorFrontCount),
-                                            overallHeight: String(draft.height ?? ""),
-                                          overallWidth: String(draft.width ?? ""),
-                                          topGap: String(draft.doorTopGap ?? ""),
-                                          betweenGap: String(draft.doorBetweenGap ?? ""),
-                                          sideLeft: normalizeDoorSideValue(draft.doorSideLeft),
-                                          sideRight: normalizeDoorSideValue(draft.doorSideRight),
-                                          sideLeftGap: String(draft.doorSideLeftGap ?? ""),
-                                          sideRightGap: String(draft.doorSideRightGap ?? ""),
-                                          frontWidths: normalizeDoorFrontWidths(
-                                            draft.doorFrontWidths,
-                                            Number.parseInt(draft.doorFrontCount || "", 10) || 0,
-                                          ),
-                                          frontWidthManual: normalizeDoorFrontWidthManual(
-                                            draft.doorFrontWidthManual,
-                                            Number.parseInt(draft.doorFrontCount || "", 10) || 0,
-                                          ),
-                                          frontHeights: normalizeDoorFrontHeights(
-                                            draft.doorFrontHeights,
-                                            Number.parseInt(draft.doorFrontCount || "", 10) || 0,
-                                          ),
-                                            frontHeightManual: normalizeDoorFrontHeightManual(
-                                              draft.doorFrontHeightManual,
-                                              Number.parseInt(draft.doorFrontCount || "", 10) || 0,
-                                            ),
-                                          onTopGapChange: (value) => onDraftDoorGapChange(draft.id, "doorTopGap", value),
-                                          onBetweenGapChange: (value) => onDraftDoorGapChange(draft.id, "doorBetweenGap", value),
-                                          onSideChange: (key, value) => onDraftDoorSideChange(draft.id, key, value),
-                                          onSideGapChange: (key, value) => onDraftDoorSideGapChange(draft.id, key, value),
-                                          onFrontWidthChange: (index, value) => onDraftDoorFrontWidthChange(draft.id, index, value),
-                                          onFrontHeightChange: (index, value) => onDraftDoorFrontHeightChange(draft.id, index, value),
-                                          onFrontWidthBlur: (index) => onDraftDoorFrontWidthBlur(draft.id, index),
-                                          onFrontHeightBlur: (index) => onDraftDoorFrontHeightBlur(draft.id, index),
-                                          disabled: productionReadOnly,
-                                          textColor: draftTextColor,
-                                          borderColor: draftFieldBorder,
-                                            fieldBg: draftFieldBg,
-                                            fieldText: draftTextColor,
-                                          })
-                                        : null}
-                                    </div>
-                                  </div>
-                                </div>
-                                {draftIsConfiguredDoor ? (
-                                  <div className={isTabletProjectViewport ? "sm:col-span-2" : ""}>
-                                    {!isTabletProjectViewport ? (
-                                      <div className="mb-3 inline-flex rounded-[10px] border p-[2px]" style={{ borderColor: draftFieldBorder, backgroundColor: "rgba(255,255,255,0.14)" }}>
-                                        {(["fields", "drawing"] as const).map((panel) => {
-                                          const active = draftCompactConfiguredPanel === panel;
-                                          return (
-                                            <button
-                                              key={`${draft.id}_${panel}`}
-                                              type="button"
-                                              onClick={() =>
-                                                setCutlistCompactConfiguredDraftPanels((prev) => ({
-                                                  ...prev,
-                                                  [draft.id]: panel,
-                                                }))
-                                              }
-                                              className="min-w-[94px] rounded-[8px] px-3 py-[7px] text-[11px] font-semibold uppercase tracking-[1px]"
-                                              style={{
-                                                backgroundColor: active ? draftFieldBg : "transparent",
-                                                color: draftTextColor,
-                                              }}
-                                            >
-                                              {panel}
-                                            </button>
-                                          );
-                                        })}
-                                      </div>
-                                    ) : null}
-                                    <div className={`grid items-start gap-3 ${isTabletProjectViewport ? "sm:grid-cols-[minmax(0,340px)_minmax(0,1fr)]" : ""}`}>
-                                      {(isTabletProjectViewport || draftCompactConfiguredPanel === "fields") ? (
-                                        <div className="space-y-3">
-                                          <div className="space-y-1">
-                                            <p className="text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Board Type</p>
-                                            <div className="relative z-[120] pointer-events-auto">
-                                              <BoardPillDropdown
-                                                value={draft.board}
-                                                options={cutlistBoardOptions}
-                                                disabled={productionReadOnly}
-                                                title={boardWarn || undefined}
-                                                className={warningClassForCell(draft.id, "board")}
-                                                bg={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).backgroundColor ?? draftFieldBg}
-                                                border={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).borderColor ?? draftFieldBorder}
-                                                text={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).color ?? draftTextColor}
-                                                getSize={boardSizeFor}
-                                                getLabel={boardDisplayLabel}
-                                                onChange={(next) => onDraftBoardChange(draft.id, next)}
-                                              />
-                                            </div>
-                                          </div>
-                                          <div className={`grid gap-2 ${showCutlistGrainColumn && draftBoardAllowsGrain ? "grid-cols-[minmax(0,1fr)_112px]" : "grid-cols-1"}`}>
-                                            <div className="space-y-1">
-                                              <p className="text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Part Name</p>
-                                              <PartNameSuggestionInput
-                                                disabled={productionReadOnly}
-                                                title={nameWarn || undefined}
-                                                value={draft.name}
-                                                options={productionPartNameSuggestionsForRoom(draft.room, draft.name)}
-                                                matchPartType={draft.partType}
-                                                onChange={(next) => updateDraftCutlistRow(draft.id, { name: next })}
-                                                className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell(draft.id, "name")}`}
-                                                style={warningStyleForCell(draft.id, "name", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
-                                              />
-                                            </div>
-                                            {showCutlistGrainColumn && draftBoardAllowsGrain ? (
-                                              <div className="space-y-1">
-                                                <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Grain</p>
-                                                <GrainDimensionToggle
-                                                  value={String(draft.grainValue ?? "")}
-                                                  options={grainDimensionChoicesForRow(draft)}
-                                                  disabled={productionReadOnly}
-                                                  onChange={(v) => applyDraftRowGrainValue(draft, v)}
-                                                />
-                                              </div>
-                                            ) : null}
-                                          </div>
-                                          <div className="grid grid-cols-5 gap-2">
-                                            <div className="space-y-1">
-                                              <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Height</p>
-                                              <input ref={registerCutlistWarnCellRef(draft.id, "height")} disabled={productionReadOnly} inputMode="decimal" title={heightWarn || undefined} value={draft.height} onChange={(e) => updateDraftCutlistRow(draft.id, { height: numericDimensionText(e.target.value) })} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`} style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
-                                            </div>
-                                            <div className="space-y-1">
-                                              <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Width</p>
-                                              <input ref={registerCutlistWarnCellRef(draft.id, "width")} disabled={productionReadOnly} inputMode="decimal" title={widthWarn || undefined} value={draft.width} onChange={(e) => onDraftDoorOverallWidthChange(draft.id, e.target.value)} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`} style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
-                                            </div>
-                                            <div className="space-y-1">
-                                              <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Quantity</p>
-                                              <input ref={registerCutlistWarnCellRef(draft.id, "quantity")} disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "quantity")}`} style={warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
-                                            </div>
-                                            <div className="space-y-1 col-span-2">
-                                              <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Clashing</p>
-                                              <div className="grid grid-cols-2 gap-2">
-                                                <BoardPillDropdown
-                                                  value={draft.clashLeft ?? ""}
-                                                  options={CLASH_LEFT_OPTIONS}
-                                                  disabled={productionReadOnly}
-                                                  bg={draftFieldBg}
-                                                  border={draftFieldBorder}
-                                                  text={draftTextColor}
-                                                  size="default"
-                                                  getSize={() => ""}
-                                                  getLabel={(v) => v}
-                                                  onChange={(v) => updateDraftCutlistRow(draft.id, { clashLeft: v })}
-                                                />
-                                                <BoardPillDropdown
-                                                  value={draft.clashRight ?? ""}
-                                                  options={CLASH_RIGHT_OPTIONS}
-                                                  disabled={productionReadOnly}
-                                                  bg={draftFieldBg}
-                                                  border={draftFieldBorder}
-                                                  text={draftTextColor}
-                                                  size="default"
-                                                  getSize={() => ""}
-                                                  getLabel={(v) => v}
-                                                  onChange={(v) => updateDraftCutlistRow(draft.id, { clashRight: v })}
-                                                />
-                                              </div>
-                                            </div>
-                                          </div>
-                                          {draftDoorMode === "door" ? (
-                                            <div className="space-y-1">
-                                              {renderDoorHingeEditor({
-                                                upValues: normalizeDoorHingeValues(draft.hingesUp),
-                                                downValues: normalizeDoorHingeValues(draft.hingesDown),
-                                                onChange: (direction, index, value) => onDraftCutlistHingeChange(draft.id, direction, index, value),
-                                                disabled: productionReadOnly,
-                                                bg: draftFieldBg,
-                                                border: draftFieldBorder,
-                                                text: draftTextColor,
-                                                rowKey: draft.id,
-                                                rowLabel: cutlistRowLabelFor(draft, "Entry"),
-                                                maxValue: maxDoorHingeValueForRowLike(draft),
-                                                tall: true,
-                                                hingeSide: draft.hingeSide,
-                                                onHingeSideChange: (v) => updateDraftCutlistRow(draft.id, { hingeSide: v }),
-                                              })}
-                                            </div>
-                                          ) : null}
-                                          <div className="space-y-1">
-                                            <p className="text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Information</p>
-                                            <div className="grid gap-[6px]">
-                                              {informationLinesFromValue(draft.information).map((line, idx) => (
-                                                <div key={`${draft.id}_configured_mobile_info_${idx}`} className="flex items-center gap-[6px]">
-                                                  <button
-                                                    type="button"
-                                                    disabled={productionReadOnly}
-                                                    onClick={() => (idx === 0 ? onDraftAddInformationLine(draft.id) : onDraftRemoveInformationLine(draft.id, idx))}
-                                                    className="glass-shine inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border font-semibold text-white hover:brightness-95 disabled:opacity-55"
-                                                    style={glassShineStyle(idx === 0 ? "#16A34A" : "var(--danger)")}
-                                                  >
-                                                    {idx === 0 ? <Plus size={16} className="mx-auto" strokeWidth={2.8} /> : <X size={15} className="mx-auto" strokeWidth={2.8} />}
-                                                  </button>
-                                                  <input
-                                                    disabled={productionReadOnly}
-                                                    value={line}
-                                                    onChange={(e) => onDraftInformationLineChange(draft.id, idx, e.target.value)}
-                                                    placeholder="Information"
-                                                    className="cutlist-field h-8 flex-1 rounded-[8px] border bg-transparent px-2 text-[12px]"
-                                                    style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
-                                                  />
-                                                </div>
-                                              ))}
-                                            </div>
-                                          </div>
-                                        </div>
-                                      ) : null}
-                                      {(isTabletProjectViewport || draftCompactConfiguredPanel === "drawing") ? (
-                                        <div className="self-stretch">
-                                          {renderDoorSetupDesigner({
-                                            mode: draftDoorMode === "drawer" ? "drawer" : "door",
-                                            frontCount: normalizeDoorFrontCountValue(draft.doorFrontCount),
-                                            overallHeight: String(draft.height ?? ""),
-                                            overallWidth: String(draft.width ?? ""),
-                                            topGap: String(draft.doorTopGap ?? ""),
-                                            betweenGap: String(draft.doorBetweenGap ?? ""),
-                                            sideLeft: normalizeDoorSideValue(draft.doorSideLeft),
-                                            sideRight: normalizeDoorSideValue(draft.doorSideRight),
-                                            sideLeftGap: String(draft.doorSideLeftGap ?? ""),
-                                            sideRightGap: String(draft.doorSideRightGap ?? ""),
-                                            frontWidths: normalizeDoorFrontWidths(
-                                              draft.doorFrontWidths,
-                                              Number.parseInt(draft.doorFrontCount || "", 10) || 0,
-                                            ),
-                                            frontWidthManual: normalizeDoorFrontWidthManual(
-                                              draft.doorFrontWidthManual,
-                                              Number.parseInt(draft.doorFrontCount || "", 10) || 0,
-                                            ),
-                                            frontHeights: normalizeDoorFrontHeights(
-                                              draft.doorFrontHeights,
-                                              Number.parseInt(draft.doorFrontCount || "", 10) || 0,
-                                            ),
-                                            frontHeightManual: normalizeDoorFrontHeightManual(
-                                              draft.doorFrontHeightManual,
-                                              Number.parseInt(draft.doorFrontCount || "", 10) || 0,
-                                            ),
-                                            onTopGapChange: (value) => onDraftDoorGapChange(draft.id, "doorTopGap", value),
-                                            onBetweenGapChange: (value) => onDraftDoorGapChange(draft.id, "doorBetweenGap", value),
-                                            onSideChange: (key, value) => onDraftDoorSideChange(draft.id, key, value),
-                                            onSideGapChange: (key, value) => onDraftDoorSideGapChange(draft.id, key, value),
-                                            onFrontWidthChange: (index, value) => onDraftDoorFrontWidthChange(draft.id, index, value),
-                                            onFrontHeightChange: (index, value) => onDraftDoorFrontHeightChange(draft.id, index, value),
-                                            onFrontWidthBlur: (index) => onDraftDoorFrontWidthBlur(draft.id, index),
-                                            onFrontHeightBlur: (index) => onDraftDoorFrontHeightBlur(draft.id, index),
-                                            disabled: productionReadOnly,
-                                            textColor: draftTextColor,
-                                            borderColor: draftFieldBorder,
-                                            fieldBg: draftFieldBg,
-                                            fieldText: draftTextColor,
-                                          })}
-                                        </div>
-                                      ) : null}
-                                    </div>
-                                  </div>
-                                ) : null}
-                                {!draftIsConfiguredDoor ? (
-                                <>
-                                {/* (Height, Width and Depth in thirds — or, for a front (no Depth), Height and Width in halves. A Custom
-                                    piece: its Height, Width and Depth the shape's, not typed — then what it is, Edit and its drawing.) */}
-                                {draftShape ? (
-                                  <>
-                                  <div className={`grid grid-cols-3 items-end gap-2 ${isTabletProjectViewport ? "sm:col-span-2" : ""}`}>
-                                    {(["height", "width", "depth"] as const).map((field) => (
-                                      <div key={field} className="space-y-1 text-center">
-                                        <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>{field === "height" ? "Height" : field === "width" ? "Width" : "Depth"}</p>
-                                        <input
-                                          ref={registerCutlistWarnCellRef(draft.id, field)}
-                                          readOnly
-                                          tabIndex={-1}
-                                          value={field === "height" ? draft.height : field === "width" ? draft.width : cutlistShapeRowDepth(draft, draftShape)}
-                                          title="Set by the shape — Edit shape to change it"
-                                          className={`cutlist-field h-8 w-full cursor-default rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, field)}`}
-                                          style={{
-                                            ...warningStyleForCell(draft.id, field, { backgroundColor: "transparent", borderColor: draftFieldBorder, color: draftTextColor }),
-                                            ...(matchesGrainDimension(draftGrainValue, field === "height" ? draft.height : field === "width" ? draft.width : cutlistShapeRowDepth(draft, draftShape), field)
-                                              ? { fontWeight: 700, textDecoration: "underline" }
-                                              : {}),
-                                          }}
-                                        />
-                                      </div>
-                                    ))}
-                                  </div>
-                                  {renderCustomEntrySecondRow({
-                                    shape: draftShape,
-                                    board: draft.board,
-                                    color,
-                                    readOnly: productionReadOnly,
-                                    phone: true,
-                                    className: isTabletProjectViewport ? "sm:col-span-2" : "",
-                                    onEdit: (e) => openCutlistShapeEditor(e, { mode: "draft", rowId: draft.id }),
-                                    extra: isCabinetShape(draftShape)
-                                      ? renderCustomCabinetDraftFields(draft, draftShape, { readOnly: productionReadOnly, textColor: draftTextColor, fieldBg: draftFieldBg, fieldBorder: draftFieldBorder, onPatch: (patch) => updateDraftCutlistRow(draft.id, patch) })
-                                      : null,
-                                  })}
-                                  </>
-                                ) : (
-                                <div className={`grid ${isFrontBankRow || draftIsDoor ? "grid-cols-2" : "grid-cols-3"} gap-2 ${isTabletProjectViewport ? "sm:col-span-2" : ""}`}>
-                                  <div className="space-y-1 text-center">
-                                    <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Height</p>
-                                    {isDrawerPartType(draft.partType) ? (
-                                      <div ref={registerCutlistWarnCellRef(draft.id, "height")}>
-                                      <DrawerHeightDropdown
-                                        value={String(draft.height || "")}
-                                        options={drawerHeightLetterOptionsForRoom(draft.room)}
-                                        optionValues={drawerBreakdownForRoom(draft.room).letterValueMap}
-                                        disabled={productionReadOnly}
-                                        title={heightWarn || undefined}
-                                        className={warningClassForCell(draft.id, "height")}
-                                        bg={warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).backgroundColor ?? draftFieldBg}
-                                        border={warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).borderColor ?? draftFieldBorder}
-                                        text={warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).color ?? draftTextColor}
-                                        onAdd={(token) => addDraftDrawerHeightToken(draft.id, token)}
-                                        onRemove={(token) => removeDraftDrawerHeightToken(draft.id, token)}
-                                      />
-                                      </div>
-                                    ) : isFrontBankRow && draftDoorMode === "drawer" ? (
-                                      (() => {
-                                        const frontHeights = normalizeDoorFrontHeights(draft.doorFrontHeights, frontBankCount);
-                                        const frontHeightManual = normalizeDoorFrontHeightManual(draft.doorFrontHeightManual, frontBankCount);
-                                        const seamCount = Math.max(0, frontBankCount - 1);
-                                        const frontBetweenGaps = resolveDrawerBankBetweenGaps(draft, seamCount);
-                                        const resolvedFrontHeights = resolveDrawerBankFrontHeights(
-                                          frontHeights,
-                                          String(draft.height ?? ""),
-                                          frontBankTopGapValue,
-                                          frontBetweenGaps,
-                                          frontHeightManual,
-                                        ).heights;
-                                        return (
-                                          <div ref={registerCutlistWarnCellRef(draft.id, "height")}>
-                                            {renderFrontSplitStack({
-                                              count: frontBankCount,
-                                              values: frontHeights,
-                                              resolvedValues: resolvedFrontHeights,
-                                              topGapValue: frontBankTopGapValue,
-                                              betweenGaps: frontBetweenGaps,
-                                              hasTopGapLabel: frontBankHasTopGapLabel,
-                                              hasBetweenGapLabel: frontBankHasBetweenGapLabel,
-                                              onValueChange: (index, value) => onDraftDoorFrontHeightChange(draft.id, index, value),
-                                              onValueBlur: (index) => onDraftDoorFrontHeightBlur(draft.id, index),
-                                              onTopGapChange: (next) => onDraftDoorGapChange(draft.id, "doorTopGap", next),
-                                              onBetweenGapChange: (index, next) => onDraftFrontBetweenGapChange(draft.id, index, next),
-                                              topGapTitle: "Below bench to top of door/drawer — editing this stops it following the settings default",
-                                              betweenGapTitle: "Horizontal gap between drawers — editing this stops it following the settings default",
-                                              fieldLabel: "height",
-                                              fieldBg: draftFieldBg,
-                                              fieldBorder: draftFieldBorder,
-                                              fieldText: draftTextColor,
-                                              gapKey: draft.id,
-                                              grainValue: draft.grainValue,
-                                              grainCandidates: draftBoardAllowsGrain ? grainDimensionChoicesForRow(draft) : undefined,
-                                            })}
-                                          </div>
-                                        );
-                                      })()
-                                    ) : isFrontBankRow ? (() => {
-                                      const heightManualArr = normalizeDoorFrontHeightManual(draft.doorFrontHeightManual, frontBankCount);
-                                      const heightValuesArr = normalizeDoorFrontHeights(draft.doorFrontHeights, frontBankCount);
-                                      return (
-                                        <div ref={registerCutlistWarnCellRef(draft.id, "height")}>
-                                          {renderFrontFieldStack(
-                                        frontBankCount,
-                                        heightManualArr,
-                                        "Linked height — untick to give this front its own height",
-                                        (index, linked) => onDraftFrontHeightLinkToggle(draft.id, index, linked),
-                                        (index) => {
-                                          const frontHeightValue = heightManualArr[index] ? heightValuesArr[index] : heightValuesArr[index] || draft.height;
-                                          return (
-                                          <input
-                                            disabled={productionReadOnly}
-                                            inputMode="decimal"
-                                            title={`Front ${index + 1} height`}
-                                            value={frontHeightValue}
-                                            placeholder={heightManualArr[index] ? draft.height : undefined}
-                                            onChange={(e) => onDraftFrontHeightChange(draft.id, index, e.target.value)}
-                                            className="cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-1 pr-5 text-[11px] text-center cs-frontbank-ghost"
-                                            style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor, ...(grainAxisSelected(String(draft.grainValue ?? ""), "height", draftBoardAllowsGrain ? grainDimensionChoicesForRow(draft) : undefined) ? { fontWeight: 700, textDecoration: "underline" } : {}) }}
-                                          />
-                                          );
-                                        },
-                                      )}
-                                        </div>
-                                      );
-                                    })() : (
-                                      <input
-                                        ref={registerCutlistWarnCellRef(draft.id, "height")}
-                                        disabled={productionReadOnly}
-                                        inputMode="decimal"
-                                        title={heightWarn || undefined}
-                                        value={draft.height}
-                                        onChange={(e) => updateDraftCutlistRow(draft.id, { height: numericDimensionText(e.target.value) })}
-                                        className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`}
-                                        style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }}
-                                      />
-                                    )}
-                                    {isFrontBankRow && resolvedProductionBaseCabHeight ? (
-                                      <p className="text-[9px] font-semibold" style={{ color: "var(--text-muted)" }}>Base: {resolvedProductionBaseCabHeight}</p>
-                                    ) : null}
-                                  </div>
-                                  <div className="space-y-1 text-center">
-                                    <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Width</p>
-                                    {isFrontBankRow && draftDoorMode === "door" ? (() => {
-                                      const frontWidths = normalizeDoorFrontWidths(draft.doorFrontWidths, frontBankCount);
-                                      const frontWidthManual = normalizeDoorFrontWidthManual(draft.doorFrontWidthManual, frontBankCount);
-                                      const seamCount = Math.max(0, frontBankCount - 1);
-                                      const frontBetweenGaps = resolveDrawerBankBetweenGaps(draft, seamCount);
-                                      const resolvedFrontWidths = resolveDrawerBankFrontHeights(
-                                        frontWidths,
-                                        String(draft.width ?? ""),
-                                        "0",
-                                        frontBetweenGaps,
-                                        frontWidthManual,
-                                      ).heights;
-                                      return (
-                                        <div ref={registerCutlistWarnCellRef(draft.id, "width")}>
-                                          {renderFrontSplitStack({
-                                            count: frontBankCount,
-                                            values: frontWidths,
-                                            resolvedValues: resolvedFrontWidths,
-                                            topGapValue: "0",
-                                            betweenGaps: frontBetweenGaps,
-                                            hasTopGapLabel: false,
-                                            hasBetweenGapLabel: frontBankHasBetweenGapLabel,
-                                            onValueChange: (index, value) => onDraftFrontWidthSplitChange(draft.id, index, value),
-                                            onValueBlur: (index) => onDraftFrontWidthSplitBlur(draft.id, index),
-                                            onTopGapChange: () => {},
-                                            onBetweenGapChange: (index, next) => onDraftFrontBetweenGapChange(draft.id, index, next),
-                                            topGapTitle: "",
-                                            betweenGapTitle: "Vertical gap between doors — editing this stops it following the settings default",
-                                            fieldLabel: "width",
-                                            fieldBg: draftFieldBg,
-                                            fieldBorder: draftFieldBorder,
-                                            fieldText: draftTextColor,
-                                            gapKey: `${draft.id}:w`,
-                                            grainValue: draft.grainValue,
-                                            grainCandidates: draftBoardAllowsGrain ? grainDimensionChoicesForRow(draft) : undefined,
-                                          })}
-                                        </div>
-                                      );
-                                    })() : isFrontBankRow ? (() => {
-                                      const widthManualArr = normalizeDoorFrontWidthManual(draft.doorFrontWidthManual, frontBankCount);
-                                      const widthValuesArr = normalizeDoorFrontWidths(draft.doorFrontWidths, frontBankCount);
-                                      return (
-                                        <div ref={registerCutlistWarnCellRef(draft.id, "width")}>
-                                          {renderFrontFieldStack(
-                                        frontBankCount,
-                                        widthManualArr,
-                                        "Linked width — untick to give this front its own width",
-                                        (index, linked) => onDraftFrontWidthLinkToggle(draft.id, index, linked),
-                                        (index) => {
-                                          const frontWidthValue = widthManualArr[index] ? widthValuesArr[index] : widthValuesArr[index] || draft.width;
-                                          return (
-                                          <input
-                                            disabled={productionReadOnly}
-                                            inputMode="decimal"
-                                            title={`Front ${index + 1} width`}
-                                            value={frontWidthValue}
-                                            placeholder={widthManualArr[index] ? draft.width : undefined}
-                                            onChange={(e) => onDraftFrontWidthChange(draft.id, index, e.target.value)}
-                                            className="cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-1 pr-5 text-[11px] text-center cs-frontbank-ghost"
-                                            style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor, ...(grainAxisSelected(String(draft.grainValue ?? ""), "width", draftBoardAllowsGrain ? grainDimensionChoicesForRow(draft) : undefined) ? { fontWeight: 700, textDecoration: "underline" } : {}) }}
-                                          />
-                                          );
-                                        },
-                                      )}
-                                        </div>
-                                      );
-                                    })() : (
-                                      <input
-                                        ref={registerCutlistWarnCellRef(draft.id, "width")}
-                                        disabled={productionReadOnly}
-                                        inputMode="decimal"
-                                        title={widthWarn || undefined}
-                                        value={draft.width}
-                                        onChange={(e) => onDraftDoorOverallWidthChange(draft.id, e.target.value)}
-                                        className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`}
-                                        style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }}
-                                      />
-                                    )}
-                                  </div>
-                                  {isFrontBankRow || draftIsDoor ? null : (
-                                    <div className="space-y-1 text-center">
-                                      <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Depth</p>
-                                      {isDrawerPartType(draft.partType) && drawerDepthKeys(draft).length > 0 ? (
-                                        <div ref={registerCutlistWarnCellRef(draft.id, "depth")}>
-                                          {renderDrawerDepthBoxes(
-                                            draft,
-                                            drawerDepthKeys(draft),
-                                            `h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "depth")}`,
-                                            { ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) },
-                                          )}
-                                        </div>
-                                      ) : (
-                                        <input ref={registerCutlistWarnCellRef(draft.id, "depth")} disabled={productionReadOnly} inputMode="decimal" title={depthWarn || undefined} value={draft.depth} onChange={(e) => updateDraftCutlistRow(draft.id, { depth: numericDimensionText(e.target.value) })} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "depth")}`} style={{ ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
-                                      )}
-                                    </div>
-                                  )}
-                                </div>
-                                )}
-                                <div className={`grid gap-2 ${draftIsCabinetry ? "grid-cols-2" : draftBoardAllowsGrain && showCutlistGrainColumn ? "grid-cols-4" : "grid-cols-3"} ${isTabletProjectViewport ? "sm:col-span-2" : ""}`}>
-                                  <div className="space-y-1 text-center">
-                                    <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Quantity</p>
-                                    {isFrontBankRow ? (() => {
-                                      const quantityManualArr = normalizeDoorFrontManualArray(draft.doorFrontQuantityManual, frontBankCount);
-                                      const quantityValuesArr = normalizeDoorFrontTextArray(draft.doorFrontQuantities, frontBankCount);
-                                      return renderFrontFieldStack(
-                                        frontBankCount,
-                                        quantityManualArr,
-                                        "Linked quantity — untick to give this front its own quantity",
-                                        (index, linked) => onDraftFrontQuantityLinkToggle(draft.id, index, linked),
-                                        (index) => (
-                                          <input
-                                            disabled={productionReadOnly}
-                                            inputMode="numeric"
-                                            pattern="[0-9]*"
-                                            title={`Front ${index + 1} quantity`}
-                                            value={quantityManualArr[index] ? quantityValuesArr[index] : quantityValuesArr[index] || draft.quantity}
-                                            placeholder={quantityManualArr[index] ? draft.quantity : undefined}
-                                            onChange={(e) => onDraftFrontQuantityChange(draft.id, index, e.target.value)}
-                                            className="cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-1 pr-5 text-[11px] text-center cs-frontbank-ghost"
-                                            style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
-                                          />
-                                        ),
-                                      );
-                                    })() : (
-                                      <input ref={registerCutlistWarnCellRef(draft.id, "quantity")} disabled={productionReadOnly || (isDrawerPartType(draft.partType) && !draftIsDoor)} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`} style={warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
-                                    )}
-                                  </div>
-                                  {!draftIsCabinetry ? (
-                                    <>
-                                      <div className="space-y-1 col-span-2">
-                                        <p className="text-center text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Clashing</p>
-                                        {draftShape ? (
-                                          <div className="flex h-8 items-center justify-center text-[12px]" style={{ color: draftTextColor }} title="Clashing — set on the shape">
-                                            {cutlistRowBandedLengthText(draft, draftShape)}
-                                          </div>
-                                        ) : (
-                                        <div className="grid grid-cols-2 gap-2">
-                                          <div>
-                                            <BoardPillDropdown
-                                              value={draft.clashLeft ?? ""}
-                                              options={CLASH_LEFT_OPTIONS}
-                                              disabled={productionReadOnly || isDrawerPartType(draft.partType)}
-                                              bg={draftFieldBg}
-                                              border={draftFieldBorder}
-                                              text={draftTextColor}
-                                              size="default"
-                                              getSize={() => ""}
-                                              getLabel={(v) => v}
-                                              onChange={(v) => updateDraftCutlistRow(draft.id, { clashLeft: v })}
-                                            />
-                                          </div>
-                                          <div>
-                                            <BoardPillDropdown
-                                              value={draft.clashRight ?? ""}
-                                              options={CLASH_RIGHT_OPTIONS}
-                                              disabled={productionReadOnly || isDrawerPartType(draft.partType)}
-                                              bg={draftFieldBg}
-                                              border={draftFieldBorder}
-                                              text={draftTextColor}
-                                              size="default"
-                                              getSize={() => ""}
-                                              getLabel={(v) => v}
-                                              onChange={(v) => updateDraftCutlistRow(draft.id, { clashRight: v })}
-                                            />
-                                          </div>
-                                        </div>
-                                        )}
-                                      </div>
-                                      {showCutlistGrainColumn && draftBoardAllowsGrain ? (
-                                        <div className="space-y-1 text-center">
-                                          <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Grain</p>
-                                          <GrainDimensionToggle
-                                            value={String(draft.grainValue ?? "")}
-                                            options={grainDimensionChoicesForRow(draft)}
-                                            disabled={productionReadOnly}
-                                            onChange={(v) => applyDraftRowGrainValue(draft, v)}
-                                          />
-                                        </div>
-                                      ) : null}
-                                    </>
-                                  ) : (
-                                    <div className="space-y-1">
-                                      <p className="text-center text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Clashing</p>
-                                      <BoardPillDropdown
-                                        value={draft.cabinetryClashBottom || ""}
-                                        options={CLASH_BOTTOM_OPTIONS}
-                                        disabled={productionReadOnly}
-                                        bg={draftFieldBg}
-                                        border={draftFieldBorder}
-                                        text={draftTextColor}
-                                        size="default"
-                                        getSize={() => ""}
-                                        getLabel={(v) => v}
-                                        onChange={(v) => {
-                                          updateDraftCutlistRow(draft.id, { cabinetryClashBottom: v, cabinetryClashBottomManual: Boolean(v) });
-                                        }}
-                                      />
-                                    </div>
-                                  )}
-                                </div>
-                                {draftIsDoor && !draftIsConfiguredDoor && draftDoorMode !== "drawer" ? (
-                                  <div className={`space-y-1 ${isTabletProjectViewport ? "sm:col-span-2" : ""}`}>
-                                    <label className="inline-flex items-center gap-2 text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>
-                                      <input
-                                        type="checkbox"
-                                        checked={draftDoorHingesEnabled}
-                                        disabled={productionReadOnly}
-                                        className="h-4 w-4 accent-[var(--brand-strong)]"
-                                        onChange={(e) => {
-                                          const checked = e.target.checked;
-                                          setCutlistCompactDoorHingeEnabledRows((prev) => ({
-                                            ...prev,
-                                            [draft.id]: checked,
-                                          }));
-                                          if (!checked) {
-                                            updateDraftCutlistRow(draft.id, {
-                                              hingesUp: [],
-                                              hingesDown: [],
-                                            });
-                                          }
-                                        }}
-                                      />
-                                      Hinges
-                                    </label>
-                                    <div className="relative overflow-visible">
-                                      <div className="pointer-events-auto">
-                                      {draftDoorHingesEnabled ? renderDoorHingeEditor({
-                                          upValues: normalizeDoorHingeValues(draft.hingesUp),
-                                          downValues: normalizeDoorHingeValues(draft.hingesDown),
-                                          onChange: (direction, index, value) => onDraftCutlistHingeChange(draft.id, direction, index, value),
-                                          disabled: productionReadOnly,
-                                          bg: draftFieldBg,
-                                          border: draftFieldBorder,
-                                          text: draftTextColor,
-                                          rowKey: draft.id,
-                                          rowLabel: cutlistRowLabelFor(draft, "Entry"),
-                                          maxValue: maxDoorHingeValueForRowLike(draft),
-                                          tall: true,
-                                          hideGroupLabel: true,
-                                          hingeSide: draft.hingeSide,
-                                          onHingeSideChange: (v) => updateDraftCutlistRow(draft.id, { hingeSide: v }),
-                                        }) : null}
-                                      </div>
-                                    </div>
-                                  </div>
-                                ) : null}
-                              {draftIsCabinetry ? (
-                                <div className={`space-y-2 rounded-[10px] border p-2 ${isTabletProjectViewport ? "sm:col-span-2" : ""}`} style={{ borderColor: draftFieldBorder, backgroundColor: draftFieldBg }}>
-                                  <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Shelves</p>
-                                  <div className={`grid gap-2 ${isTabletProjectViewport ? "sm:grid-cols-2" : ""}`}>
-                                    <div className="space-y-1">
-                                      <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Fixed Shelf</p>
-                                      <input inputMode="numeric" disabled={productionReadOnly} value={draft.fixedShelf ?? ""} onChange={(e) => updateDraftCutlistRow(draft.id, { fixedShelf: numericOnlyText(e.target.value) })} className="cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
-                                      {hasShelfQuantity(draft.fixedShelf) ? (
-                                        <BoardPillDropdown value={normalizeDrillingValue(draft.fixedShelfDrilling)} options={drillingOptionsForShelfQuantity(draft.fixedShelf)} disabled={productionReadOnly} bg={draftFieldBg} border={draftFieldBorder} text={draftTextColor} size="compact" hideBlankOption getSize={() => ""} getLabel={(v) => v} onChange={(v) => updateDraftCutlistRow(draft.id, { fixedShelfDrilling: normalizeDrillingValue(v) })} />
-                                      ) : null}
-                                    </div>
-                                    <div className="space-y-1">
-                                      <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Adjustable Shelf</p>
-                                      <input inputMode="numeric" disabled={productionReadOnly} value={draft.adjustableShelf ?? ""} onChange={(e) => updateDraftCutlistRow(draft.id, { adjustableShelf: numericOnlyText(e.target.value) })} className="cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
-                                      {hasShelfQuantity(draft.adjustableShelf) ? (
-                                        <BoardPillDropdown value={normalizeDrillingValue(draft.adjustableShelfDrilling)} options={drillingOptionsForShelfQuantity(draft.adjustableShelf)} disabled={productionReadOnly} bg={draftFieldBg} border={draftFieldBorder} text={draftTextColor} size="compact" hideBlankOption getSize={() => ""} getLabel={(v) => v} onChange={(v) => updateDraftCutlistRow(draft.id, { adjustableShelfDrilling: normalizeDrillingValue(v) })} />
-                                      ) : null}
-                                    </div>
-                                  </div>
-                                </div>
-                              ) : null}
-                              {draftIsCabinetry ? (
-                                <div className="flex items-center gap-2">
-                                  <CabinetryKindToggle
-                                    value={draft.cabinetryKind || "base"}
-                                    disabled={productionReadOnly}
-                                    onChange={(next) => updateDraftCutlistRow(draft.id, cabinetryKindChangePatch(draft, next))}
-                                  />
-                                  {(draft.cabinetryKind || "base") === "base" ? (
-                                    <label className="inline-flex items-center gap-1" title="Force a full Top instead of Rails on this Base cabinet">
-                                      <input
-                                        type="checkbox"
-                                        disabled={productionReadOnly}
-                                        checked={Boolean(draft.cabinetryFullTop)}
-                                        onChange={(e) => updateDraftCutlistRow(draft.id, { cabinetryFullTop: e.target.checked })}
-                                        className="h-3.5 w-3.5"
-                                      />
-                                      <span className="whitespace-nowrap text-[11px] font-medium" style={{ color: draftTextColor }}>Full Top</span>
-                                    </label>
-                                  ) : null}
-                                </div>
-                              ) : null}
-                              <div className={`grid gap-1 ${isTabletProjectViewport ? "sm:col-span-2" : ""}`}>
-                                <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Information</p>
-                                {informationLinesFromValue(draft.information).map((line, idx) => (
-                                  <div key={`${draft.id}_fullscreen_mobile_info_${idx}`} className="flex items-center gap-[6px]">
-                                    <button
-                                      type="button"
-                                      disabled={productionReadOnly}
-                                      onClick={() => (idx === 0 ? onDraftAddInformationLine(draft.id) : onDraftRemoveInformationLine(draft.id, idx))}
-                                      className="glass-shine inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border font-semibold text-white hover:brightness-95 disabled:opacity-55"
-                                      style={glassShineStyle(idx === 0 ? "#16A34A" : "var(--danger)")}
-                                    >
-                                      {idx === 0 ? <Plus size={16} className="mx-auto" strokeWidth={2.8} /> : <X size={15} className="mx-auto" strokeWidth={2.8} />}
-                                    </button>
-                                    <input
-                                      disabled={productionReadOnly}
-                                      value={line}
-                                      onChange={(e) => onDraftInformationLineChange(draft.id, idx, e.target.value)}
-                                      placeholder="Information"
-                                      className="cutlist-field h-8 flex-1 rounded-[8px] border bg-transparent px-2 text-[12px]"
-                                      style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
-                                    />
-                                  </div>
-                                ))}
-                              </div>
-                              </>
-                              ) : null}
-                              </div>
-                              </div>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                      )}
-
-                      <button
-                        disabled={productionReadOnly}
-                        onClick={() => void addDraftRowsToCutlist()}
-                        // (Round-ended, with the glass shine — the brand blue; as wide as the search under it — out past the entry's own
-                        // 12px either side.)
-                        className="glass-shine -mx-3 inline-flex h-[44px] w-[calc(100%+24px)] items-center justify-center rounded-full border text-[18px] font-normal text-white hover:brightness-95 disabled:opacity-55"
-                        style={glassShineStyle("var(--brand)")}
-                      >
-                        Add to Cutlist
-                      </button>
-                    </div>
-                    )}
-                  </section>
-                )}
-
-                <div className={`mt-3 ${productionRoomIsEmpty ? "hidden" : ""}`}>
-                  <input
-                    value={cutlistSearch}
-                    onChange={(e) => onCutlistSearchChange(e.target.value)}
-                    placeholder="Search cutlist..."
-                    className="mb-3 h-9 w-full rounded-full border px-4 text-[12px] outline-none"
-                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                  />
-                  {groupedCutlistRows.length === 0 && (
-                    <>
-                      <EmptyState compact icon={<Scissors size={16} />} title="No cutlist rows yet" hint="Parts added to the cutlist show here, grouped by part type." />
-                      {renderEmptyProjectCutlistRooms("production")}
-                    </>
-                  )}
-                  {/* -mx-3: cancels this page's own px-3 so these full-width part-type title bars
-                      reach the true screen edges (unlike CNC's own board-type sections, which stay
-                      inset in their own rounded/bordered cards) — matches CNC's row-list layout
-                      otherwise, just grouped by part type instead of board type and sitting
-                      directly on the page background rather than in an extra boxed container. */}
-                  <div className="-mx-3">
-                    {groupedCutlistRows.map((group) => {
-                      const color = cutlistGroupColor(group);
-                      // (Its part type's colours as the desktop list's: the colour itself along its title bar, a lighter wash of it
-                      // over the headings, a pale one over the rows, words in a dark shade of it.)
-                      const palette = cutlistTablePalette(color);
-                      const collapsed = !cutlistMobileExpandedGroups[group.partType];
-                      const rowCount = group.rows.length;
-                      // (Its Size column as wide as its longest size — right beside Qty, Part taking what's between it and Board.)
-                      const sizeCh = Math.max(4, ...group.rows.map((row) => mobileListSizeText(row).length));
-                      return (
-                        <section
-                          key={`cutlist_fullscreen_mobile_group_${group.partType}`}
-                          className="mb-3 border-b"
-                          style={{ borderColor: palette.border }}
-                        >
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setCutlistMobileExpandedGroups((prev) => ({ ...prev, [group.partType]: !prev[group.partType] }))
-                            }
-                            className="relative flex w-full cursor-pointer items-center justify-between gap-3 px-3 py-2 text-left text-[16px] font-semibold"
-                            style={{ backgroundColor: palette.titleBarBg, color: palette.titleText }}
-                          >
-                            <span className="min-w-0 truncate">{cutlistGroupTitle(group)}</span>
-                            <span className="flex shrink-0 items-center gap-2">
-                              <span className="text-[11px] font-bold" style={{ color: palette.titleText }}>
-                                {rowCount} {rowCount === 1 ? "Row" : "Rows"}
-                              </span>
-                              <TintedAngleDownIcon color={palette.titleText} size={12} expanded={!collapsed} />
-                            </span>
-                          </button>
-                          {/* Grid-rows accordion trick (0fr/1fr, transitioned) instead of an
-                              unmount/remount toggle — same technique desktop's own group collapse
-                              uses, so the section slides open/shut instead of snapping. */}
-                          <div
-                            style={{
-                              display: "grid",
-                              gridTemplateRows: collapsed ? "0fr" : "1fr",
-                              transition: "grid-template-rows 220ms ease",
-                            }}
-                          >
-                            <div className="overflow-hidden">
-                              <div
-                                className="flex items-center gap-2 border-b px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.4px]"
-                                style={{ backgroundColor: palette.headerBg, color: palette.headerText, borderColor: palette.divider }}
-                              >
-                                <span className="w-[96px] shrink-0">Board</span>
-                                <span className="min-w-0 flex-1 truncate text-[12px] font-semibold normal-case tracking-normal">Part</span>
-                                <span className="shrink-0 text-center text-[11px]" style={{ width: `${sizeCh}ch` }}>
-                                  <span className="text-[10px]">Size</span>
-                                </span>
-                                <span className="mr-2 w-[28px] shrink-0 text-center">Qty</span>
-                              </div>
-                              {group.rows.map((row, rowIndex) => {
-                                // (A part type's table's Custom area: a slim "Custom" heading over its first piece.)
-                                const rowShownAsCustom = cutlistRowShownAsCustom(group, row);
-                                const startsCustomArea = Boolean(group.customArea?.length) && row === group.customArea?.[0];
-                                return (
-                                  <Fragment key={`cutlist_fullscreen_mobile_${group.partType}_${row.id}`}>
-                                  {startsCustomArea ? (
-                                    <div
-                                      className="flex items-center gap-2 px-3 py-1 text-[11px] font-medium"
-                                      style={{ backgroundColor: palette.titleBarBg, color: palette.titleText, borderTop: rowIndex > 0 ? `1px solid ${palette.border}` : undefined }}
-                                    >
-                                      <span>{CUSTOM_CUTLIST_GROUP_TITLE}</span>
-                                      <span className="rounded-full px-2 py-[2px] text-[10px] font-medium leading-none" style={{ backgroundColor: palette.countChipBg }}>
-                                        {formatPartCount(cutlistRowsPartCount(group.customArea ?? []))}
-                                      </span>
-                                    </div>
-                                  ) : null}
-                                  <article
-                                    className="bg-transparent"
-                                    style={rowIndex > 0 && !startsCustomArea ? { borderTop: `1px solid ${palette.divider}` } : undefined}
-                                  >
-                                    <button
-                                      type="button"
-                                      onClick={(e) => {
-                                        productionMobileRowDetailOriginElRef.current = e.currentTarget;
-                                        setProductionMobileRowDetailOrigin(captureGlassModalOrigin(e));
-                                        setProductionMobileRowDetailKey({ rowId: row.id, partType: group.partType });
-                                        setIsProductionMobileRowDetailOpen(true);
-                                      }}
-                                      className="flex w-full items-center gap-2 px-3 py-2 text-left active:brightness-95"
-                                      style={{ backgroundColor: palette.rowBg, color: palette.text }}
-                                    >
-                                      <span className="w-[96px] shrink-0 truncate text-[11px] font-medium">
-                                        {boardDisplayLabel(row.board) || "-"}
-                                      </span>
-                                      <span className="flex min-w-0 flex-1 items-center gap-1.5">
-                                        {/* (The Custom table, or a table's Custom area: each piece its own part type's pill.) */}
-                                        {rowShownAsCustom ? (
-                                          <span
-                                            className="inline-block max-w-[72px] shrink-0 truncate rounded-full px-2 py-[1px] text-[10px] font-medium"
-                                            style={{ backgroundColor: partTypeColors[row.partType || "Unassigned"] ?? color, color: isLightHex(partTypeColors[row.partType || "Unassigned"] ?? color) ? "#1F2937" : "#F8FAFC" }}
-                                          >
-                                            {row.partType || "Unassigned"}
-                                          </span>
-                                        ) : null}
-                                        <span className="min-w-0 truncate text-[12px] font-semibold">
-                                          {row.name || "-"}
-                                        </span>
-                                      </span>
-                                      {(() => {
-                                        // (A Custom piece: its size as the others' — set by the shape, a flat piece's without a Depth.)
-                                        const rowShape = rowShownAsCustom ? cutlistRowShape(row) : null;
-                                        return (
-                                          <span className="shrink-0 whitespace-nowrap text-right text-[11px] font-medium" style={{ width: `${sizeCh}ch` }}>
-                                            {mobileListSizeText(rowShape ? { ...row, depth: cutlistShapeRowDepth(row, rowShape) } : row)}
-                                          </span>
-                                        );
-                                      })()}
-                                      <span className="mr-2 w-[28px] shrink-0 text-center text-[12px] font-medium">
-                                        {row.quantity || ""}
-                                      </span>
-                                    </button>
-                                  </article>
-                                  </Fragment>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        </section>
-                      );
-                    })}
                   </div>
                 </div>
-
-                {shouldRenderProductionMobileRowDetail && productionMobileRowDetailKey && (() => {
-                  const group = groupedCutlistRows.find((g) => g.partType === productionMobileRowDetailKey.partType);
-                  const row = group?.rows.find((r) => r.id === productionMobileRowDetailKey.rowId);
-                  if (!group || !row) return null;
-                  const infoLines = informationLinesFromValue(String(row.information ?? ""));
-                  const hasInformationContent = infoLines.some((line) => line.trim().length > 0);
-                  const rowIsConfiguredDoor = isDoorPartType(row.partType) && normalizeDoorModeValue(row.doorMode) !== "manual";
-                  const doorPieces = rowIsConfiguredDoor ? buildConfiguredDoorListSubrows(row) : [];
-                  const rowBoardAllowsGrain = productionBoardAllowsGrainForValue(String(row.board ?? "").trim());
-                  const rowGrainValue = String(row.grainValue ?? "").trim();
-                  const rowIsBankFront = Boolean(row.bankGroupId);
-                  // (A Custom piece: its shape, and the banding drawn on it in place of its clashing.)
-                  const rowShape = cutlistRowShape(row);
-                  const clashingValue = rowShape ? cutlistRowBandedLengthText(row, rowShape) : joinClashing(row.clashLeft ?? "", row.clashRight ?? "") || row.clashing || "-";
-                  const rowIsCabinetry = isCabinetryPartType(row.partType);
-                  const closeProductionMobileRowDetail = () => setIsProductionMobileRowDetailOpen(false);
-                  // (The Custom table's, or a table's Custom area's: its own part type's colour.)
-                  const detailColor = partTypeColors[cutlistRowShownAsCustom(group, row) ? String(row.partType || "Unassigned") : group.partType] ?? "#CBD5E1";
-                  const detailPalette = groupColorPalette(detailColor);
-                  const detailBarBg = detailPalette.headerBg;
-                  // Same reference size/weight as CNC's own popup (see its own "label" comment) —
-                  // just without the uppercase transform, per feedback that title-case reads better.
-                  const detailLabel = "text-[13px] font-bold tracking-[0.6px]";
-                  return createPortal(
-                    <div
-                      className="glass-modal-backdrop fixed inset-0 z-[200] flex items-center justify-center p-4"
-                      style={{ color: "var(--text-main)" }}
-                      onClick={closeProductionMobileRowDetail}
-                    >
-                      <div
-                        ref={productionMobileRowDetailPanelRef}
-                        className="glass-modal-panel flex w-fit min-w-[340px] max-w-[94vw] flex-col overflow-hidden"
-                        style={{ maxHeight: "calc(100svh - 32px)", backgroundColor: hexToRgba(detailPalette.rowBg, 0.55) }}
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <div className="flex min-h-0 flex-1 flex-col">
-                          <div className="glass-modal-header relative flex h-[56px] shrink-0 items-center justify-between gap-3 px-5" style={{ backgroundColor: hexToRgba(detailPalette.titleBarBg, 0.6) }}>
-                            <div className="min-w-0">
-                              <p className="truncate text-[14px] font-bold uppercase tracking-[1px]" style={{ color: detailPalette.text }}>{row.name || "Part"}</p>
-                              <p className="truncate text-[12px] font-medium" style={{ color: detailPalette.text }}>{cutlistRowShownAsCustom(group, row) ? row.partType : group.partType}</p>
-                            </div>
-                            <button type="button" onClick={closeProductionMobileRowDetail} className={modalCloseButtonClass} style={{ color: detailPalette.text }} aria-label="Close">
-                              <X size={16} />
-                            </button>
-                          </div>
-                          <div className="min-h-0 flex-1 overflow-auto p-4 text-[15px]" style={{ color: detailPalette.text }}>
-                            <div className="grid w-full gap-x-4 gap-y-1.5" style={{ gridTemplateColumns: showRoomColumnInList ? "max-content minmax(max-content, 1fr)" : "minmax(max-content, 1fr)" }}>
-                              <div className="rounded-[8px]" style={{ gridColumn: "1 / -1", gridRow: 1, backgroundColor: detailBarBg }} />
-                              <p className={`${detailLabel} whitespace-nowrap px-3 py-1.5`} style={{ gridColumn: 1, gridRow: 1, color: detailPalette.text }}>Part Name</p>
-                              {showRoomColumnInList ? (
-                                <p className={`${detailLabel} whitespace-nowrap px-3 py-1.5`} style={{ gridColumn: 2, gridRow: 1, color: detailPalette.text }}>Room</p>
-                              ) : null}
-                              <div className="whitespace-nowrap px-3" style={{ gridColumn: 1, gridRow: 2 }}>
-                                {isEditing(row.id, "name") ? (
-                                  <PartNameSuggestionInput
-                                    autoFocus
-                                    value={editingCellValue}
-                                    options={productionPartNameSuggestionsForRoom(row.room, row.name)}
-                                    matchPartType={row.partType}
-                                    onChange={(next) => setEditingCellValue(next)}
-                                    onBlur={() => void commitCellEdit()}
-                                    onCommit={() => void commitCellEdit()}
-                                    onCancel={cancelCellEdit}
-                                    className="h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-left text-[12px] text-[var(--text-main)]"
-                                  />
-                                ) : (
-                                  <button
-                                    type="button"
-                                    disabled={productionReadOnly}
-                                    onClick={() => startCellEdit(row, "name")}
-                                    className="min-w-0 break-words rounded-[6px] px-1 py-[2px] text-left disabled:opacity-100"
-                                    style={{ color: detailPalette.text }}
-                                  >
-                                    {row.name || "-"}
-                                  </button>
-                                )}
-                              </div>
-                              {showRoomColumnInList ? (
-                                <div className="whitespace-nowrap px-3" style={{ gridColumn: 2, gridRow: 2 }}>
-                                  {isEditing(row.id, "room") ? (
-                                    <GlassSelectDropdown
-                                      fullWidth
-                                      value={editingCellValue}
-                                      options={cutlistEntryRoomOptions}
-                                      disabled={productionReadOnly}
-                                      onChange={(next) => {
-                                        setEditingCellValue(next);
-                                        void commitCellEdit(next);
-                                      }}
-                                      className={`h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-left text-[12px] text-[var(--text-main)] ${warningClassForCell(row.id, "room")}`}
-                                      style={warningStyleForCell(row.id, "room", { backgroundColor: "var(--panel-bg)", borderColor: "var(--glass-border)", color: "var(--text-main)" })}
-                                    />
-                                  ) : (
-                                    <button
-                                      type="button"
-                                      disabled={productionReadOnly}
-                                      onClick={() => startCellEdit(row, "room")}
-                                      className="min-w-0 break-words rounded-[6px] px-1 py-[2px] text-left disabled:opacity-100"
-                                      style={{ color: detailPalette.text }}
-                                    >
-                                      {row.room || "-"}
-                                    </button>
-                                  )}
-                                </div>
-                              ) : null}
-                            </div>
-
-                            <div className="mt-4 rounded-[8px] px-3 py-1.5" style={{ backgroundColor: detailBarBg }}>
-                              <p className={detailLabel} style={{ color: detailPalette.text }}>Board</p>
-                            </div>
-                            <div className="px-3 pt-1.5">
-                              {isEditing(row.id, "board") ? (
-                                <BoardPillDropdown
-                                  value={editingCellValue}
-                                  options={Array.from(new Set([row.board, ...cutlistBoardOptions].filter(Boolean)))}
-                                  disabled={productionReadOnly}
-                                  bg="var(--panel-bg)"
-                                  border="var(--glass-border)"
-                                  text="var(--text-main)"
-                                  size="compact"
-                                  getSize={boardSizeFor}
-                                  getLabel={boardDisplayLabel}
-                                  onChange={(next) => {
-                                    setEditingCellValue(next);
-                                    void commitCellEdit(next);
-                                  }}
-                                />
-                              ) : (
-                                <button
-                                  type="button"
-                                  disabled={productionReadOnly}
-                                  onClick={() => startCellEdit(row, "board")}
-                                  className="min-w-0 break-words rounded-[6px] px-1 py-[2px] text-left disabled:opacity-100"
-                                  style={{ color: detailPalette.text }}
-                                >
-                                  {boardDisplayLabel(row.board) || "-"}
-                                </button>
-                              )}
-                            </div>
-
-                            {rowShape ? (
-                              <>
-                                <div className="mt-4 rounded-[8px] px-3 py-1.5" style={{ backgroundColor: detailBarBg }}>
-                                  <p className={detailLabel} style={{ color: detailPalette.text }}>Shape</p>
-                                </div>
-                                {/* (Its drawing big enough to read — its sizes, R labels and arrows at its banding — Edit shape and
-                                    its DXF under it.) */}
-                                <div className="px-3 pt-2">
-                                  <CutlistShapeDetail
-                                    shape={rowShape}
-                                    name={String(row.name || row.partType || "Shape")}
-                                    readOnly={productionReadOnly}
-                                    onEdit={(e) => openCutlistShapeEditor(e, { mode: "row", rowId: row.id })}
-                                    drawingWidth={360}
-                                    drawingHeight={230}
-                                    fontSize={11}
-                                    stacked
-                                    textColor={detailPalette.text}
-                                    boardThicknessMm={customCabinetThicknessForBoard(row.board)}
-                                    doorGapMm={customCabinetDoorGapFor(rowShape)}
-                                    color={partTypeColors[String(row.partType || "Unassigned")] ?? "#CBD5E1"}
-                                    quantity={row.quantity}
-                                  />
-                                </div>
-                                {renderCustomCabinetPieceCards(row, { barBg: detailBarBg, labelClass: detailLabel, textColor: detailPalette.text })}
-                              </>
-                            ) : null}
-
-                            {!rowIsConfiguredDoor ? (
-                              <>
-                                <div className="mt-4 grid grid-cols-3 gap-4 rounded-[8px] px-3 py-1.5 text-center" style={{ backgroundColor: detailBarBg }}>
-                                  <p className={detailLabel} style={{ color: detailPalette.text }}>Height</p>
-                                  <p className={detailLabel} style={{ color: detailPalette.text }}>Width</p>
-                                  <p className={detailLabel} style={{ color: detailPalette.text }}>Depth</p>
-                                </div>
-                                <div className="grid grid-cols-3 gap-4 px-3 pt-1.5 text-center">
-                                  <div>
-                                    {isEditing(row.id, "height") ? (
-                                      isDrawerPartType(row.partType) ? (
-                                        <DrawerHeightDropdown
-                                          value={String(editingCellValue || "")}
-                                          options={drawerHeightLetterOptionsForRoom(row.room)}
-                                          optionValues={drawerBreakdownForRoom(row.room).letterValueMap}
-                                          compact
-                                          title={warningForCell(row.id, "height") || undefined}
-                                          className={warningClassForCell(row.id, "height")}
-                                          bg={warningStyleForCell(row.id, "height", { backgroundColor: "var(--panel-bg)", borderColor: "var(--glass-border)", color: "var(--text-main)" }).backgroundColor ?? "var(--panel-bg)"}
-                                          border={warningStyleForCell(row.id, "height", { backgroundColor: "var(--panel-bg)", borderColor: "var(--glass-border)", color: "var(--text-main)" }).borderColor ?? "var(--glass-border)"}
-                                          text={warningStyleForCell(row.id, "height", { backgroundColor: "var(--panel-bg)", borderColor: "var(--glass-border)", color: "var(--text-main)" }).color ?? "var(--text-main)"}
-                                          onAdd={(token) => addEditingDrawerHeightToken(token)}
-                                          onRemove={(token) => removeEditingDrawerHeightToken(token)}
-                                          onOpenChange={(isOpen) => {
-                                            if (!isOpen) {
-                                              void commitCellEdit(editingCellValue);
-                                            }
-                                          }}
-                                        />
-                                      ) : (
-                                        <input
-                                          autoFocus
-                                          defaultValue={editingCellValue}
-                                          inputMode="numeric"
-                                          pattern="[0-9]*"
-                                          onChange={(e) => {
-                                            const next = sanitizeCutlistNumericInput("height", e.target.value);
-                                            editingCellValueRef.current = next;
-                                            if (next !== e.currentTarget.value) e.currentTarget.value = next;
-                                          }}
-                                          onBlur={() => void commitCellEdit()}
-                                          onKeyDown={(e) => {
-                                            if (e.key === "Enter") {
-                                              e.preventDefault();
-                                              void commitCellEdit();
-                                            }
-                                            if (e.key === "Escape") cancelCellEdit();
-                                          }}
-                                          className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
-                                        />
-                                      )
-                                    ) : (
-                                      <button
-                                        type="button"
-                                        disabled={productionReadOnly || Boolean(rowShape)}
-                                        onClick={() => startCellEdit(row, "height")}
-                                        className={`min-w-0 rounded-[6px] px-1 disabled:opacity-100 ${isDrawerPartType(row.partType) ? "" : "py-[2px]"}`}
-                                        style={{ color: detailPalette.text, ...(matchesGrainDimension(rowGrainValue, row.height, "height") ? { fontWeight: 700, textDecoration: "underline" } : undefined) }}
-                                      >
-                                        {isDrawerPartType(row.partType) ? renderDrawerHeightLines(row) : (row.height || "-")}
-                                      </button>
-                                    )}
-                                  </div>
-                                  <div>
-                                    {isEditing(row.id, "width") ? (
-                                      <input
-                                        autoFocus
-                                        defaultValue={editingCellValue}
-                                        inputMode="numeric"
-                                        pattern="[0-9]*"
-                                        onChange={(e) => {
-                                          const next = sanitizeCutlistNumericInput("width", e.target.value);
-                                          editingCellValueRef.current = next;
-                                          if (next !== e.currentTarget.value) e.currentTarget.value = next;
-                                        }}
-                                        onBlur={() => void commitCellEdit()}
-                                        onKeyDown={(e) => {
-                                          if (e.key === "Enter") {
-                                            e.preventDefault();
-                                            void commitCellEdit();
-                                          }
-                                          if (e.key === "Escape") cancelCellEdit();
-                                        }}
-                                        className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
-                                      />
-                                    ) : (
-                                      <button
-                                        type="button"
-                                        disabled={productionReadOnly || Boolean(rowShape)}
-                                        onClick={() => startCellEdit(row, "width")}
-                                        className="min-w-0 rounded-[6px] px-1 py-[2px] disabled:opacity-100"
-                                        style={{ color: detailPalette.text, ...(matchesGrainDimension(rowGrainValue, row.width, "width") ? { fontWeight: 700, textDecoration: "underline" } : undefined) }}
-                                      >
-                                        {row.width || "-"}
-                                      </button>
-                                    )}
-                                  </div>
-                                  <div>
-                                    {isDrawerPartType(row.partType) && drawerDepthKeys(row).length > 0 ? (
-                                      renderDrawerDepthLines(row, drawerDepthKeys(row), detailPalette.text, true)
-                                    ) : isEditing(row.id, "depth") ? (
-                                      <input
-                                        autoFocus
-                                        defaultValue={editingCellValue}
-                                        inputMode="numeric"
-                                        pattern="[0-9]*"
-                                        onChange={(e) => {
-                                          const next = sanitizeCutlistNumericInput("depth", e.target.value);
-                                          editingCellValueRef.current = next;
-                                          if (next !== e.currentTarget.value) e.currentTarget.value = next;
-                                        }}
-                                        onBlur={() => void commitCellEdit()}
-                                        onKeyDown={(e) => {
-                                          if (e.key === "Enter") {
-                                            e.preventDefault();
-                                            void commitCellEdit();
-                                          }
-                                          if (e.key === "Escape") cancelCellEdit();
-                                        }}
-                                        className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
-                                      />
-                                    ) : (
-                                      <button
-                                        type="button"
-                                        disabled={productionReadOnly}
-                                        onClick={() => startCellEdit(row, "depth")}
-                                        className="min-w-0 rounded-[6px] px-1 py-[2px] disabled:opacity-100"
-                                        style={{ color: detailPalette.text, ...(matchesGrainDimension(rowGrainValue, row.depth, "depth") ? { fontWeight: 700, textDecoration: "underline" } : undefined) }}
-                                      >
-                                        {row.depth || "-"}
-                                      </button>
-                                    )}
-                                  </div>
-                                </div>
-
-                                <div className="mt-4 grid grid-cols-3 gap-4 rounded-[8px] px-3 py-1.5 text-center" style={{ backgroundColor: detailBarBg }}>
-                                  <p className={detailLabel} style={{ color: detailPalette.text }}>Quantity</p>
-                                  <p className={detailLabel} style={{ color: detailPalette.text }}>Clashing</p>
-                                  <p className={detailLabel} style={{ color: detailPalette.text }}>Grain</p>
-                                </div>
-                                <div className="grid grid-cols-3 gap-4 px-3 pt-1.5 text-center">
-                                  <div>
-                                    {isEditing(row.id, "quantity") ? (
-                                      <input
-                                        autoFocus
-                                        defaultValue={editingCellValue}
-                                        inputMode="numeric"
-                                        pattern="[0-9]*"
-                                        onChange={(e) => {
-                                          const next = sanitizeCutlistNumericInput("quantity", e.target.value);
-                                          editingCellValueRef.current = next;
-                                          if (next !== e.currentTarget.value) e.currentTarget.value = next;
-                                        }}
-                                        onBlur={() => void commitCellEdit()}
-                                        onKeyDown={(e) => {
-                                          if (e.key === "Enter") {
-                                            e.preventDefault();
-                                            void commitCellEdit();
-                                          }
-                                          if (e.key === "Escape") cancelCellEdit();
-                                        }}
-                                        className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-center text-[12px] text-[var(--text-main)]"
-                                      />
-                                    ) : (
-                                      <button
-                                        type="button"
-                                        disabled={productionReadOnly}
-                                        onClick={() => startCellEdit(row, "quantity")}
-                                        className="min-w-0 rounded-[6px] px-1 py-[2px] disabled:opacity-100"
-                                        style={{ color: detailPalette.text }}
-                                      >
-                                        {row.quantity || "1"}
-                                      </button>
-                                    )}
-                                  </div>
-                                  <div>
-                                    {rowIsCabinetry ? (
-                                      editingClashBottomRowId === row.id ? (
-                                        <BoardPillDropdown
-                                          value={row.cabinetryClashBottom || ""}
-                                          options={CLASH_BOTTOM_OPTIONS}
-                                          disabled={productionReadOnly}
-                                          bg="var(--panel-bg)"
-                                          border="var(--glass-border)"
-                                          text="var(--text-main)"
-                                          size="compact"
-                                          getSize={() => ""}
-                                          getLabel={(v) => v}
-                                          onChange={(v) => {
-                                            void setCutlistRowClashBottom(row.id, v);
-                                            setEditingClashBottomRowId(null);
-                                          }}
-                                          onBlur={() => setEditingClashBottomRowId(null)}
-                                        />
-                                      ) : (
-                                        <button
-                                          type="button"
-                                          disabled={productionReadOnly}
-                                          onClick={() => setEditingClashBottomRowId(row.id)}
-                                          className="min-w-0 break-words rounded-[6px] px-1 py-[2px] disabled:opacity-100"
-                                          style={{ color: detailPalette.text }}
-                                        >
-                                          {row.cabinetryClashBottom || "-"}
-                                        </button>
-                                      )
-                                    ) : isEditing(row.id, "clashing") ? (
-                                      <div className="grid grid-cols-2 gap-1">
-                                        <CompactPlainDropdown
-                                          autoFocus
-                                          value={editingClashLeft}
-                                          options={CLASH_LEFT_OPTIONS}
-                                          disabled={productionReadOnly || isDrawerPartType(row.partType)}
-                                          onChange={(next) => {
-                                            editingClashLeftRef.current = next;
-                                            setEditingClashLeft(next);
-                                          }}
-                                          onCommit={() => void commitCellEdit()}
-                                          onCancel={cancelCellEdit}
-                                        />
-                                        <CompactPlainDropdown
-                                          value={editingClashRight}
-                                          options={CLASH_RIGHT_OPTIONS}
-                                          disabled={productionReadOnly || isDrawerPartType(row.partType)}
-                                          onChange={(next) => {
-                                            editingClashRightRef.current = next;
-                                            setEditingClashRight(next);
-                                          }}
-                                          onCommit={() => void commitCellEdit()}
-                                          onCancel={cancelCellEdit}
-                                        />
-                                      </div>
-                                    ) : (
-                                      <button
-                                        type="button"
-                                        disabled={productionReadOnly}
-                                        onClick={() => startCellEdit(row, "clashing")}
-                                        className="min-w-0 break-words rounded-[6px] px-1 py-[2px] disabled:opacity-100"
-                                        style={{ color: detailPalette.text }}
-                                      >
-                                        {clashingValue}
-                                      </button>
-                                    )}
-                                  </div>
-                                  <div>
-                                    {rowBoardAllowsGrain ? (
-                                      <GrainDimensionToggle
-                                        value={String(row.grainValue ?? "")}
-                                        options={grainDimensionChoicesForRow(row)}
-                                        disabled={productionReadOnly}
-                                        onChange={(v) => void (rowIsBankFront ? applyBankGrainValue(row, v) : applyRowGrainValue(row, v))}
-                                        size="compact"
-                                      />
-                                    ) : (
-                                      <p className="min-w-0 break-words" style={{ color: detailPalette.text }}>-</p>
-                                    )}
-                                  </div>
-                                </div>
-                              </>
-                            ) : (
-                              <>
-                                <div className="mt-4 rounded-[8px] px-3 py-1.5" style={{ backgroundColor: detailBarBg }}>
-                                  <p className={detailLabel} style={{ color: detailPalette.text }}>Pieces</p>
-                                </div>
-                                <div className="px-3 pt-1.5">
-                                  <div className="min-w-0 space-y-2 text-left">
-                                    {doorPieces.length ? doorPieces.map((piece) => (
-                                      <div key={`${row.id}_compact_piece_${piece.key}`} className="rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-muted)] px-2 py-2">
-                                        <p className="break-words font-semibold text-[var(--text-main)]">{piece.partName}</p>
-                                        <p className="mt-1 break-words text-[var(--text-muted)]">
-                                          <span
-                                            style={
-                                              matchesGrainDimension(String(piece.grainValue ?? ""), piece.height, "height")
-                                                ? { fontWeight: 700, textDecoration: "underline" }
-                                                : undefined
-                                            }
-                                          >
-                                            {piece.height || "-"} H
-                                          </span>
-                                          {" x "}
-                                          <span
-                                            style={
-                                              matchesGrainDimension(String(piece.grainValue ?? ""), piece.width, "width")
-                                                ? { fontWeight: 700, textDecoration: "underline" }
-                                                : undefined
-                                            }
-                                          >
-                                            {piece.width || "-"} W
-                                          </span>
-                                        </p>
-                                        <p className="mt-1 text-[var(--text-muted)]">Qty {piece.quantity || "1"}</p>
-                                      </div>
-                                    )) : <p style={{ color: detailPalette.text }}>-</p>}
-                                  </div>
-                                </div>
-
-                                <div className="mt-4 grid grid-cols-2 gap-4 rounded-[8px] px-3 py-1.5 text-center" style={{ backgroundColor: detailBarBg }}>
-                                  <p className={detailLabel} style={{ color: detailPalette.text }}>Clashing</p>
-                                  <p className={detailLabel} style={{ color: detailPalette.text }}>Grain</p>
-                                </div>
-                                <div className="grid grid-cols-2 gap-4 px-3 pt-1.5 text-center">
-                                  <div>
-                                    {isEditing(row.id, "clashing") ? (
-                                      <div className="grid grid-cols-2 gap-1">
-                                        <CompactPlainDropdown
-                                          autoFocus
-                                          value={editingClashLeft}
-                                          options={CLASH_LEFT_OPTIONS}
-                                          disabled={productionReadOnly || isDrawerPartType(row.partType)}
-                                          onChange={(next) => {
-                                            editingClashLeftRef.current = next;
-                                            setEditingClashLeft(next);
-                                          }}
-                                          onCommit={() => void commitCellEdit()}
-                                          onCancel={cancelCellEdit}
-                                        />
-                                        <CompactPlainDropdown
-                                          value={editingClashRight}
-                                          options={CLASH_RIGHT_OPTIONS}
-                                          disabled={productionReadOnly || isDrawerPartType(row.partType)}
-                                          onChange={(next) => {
-                                            editingClashRightRef.current = next;
-                                            setEditingClashRight(next);
-                                          }}
-                                          onCommit={() => void commitCellEdit()}
-                                          onCancel={cancelCellEdit}
-                                        />
-                                      </div>
-                                    ) : (
-                                      <button
-                                        type="button"
-                                        disabled={productionReadOnly}
-                                        onClick={() => startCellEdit(row, "clashing")}
-                                        className="min-w-0 break-words rounded-[6px] px-1 py-[2px] disabled:opacity-100"
-                                        style={{ color: detailPalette.text }}
-                                      >
-                                        {clashingValue}
-                                      </button>
-                                    )}
-                                  </div>
-                                  <div>
-                                    {rowBoardAllowsGrain ? (
-                                      <GrainDimensionToggle
-                                        value={String(row.grainValue ?? "")}
-                                        options={grainDimensionChoicesForRow(row)}
-                                        disabled={productionReadOnly}
-                                        onChange={(v) => void (rowIsBankFront ? applyBankGrainValue(row, v) : applyRowGrainValue(row, v))}
-                                        size="compact"
-                                      />
-                                    ) : (
-                                      <p className="min-w-0 break-words" style={{ color: detailPalette.text }}>-</p>
-                                    )}
-                                  </div>
-                                </div>
-                              </>
-                            )}
-
-                            {/* (A Cabinetry row's shelves and its Base / Wall — a custom cabinet's too: its shape's, renderCabinetryPopupFields.) */}
-                            {rowIsCabinetry
-                              ? renderCabinetryPopupFields(row, { readOnly: productionReadOnly, textColor: detailPalette.text, barBg: detailBarBg, labelClass: detailLabel })
-                              : rowShape && customCabinetOf(row)
-                                ? renderCabinetryPopupFields(customCabinetFieldsRow(row, rowShape), { readOnly: productionReadOnly, textColor: detailPalette.text, barBg: detailBarBg, labelClass: detailLabel })
-                                : null}
-
-                            <div className="mt-4 flex items-center justify-between gap-2 rounded-[8px] px-3 py-1.5" style={{ backgroundColor: detailBarBg }}>
-                              <p className={detailLabel} style={{ color: detailPalette.text }}>Information</p>
-                              {!isEditing(row.id, "information") && !hasInformationContent ? (
-                                <button
-                                  type="button"
-                                  disabled={productionReadOnly}
-                                  onClick={() => startCellEdit(row, "information")}
-                                  // (Round, with the glass shine — green — as the entry's.)
-                                  className="glass-shine inline-flex h-7 w-7 items-center justify-center rounded-full border text-white hover:brightness-95 disabled:opacity-55"
-                                  style={glassShineStyle("#16A34A")}
-                                >
-                                  <Plus size={16} className="mx-auto" strokeWidth={2.8} />
-                                </button>
-                              ) : null}
-                            </div>
-                            <div className="px-3 pt-1.5">
-                              {isEditing(row.id, "information") ? (
-                                <div className="grid gap-[4px]">
-                                  {(informationLinesFromValue(editingCellValue).length
-                                    ? informationLinesFromValue(editingCellValue)
-                                    : [""]).map((line, idx) => (
-                                    <div key={`${row.id}_edit_info_mobile_${idx}`} className="flex items-center gap-[6px]">
-                                      <button
-                                        type="button"
-                                        data-cutlist-info-edit-row={row.id}
-                                        // (The box being typed in keeps the focus: a tap here doesn't blur it — which would save and
-                                        // close these lines before the tap landed. A phone doesn't focus a tapped button either.)
-                                        onMouseDown={(e) => e.preventDefault()}
-                                        onClick={() => (idx === 0 ? onEditingAddInformationLine() : onEditingRemoveInformationLine(idx))}
-                                        className="glass-shine inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-white hover:brightness-95"
-                                        style={glassShineStyle(idx === 0 ? "#16A34A" : "var(--danger)")}
-                                      >
-                                        {idx === 0 ? <Plus size={16} className="mx-auto" strokeWidth={2.8} /> : <X size={15} className="mx-auto" strokeWidth={2.8} />}
-                                      </button>
-                                      <input
-                                        autoFocus={idx === 0}
-                                        data-cutlist-info-edit-row={row.id}
-                                        value={line}
-                                        // (Shown from the state, so it's set too — onEditingInformationLineChange alone only keeps the ref, for the
-                                        // desktop list's uncontrolled boxes: without it what's typed never appears.)
-                                        onChange={(e) => {
-                                          onEditingInformationLineChange(idx, e.target.value);
-                                          setEditingCellValue(editingCellValueRef.current);
-                                        }}
-                                        // (Saved once the focus leaves its lines — not on moving to another of them.)
-                                        onBlur={onInformationInputBlur}
-                                        onKeyDown={(e) => {
-                                          if (e.key === "Enter") {
-                                            e.preventDefault();
-                                            void commitCellEdit();
-                                          }
-                                          if (e.key === "Escape") cancelCellEdit();
-                                        }}
-                                        className="cutlist-field h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px] text-[var(--text-main)]"
-                                      />
-                                    </div>
-                                  ))}
-                                </div>
-                              ) : (
-                                <button
-                                  type="button"
-                                  disabled={productionReadOnly}
-                                  onClick={() => startCellEdit(row, "information")}
-                                  className="w-full space-y-[2px] text-left disabled:opacity-100"
-                                  style={{ color: detailPalette.text }}
-                                >
-                                  {hasInformationContent ? infoLines.map((line, idx) => (
-                                    <p key={`cutlist_fullscreen_mobile_info_${row.id}_${idx}`} className="break-words">{line}</p>
-                                  )) : <p style={{ color: detailPalette.text }}>-</p>}
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  , document.body);
-                })()}
               </div>
-            </div>
+            ) : null}
+            <CutlistRoomsSheet
+              open={isCutlistMobileRoomsOpen}
+              onClose={() => setIsCutlistMobileRoomsOpen(false)}
+              rooms={roomItems}
+              activeKey={cutlistRoomFilter}
+              onSelect={setCutlistRoomFilter}
+              onAddRoom={openAddRoom}
+              canAddRoom={salesAccess.edit && !isSavingSalesRooms}
+            />
+            <CutlistIssuesSheet
+              open={cutlistMobileIssuesScope === "production" && issueItems.length > 0}
+              onClose={() => setCutlistMobileIssuesScope("")}
+              issues={issueItems}
+              onGo={(item) => focusCutlistMobileIssue(item, "production")}
+            />
+            <CutlistNotesSheet
+              open={Boolean(cutlistNotesSheetTab)}
+              onClose={closeCutlistNotesSheet}
+              activeKey={cutlistNotesSheetTab}
+              onSelect={openCutlistNotesSheetTab}
+              tabs={[
+                { key: "cabinetry", label: "Cabinetry", icon: <Ruler /> },
+                { key: "notes", label: "Notes", icon: <NotebookPen />, hasNotes: productionNotesHasText },
+                ...contractorTabOptions.map((name) => ({ key: `contractor:${name}`, label: name, icon: <ContractorIcon name={name} icons={contractorIcons} />, hasNotes: contractorHasNotes(name) })),
+              ]}
+            >
+              {cutlistNotesSheetTab === "cabinetry" ? (
+                renderCutlistCabinetrySections()
+              ) : cutlistNotesSheetTab ? (
+                <CutlistNotesEditor
+                  key={cutlistNotesSheetTab}
+                  editorKey={`cutlist-notes-sheet-${cutlistNotesSheetTab}`}
+                  initialValue={cutlistNotesSheetInitial}
+                  readOnly={productionReadOnly}
+                  savedHtml={
+                    cutlistNotesSheetTab === "notes"
+                      ? notesToDisplayHtml(project?.productionNotes || "")
+                      : notesToDisplayHtml(project?.contractorNotes?.[cutlistNotesSheetTab.slice("contractor:".length)] || "")
+                  }
+                  onDraft={(value) => {
+                    cutlistNotesSheetDraftRef.current = value;
+                  }}
+                />
+              ) : null}
+            </CutlistNotesSheet>
+            {/* A List part's Edit sheet: the same fields as its Entry card (its draft's), Duplicate and Delete, Save. */}
+            <CutlistSheet
+              open={Boolean(cutlistListEdit?.open && cutlistListEdit.scope === "production" && listEditDraft)}
+              onClose={closeCutlistListEdit}
+              title={String(listEditDraft?.name || "").trim() || listEditDraft?.partType || "Part"}
+              subtitle={listEditDraft ? [listEditDraft.partType, listEditDraft.room].filter(Boolean).join(" · ") : undefined}
+              tint={listEditTone ? { panelBg: hexToRgba(listEditTone.rowBg, 0.82), headerBg: hexToRgba(listEditTone.headerBg, 0.7), text: listEditTone.text } : undefined}
+              maxWidth={760}
+              headerActions={
+                <button
+                  type="button"
+                  disabled={productionReadOnly || !cutlistListEdit}
+                  onClick={() => cutlistListEdit && void duplicateCutlistListRow("production", cutlistListEdit.rowId)}
+                  className="glass-shine glass-shine-neutral inline-flex h-9 w-9 items-center justify-center rounded-full border disabled:opacity-55"
+                  style={{ color: "var(--text-main)" }}
+                  aria-label="Duplicate"
+                  title="Duplicate"
+                >
+                  <Copy size={15} />
+                </button>
+              }
+              footer={
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={productionReadOnly}
+                    onClick={() => cutlistListEdit && void deleteCutlistListRow("production", cutlistListEdit.rowId)}
+                    className="glass-shine inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full border px-4 text-[14px] font-medium text-white disabled:opacity-55"
+                    style={glassShineStyle(cutlistListEditDeleteArmed ? "#16A34A" : "var(--danger)")}
+                  >
+                    <Trash2 size={15} />
+                    {cutlistListEditDeleteArmed ? "Confirm" : "Delete"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={closeCutlistListEdit}
+                    className="glass-shine glass-shine-neutral inline-flex h-11 min-w-0 flex-1 items-center justify-center rounded-full border px-4 text-[14px] font-medium"
+                    style={{ color: "var(--text-main)" }}
+                  >
+                    Close
+                  </button>
+                  <button
+                    type="button"
+                    disabled={productionReadOnly}
+                    onClick={() => void saveCutlistListEdit()}
+                    className="glass-shine inline-flex h-11 min-w-0 flex-1 items-center justify-center rounded-full border px-4 text-[14px] font-medium text-white disabled:opacity-55"
+                    style={glassShineStyle("var(--brand)")}
+                  >
+                    Save
+                  </button>
+                </div>
+              }
+            >
+              {listEditDraft ? (
+                <div className="cutlist-touch space-y-3 px-4 pb-4 pt-1">
+                  {showRoomColumnInList ? (
+                    <div className="space-y-1">
+                      <p className="text-[10px] font-bold uppercase tracking-[1px]">Room</p>
+                      <GlassSelectDropdown
+                        fullWidth
+                        value={String(listEditDraft.room || "")}
+                        options={cutlistEntryRoomOptions.filter((room) => room !== "Project Cutlist")}
+                        disabled={productionReadOnly}
+                        onChange={(next) => updateDraftCutlistRow(listEditDraft.id, { room: next })}
+                        className="h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-left text-[12px] text-[var(--text-main)]"
+                      />
+                    </div>
+                  ) : null}
+                  {renderProductionDraftFields(listEditDraft, isTabletProjectViewport)}
+                </div>
+              ) : null}
+            </CutlistSheet>
             {/* Mobile-only copy of the desktop "Doors or Drawers?" picker below (same
                 state/refs/handlers) — previously only rendered inside the desktop return, so
                 tapping a Door part-type button on mobile flipped doorDrawerPickerPartType open
@@ -52277,101 +51843,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   document.body,
                 )
               : null}
-            {/* The Notes bar along the bottom (the Quote's Actions bar), its sheet Notes and the trades — the company's
-                contractors, and Other — as bubbles (the Actions sheet's); each opens in its drawer (CutlistSideDrawer —
-                the whole screen on a phone). */}
-            <div data-bottom-bar="" className="fixed inset-x-0 bottom-0 z-[95] flex h-[56px] border-t" style={{ borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)" }}>
-              {/* (Split half and half: the Cabinetry drawer on the left, Notes on the right.) */}
-              <button
-                type="button"
-                onClick={() => {
-                  if (isCutlistCabinetryOpen) {
-                    closeCutlistCabinetryDrawer();
-                    return;
-                  }
-                  closeOtherCutlistDrawersInTheSide("cabinetry");
-                  openCutlistCabinetryDrawer();
-                }}
-                className="flex h-full w-1/2 min-w-0 shrink-0 items-center justify-center gap-2 border-r px-4 text-[15px] font-medium hover:brightness-95"
-                style={{ color: "#ffffff", borderRightColor: "rgba(255,255,255,0.35)" }}
-              >
-                <Ruler size={17} className="shrink-0" />
-                Cabinetry
-              </button>
-              <button
-                type="button"
-                onClick={() => productionNotesMobileSheet.setIsOpen(!productionNotesMobileSheet.isOpen)}
-                className="flex h-full w-1/2 min-w-0 shrink-0 items-center justify-center text-[18px] font-medium hover:brightness-95"
-                style={{ color: "#ffffff" }}
-              >
-                Notes
-              </button>
-            </div>
-            {typeof document !== "undefined"
-              ? createPortal(
-                  // (As the Quote's Actions sheet — see its comments: nothing of its own to tap but its backdrop and its
-                  // bubbles; the sheet handles its own touches, its close-drag.)
-                  <div className="pointer-events-none fixed inset-0 z-[130]" data-app-gesture-exempt="true">
-                    <div
-                      ref={productionNotesMobileSheet.backdropRef}
-                      onClick={productionNotesMobileSheet.onBackdropClick}
-                      {...productionNotesMobileSheet.dragHandlers}
-                      className="absolute inset-0"
-                      style={{
-                        opacity: 0,
-                        pointerEvents: "none",
-                        backgroundColor: "rgba(15, 23, 42, 0.14)",
-                        backdropFilter: "blur(6px)",
-                        WebkitBackdropFilter: "blur(6px)",
-                      }}
-                    />
-                    <div
-                      ref={productionNotesMobileSheet.panelRef}
-                      {...productionNotesMobileSheet.dragHandlers}
-                      className="pointer-events-auto absolute inset-x-3 flex max-h-[calc(100svh-140px)] flex-col gap-3 overflow-y-auto p-3"
-                      style={{ bottom: MOBILE_ACTIONS_SHEET_CLOSED_OFFSET_PX, transform: "translateY(100%)", visibility: "hidden" }}
-                    >
-                      {[{ key: "notes", name: "Notes" }, ...contractorTabOptions.map((name) => ({ key: `contractor:${name}`, name }))].map(
-                        ({ key, name }) => {
-                          const isNotes = key === "notes";
-                          const hasNotes = isNotes
-                            ? Boolean(String(project?.productionNotes ?? "").replace(/<[^>]*>/g, "").replace(/&nbsp;/g, " ").trim())
-                            : contractorHasNotes(name);
-                          return (
-                            <div key={key} style={mobileActionsButtonBounceStyle(isCompactProjectViewport, productionNotesMobileSheet, `cutlist-notes:${key}`)}>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  productionNotesMobileSheet.setIsOpen(false);
-                                  if (isNotes) {
-                                    closeOtherCutlistDrawersInTheSide("notes");
-                                    if (!isProductionNotesPanelOpen) openProductionNotesPanel();
-                                    else bringCutlistDrawerToFront("notes");
-                                  } else openContractorNotes(name);
-                                }}
-                                className="flex w-full items-center justify-center gap-3 rounded-[10px] border px-3 py-3 text-center text-[15px] font-medium transition hover:brightness-95"
-                                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                              >
-                                {isNotes ? <NotebookPen size={16} className="shrink-0" /> : <HardHat size={16} className="shrink-0" />}
-                                <span className="min-w-0 truncate">{name}</span>
-                                {hasNotes ? (
-                                  <span title="Has notes" className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: "var(--brand)" }} />
-                                ) : null}
-                              </button>
-                            </div>
-                          );
-                        },
-                      )}
-                    </div>
-                  </div>,
-                  document.body,
-                )
-              : null}
             {renderProductionNotesDrawer()}
             {renderContractorNotesDrawers()}
             {renderCutlistCabinetryDrawer()}
             {cutlistLeaveCheckPortal}
             {cutlistShapeEditorPortal}
+            {addRoomModalPortal}
           </div>
         </ProtectedRoute>
       );
@@ -52895,7 +52372,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 <div className="grid grid-cols-5 gap-2">
                                   <div className="space-y-1">
                                     <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Height</p>
-                                    <input disabled={productionReadOnly} inputMode="decimal" title={heightWarn || undefined} value={draft.height} onChange={(e) => updateDraftCutlistRow(draft.id, { height: numericDimensionText(e.target.value) })} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`} style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                                    <input disabled={productionReadOnly} inputMode="decimal" title={heightWarn || undefined} value={draft.height} onChange={(e) => updateDraftCutlistRow(draft.id, { height: dimensionMathText(e.target.value) })} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`} style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
                                   </div>
                                   <div className="space-y-1">
                                     <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Width</p>
@@ -53439,7 +52916,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               );
                             })()
                           ) : (
-                            <input ref={registerCutlistWarnCellRef(draft.id, "height")} disabled={productionReadOnly} inputMode="decimal" title={heightWarn || undefined} value={draft.height} onChange={(e) => updateDraftCutlistRow(draft.id, { height: numericDimensionText(e.target.value) })} className={`cutlist-field ${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} w-full rounded-[8px] border bg-transparent px-2 text-center ${warningClassForCell(draft.id, "height")}`} style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("height"), marginLeft: isSubPartDraft ? -4 : undefined }} />
+                            <input ref={registerCutlistWarnCellRef(draft.id, "height")} disabled={productionReadOnly} inputMode="decimal" title={heightWarn || undefined} value={draft.height} onChange={(e) => updateDraftCutlistRow(draft.id, { height: dimensionMathText(e.target.value) })} className={`cutlist-field ${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} w-full rounded-[8px] border bg-transparent px-2 text-center ${warningClassForCell(draft.id, "height")}`} style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("height"), marginLeft: isSubPartDraft ? -4 : undefined }} />
                           )}
                           <div ref={registerCutlistWarnCellRef(draft.id, "width")} style={{ ...cutlistEntryCellStyle("width"), ...subCellCenterStyle }}>
                             {draftShape ? (
@@ -53527,14 +53004,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               // (Drawers: a depth for each.)
                               renderDrawerDepthBoxes(
                                 draft,
-                                drawerDepthKeys(draft),
+                                drawerKeysInHeightOrder(draft),
                                 `${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} w-full rounded-[8px] border bg-transparent px-2 text-center ${warningClassForCell(draft.id, "depth")}`,
                                 { ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) },
                                 // (Its column's own width — cutlistEntryGridTemplateFor.)
                                 70,
                               )
                             ) : (
-                              <input disabled={productionReadOnly} inputMode="decimal" title={depthWarn || undefined} value={draft.depth} onChange={(e) => updateDraftCutlistRow(draft.id, { depth: numericDimensionText(e.target.value) })} className={`cutlist-field ${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} w-full rounded-[8px] border bg-transparent px-2 text-center ${warningClassForCell(draft.id, "depth")}`} style={{ ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                              <input disabled={productionReadOnly} inputMode="decimal" title={depthWarn || undefined} value={draft.depth} onChange={(e) => updateDraftCutlistRow(draft.id, { depth: dimensionMathText(e.target.value) })} className={`cutlist-field ${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} w-full rounded-[8px] border bg-transparent px-2 text-center ${warningClassForCell(draft.id, "depth")}`} style={{ ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
                             )}
                           </div>
                           <div ref={registerCutlistWarnCellRef(draft.id, "quantity")} style={{ ...cutlistEntryCellStyle("quantity"), ...subCellCenterStyle }}>
@@ -54372,7 +53849,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                           className={`px-2 py-[3px] align-middle ${alignClass}`}
                                           style={{ ...cutlistListColumnStyle("depth"), color: groupTextColor }}
                                         >
-                                          {renderDrawerDepthLines(row, drawerDepthKeys(row), groupTextColor, false)}
+                                          {renderDrawerDepthLines(row, drawerKeysInHeightOrder(row), groupTextColor, false)}
                                         </td>
                                       );
                                     }
@@ -54640,7 +54117,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                             inputMode={isNumericCutlistInputKey(key) ? "numeric" : undefined}
                                             pattern={isNumericCutlistInputKey(key) ? "[0-9]*" : undefined}
                                             onChange={(e) => {
-                                              const next = isNumericCutlistInputKey(key) ? numericOnlyText(e.target.value) : e.target.value;
+                                              const next = isNumericCutlistInputKey(key) ? sanitizeCutlistNumericInput(key, e.target.value) : e.target.value;
                                               editingCellValueRef.current = next;
                                               if (next !== e.currentTarget.value) {
                                                 e.currentTarget.value = next;
@@ -55030,6 +54507,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           className="flex w-full min-w-0 items-center gap-2 rounded-[8px] px-2.5 py-2 text-left text-[13px] font-medium transition hover:bg-[color-mix(in_srgb,var(--brand)_12%,transparent)]"
                           style={{ color: "var(--text-main)", ...(open ? { backgroundColor: "color-mix(in srgb, var(--brand) 10%, transparent)" } : {}) }}
                         >
+                          <ContractorIcon name={name} icons={contractorIcons} size={14} className="shrink-0" />
                           <span className="min-w-0 truncate">{name}</span>
                           {hasNotes ? (
                             <span title="Has notes" className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: "var(--brand)" }} />
@@ -61588,6 +61066,145 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     );
   }
 
+  // The computer's Nesting: the board showing (the one picked in its rail, else the first) — and its sheet on the right
+  // (nestingSheetPreview), one of its own, its first until another's picked.
+  const nestingDesktopBoard = nestingBoardLayouts.find((group) => group.boardKey === nestingDesktopBoardKey) ?? nestingBoardLayouts[0] ?? null;
+  if (isNestingFullscreen && !isCompactProjectViewport && nestingDesktopBoard?.sheets.length) {
+    const showing =
+      nestingSheetPreview?.boardKey === nestingDesktopBoard.boardKey &&
+      nestingDesktopBoard.sheets.some((sheet) => sheet.index === nestingSheetPreview.sheetIndex);
+    if (!showing) setNestingSheetPreview({ boardKey: nestingDesktopBoard.boardKey, sheetIndex: nestingDesktopBoard.sheets[0].index });
+  }
+  type NestingBoardLayout = (typeof nestingBoardLayouts)[number];
+  type NestingBoardSheet = NestingBoardLayout["sheets"][number];
+  // How much of a sheet its parts take (as its Sheet Stats work it out) — and a board's, all its sheets together.
+  const nestingSheetUsedPct = (group: NestingBoardLayout, sheet: NestingBoardSheet) => {
+    const area = Math.max(1, group.sheetWidth * group.sheetHeight);
+    const used = sheet.placements.reduce((sum, placement) => sum + nestingPlacementArea(placement, nestingSettings.minPieceSize), 0);
+    return Math.max(0, Math.min(100, (used / area) * 100));
+  };
+  const nestingBoardUsedPct = (group: NestingBoardLayout) =>
+    group.sheets.length ? group.sheets.reduce((sum, sheet) => sum + nestingSheetUsedPct(group, sheet), 0) / group.sheets.length : 0;
+  // A board's part types (by how many of its pieces are each) — its mix bar.
+  const nestingBoardMix = (group: NestingBoardLayout) => {
+    const counts = new Map<string, number>();
+    for (const sheet of group.sheets) for (const placement of sheet.placements) counts.set(placement.piece.partType, (counts.get(placement.piece.partType) ?? 0) + 1);
+    return Array.from(counts.entries()).map(([partType, count]) => ({ partType, count, color: partTypeColors[partType] ?? "#CBD5E1" }));
+  };
+  // "% used" in a pill: green from 75%, amber from 55%, red under.
+  const renderNestingUsedPill = (pct: number) => {
+    const tone = pct >= 75 ? "var(--success)" : pct >= 55 ? "#D97706" : "var(--danger)";
+    return (
+      <span className="shrink-0 rounded-full px-2 py-[2px] text-[11px] font-medium" style={{ backgroundColor: `color-mix(in srgb, ${tone} 16%, transparent)`, color: tone }}>
+        {Math.round(pct)}%
+      </span>
+    );
+  };
+  // A sheet, small (a card in the computer's sheets) — its parts as the phone's sheets draw them, each one's name on it and
+  // its details on hover.
+  const renderNestingSheetThumb = (group: NestingBoardLayout, sheet: NestingBoardSheet) => {
+    const boardHasGrain = boardGrainFor(group.boardKey);
+    const grainArrowRotation = group.sheetWidth >= group.sheetHeight ? 0 : 90;
+    const marginX = (group.sheetWidth - group.innerW) / 2;
+    const marginY = (group.sheetHeight - group.innerH) / 2;
+    return (
+      <div className="relative z-0 isolate w-full overflow-hidden rounded-[6px] border border-[#D5DDE8] bg-white" style={{ aspectRatio: `${group.sheetWidth}/${group.sheetHeight}` }}>
+        {sheet.placements.map((placement) => {
+          const c = partTypeColors[placement.piece.partType] ?? "#CBD5E1";
+          const t = isLightHex(c) ? "#0F172A" : "#F8FAFC";
+          const { trueOnSheetW, trueOnSheetH, hitMin } = nestingPlacementTrueSize(placement.piece, placement.rotated, nestingSettings.minPieceSize);
+          const shapeOutline = nestingPlacementOutline(placement, trueOnSheetW, trueOnSheetH);
+          const labelBox = shapeOutline ? nestingPlacementLabelBox(placement, shapeOutline, trueOnSheetW, trueOnSheetH) : null;
+          return (
+            <div
+              key={`${placement.piece.id}_${placement.x}_${placement.y}_thumb`}
+              className="absolute z-[10] border px-[4px] py-[1px] text-[9px] font-semibold leading-tight"
+              onMouseEnter={(e) => {
+                setNestingTooltip({
+                  text: nestingPieceTooltip(
+                    String(placement.piece.row.parentName || placement.piece.name || "Part"),
+                    String(placement.piece.name || "Part"),
+                    String(placement.piece.room || placement.piece.row.room || "-"),
+                    hitMin ? trueOnSheetW : placement.w,
+                    hitMin ? trueOnSheetH : placement.h,
+                    hitMin ? NESTING_MACHINE_MIN_TRIM_NOTE : undefined,
+                  ),
+                  x: e.clientX + 14,
+                  y: e.clientY + 14,
+                  bg: lightenHex(c, 0.72),
+                  border: darkenHex(c, 0.18),
+                  textColor: isLightHex(c) ? "#0F172A" : "#F8FAFC",
+                });
+              }}
+              onMouseMove={(e) => setNestingTooltip((prev) => (prev ? { ...prev, x: e.clientX + 14, y: e.clientY + 14 } : prev))}
+              onMouseLeave={() => setNestingTooltip(null)}
+              style={{
+                left: `${((marginX + placement.x) / group.sheetWidth) * 100}%`,
+                top: `${((marginY + placement.y) / group.sheetHeight) * 100}%`,
+                width: `${(placement.w / group.sheetWidth) * 100}%`,
+                height: `${(placement.h / group.sheetHeight) * 100}%`,
+                backgroundColor: hitMin || shapeOutline ? "transparent" : lightenHex(c, 0.18),
+                backgroundImage: hitMin
+                  ? `repeating-linear-gradient(45deg, ${darkenHex(c, 0.12)}55 0px, ${darkenHex(c, 0.12)}55 5px, transparent 5px, transparent 10px)`
+                  : undefined,
+                borderColor: shapeOutline && !hitMin ? "transparent" : darkenHex(c, 0.22),
+                borderStyle: hitMin ? "dashed" : "solid",
+                color: t,
+                pointerEvents: shapeOutline ? "none" : undefined,
+              }}
+            >
+              {shapeOutline ? (
+                <NestingShapeOutline points={shapeOutline} trueW={trueOnSheetW} trueH={trueOnSheetH} boxW={placement.w} boxH={placement.h} fill={lightenHex(c, 0.18)} stroke={darkenHex(c, 0.22)} />
+              ) : null}
+              {!shapeOutline && hitMin && (
+                <div
+                  className="absolute left-0 top-0 border-r border-b border-dashed"
+                  style={{
+                    width: `${Math.min(100, (trueOnSheetW / placement.w) * 100)}%`,
+                    height: `${Math.min(100, (trueOnSheetH / placement.h) * 100)}%`,
+                    backgroundColor: lightenHex(c, 0.18),
+                    borderColor: darkenHex(c, 0.4),
+                    zIndex: -1,
+                  }}
+                />
+              )}
+              <div className={labelBox ? "absolute overflow-hidden px-[4px] py-[1px]" : "contents"} style={labelBox ? nestingLabelBoxStyle(labelBox, placement.w, placement.h) : undefined}>
+                <span className="block truncate">{placement.piece.name}</span>
+              </div>
+            </div>
+          );
+        })}
+        {boardHasGrain && (
+          <div className="pointer-events-none absolute inset-0 z-[30]">
+            {[
+              [8, 14], [22, 14], [36, 14], [50, 14], [64, 14], [78, 14], [92, 14],
+              [15, 34], [29, 34], [43, 34], [57, 34], [71, 34], [85, 34],
+              [8, 54], [22, 54], [36, 54], [50, 54], [64, 54], [78, 54], [92, 54],
+              [15, 74], [29, 74], [43, 74], [57, 74], [71, 74], [85, 74],
+              [8, 90], [22, 90], [36, 90], [50, 90], [64, 90], [78, 90], [92, 90],
+            ].map(([x, y], idx) => (
+              <img
+                key={`${group.boardKey}_${sheet.index}_thumb_grain_${idx}`}
+                src="/arrow-right.png"
+                alt=""
+                aria-hidden="true"
+                className="absolute opacity-55"
+                style={{
+                  left: `${x}%`,
+                  top: `${y}%`,
+                  width: "11px",
+                  height: "11px",
+                  transform: `translate(-50%, -50%) rotate(${grainArrowRotation}deg)`,
+                  filter: "drop-shadow(0 0 1px rgba(255,255,255,0.75))",
+                }}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   if (isNestingFullscreen) {
     return (
       <ProtectedRoute>
@@ -61604,7 +61221,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             data-app-top-bar="true"
             className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
             style={{
-              height: 56 + 49,
+              height: isCompactProjectViewport ? 56 + 49 : 56,
               backgroundColor: "var(--glass-bg-strong)",
               backdropFilter: "blur(14px) saturate(220%)",
               WebkitBackdropFilter: "blur(14px) saturate(220%)",
@@ -61656,30 +61273,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               {renderSaveAndBackButton(() => void onSaveAndBackFromNesting(), isCompactProjectViewport)}
             </div>
           </div>
-          {!isCompactProjectViewport && (
-            <>
-              {/* Full-width divider under the toggle band — matches CNC's own, not just the width
-                  of the 360px button. */}
-              <div className="pointer-events-none fixed inset-x-0 z-[95] h-px" style={{ top: 56 + 49, backgroundColor: projectPalette.border }} />
-              <button
-                type="button"
-                onClick={toggleNestingVisibilityPanel}
-                className="fixed z-[95] flex items-center justify-center gap-1.5 text-[15px] font-bold transition hover:brightness-95"
-                style={{
-                  left: 0,
-                  top: 56,
-                  width: 360,
-                  height: 49,
-                  color: isNestingVisibilityPanelOpen && !isNestingVisibilityPanelClosing ? "var(--brand-strong)" : projectPalette.text,
-                }}
-              >
-                Visibility
-                {/* Points LEFT (its own edge, where it slides out from) while closed, back toward
-                    center once open — same convention as CNC's own left-side toggle. */}
-                <ChevronDown size={13} style={{ transform: isNestingVisibilityPanelOpen && !isNestingVisibilityPanelClosing ? "rotate(-90deg)" : "rotate(90deg)", transition: "transform 140ms ease" }} />
-              </button>
-            </>
-          )}
           {/* Mobile-only: board-type prev/next bar, its own fixed second band (same 56+49 shared
               backdrop the desktop toggle band above uses) — content below can now scroll all the
               way up underneath both this bar and the true top bar, instead of being pushed down
@@ -61735,7 +61328,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </div>
             );
           })()}
-          <div className={`relative min-h-0 overflow-hidden ${isCompactProjectViewport ? "h-[100svh]" : "mt-[105px] h-[calc(100svh-105px)]"}`}>
+          <div className={`relative min-h-0 ${isCompactProjectViewport ? "h-[100svh] overflow-hidden" : "mt-[56px] h-[calc(100svh-56px)]"}`}>
             {isCompactProjectViewport ? (
               <>
               <div className="flex h-full min-h-0 flex-col">
@@ -62160,264 +61753,121 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               )}
               </>
             ) : (
-              <div className="h-full min-h-0 overflow-hidden pr-3 pt-3">
-                <section
-                  className="min-h-0 h-full overflow-hidden pl-3 pb-3"
-                  style={{
-                    marginLeft: isNestingVisibilityPanelOpen && !isNestingVisibilityPanelClosing ? 360 : 0,
-                    transition: isNestingVisibilityPanelOpen && !isNestingVisibilityPanelClosing
-                      ? "margin-left 180ms ease"
-                      : "margin-left 200ms ease 280ms",
-                  }}
-                >
-              <div className="flex h-full min-h-0 flex-col gap-3">
-                  {nestingBoardLayouts.length === 0 && (
-                    <EmptyState compact icon={<GitBranch size={16} />} title="No visible nesting pieces" hint="Toggle visibility on the left panel." />
-                  )}
-                  <div className="grid min-h-0 flex-1 grid-cols-[repeat(4,minmax(0,1fr))] items-stretch gap-3 overflow-hidden">
-                    {nestingBoardLayouts.map((group) => {
-                      const partsCount = group.sheets.reduce((sum, sheet) => sum + sheet.placements.length, 0);
-                      const boardHasGrain = boardGrainFor(group.boardKey);
-                      const grainArrowRotation = group.sheetWidth >= group.sheetHeight ? 0 : 90;
-                      const grainArrowPoints: Array<[number, number]> = [
-                        [8, 14], [22, 14], [36, 14], [50, 14], [64, 14], [78, 14], [92, 14],
-                        [15, 34], [29, 34], [43, 34], [57, 34], [71, 34], [85, 34],
-                        [8, 54], [22, 54], [36, 54], [50, 54], [64, 54], [78, 54], [92, 54],
-                        [15, 74], [29, 74], [43, 74], [57, 74], [71, 74], [85, 74],
-                        [8, 90], [22, 90], [36, 90], [50, 90], [64, 90], [78, 90], [92, 90],
-                      ];
-                      return (
-                        <div key={group.boardKey} className="flex h-full min-h-0 flex-col overflow-hidden rounded-[12px] border border-[#D7DEE8] bg-[#F7F9FC]">
-                          <div className="border-b border-[#DCE3EC] bg-[#EEF2F7] px-[5px] py-1">
-                            <div className="mb-1 flex items-center justify-between gap-2">
-                              <span className="shrink-0 rounded-[999px] px-2 py-[1px] text-[11px] font-medium" style={{ backgroundColor: isDarkMode ? "rgba(255,255,255,0.12)" : "#DEE6F3", color: isDarkMode ? "#f1f1f1" : "#45658A" }}>
-                                {group.sheetWidth}x{group.sheetHeight}
+              // The computer's: a rail down the left (its boards; what's in the nesting, part by part), the board picked —
+              // its sheets, or every part on them — in the middle, and its sheet open large on the right. (The glass cards scroll
+              // inside themselves, never in a column that scrolls — that would cut their shadows off at its edges.)
+              <div className="grid h-full min-h-0 gap-4 px-4 pb-6 pt-3" style={{ gridTemplateColumns: "290px minmax(0,1fr) clamp(380px, 38vw, 760px)" }}>
+                <aside className="flex min-h-0 flex-col gap-4">
+                  <div className="glass-shine glass-shine-neutral hide-native-scrollbar max-h-[40%] shrink-0 overflow-y-auto rounded-[18px] border p-2" style={{ borderColor: "var(--glass-border)", color: "var(--text-main)" }}>
+                    <p className="px-2 pb-1.5 pt-1 text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>
+                      Boards
+                    </p>
+                    {nestingBoardLayouts.length ? (
+                      <div className="space-y-1">
+                        {nestingBoardLayouts.map((group) => {
+                          const active = group.boardKey === nestingDesktopBoard?.boardKey;
+                          const partsCount = group.sheets.reduce((sum, sheet) => sum + sheet.placements.length, 0);
+                          return (
+                            <button
+                              key={`nest_board_${group.boardKey}`}
+                              type="button"
+                              onClick={() => {
+                                setNestingDesktopBoardKey(group.boardKey);
+                                if (group.sheets.length) setNestingSheetPreview({ boardKey: group.boardKey, sheetIndex: group.sheets[0].index });
+                              }}
+                              aria-current={active ? "true" : undefined}
+                              className={`flex w-full flex-col rounded-[12px] px-3 py-2.5 text-left transition ${active ? "" : "hover:bg-[var(--panel-muted)]"}`}
+                              style={{ backgroundColor: active ? "var(--brand-soft)" : undefined }}
+                            >
+                              <span className="flex min-w-0 items-start gap-2">
+                                <span className="min-w-0 flex-1 text-[13px] font-medium leading-[1.3]" style={{ color: active ? "var(--brand-strong)" : "var(--text-main)" }}>
+                                  {group.boardLabel}
+                                </span>
+                                {renderNestingUsedPill(nestingBoardUsedPct(group))}
                               </span>
-                              <span className="inline-flex shrink-0 min-w-[74px] justify-end rounded-[999px] bg-[#EEF2F7] px-2 py-[1px] text-[11px] font-bold text-[#3A506F]">
-                                {group.sheets.length} sheets
+                              <span className="mt-1 text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>
+                                {group.sheets.length} {group.sheets.length === 1 ? "sheet" : "sheets"} · {formatPartCount(partsCount)}
                               </span>
-                            </div>
-                            <div className="flex items-start justify-between gap-2 px-2">
-                              <p className="min-w-0 flex-1 truncate leading-[1.1] text-[11px] font-bold text-[#1F2937]">{group.boardLabel}</p>
-                              <span className="inline-flex shrink-0 min-w-[74px] justify-end leading-[1.1] text-right text-[11px] font-bold text-[#3A506F]">
-                                {formatPartCount(partsCount)}
-                              </span>
-                            </div>
-                          </div>
-                            <div ref={getNestingBoardScrollRef(group.boardKey)} className="min-h-0 flex-1 space-y-2 overflow-auto p-2 hide-native-scrollbar">
-                              {group.sheets.map((sheet) => (
-                                <div key={`${group.boardKey}_sheet_${sheet.index}`} className="p-0">
-                                  <p className="mb-1 text-[11px] font-bold text-[#6B7D94]">Sheet {sheet.index}</p>
-                                <div
-                                  className="relative z-0 isolate w-full cursor-pointer overflow-hidden rounded-[4px] border border-[#D5DDE8] bg-white"
-                                  style={{ aspectRatio: `${group.sheetWidth}/${group.sheetHeight}`, minHeight: 120 }}
-                                  onClick={(e) => {
-                                    nestingSheetPreviewOriginElRef.current = e.currentTarget;
-                                    setNestingSheetPreviewOrigin(captureGlassModalOrigin(e));
-                                    setNestingSheetPreview({ boardKey: group.boardKey, sheetIndex: sheet.index });
-                                    setIsNestingSheetPreviewOpen(true);
-                                    setNestingPreviewScale(1);
-                                    setNestingPreviewOffset({ x: 0, y: 0 });
-                                  }}
-                                >
-                                    {sheet.placements.map((placement) => {
-                                      const c = partTypeColors[placement.piece.partType] ?? "#CBD5E1";
-                                      const t = isLightHex(c) ? "#0F172A" : "#F8FAFC";
-                                      const marginX = (group.sheetWidth - group.innerW) / 2;
-                                      const marginY = (group.sheetHeight - group.innerH) / 2;
-                                      const { trueOnSheetW, trueOnSheetH, hitMin } = nestingPlacementTrueSize(placement.piece, placement.rotated, nestingSettings.minPieceSize);
-                                      // (A Custom piece: its true outline, in place of the box it's packed by.)
-                                      const shapeOutline = nestingPlacementOutline(placement, trueOnSheetW, trueOnSheetH);
-                                      // (Its name inside its outline, not over an L's empty corner.)
-                                      const labelBox = shapeOutline ? nestingPlacementLabelBox(placement, shapeOutline, trueOnSheetW, trueOnSheetH) : null;
-                                      return (
-                                        <div
-                                          key={placement.piece.id}
-                                          className="absolute z-[10] cursor-pointer border px-[6px] py-[1px] text-[10px] font-semibold leading-tight"
-                                          onMouseEnter={(e) => {
-                                            const base = partTypeColors[placement.piece.partType] ?? "#CBD5E1";
-                                            setNestingTooltip({
-                                              text: nestingPieceTooltip(
-                                                String(placement.piece.row.parentName || placement.piece.name || "Part"),
-                                                String(placement.piece.name || "Part"),
-                                                String(placement.piece.room || placement.piece.row.room || "-"),
-                                                hitMin ? trueOnSheetW : placement.w,
-                                                hitMin ? trueOnSheetH : placement.h,
-                                                hitMin ? NESTING_MACHINE_MIN_TRIM_NOTE : undefined,
-                                              ),
-                                              x: e.clientX + 14,
-                                              y: e.clientY + 14,
-                                              bg: lightenHex(base, 0.72),
-                                              border: darkenHex(base, 0.18),
-                                              textColor: isLightHex(base) ? "#0F172A" : "#F8FAFC",
-                                            });
-                                          }}
-                                          onMouseMove={(e) => {
-                                            setNestingTooltip((prev) =>
-                                              prev
-                                                ? { ...prev, x: e.clientX + 14, y: e.clientY + 14 }
-                                                : prev,
-                                            );
-                                          }}
-                                          onMouseLeave={() => setNestingTooltip(null)}
-                                          style={{
-                                            left: `${((marginX + placement.x) / group.sheetWidth) * 100}%`,
-                                            top: `${((marginY + placement.y) / group.sheetHeight) * 100}%`,
-                                            width: `${(placement.w / group.sheetWidth) * 100}%`,
-                                            height: `${(placement.h / group.sheetHeight) * 100}%`,
-                                            backgroundColor: hitMin || shapeOutline ? "transparent" : lightenHex(c, 0.18),
-                                            backgroundImage: hitMin
-                                              ? `repeating-linear-gradient(45deg, ${darkenHex(c, 0.12)}55 0px, ${darkenHex(c, 0.12)}55 5px, transparent 5px, transparent 10px)`
-                                              : undefined,
-                                            borderColor: shapeOutline && !hitMin ? "transparent" : darkenHex(c, 0.22),
-                                            borderStyle: hitMin ? "dashed" : "solid",
-                                            color: t,
-                                            // (A shaped piece is hovered by its outline, not the box round it.)
-                                            pointerEvents: shapeOutline ? "none" : undefined,
-                                          }}
-                                        >
-                                          {shapeOutline ? (
-                                            <NestingShapeOutline points={shapeOutline} trueW={trueOnSheetW} trueH={trueOnSheetH} boxW={placement.w} boxH={placement.h} fill={lightenHex(c, 0.18)} stroke={darkenHex(c, 0.22)} />
-                                          ) : null}
-                                          {!shapeOutline && hitMin && (
-                                            <div
-                                              className="absolute left-0 top-0 border-r border-b border-dashed"
-                                              style={{
-                                                width: `${Math.min(100, (trueOnSheetW / placement.w) * 100)}%`,
-                                                height: `${Math.min(100, (trueOnSheetH / placement.h) * 100)}%`,
-                                                backgroundColor: lightenHex(c, 0.18),
-                                                borderColor: darkenHex(c, 0.4),
-                                                zIndex: -1,
-                                              }}
-                                            />
-                                          )}
-                                          <div className={labelBox ? "absolute overflow-hidden px-[6px] py-[1px]" : "contents"} style={labelBox ? nestingLabelBoxStyle(labelBox, placement.w, placement.h) : undefined}>
-                                            {(isCabinetryPartType(placement.piece.partType) || isDrawerPartType(placement.piece.partType)) && placement.piece.row.parentName ? (
-                                              <>
-                                                <span className="block truncate text-[10px] leading-tight opacity-85" style={{ paddingLeft: 4 }}>{placement.piece.row.parentName}</span>
-                                                <span className="block truncate text-[10px] leading-tight" style={{ paddingLeft: 4 }}>{placement.piece.name}</span>
-                                              </>
-                                            ) : (
-                                              <span className="block truncate" style={{ paddingLeft: 4 }}>{placement.piece.name}</span>
-                                            )}
-                                          </div>
-                                        </div>
-                                      );
-                                    })}
-                                    {boardHasGrain && (
-                                      <div className="pointer-events-none absolute inset-0 z-[30]">
-                                        {grainArrowPoints.map(([x, y], idx) => (
-                                          <img
-                                            key={`${group.boardKey}_sheet_${sheet.index}_grain_${idx}`}
-                                            src="/arrow-right.png"
-                                            alt=""
-                                            aria-hidden="true"
-                                            className="absolute opacity-55"
-                                            style={{
-                                              left: `${x}%`,
-                                              top: `${y}%`,
-                                              width: "15px",
-                                              height: "15px",
-                                              transform: `translate(-50%, -50%) rotate(${grainArrowRotation}deg)`,
-                                              filter: "drop-shadow(0 0 1px rgba(255,255,255,0.75))",
-                                            }}
-                                          />
-                                        ))}
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
-                              ))}
-                              {partsCount === 0 && (
-                                <div className="rounded-[8px] border border-dashed border-[#D8DEE8] bg-white px-2 py-4 text-center text-[11px] font-semibold text-[#7B8798]">
-                                  No parts for this board
-                                </div>
-                              )}
-                            </div>
-                        </div>
-                      );
-                    })}
+                              <CutlistMixBar mix={nestingBoardMix(group)} className="mt-[7px]" />
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="px-2 pb-2 text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>
+                        Nothing to nest — tick parts below.
+                      </p>
+                    )}
                   </div>
-              </div>
-            </section>
-
-            {isNestingVisibilityPanelOpen && (
-            // Same "floating bubbles over the page background" treatment as CNC's own Visibility
-            // panel — no enclosing box here, each entry is already its own rounded+bordered
-            // "bubble". The "Edit Visibility" title lives in the header toggle button itself, not
-            // repeated in the panel body. Same scroll-under-header + custom left-side scrollbar
-            // treatment as CNC's own Visibility panel too — top: 0/full height with a 105px spacer
-            // as the first child (instead of top: 105), native scrollbar hidden, GlassScrollbarThumb
-            // rendered separately below with side="left".
-            <section
-              ref={nestingVisibilityScrollRef}
-              className="self-start min-h-0 overflow-y-auto hide-native-scrollbar"
-              style={{ position: "fixed", left: 0, top: 0, width: 360, height: "100svh" }}
-            >
-              <div style={{ height: 105 }} />
-              <div
-                className="flex items-center gap-2 p-3"
-                style={
-                  isNestingVisibilityPanelClosing
-                    ? { animation: "glass-bubble-slide-out-left 280ms ease 0ms both" }
-                    : isNestingVisibilityPanelJustOpened
-                      ? { animation: "glass-bubble-slide-in-left 480ms cubic-bezier(0.34, 1.56, 0.64, 1) 0ms both" }
-                      : undefined
-                }
-              >
-                <input
-                  value={nestingSearch}
-                  onChange={(e) => setNestingSearch(e.target.value)}
-                  placeholder="Search pieces..."
-                  className="h-8 min-w-0 flex-1 rounded-full border border-[#D8DEE8] bg-white px-3 text-[12px]"
-                />
-                <button
-                  type="button"
-                  disabled={productionReadOnly}
-                  onClick={() => void onShowAllNestingRows()}
-                  className="h-8 shrink-0 rounded-full border border-[#D8DEE8] bg-white px-3 text-[11px] font-semibold text-[#334155] hover:brightness-95 disabled:opacity-55"
-                >
-                  Show All
-                </button>
-              </div>
-              <div className="px-3 pb-3">
-                <div className="space-y-1">
-                  {nestingSidebarGroups.map((group) => {
-                    const color = partTypeColors[group.partType] ?? "#CBD5E1";
-                    const textColor = isLightHex(color) ? "#0F172A" : "#F8FAFC";
-                    const partTypeCollapseKey = `pt:${group.partType}`;
-                    const collapsed = Boolean(nestingCollapsedGroups[partTypeCollapseKey]);
-                    const totalQty = group.rows.reduce(
-                      (sum, row) => sum + Math.max(1, Number.parseInt(String(row.quantity || "1"), 10) || 1),
-                      0,
-                    );
-                    const visibleCount = group.rows.reduce((sum, row) => {
-                      const checked = typeof nestingVisibilityMap[row.id] === "boolean"
-                        ? nestingVisibilityMap[row.id]
-                        : row.includeInNesting !== false;
-                      return sum + (checked ? 1 : 0);
-                    }, 0);
-                    const allChecked = group.rows.length > 0 && visibleCount === group.rows.length;
-                    const someChecked = visibleCount > 0 && !allChecked;
-                    return (
-                      <div key={`nest_group_${group.partType}`} className="space-y-1">
-                        <div
-                          className="flex items-center justify-between rounded-full pl-[5px] text-[11px] font-extrabold"
-                          style={{
-                            backgroundColor: color,
-                            color: textColor,
-                            ...(isNestingVisibilityPanelClosing
-                              ? { animation: "glass-bubble-slide-out-left 280ms ease 0ms both" }
-                              : isNestingVisibilityPanelJustOpened
-                                ? {
-                                    animation: `glass-bubble-slide-in-left 480ms cubic-bezier(0.34, 1.56, 0.64, 1) ${stableBubbleAnimationDelayMs(partTypeCollapseKey)}ms both`,
-                                  }
-                                : {}),
-                          }}
-                        >
-                          <span style={{ paddingLeft: 5 }}>{group.partType} ({totalQty})</span>
-                          <div className="ml-auto inline-flex items-center">
-                            <span className="inline-flex h-7 items-center self-center pr-2">
+                  <div className="glass-shine glass-shine-neutral flex min-h-0 flex-1 flex-col overflow-hidden rounded-[18px] border p-2" style={{ borderColor: "var(--glass-border)", color: "var(--text-main)" }}>
+                    <div className="flex shrink-0 items-center gap-2 px-2 pb-2 pt-1">
+                      <p className="flex-1 text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>
+                        In this nesting
+                      </p>
+                      <button
+                        type="button"
+                        disabled={productionReadOnly}
+                        onClick={() => void onShowAllNestingRows()}
+                        className="glass-shine glass-shine-neutral inline-flex h-7 shrink-0 items-center rounded-full border px-3 text-[11px] font-medium hover:brightness-95 disabled:opacity-55"
+                        style={{ borderColor: "var(--glass-border)", color: "var(--text-main)" }}
+                      >
+                        Show All
+                      </button>
+                    </div>
+                    <div className="relative shrink-0 px-1 pb-2">
+                      <Search size={13} className="pointer-events-none absolute left-4 top-[9px]" style={{ color: "var(--text-muted)" }} />
+                      <input
+                        value={nestingSearch}
+                        onChange={(e) => setNestingSearch(e.target.value)}
+                        placeholder="Search pieces..."
+                        className="h-8 w-full rounded-full border border-[var(--glass-border)] bg-[var(--panel-bg)] pl-8 pr-3 text-[12px] text-[var(--text-main)] outline-none focus:border-[var(--brand)]"
+                      />
+                    </div>
+                    {(() => {
+                      // (What's been taken off: how many — and all back with one press, as Show All.)
+                      const leftOut = nestingSidebarGroups.reduce(
+                        (sum, group) =>
+                          sum +
+                          group.rows.filter((row) => !(typeof nestingVisibilityMap[row.id] === "boolean" ? nestingVisibilityMap[row.id] : row.includeInNesting !== false)).length,
+                        0,
+                      );
+                      return leftOut > 0 ? (
+                        <div className="mx-1 mb-2 flex shrink-0 items-center gap-2 rounded-[12px] px-3 py-2 text-[12px] font-medium" style={{ backgroundColor: "color-mix(in srgb, #D97706 14%, transparent)", color: "#B45309" }}>
+                          <EyeOff size={14} className="shrink-0" />
+                          <span className="flex-1">{leftOut} left out</span>
+                          <button
+                            type="button"
+                            disabled={productionReadOnly}
+                            onClick={() => void onShowAllNestingRows()}
+                            className="h-6 shrink-0 rounded-full border px-2.5 text-[11px] font-medium hover:brightness-95 disabled:opacity-55"
+                            style={{ borderColor: "color-mix(in srgb, #D97706 40%, transparent)", backgroundColor: "var(--panel-bg)", color: "#B45309" }}
+                          >
+                            Put back
+                          </button>
+                        </div>
+                      ) : null;
+                    })()}
+                    <div ref={nestingVisibilityScrollRef as React.Ref<HTMLDivElement>} className="hide-native-scrollbar min-h-0 flex-1 space-y-2 overflow-y-auto px-1 pb-1">
+                      {nestingSidebarGroups.map((group) => {
+                        const color = partTypeColors[group.partType] ?? "#CBD5E1";
+                        const textColor = isLightHex(color) ? "#0F172A" : "#F8FAFC";
+                        const partTypeCollapseKey = `pt:${group.partType}`;
+                        const collapsed = Boolean(nestingCollapsedGroups[partTypeCollapseKey]);
+                        const totalQty = group.rows.reduce(
+                          (sum, row) => sum + Math.max(1, Number.parseInt(String(row.quantity || "1"), 10) || 1),
+                          0,
+                        );
+                        const visibleCount = group.rows.reduce((sum, row) => {
+                          const checked = typeof nestingVisibilityMap[row.id] === "boolean"
+                            ? nestingVisibilityMap[row.id]
+                            : row.includeInNesting !== false;
+                          return sum + (checked ? 1 : 0);
+                        }, 0);
+                        const allChecked = group.rows.length > 0 && visibleCount === group.rows.length;
+                        const someChecked = visibleCount > 0 && !allChecked;
+                        return (
+                          <div key={`nest_group_${group.partType}`} className="overflow-hidden rounded-[12px] border" style={{ borderColor: darkenHex(color, 0.12) }}>
+                            <div className="flex items-center gap-2 pl-2.5 text-[12px] font-semibold" style={{ backgroundColor: color, color: textColor }}>
                               <input
                                 type="checkbox"
                                 checked={allChecked}
@@ -62434,74 +61884,300 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 className="h-4 w-4 accent-[#12345B]"
                                 title={allChecked ? "Untick all in part type" : "Tick all in part type"}
                               />
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => toggleNestingGroup(partTypeCollapseKey)}
-                              className="inline-flex h-7 w-8 items-center justify-center rounded-r-full border-l border-black/15 hover:bg-black/10"
-                              style={{ color: textColor }}
-                              title={collapsed ? "Expand part type" : "Collapse part type"}
-                            >
-                              {collapsed ? <Plus size={14} strokeWidth={2.6} /> : <Minus size={14} strokeWidth={2.6} />}
+                              <span className="min-w-0 flex-1 truncate py-2">
+                                {group.partType} <span className="font-medium opacity-80">{visibleCount}/{group.rows.length}</span>
+                                <span className="font-medium opacity-80"> · {totalQty}</span>
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => toggleNestingGroup(partTypeCollapseKey)}
+                                className="inline-flex h-8 w-9 shrink-0 items-center justify-center border-l border-black/15 hover:bg-black/10"
+                                style={{ color: textColor }}
+                                title={collapsed ? "Expand part type" : "Collapse part type"}
+                              >
+                                <ChevronDown size={15} className="transition-transform" style={{ transform: collapsed ? "rotate(-90deg)" : undefined }} />
+                              </button>
+                            </div>
+                            {!collapsed &&
+                              group.rows.map((row) => {
+                                const checked = typeof nestingVisibilityMap[row.id] === "boolean"
+                                  ? nestingVisibilityMap[row.id]
+                                  : row.includeInNesting !== false;
+                                return (
+                                  <label
+                                    key={`nest_vis_${row.id}`}
+                                    data-nest-vis-row={row.id}
+                                    className="flex cursor-pointer items-start gap-2 border-t px-2.5 py-2"
+                                    style={{ backgroundColor: lightenHex(color, 0.82), borderColor: darkenHex(color, 0.08), opacity: checked ? 1 : 0.55 }}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={checked}
+                                      disabled={productionReadOnly}
+                                      onChange={(e) => void onToggleNestingVisibility(row.id, e.target.checked)}
+                                      className="mt-[2px] h-4 w-4 accent-[#12345B]"
+                                    />
+                                    {/* (Its name, then its room and board under it; how many on the right.) */}
+                                    <span className="flex min-w-0 flex-1 items-start justify-between gap-2 text-[11px] text-slate-700">
+                                      <span className="min-w-0">
+                                        <span className={`block truncate font-medium text-slate-900 ${checked ? "" : "line-through"}`}>{row.name || "Part"}</span>
+                                        <span className="mt-[1px] block truncate text-[10px]">
+                                          {row.room || "-"} · {boardDisplayLabel(row.board) || "No board"}
+                                        </span>
+                                      </span>
+                                      <span className="shrink-0 pt-[1px] font-medium text-slate-900">
+                                        ×{Math.max(1, Number.parseInt(String(row.quantity || "1"), 10) || 1)}
+                                      </span>
+                                    </span>
+                                  </label>
+                                );
+                              })}
+                          </div>
+                        );
+                      })}
+                      {cutlistRows.length === 0 && (
+                        <EmptyState compact icon={<GitBranch size={16} />} title="No cutlist rows yet" hint="Parts added to the cutlist show here." />
+                      )}
+                    </div>
+                  </div>
+                </aside>
+                <section className="relative min-h-0">
+                  {nestingDesktopBoard ? (
+                    <>
+                      {(() => {
+                        const group = nestingDesktopBoard;
+                        const partsCount = group.sheets.reduce((sum, sheet) => sum + sheet.placements.length, 0);
+                        const stats: Array<[string, string]> = [
+                          ["Sheets", String(group.sheets.length)],
+                          ["Parts", String(partsCount)],
+                          ["Avg used", `${Math.round(nestingBoardUsedPct(group))}%`],
+                          ["Board", `${Math.round(group.sheetWidth)} × ${Math.round(group.sheetHeight)}`],
+                        ];
+                        return (
+                          // (Its name, mix bar and Sheets / Parts along the top; its numbers in a row under them. Glass, over the
+                          // sheets — they scroll up behind it, stopping at its top, as the Cutlist Entry's sticky header has them.)
+                          <div
+                            ref={nestingDesktopHeaderRef}
+                            data-title-bar="true"
+                            className="glass-shine glass-shine-neutral relative z-10 rounded-[18px] border px-4 py-3"
+                            style={{
+                              borderColor: "var(--glass-border)",
+                              background: "var(--glass-bg-strong)",
+                              backdropFilter: "blur(14px) saturate(220%)",
+                              WebkitBackdropFilter: "blur(14px) saturate(220%)",
+                            }}
+                          >
+                            <div className="flex items-center gap-4">
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-[16px] font-semibold" style={{ color: "var(--text-main)" }}>
+                                {group.boardLabel}
+                              </p>
+                              <CutlistMixBar mix={nestingBoardMix(group)} className="mt-[7px] max-w-[260px]" />
+                            </div>
+                            <div className="w-[190px] shrink-0">
+                              <Segmented
+                                value={nestingDesktopView}
+                                onChange={setNestingDesktopView}
+                                options={[
+                                  { value: "sheets", label: "Sheets" },
+                                  { value: "parts", label: "Parts" },
+                                ]}
+                                tone="brand"
+                                pill
+                                fill
+                                flip
+                                strongText
+                              />
+                            </div>
+                            </div>
+                            <div className="mt-3 grid grid-cols-4 gap-2">
+                              {stats.map(([label, value]) => (
+                                <div key={label} className="min-w-0 rounded-[12px] border px-3 py-1.5" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}>
+                                  <p className="text-[11px] font-medium" style={{ color: "var(--text-muted)" }}>
+                                    {label}
+                                  </p>
+                                  <p className="truncate text-[14px] font-semibold" style={{ color: "var(--text-main)" }}>
+                                    {value}
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })()}
+                      <div
+                        ref={getNestingBoardScrollRef(nestingDesktopBoard.boardKey)}
+                        className="hide-native-scrollbar absolute -bottom-2.5 -left-2.5 -right-2.5 top-0 overflow-y-auto px-2.5 pb-2.5"
+                        style={{ paddingTop: nestingDesktopHeaderH + 12 }}
+                      >
+                        {nestingDesktopView === "sheets" ? (
+                          <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))" }}>
+                            {nestingDesktopBoard.sheets.map((sheet) => {
+                              const selected = nestingSheetPreview?.boardKey === nestingDesktopBoard.boardKey && nestingSheetPreview.sheetIndex === sheet.index;
+                              return (
+                                <button
+                                  key={`${nestingDesktopBoard.boardKey}_sheet_${sheet.index}`}
+                                  type="button"
+                                  onClick={() => setNestingSheetPreview({ boardKey: nestingDesktopBoard.boardKey, sheetIndex: sheet.index })}
+                                  className="rounded-[14px] border p-2 text-left transition hover:brightness-[0.98]"
+                                  style={{
+                                    backgroundColor: "var(--panel-bg)",
+                                    borderColor: selected ? "var(--brand)" : "var(--glass-border)",
+                                    // (Its blue on the inside of its edge — nothing round the outside to show past the board header as
+                                    // it goes under it.)
+                                    boxShadow: selected ? "inset 0 0 0 1px var(--brand)" : undefined,
+                                  }}
+                                >
+                                  <span className="mb-1.5 flex items-center justify-between gap-2">
+                                    <span className="text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
+                                      Sheet {sheet.index}
+                                    </span>
+                                    {renderNestingUsedPill(nestingSheetUsedPct(nestingDesktopBoard, sheet))}
+                                  </span>
+                                  {renderNestingSheetThumb(nestingDesktopBoard, sheet)}
+                                  <span className="mt-1.5 block text-[11px] font-medium" style={{ color: "var(--text-muted)" }}>
+                                    {formatPartCount(sheet.placements.length)}
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          // Every part on the board's sheets: what it is, its size, and the sheet it's on (pressed: open there).
+                          <div className="overflow-hidden rounded-[14px] border" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}>
+                            <div className="grid items-center gap-3 px-3 py-2 text-[11px] font-semibold" style={{ gridTemplateColumns: "6px minmax(0,1fr) 140px 120px 80px", color: "var(--text-muted)", backgroundColor: "var(--panel-muted)" }}>
+                              <span />
+                              <span>Part</span>
+                              <span>Room</span>
+                              <span>Size</span>
+                              <span>Sheet</span>
+                            </div>
+                            {nestingDesktopBoard.sheets.flatMap((sheet) =>
+                              sheet.placements.map((placement) => {
+                                const c = partTypeColors[placement.piece.partType] ?? "#CBD5E1";
+                                const { trueOnSheetW, trueOnSheetH, hitMin } = nestingPlacementTrueSize(placement.piece, placement.rotated, nestingSettings.minPieceSize);
+                                const w = hitMin ? trueOnSheetW : placement.w;
+                                const h = hitMin ? trueOnSheetH : placement.h;
+                                return (
+                                  <div
+                                    key={`${placement.piece.id}_${sheet.index}_${placement.x}_${placement.y}_part`}
+                                    className="grid items-center gap-3 border-t px-3 py-2 text-[12px]"
+                                    style={{ gridTemplateColumns: "6px minmax(0,1fr) 140px 120px 80px", borderColor: "var(--glass-border)" }}
+                                  >
+                                    <span className="h-6 w-[5px] rounded-full" style={{ backgroundColor: c }} />
+                                    <span className="min-w-0 truncate font-medium" style={{ color: "var(--text-main)" }}>
+                                      {placement.piece.row.parentName ? `${placement.piece.row.parentName} · ` : ""}
+                                      {placement.piece.name || "Part"}
+                                    </span>
+                                    <span className="truncate font-medium" style={{ color: "var(--text-muted)" }}>
+                                      {placement.piece.room || placement.piece.row.room || "-"}
+                                    </span>
+                                    <span className="font-medium" style={{ color: "var(--text-muted)" }}>
+                                      {formatMm(w)} × {formatMm(h)}
+                                    </span>
+                                    <span>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setNestingSheetPreview({ boardKey: nestingDesktopBoard.boardKey, sheetIndex: sheet.index });
+                                          setNestingDesktopView("sheets");
+                                        }}
+                                        className="glass-shine glass-shine-neutral inline-flex h-6 items-center rounded-full border px-2.5 text-[11px] font-medium hover:brightness-95"
+                                        style={{ borderColor: "var(--glass-border)", color: "var(--text-main)" }}
+                                      >
+                                        Sheet {sheet.index}
+                                      </button>
+                                    </span>
+                                  </div>
+                                );
+                              }),
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="flex h-full items-center justify-center">
+                      <EmptyState compact icon={<GitBranch size={16} />} title="No visible nesting pieces" hint="Tick parts in the list on the left." />
+                    </div>
+                  )}
+                </section>
+                <section className="flex min-h-0 flex-col">
+                  {nestingDesktopBoard && selectedNestingSheet ? (
+                    (() => {
+                      const group = selectedNestingSheet.group;
+                      const position = group.sheets.findIndex((sheet) => sheet.index === selectedNestingSheet.sheet.index);
+                      const stepTo = (delta: number) => {
+                        const next = group.sheets[(position + delta + group.sheets.length) % group.sheets.length];
+                        if (next) setNestingSheetPreview({ boardKey: group.boardKey, sheetIndex: next.index });
+                      };
+                      const stepClass =
+                        "glass-shine glass-shine-neutral inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border transition hover:brightness-95 disabled:opacity-40";
+                      return (
+                        <div className="glass-shine glass-shine-neutral hide-native-scrollbar max-h-full overflow-y-auto rounded-[18px] border p-3" style={{ borderColor: "var(--glass-border)" }}>
+                          <div className="mb-2 flex items-center gap-2">
+                            <button type="button" disabled={group.sheets.length < 2} onClick={() => stepTo(-1)} className={stepClass} style={{ borderColor: "var(--glass-border)", color: "var(--text-main)" }} aria-label="Previous sheet">
+                              <ChevronLeft size={18} strokeWidth={2.4} />
+                            </button>
+                            <div className="min-w-0 flex-1 text-center">
+                              <p className="text-[15px] font-semibold" style={{ color: "var(--text-main)" }}>
+                                Sheet {selectedNestingSheet.sheet.index}{" "}
+                                <span className="text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>
+                                  of {group.sheets.length}
+                                </span>
+                              </p>
+                              <p className="truncate text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>
+                                {group.boardLabel}
+                              </p>
+                            </div>
+                            <button type="button" disabled={group.sheets.length < 2} onClick={() => stepTo(1)} className={stepClass} style={{ borderColor: "var(--glass-border)", color: "var(--text-main)" }} aria-label="Next sheet">
+                              <ChevronRight size={18} strokeWidth={2.4} />
                             </button>
                           </div>
+                          <div
+                            ref={nestingPreviewViewportRef}
+                            className="relative w-full overflow-hidden rounded-[6px] border border-[#D5DDE8] bg-white"
+                            onTouchStart={handleNestingPreviewTouchStart}
+                            onTouchMove={handleNestingPreviewTouchMove}
+                            onTouchEnd={handleNestingPreviewTouchEnd}
+                            onTouchCancel={handleNestingPreviewTouchEnd}
+                            style={{ aspectRatio: `${group.sheetWidth}/${group.sheetHeight}`, touchAction: "none" }}
+                          >
+                            {renderNestingPreviewSheetContent()}
+                          </div>
+                          {selectedNestingSheetStats ? (
+                            <div className="mt-3 grid grid-cols-3 gap-2">
+                              {(
+                                [
+                                  ["Used", `${selectedNestingSheetStats.usedPct.toFixed(1)}%`],
+                                  ["Wastage", `${selectedNestingSheetStats.wastagePct.toFixed(1)}%`],
+                                  ["Parts on sheet", String(selectedNestingSheetStats.partCount)],
+                                  ["Sheet area", `${selectedNestingSheetStats.sheetAreaM2.toFixed(3)} m2`],
+                                  ["Board size", `${Math.round(group.sheetWidth)} × ${Math.round(group.sheetHeight)}`],
+                                  [
+                                    "Largest part",
+                                    selectedNestingSheetStats.largest
+                                      ? `${selectedNestingSheetStats.largest.piece.name} (${formatMm(selectedNestingSheetStats.largest.w)} × ${formatMm(selectedNestingSheetStats.largest.h)})`
+                                      : "-",
+                                  ],
+                                ] as Array<[string, string]>
+                              ).map(([label, value]) => (
+                                <div key={label} className="min-w-0 rounded-[12px] border px-3 py-2" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}>
+                                  <p className="text-[11px] font-medium" style={{ color: "var(--text-muted)" }}>
+                                    {label}
+                                  </p>
+                                  <p className="truncate text-[13px] font-semibold" style={{ color: "var(--text-main)" }} title={value}>
+                                    {value}
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
                         </div>
-                        {!collapsed && group.rows.map((row) => {
-                          const checked = typeof nestingVisibilityMap[row.id] === "boolean"
-                            ? nestingVisibilityMap[row.id]
-                            : row.includeInNesting !== false;
-                          const rowColor = partTypeColors[row.partType] ?? "#CBD5E1";
-                          const rowBg = lightenHex(rowColor, 0.72);
-                          return (
-                            <label
-                              key={`nest_vis_${row.id}`}
-                              className="flex items-start gap-2 rounded-[16px] border px-3 py-2"
-                              style={{
-                                backgroundColor: rowBg,
-                                borderColor: darkenHex(rowColor, 0.12),
-                                ...(isNestingVisibilityPanelClosing
-                                  ? { animation: "glass-bubble-slide-out-left 280ms ease 0ms both" }
-                                  : isNestingVisibilityPanelJustOpened
-                                    ? {
-                                        animation: `glass-bubble-slide-in-left 480ms cubic-bezier(0.34, 1.56, 0.64, 1) ${stableBubbleAnimationDelayMs(row.id)}ms both`,
-                                      }
-                                    : {}),
-                              }}
-                            >
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                disabled={productionReadOnly}
-                                onChange={(e) => void onToggleNestingVisibility(row.id, e.target.checked)}
-                                className="mt-[2px] h-4 w-4"
-                              />
-                              <span className="flex min-w-0 flex-1 items-start justify-between gap-2 text-[11px] text-slate-700">
-                                <span className="min-w-0">
-                                  <span className="block truncate font-medium text-slate-900">{row.name || "Part"}</span>
-                                  <span className="mt-[1px] block truncate text-[10px]">{row.room || "-"}</span>
-                                </span>
-                                <span className="shrink-0 text-right">
-                                  <span className="block pt-[1px] font-medium text-slate-900">
-                                    {Math.max(1, Number.parseInt(String(row.quantity || "1"), 10) || 1)}
-                                  </span>
-                                  <span className="mt-[1px] block text-[10px] text-slate-600">
-                                    {boardDisplayLabel(row.board) || "No board"}
-                                  </span>
-                                </span>
-                              </span>
-                            </label>
-                          );
-                        })}
-                      </div>
-                    );
-                  })}
-                  {cutlistRows.length === 0 && (
-                    <EmptyState compact icon={<GitBranch size={16} />} title="No cutlist rows yet" hint="Parts added to the cutlist show here." />
-                  )}
-                </div>
-              </div>
-            </section>
-            )}
+                      );
+                    })()
+                  ) : null}
+                </section>
               </div>
             )}
           </div>
@@ -62623,6 +62299,117 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             </div>
           </div>
           , document.body)}
+          {nestingPieceMenu && typeof document !== "undefined"
+            ? createPortal(
+                (() => {
+                  const menu = nestingPieceMenu;
+                  const parentRowId = parseDerivedNestingRowId(menu.rowId).parentRowId;
+                  const typeGroup = nestingSidebarGroups.find((group) => group.partType === menu.partType);
+                  const close = () => setNestingPieceMenu(null);
+                  const itemClass =
+                    "flex w-full items-center gap-2.5 rounded-[8px] px-2.5 py-2 text-left text-[13px] font-medium transition hover:bg-[color-mix(in_srgb,var(--brand)_12%,transparent)] disabled:pointer-events-none disabled:opacity-45";
+                  const items: Array<{ key: string; icon: ReactNode; label: string; danger?: boolean; disabled?: boolean; run: () => void } | "divider"> = [
+                    {
+                      key: "edit",
+                      icon: <Pencil size={14} />,
+                      label: "Edit in cutlist",
+                      run: () => jumpToCutlistFromDerivedRowId(menu.rowId),
+                    },
+                    {
+                      key: "find",
+                      icon: <Search size={14} />,
+                      label: "Find in list",
+                      run: () => {
+                        // (Its part type opened in the rail, and its row scrolled to and picked out a moment.)
+                        setNestingCollapsedGroups((prev) => ({ ...prev, [`pt:${menu.partType}`]: false }));
+                        window.setTimeout(() => {
+                          const row = document.querySelector<HTMLElement>(`[data-nest-vis-row="${CSS.escape(parentRowId)}"]`);
+                          if (!row) return;
+                          row.scrollIntoView({ behavior: "smooth", block: "center" });
+                          row.style.outline = "2px solid var(--brand)";
+                          row.style.outlineOffset = "-2px";
+                          window.setTimeout(() => {
+                            row.style.outline = "";
+                            row.style.outlineOffset = "";
+                          }, 1600);
+                        }, 60);
+                      },
+                    },
+                    {
+                      key: "copy",
+                      icon: <Copy size={14} />,
+                      label: `Copy size (${menu.size})`,
+                      run: () => void navigator.clipboard?.writeText(menu.size).catch(() => undefined),
+                    },
+                    "divider",
+                    {
+                      key: "leave",
+                      icon: <EyeOff size={14} />,
+                      label: "Leave out of nesting",
+                      danger: true,
+                      disabled: productionReadOnly || !parentRowId,
+                      run: () => onToggleNestingVisibility(parentRowId, false),
+                    },
+                    {
+                      key: "leave-type",
+                      icon: <Layers size={14} />,
+                      label: `Leave out every ${menu.partType || "piece of this type"}`,
+                      danger: true,
+                      disabled: productionReadOnly || !typeGroup?.rows.length,
+                      run: () => typeGroup?.rows.forEach((row) => onToggleNestingVisibility(row.id, false)),
+                    },
+                  ];
+                  const width = 250;
+                  return (
+                    <div
+                      ref={nestingPieceMenuRef}
+                      role="menu"
+                      aria-label={menu.title}
+                      className="fixed z-[2147483647] flex flex-col rounded-[12px] border p-1"
+                      style={{
+                        left: Math.max(8, Math.min(menu.x, (typeof window !== "undefined" ? window.innerWidth : 1280) - width - 8)),
+                        top: Math.max(8, Math.min(menu.y, (typeof window !== "undefined" ? window.innerHeight : 800) - 270)),
+                        width,
+                        ...GLASS_DROPDOWN_MENU_STYLE,
+                      }}
+                      onContextMenu={(e) => e.preventDefault()}
+                    >
+                      <div className="px-2.5 pb-1.5 pt-1.5">
+                        <p className="truncate text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>
+                          {menu.title}
+                        </p>
+                        <p className="truncate text-[11px] font-medium" style={{ color: "var(--text-muted)" }}>
+                          {[menu.subtitle, menu.size].filter(Boolean).join(" · ")}
+                        </p>
+                      </div>
+                      <div className="mx-1 mb-1 h-px" style={{ backgroundColor: "var(--glass-border)" }} />
+                      {items.map((item, index) =>
+                        item === "divider" ? (
+                          <div key={`divider_${index}`} className="mx-1 my-1 h-px" style={{ backgroundColor: "var(--glass-border)" }} />
+                        ) : (
+                          <button
+                            key={item.key}
+                            type="button"
+                            role="menuitem"
+                            disabled={item.disabled}
+                            onClick={() => {
+                              close();
+                              item.run();
+                            }}
+                            className={itemClass}
+                            style={{ color: item.danger ? "var(--danger)" : "var(--text-main)" }}
+                          >
+                            <span className="inline-flex shrink-0">{item.icon}</span>
+                            <span className="min-w-0 truncate">{item.label}</span>
+                          </button>
+                        ),
+                      )}
+                    </div>
+                  );
+                })(),
+                document.body,
+              )
+            : null}
           {nestingTooltip && (
             <div
               className="pointer-events-none fixed z-[5000] max-w-[320px] rounded-[6px] border px-2 py-1 text-[10px] font-medium shadow-lg"
@@ -62663,10 +62450,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         </div>
         {!isCompactProjectViewport && (
           <>
-            {isNestingVisibilityPanelOpen && <GlassScrollbarThumb scrollRef={nestingVisibilityScrollRef} side="left" />}
-            {nestingBoardLayouts.map((group) => (
-              <GlassScrollbarThumb key={group.boardKey} scrollRef={getNestingBoardScrollRef(group.boardKey)} side="right" />
-            ))}
+            {/* (Halfway between the end of the part type rows and the card's edge: the rows end 4px inside the list (its px-1),
+                the card's edge is 9px outside it (its p-2 and border) — so the 4px thumb's middle sits 2.5px outside it.) */}
+            <GlassScrollbarThumb scrollRef={nestingVisibilityScrollRef} side="right" subtle insetPx={-4.5} />
+            {nestingDesktopBoard ? (
+              <GlassScrollbarThumb key={nestingDesktopBoard.boardKey} scrollRef={getNestingBoardScrollRef(nestingDesktopBoard.boardKey)} side="right" subtle />
+            ) : null}
           </>
         )}
         {/* Mobile: tracks whichever board page is currently active (see
@@ -64435,7 +64224,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             ref={item.key === "lead" ? sourceLeadButtonRef : undefined}
                             type="button"
                             onClick={(e) => {
-                              if (item.key === "lead") {
+                              if (item.key === "cutlist") {
+                                openProjectLiveView("production", { productionNav: "cutlist", nestingFullscreen: false });
+                              } else if (item.key === "lead") {
                                 setSourceLeadOrigin(captureGlassModalOrigin(e));
                                 setIsSourceLeadOpen(true);
                               } else if (item.key === "specifications") {
@@ -65700,9 +65491,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 />
                               </div>
                               <input disabled={salesReadOnly} value={initialCutlistEntry.name} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, name: e.target.value }))} className="cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("name") }} />
-                              <input disabled={salesReadOnly} inputMode="decimal" value={initialCutlistEntry.height} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, height: numericDimensionText(e.target.value) }))} className="cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("height") }} />
-                              <input disabled={salesReadOnly} inputMode="decimal" value={initialCutlistEntry.width} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, width: numericDimensionText(e.target.value) }))} className="cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("width") }} />
-                              <input disabled={salesReadOnly} inputMode="decimal" value={initialCutlistEntry.depth} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, depth: numericDimensionText(e.target.value) }))} className="cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("depth") }} />
+                              <input disabled={salesReadOnly} inputMode="decimal" value={initialCutlistEntry.height} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, height: dimensionMathText(e.target.value) }))} className="cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("height") }} />
+                              <input disabled={salesReadOnly} inputMode="decimal" value={initialCutlistEntry.width} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, width: dimensionMathText(e.target.value) }))} className="cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("width") }} />
+                              <input disabled={salesReadOnly} inputMode="decimal" value={initialCutlistEntry.depth} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, depth: dimensionMathText(e.target.value) }))} className="cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("depth") }} />
                               <input disabled={salesReadOnly} inputMode="numeric" pattern="[0-9]*" value={initialCutlistEntry.quantity} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, quantity: numericOnlyText(e.target.value) }))} className="cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("quantity") }} />
                               <div style={initialCutlistEntrySubCellStyle("clashing", 0)}>
                                 <BoardPillDropdown value={initialCutlistEntry.clashLeft ?? ""} options={CLASH_LEFT_OPTIONS} disabled={salesReadOnly} bg={activeInitialCutlistEntryFieldBg} border={activeInitialCutlistEntryFieldBorder} text={activeInitialCutlistEntryTextColor} size="default" getSize={() => ""} getLabel={(v) => v} onChange={(v) => setInitialCutlistEntry((prev) => ({ ...prev, clashLeft: v }))} />
@@ -66866,7 +66657,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             {isDoorPartType(cutlistEntry.partType) ? (
                               <div style={cutlistEntryCellStyle("depth")} />
                             ) : (
-                              <input ref={registerCutlistWarnCellRef("single", "depth")} disabled={productionReadOnly} inputMode="decimal" title={warningForCell("single", "depth") || undefined} value={cutlistEntry.depth} onChange={(e) => setCutlistEntry((prev) => autoSelectGrainValueForRow({ ...prev, depth: numericDimensionText(e.target.value) }))} className={`cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "depth")}`} style={{ ...warningStyleForCell("single", "depth", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("depth") }} />
+                              <input ref={registerCutlistWarnCellRef("single", "depth")} disabled={productionReadOnly} inputMode="decimal" title={warningForCell("single", "depth") || undefined} value={cutlistEntry.depth} onChange={(e) => setCutlistEntry((prev) => autoSelectGrainValueForRow({ ...prev, depth: dimensionMathText(e.target.value) }))} className={`cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "depth")}`} style={{ ...warningStyleForCell("single", "depth", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("depth") }} />
                             )}
                               <input ref={registerCutlistWarnCellRef("single", "quantity")} disabled={productionReadOnly || (isDrawerPartType(cutlistEntry.partType) && !isDoorPartType(cutlistEntry.partType))} inputMode="numeric" pattern="[0-9]*" title={warningForCell("single", "quantity") || undefined} value={cutlistEntry.quantity} onChange={(e) => { const nextQuantity = numericOnlyText(e.target.value); setCutlistEntry((prev) => ({ ...prev, quantity: nextQuantity, hingeSide: deriveDoorHingeSideForQuantity(prev.partType, nextQuantity) ?? prev.hingeSide })); }} className={`cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell("single", "quantity")}`} style={{ ...warningStyleForCell("single", "quantity", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...cutlistEntryCellStyle("quantity") }} />
                             <>

@@ -7,6 +7,7 @@ import { glassShineStyle } from "@/lib/glass-shine";
 import { useUndo } from "@/components/undo-bar";
 import { GlassModalHeader } from "@/components/glass-modal-header";
 import { createPortal } from "react-dom";
+import { ContractorIconPicker, normalizeContractorIcons } from "@/components/contractor-icon";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, Building2, Check, CheckCircle2, ChevronDown, CircleHelp, ClipboardList, Clock3, DatabaseBackup, Download, GripVertical, HardHat, Layers3, Loader2, Package2, Plus, RotateCcw, Search, Settings, Trophy, Upload, Users, X } from "lucide-react";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
@@ -2282,6 +2283,9 @@ export default function CompanySettingsPage() {
   // Saved as calendarHolidayRegion; the national ones only by default.
   const [calendarHolidayRegion, setCalendarHolidayRegion] = useState<NzHolidayRegion>("nz");
   const [contractors, setContractors] = useState<string[]>([]);
+  // Each contractor's icon (contractorIcons: its name → the icon — components/contractor-icon.tsx). Kept by name, so
+  // one taken off and put back with Undo still has its icon; only the contractors there are saved.
+  const [contractorIcons, setContractorIcons] = useState<Record<string, string>>({});
   // Room names (roomNames): one list, shown in both Sales and Production — offered when adding a room to a project, and
   // in the offline cutlist template.
   const [roomNames, setRoomNames] = useState<string[]>([]);
@@ -2679,6 +2683,7 @@ export default function CompanySettingsPage() {
         setCalendarShowNonWorkdays((doc as Record<string, unknown>).calendarShowNonWorkdays !== false);
         setCalendarHolidayRegion(normalizeNzHolidayRegion((doc as Record<string, unknown>).calendarHolidayRegion));
         setContractors(normalizeStringList(doc.contractors, []));
+        setContractorIcons(normalizeContractorIcons((doc as Record<string, unknown>).contractorIcons));
         setRoomNames(normalizeStringList((doc as Record<string, unknown>).roomNames, []));
         setRoles(normalizeRoles(doc.roles));
         savedRolesRef.current = normalizeRoles(doc.roles);
@@ -4390,6 +4395,9 @@ export default function CompanySettingsPage() {
       boardThicknesses: boardThicknesses.map((v) => Number(v)).filter((v) => Number.isFinite(v) && v > 0),
       boardFinishes: boardFinishes.map((v) => toStr(v)).filter(Boolean),
       contractors: contractors.map((v) => toStr(v)).filter(Boolean),
+      contractorIcons: Object.fromEntries(
+        contractors.map((v) => toStr(v)).filter((name) => name && contractorIcons[name]).map((name) => [name, contractorIcons[name]]),
+      ),
       roomNames: Array.from(new Set(roomNames.map((v) => toStr(v)).filter(Boolean))),
       sheetSizes: sheetSizes
         .map((r) => ({ h: Number(r.h), w: Number(r.w), isDefault: r.isDefault }))
@@ -4653,6 +4661,7 @@ export default function CompanySettingsPage() {
         boardThicknesses,
         boardFinishes,
         contractors,
+        contractorIcons,
         roomNames,
         sheetSizes,
         partTypes,
@@ -5129,6 +5138,7 @@ export default function CompanySettingsPage() {
     boardThicknesses,
     boardFinishes,
     contractors,
+    contractorIcons,
     roomNames,
     sheetSizes,
     partTypes,
@@ -6528,15 +6538,32 @@ export default function CompanySettingsPage() {
                         </span>
                       </FieldRow>
                     </Panel>
-                    <Panel title="Contractors" icon={TradeIcon} description="Trades you can assign work to on a project.">
+                    <Panel title="Contractors" icon={TradeIcon} description="Trades you can assign work to on a project. Press a contractor's icon to change it.">
                       <div className="flex flex-wrap items-center gap-1.5">
                         {contractors.map((value, idx) => (
-                          <span key={`contractor_${idx}`} className={chipClass}>
+                          <span key={`contractor_${idx}`} className={chipClass.replace("pl-3", "pl-1")}>
+                            <ContractorIconPicker
+                              name={value}
+                              value={contractorIcons[value.trim()] ?? ""}
+                              onChange={(key) => setContractorIcons((prev) => ({ ...prev, [value.trim()]: key }))}
+                            />
                             <input
                               value={value}
                               placeholder="e.g. Electrician"
                               size={Math.max(10, value.length + 1)}
-                              onChange={(e) => setContractors((prev) => prev.map((v, i) => (i === idx ? e.target.value : v)))}
+                              onChange={(e) => {
+                                const next = e.target.value;
+                                setContractors((prev) => prev.map((v, i) => (i === idx ? next : v)));
+                                // (Its icon goes with it as it's renamed.)
+                                setContractorIcons((prev) => {
+                                  const from = value.trim();
+                                  const to = next.trim();
+                                  if (from === to || !prev[from]) return prev;
+                                  const moved = { ...prev, [to]: prev[from] };
+                                  delete moved[from];
+                                  return moved;
+                                });
+                              }}
                               className="min-w-0 bg-transparent text-[12.5px] font-semibold outline-none"
                               style={{ color: "var(--text-main)" }}
                             />

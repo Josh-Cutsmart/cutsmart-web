@@ -150,6 +150,7 @@ export function GlassScrollbarThumb({
   thumbWidthPx = 6,
   viewportBottomInsetPx = 12,
   trackClassName = "",
+  subtle = false,
 }: {
   scrollRef: RefObject<HTMLElement | null>;
   // Element whose bounding box positions the track — defaults to scrollRef's own element. Pass a
@@ -182,8 +183,12 @@ export function GlassScrollbarThumb({
   // horizontal replacement to desktop, where dragging a scrollbar is the expected interaction
   // (mobile already has native touch-swipe scrolling on the same container).
   trackClassName?: string;
+  // Quieter: thinner and fainter, firming up while it's hovered or held (e.g. the computer's Nesting).
+  subtle?: boolean;
 }) {
   const isHorizontal = orientation === "horizontal";
+  if (subtle && thumbWidthPx === 6) thumbWidthPx = 4;
+  const restColor = subtle ? "color-mix(in srgb, var(--custom-scrollbar-thumb) 45%, transparent)" : "var(--custom-scrollbar-thumb)";
   // `top`/`bottom` are mutually exclusive (exactly one is a number, the other null → CSS "auto") —
   // see the horizontal-mode branch below for why: pinning via CSS `bottom` instead of a JS-computed
   // `top: window.innerHeight - ...` sidesteps devicePixelRatio/zoom sub-pixel rounding entirely for
@@ -435,14 +440,14 @@ export function GlassScrollbarThumb({
         // also select-dragging whatever text sat under the pointer's path.
         style={
           isHorizontal
-            ? { top: 0, left: 0, width: thumbLength, height: thumbWidthPx, backgroundColor: "var(--custom-scrollbar-thumb)", cursor: "grab" }
-            : { left: 0, top: 0, height: thumbLength, width: thumbWidthPx, backgroundColor: "var(--custom-scrollbar-thumb)", cursor: "grab" }
+            ? { top: 0, left: 0, width: thumbLength, height: thumbWidthPx, backgroundColor: restColor, cursor: "grab" }
+            : { left: 0, top: 0, height: thumbLength, width: thumbWidthPx, backgroundColor: restColor, cursor: "grab" }
         }
         onMouseEnter={(event) => {
           event.currentTarget.style.backgroundColor = "var(--custom-scrollbar-thumb-hover)";
         }}
         onMouseLeave={(event) => {
-          event.currentTarget.style.backgroundColor = "var(--custom-scrollbar-thumb)";
+          event.currentTarget.style.backgroundColor = restColor;
         }}
       />
     </div>,

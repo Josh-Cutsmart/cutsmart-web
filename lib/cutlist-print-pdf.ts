@@ -131,6 +131,8 @@ const FALLBACK_COLOUR: Rgb = [203, 213, 225];
 const MARGIN = 22;
 const HEADER_TOP = 20;
 const NOTES_H = 58;
+// The header's NOTES box's width — in the middle of the page.
+const NOTES_W = 270;
 const TABLE_TOP = HEADER_TOP + NOTES_H + 14;
 // A board's bar, and its column headings.
 const BOARD_H = 15;
@@ -568,6 +570,10 @@ export function buildCutlistPrintPdf(jsPDF: JsPdfCtor, input: CutlistPrintInput)
   let spanned: number[] = [];
   // Part Name's column.
   let nameIndex = 0;
+  // Where a part's second line starts: the Height column (the columns before it — Room, Part Name — run on down beside
+  // it) — its own table's, as each has its own columns.
+  let detailFrom = 0;
+  let detailLeft = MARGIN;
   const setColumnsFor = (sectionRows: CutlistRow[]) => {
     const used = new Set<ColumnKey>(["room", "name", "information"]);
     const fronts = new Set(sectionRows.filter((row) => input.kindOf(row) === "door").map(frontKind));
@@ -593,6 +599,9 @@ export function buildCutlistPrintPdf(jsPDF: JsPdfCtor, input: CutlistPrintInput)
       .map((column, index) => (["height", "width", "depth", "quantity", "clashLeft", "clashRight", "hingeSide", "hinges"].includes(column.key) ? index : -1))
       .filter((index) => index >= 0);
     nameIndex = columns.findIndex((column) => column.key === "name");
+    const heightIndex = columns.findIndex((column) => column.key === "height");
+    detailFrom = heightIndex > 0 ? heightIndex : 0;
+    detailLeft = detailFrom > 0 ? lefts[detailFrom] : MARGIN;
   };
   setColumnsFor(rows);
   const columnIndex = (key: ColumnKey) => columns.findIndex((column) => column.key === key);
@@ -659,10 +668,14 @@ export function buildCutlistPrintPdf(jsPDF: JsPdfCtor, input: CutlistPrintInput)
     return `${cut.trimEnd()}…`;
   };
 
-  // The page's header: PROJECT CUTLIST and the part type; the NOTES box; the company and the project.
+  // The page's header: PROJECT CUTLIST and the part type; the NOTES box, in the middle of the page; the company and the
+  // project, taking the room from the box to the right edge.
   const drawHeader = (partType: string) => {
     const leftW = 200;
-    const rightW = 220;
+    const right = pageWidth - MARGIN;
+    const boxW = NOTES_W;
+    const boxX = (pageWidth - boxW) / 2;
+    const rightW = right - (boxX + boxW) - 24;
     doc.setTextColor(...BLUE);
     doc.setFont("helvetica", "bold");
     doc.setFontSize(17);
@@ -674,25 +687,40 @@ export function buildCutlistPrintPdf(jsPDF: JsPdfCtor, input: CutlistPrintInput)
     doc.setFontSize(15);
     doc.text(fit(partType, leftW), MARGIN, HEADER_TOP + 44);
 
-    const right = pageWidth - MARGIN;
     doc.setTextColor(...BLUE);
-    doc.setFontSize(17);
+    // (A long company name a little smaller to fit, before it's cut short.)
+    let companySize = 17;
+    doc.setFontSize(companySize);
+    while (companySize > 12 && doc.getTextWidth(input.companyName || "") > rightW) {
+      companySize -= 0.5;
+      doc.setFontSize(companySize);
+    }
     doc.text(fit(input.companyName || "", rightW), right, HEADER_TOP + 16, { align: "right" });
     doc.line(right - rightW, HEADER_TOP + 23, right, HEADER_TOP + 23);
     doc.setTextColor(...BLACK);
     doc.setFontSize(13);
     doc.text(fit(input.projectName || "Project", rightW), right, HEADER_TOP + 43, { align: "right" });
 
-    const boxX = MARGIN + leftW + 24;
-    const boxW = right - rightW - 24 - boxX;
     doc.setDrawColor(...BLUE);
     doc.setLineWidth(1.2);
     doc.rect(boxX, HEADER_TOP, boxW, NOTES_H, "S");
     doc.setTextColor(...BLUE);
     doc.setFontSize(9);
     doc.text("NOTES:", boxX + 8, HEADER_TOP + 13);
-    const colW = (boxW - 24) / 2;
-    const note = (label: string, value: string, x: number, y: number, maxLines = 3) => {
+    // (Its left column as wide as its notes need — their values are short — up to half; Hinge Type, the long one, the rest.)
+    doc.setFontSize(8.5);
+    const noteW = (label: string, value: string) => {
+      doc.setFont("helvetica", "bold");
+      const labelW = doc.getTextWidth(`${label}: `);
+      doc.setFont("helvetica", "normal");
+      return labelW + doc.getTextWidth(value || "-");
+    };
+    const leftColW = Math.min(
+      (boxW - 24) / 2,
+      Math.max(noteW("Carcass Thickness", input.notes.carcassThickness), noteW("Base Cab Height", input.notes.baseCabHeight)) + 2,
+    );
+    const rightColW = boxW - 24 - leftColW;
+    const note = (label: string, value: string, x: number, y: number, colW: number, maxLines = 3) => {
       doc.setFont("helvetica", "bold");
       doc.setFontSize(8.5);
       doc.setTextColor(...BLACK);
@@ -702,12 +730,12 @@ export function buildCutlistPrintPdf(jsPDF: JsPdfCtor, input: CutlistPrintInput)
       const lines = doc.splitTextToSize(value || "-", Math.max(20, colW - labelW)) as string[];
       doc.text(lines.length > maxLines ? [...lines.slice(0, maxLines - 1), fit(lines.slice(maxLines - 1).join(" "), Math.max(20, colW - labelW))] : lines, x + labelW, y);
     };
-    note("Carcass Thickness", input.notes.carcassThickness, boxX + 8, HEADER_TOP + 28);
-    note("Base Cab Height", input.notes.baseCabHeight, boxX + 8, HEADER_TOP + 40);
+    note("Carcass Thickness", input.notes.carcassThickness, boxX + 8, HEADER_TOP + 28, leftColW);
+    note("Base Cab Height", input.notes.baseCabHeight, boxX + 8, HEADER_TOP + 40, leftColW);
     // (One line — Tall Cab Height under it.)
-    note("Hinge Type", input.notes.hingeType, boxX + 16 + colW, HEADER_TOP + 28, 1);
+    note("Hinge Type", input.notes.hingeType, boxX + 16 + leftColW, HEADER_TOP + 28, rightColW, 1);
     // (Under Hinge Type, beside Base Cab Height.)
-    note("Tall Cab Height", input.notes.tallCabHeight, boxX + 16 + colW, HEADER_TOP + 40);
+    note("Tall Cab Height", input.notes.tallCabHeight, boxX + 16 + leftColW, HEADER_TOP + 40, rightColW);
   };
 
   // A board's bar, in the part type's colour: the board, and how many parts (or that it carries on from the page before).
@@ -723,10 +751,23 @@ export function buildCutlistPrintPdf(jsPDF: JsPdfCtor, input: CutlistPrintInput)
     doc.setFont("helvetica", "bold");
     doc.setFontSize(9);
     doc.text(fit(board, tableWidth - noteW - PAD_X * 4 - 12), MARGIN + PAD_X + 2, baselineFor(y, BOARD_H, 1, 9));
-    doc.setDrawColor(...BLACK);
+    rule(MARGIN, y + BOARD_H, MARGIN + tableWidth, y + BOARD_H);
+  };
+
+  // The tables' lines — every divider, 0.5 wide (black; the light one between Hinges' side and positions) — queued as
+  // they're laid out and drawn together as each table (or its page) closes: over every shading, so none is half painted
+  // over by what's drawn under it, and each right on its edge.
+  let rules: Array<{ x1: number; y1: number; x2: number; y2: number; light: boolean }> = [];
+  const rule = (x1: number, y1: number, x2: number, y2: number, light = false) => {
+    rules.push({ x1, y1, x2, y2, light });
+  };
+  const drawRules = () => {
     doc.setLineWidth(0.5);
-    // (Its bottom line just inside it — what's drawn under it next doesn't paint over half of it, as every divider.)
-    doc.line(MARGIN, y + BOARD_H - 0.25, MARGIN + tableWidth, y + BOARD_H - 0.25);
+    for (const line of rules) {
+      doc.setDrawColor(...(line.light ? LIGHT_LINE : BLACK));
+      doc.line(line.x1, line.y1, line.x2, line.y2);
+    }
+    rules = [];
   };
 
   // A table's Custom area's bar, over its Custom pieces: "Custom" (and that it carries on from the page before), and how
@@ -741,10 +782,8 @@ export function buildCutlistPrintPdf(jsPDF: JsPdfCtor, input: CutlistPrintInput)
     doc.text(continued ? "Custom (continued)" : "Custom", MARGIN + PAD_X + 2, baselineFor(y, CUSTOM_BAR_H, 1, FONT));
     doc.setFont("helvetica", "normal");
     doc.text(`${parts} part${parts === 1 ? "" : "s"}`, MARGIN + tableWidth - PAD_X - 2, baselineFor(y, CUSTOM_BAR_H, 1, FONT), { align: "right" });
-    doc.setDrawColor(...BLACK);
-    doc.setLineWidth(0.5);
-    doc.line(MARGIN, y, MARGIN + tableWidth, y);
-    doc.line(MARGIN, y + CUSTOM_BAR_H - 0.25, MARGIN + tableWidth, y + CUSTOM_BAR_H - 0.25);
+    rule(MARGIN, y, MARGIN + tableWidth, y);
+    rule(MARGIN, y + CUSTOM_BAR_H, MARGIN + tableWidth, y + CUSTOM_BAR_H);
   };
 
   // The table's column headings, in a lighter shade of the part type's colour.
@@ -763,11 +802,9 @@ export function buildCutlistPrintPdf(jsPDF: JsPdfCtor, input: CutlistPrintInput)
       const x = column.align === "center" || pair ? lefts[index] + w / 2 : lefts[index] + PAD_X;
       doc.text(fit(column.header, w - PAD_X * 2), x, baselineFor(y, HEAD_H, 1, FONT), { align: column.align === "center" || pair ? "center" : "left" });
     });
-    doc.setDrawColor(...BLACK);
-    doc.setLineWidth(0.5);
-    doc.line(MARGIN, y + HEAD_H - 0.25, MARGIN + tableWidth, y + HEAD_H - 0.25);
+    rule(MARGIN, y + HEAD_H, MARGIN + tableWidth, y + HEAD_H);
     lefts.forEach((x, index) => {
-      if (index > 0 && !SECOND_OF_PAIR.includes(columns[index].key)) doc.line(x, y, x, y + HEAD_H);
+      if (index > 0 && !SECOND_OF_PAIR.includes(columns[index].key)) rule(x, y, x, y + HEAD_H);
     });
   };
 
@@ -777,10 +814,7 @@ export function buildCutlistPrintPdf(jsPDF: JsPdfCtor, input: CutlistPrintInput)
   const drawColumnLines = (top: number, bottom: number, upTo = columns.length, skip: number[] = []) => {
     for (let index = 1; index < upTo; index += 1) {
       if (skip.includes(index)) continue;
-      const light = columns[index].key === "hinges";
-      doc.setDrawColor(...(light ? LIGHT_LINE : BLACK));
-      doc.setLineWidth(0.5);
-      doc.line(lefts[index], top, lefts[index], bottom);
+      rule(lefts[index], top, lefts[index], bottom, columns[index].key === "hinges");
     }
   };
 
@@ -867,17 +901,13 @@ export function buildCutlistPrintPdf(jsPDF: JsPdfCtor, input: CutlistPrintInput)
     return { before, after, detailLines, detailH, height, parts };
   };
 
-  // Where a part's second line starts: the Height column (the columns before it — Room, Part Name — run on down beside it).
-  const detailFrom = columnIndex("height") > 0 ? columnIndex("height") : 0;
-  const detailLeft = detailFrom > 0 ? lefts[detailFrom] : MARGIN;
-
   // A table row, from `y`. (`tall`: the columns before the second line's start — their text centred down the row and its
-  // second line together, `tall` high.)
+  // second line together, `tall` high. Its Room isn't written here — drawPart writes it, centred down the whole part.)
   const drawLine = (line: TableLine, y: number, tall = 0) => {
     doc.setTextColor(...BLACK);
     columns.forEach((column, index) => {
       const cell = line.cells[index];
-      if (!cell.length || !cell[0]) return;
+      if (!cell.length || !cell[0] || column.key === "room") return;
       const grained = (column.key === "height" || column.key === "width" || column.key === "depth") && column.key === line.axis;
       const name = index === nameIndex;
       doc.setFont("helvetica", grained || (name && line.bold) ? "bold" : "normal");
@@ -926,11 +956,9 @@ export function buildCutlistPrintPdf(jsPDF: JsPdfCtor, input: CutlistPrintInput)
     const h = bottom - top;
     doc.setFillColor(...fill);
     doc.rect(x, top, w, h, "F");
-    doc.setDrawColor(...BLACK);
-    doc.setLineWidth(0.5);
-    doc.line(x, top, x + w, top);
-    doc.line(x, bottom, x + w, bottom);
-    doc.line(x + w, top, x + w, bottom);
+    rule(x, top, x + w, top);
+    rule(x, bottom, x + w, bottom);
+    rule(x + w, top, x + w, bottom);
     const label = text.toUpperCase();
     let fontSize = STRIP_FONT;
     doc.setFont("helvetica", "bold");
@@ -949,10 +977,26 @@ export function buildCutlistPrintPdf(jsPDF: JsPdfCtor, input: CutlistPrintInput)
   const drawPart = (part: ReturnType<typeof layoutPart>, y: number, fill: Rgb) => {
     doc.setFillColor(...fill);
     doc.rect(MARGIN, y, tableWidth, part.height, "F");
+    // Its Room centred down the whole part — its own row, its second line and its pieces.
+    const roomIndex = columnIndex("room");
+    const roomCell = roomIndex >= 0 ? part.before[0]?.cells[roomIndex] : undefined;
+    if (roomCell?.length && roomCell[0]) {
+      doc.setTextColor(...BLACK);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(FONT);
+      doc.text(roomCell, lefts[roomIndex] + PAD_X, baselineFor(y, part.height, roomCell.length, FONT));
+    }
     let top = y;
     for (const [lineIndex, line] of part.before.entries()) {
-      // (Its own row, with a second line under it: its Room and Part Name centred down both.)
+      // (Its own row, with a second line under it: its Part Name centred down both.)
       drawLine(line, top, part.detailH > 0 && lineIndex === part.before.length - 1 ? line.height + part.detailH : 0);
+      // (A drawer's own row — its name over its sizes, quantity and clashing: a line above and below it across them.)
+      if (line.nameSpan && spanned.length) {
+        const from = lefts[nameIndex];
+        const to = Math.max(...spanned.map((index) => lefts[index] + widths[index]));
+        rule(from, top, to, top);
+        rule(from, top + line.height, to, top + line.height);
+      }
       top += line.height;
     }
     if (part.detailH > 0) {
@@ -969,14 +1013,13 @@ export function buildCutlistPrintPdf(jsPDF: JsPdfCtor, input: CutlistPrintInput)
       });
       // (A line across from the Height column between its row and its second line — its row's columns there stop at it;
       // none through this — as the column lines are, black at 0.5. The columns before it carry on down beside it.)
-      doc.setDrawColor(...BLACK);
-      doc.setLineWidth(0.5);
-      doc.line(detailLeft, top, MARGIN + tableWidth, top);
+      rule(detailLeft, top, MARGIN + tableWidth, top);
       drawColumnLines(top, top + part.detailH, detailFrom + 1);
       top += part.detailH;
-      // (...and one under it, closing the part off from the next — drawn just inside it, so the next part's shading
-      // doesn't paint over half of it.)
-      doc.line(MARGIN, top - 0.25, MARGIN + tableWidth, top - 0.25);
+      // (...and one under it, closing the part off from the next — from the Doors / Drawers strip's edge, when the table has
+      // one: the strip runs on unbroken down its doors or drawer fronts.)
+      const stripIndex = columnIndex("group");
+      rule(stripIndex >= 0 ? lefts[stripIndex] + widths[stripIndex] : MARGIN, top, MARGIN + tableWidth, top);
     }
     for (const line of part.after) {
       drawLine(line, top);
@@ -1049,6 +1092,7 @@ export function buildCutlistPrintPdf(jsPDF: JsPdfCtor, input: CutlistPrintInput)
     };
     // Its outline, down to where it's got to.
     const closeTable = () => {
+      drawRules();
       doc.setDrawColor(...BLACK);
       doc.setLineWidth(0.8);
       doc.rect(MARGIN, tableTop, tableWidth, y - tableTop, "S");
@@ -1105,11 +1149,7 @@ export function buildCutlistPrintPdf(jsPDF: JsPdfCtor, input: CutlistPrintInput)
         drawPart(part, y, band());
         y += part.height;
         if (changed && group) {
-          if (top > tableTop + BOARD_H + HEAD_H) {
-            doc.setDrawColor(...BLACK);
-            doc.setLineWidth(0.5);
-            doc.line(MARGIN, top, MARGIN + tableWidth, top);
-          }
+          if (top > tableTop + BOARD_H + HEAD_H) rule(MARGIN, top, MARGIN + tableWidth, top);
           run = { text: group, top };
         }
       });

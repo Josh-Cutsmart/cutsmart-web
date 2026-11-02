@@ -81,6 +81,15 @@ whatsNew: [
 <li>Cutlist Entry's column headings only show while there are rows being entered</li>
 <li>An empty Project Cutlist lists the project's rooms as buttons — one press takes you to that room's cutlist (Initial Measure and Production)</li>
 <li>The cutlists' boxes match their dropdowns, in dark mode too — no more see-through boxes with light text on a pale row</li>
+<li>Reload and the cutlist is as you left it: the same room, Entry or List, and the part types you folded away still folded (Initial Measure and Production)</li>
+<li>Type a sum in a Height, Width or Depth box — 50-16, 600x2, 1200/3 — and it's worked out when you click away (left to right, like a calculator)</li>
+<li><b>Contractor icons</b>: give each contractor an icon in Company Settings › Production › Contractors — it shows on their notes button, in the Contractors menu and on their notes</li>
+<li>Drawers: each drawer's depth is listed lowest height first, highest last</li>
+<li><b>Nesting</b> redesigned on a computer: your boards down the left (how full their sheets are, at a glance), the board's sheets in the middle — each with how much of it is used — and the sheet you pick open large on the right with its stats</li>
+<li><b>Small Jobs have a cutlist</b>: the same cutlist as a project's Production — press <b>Cutlist</b> at the top of the job's side buttons</li>
+<li>New Project: see-through glass cards, and text boxes like the cutlist's</li>
+<li>Nesting: leave out a single piece — untick it in the list, or hover it on the big sheet and press <b>Leave out</b> — with <b>Put back</b> to bring everything back. The Parts view lists every piece and the sheet it's on</li>
+<li>Drawers: click a drawer's weight to open its weights below it — click its weight in a closed box and the box opens with its weights showing. A weight you picked stays picked out once the box closes</li>
 <li><b>Order</b> redesigned: the order at a glance up top, Drawers, Hinges and Other side by side, then Boards and Misc</li>
 <li>Drag hinges and other parts in from the <b>Hardware Library</b>, or click one to add it</li>
 <li>Two people in the Order see each other's changes as they're made</li>
