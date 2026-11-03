@@ -87,6 +87,16 @@ whatsNew: [
 <li>Drawers: each drawer's depth is listed lowest height first, highest last</li>
 <li><b>Nesting</b> redesigned on a computer: your boards down the left (how full their sheets are, at a glance), the board's sheets in the middle — each with how much of it is used — and the sheet you pick open large on the right with its stats</li>
 <li><b>Small Jobs have a cutlist</b>: the same cutlist as a project's Production — press <b>Cutlist</b> at the top of the job's side buttons</li>
+<li>Small Jobs have <b>Boards</b> too — the same Board Settings as a project's Production, in a pop-up from the job's side buttons</li>
+<li>A cutlist with no rooms yet shows <b>Add Room</b> — and once it's made, that room's cutlist opens</li>
+<li>Opening Notifications clears the number on the bell — they stay unread in the list</li>
+<li>Phones: change a part's part type in its Edit sheet</li>
+<li>Phones: a new board opens straight away when it's added</li>
+<li>Phones: swiping a cutlist sheet closed no longer flashes it back up first</li>
+<li>Phones: + − × ÷ = over the number keypad while typing a Height, Width or Depth in the cutlist</li>
+<li>Phones: the pull-down menu at the top never opens over a pop-up, and it's harder to set off by accident — it has to be pulled further, mostly straight down, and held a moment before letting go does anything</li>
+<li>Phones: typing in a box brings it to the middle of the screen above the keyboard, with the page carrying on behind the keyboard instead of white</li>
+<li>A Small Job's title bar is glass as the page scrolls under it</li>
 <li>New Project: see-through glass cards, and text boxes like the cutlist's</li>
 <li>Nesting: leave out a single piece — untick it in the list, or hover it on the big sheet and press <b>Leave out</b> — with <b>Put back</b> to bring everything back. The Parts view lists every piece and the sheet it's on</li>
 <li>Drawers: click a drawer's weight to open its weights below it — click its weight in a closed box and the box opens with its weights showing. A weight you picked stays picked out once the box closes</li>

@@ -425,6 +425,32 @@ export function GlobalAppTabsBar() {
   const notifBtnRef = useRef<HTMLButtonElement | null>(null);
   const notifDropdownRef = useRef<HTMLDivElement | null>(null);
   const notifUnreadCount = notifRows.filter((row) => !row.read).length;
+  // The bell's count: the unread ones that came in since Notifications was last opened or closed — opening it clears the
+  // count, but they stay unread in the list. When that was is kept in this browser, per person.
+  const bellSeenKey = user?.uid ? `cutsmart_notif_bell_seen_${user.uid}` : "";
+  const [bellSeen, setBellSeen] = useState<{ key: string; at: number; open: boolean }>({ key: "", at: 0, open: false });
+  if (bellSeen.key !== bellSeenKey) {
+    let at = 0;
+    try {
+      at = bellSeenKey && typeof window !== "undefined" ? Number(window.localStorage.getItem(bellSeenKey)) || 0 : 0;
+    } catch {
+      at = 0;
+    }
+    setBellSeen({ key: bellSeenKey, at, open: isNotifOpen });
+  } else if (bellSeen.open !== isNotifOpen) {
+    // (Seen up to the newest one in the list as it's opened or closed — any later one's new.)
+    const newest = notifRows.reduce((max, row) => Math.max(max, Date.parse(row.createdAtIso) || 0), bellSeen.at);
+    setBellSeen({ key: bellSeenKey, at: newest, open: isNotifOpen });
+  }
+  useEffect(() => {
+    if (!bellSeen.key || !bellSeen.at) return;
+    try {
+      window.localStorage.setItem(bellSeen.key, String(bellSeen.at));
+    } catch {
+      // (Not kept — it's counted again from the start next time.)
+    }
+  }, [bellSeen]);
+  const notifBellCount = isNotifOpen ? 0 : notifRows.filter((row) => !row.read && (Date.parse(row.createdAtIso) || 0) > bellSeen.at).length;
   // Which person and company the list was last loaded for — until it has been for these, it isn't "all caught
   // up", just not loaded yet (renderNotifRows shows placeholders then).
   const notifListKey = `${String(user?.uid || "")}|${activeCompanyId}`;
@@ -2385,15 +2411,16 @@ export function GlobalAppTabsBar() {
               <span key={notifBellWobbleKey} className={notifBellWobbleKey > 0 ? "inline-flex bell-wobble" : "inline-flex"}>
                 <Bell size={16} />
               </span>
-              {notifUnreadCount > 0 ? (
-                // How many are unread, on a small pill in the solid red of the app's red X buttons
-                // (--danger-gradient, white text). notif-count-pill (globals.css) centres the number exactly.
+              {notifBellCount > 0 ? (
+                // How many new ones (notifBellCount — since Notifications was last opened), on a small pill in the solid
+                // red of the app's red X buttons (--danger-gradient, white text). notif-count-pill (globals.css) centres the
+                // number exactly.
                 <span
                   className="notif-count-pill pointer-events-none absolute right-[3px] top-[4px] inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-full px-[3.5px] text-[9px] font-semibold leading-none text-white tabular-nums"
                   style={{ backgroundImage: "var(--danger-gradient)" }}
-                  aria-label={`${notifUnreadCount} unread`}
+                  aria-label={`${notifBellCount} new`}
                 >
-                  {notifUnreadCount > 99 ? "99+" : notifUnreadCount}
+                  {notifBellCount > 99 ? "99+" : notifBellCount}
                 </span>
               ) : null}
             </button>

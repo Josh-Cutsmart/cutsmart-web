@@ -1388,6 +1388,20 @@ html[data-keyboard-open="true"] .glass-modal-panel {
   html[data-keyboard-open="true"] .glass-modal-panel[data-phone-fullscreen="true"] [data-keyboard-scroll-pad="true"] {
     padding-bottom: calc(var(--keyboard-inset-px, 0px) + var(--keyboard-offset-top-px, 0px) + 16px);
   }
+  /* A bottom sheet keeping its box (data-phone-keep-box — the cutlist's Edit, Rooms, Notes…): not shrunk above the
+     keyboard either (the backdrop's pale showed under it, through the see-through keyboard) — left as tall as it was,
+     its bottom behind the keyboard, held where it was as above; its scrolling body given room at the bottom for what the
+     keyboard covers, and the field being typed in brought to the middle of what's visible (lib/use-keyboard-inset.ts). */
+  html[data-keyboard-open="true"] .glass-modal-panel[data-phone-keep-box="true"] {
+    max-height: calc(100svh - 48px) !important;
+    overflow-y: hidden;
+    margin-bottom: 0;
+    transform: translateY(var(--keyboard-offset-top-px, 0px));
+    transition: none;
+  }
+  html[data-keyboard-open="true"] .glass-modal-panel[data-phone-keep-box="true"] [data-keyboard-scroll-pad="true"] {
+    padding-bottom: calc(var(--keyboard-inset-px, 0px) + var(--keyboard-offset-top-px, 0px) + 16px);
+  }
 }
 
 /* The phone / tablet cutlist's sheets (components/cutlist-mobile/cutlist-sheet.tsx): up from the bottom of the screen,
@@ -1441,6 +1455,12 @@ tr.cutlist-jump-highlight > td,
 .cutlist-sheet-panel[data-closing="true"] {
   animation: cutlist-sheet-out 220ms cubic-bezier(0.4, 0, 1, 1) forwards;
   pointer-events: none;
+}
+/* Swiped away (components/modal-swipe-to-close.tsx — it's left where the finger took it, off the bottom, by its own
+   translate): no sliding out again — that started from its place, so it flashed back up before going. */
+.cutlist-sheet-panel[data-closing="true"][style*="translate"] {
+  animation: none;
+  visibility: hidden;
 }
 .cutlist-sheet-backdrop {
   animation: cutlist-sheet-fade-in 220ms ease backwards;

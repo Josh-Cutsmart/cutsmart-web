@@ -111,7 +111,8 @@ export function useView3dGestures({
     event.preventDefault();
     const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 400 : 1;
     const [x, y] = local(event.clientX, event.clientY);
-    zoomAt(x, y, Math.exp(-event.deltaY * unit * (event.ctrlKey ? 0.01 : 0.002)));
+    // (The wheel rolled towards you zooms in; a trackpad's pinch, as it's pinched.)
+    zoomAt(x, y, Math.exp(-event.deltaY * unit * (event.ctrlKey ? 0.01 : -0.002)));
   });
   useEffect(() => {
     if (!host) return;

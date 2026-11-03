@@ -255,6 +255,10 @@ service cloud.firestore {
         match /projectMedia/{kind} {
           allow read, write: if isCompanyMember(companyId);
         }
+        // Drawings — one doc per kind ("kitchen": Planning › Drawing).
+        match /drawings/{kind} {
+          allow read, write: if isCompanyMember(companyId);
+        }
       }
 
       // Invites: used by Staff & Permissions "Add Staff" and Join Company invite flow
@@ -305,6 +309,9 @@ service cloud.firestore {
         allow read, write: if canUseLegacyProjectChild(projectId);
       }
       match /projectMedia/{kind} {
+        allow read, write: if canUseLegacyProjectChild(projectId);
+      }
+      match /drawings/{kind} {
         allow read, write: if canUseLegacyProjectChild(projectId);
       }
     }

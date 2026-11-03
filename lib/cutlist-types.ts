@@ -62,6 +62,8 @@ export type CutlistRow = {
   parentName?: string;
   bankGroupId?: string;
   bankFrontIndexes?: number[];
+  // A sub part's main row (added under it in the Cutlist Entry): the row's id.
+  parentRowId?: string;
   // A Custom part type's piece: the shape it's cut to (lib/cutlist-shape.ts) — its Height and Width are the shape's
   // outer size, its edge banding the shape's own.
   shape?: CutlistShape;

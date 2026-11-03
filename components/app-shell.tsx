@@ -1045,7 +1045,9 @@ export function AppShell({
     pullTopBarElRef.current = topBarEl;
   };
   type PullZone = "reload" | "dashboard" | "saveBack";
-  const pullDashboardRef = useRef<{ startY: number; active: boolean; armed: boolean; selected: PullZone } | null>(null);
+  // (startX: for telling a pull down from a sideways drag. armedSince: when it was last pulled all the way out — it has to
+  // be held there a moment before letting go does anything.)
+  const pullDashboardRef = useRef<{ startY: number; startX: number; active: boolean; armed: boolean; armedSince: number; selected: PullZone } | null>(null);
   // The bar's resting height (matches the tab bar's own h-12) and how tall it can grow if you keep
   // pulling past that — "it should be able to stretch higher, not stop at the tab bar's own
   // height." Both the real tab bar's outer div AND this banner are set to the SAME live height
@@ -1057,7 +1059,12 @@ export function AppShell({
   // has been pulled all the way out to its current full height, not at some shorter, separate
   // threshold partway through the grow. Releasing before the bar is fully stretched out never
   // fires anything, no matter which zone the finger was over.
-  const PULL_HEIGHT_GROW_DISTANCE_PX = 160;
+  const PULL_HEIGHT_GROW_DISTANCE_PX = 200;
+  // Not set off by accident: nothing moves till the finger's come this far down (a scroll that bounces at the top of a
+  // page, a tap that slides a little) — and, fully pulled, it's only armed once it's been held there this long (a quick
+  // flick down and off the screen never fires Save & Back or a reload).
+  const PULL_DEAD_ZONE_PX = 24;
+  const PULL_ARM_HOLD_MS = 180;
   // How far the finger has to travel for the tab-bar-content/pulldown-icons crossfade to go 0 → 1
   // — deliberately SHORT, independent of the (longer) height-grow distance above. The bubble-travel
   // animation is a fixed-duration CSS animation triggered whenever the selected zone changes
@@ -1285,6 +1292,17 @@ export function AppShell({
     // else on the page. So this one is only checked once the axis is known, in onMainTouchMove's
     // horizontal branch, not bailed out of here.
     const startedOnGestureExempt = (event.target as HTMLElement | null)?.closest('[data-app-gesture-exempt="true"]');
+    // ...and anything that's a pop-up of its own, or a menu, wherever it is (React passes a touch on a pop-up portalled to
+    // the page's body back up through here) — or any pop-up open at all, looked for now (isAnyPopupOpen's flag is a frame
+    // behind, and only knows those with a backdrop it recognises).
+    const POPUP_SELECTOR =
+      '.glass-modal-panel, .glass-modal-backdrop, [role="dialog"], [aria-modal="true"], [role="menu"], [role="listbox"], [data-glass-dropdown-menu="true"]';
+    const startedOnPopup = Boolean((event.target as HTMLElement | null)?.closest(POPUP_SELECTOR));
+    const popupShowing =
+      typeof document !== "undefined" &&
+      Array.from(document.querySelectorAll<HTMLElement>('.glass-modal-panel, [role="dialog"], [aria-modal="true"]')).some(
+        (el) => !el.closest("[inert]") && el.getClientRects().length > 0,
+      );
     // event.touches.length > 1: a pinch's two fingers can easily read as one finger dragging
     // (the exact motion that pulls down the nav bar or swipes open the nav/notif drawers here) —
     // belt-and-braces alongside startedOnGestureExempt above, which is what actually stops this in
@@ -1293,7 +1311,16 @@ export function AppShell({
     // isAnyPopupOpen(): while a pop-up is up (anything components/scroll-lock-watcher.tsx counts — a
     // modal, a drawer, a confirm), a drag on it belongs to the pop-up — dragging down shouldn't pull the
     // top menu down over it, and a sideways drag shouldn't slide a drawer in under/over it.
-    if (isDesktopViewport || mobileNavOpen || notifOpen || startedOnGestureExempt || event.touches.length > 1 || isAnyPopupOpen()) {
+    if (
+      isDesktopViewport ||
+      mobileNavOpen ||
+      notifOpen ||
+      startedOnGestureExempt ||
+      startedOnPopup ||
+      popupShowing ||
+      event.touches.length > 1 ||
+      isAnyPopupOpen()
+    ) {
       mainSwipeStartRef.current = null;
       pullDashboardRef.current = null;
       // Also clear a stale kind, not just the two refs above — a previous gesture that committed
@@ -1360,7 +1387,7 @@ export function AppShell({
     // behind on a real device, when a second gesture (e.g. a quick re-grab right after a pinch)
     // starts before React has caught up, which let this pulldown arm mid-zoom.
     if (alreadyAtTop && mobileTopBarEnabled && !isSheetZoomedAwayFromEdgeRef.current) {
-      pullDashboardRef.current = { startY: touch.clientY, active: false, armed: false, selected: "dashboard" };
+      pullDashboardRef.current = { startY: touch.clientY, startX: touch.clientX, active: false, armed: false, armedSince: 0, selected: "dashboard" };
       if (typeof document !== "undefined") findPullTopBar();
       else pullTopBarElRef.current = null;
       pullTopBarContentElRef.current =
@@ -1472,11 +1499,18 @@ export function AppShell({
     // The board's already moving sideways under the finger (the browser took it as a horizontal scroll): never pull
     // the menu down over it — that would stop it.
     if (start.scroller && Math.abs(start.scroller.scrollLeft - start.scrollerLeft) > 1 && !pull.active) return;
-    const dy = touch.clientY - pull.startY;
+    // (Only once it's well on its way down — and more down than sideways; a drag that's mostly sideways never starts it.)
+    const rawDy = touch.clientY - pull.startY;
+    if (!pull.active && rawDy > 0 && Math.abs(touch.clientX - pull.startX) > rawDy * 0.75) {
+      pullDashboardRef.current = null;
+      return;
+    }
+    const dy = rawDy - PULL_DEAD_ZONE_PX;
     if (dy <= 0) {
       if (pull.active) {
         pull.active = false;
         pull.armed = false;
+        pull.armedSince = 0;
         resetPullBanner(false);
       }
       return;
@@ -1493,7 +1527,10 @@ export function AppShell({
     const barHeight = PULL_BANNER_MIN_HEIGHT_PX + (PULL_BANNER_MAX_HEIGHT_PX - PULL_BANNER_MIN_HEIGHT_PX) * heightProgress;
     // Armed only once the bar has been pulled all the way out to its current full height — not at
     // some earlier, shorter distance — so a zone only "activates" when the menu is fully revealed.
-    pull.armed = heightProgress >= 1;
+    const fullyOut = heightProgress >= 1;
+    if (fullyOut && !pull.armed) pull.armedSince = event.timeStamp;
+    if (!fullyOut) pull.armedSince = 0;
+    pull.armed = fullyOut;
     // Three equal zones left-to-right: Reload / Dashboard / Save & Back.
     const fraction = touch.clientX / window.innerWidth;
     pull.selected = fraction < 1 / 3 ? "reload" : fraction < 2 / 3 ? "dashboard" : "saveBack";
@@ -1544,7 +1581,8 @@ export function AppShell({
       resetPullBanner(true);
     }
     if (pull?.active) {
-      if (pull.armed) {
+      // (Held all the way out for a moment first — a quick flick past it doesn't count.)
+      if (pull.armed && pull.armedSince > 0 && event.timeStamp - pull.armedSince >= PULL_ARM_HOLD_MS) {
         // Let the banner's own release animation (just kicked off above, via the unconditional
         // resetPullBanner(true)) actually play before firing the action, instead of it starting to
         // slide back to hidden and then immediately being torn away by a reload/navigation — this

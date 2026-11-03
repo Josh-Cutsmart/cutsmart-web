@@ -19,6 +19,7 @@ const PROJECT_COLLECTIONS = [
   "checklists",
   "salesGrids",
   "projectMedia",
+  "drawings",
 ] as const;
 
 type ExportedDoc = { id: string; data: unknown; collections?: Record<string, ExportedDoc[]> };

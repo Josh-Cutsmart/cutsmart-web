@@ -49,12 +49,17 @@ function readKeyboardInset(vv: VisualViewport): KeyboardInset {
 // focused field into view at the moment it was focused (before the cap) — so bring it back into the visible part of
 // whichever scroll area(s) inside the panel now hold it. Visible: inside the scroll area, and on screen above the
 // keyboard (a full-screen pop-up's scroll area reaches down behind it).
+// A pop-up that reaches down behind the keyboard on a phone: a full-screen one (data-phone-fullscreen, and every pop-up
+// on a phone but those keeping their box), or a bottom sheet (data-phone-keep-box — the cutlist's) — see app/globals.css.
+const BEHIND_KEYBOARD_PANEL = '.glass-modal-panel[data-phone-fullscreen="true"], .glass-modal-panel[data-phone-keep-box="true"]';
+
 function revealFocusedFieldInPanel(): void {
   const field = document.activeElement;
   if (!(field instanceof HTMLElement) || !field.closest(".glass-modal-panel")) return;
-  // (Only a full-screen pop-up's scroll area reaches behind the keyboard; a capped one's is all above it already.)
+  // (A pop-up reaching behind the keyboard: the field centred in what's visible above it, as a page's are. A capped one's
+  // scroll area is all above it already: just into view.)
   const vv = window.visualViewport;
-  const behindKeyboard = Boolean(field.closest('.glass-modal-panel[data-phone-fullscreen="true"]'));
+  const behindKeyboard = Boolean(field.closest(BEHIND_KEYBOARD_PANEL)) || isPhoneFullscreenPanel(field);
   const visibleTop = vv && behindKeyboard ? vv.offsetTop : -Infinity;
   const visibleBottom = vv && behindKeyboard ? vv.offsetTop + vv.height : Infinity;
   for (let node = field.parentElement; node; node = node.parentElement) {
@@ -64,11 +69,21 @@ function revealFocusedFieldInPanel(): void {
       const top = Math.max(box.top, visibleTop);
       const bottom = Math.min(box.bottom, visibleBottom);
       const rect = field.getBoundingClientRect();
-      if (rect.bottom > bottom) node.scrollTop += rect.bottom - bottom + REVEAL_MARGIN_PX;
+      if (behindKeyboard && bottom - top > rect.height + REVEAL_MARGIN_PX * 2) {
+        const target = top + (bottom - top - rect.height) / 2;
+        node.scrollTop += rect.top - target;
+      } else if (rect.bottom > bottom) node.scrollTop += rect.bottom - bottom + REVEAL_MARGIN_PX;
       else if (rect.top < top) node.scrollTop -= top - rect.top + REVEAL_MARGIN_PX;
     }
     if (node.classList.contains("glass-modal-panel")) return;
   }
+}
+
+// A phone's pop-up shown as the whole screen without being marked so (globals.css: every pop-up on a phone but those
+// keeping their box).
+function isPhoneFullscreenPanel(field: HTMLElement): boolean {
+  const panel = field.closest<HTMLElement>(".glass-modal-panel");
+  return Boolean(panel) && panel!.dataset.phoneKeepBox !== "true" && window.matchMedia("(max-width: 639.98px)").matches;
 }
 
 // A notes box (data-keyboard-center — a lead's new note, a project's Notes cards) being typed in with the keyboard up:
@@ -81,9 +96,32 @@ const CENTER_MARGIN_PX = 12;
 const KEYBOARD_ROOM_ATTR = "data-keyboard-room";
 const KEYBOARD_ROOM_VAR = "--keyboard-room-px";
 
+// What's being typed in, to bring to the middle: a notes box (data-keyboard-center) — or, on a touch screen, any text box
+// on a page (not in a pop-up, which looks after its own; not in a bar pinned over the page — a sticky search — which
+// scrolling can't move; not marked data-keyboard-center="off").
+const TEXT_INPUT_TYPES = new Set(["", "text", "search", "email", "tel", "url", "number", "password", "date", "time", "datetime-local"]);
+
+function isTextEntry(el: HTMLElement): boolean {
+  if (el.isContentEditable || el instanceof HTMLTextAreaElement) return true;
+  return el instanceof HTMLInputElement && TEXT_INPUT_TYPES.has(el.type) && !el.readOnly;
+}
+
+function inPinnedBar(el: HTMLElement): boolean {
+  for (let node = el.parentElement; node && node !== document.body; node = node.parentElement) {
+    const { position } = getComputedStyle(node);
+    if (position === "sticky" || position === "fixed") return true;
+  }
+  return false;
+}
+
 function focusedKeyboardCenterBox(): HTMLElement | null {
   const field = document.activeElement;
-  return field instanceof HTMLElement ? field.closest<HTMLElement>("[data-keyboard-center]") : null;
+  if (!(field instanceof HTMLElement)) return null;
+  const marked = field.closest<HTMLElement>("[data-keyboard-center]");
+  if (marked) return marked.dataset.keyboardCenter === "off" ? null : marked;
+  if (!window.matchMedia("(pointer: coarse)").matches || !isTextEntry(field)) return null;
+  if (field.closest(".glass-modal-panel") || inPinnedBar(field)) return null;
+  return field;
 }
 
 // Room at the end of a scroll area (its ::after) — only where that's what it gives (not a box that would just grow
@@ -178,7 +216,8 @@ function focusInPhoneFullscreenPanel(): boolean {
   const field = document.activeElement;
   return (
     field instanceof HTMLElement &&
-    Boolean(field.closest('.glass-modal-panel[data-phone-fullscreen="true"]')) &&
+    Boolean(field.closest(".glass-modal-panel")) &&
+    (Boolean(field.closest(BEHIND_KEYBOARD_PANEL)) || isPhoneFullscreenPanel(field)) &&
     window.matchMedia("(max-width: 639.98px)").matches
   );
 }

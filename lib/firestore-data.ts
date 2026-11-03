@@ -2094,6 +2094,7 @@ const PROJECT_CONTENT_SUBCOLLECTIONS = [
   "checklists",
   "salesGrids",
   "projectMedia",
+  "drawings",
 ] as const;
 
 // An image or file — embedded (a data: URL), or in Storage (its download URL, gs:// address or path).
@@ -3553,6 +3554,44 @@ export async function migrateLegacyProjectChecklists(project: Project, checklist
     return true;
   } catch (error) {
     console.warn("[migrateLegacyProjectChecklists] write failed:", error);
+    return false;
+  }
+}
+
+// Drawings — one doc per kind ("kitchen": Planning › Drawing — what's placed where, the pieces left off, the
+// bench's overhangs; kept as JSON text), beside the project like the others, so its doc isn't rewritten on every change. Read: `data`
+// null — none saved yet; null itself — it couldn't be read (so nothing's written over it).
+export type ProjectDrawingKind = "kitchen";
+
+export async function fetchProjectDrawing(project: Project, kind: ProjectDrawingKind): Promise<{ data: Record<string, unknown> | null } | null> {
+  const ref = await resolveProjectDocRef(project);
+  if (!ref) return null;
+  try {
+    const snap = await getDoc(doc(ref, "drawings", kind));
+    if (!snap.exists()) return { data: null };
+    const raw = snap.data() as Record<string, unknown>;
+    // (Kept as text — a drawing has lists in lists, which Firestore can't hold.)
+    if (typeof raw.json === "string") {
+      const parsed: unknown = JSON.parse(raw.json);
+      return { data: parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null };
+    }
+    return { data: raw };
+  } catch (error) {
+    console.warn(`[fetchProjectDrawing] ${kind} read failed:`, error);
+    return null;
+  }
+}
+
+export async function saveProjectDrawing(project: Project, kind: ProjectDrawingKind, data: Record<string, unknown>): Promise<boolean> {
+  if (!db) return false;
+  const ref = await resolveProjectDocRef(project);
+  if (!ref) return false;
+  try {
+    // (As text: a drawing has lists in lists — a cabinet's fronts in columns — which Firestore can't hold.)
+    await setDoc(doc(ref, "drawings", kind), { json: JSON.stringify(data), updatedAtIso: new Date().toISOString() });
+    return true;
+  } catch (error) {
+    console.warn(`[saveProjectDrawing] ${kind} write failed:`, error);
     return false;
   }
 }

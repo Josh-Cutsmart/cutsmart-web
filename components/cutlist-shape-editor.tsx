@@ -699,7 +699,8 @@ function ShapeEditorBody({
     event.preventDefault();
     const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? size.height || 400 : 1;
     const [x, y] = stagePoint(event.clientX, event.clientY);
-    zoomAt(x, y, Math.exp(-event.deltaY * unit * (event.ctrlKey ? 0.01 : 0.002)));
+    // (The wheel rolled towards you zooms in, as the 3D views' — lib/use-view-3d-gestures.ts.)
+    zoomAt(x, y, Math.exp(-event.deltaY * unit * (event.ctrlKey ? 0.01 : -0.002)));
   });
   useEffect(() => {
     const el = stageRef.current;

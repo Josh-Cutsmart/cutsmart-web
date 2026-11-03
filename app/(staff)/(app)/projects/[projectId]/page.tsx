@@ -8,7 +8,7 @@ import { haptic } from "@/lib/haptics";
 import { createPortal, flushSync } from "react-dom";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Great_Vibes } from "next/font/google";
-import { AlertTriangle, ArrowLeft, ArrowLeftRight, ArrowRight, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, CloudCheck, CloudOff, CloudUpload, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, EyeOff, File as FileIcon, FileSpreadsheet, FileUp, FileText, FolderSearch, GitBranch, Eraser, GripVertical, HardHat, History as HistoryIcon, Image as ImageIcon, ImagePlus, Import as ImportIcon, Inbox, Info, Layers, Link2, ListChecks, Lock, Mail, MapPin, Maximize2, Minimize2, Minus, Package, PanelRightClose, MoreHorizontal, NotebookPen, Pencil, Phone, Plus, Printer, QrCode, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, Unlock, User, UserPlus, Users, Wrench, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowLeftRight, ArrowRight, Box, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, CloudCheck, CloudOff, CloudUpload, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, EyeOff, File as FileIcon, FileSpreadsheet, FileUp, FileText, FolderSearch, GitBranch, Eraser, GripVertical, HardHat, History as HistoryIcon, Image as ImageIcon, ImagePlus, Import as ImportIcon, Inbox, Info, Layers, Link2, ListChecks, Lock, Mail, MapPin, Maximize2, Minimize2, Minus, Package, PanelRightClose, MoreHorizontal, NotebookPen, Pencil, Phone, Plus, Printer, QrCode, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, Unlock, User, UserPlus, Users, Wrench, X } from "lucide-react";
 import type { DecoupledEditor, ModelWriter } from "ckeditor5";
 import type { RichText as ExcelRichText } from "exceljs";
 import type JSZip from "jszip";
@@ -127,6 +127,8 @@ import {
   updateGridVersionGrid,
   updateProductComparison,
   updateProjectPatch,
+  fetchProjectDrawing,
+  saveProjectDrawing,
   restoreArchivedProject,
   updateProjectStatus,
   convertSmallJobToProject,
@@ -185,6 +187,9 @@ import { Skeleton, SkeletonGroup, SkeletonLines, SkeletonRows } from "@/componen
 import { EmptyState } from "@/components/empty-state";
 import { CutlistSheet } from "@/components/cutlist-mobile/cutlist-sheet";
 import { ContractorIcon, normalizeContractorIcons } from "@/components/contractor-icon";
+import { DimensionMathBar } from "@/components/cutlist-mobile/dimension-math-bar";
+import { KitchenDrawing, type KitchenFront, type KitchenUnit } from "@/components/kitchen-drawing";
+import { dimensionMathText, evaluateDimensionMath } from "@/lib/dimension-math";
 import { CutlistMixBar, CutlistRoomBar, CutlistRoomRail, CutlistRoomSlide, CutlistRoomsSheet, formatPartsLabel, type CutlistRoomItem } from "@/components/cutlist-mobile/cutlist-rooms";
 import { CutlistEntryCard, CutlistHwdSize, CutlistNotesButton, CutlistViewSwitch, useAutoFoldDrafts, type CutlistCardTone } from "@/components/cutlist-mobile/cutlist-entry";
 import { CutlistListToolbar, CutlistListView, type CutlistListCardData, type CutlistListGroupData } from "@/components/cutlist-mobile/cutlist-list";
@@ -855,7 +860,7 @@ function orderLinesFromDatabase(
   return { lines: merged && sigs(merged) !== sigs(hereLines) ? merged : null };
 }
 
-type ProductionNav = "overview" | "cutlist" | "nesting" | "cnc" | "order" | "labels" | "unlock" | "print" | "remedials";
+type ProductionNav = "overview" | "cutlist" | "nesting" | "cnc" | "order" | "labels" | "drawing" | "unlock" | "print" | "remedials";
 // Production › Labels' room filter: every room's.
 const ALL_LABEL_ROOMS = "__all_rooms__";
 // Labels' QR codes switched off ("off") or on, on this device.
@@ -7171,39 +7176,6 @@ function numericDimensionText(value: unknown): string {
   return numericDecimalText(value, 1);
 }
 
-// What can be typed in a Height / Width / Depth box: numbers (a decimal place each) and, for a sum, + - * x / between them
-// ("50-16") — worked out as the box is left (evaluateDimensionMath).
-function dimensionMathText(value: unknown): string {
-  const raw = String(value ?? "")
-    .replace(/[×X]/g, "x")
-    .replace(/[^\d.+\-*/x]/g, "");
-  return raw
-    .split(/([+\-*/x])/)
-    .map((part, index) => (index % 2 ? part : numericDecimalText(part, 1)))
-    .join("");
-}
-// A sum typed in one of those boxes, worked out as a calculator does: left to right, each step on the total so far
-// ("300-2-2-2/2" is 147, not 295) — * and x multiply, / divides — to 1 decimal place, never below 0. null when it isn't a
-// whole sum (just a number, one still being typed, or a divide by 0).
-function evaluateDimensionMath(text: string): string | null {
-  const t = String(text ?? "").replace(/\s/g, "").replace(/[×X]/g, "x");
-  if (!/^\d*\.?\d+(?:[+\-*/x]\d*\.?\d+)+$/.test(t)) return null;
-  const tokens = t.split(/([+\-*/x])/);
-  let total = Number.parseFloat(tokens[0]);
-  for (let i = 1; i < tokens.length; i += 2) {
-    const op = tokens[i];
-    const n = Number.parseFloat(tokens[i + 1]);
-    if (op === "+") total += n;
-    else if (op === "-") total -= n;
-    else if (op === "*" || op === "x") total *= n;
-    else {
-      if (n === 0) return null;
-      total /= n;
-    }
-  }
-  if (!Number.isFinite(total)) return null;
-  return String(Math.max(0, Math.round(total * 10) / 10));
-}
 
 function isNumericCutlistInputKey(key: string): boolean {
   return key === "height" || key === "width" || key === "depth" || key === "quantity";
@@ -8325,6 +8297,10 @@ function serializeCutlistRowsForStorage(
         Grain: String(row.grainValue || (row.grain ? "Yes" : "")),
         includeInNesting: row.includeInNesting !== false,
         parentName: String(row.parentName ?? ""),
+        // (A drawer bank's fronts: their bank, and their places in it top to bottom. A sub part: its main row.)
+        ...(row.bankGroupId ? { bankGroupId: row.bankGroupId } : {}),
+        ...(row.bankFrontIndexes?.length ? { bankFrontIndexes: row.bankFrontIndexes } : {}),
+        ...(row.parentRowId ? { parentRowId: row.parentRowId } : {}),
       };
   });
 }
@@ -8375,6 +8351,9 @@ function serializeCutlistRowsSnapshot(rows: CutlistRow[]) {
         grainValue: String(row.grainValue ?? ""),
         includeInNesting: row.includeInNesting !== false,
         parentName: String(row.parentName ?? ""),
+        bankGroupId: String(row.bankGroupId ?? ""),
+        bankFrontIndexes: row.bankFrontIndexes ?? [],
+        parentRowId: String(row.parentRowId ?? ""),
       })),
   );
 }
@@ -8448,8 +8427,13 @@ function placeProjectHeaderGlass(glass: HTMLElement | null, titleBar: HTMLElemen
   });
   if (!glass) return;
   const tabs = tabBar?.getBoundingClientRect();
-  const glassOn = tabs && tabs.top <= titleBottom + 1 ? "true" : "false";
-  glass.style.height = `${Math.max(0, tabs ? tabs.bottom : titleBottom)}px`;
+  // (No tab bar showing — a small job's page is just its General tab: the glass behind the title bar alone, once the
+  // page has scrolled under it.)
+  const tabsShown = Boolean(tabs && tabs.height > 0);
+  const mainEl = typeof document !== "undefined" ? document.querySelector("main") : null;
+  const scrolled = (typeof window !== "undefined" && window.scrollY > 0) || (mainEl ? mainEl.scrollTop > 0 : false);
+  const glassOn = tabsShown ? (tabs && tabs.top <= titleBottom + 1 ? "true" : "false") : scrolled ? "true" : "false";
+  glass.style.height = `${Math.max(0, tabsShown && tabs ? tabs.bottom : titleBottom)}px`;
   glass.style.opacity = glassOn === "true" ? "1" : "0";
   // The title bar: solid until then, hiding the dates bar going under it however fast it's scrolled.
   if (titleBar.dataset.glassOn !== glassOn) titleBar.dataset.glassOn = glassOn;
@@ -10478,6 +10462,13 @@ export default function ProjectDetailsPage() {
   const quoteVersionLongPress = useLongPress();
   const specsVersionLongPress = useLongPress();
   const [nestingCompactBoardKey, setNestingCompactBoardKey] = useState("");
+  // A small job's Boards (its General tab's side button): Production's Board Settings, in a pop-up — a small job has no
+  // Production tab, and its cutlist needs its boards.
+  const [isSmallJobBoardsOpen, setIsSmallJobBoardsOpen] = useState(false);
+  const [smallJobBoardsOrigin, setSmallJobBoardsOrigin] = useState<GlassModalOrigin>(null);
+  const smallJobBoardsPanelRef = useRef<HTMLDivElement | null>(null);
+  const smallJobBoardsOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderSmallJobBoards = useGlassModalPopOrigin(isSmallJobBoardsOpen, smallJobBoardsOrigin, smallJobBoardsPanelRef, undefined, smallJobBoardsOriginElRef);
   // The computer's Nesting: the board picked in its Boards rail (none yet: the first), and whether the middle shows its
   // sheets or every part on them. The sheet open on the right is nestingSheetPreview's (as the phone's pop-up's).
   const [nestingDesktopBoardKey, setNestingDesktopBoardKey] = useState("");
@@ -13002,8 +12993,9 @@ export default function ProjectDetailsPage() {
   const productionCutlistState = useProjectCutlistRaw(
     project,
     "production",
-    // (And a part opened from its label's QR code — ?part=, scannedPartPortal — whichever tab it opens on.)
-    resolvedTab === "production" || isProductionPrintModalOpen || Boolean(searchParams.get("part")),
+    // (And a part opened from its label's QR code — ?part=, scannedPartPortal — whichever tab it opens on. And a small
+    // job's Boards pop-up: its boards' sheet counts.)
+    resolvedTab === "production" || isProductionPrintModalOpen || Boolean(searchParams.get("part")) || isSmallJobBoardsOpen,
   );
   // Who else has the cutlist open right now (lib/use-cutlist-presence.ts): "Anna is also editing", in its top bar. Only
   // people who can edit it count themselves in; anyone with it open sees them.
@@ -13256,6 +13248,7 @@ export default function ProjectDetailsPage() {
     cnc: "Production CNC Cutlist",
     order: "Production Order",
     labels: "Production Labels",
+    drawing: "Planning Drawing",
   };
   const buildProjectLiveViewKey = useCallback(
     (mainTab: ProjectMainTab, nextSalesNav: SalesNav, nextProductionNav: ProductionNav) => {
@@ -21944,6 +21937,11 @@ export default function ProjectDetailsPage() {
               grainValue: grainParsed.grainValue,
               includeInNesting,
               parentName: String(item.parentName ?? "").trim() || undefined,
+              bankGroupId: String(item.bankGroupId ?? "").trim() || undefined,
+              bankFrontIndexes: Array.isArray(item.bankFrontIndexes)
+                ? item.bankFrontIndexes.map((n) => Number(n)).filter((n) => Number.isFinite(n) && n > 0)
+                : undefined,
+              parentRowId: String(item.parentRowId ?? "").trim() || undefined,
           };
         });
         // A save from here on its way: its rows come back with it in a moment.
@@ -25332,12 +25330,21 @@ export default function ProjectDetailsPage() {
   // The rooms that can have their own hardware (the Hardware container lists them when there's more than one).
   const hardwareRoomNames = cutlistAddedRoomTabs.map((tab) => tab.filter);
 
-  const onAddBoardRow = async () => {
+  // (A phone or tablet: the new board's pop-up opened on it straight away, from the + pressed — its rows are each one's
+  // pop-up there, not fields in a row.)
+  const onAddBoardRow = async (e?: ReactMouseEvent<HTMLElement>) => {
+    const row = newBoardRow();
     const next = {
       ...productionForm,
-      boardTypes: [...productionForm.boardTypes, newBoardRow()],
+      boardTypes: [...productionForm.boardTypes, row],
     };
     setProductionForm(next);
+    if (isCompactProjectViewport && e) {
+      boardRowDetailOriginElRef.current = e.currentTarget;
+      setBoardRowDetailOrigin(captureGlassModalOrigin(e));
+      setBoardRowDetailId(row.id);
+      setIsBoardRowDetailOpen(true);
+    }
     await persistProductionForm(next);
   };
 
@@ -29764,7 +29771,15 @@ export default function ProjectDetailsPage() {
     setCutlistCellWarnings(nextWarnings);
     flashCutlistWarningCells(nextWarnings);
     if (!accepted.length) return nextWarnings;
-    const nextRows: CutlistRow[] = [...cutlistRows, ...accepted.flatMap((row) => expandAcceptedRowForCutlist(row))];
+    // (Each sub part keeps its main row's id — the main row's new one, as it's added.)
+    let mainRowId = "";
+    const addedRows = accepted.flatMap((row) => {
+      const rows = expandAcceptedRowForCutlist(row);
+      if (subPartDraftRowIds.has(row.id) && mainRowId) return rows.map((added) => ({ ...added, parentRowId: mainRowId }));
+      mainRowId = rows[0]?.id ?? "";
+      return rows;
+    });
+    const nextRows: CutlistRow[] = [...cutlistRows, ...addedRows];
     for (const row of accepted) {
       logCutlistActivity(`${row.name || "Part"} added to ${row.room || "Project Cutlist"}`, {
         partType: row.partType,
@@ -31358,6 +31373,49 @@ export default function ProjectDetailsPage() {
     setCutlistListEditDeleteArmed(false);
     setCutlistListEdit({ scope, rowId, draftId, open: true });
   };
+  // A part's part type changed in its Edit sheet: as a List cell's own change makes it (commitCellEdit) — its shape let go
+  // (all but a Custom part type), a cabinet's shelves kept and its clashing cleared or the other way round, a drawer's
+  // heights tidied.
+  const partTypeSwitchPatch = (row: CutlistDraftRow, value: string): Partial<CutlistDraftRow> => {
+    const updated: CutlistDraftRow = { ...row, partType: value };
+    if (updated.shape && !isCustomPartType(value)) updated.shape = undefined;
+    if (isCabinetryPartType(value)) {
+      updated.clashing = "";
+      updated.clashLeft = "";
+      updated.clashRight = "";
+      updated.fixedShelfDrilling = normalizeDrillingValue(updated.fixedShelfDrilling);
+      updated.adjustableShelfDrilling = normalizeDrillingValue(updated.adjustableShelfDrilling);
+    } else {
+      updated.fixedShelf = "";
+      updated.adjustableShelf = "";
+      updated.fixedShelfDrilling = "No";
+      updated.adjustableShelfDrilling = "No";
+      updated.clashing = joinClashing(String(updated.clashLeft ?? ""), String(updated.clashRight ?? ""));
+    }
+    if (isClassicDrawerRowLike({ partType: value, doorMode: updated.doorMode })) {
+      const tokens = parseDrawerHeightTokens(String(updated.height ?? ""));
+      updated.height = formatDrawerHeightTokens(tokens);
+      updated.quantity = String(Math.max(1, tokens.length));
+    }
+    return updated;
+  };
+  // Its part type picker: its cutlist's part types, in their colours (not Custom — that's drawn; a Custom part keeps its own).
+  const renderListEditPartType = (draft: CutlistDraftRow, options: string[], disabled: boolean, onPick: (patch: Partial<CutlistDraftRow>) => void) => (
+    <div className="space-y-1">
+      <p className="text-[10px] font-bold uppercase tracking-[1px]">Part Type</p>
+      <GlassSelectDropdown
+        fullWidth
+        value={String(draft.partType || "")}
+        options={options.filter((option) => !isCustomPartType(option) || option === draft.partType)}
+        getOptionColor={(option) => partTypeColors[option]}
+        disabled={disabled}
+        onChange={(next) => {
+          if (next !== draft.partType) onPick(partTypeSwitchPatch(draft, next));
+        }}
+        className="h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-left text-[12px] text-[var(--text-main)]"
+      />
+    </div>
+  );
   const closeCutlistListEdit = () => {
     const edit = cutlistListEdit;
     if (!edit) return;
@@ -32668,7 +32726,30 @@ export default function ProjectDetailsPage() {
     const roomFilter = initial ? initialCutlistRoomFilter : cutlistRoomFilter;
     const search = initial ? initialCutlistSearch : cutlistSearch;
     const rooms = initial ? initialCutlistAddedRoomTabs : cutlistAddedRoomTabs;
-    if (roomFilter !== "Project Cutlist" || search.trim() || !rooms.length) return null;
+    if (roomFilter !== "Project Cutlist" || search.trim()) return null;
+    // (No rooms at all yet: Add Room — the Rooms' own, its room's cutlist opened once it's made.)
+    if (!rooms.length) {
+      return salesAccess.edit ? (
+        <div className="mt-1 flex justify-center px-3 pb-4">
+          <button
+            type="button"
+            onClick={(e) => {
+              const el = e.currentTarget;
+              addRoomPilotOriginElRef.current = el;
+              addRoomFullscreenOriginElRef.current = el;
+              const rect = el.getBoundingClientRect();
+              setRoomModalOrigin({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+              void onAddCutlistRoom();
+            }}
+            className="glass-shine inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-full px-5 text-[13px] font-semibold text-white transition hover:brightness-105"
+            style={glassShineStyle("#16A34A")}
+          >
+            <Plus size={16} strokeWidth={2.6} />
+            Add Room
+          </button>
+        </div>
+      ) : null;
+    }
     return (
       <div className="mt-1 flex flex-wrap items-center justify-center gap-2 px-3 pb-4">
         {rooms.map((roomTab) => (
@@ -36419,6 +36500,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   }, [isCncFullscreen]);
   const isOrderFullscreen = resolvedTab === "production" && productionAccess.view && productionNav === "order";
   const isLabelsFullscreen = resolvedTab === "production" && productionAccess.view && productionNav === "labels";
+  // Planning › Drawing — the kitchen drawn from the cutlist's pieces (components/kitchen-drawing.tsx).
+  const isKitchenDrawingFullscreen = resolvedTab === "production" && productionAccess.view && productionNav === "drawing";
   const isSalesInitialFullscreen = resolvedTab === "sales" && salesAccess.view && salesNav === "initial";
   // The Initial Measure Cutlist Entry's top, as the production cutlist's (its own scrolling area — reaching up under the
   // top bar and the feed's band — held 8px under them).
@@ -36509,7 +36592,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     wasNestingFullscreenRef.current = isNestingFullscreen;
   }, [isNestingFullscreen]);
   const isProductionSectionFullscreen =
-    isCutlistFullscreen || isCncFullscreen || isOrderFullscreen || isNestingFullscreen || isLabelsFullscreen;
+    isCutlistFullscreen || isCncFullscreen || isOrderFullscreen || isNestingFullscreen || isLabelsFullscreen || isKitchenDrawingFullscreen;
   useEffect(() => {
     setChromeHidden(
       isProductionSectionFullscreen ||
@@ -41704,6 +41787,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   const generalSideTabs = [
     // A small job's cutlist: Production's own cutlist screen (its General tab is all a small job has otherwise).
     ...(project?.isSmallJob && productionAccess.view ? [{ label: "Cutlist", icon: Scissors, key: "cutlist" as const }] : []),
+    // ...and its boards (Board Settings, in a pop-up).
+    ...(project?.isSmallJob && productionAccess.view ? [{ label: "Boards", icon: Layers, key: "boards" as const }] : []),
     ...(project?.sourceLeadId ? [{ label: "Lead", icon: Inbox, key: "lead" as const }] : []),
     ...(productionAccess.view || salesAccess.view ? [{ label: "Specifications", icon: ClipboardList, key: "specifications" as const }] : []),
     ...(projectScheduleViewer.canViewCalendar ? [{ label: "Schedule", icon: CalendarDays, key: "schedule" as const }] : []),
@@ -47480,6 +47565,135 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         )
       : null;
 
+  // Planning › Drawing: the production cutlist's pieces — a door set up as fronts, each front — at their boards'
+  // thickness, and the project's gaps (General › Gap allowances, else the company's).
+  if (isKitchenDrawingFullscreen) {
+    const companyGaps = normalizeGapAllowancesSettings((companyDoc as Record<string, unknown> | null)?.gapAllowancesSettings);
+    const gapOf = (value: string, fallback: string, otherwise: number) => {
+      const n = toNum(String(value || "").trim() || fallback);
+      return Number.isFinite(n) && n >= 0 && String(value || fallback || "").trim() ? n : otherwise;
+    };
+    const kitchenGaps = {
+      doorGap: gapOf(projectGapAllowancesDraft.baseVerticalGapDoorsPanels, companyGaps.baseVerticalGapDoorsPanels, 2),
+      tallDoorGap: gapOf(projectGapAllowancesDraft.tallVerticalGapDoorsPanels, companyGaps.tallVerticalGapDoorsPanels, 2),
+      drawerGap: gapOf(projectGapAllowancesDraft.baseHorizontalGapNormalHandles, companyGaps.baseHorizontalGapNormalHandles, 2),
+      benchGap: gapOf(projectGapAllowancesDraft.baseBelowBenchToTopOfDoorDrawer, companyGaps.baseBelowBenchToTopOfDoorDrawer, 4),
+      tallTopGap: gapOf(projectGapAllowancesDraft.tallTopOfDoorToTopNoScribers, companyGaps.tallTopOfDoorToTopNoScribers, 2),
+      baseCabHeight: toNum(productionForm.cabinetry.baseCabHeight) || 720,
+      tallCabHeight: toNum(productionForm.cabinetry.tallCabHeight) || 2100,
+    };
+    // What can be dropped in, as it goes in: a drawer bank (its fronts top to bottom, as the cutlist has them); a door
+    // set up as fronts, or ×2 or more (side by side — a drawer's one above the other); a cabinet (Cabinetry, at its size —
+    // with its sub parts); a custom cabinet; a panel. Anything else listed, not placed.
+    const kitchenUnits: KitchenUnit[] = [];
+    const rowUnitId = (row: CutlistRow) => (row.bankGroupId && isDoorPartType(row.partType) ? `bank:${row.bankGroupId}` : `row:${row.id}`);
+    const kitchenFront = (row: CutlistRow, key: string, name: string, height: unknown, width: unknown): KitchenFront => ({
+      id: key,
+      name,
+      height: toNum(String(height ?? "")),
+      width: toNum(String(width ?? "")),
+      thicknessMm: customCabinetThicknessForBoard(row.board),
+      color: partTypeColors[String(row.partType || "").trim()] ?? "#CBD5E1",
+    });
+    const rowQuantity = (row: CutlistRow) => Math.max(1, Number.parseInt(String(row.quantity || "1"), 10) || 1);
+    const banksDone = new Set<string>();
+    for (const row of cutlistRows) {
+      const partType = String(row.partType || "").trim() || "Unassigned";
+      const shared = {
+        partType,
+        color: partTypeColors[partType] ?? "#CBD5E1",
+        room: String(row.room || "").trim(),
+        thicknessMm: customCabinetThicknessForBoard(row.board),
+        height: toNum(row.height),
+        width: toNum(row.width),
+        depth: toNum(row.depth),
+        wall: false,
+        subUnits: [] as string[],
+      };
+      if (isDoorPartType(partType) && row.bankGroupId) {
+        if (banksDone.has(row.bankGroupId)) continue;
+        banksDone.add(row.bankGroupId);
+        const bankRows = cutlistRows.filter((r) => r.bankGroupId === row.bankGroupId);
+        const placed = bankRows.flatMap((r, rowIndex) => {
+          const indexes = r.bankFrontIndexes?.length ? r.bankFrontIndexes : Array.from({ length: rowQuantity(r) }, (_, i) => 1000 + rowIndex * 50 + i);
+          return indexes.map((at) => ({ at, front: kitchenFront(r, `${r.id}#${at}`, String(r.name || "Drawer front"), r.height, r.width) }));
+        });
+        placed.sort((a, b) => a.at - b.at);
+        kitchenUnits.push({ ...shared, id: rowUnitId(row), name: String(row.parentName || row.name || "Drawer bank"), kind: "fronts", layout: "stack", fronts: placed.map((p) => p.front), quantity: 1 });
+        continue;
+      }
+      if (isDoorPartType(partType)) {
+        const mode = normalizeDoorModeValue(row.doorMode);
+        const configured = mode === "manual" ? [] : buildConfiguredDoorDerivedPieces(row);
+        const fronts = configured.length
+          ? configured.map((piece, index) => kitchenFront(row, `${row.id}#${index + 1}`, piece.partName || String(row.name || ""), piece.height, piece.width))
+          : Array.from({ length: rowQuantity(row) }, (_, index) => kitchenFront(row, `${row.id}#${index + 1}`, String(row.name || ""), row.height, row.width));
+        const stacked = configured.length ? mode === "drawer" : /drawer/i.test(String(row.name || ""));
+        kitchenUnits.push({ ...shared, id: rowUnitId(row), name: String(row.name || ""), kind: "fronts", layout: stacked ? "stack" : "side", fronts, quantity: configured.length ? rowQuantity(row) : 1 });
+        continue;
+      }
+      const customCabinet = customCabinetOf(row);
+      const kind: KitchenUnit["kind"] = isCabinetryPartType(partType)
+        ? "cabinet"
+        : customCabinet
+          ? "custom"
+          : isPanelPartType(partType) || /panel/i.test(partType)
+            ? "panel"
+            : "other";
+      kitchenUnits.push({
+        ...shared,
+        id: rowUnitId(row),
+        name: String(row.name || ""),
+        kind,
+        layout: "side",
+        fronts: [],
+        ...(customCabinet ? { shape: customCabinet.shape, thicknessMm: customCabinet.thicknessMm, height: cabinetSettings(customCabinet.shape).height } : {}),
+        wall: kind === "cabinet" ? normalizeCabinetryKindValue(row.cabinetryKind) === "wall" : false,
+        // (A Cabinetry one's pieces, as its cutlist makes them: a top — a wall one's, or set — or two rails, and its shelves.)
+        ...(kind === "cabinet"
+          ? {
+              cabinetry: {
+                fullTop: normalizeCabinetryKindValue(row.cabinetryKind) === "wall" || Boolean(row.cabinetryFullTop),
+                fixedShelves: Math.max(0, Math.floor(toNum(row.fixedShelf))),
+                adjustableShelves: Math.max(0, Math.floor(toNum(row.adjustableShelf))),
+              },
+            }
+          : {}),
+        // (Its sub parts — each once.)
+        subUnits: kind === "cabinet" ? Array.from(new Set(cutlistRows.filter((r) => r.parentRowId === row.id).map(rowUnitId))) : [],
+        quantity: rowQuantity(row),
+      });
+    }
+    // (Every piece of the cutlist listed — one without a size yet (or a custom one without its shape), listed but not
+    // placed; a set of fronts, just those with a size.)
+    for (const [index, unit] of kitchenUnits.entries()) {
+      const fronts = unit.fronts.filter((f) => f.height > 0 && f.width > 0);
+      // (A panel: a height and a width — or a width and a depth, lying flat.)
+      const sized =
+        unit.kind === "fronts"
+          ? fronts.length > 0
+          : unit.kind === "custom"
+            ? Boolean(unit.shape)
+            : (unit.height > 0 && unit.width > 0) || (unit.kind === "panel" && unit.width > 0 && unit.depth > 0);
+      kitchenUnits[index] = { ...unit, fronts, kind: sized ? unit.kind : "other" };
+    }
+    return (
+      <ProtectedRoute>
+        <KitchenDrawing
+          // (Its own, for each project — read again as one's opened.)
+          key={String(project?.id || "")}
+          projectId={String(project?.id || "")}
+          projectName={project?.name || "Project"}
+          units={kitchenUnits}
+          gaps={kitchenGaps}
+          load={() => (project ? fetchProjectDrawing(project, "kitchen") : Promise.resolve(null))}
+          save={(data) => (project ? saveProjectDrawing(project, "kitchen", data) : Promise.resolve(false))}
+          readOnly={!productionAccess.edit}
+          onBack={() => setProductionNav("overview")}
+        />
+      </ProtectedRoute>
+    );
+  }
   if (isOrderFullscreen) {
     // The order at a glance up top (a glass bubble for each kind of thing on it), then a glass card for each part of it —
     // in the colour of its bubble: Hardware across the page (Drawers, Hinges and Other side by side on a computer), Boards
@@ -48747,7 +48961,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               renderDetails={(id) => renderCutlistMobileRowDetails(initialCutlistRows.find((row) => row.id === id), "initial")}
               empty={
                 <>
-                  <EmptyState compact icon={<Ruler size={16} />} title="No cutlist rows yet" hint="Parts added to the cutlist show here, grouped by part type." />
+                  <EmptyState compact icon={<Ruler size={16} />} title="No cutlist rows yet" hint={initialCutlistAddedRoomTabs.length ? "Parts added to the cutlist show here, grouped by part type." : "Add a room to start its cutlist."} />
                   {renderEmptyProjectCutlistRooms("initial")}
                 </>
               }
@@ -48757,6 +48971,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       );
       return (
         <ProtectedRoute>
+          {/* (+ − × ÷ = over the keyboard while a Height / Width / Depth box is typed in.) */}
+          <DimensionMathBar />
           <div
             className="relative flex h-[100svh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]"
             style={mobileWide ? ({ "--cutlist-compact-top": "56px" } as React.CSSProperties) : undefined}
@@ -48951,6 +49167,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             >
               {listEditDraft ? (
                 <div className="cutlist-touch space-y-3 px-4 pb-4 pt-1">
+                  {renderListEditPartType(listEditDraft, initialMeasurePartTypeOptions, salesReadOnly, (patch) => updateInitialDraftCutlistRow(listEditDraft.id, patch))}
                   {showRoomColumnInInitialList ? (
                     <div className="space-y-1">
                       <p className="text-[10px] font-bold uppercase tracking-[1px]">Room</p>
@@ -49746,7 +49963,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   <div ref={initialCutlistListWrapRef} className="overflow-visible bg-transparent">
                     {groupedInitialCutlistRows.length === 0 && (
                       <>
-                        <EmptyState compact icon={<Ruler size={16} />} title="No cutlist rows yet" hint="Parts added to the cutlist show here, grouped by part type." />
+                        <EmptyState compact icon={<Ruler size={16} />} title="No cutlist rows yet" hint={initialCutlistAddedRoomTabs.length ? "Parts added to the cutlist show here, grouped by part type." : "Add a room to start its cutlist."} />
                         {renderEmptyProjectCutlistRooms("initial")}
                       </>
                     )}
@@ -51382,7 +51599,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               renderDetails={(id) => renderCutlistMobileRowDetails(cutlistRows.find((row) => row.id === id), "production")}
               empty={
                 <>
-                  <EmptyState compact icon={<Scissors size={16} />} title="No cutlist rows yet" hint="Parts added to the cutlist show here, grouped by part type." />
+                  <EmptyState compact icon={<Scissors size={16} />} title="No cutlist rows yet" hint={cutlistAddedRoomTabs.length ? "Parts added to the cutlist show here, grouped by part type." : "Add a room to start its cutlist."} />
                   {renderEmptyProjectCutlistRooms("production")}
                 </>
               }
@@ -51392,6 +51609,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       );
       return (
         <ProtectedRoute>
+          {/* (+ − × ÷ = over the keyboard while a Height / Width / Depth box is typed in.) */}
+          <DimensionMathBar />
           <div
             className="relative flex h-[100svh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]"
             style={mobileWide ? ({ "--cutlist-compact-top": "56px" } as React.CSSProperties) : undefined}
@@ -51674,6 +51893,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             >
               {listEditDraft ? (
                 <div className="cutlist-touch space-y-3 px-4 pb-4 pt-1">
+                  {renderListEditPartType(listEditDraft, partTypeOptions, productionReadOnly, (patch) => updateDraftCutlistRow(listEditDraft.id, patch))}
                   {showRoomColumnInList ? (
                     <div className="space-y-1">
                       <p className="text-[10px] font-bold uppercase tracking-[1px]">Room</p>
@@ -53292,7 +53512,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   <div ref={cutlistListWrapRef} className="overflow-visible bg-transparent">
                     {groupedCutlistRows.length === 0 && (
                       <>
-                        <EmptyState compact icon={<Scissors size={16} />} title="No cutlist rows yet" hint="Parts added to the cutlist show here, grouped by part type." />
+                        <EmptyState compact icon={<Scissors size={16} />} title="No cutlist rows yet" hint={cutlistAddedRoomTabs.length ? "Parts added to the cutlist show here, grouped by part type." : "Add a room to start its cutlist."} />
                         {renderEmptyProjectCutlistRooms("production")}
                       </>
                     )}
@@ -61066,6 +61286,687 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     );
   }
 
+  // Board Settings (Production's overview, and a small job's Boards pop-up): its boards, Add board, and their pop-ups — a
+  // phone's board row, and a board in use that can't be removed.
+  const renderBoardSettings = () => (
+    <>
+                <section
+                  className="glass-shine glass-shine-neutral glass-shine-panel relative z-10 overflow-visible rounded-[18px] border"
+                  style={tabContainerStyle}
+                >
+                  <div className="flex h-[50px] items-center justify-between rounded-t-[18px] border-b px-4" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
+                    <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Board Settings</p>
+                    <button
+                      type="button"
+                      disabled={productionReadOnly}
+                      onClick={(e) => void onAddBoardRow(e)}
+                      // Round, with the glass shine (lib/glass-shine.ts) in green — as the Design tab's Rooms.
+                      className="glass-shine inline-flex h-8 w-8 items-center justify-center rounded-full text-white hover:brightness-105 disabled:opacity-55"
+                      style={glassShineStyle("#16A34A")}
+                      title="Add board"
+                      aria-label="Add board"
+                    >
+                      {/* The same + as the Design tab's Add room (round ends). */}
+                      <Plus size={24} strokeWidth={3} />
+                    </button>
+                  </div>
+                  <div className="p-3 text-[12px]">
+                    {isCompactProjectViewport ? (
+                      <>
+                        <div className="mb-2 grid items-center gap-3" style={{ gridTemplateColumns: "minmax(0,1fr) 56px 76px" }}>
+                          <p />
+                          <p className="text-right text-[10px] font-bold uppercase tracking-[0.5px]" style={{ color: projectPalette.textMuted }}>
+                            Sheets
+                          </p>
+                          <p className="text-right text-[10px] font-bold uppercase tracking-[0.5px]" style={{ color: projectPalette.textMuted }}>
+                            Edgetape
+                          </p>
+                        </div>
+                        <div className="space-y-2">
+                          {productionForm.boardTypes.map((row, rowIndex) => {
+                            const requiredSheets = requiredSheetCountByBoardRowId[row.id] ?? 0;
+                            const requiredEdgetape = requiredEdgetapeByBoardRowId[row.id] ?? row.edgetape;
+                            return (
+                              <button
+                                key={row.id}
+                                type="button"
+                                onClick={(e) => {
+                                  boardRowDetailOriginElRef.current = e.currentTarget;
+                                  setBoardRowDetailOrigin(captureGlassModalOrigin(e));
+                                  setBoardRowDetailId(row.id);
+                                  setIsBoardRowDetailOpen(true);
+                                }}
+                                className="grid w-full items-center gap-3 rounded-[12px] border p-3 text-left hover:brightness-95"
+                                style={{
+                                  gridTemplateColumns: "minmax(0,1fr) 56px 76px",
+                                  borderColor: projectPalette.border,
+                                  backgroundColor: projectPalette.panelMuted,
+                                }}
+                              >
+                                <p className="min-w-0 truncate text-[12px] font-medium tracking-[0.7px]" style={{ color: "var(--text-main)" }}>
+                                  {row.colour
+                                    ? [row.colour, row.thickness ? activeLength(row.thickness) : "", row.finish].filter(Boolean).join(" ")
+                                    : `Board ${rowIndex + 1}`}
+                                </p>
+                                <p className="text-right text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
+                                  {requiredSheets}
+                                </p>
+                                <p className="text-right text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
+                                  {requiredEdgetape}
+                                </p>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="grid items-center gap-2 text-[11px] font-bold" style={{ color: projectPalette.textMuted, gridTemplateColumns: boardSettingsRowGridTemplate }}>
+                          <p></p>
+                          <p>Colour</p>
+                          <p className="text-center">Thickness</p>
+                          <p className="text-center">Finish</p>
+                          <p className="text-center">Edging</p>
+                          <p className="text-center">Grain</p>
+                          <p className="text-center">Lacquer</p>
+                          <p className="text-center">Sheet Size</p>
+                          <p className="text-center">Sheets</p>
+                          <p className="text-center">Edgetape</p>
+                        </div>
+                        <div className="mt-2 space-y-2">
+                          {productionForm.boardTypes.map((row) => (
+                            <div key={row.id} className="row-glow-anchor grid items-center gap-2" style={{ gridTemplateColumns: boardSettingsRowGridTemplate }}>
+                              <div className="row-glow" data-active={hoveredBoardRemoveRowId === row.id} />
+                              {(() => {
+                                const requiredSheets = requiredSheetCountByBoardRowId[row.id] ?? 0;
+                                return (
+                                  <>
+                              <button
+                                disabled={productionReadOnly}
+                                onClick={(e) => { boardRowDeleteBlockedOriginElRef.current = e.currentTarget; setBoardRowModalOrigin(captureGlassModalOrigin(e)); void onRemoveBoardRow(row.id); }}
+                                onMouseEnter={() => setHoveredBoardRemoveRowId(row.id)}
+                                onMouseLeave={() => setHoveredBoardRemoveRowId((prev) => (prev === row.id ? "" : prev))}
+                                // Round, with the glass shine (lib/glass-shine.ts) in red — as the Design tab's Rooms.
+                                className="glass-shine inline-flex h-7 w-7 items-center justify-center rounded-full text-white hover:brightness-105 disabled:opacity-55"
+                                style={glassShineStyle("#EF4444")}
+                                aria-label="Remove board"
+                              >
+                                <X size={17} className="mx-auto" strokeWidth={2.75} />
+                              </button>
+                              <div className="relative z-20">
+                                <input
+                                  // No browser autofill — its own suggestions list opens here (an autocomplete value
+                                  // the browser doesn't recognise; "off" isn't always kept to).
+                                  autoComplete="cs-board-field"
+                                  ref={(el) => { boardColourInputRefs.current[row.id] = el; }}
+                                  disabled={productionReadOnly}
+                                  value={row.colour}
+                                  onFocus={() => {
+                                    boardColourEditStartRef.current[row.id] = String(row.colour || "").trim();
+                                    setActiveBoardColourSuggestionsRowId(row.id);
+                                  }}
+                                  onChange={(e) => {
+                                    onBoardFieldDraftChange(row.id, { colour: e.target.value });
+                                    setActiveBoardColourSuggestionsRowId(row.id);
+                                  }}
+                                  onBlur={(e) => {
+                                    const previousColour = String(
+                                      boardColourEditStartRef.current[row.id] ?? row.colour ?? "",
+                                    ).trim();
+                                    delete boardColourEditStartRef.current[row.id];
+                                    window.setTimeout(() => {
+                                      setActiveBoardColourSuggestionsRowId((prev) => (prev === row.id ? null : prev));
+                                    }, 120);
+                                    commitBoardColourChange(row.id, e.target.value, previousColour);
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Escape") {
+                                      setActiveBoardColourSuggestionsRowId(null);
+                                    }
+                                  }}
+                                  className="h-7 w-full rounded-[8px] border px-2 text-[12px]"
+                                  style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
+                                />
+                                {activeBoardColourSuggestionsRowId === row.id && boardColourDropdownRect &&
+                                  typeof document !== "undefined" &&
+                                  (() => {
+                                    const query = String(row.colour || "").trim().toLowerCase();
+                                    const starts = boardColourSuggestions.filter((c) => c.toLowerCase().startsWith(query));
+                                    const contains = boardColourSuggestions.filter(
+                                      (c) => !c.toLowerCase().startsWith(query) && c.toLowerCase().includes(query),
+                                    );
+                                    const filtered = (query ? [...starts, ...contains] : boardColourSuggestions).slice(0, 20);
+                                    if (!filtered.length) return null;
+                                    return createPortal(
+                                      <div
+                                        data-board-suggestions-menu="true"
+                                        className="fixed max-h-[220px] w-[220px] overflow-auto rounded-[8px] border p-1 shadow-[0_12px_28px_rgba(15,23,42,0.14)]"
+                                        style={{
+                                          left: boardColourDropdownRect.left,
+                                          top: boardColourDropdownRect.top,
+                                          zIndex: 2147483647,
+                                          borderColor: projectPalette.border,
+                                          backgroundColor: projectPalette.panelBg,
+                                        }}
+                                        onMouseDown={(ev) => ev.preventDefault()}
+                                      >
+                                        {filtered.map((colour) => (
+                                          <button
+                                            key={`${row.id}_${colour}`}
+                                            type="button"
+                                            onMouseDown={(ev) => ev.preventDefault()}
+                                            onClick={() => {
+                                              const previousColour = String(
+                                                boardColourEditStartRef.current[row.id] ?? row.colour ?? "",
+                                              ).trim();
+                                              delete boardColourEditStartRef.current[row.id];
+                                              setActiveBoardColourSuggestionsRowId(null);
+                                              commitBoardColourChange(row.id, colour, previousColour);
+                                            }}
+                                            className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] max-md:rounded-[8px] max-md:px-3 max-md:py-2.5 max-md:text-[15px]"
+                                            style={{ color: "var(--text-main)" }}
+                                          >
+                                            {colour}
+                                          </button>
+                                        ))}
+                                      </div>,
+                                      document.body,
+                                    );
+                                  })()}
+                              </div>
+                              <GlassSelectDropdown
+                                fullWidth
+                                noTruncate
+                                disabled={productionReadOnly}
+                                value={row.thickness}
+                                options={["", ...boardThicknessOptions]}
+                                getLabel={(opt) => (opt ? activeLength(opt) : "")}
+                                onChange={(next) => void onBoardFieldCommit(row.id, { thickness: next })}
+                                className="h-7 rounded-[8px] border px-2 text-[12px]"
+                                style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
+                              />
+                              <GlassSelectDropdown
+                                fullWidth
+                                noTruncate
+                                disabled={productionReadOnly}
+                                value={row.finish}
+                                options={["", ...boardFinishOptions]}
+                                onChange={(next) => void onBoardFieldCommit(row.id, { finish: next })}
+                                className="h-7 rounded-[8px] border px-2 text-[12px]"
+                                style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
+                              />
+                              <div className="relative z-20">
+                                <input
+                                  // No browser autofill — its own suggestions list opens here (an autocomplete value
+                                  // the browser doesn't recognise; "off" isn't always kept to).
+                                  autoComplete="cs-board-field"
+                                  ref={(el) => { boardEdgingInputRefs.current[row.id] = el; }}
+                                  disabled={productionReadOnly}
+                                  value={row.edging}
+                                  onFocus={() => {
+                                    boardEdgingEditStartRef.current[row.id] = String(row.edging || "").trim();
+                                    setActiveBoardEdgingSuggestionsRowId(row.id);
+                                  }}
+                                  onChange={(e) => {
+                                    onBoardFieldDraftChange(row.id, { edging: e.target.value });
+                                    setActiveBoardEdgingSuggestionsRowId(row.id);
+                                  }}
+                                  onBlur={(e) => {
+                                    const previousEdging = String(
+                                      boardEdgingEditStartRef.current[row.id] ?? row.edging ?? "",
+                                    ).trim();
+                                    delete boardEdgingEditStartRef.current[row.id];
+                                    window.setTimeout(() => {
+                                      setActiveBoardEdgingSuggestionsRowId((prev) => (prev === row.id ? null : prev));
+                                    }, 120);
+                                    void onBoardFieldCommit(row.id, { edging: e.target.value }, false, undefined, true, previousEdging);
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Escape") {
+                                      setActiveBoardEdgingSuggestionsRowId(null);
+                                    }
+                                  }}
+                                  className="h-7 w-full rounded-[8px] border px-2 text-[12px]"
+                                  style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
+                                />
+                                {activeBoardEdgingSuggestionsRowId === row.id && boardEdgingDropdownRect &&
+                                  typeof document !== "undefined" &&
+                                  (() => {
+                                    const options = boardEdgingSuggestionsForColour(row.colour);
+                                    const query = String(row.edging || "").trim().toLowerCase();
+                                    const starts = options.filter((v) => v.toLowerCase().startsWith(query));
+                                    const contains = options.filter(
+                                      (v) => !v.toLowerCase().startsWith(query) && v.toLowerCase().includes(query),
+                                    );
+                                    const filtered = (query ? [...starts, ...contains] : options).slice(0, 20);
+                                    if (!filtered.length) return null;
+                                    return createPortal(
+                                      <div
+                                        data-board-suggestions-menu="true"
+                                        className="fixed max-h-[220px] w-[220px] overflow-auto rounded-[8px] border p-1 shadow-[0_12px_28px_rgba(15,23,42,0.14)]"
+                                        style={{
+                                          left: boardEdgingDropdownRect.left,
+                                          top: boardEdgingDropdownRect.top,
+                                          zIndex: 2147483647,
+                                          borderColor: projectPalette.border,
+                                          backgroundColor: projectPalette.panelBg,
+                                        }}
+                                        onMouseDown={(ev) => ev.preventDefault()}
+                                      >
+                                        {filtered.map((edging) => (
+                                          <button
+                                            key={`${row.id}_${edging}`}
+                                            type="button"
+                                            onMouseDown={(ev) => ev.preventDefault()}
+                                            onClick={() => {
+                                              const previousEdging = String(
+                                                boardEdgingEditStartRef.current[row.id] ?? row.edging ?? "",
+                                              ).trim();
+                                              delete boardEdgingEditStartRef.current[row.id];
+                                              setActiveBoardEdgingSuggestionsRowId(null);
+                                              void onBoardFieldCommit(row.id, { edging }, false, undefined, true, previousEdging);
+                                            }}
+                                            className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] max-md:rounded-[8px] max-md:px-3 max-md:py-2.5 max-md:text-[15px]"
+                                            style={{ color: "var(--text-main)" }}
+                                          >
+                                            {edging}
+                                          </button>
+                                        ))}
+                                      </div>,
+                                      document.body,
+                                    );
+                                  })()}
+                              </div>
+                              <div className="flex justify-center">
+                                <QuoteExtraToggleSwitch
+                                  disabled={productionReadOnly}
+                                  checked={row.grain}
+                                  onChange={(checked) => void onBoardFieldCommit(row.id, { grain: checked })}
+                                />
+                              </div>
+                              <div className="flex justify-center">
+                                <QuoteExtraToggleSwitch
+                                  disabled={productionReadOnly}
+                                  checked={row.lacquer}
+                                  onChange={(checked) => void onBoardFieldCommit(row.id, { lacquer: checked })}
+                                />
+                              </div>
+                              <GlassSelectDropdown
+                                fullWidth
+                                noTruncate
+                                disabled={productionReadOnly}
+                                value={row.sheetSize}
+                                options={["", ...sheetSizeOptions.map((opt) => `${opt.h} x ${opt.w}`)]}
+                                onChange={(next) => void onBoardFieldCommit(row.id, { sheetSize: next })}
+                                className="h-7 rounded-[8px] border px-2 text-[12px]"
+                                style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
+                              />
+                              <p className="text-center text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>{requiredSheets}</p>
+                              <p className="text-center text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
+                                {requiredEdgetapeByBoardRowId[row.id] ?? row.edgetape}
+                              </p>
+                                  </>
+                                );
+                              })()}
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                    <button
+                      type="button"
+                      disabled={productionReadOnly}
+                      onClick={(e) => void onAddBoardRow(e)}
+                      // Round, with the glass shine (lib/glass-shine.ts) in green — as the Design tab's Rooms.
+                      className="glass-shine mt-3 inline-flex h-8 w-8 items-center justify-center rounded-full text-white hover:brightness-105 disabled:opacity-55"
+                      style={glassShineStyle("#16A34A")}
+                      title="Add board"
+                      aria-label="Add board"
+                    >
+                      {/* The same + as the Design tab's Add room (round ends). */}
+                      <Plus size={24} strokeWidth={3} />
+                    </button>
+                  </div>
+                </section>
+                {shouldRenderBoardRowDeleteBlockedModal && displayBoardRowDeleteBlocked && typeof document !== "undefined" && createPortal(
+                  <div className="fixed inset-0 z-[1700] flex items-center justify-center px-4 py-4">
+                    <button
+                      type="button"
+                      aria-label="Close board delete warning backdrop"
+                      onClick={() => setBoardRowDeleteBlocked(null)}
+                      className="absolute inset-0 glass-modal-backdrop"
+                    />
+                    <div ref={boardRowDeleteBlockedPanelRef} className="glass-modal-panel relative z-[1701] w-[min(720px,96vw)] overflow-hidden">
+                      <GlassModalHeader title="Colour in use" onClose={() => setBoardRowDeleteBlocked(null)} />
+                      <p className="px-5 pt-4 text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
+                        {displayBoardRowDeleteBlocked.colour} is in use on this cutlist, it cannot be deleted.
+                      </p>
+                      <div className="flex items-center justify-end gap-2 px-5 py-4">
+                        <button
+                          type="button"
+                          onClick={() => setBoardRowDeleteBlocked(null)}
+                          className="h-9 rounded-[9px] border px-4 text-[12px] font-semibold hover:brightness-95"
+                          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+                        >
+                          OK
+                        </button>
+                      </div>
+                    </div>
+                  </div>,
+                  document.body,
+                )}
+                {shouldRenderBoardRowDetail && boardRowDetailId && (() => {
+                  const rowIndex = productionForm.boardTypes.findIndex((r) => r.id === boardRowDetailId);
+                  const row = productionForm.boardTypes[rowIndex];
+                  if (!row) return null;
+                  const requiredSheets = requiredSheetCountByBoardRowId[row.id] ?? 0;
+                  const requiredEdgetape = requiredEdgetapeByBoardRowId[row.id] ?? row.edgetape;
+                  const closeBoardRowDetail = () => setIsBoardRowDetailOpen(false);
+                  // Same flat colours as the CNC Cutlist mobile popup (shouldRenderCncMobileRowDetail) —
+                  // no per-item theming, just the default glass panel with black text and a light grey banner bar.
+                  const detailBarBg = "color-mix(in srgb, var(--text-main) 10%, transparent)";
+                  const detailLabel = "text-[13px] font-bold tracking-[0.6px]";
+                  // Portaled straight to document.body (same as the delete-blocked modal right above
+                  // this) so the backdrop's blur genuinely sits over everything — the global app tab
+                  // bar and this page's own sticky headers included — instead of being trapped inside
+                  // whatever nested stacking context this section happens to render within.
+                  if (typeof document === "undefined") return null;
+                  return createPortal(
+                    <div
+                      className="glass-modal-backdrop fixed inset-0 z-[1650] flex items-center justify-center p-4"
+                      onClick={closeBoardRowDetail}
+                    >
+                      <div
+                        ref={boardRowDetailPanelRef}
+                        className="glass-modal-panel flex w-fit min-w-[320px] max-w-[94vw] flex-col overflow-hidden"
+                        style={{ maxHeight: "calc(100svh - 32px)" }}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <div className="flex min-h-0 flex-1 flex-col">
+                          <div className="glass-modal-header relative flex h-[56px] shrink-0 items-center justify-between gap-3 px-5">
+                            <p className="min-w-0 truncate text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Board {rowIndex + 1}</p>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                disabled={productionReadOnly}
+                                onClick={(e) => { boardRowDeleteBlockedOriginElRef.current = e.currentTarget; setBoardRowModalOrigin(captureGlassModalOrigin(e)); void onRemoveBoardRow(row.id); }}
+                                onMouseEnter={() => setHoveredBoardRemoveRowId(row.id)}
+                                onMouseLeave={() => setHoveredBoardRemoveRowId((prev) => (prev === row.id ? "" : prev))}
+                                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-white hover:brightness-95 disabled:opacity-55 max-md:h-10 max-md:w-10"
+                                style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
+                                title="Remove board"
+                              >
+                                <Trash2 size={15} strokeWidth={2.2} />
+                              </button>
+                              <button type="button" onClick={closeBoardRowDetail} className={modalCloseButtonClass} aria-label="Close">
+                                <X size={16} />
+                              </button>
+                            </div>
+                          </div>
+                          <div className="min-h-0 flex-1 overflow-auto p-4 text-[15px]" style={{ color: "var(--text-main)" }}>
+                            <div className="rounded-[8px] px-3 py-1.5" style={{ backgroundColor: detailBarBg }}>
+                              <p className={detailLabel} style={{ color: "var(--text-main)" }}>Colour</p>
+                            </div>
+                            <div className="relative z-20 px-3 pt-1.5">
+                              <input
+                                // No browser autofill — its own suggestions list opens here (an autocomplete value
+                                // the browser doesn't recognise; "off" isn't always kept to).
+                                autoComplete="cs-board-field"
+                                ref={(el) => { boardColourInputRefs.current[row.id] = el; }}
+                                disabled={productionReadOnly}
+                                value={row.colour}
+                                onFocus={() => {
+                                  boardColourEditStartRef.current[row.id] = String(row.colour || "").trim();
+                                  setActiveBoardColourSuggestionsRowId(row.id);
+                                }}
+                                onChange={(e) => {
+                                  onBoardFieldDraftChange(row.id, { colour: e.target.value });
+                                  setActiveBoardColourSuggestionsRowId(row.id);
+                                }}
+                                onBlur={(e) => {
+                                  const previousColour = String(
+                                    boardColourEditStartRef.current[row.id] ?? row.colour ?? "",
+                                  ).trim();
+                                  delete boardColourEditStartRef.current[row.id];
+                                  window.setTimeout(() => {
+                                    setActiveBoardColourSuggestionsRowId((prev) => (prev === row.id ? null : prev));
+                                  }, 120);
+                                  commitBoardColourChange(row.id, e.target.value, previousColour);
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Escape") {
+                                    setActiveBoardColourSuggestionsRowId(null);
+                                  }
+                                }}
+                                className="h-9 w-full rounded-[8px] border px-3 text-[13px]"
+                                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                              />
+                              {activeBoardColourSuggestionsRowId === row.id && boardColourDropdownRect &&
+                                typeof document !== "undefined" &&
+                                (() => {
+                                  const query = String(row.colour || "").trim().toLowerCase();
+                                  const starts = boardColourSuggestions.filter((c) => c.toLowerCase().startsWith(query));
+                                  const contains = boardColourSuggestions.filter(
+                                    (c) => !c.toLowerCase().startsWith(query) && c.toLowerCase().includes(query),
+                                  );
+                                  const filtered = (query ? [...starts, ...contains] : boardColourSuggestions).slice(0, 20);
+                                  if (!filtered.length) return null;
+                                  return createPortal(
+                                    <div
+                                      data-board-suggestions-menu="true"
+                                      className="fixed max-h-[220px] overflow-auto rounded-[8px] border p-1 shadow-[0_12px_28px_rgba(15,23,42,0.14)] max-md:max-h-[320px] max-md:rounded-[12px] max-md:p-1.5"
+                                      style={{
+                                        left: boardColourDropdownRect.left,
+                                        top: boardColourDropdownRect.top,
+                                        width: boardColourDropdownRect.width,
+                                        zIndex: 2147483647,
+                                        borderColor: "var(--glass-border)",
+                                        backgroundColor: "var(--panel-bg)",
+                                      }}
+                                      onMouseDown={(ev) => ev.preventDefault()}
+                                    >
+                                      {filtered.map((colour) => (
+                                        <button
+                                          key={`${row.id}_${colour}`}
+                                          type="button"
+                                          onMouseDown={(ev) => ev.preventDefault()}
+                                          onClick={() => {
+                                            const previousColour = String(
+                                              boardColourEditStartRef.current[row.id] ?? row.colour ?? "",
+                                            ).trim();
+                                            delete boardColourEditStartRef.current[row.id];
+                                            setActiveBoardColourSuggestionsRowId(null);
+                                            commitBoardColourChange(row.id, colour, previousColour);
+                                          }}
+                                          className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] max-md:rounded-[8px] max-md:px-3 max-md:py-2.5 max-md:text-[15px]"
+                                          style={{ color: "var(--text-main)" }}
+                                        >
+                                          {colour}
+                                        </button>
+                                      ))}
+                                    </div>,
+                                    document.body,
+                                  );
+                                })()}
+                            </div>
+
+                            <div className="mt-4 grid grid-cols-2 gap-4 rounded-[8px] px-3 py-1.5 text-center" style={{ backgroundColor: detailBarBg }}>
+                              <p className={detailLabel} style={{ color: "var(--text-main)" }}>Thickness</p>
+                              <p className={detailLabel} style={{ color: "var(--text-main)" }}>Finish</p>
+                            </div>
+                            <div className="grid grid-cols-2 gap-4 px-3 pt-1.5">
+                              <GlassSelectDropdown
+                                fullWidth
+                                noTruncate
+                                disabled={productionReadOnly}
+                                value={row.thickness}
+                                options={["", ...boardThicknessOptions]}
+                                getLabel={(opt) => (opt ? activeLength(opt) : "")}
+                                onChange={(next) => void onBoardFieldCommit(row.id, { thickness: next })}
+                                className="h-9 rounded-[8px] border px-3 text-[13px]"
+                                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                              />
+                              <GlassSelectDropdown
+                                fullWidth
+                                noTruncate
+                                disabled={productionReadOnly}
+                                value={row.finish}
+                                options={["", ...boardFinishOptions]}
+                                onChange={(next) => void onBoardFieldCommit(row.id, { finish: next })}
+                                className="h-9 rounded-[8px] border px-3 text-[13px]"
+                                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                              />
+                            </div>
+
+                            <div className="mt-4 rounded-[8px] px-3 py-1.5" style={{ backgroundColor: detailBarBg }}>
+                              <p className={detailLabel} style={{ color: "var(--text-main)" }}>Edging</p>
+                            </div>
+                            <div className="relative z-20 px-3 pt-1.5">
+                              <input
+                                // No browser autofill — its own suggestions list opens here (an autocomplete value
+                                // the browser doesn't recognise; "off" isn't always kept to).
+                                autoComplete="cs-board-field"
+                                ref={(el) => { boardEdgingInputRefs.current[row.id] = el; }}
+                                disabled={productionReadOnly}
+                                value={row.edging}
+                                onFocus={() => {
+                                  boardEdgingEditStartRef.current[row.id] = String(row.edging || "").trim();
+                                  setActiveBoardEdgingSuggestionsRowId(row.id);
+                                }}
+                                onChange={(e) => {
+                                  onBoardFieldDraftChange(row.id, { edging: e.target.value });
+                                  setActiveBoardEdgingSuggestionsRowId(row.id);
+                                }}
+                                onBlur={(e) => {
+                                  const previousEdging = String(
+                                    boardEdgingEditStartRef.current[row.id] ?? row.edging ?? "",
+                                  ).trim();
+                                  delete boardEdgingEditStartRef.current[row.id];
+                                  window.setTimeout(() => {
+                                    setActiveBoardEdgingSuggestionsRowId((prev) => (prev === row.id ? null : prev));
+                                  }, 120);
+                                  void onBoardFieldCommit(row.id, { edging: e.target.value }, false, undefined, true, previousEdging);
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Escape") {
+                                    setActiveBoardEdgingSuggestionsRowId(null);
+                                  }
+                                }}
+                                className="h-9 w-full rounded-[8px] border px-3 text-[13px]"
+                                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                              />
+                              {activeBoardEdgingSuggestionsRowId === row.id && boardEdgingDropdownRect &&
+                                typeof document !== "undefined" &&
+                                (() => {
+                                  const options = boardEdgingSuggestionsForColour(row.colour);
+                                  const query = String(row.edging || "").trim().toLowerCase();
+                                  const starts = options.filter((v) => v.toLowerCase().startsWith(query));
+                                  const contains = options.filter(
+                                    (v) => !v.toLowerCase().startsWith(query) && v.toLowerCase().includes(query),
+                                  );
+                                  const filtered = (query ? [...starts, ...contains] : options).slice(0, 20);
+                                  if (!filtered.length) return null;
+                                  return createPortal(
+                                    <div
+                                      data-board-suggestions-menu="true"
+                                      className="fixed max-h-[220px] overflow-auto rounded-[8px] border p-1 shadow-[0_12px_28px_rgba(15,23,42,0.14)] max-md:max-h-[320px] max-md:rounded-[12px] max-md:p-1.5"
+                                      style={{
+                                        left: boardEdgingDropdownRect.left,
+                                        top: boardEdgingDropdownRect.top,
+                                        width: boardEdgingDropdownRect.width,
+                                        zIndex: 2147483647,
+                                        borderColor: "var(--glass-border)",
+                                        backgroundColor: "var(--panel-bg)",
+                                      }}
+                                      onMouseDown={(ev) => ev.preventDefault()}
+                                    >
+                                      {filtered.map((edging) => (
+                                        <button
+                                          key={`${row.id}_${edging}`}
+                                          type="button"
+                                          onMouseDown={(ev) => ev.preventDefault()}
+                                          onClick={() => {
+                                            const previousEdging = String(
+                                              boardEdgingEditStartRef.current[row.id] ?? row.edging ?? "",
+                                            ).trim();
+                                            delete boardEdgingEditStartRef.current[row.id];
+                                            setActiveBoardEdgingSuggestionsRowId(null);
+                                            void onBoardFieldCommit(row.id, { edging }, false, undefined, true, previousEdging);
+                                          }}
+                                          className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] max-md:rounded-[8px] max-md:px-3 max-md:py-2.5 max-md:text-[15px]"
+                                          style={{ color: "var(--text-main)" }}
+                                        >
+                                          {edging}
+                                        </button>
+                                      ))}
+                                    </div>,
+                                    document.body,
+                                  );
+                                })()}
+                            </div>
+
+                            <div className="mt-4 grid grid-cols-3 gap-4 rounded-[8px] px-3 py-1.5 text-center" style={{ backgroundColor: detailBarBg }}>
+                              <p className={detailLabel} style={{ color: "var(--text-main)" }}>Grain</p>
+                              <p className={detailLabel} style={{ color: "var(--text-main)" }}>Lacquer</p>
+                              <p className={detailLabel} style={{ color: "var(--text-main)" }}>Sheet Size</p>
+                            </div>
+                            <div className="grid grid-cols-3 gap-4 px-3 pt-1.5">
+                              <div className="flex h-9 items-center justify-center">
+                                <QuoteExtraToggleSwitch
+                                  size="large"
+                                  disabled={productionReadOnly}
+                                  checked={row.grain}
+                                  onChange={(checked) => void onBoardFieldCommit(row.id, { grain: checked })}
+                                />
+                              </div>
+                              <div className="flex h-9 items-center justify-center">
+                                <QuoteExtraToggleSwitch
+                                  size="large"
+                                  disabled={productionReadOnly}
+                                  checked={row.lacquer}
+                                  onChange={(checked) => void onBoardFieldCommit(row.id, { lacquer: checked })}
+                                />
+                              </div>
+                              <GlassSelectDropdown
+                                fullWidth
+                                noTruncate
+                                disabled={productionReadOnly}
+                                value={row.sheetSize}
+                                options={["", ...sheetSizeOptions.map((opt) => `${opt.h} x ${opt.w}`)]}
+                                onChange={(next) => void onBoardFieldCommit(row.id, { sheetSize: next })}
+                                className="h-9 rounded-[8px] border px-2 text-[12px]"
+                                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                              />
+                            </div>
+                          </div>
+                          <div className="grid shrink-0 grid-cols-2 gap-[5px] px-[5px] pb-[5px]">
+                            <div className="flex flex-col items-center">
+                              <p className="pb-1.5 pt-3 text-[12px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-main)" }}>Sheets</p>
+                              <div
+                                className="flex w-full flex-1 items-center justify-center rounded-[15px] py-3 text-white"
+                                style={{ backgroundImage: "var(--success-gradient)" }}
+                              >
+                                <p className="text-[18px] font-medium leading-none" style={{ color: "#FFFFFF" }}>{requiredSheets}</p>
+                              </div>
+                            </div>
+                            <div className="flex flex-col items-center">
+                              <p className="pb-1.5 pt-3 text-[12px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-main)" }}>Edgetape</p>
+                              <div
+                                className="flex w-full flex-1 items-center justify-center rounded-[15px] py-3 text-white"
+                                style={{ backgroundImage: "var(--brand-gradient)" }}
+                              >
+                                <p className="text-[18px] font-medium leading-none" style={{ color: "#FFFFFF" }}>{requiredEdgetape}</p>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>,
+                    document.body,
+                  );
+                })()}
+    </>
+  );
   // The computer's Nesting: the board showing (the one picked in its rail, else the first) — and its sheet on the right
   // (nestingSheetPreview), one of its own, its first until another's picked.
   const nestingDesktopBoard = nestingBoardLayouts.find((group) => group.boardKey === nestingDesktopBoardKey) ?? nestingBoardLayouts[0] ?? null;
@@ -64226,6 +65127,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             onClick={(e) => {
                               if (item.key === "cutlist") {
                                 openProjectLiveView("production", { productionNav: "cutlist", nestingFullscreen: false });
+                              } else if (item.key === "boards") {
+                                smallJobBoardsOriginElRef.current = e.currentTarget;
+                                setSmallJobBoardsOrigin(captureGlassModalOrigin(e));
+                                setIsSmallJobBoardsOpen(true);
                               } else if (item.key === "lead") {
                                 setSourceLeadOrigin(captureGlassModalOrigin(e));
                                 setIsSourceLeadOpen(true);
@@ -64252,6 +65157,36 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       );
                     })}
                   </div>
+                  {shouldRenderSmallJobBoards && typeof document !== "undefined"
+                    ? createPortal(
+                        <div
+                          className="glass-modal-backdrop fixed inset-0 z-[1600] flex items-start justify-center overflow-y-auto px-3 py-6 sm:px-6"
+                          onClick={(e) => {
+                            if (e.target === e.currentTarget) setIsSmallJobBoardsOpen(false);
+                          }}
+                        >
+                          <div
+                            ref={smallJobBoardsPanelRef}
+                            role="dialog"
+                            aria-modal="true"
+                            aria-label="Boards"
+                            className="glass-modal-panel relative flex w-[min(1180px,100%)] flex-col overflow-visible"
+                          >
+                            <div className="glass-modal-header flex h-[56px] shrink-0 items-center gap-3 rounded-t-[20px] px-5">
+                              <div className="flex min-w-0 flex-1 items-center gap-2" style={{ color: "var(--text-main)" }}>
+                                <Layers size={16} className="shrink-0" />
+                                <p className="min-w-0 truncate text-[14px] font-bold uppercase tracking-[1px]">Boards</p>
+                              </div>
+                              <button type="button" onClick={() => setIsSmallJobBoardsOpen(false)} className={modalCloseButtonClass} aria-label="Close" title="Close">
+                                <X size={16} />
+                              </button>
+                            </div>
+                            <div className="p-3 sm:p-4">{renderBoardSettings()}</div>
+                          </div>
+                        </div>,
+                        document.body,
+                      )
+                    : null}
                   {project.sourceLeadId ? (
                     <LeadDetailsModal
                       companyId={String(project.companyId || "").trim()}
@@ -65696,6 +66631,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         { label: "Specifications", icon: ClipboardList, key: "specifications" },
                         // The Calendar's events for the project (as Design's — for those who can see the Calendar).
                         ...(projectScheduleViewer.canViewCalendar ? [{ label: "Schedule", icon: CalendarDays, key: "schedule" }] : []),
+                        // The kitchen drawn from the cutlist's pieces (components/kitchen-drawing.tsx — saved with the project).
+                        { label: "Drawing", icon: Box, key: "drawing" },
                       ],
                     },
                     {
@@ -67900,681 +68837,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     </section>
                 </div>
 
-                <section
-                  className="glass-shine glass-shine-neutral glass-shine-panel relative z-10 overflow-visible rounded-[18px] border"
-                  style={tabContainerStyle}
-                >
-                  <div className="flex h-[50px] items-center justify-between rounded-t-[18px] border-b px-4" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
-                    <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Board Settings</p>
-                    <button
-                      type="button"
-                      disabled={productionReadOnly}
-                      onClick={() => void onAddBoardRow()}
-                      // Round, with the glass shine (lib/glass-shine.ts) in green — as the Design tab's Rooms.
-                      className="glass-shine inline-flex h-8 w-8 items-center justify-center rounded-full text-white hover:brightness-105 disabled:opacity-55"
-                      style={glassShineStyle("#16A34A")}
-                      title="Add board"
-                      aria-label="Add board"
-                    >
-                      {/* The same + as the Design tab's Add room (round ends). */}
-                      <Plus size={24} strokeWidth={3} />
-                    </button>
-                  </div>
-                  <div className="p-3 text-[12px]">
-                    {isCompactProjectViewport ? (
-                      <>
-                        <div className="mb-2 grid items-center gap-3" style={{ gridTemplateColumns: "minmax(0,1fr) 56px 76px" }}>
-                          <p />
-                          <p className="text-right text-[10px] font-bold uppercase tracking-[0.5px]" style={{ color: projectPalette.textMuted }}>
-                            Sheets
-                          </p>
-                          <p className="text-right text-[10px] font-bold uppercase tracking-[0.5px]" style={{ color: projectPalette.textMuted }}>
-                            Edgetape
-                          </p>
-                        </div>
-                        <div className="space-y-2">
-                          {productionForm.boardTypes.map((row, rowIndex) => {
-                            const requiredSheets = requiredSheetCountByBoardRowId[row.id] ?? 0;
-                            const requiredEdgetape = requiredEdgetapeByBoardRowId[row.id] ?? row.edgetape;
-                            return (
-                              <button
-                                key={row.id}
-                                type="button"
-                                onClick={(e) => {
-                                  boardRowDetailOriginElRef.current = e.currentTarget;
-                                  setBoardRowDetailOrigin(captureGlassModalOrigin(e));
-                                  setBoardRowDetailId(row.id);
-                                  setIsBoardRowDetailOpen(true);
-                                }}
-                                className="grid w-full items-center gap-3 rounded-[12px] border p-3 text-left hover:brightness-95"
-                                style={{
-                                  gridTemplateColumns: "minmax(0,1fr) 56px 76px",
-                                  borderColor: projectPalette.border,
-                                  backgroundColor: projectPalette.panelMuted,
-                                }}
-                              >
-                                <p className="min-w-0 truncate text-[12px] font-medium tracking-[0.7px]" style={{ color: "var(--text-main)" }}>
-                                  {row.colour
-                                    ? [row.colour, row.thickness ? activeLength(row.thickness) : "", row.finish].filter(Boolean).join(" ")
-                                    : `Board ${rowIndex + 1}`}
-                                </p>
-                                <p className="text-right text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
-                                  {requiredSheets}
-                                </p>
-                                <p className="text-right text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
-                                  {requiredEdgetape}
-                                </p>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <div className="grid items-center gap-2 text-[11px] font-bold" style={{ color: projectPalette.textMuted, gridTemplateColumns: boardSettingsRowGridTemplate }}>
-                          <p></p>
-                          <p>Colour</p>
-                          <p className="text-center">Thickness</p>
-                          <p className="text-center">Finish</p>
-                          <p className="text-center">Edging</p>
-                          <p className="text-center">Grain</p>
-                          <p className="text-center">Lacquer</p>
-                          <p className="text-center">Sheet Size</p>
-                          <p className="text-center">Sheets</p>
-                          <p className="text-center">Edgetape</p>
-                        </div>
-                        <div className="mt-2 space-y-2">
-                          {productionForm.boardTypes.map((row) => (
-                            <div key={row.id} className="row-glow-anchor grid items-center gap-2" style={{ gridTemplateColumns: boardSettingsRowGridTemplate }}>
-                              <div className="row-glow" data-active={hoveredBoardRemoveRowId === row.id} />
-                              {(() => {
-                                const requiredSheets = requiredSheetCountByBoardRowId[row.id] ?? 0;
-                                return (
-                                  <>
-                              <button
-                                disabled={productionReadOnly}
-                                onClick={(e) => { boardRowDeleteBlockedOriginElRef.current = e.currentTarget; setBoardRowModalOrigin(captureGlassModalOrigin(e)); void onRemoveBoardRow(row.id); }}
-                                onMouseEnter={() => setHoveredBoardRemoveRowId(row.id)}
-                                onMouseLeave={() => setHoveredBoardRemoveRowId((prev) => (prev === row.id ? "" : prev))}
-                                // Round, with the glass shine (lib/glass-shine.ts) in red — as the Design tab's Rooms.
-                                className="glass-shine inline-flex h-7 w-7 items-center justify-center rounded-full text-white hover:brightness-105 disabled:opacity-55"
-                                style={glassShineStyle("#EF4444")}
-                                aria-label="Remove board"
-                              >
-                                <X size={17} className="mx-auto" strokeWidth={2.75} />
-                              </button>
-                              <div className="relative z-20">
-                                <input
-                                  // No browser autofill — its own suggestions list opens here (an autocomplete value
-                                  // the browser doesn't recognise; "off" isn't always kept to).
-                                  autoComplete="cs-board-field"
-                                  ref={(el) => { boardColourInputRefs.current[row.id] = el; }}
-                                  disabled={productionReadOnly}
-                                  value={row.colour}
-                                  onFocus={() => {
-                                    boardColourEditStartRef.current[row.id] = String(row.colour || "").trim();
-                                    setActiveBoardColourSuggestionsRowId(row.id);
-                                  }}
-                                  onChange={(e) => {
-                                    onBoardFieldDraftChange(row.id, { colour: e.target.value });
-                                    setActiveBoardColourSuggestionsRowId(row.id);
-                                  }}
-                                  onBlur={(e) => {
-                                    const previousColour = String(
-                                      boardColourEditStartRef.current[row.id] ?? row.colour ?? "",
-                                    ).trim();
-                                    delete boardColourEditStartRef.current[row.id];
-                                    window.setTimeout(() => {
-                                      setActiveBoardColourSuggestionsRowId((prev) => (prev === row.id ? null : prev));
-                                    }, 120);
-                                    commitBoardColourChange(row.id, e.target.value, previousColour);
-                                  }}
-                                  onKeyDown={(e) => {
-                                    if (e.key === "Escape") {
-                                      setActiveBoardColourSuggestionsRowId(null);
-                                    }
-                                  }}
-                                  className="h-7 w-full rounded-[8px] border px-2 text-[12px]"
-                                  style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
-                                />
-                                {activeBoardColourSuggestionsRowId === row.id && boardColourDropdownRect &&
-                                  typeof document !== "undefined" &&
-                                  (() => {
-                                    const query = String(row.colour || "").trim().toLowerCase();
-                                    const starts = boardColourSuggestions.filter((c) => c.toLowerCase().startsWith(query));
-                                    const contains = boardColourSuggestions.filter(
-                                      (c) => !c.toLowerCase().startsWith(query) && c.toLowerCase().includes(query),
-                                    );
-                                    const filtered = (query ? [...starts, ...contains] : boardColourSuggestions).slice(0, 20);
-                                    if (!filtered.length) return null;
-                                    return createPortal(
-                                      <div
-                                        data-board-suggestions-menu="true"
-                                        className="fixed max-h-[220px] w-[220px] overflow-auto rounded-[8px] border p-1 shadow-[0_12px_28px_rgba(15,23,42,0.14)]"
-                                        style={{
-                                          left: boardColourDropdownRect.left,
-                                          top: boardColourDropdownRect.top,
-                                          zIndex: 2147483647,
-                                          borderColor: projectPalette.border,
-                                          backgroundColor: projectPalette.panelBg,
-                                        }}
-                                        onMouseDown={(ev) => ev.preventDefault()}
-                                      >
-                                        {filtered.map((colour) => (
-                                          <button
-                                            key={`${row.id}_${colour}`}
-                                            type="button"
-                                            onMouseDown={(ev) => ev.preventDefault()}
-                                            onClick={() => {
-                                              const previousColour = String(
-                                                boardColourEditStartRef.current[row.id] ?? row.colour ?? "",
-                                              ).trim();
-                                              delete boardColourEditStartRef.current[row.id];
-                                              setActiveBoardColourSuggestionsRowId(null);
-                                              commitBoardColourChange(row.id, colour, previousColour);
-                                            }}
-                                            className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] max-md:rounded-[8px] max-md:px-3 max-md:py-2.5 max-md:text-[15px]"
-                                            style={{ color: "var(--text-main)" }}
-                                          >
-                                            {colour}
-                                          </button>
-                                        ))}
-                                      </div>,
-                                      document.body,
-                                    );
-                                  })()}
-                              </div>
-                              <GlassSelectDropdown
-                                fullWidth
-                                noTruncate
-                                disabled={productionReadOnly}
-                                value={row.thickness}
-                                options={["", ...boardThicknessOptions]}
-                                getLabel={(opt) => (opt ? activeLength(opt) : "")}
-                                onChange={(next) => void onBoardFieldCommit(row.id, { thickness: next })}
-                                className="h-7 rounded-[8px] border px-2 text-[12px]"
-                                style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
-                              />
-                              <GlassSelectDropdown
-                                fullWidth
-                                noTruncate
-                                disabled={productionReadOnly}
-                                value={row.finish}
-                                options={["", ...boardFinishOptions]}
-                                onChange={(next) => void onBoardFieldCommit(row.id, { finish: next })}
-                                className="h-7 rounded-[8px] border px-2 text-[12px]"
-                                style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
-                              />
-                              <div className="relative z-20">
-                                <input
-                                  // No browser autofill — its own suggestions list opens here (an autocomplete value
-                                  // the browser doesn't recognise; "off" isn't always kept to).
-                                  autoComplete="cs-board-field"
-                                  ref={(el) => { boardEdgingInputRefs.current[row.id] = el; }}
-                                  disabled={productionReadOnly}
-                                  value={row.edging}
-                                  onFocus={() => {
-                                    boardEdgingEditStartRef.current[row.id] = String(row.edging || "").trim();
-                                    setActiveBoardEdgingSuggestionsRowId(row.id);
-                                  }}
-                                  onChange={(e) => {
-                                    onBoardFieldDraftChange(row.id, { edging: e.target.value });
-                                    setActiveBoardEdgingSuggestionsRowId(row.id);
-                                  }}
-                                  onBlur={(e) => {
-                                    const previousEdging = String(
-                                      boardEdgingEditStartRef.current[row.id] ?? row.edging ?? "",
-                                    ).trim();
-                                    delete boardEdgingEditStartRef.current[row.id];
-                                    window.setTimeout(() => {
-                                      setActiveBoardEdgingSuggestionsRowId((prev) => (prev === row.id ? null : prev));
-                                    }, 120);
-                                    void onBoardFieldCommit(row.id, { edging: e.target.value }, false, undefined, true, previousEdging);
-                                  }}
-                                  onKeyDown={(e) => {
-                                    if (e.key === "Escape") {
-                                      setActiveBoardEdgingSuggestionsRowId(null);
-                                    }
-                                  }}
-                                  className="h-7 w-full rounded-[8px] border px-2 text-[12px]"
-                                  style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
-                                />
-                                {activeBoardEdgingSuggestionsRowId === row.id && boardEdgingDropdownRect &&
-                                  typeof document !== "undefined" &&
-                                  (() => {
-                                    const options = boardEdgingSuggestionsForColour(row.colour);
-                                    const query = String(row.edging || "").trim().toLowerCase();
-                                    const starts = options.filter((v) => v.toLowerCase().startsWith(query));
-                                    const contains = options.filter(
-                                      (v) => !v.toLowerCase().startsWith(query) && v.toLowerCase().includes(query),
-                                    );
-                                    const filtered = (query ? [...starts, ...contains] : options).slice(0, 20);
-                                    if (!filtered.length) return null;
-                                    return createPortal(
-                                      <div
-                                        data-board-suggestions-menu="true"
-                                        className="fixed max-h-[220px] w-[220px] overflow-auto rounded-[8px] border p-1 shadow-[0_12px_28px_rgba(15,23,42,0.14)]"
-                                        style={{
-                                          left: boardEdgingDropdownRect.left,
-                                          top: boardEdgingDropdownRect.top,
-                                          zIndex: 2147483647,
-                                          borderColor: projectPalette.border,
-                                          backgroundColor: projectPalette.panelBg,
-                                        }}
-                                        onMouseDown={(ev) => ev.preventDefault()}
-                                      >
-                                        {filtered.map((edging) => (
-                                          <button
-                                            key={`${row.id}_${edging}`}
-                                            type="button"
-                                            onMouseDown={(ev) => ev.preventDefault()}
-                                            onClick={() => {
-                                              const previousEdging = String(
-                                                boardEdgingEditStartRef.current[row.id] ?? row.edging ?? "",
-                                              ).trim();
-                                              delete boardEdgingEditStartRef.current[row.id];
-                                              setActiveBoardEdgingSuggestionsRowId(null);
-                                              void onBoardFieldCommit(row.id, { edging }, false, undefined, true, previousEdging);
-                                            }}
-                                            className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] max-md:rounded-[8px] max-md:px-3 max-md:py-2.5 max-md:text-[15px]"
-                                            style={{ color: "var(--text-main)" }}
-                                          >
-                                            {edging}
-                                          </button>
-                                        ))}
-                                      </div>,
-                                      document.body,
-                                    );
-                                  })()}
-                              </div>
-                              <div className="flex justify-center">
-                                <QuoteExtraToggleSwitch
-                                  disabled={productionReadOnly}
-                                  checked={row.grain}
-                                  onChange={(checked) => void onBoardFieldCommit(row.id, { grain: checked })}
-                                />
-                              </div>
-                              <div className="flex justify-center">
-                                <QuoteExtraToggleSwitch
-                                  disabled={productionReadOnly}
-                                  checked={row.lacquer}
-                                  onChange={(checked) => void onBoardFieldCommit(row.id, { lacquer: checked })}
-                                />
-                              </div>
-                              <GlassSelectDropdown
-                                fullWidth
-                                noTruncate
-                                disabled={productionReadOnly}
-                                value={row.sheetSize}
-                                options={["", ...sheetSizeOptions.map((opt) => `${opt.h} x ${opt.w}`)]}
-                                onChange={(next) => void onBoardFieldCommit(row.id, { sheetSize: next })}
-                                className="h-7 rounded-[8px] border px-2 text-[12px]"
-                                style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
-                              />
-                              <p className="text-center text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>{requiredSheets}</p>
-                              <p className="text-center text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
-                                {requiredEdgetapeByBoardRowId[row.id] ?? row.edgetape}
-                              </p>
-                                  </>
-                                );
-                              })()}
-                            </div>
-                          ))}
-                        </div>
-                      </>
-                    )}
-                    <button
-                      type="button"
-                      disabled={productionReadOnly}
-                      onClick={() => void onAddBoardRow()}
-                      // Round, with the glass shine (lib/glass-shine.ts) in green — as the Design tab's Rooms.
-                      className="glass-shine mt-3 inline-flex h-8 w-8 items-center justify-center rounded-full text-white hover:brightness-105 disabled:opacity-55"
-                      style={glassShineStyle("#16A34A")}
-                      title="Add board"
-                      aria-label="Add board"
-                    >
-                      {/* The same + as the Design tab's Add room (round ends). */}
-                      <Plus size={24} strokeWidth={3} />
-                    </button>
-                  </div>
-                </section>
-                {shouldRenderBoardRowDeleteBlockedModal && displayBoardRowDeleteBlocked && typeof document !== "undefined" && createPortal(
-                  <div className="fixed inset-0 z-[1700] flex items-center justify-center px-4 py-4">
-                    <button
-                      type="button"
-                      aria-label="Close board delete warning backdrop"
-                      onClick={() => setBoardRowDeleteBlocked(null)}
-                      className="absolute inset-0 glass-modal-backdrop"
-                    />
-                    <div ref={boardRowDeleteBlockedPanelRef} className="glass-modal-panel relative z-[1701] w-[min(720px,96vw)] overflow-hidden">
-                      <GlassModalHeader title="Colour in use" onClose={() => setBoardRowDeleteBlocked(null)} />
-                      <p className="px-5 pt-4 text-[13px] font-medium" style={{ color: "var(--text-main)" }}>
-                        {displayBoardRowDeleteBlocked.colour} is in use on this cutlist, it cannot be deleted.
-                      </p>
-                      <div className="flex items-center justify-end gap-2 px-5 py-4">
-                        <button
-                          type="button"
-                          onClick={() => setBoardRowDeleteBlocked(null)}
-                          className="h-9 rounded-[9px] border px-4 text-[12px] font-semibold hover:brightness-95"
-                          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
-                        >
-                          OK
-                        </button>
-                      </div>
-                    </div>
-                  </div>,
-                  document.body,
-                )}
-                {shouldRenderBoardRowDetail && boardRowDetailId && (() => {
-                  const rowIndex = productionForm.boardTypes.findIndex((r) => r.id === boardRowDetailId);
-                  const row = productionForm.boardTypes[rowIndex];
-                  if (!row) return null;
-                  const requiredSheets = requiredSheetCountByBoardRowId[row.id] ?? 0;
-                  const requiredEdgetape = requiredEdgetapeByBoardRowId[row.id] ?? row.edgetape;
-                  const closeBoardRowDetail = () => setIsBoardRowDetailOpen(false);
-                  // Same flat colours as the CNC Cutlist mobile popup (shouldRenderCncMobileRowDetail) —
-                  // no per-item theming, just the default glass panel with black text and a light grey banner bar.
-                  const detailBarBg = "color-mix(in srgb, var(--text-main) 10%, transparent)";
-                  const detailLabel = "text-[13px] font-bold tracking-[0.6px]";
-                  // Portaled straight to document.body (same as the delete-blocked modal right above
-                  // this) so the backdrop's blur genuinely sits over everything — the global app tab
-                  // bar and this page's own sticky headers included — instead of being trapped inside
-                  // whatever nested stacking context this section happens to render within.
-                  if (typeof document === "undefined") return null;
-                  return createPortal(
-                    <div
-                      className="glass-modal-backdrop fixed inset-0 z-[1650] flex items-center justify-center p-4"
-                      onClick={closeBoardRowDetail}
-                    >
-                      <div
-                        ref={boardRowDetailPanelRef}
-                        className="glass-modal-panel flex w-fit min-w-[320px] max-w-[94vw] flex-col overflow-hidden"
-                        style={{ maxHeight: "calc(100svh - 32px)" }}
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <div className="flex min-h-0 flex-1 flex-col">
-                          <div className="glass-modal-header relative flex h-[56px] shrink-0 items-center justify-between gap-3 px-5">
-                            <p className="min-w-0 truncate text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Board {rowIndex + 1}</p>
-                            <div className="flex items-center gap-2">
-                              <button
-                                type="button"
-                                disabled={productionReadOnly}
-                                onClick={(e) => { boardRowDeleteBlockedOriginElRef.current = e.currentTarget; setBoardRowModalOrigin(captureGlassModalOrigin(e)); void onRemoveBoardRow(row.id); }}
-                                onMouseEnter={() => setHoveredBoardRemoveRowId(row.id)}
-                                onMouseLeave={() => setHoveredBoardRemoveRowId((prev) => (prev === row.id ? "" : prev))}
-                                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-white hover:brightness-95 disabled:opacity-55 max-md:h-10 max-md:w-10"
-                                style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
-                                title="Remove board"
-                              >
-                                <Trash2 size={15} strokeWidth={2.2} />
-                              </button>
-                              <button type="button" onClick={closeBoardRowDetail} className={modalCloseButtonClass} aria-label="Close">
-                                <X size={16} />
-                              </button>
-                            </div>
-                          </div>
-                          <div className="min-h-0 flex-1 overflow-auto p-4 text-[15px]" style={{ color: "var(--text-main)" }}>
-                            <div className="rounded-[8px] px-3 py-1.5" style={{ backgroundColor: detailBarBg }}>
-                              <p className={detailLabel} style={{ color: "var(--text-main)" }}>Colour</p>
-                            </div>
-                            <div className="relative z-20 px-3 pt-1.5">
-                              <input
-                                // No browser autofill — its own suggestions list opens here (an autocomplete value
-                                // the browser doesn't recognise; "off" isn't always kept to).
-                                autoComplete="cs-board-field"
-                                ref={(el) => { boardColourInputRefs.current[row.id] = el; }}
-                                disabled={productionReadOnly}
-                                value={row.colour}
-                                onFocus={() => {
-                                  boardColourEditStartRef.current[row.id] = String(row.colour || "").trim();
-                                  setActiveBoardColourSuggestionsRowId(row.id);
-                                }}
-                                onChange={(e) => {
-                                  onBoardFieldDraftChange(row.id, { colour: e.target.value });
-                                  setActiveBoardColourSuggestionsRowId(row.id);
-                                }}
-                                onBlur={(e) => {
-                                  const previousColour = String(
-                                    boardColourEditStartRef.current[row.id] ?? row.colour ?? "",
-                                  ).trim();
-                                  delete boardColourEditStartRef.current[row.id];
-                                  window.setTimeout(() => {
-                                    setActiveBoardColourSuggestionsRowId((prev) => (prev === row.id ? null : prev));
-                                  }, 120);
-                                  commitBoardColourChange(row.id, e.target.value, previousColour);
-                                }}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Escape") {
-                                    setActiveBoardColourSuggestionsRowId(null);
-                                  }
-                                }}
-                                className="h-9 w-full rounded-[8px] border px-3 text-[13px]"
-                                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                              />
-                              {activeBoardColourSuggestionsRowId === row.id && boardColourDropdownRect &&
-                                typeof document !== "undefined" &&
-                                (() => {
-                                  const query = String(row.colour || "").trim().toLowerCase();
-                                  const starts = boardColourSuggestions.filter((c) => c.toLowerCase().startsWith(query));
-                                  const contains = boardColourSuggestions.filter(
-                                    (c) => !c.toLowerCase().startsWith(query) && c.toLowerCase().includes(query),
-                                  );
-                                  const filtered = (query ? [...starts, ...contains] : boardColourSuggestions).slice(0, 20);
-                                  if (!filtered.length) return null;
-                                  return createPortal(
-                                    <div
-                                      data-board-suggestions-menu="true"
-                                      className="fixed max-h-[220px] overflow-auto rounded-[8px] border p-1 shadow-[0_12px_28px_rgba(15,23,42,0.14)] max-md:max-h-[320px] max-md:rounded-[12px] max-md:p-1.5"
-                                      style={{
-                                        left: boardColourDropdownRect.left,
-                                        top: boardColourDropdownRect.top,
-                                        width: boardColourDropdownRect.width,
-                                        zIndex: 2147483647,
-                                        borderColor: "var(--glass-border)",
-                                        backgroundColor: "var(--panel-bg)",
-                                      }}
-                                      onMouseDown={(ev) => ev.preventDefault()}
-                                    >
-                                      {filtered.map((colour) => (
-                                        <button
-                                          key={`${row.id}_${colour}`}
-                                          type="button"
-                                          onMouseDown={(ev) => ev.preventDefault()}
-                                          onClick={() => {
-                                            const previousColour = String(
-                                              boardColourEditStartRef.current[row.id] ?? row.colour ?? "",
-                                            ).trim();
-                                            delete boardColourEditStartRef.current[row.id];
-                                            setActiveBoardColourSuggestionsRowId(null);
-                                            commitBoardColourChange(row.id, colour, previousColour);
-                                          }}
-                                          className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] max-md:rounded-[8px] max-md:px-3 max-md:py-2.5 max-md:text-[15px]"
-                                          style={{ color: "var(--text-main)" }}
-                                        >
-                                          {colour}
-                                        </button>
-                                      ))}
-                                    </div>,
-                                    document.body,
-                                  );
-                                })()}
-                            </div>
-
-                            <div className="mt-4 grid grid-cols-2 gap-4 rounded-[8px] px-3 py-1.5 text-center" style={{ backgroundColor: detailBarBg }}>
-                              <p className={detailLabel} style={{ color: "var(--text-main)" }}>Thickness</p>
-                              <p className={detailLabel} style={{ color: "var(--text-main)" }}>Finish</p>
-                            </div>
-                            <div className="grid grid-cols-2 gap-4 px-3 pt-1.5">
-                              <GlassSelectDropdown
-                                fullWidth
-                                noTruncate
-                                disabled={productionReadOnly}
-                                value={row.thickness}
-                                options={["", ...boardThicknessOptions]}
-                                getLabel={(opt) => (opt ? activeLength(opt) : "")}
-                                onChange={(next) => void onBoardFieldCommit(row.id, { thickness: next })}
-                                className="h-9 rounded-[8px] border px-3 text-[13px]"
-                                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                              />
-                              <GlassSelectDropdown
-                                fullWidth
-                                noTruncate
-                                disabled={productionReadOnly}
-                                value={row.finish}
-                                options={["", ...boardFinishOptions]}
-                                onChange={(next) => void onBoardFieldCommit(row.id, { finish: next })}
-                                className="h-9 rounded-[8px] border px-3 text-[13px]"
-                                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                              />
-                            </div>
-
-                            <div className="mt-4 rounded-[8px] px-3 py-1.5" style={{ backgroundColor: detailBarBg }}>
-                              <p className={detailLabel} style={{ color: "var(--text-main)" }}>Edging</p>
-                            </div>
-                            <div className="relative z-20 px-3 pt-1.5">
-                              <input
-                                // No browser autofill — its own suggestions list opens here (an autocomplete value
-                                // the browser doesn't recognise; "off" isn't always kept to).
-                                autoComplete="cs-board-field"
-                                ref={(el) => { boardEdgingInputRefs.current[row.id] = el; }}
-                                disabled={productionReadOnly}
-                                value={row.edging}
-                                onFocus={() => {
-                                  boardEdgingEditStartRef.current[row.id] = String(row.edging || "").trim();
-                                  setActiveBoardEdgingSuggestionsRowId(row.id);
-                                }}
-                                onChange={(e) => {
-                                  onBoardFieldDraftChange(row.id, { edging: e.target.value });
-                                  setActiveBoardEdgingSuggestionsRowId(row.id);
-                                }}
-                                onBlur={(e) => {
-                                  const previousEdging = String(
-                                    boardEdgingEditStartRef.current[row.id] ?? row.edging ?? "",
-                                  ).trim();
-                                  delete boardEdgingEditStartRef.current[row.id];
-                                  window.setTimeout(() => {
-                                    setActiveBoardEdgingSuggestionsRowId((prev) => (prev === row.id ? null : prev));
-                                  }, 120);
-                                  void onBoardFieldCommit(row.id, { edging: e.target.value }, false, undefined, true, previousEdging);
-                                }}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Escape") {
-                                    setActiveBoardEdgingSuggestionsRowId(null);
-                                  }
-                                }}
-                                className="h-9 w-full rounded-[8px] border px-3 text-[13px]"
-                                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                              />
-                              {activeBoardEdgingSuggestionsRowId === row.id && boardEdgingDropdownRect &&
-                                typeof document !== "undefined" &&
-                                (() => {
-                                  const options = boardEdgingSuggestionsForColour(row.colour);
-                                  const query = String(row.edging || "").trim().toLowerCase();
-                                  const starts = options.filter((v) => v.toLowerCase().startsWith(query));
-                                  const contains = options.filter(
-                                    (v) => !v.toLowerCase().startsWith(query) && v.toLowerCase().includes(query),
-                                  );
-                                  const filtered = (query ? [...starts, ...contains] : options).slice(0, 20);
-                                  if (!filtered.length) return null;
-                                  return createPortal(
-                                    <div
-                                      data-board-suggestions-menu="true"
-                                      className="fixed max-h-[220px] overflow-auto rounded-[8px] border p-1 shadow-[0_12px_28px_rgba(15,23,42,0.14)] max-md:max-h-[320px] max-md:rounded-[12px] max-md:p-1.5"
-                                      style={{
-                                        left: boardEdgingDropdownRect.left,
-                                        top: boardEdgingDropdownRect.top,
-                                        width: boardEdgingDropdownRect.width,
-                                        zIndex: 2147483647,
-                                        borderColor: "var(--glass-border)",
-                                        backgroundColor: "var(--panel-bg)",
-                                      }}
-                                      onMouseDown={(ev) => ev.preventDefault()}
-                                    >
-                                      {filtered.map((edging) => (
-                                        <button
-                                          key={`${row.id}_${edging}`}
-                                          type="button"
-                                          onMouseDown={(ev) => ev.preventDefault()}
-                                          onClick={() => {
-                                            const previousEdging = String(
-                                              boardEdgingEditStartRef.current[row.id] ?? row.edging ?? "",
-                                            ).trim();
-                                            delete boardEdgingEditStartRef.current[row.id];
-                                            setActiveBoardEdgingSuggestionsRowId(null);
-                                            void onBoardFieldCommit(row.id, { edging }, false, undefined, true, previousEdging);
-                                          }}
-                                          className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] max-md:rounded-[8px] max-md:px-3 max-md:py-2.5 max-md:text-[15px]"
-                                          style={{ color: "var(--text-main)" }}
-                                        >
-                                          {edging}
-                                        </button>
-                                      ))}
-                                    </div>,
-                                    document.body,
-                                  );
-                                })()}
-                            </div>
-
-                            <div className="mt-4 grid grid-cols-3 gap-4 rounded-[8px] px-3 py-1.5 text-center" style={{ backgroundColor: detailBarBg }}>
-                              <p className={detailLabel} style={{ color: "var(--text-main)" }}>Grain</p>
-                              <p className={detailLabel} style={{ color: "var(--text-main)" }}>Lacquer</p>
-                              <p className={detailLabel} style={{ color: "var(--text-main)" }}>Sheet Size</p>
-                            </div>
-                            <div className="grid grid-cols-3 gap-4 px-3 pt-1.5">
-                              <div className="flex h-9 items-center justify-center">
-                                <QuoteExtraToggleSwitch
-                                  size="large"
-                                  disabled={productionReadOnly}
-                                  checked={row.grain}
-                                  onChange={(checked) => void onBoardFieldCommit(row.id, { grain: checked })}
-                                />
-                              </div>
-                              <div className="flex h-9 items-center justify-center">
-                                <QuoteExtraToggleSwitch
-                                  size="large"
-                                  disabled={productionReadOnly}
-                                  checked={row.lacquer}
-                                  onChange={(checked) => void onBoardFieldCommit(row.id, { lacquer: checked })}
-                                />
-                              </div>
-                              <GlassSelectDropdown
-                                fullWidth
-                                noTruncate
-                                disabled={productionReadOnly}
-                                value={row.sheetSize}
-                                options={["", ...sheetSizeOptions.map((opt) => `${opt.h} x ${opt.w}`)]}
-                                onChange={(next) => void onBoardFieldCommit(row.id, { sheetSize: next })}
-                                className="h-9 rounded-[8px] border px-2 text-[12px]"
-                                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                              />
-                            </div>
-                          </div>
-                          <div className="grid shrink-0 grid-cols-2 gap-[5px] px-[5px] pb-[5px]">
-                            <div className="flex flex-col items-center">
-                              <p className="pb-1.5 pt-3 text-[12px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-main)" }}>Sheets</p>
-                              <div
-                                className="flex w-full flex-1 items-center justify-center rounded-[15px] py-3 text-white"
-                                style={{ backgroundImage: "var(--success-gradient)" }}
-                              >
-                                <p className="text-[18px] font-medium leading-none" style={{ color: "#FFFFFF" }}>{requiredSheets}</p>
-                              </div>
-                            </div>
-                            <div className="flex flex-col items-center">
-                              <p className="pb-1.5 pt-3 text-[12px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-main)" }}>Edgetape</p>
-                              <div
-                                className="flex w-full flex-1 items-center justify-center rounded-[15px] py-3 text-white"
-                                style={{ backgroundImage: "var(--brand-gradient)" }}
-                              >
-                                <p className="text-[18px] font-medium leading-none" style={{ color: "#FFFFFF" }}>{requiredEdgetape}</p>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>,
-                    document.body,
-                  );
-                })()}
+                {renderBoardSettings()}
                 <div className="mt-4">
                   {renderProductionNotesCard("overview")}
                 </div>
