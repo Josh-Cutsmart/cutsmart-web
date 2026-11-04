@@ -11,7 +11,6 @@ const COMPANY_ID_HINTS = Array.from(
   new Set(
     [
       String(process.env.NEXT_PUBLIC_DEFAULT_COMPANY_ID ?? "").trim(),
-      "cmp_mykm_91647c",
     ].filter(Boolean),
   ),
 );

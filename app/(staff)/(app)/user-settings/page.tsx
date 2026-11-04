@@ -376,7 +376,6 @@ export default function UserSettingsPage() {
       if (directCompanyId) candidateIds.add(directCompanyId);
       if (membershipCompanyId) candidateIds.add(membershipCompanyId);
       if (process.env.NEXT_PUBLIC_DEFAULT_COMPANY_ID) candidateIds.add(String(process.env.NEXT_PUBLIC_DEFAULT_COMPANY_ID).trim());
-      candidateIds.add("cmp_mykm_91647c");
 
       if (/^#[0-9A-Fa-f]{6}$/.test(storedThemeColor)) {
         setCompanyColor(storedThemeColor);

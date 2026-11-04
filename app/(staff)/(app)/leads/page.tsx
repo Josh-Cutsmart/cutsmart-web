@@ -5069,24 +5069,19 @@ export default function LeadsPage() {
                   // where scrolling is all there is to it.
                   <div className="hidden items-center gap-1.5 sm:flex">
                     <span className="text-[11px] font-semibold" style={{ color: leadsToolbarPalette.textMuted }}>Show</span>
-                    <select
-                      value={listPageSize}
-                      onChange={(e) => setListPageSize(Number(e.target.value))}
-                      aria-label="Leads per page"
-                      className="cs-own-fill h-9 border px-3 text-[12px] font-semibold outline-none"
-                      style={{
-                        borderRadius: 9999,
+                    <GlassDropdown
+                      value={String(listPageSize)}
+                      options={[10, 20, 30, 40, 50].map((size) => ({ value: String(size), label: String(size) }))}
+                      onChange={(next) => setListPageSize(Number(next))}
+                      ariaLabel="Leads per page"
+                      menuMinWidth={84}
+                      triggerClassName="cs-own-fill h-9 shrink-0 justify-between rounded-full border px-3.5 text-[12px] font-semibold"
+                      triggerStyle={{
                         borderColor: leadsToolbarPalette.border,
                         backgroundColor: leadsToolbarPalette.panelBg,
                         color: leadsToolbarPalette.text,
-                        ["--field-bg" as string]: leadsToolbarPalette.panelBg,
-                        ["--field-border" as string]: leadsToolbarPalette.border,
                       }}
-                    >
-                      {[10, 20, 30, 40, 50].map((size) => (
-                        <option key={size} value={size}>{size}</option>
-                      ))}
-                    </select>
+                    />
                     <span className="text-[11px] font-semibold" style={{ color: leadsToolbarPalette.textMuted }}>per page</span>
                   </div>
                 ) : null}

@@ -44,6 +44,45 @@ function phoneKey(value: unknown): string {
   return digits.length >= 6 ? digits.slice(-9) : "";
 }
 
+// The staff member a person is (same email or phone), if they are one.
+export function staffMemberMatching(person: { email?: unknown; phone?: unknown }, members: CompanyMemberOption[]): CompanyMemberOption | null {
+  const email = emailKey(person.email);
+  const phone = phoneKey(person.phone);
+  if (!email && !phone) return null;
+  return (
+    members.find(
+      (member) =>
+        String(member.uid || "").trim() && ((email && emailKey(member.email) === email) || (phone && phoneKey(member.mobile) === phone)),
+    ) ?? null
+  );
+}
+
+// A member's staff card.
+export function staffContactRow(member: CompanyMemberOption, companyId: string): CompanyClientRow {
+  const email = String(member.email || "").trim();
+  return {
+    id: `${STAFF_CONTACT_ID_PREFIX}${String(member.uid || "").trim()}`,
+    companyId,
+    name: String(member.displayName || member.email || "").trim(),
+    email,
+    emailNormalized: emailKey(email),
+    phone: String(member.mobile || "").trim(),
+    address: "",
+    notes: "",
+    category: STAFF_CONTACT_CATEGORY,
+    archived: false,
+    createdAtIso: "",
+    updatedAtIso: "",
+    firstProjectAtIso: "",
+    lastProjectAtIso: "",
+    lastProjectId: "",
+    projectCount: 0,
+    createdByUids: [],
+    assignedToUids: [],
+    history: [],
+  };
+}
+
 // The contacts list with every staff member in it. A staff member who's already a contact (same email
 // or phone) isn't added again — that contact shows under Staff instead (keeping its projects and notes),
 // with their number/email filled in if it had none.
@@ -52,7 +91,6 @@ export function withStaffContacts(contacts: CompanyClientRow[], members: Company
   for (const member of members) {
     const uid = String(member.uid || "").trim();
     if (!uid) continue;
-    const name = String(member.displayName || member.email || "").trim();
     const email = String(member.email || "").trim();
     const phone = String(member.mobile || "").trim();
     const memberEmail = emailKey(email);
@@ -72,27 +110,7 @@ export function withStaffContacts(contacts: CompanyClientRow[], members: Company
       };
       continue;
     }
-    out.push({
-      id: `${STAFF_CONTACT_ID_PREFIX}${uid}`,
-      companyId,
-      name,
-      email,
-      emailNormalized: memberEmail,
-      phone,
-      address: "",
-      notes: "",
-      category: STAFF_CONTACT_CATEGORY,
-      archived: false,
-      createdAtIso: "",
-      updatedAtIso: "",
-      firstProjectAtIso: "",
-      lastProjectAtIso: "",
-      lastProjectId: "",
-      projectCount: 0,
-      createdByUids: [],
-      assignedToUids: [],
-      history: [],
-    });
+    out.push(staffContactRow(member, companyId));
   }
   return out;
 }

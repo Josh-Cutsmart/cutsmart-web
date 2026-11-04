@@ -1,5 +1,6 @@
 "use client";
 
+import { flyToTabBar } from "@/lib/fly-to-tab-bar";
 import { activeDateTime, useCompanyFormats } from "@/lib/company-formats";
 import { GlassModalHeader } from "@/components/glass-modal-header";
 import { glassShineStyle } from "@/lib/glass-shine";
@@ -38,7 +39,7 @@ import {
 } from "@/lib/board-drop-order";
 import { BoardColumnSortMenu, BoardSortButton } from "@/components/board-sort-menu";
 import { readBoardSortPrefs, saveBoardSortPrefs } from "@/lib/board-sort-prefs";
-import { useAppTabs } from "@/lib/app-tabs-context";
+import { REOPEN_APP_TAB_SCOPE_EVENT, useAppTabs } from "@/lib/app-tabs-context";
 import {
   fetchCompanyDoc,
   fetchCompanyMembers,
@@ -261,11 +262,6 @@ function popAwayViewToolbarItems(toolbarRow: HTMLElement) {
     const rect = el.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
     const ghost = el.cloneNode(true) as HTMLElement;
-    // A copied <select> shows its first option, not the one chosen.
-    const selects = el.querySelectorAll("select");
-    ghost.querySelectorAll("select").forEach((select, index) => {
-      select.value = selects[index]?.value ?? select.value;
-    });
     ghost.removeAttribute("data-view-toolbar-item");
     ghost.removeAttribute("aria-label");
     ghost.setAttribute("aria-hidden", "true");
@@ -526,13 +522,8 @@ export default function DashboardPage() {
   const [creatorColorByUid, setCreatorColorByUid] = useState<Record<string, string>>({});
   const [companyThemeColor, setCompanyThemeColor] = useState("#2F6BFF");
   const [hoveredProjectId, setHoveredProjectId] = useState("");
-  const [openingProjectAnim, setOpeningProjectAnim] = useState<{
-    id: string;
-    from: { left: number; top: number; width: number; height: number };
-    to: { left: number; top: number; width: number; height: number };
-    phase: "start" | "animating";
-  } | null>(null);
-  const openingProjectTimerRef = useRef<number | null>(null);
+  // The project just clicked to open: its card left empty while a copy of it flies up to the tab bar.
+  const [openingProjectId, setOpeningProjectId] = useState("");
   const [showCompletedProjectsModal, setShowCompletedProjectsModal] = useState(false);
   // The completed-projects record (lib/completed-projects.ts) — for the Completed count's deleted ones (deleted while
   // completed, they're only in the record). Read again as the pop-up closes (it may have filled some in).
@@ -1188,52 +1179,26 @@ export default function DashboardPage() {
       void openProjectInDashboard(project.id, project.name);
       return;
     }
-    if (openingProjectTimerRef.current != null) {
-      window.clearTimeout(openingProjectTimerRef.current);
-      openingProjectTimerRef.current = null;
-    }
-    const rect = sourceEl.getBoundingClientRect();
-    const to = { left: 160, top: 9, width: 130, height: 30 };
-    const strip = document.querySelector('[data-app-tabs-strip="1"]');
-    if (strip) {
-      const stripRect = strip.getBoundingClientRect();
-      const groups = strip.querySelectorAll("[data-app-tab-group]");
-      const lastGroup = groups[groups.length - 1] as HTMLElement | undefined;
-      to.left = lastGroup ? lastGroup.getBoundingClientRect().right + 6 : stripRect.left + 4;
-      to.top = stripRect.top + (stripRect.height - to.height) / 2;
-    }
-    setOpeningProjectAnim({
-      id: project.id,
-      from: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
-      to,
-      phase: "start",
-    });
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => {
-        setOpeningProjectAnim((prev) => (prev && prev.id === project.id ? { ...prev, phase: "animating" } : prev));
-      });
-    });
-    openingProjectTimerRef.current = window.setTimeout(() => {
-      openingProjectTimerRef.current = null;
-      // Register a placeholder tab the instant the fly-up ghost lands, so the
-      // tab bar already shows it before navigation/data-fetch finishes — the
-      // real project page's own registration (keyed to the same scopeKey)
-      // seamlessly replaces this once it mounts, rather than leaving a gap
-      // where no tab is visible yet.
-      const scopeKey = `project:${project.id}`;
-      registerScopeTabs(scopeKey, [
-        {
-          key: `${scopeKey}:opening`,
-          label: project.name || "Project",
-          href: `/projects/${project.id}`,
-          scopeKey,
-          groupKey: scopeKey,
-          groupLabel: project.name || "Project",
-          active: true,
-        },
-      ]);
-      void openProjectInDashboard(project.id, project.name);
-    }, 220);
+    // A copy of it slides up and bounces onto the tab bar (lib/fly-to-tab-bar.ts), its project opening straight away
+    // underneath. Its tab's put on the bar now — ready for that, and so the bar already shows it before the navigation /
+    // data-fetch finishes; the real project page's own registration (keyed to the same scopeKey) seamlessly replaces this
+    // once it mounts.
+    const scopeKey = `project:${project.id}`;
+    flyToTabBar(sourceEl, scopeKey, () => void openProjectInDashboard(project.id, project.name));
+    setOpeningProjectId(project.id);
+    // (Its tab may have been closed before: it can go back on the bar now.)
+    window.dispatchEvent(new CustomEvent(REOPEN_APP_TAB_SCOPE_EVENT, { detail: scopeKey }));
+    registerScopeTabs(scopeKey, [
+      {
+        key: `${scopeKey}:opening`,
+        label: project.name || "Project",
+        href: `/projects/${project.id}`,
+        scopeKey,
+        groupKey: scopeKey,
+        groupLabel: project.name || "Project",
+        active: true,
+      },
+    ]);
   };
 
   // boardOrder: where it was dropped on the board (lib/board-drop-order.ts), saved in the same write.
@@ -1500,14 +1465,6 @@ export default function DashboardPage() {
       window.scrollTo({ top: scrollY, behavior: "auto" });
     };
   }, [showCompletedProjectsModal, showStaffModal]);
-
-  useEffect(() => {
-    return () => {
-      if (openingProjectTimerRef.current != null) {
-        window.clearTimeout(openingProjectTimerRef.current);
-      }
-    };
-  }, []);
 
   // What the list, board and stat cards show — archived projects (see the Archived page) are only
   // kept here for the Completed Projects pop-up's history.
@@ -2741,32 +2698,6 @@ export default function DashboardPage() {
         )
       : null;
 
-  const openingProjectOverlay =
-    openingProjectAnim && typeof document !== "undefined"
-      ? createPortal(
-          <div
-            aria-hidden="true"
-            className="pointer-events-none fixed z-[3000] overflow-hidden rounded-[14px] border"
-            style={{
-              left: openingProjectAnim.phase === "animating" ? openingProjectAnim.to.left : openingProjectAnim.from.left,
-              top: openingProjectAnim.phase === "animating" ? openingProjectAnim.to.top : openingProjectAnim.from.top,
-              width: openingProjectAnim.phase === "animating" ? openingProjectAnim.to.width : openingProjectAnim.from.width,
-              height: openingProjectAnim.phase === "animating" ? openingProjectAnim.to.height : openingProjectAnim.from.height,
-              opacity: openingProjectAnim.phase === "animating" ? 0 : 1,
-              transform: openingProjectAnim.phase === "animating" ? "scale(0.92)" : "scale(1)",
-              transition:
-                openingProjectAnim.phase === "animating"
-                  ? "left 220ms cubic-bezier(0.34, 1.56, 0.64, 1), top 220ms cubic-bezier(0.34, 1.56, 0.64, 1), width 220ms cubic-bezier(0.34, 1.56, 0.64, 1), height 220ms cubic-bezier(0.34, 1.56, 0.64, 1), transform 220ms cubic-bezier(0.34, 1.56, 0.64, 1), opacity 160ms ease 60ms"
-                  : "none",
-              borderColor: "var(--glass-border)",
-              backgroundColor: "var(--glass-bg-strong)",
-              boxShadow: "var(--shadow-glass)",
-            }}
-          />,
-          document.body,
-        )
-      : null;
-
   return (
     <>
           {access.status === "loading" ? (
@@ -3117,23 +3048,19 @@ export default function DashboardPage() {
                     className={`order-4 hidden w-full items-center gap-1.5 sm:order-2 sm:ml-auto sm:flex sm:w-auto ${viewToolbarPopIn ? "glass-bubble-pop" : ""}`}
                   >
                     <span className="text-[11px] font-semibold" style={{ color: dashboardPalette.textMuted }}>Show</span>
-                    <select
-                      value={pageSize}
-                      onChange={(e) => setPageSize(Number(e.target.value))}
-                      className="h-9 border px-3 text-[12px] font-medium outline-none"
-                      style={{
-                        // Pill ends like the buttons beside it — set here, since globals.css gives every
-                        // select 10px corners, which out-ranks a rounded-full class.
-                        borderRadius: 9999,
+                    <GlassDropdown
+                      value={String(pageSize)}
+                      options={[10, 20, 30, 40, 50].map((size) => ({ value: String(size), label: String(size) }))}
+                      onChange={(next) => setPageSize(Number(next))}
+                      ariaLabel="Projects per page"
+                      menuMinWidth={84}
+                      triggerClassName="cs-own-fill h-9 shrink-0 justify-between rounded-full border px-3.5 text-[12px] font-semibold"
+                      triggerStyle={{
                         borderColor: dashboardPalette.border,
                         backgroundColor: dashboardPalette.panelBg,
                         color: dashboardPalette.text,
                       }}
-                    >
-                      {[10, 20, 30, 40, 50].map((size) => (
-                        <option key={size} value={size}>{size}</option>
-                      ))}
-                    </select>
+                    />
                     <span className="text-[11px] font-semibold" style={{ color: dashboardPalette.textMuted }}>
                       per page
                     </span>
@@ -3200,7 +3127,7 @@ export default function DashboardPage() {
                         style={{
                           borderColor: dashboardPalette.border,
                           backgroundColor: hoveredProjectId === project.id ? dashboardPalette.rowHover : dashboardPalette.panelBg,
-                          opacity: openingProjectAnim?.id === project.id ? 0 : 1,
+                          opacity: openingProjectId === project.id ? 0 : 1,
                         }}
                         onMouseEnter={() => setHoveredProjectId(project.id)}
                         onMouseLeave={() => setHoveredProjectId((prev) => (prev === project.id ? "" : prev))}
@@ -3537,7 +3464,7 @@ export default function DashboardPage() {
                         // Its divider (a line along the bottom, fading out at each end the same as the
                         // hover highlight — a border can't fade) over the highlight.
                         ...fadedRowLineStyle(isDarkMode ? "var(--glass-border)" : dashboardPalette.border, rowBg),
-                        opacity: openingProjectAnim?.id === project.id ? 0 : 1,
+                        opacity: openingProjectId === project.id ? 0 : 1,
                         transition: "opacity 200ms ease",
                       }}
                       onMouseEnter={() => setHoveredProjectId(project.id)}
@@ -3835,7 +3762,6 @@ export default function DashboardPage() {
                 viewportBottomInsetPx={0}
               />
             )}
-            {openingProjectOverlay}
             <DragGhostLayer controller={projectBoardDragGhost} />
             {statusLockNotice.element}
           </>

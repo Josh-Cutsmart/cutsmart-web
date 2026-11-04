@@ -60,7 +60,7 @@ export const SETTINGS_SEARCH_INDEX: Array<{ section: SettingsSection; label: str
   { section: "sales", card: "Layout builders", label: "Item categories", keywords: "items picker" },
   { section: "sales", card: "Products", label: "Products", keywords: "job types sheet prices" },
   { section: "sales", card: "GST", label: "GST", keywords: "tax gst rate quote total" },
-  { section: "sales", card: "Extra charges", label: "Extra charges", keywords: "quote charges delivery installation default" },
+  { section: "sales", card: "Operational Cost", label: "Operational Cost", keywords: "extra charges overheads delivery installation hidden" },
   { section: "sales", card: "Rooms", label: "Rooms", keywords: "room names kitchen laundry order production" },
   { section: "sales", card: "Quote discount", label: "Quote discount", keywords: "tiers" },
   { section: "production", card: "Cutlist columns", label: "Cutlist columns" },

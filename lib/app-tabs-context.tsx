@@ -20,6 +20,9 @@ export type AppWorkspaceTabAction = {
   onCloseDiscard?: () => void;
 };
 
+// A closed tab's project being opened again from elsewhere (detail: its scope key): the tab bar stops holding it back.
+export const REOPEN_APP_TAB_SCOPE_EVENT = "cutsmart:reopen-app-tab-scope";
+
 type AppTabsContextValue = {
   tabs: AppWorkspaceTab[];
   actionsByKey: Record<string, AppWorkspaceTabAction>;

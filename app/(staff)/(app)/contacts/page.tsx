@@ -170,8 +170,8 @@ function timeSinceLabel(value: string) {
   return remMonths > 0 ? `${years}y ${remMonths}m ago` : `${years}y ago`;
 }
 
-// Letters only: a "(", digit or other symbol where an initial would be is just left out — "Josh (MYKM)" is "J",
-// not "J(".
+// Letters only: a "(", digit or other symbol where an initial would be is just left out — "Sam (Acme)" is "S",
+// not "S(".
 // The contact view's category colour as a CSS variable (registered as a <color> in globals.css so changing it
 // cross-fades); everything on the contact page that's tinted by the category is built from this.
 const AMBIENT_VAR = "var(--ambient-color)";

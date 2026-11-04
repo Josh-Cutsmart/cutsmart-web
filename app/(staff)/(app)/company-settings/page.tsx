@@ -156,6 +156,9 @@ type ItemCategoryItemRow = {
   price: string;
   markupPercent: string;
   customPrice?: boolean;
+  // Default: in every new room of a project, this many.
+  isDefault?: boolean;
+  defaultQuantity?: string;
 };
 // subcategoryColors: each sub-category's own colour (by lower-case name) — its items' circle in Design › Items; none:
 // the category's.
@@ -257,10 +260,10 @@ type PartTypeRow = {
 };
 type QuoteHelperRow = { id: string; content: string };
 type DiscountTierRow = { low: string; high: string; discount: string };
-// Company Settings → Sales → Extra charges: a named charge with a price that a project's quote can include (each one
-// toggled on / off in the project's Design tab). `isDefault`: on for every project's quote unless turned off there.
-// `id` stays the same through renames — it's what a project's toggles are kept against.
-type ExtraChargeRow = { id: string; name: string; price: string; isDefault: boolean };
+// Company Settings → Sales → Operational Cost: a named cost with a price, on every project's price once it reaches $1,
+// hidden from the Design tab. `id` stays the same through renames — it's what a project that had one turned off (or set
+// to more than one, when the Design tab had them) is kept against.
+type ExtraChargeRow = { id: string; name: string; price: string };
 type HardwareRow = {
   name: string;
   color: string;
@@ -1024,6 +1027,8 @@ function normalizeItemCategories(raw: unknown): ItemCategoryRow[] {
             price: toStr(it?.price),
             markupPercent: toStr(it?.markupPercent),
             customPrice: Boolean(it?.customPrice),
+            isDefault: Boolean(it?.isDefault),
+            defaultQuantity: toStr(it?.defaultQuantity),
           }))
         : [];
       return {
@@ -1357,7 +1362,7 @@ function normalizeExtraCharges(raw: unknown): ExtraChargeRow[] {
     .filter((item) => item && typeof item === "object")
     .map((item) => {
       const row = item as Record<string, unknown>;
-      return { id: toStr(row.id) || genExtraChargeId(), name: toStr(row.name), price: toStr(row.price), isDefault: Boolean(row.isDefault) };
+      return { id: toStr(row.id) || genExtraChargeId(), name: toStr(row.name), price: toStr(row.price) };
     });
 }
 
@@ -2596,7 +2601,6 @@ export default function CompanySettingsPage() {
 
       addCandidate(user.companyId);
       addCandidate(process.env.NEXT_PUBLIC_DEFAULT_COMPANY_ID);
-      addCandidate("cmp_mykm_91647c");
       // The company's member list loads alongside its doc (both come from the shared cache when
       // another page already loaded them) rather than after it.
       const expectedCompanyId = String(user.companyId || "").trim();
@@ -4524,6 +4528,7 @@ export default function CompanySettingsPage() {
                 price: ensureDollarFormat(toStr(item.price, "$0.00")),
                 markupPercent: toStr(item.markupPercent, "0"),
                 ...(item.customPrice ? { customPrice: true } : {}),
+                ...(item.isDefault ? { isDefault: true, defaultQuantity: Math.max(1, Math.round(Number(item.defaultQuantity)) || 1) } : {}),
               };
             })
             .filter(Boolean);
@@ -4585,7 +4590,7 @@ export default function CompanySettingsPage() {
       salesMinusOffQuoteTotal: Boolean(minusOffQuoteTotal),
       salesExtraCharges: extraCharges
         .filter((row) => row.name.trim())
-        .map((row) => ({ id: row.id, name: row.name.trim(), price: toStr(row.price), isDefault: Boolean(row.isDefault) })),
+        .map((row) => ({ id: row.id, name: row.name.trim(), price: toStr(row.price) })),
       salesAllowReopenForEditing: Boolean(salesAllowReopenForEditing),
       salesGstEnabled: Boolean(salesGstEnabled),
       salesGstPercent: Math.max(0, parseNumberLoose(salesGstPercent)),
@@ -4689,7 +4694,7 @@ export default function CompanySettingsPage() {
           salesMinusOffQuoteTotal: minusOffQuoteTotal,
           salesExtraCharges: extraCharges
             .filter((row) => row.name.trim())
-            .map((row) => ({ id: row.id, name: row.name.trim(), price: toStr(row.price), isDefault: Boolean(row.isDefault) })),
+            .map((row) => ({ id: row.id, name: row.name.trim(), price: toStr(row.price) })),
           salesAllowReopenForEditing,
           salesGstEnabled: Boolean(salesGstEnabled),
           salesGstPercent: Math.max(0, parseNumberLoose(salesGstPercent)),
@@ -8815,7 +8820,7 @@ export default function CompanySettingsPage() {
                                     style={{ backgroundColor: `color-mix(in srgb, ${row.color || "#7D99B3"} 8%, transparent)`, borderColor: "var(--glass-border)" }}
                                   >
                                     <div
-                                      className="grid grid-cols-[30px_30px_1fr_2.2fr_130px_150px_100px_110px] items-center gap-2 border-b px-4 py-1.5 text-[10.5px] font-bold uppercase tracking-[0.6px]"
+                                      className="grid grid-cols-[30px_30px_1fr_2.2fr_130px_150px_100px_110px_110px] items-center gap-2 border-b px-4 py-1.5 text-[10.5px] font-bold uppercase tracking-[0.6px]"
                                       style={{ borderColor: "var(--glass-border)", color: "var(--text-muted)" }}
                                     >
                                       <p></p>
@@ -8826,6 +8831,7 @@ export default function CompanySettingsPage() {
                                       <p>Price</p>
                                       <p>Markup %</p>
                                       <p>Output Price</p>
+                                      <p title="In every new room of a project, at this quantity">Default</p>
                                     </div>
                                     {(row.items ?? []).map((itemRow, itemIdx) => {
                                       const subcategoryOptions = parseSubcategoryNames(row.subcategories);
@@ -8834,7 +8840,7 @@ export default function CompanySettingsPage() {
                                         <div
                                           key={`${idx}_item_${itemIdx}`}
                                           id={`settings_item_category_${idx}_item_${itemIdx}`}
-                                          className={`group/itemrow grid grid-cols-[30px_30px_1fr_2.2fr_130px_150px_100px_110px] items-center gap-2 px-4 py-1.5 ${isLastItem ? "" : "border-b"}`}
+                                          className={`group/itemrow grid grid-cols-[30px_30px_1fr_2.2fr_130px_150px_100px_110px_110px] items-center gap-2 px-4 py-1.5 ${isLastItem ? "" : "border-b"}`}
                                           style={{
                                             borderColor: "var(--glass-border)",
                                             opacity: itemCategoryItemDrag?.catIndex === idx && itemCategoryItemDrag.itemIndex === itemIdx ? 0.45 : 1,
@@ -8968,6 +8974,27 @@ export default function CompanySettingsPage() {
                                                 : "When added"
                                               : computeOutputPrice(itemRow.price, itemRow.markupPercent)}
                                           </p>
+                                          {/* Default: in every new room of a project, at this quantity. */}
+                                          <div className="flex min-w-0 items-center gap-1.5">
+                                            <GlassSwitch
+                                              size="sm"
+                                              checked={Boolean(itemRow.isDefault)}
+                                              onChange={(on) => updateItemCategoryItem(idx, itemIdx, { isDefault: on, defaultQuantity: on ? itemRow.defaultQuantity || "1" : itemRow.defaultQuantity })}
+                                              ariaLabel="In every new room by default"
+                                            />
+                                            {itemRow.isDefault ? (
+                                              <input
+                                                inputMode="numeric"
+                                                value={itemRow.defaultQuantity ?? ""}
+                                                onChange={(e) => updateItemCategoryItem(idx, itemIdx, { defaultQuantity: e.target.value.replace(/[^\d]/g, "") })}
+                                                onBlur={(e) => updateItemCategoryItem(idx, itemIdx, { defaultQuantity: String(Math.max(1, Number(e.target.value) || 1)) })}
+                                                className={gridCellInputClass}
+                                                placeholder="1"
+                                                title="How many go in each new room"
+                                                aria-label="Default quantity"
+                                              />
+                                            ) : null}
+                                          </div>
                                         </div>
                                       );
                                     })}
@@ -9811,21 +9838,20 @@ export default function CompanySettingsPage() {
                   ) : null}
                   <Panel
                     className="xl:col-span-2"
-                    title="Extra charges"
+                    title="Operational Cost"
                     icon={Receipt}
-                    description="Charges a quote can include, each turned on or off in a project's Design tab. Default ones start on for every project."
+                    description={`Added to every project's price once it reaches ${formatMoney(1, companyCurrency)}. Hidden from the Design tab: only people with access to Company Settings see them, as one total in a project's cost breakdown.`}
                   >
                     <div className="space-y-1.5">
                       {extraCharges.length > 0 ? (
                         <div className="flex items-center gap-2 px-2">
                           <span className="w-6 shrink-0" />
-                          <span className={`flex-1 ${columnHeadClass}`}>Charge</span>
+                          <span className={`flex-1 ${columnHeadClass}`}>Cost</span>
                           <span className={`w-[100px] shrink-0 sm:w-[130px] ${columnHeadClass}`}>Price</span>
-                          <span className={`w-[60px] shrink-0 text-center sm:w-[88px] ${columnHeadClass}`}>Default</span>
                           <span className="w-7 shrink-0" />
                         </div>
                       ) : (
-                        <EmptyState compact icon={<Receipt size={16} />} title="No extra charges yet" hint="Charges you add here can be turned on in a project's Design tab." />
+                        <EmptyState compact icon={<Receipt size={16} />} title="No operational costs yet" hint="Costs you add here go on every project's price." />
                       )}
                       {extraCharges.map((row, idx) => (
                         <div
@@ -9856,7 +9882,7 @@ export default function CompanySettingsPage() {
                             onDragStart={(e) => {
                               setExtraChargeDragIndex(idx);
                               e.dataTransfer.setData("text/plain", `extra_charge_${idx}`);
-                              startRowDrag(e, `settings_extra_charge_${idx}`, row.name || "Charge", "#2F6BFF");
+                              startRowDrag(e, `settings_extra_charge_${idx}`, row.name || "Cost", "#2F6BFF");
                             }}
                             onDragEnd={() => {
                               setExtraChargeDragIndex(null);
@@ -9869,10 +9895,10 @@ export default function CompanySettingsPage() {
                           </button>
                           <input
                             value={row.name}
-                            placeholder="e.g. Delivery"
+                            placeholder="e.g. Overheads"
                             onChange={(e) => setExtraCharges((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))}
                             className={`${glassFieldSmClass} min-w-0 flex-1`}
-                            aria-label="Charge name"
+                            aria-label="Cost name"
                           />
                           <span className="w-[100px] shrink-0 sm:w-[130px]">
                             <input
@@ -9884,22 +9910,14 @@ export default function CompanySettingsPage() {
                                 setExtraCharges((prev) => prev.map((v, i) => (i === idx ? { ...v, price: e.target.value.trim() ? ensureDollarFormat(e.target.value) : "" } : v)))
                               }
                               className={glassFieldSmClass}
-                              aria-label="Charge price"
-                            />
-                          </span>
-                          <span className="flex w-[60px] shrink-0 justify-center sm:w-[88px]">
-                            <GlassSwitch
-                              size="sm"
-                              checked={row.isDefault}
-                              onChange={(on) => setExtraCharges((prev) => prev.map((v, i) => (i === idx ? { ...v, isDefault: on } : v)))}
-                              ariaLabel="On for every project by default"
+                              aria-label="Cost price"
                             />
                           </span>
                           <button
                             type="button"
-                            onClick={() => removeFromList(setExtraCharges, idx, row, `${toStr(row.name, "Charge")} removed`)}
+                            onClick={() => removeFromList(setExtraCharges, idx, row, `${toStr(row.name, "Cost")} removed`)}
                             className={dangerIconButtonClass}
-                            title="Remove charge"
+                            title="Remove cost"
                           >
                             <X size={15} />
                           </button>
@@ -9907,10 +9925,10 @@ export default function CompanySettingsPage() {
                       ))}
                       <button
                         type="button"
-                        onClick={() => setExtraCharges((prev) => [...prev, { id: genExtraChargeId(), name: "", price: "", isDefault: false }])}
+                        onClick={() => setExtraCharges((prev) => [...prev, { id: genExtraChargeId(), name: "", price: "" }])}
                         className={`${secondaryButtonClass} mt-1.5`}
                       >
-                        <Plus size={14} /> Add charge
+                        <Plus size={14} /> Add cost
                       </button>
                     </div>
                   </Panel>

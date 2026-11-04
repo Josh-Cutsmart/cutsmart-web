@@ -48,7 +48,7 @@ import { swallowNextClick } from "@/lib/swallow-dismiss-click";
 import { bounceOriginElement } from "@/lib/use-glass-modal-pop-origin";
 import { GlassDropdown } from "@/components/glass-dropdown";
 import { Skeleton, SkeletonGroup } from "@/components/skeleton";
-import { useAppTabs, type AppWorkspaceTab } from "@/lib/app-tabs-context";
+import { REOPEN_APP_TAB_SCOPE_EVENT, useAppTabs, type AppWorkspaceTab } from "@/lib/app-tabs-context";
 import { applyThemeMode, readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
 import { useAuth } from "@/lib/auth-context";
 import { prefetchProjectById, projectViewableByUser } from "@/lib/firestore-data";
@@ -846,6 +846,17 @@ export function GlobalAppTabsBar() {
     restoreScope(currentScopeKey);
     setHiddenScopeKeys((prev) => (prev.includes(currentScopeKey) ? prev.filter((key) => key !== currentScopeKey) : prev));
   }, [currentScopeKey, restoreScope]);
+
+  // A closed tab's project opened again from a list, ahead of its page opening.
+  useEffect(() => {
+    const onReopen = (event: Event) => {
+      const scopeKey = String((event as CustomEvent<string>).detail || "");
+      restoreScope(scopeKey);
+      setHiddenScopeKeys((prev) => (prev.includes(scopeKey) ? prev.filter((key) => key !== scopeKey) : prev));
+    };
+    window.addEventListener(REOPEN_APP_TAB_SCOPE_EVENT, onReopen);
+    return () => window.removeEventListener(REOPEN_APP_TAB_SCOPE_EVENT, onReopen);
+  }, [restoreScope]);
 
   // A project's tab for a project they can't open any more (taken off them, or gone): checked once a session, in the
   // background, and taken away. Not one whose check couldn't be done (offline), nor the one open now (its page sees to

@@ -135,7 +135,7 @@ import {
   updateProjectTags,
 } from "@/lib/firestore-data";
 import type { CompanyClientRow, CompanyMemberOption } from "@/lib/firestore-data";
-import { isStaffContactCategory } from "@/lib/staff-contacts";
+import { isStaffContactCategory, isStaffContactId, STAFF_CONTACT_CATEGORY, staffContactRow, staffMemberMatching, withStaffContactCategory } from "@/lib/staff-contacts";
 import { bumpCompanyStatCounter, bumpCompanyStatLeaderboard } from "@/lib/company-stats";
 import { getProductionUnlockRemainingSeconds, projectTabAccess } from "@/lib/permissions";
 import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
@@ -963,6 +963,9 @@ type ItemCategoryItemRow = {
   price: string;
   markupPercent: string;
   customPrice: boolean;
+  // Default: in every new room, this many (Company Settings › Item Categories).
+  isDefault: boolean;
+  defaultQuantity: number;
 };
 // subcategoryColors: each sub-category's own colour, by lower-case name (Company Settings › Item Categories);
 // subcategoryOrder: their lower-case names in the order Company Settings lists them.
@@ -1771,38 +1774,6 @@ function mobileActionsButtonBounceStyle(
   return undefined;
 }
 
-// A Design-tab extra charge's quantity: typed freely, saved when it loses focus (or on Enter) — an empty or 0 entry
-// goes back to the saved value rather than saving it.
-function ExtraChargeQuantityInput({ value, disabled, onCommit }: { value: number; disabled?: boolean; onCommit: (next: number) => void }) {
-  // (Keyed on its saved value where it's used, so a newly saved value starts it afresh.)
-  const [draft, setDraft] = useState(String(value));
-  const commit = () => {
-    const next = Number.parseFloat(draft.replace(/[^\d.]/g, ""));
-    if (!Number.isFinite(next) || next <= 0) {
-      setDraft(String(value));
-      return;
-    }
-    const rounded = Math.round(next * 100) / 100;
-    setDraft(String(rounded));
-    if (rounded !== value) onCommit(rounded);
-  };
-  return (
-    <input
-      inputMode="decimal"
-      value={draft}
-      disabled={disabled}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") e.currentTarget.blur();
-      }}
-      className="h-7 w-full rounded-[8px] border px-2 text-center text-[12px] font-semibold tabular-nums outline-none transition focus:border-[var(--brand)] disabled:opacity-60"
-      style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-      aria-label="Quantity"
-    />
-  );
-}
-
 // Compact on/off switch for the Quote Extras lists (both the Sales tab overview and the Quote
 // grid's own fullscreen sidebar) — same visual pattern (pill track + sliding circular knob) as this
 // app's other role="switch" toggles elsewhere, just sized down to fit a single list-row rather than
@@ -2111,22 +2082,8 @@ function MarqueeText({ text, className }: { text: string; className?: string }) 
   );
 }
 
-// A room's price broken into WHY it's that price — its Items and its Sheets — see salesRoomCostBreakdownByName's
-// own comment for how these are computed.
-type RoomCostBreakdownItemLine = { name: string; categoryName: string; categoryColor: string; quantity: number; unitPrice: number; lineTotal: number };
-// A product's sheets of one size in the room. Its total takes in everything else that product costs there — its misc
-// charges per sheet and its edge tape / lacquer (Company Settings → Products) — so there's no separate Misc list.
-// (sheetSize "" / count 0: that product's edge tape / lacquer in a room it has no sheets in.)
-type RoomCostBreakdownSheetLine = { productName: string; sheetSize: string; count: number; unitPrice: number; lineTotal: number };
-type RoomCostBreakdown = {
-  items: RoomCostBreakdownItemLine[];
-  itemsTotal: number;
-  sheets: RoomCostBreakdownSheetLine[];
-  sheetsTotal: number;
-  // Anything else in the room's total (normally nothing).
-  otherTotal: number;
-  roomTotal: number;
-};
+// A room's price by what makes it up, just the totals (see salesRoomCostBreakdownByName).
+type RoomCostBreakdown = { frontsAndPanelsTotal: number; itemsTotal: number; roomTotal: number };
 
 // A saved quote version's pages still on their way: a quote page's shapes (logo and details, a heading, the room lines
 // and the total) on the white sheet — in a grey of their own, as the sheet stays white in dark mode too.
@@ -2162,111 +2119,26 @@ function QuoteSheetSkeleton() {
   );
 }
 
-// Shared by the single-room cost breakdown popup and each expanded room inside the whole-project
-// cost breakdown popup — one table layout for both, so they can never drift apart. Two sections
-// (Items/Sheets), each its own small table with its own subtotal, then the room's own grand
-// total underneath.
-function RoomCostBreakdownTables({ breakdown }: { breakdown: RoomCostBreakdown }) {
-  const cellStyle = { color: "var(--text-main)" } as const;
-  const sectionLabelStyle = { color: "var(--text-muted)" } as const;
-  const borderStyle = { borderBottomColor: "var(--glass-border)" } as const;
-  const sectionHeaderBar = (label: string) => (
-    <div className="mb-1.5 rounded-[6px] px-2 py-1.5" style={{ backgroundColor: "var(--panel-muted)" }}>
-      <p className="text-[11px] font-bold uppercase tracking-[1px]" style={cellStyle}>{label}</p>
+// The cost breakdown pop-ups' bars: a line with its total, and the total they come to.
+function CostBreakdownBar({ label, value, danger }: { label: string; value: string; danger?: boolean }) {
+  return (
+    <div
+      className="flex items-center justify-between gap-3 rounded-[10px] border px-3 py-2.5 text-[13px] font-medium"
+      style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: danger ? "var(--danger-strong)" : "var(--text-main)" }}
+    >
+      <span>{label}</span>
+      <span className="tabular-nums">{value}</span>
     </div>
   );
+}
+function CostBreakdownTotalBar({ label, value }: { label: string; value: string }) {
   return (
-    <div className="space-y-4">
-      <div>
-        {sectionHeaderBar("Items")}
-        {breakdown.items.length === 0 ? (
-          <p className="text-[12px] italic" style={sectionLabelStyle}>No items assigned to this room.</p>
-        ) : (
-          <table className="w-full text-[12px]" style={{ tableLayout: "fixed" }}>
-            {/* Same column proportions as the Sheets table just below (colgroup widths must match
-                exactly, not just the count) — that's what makes the Qty columns of two entirely
-                separate tables line up vertically, since each table would otherwise size its own
-                columns purely from its own content, with no relation to the other table at all. */}
-            <colgroup>
-              <col style={{ width: "22%" }} />
-              <col style={{ width: "43%" }} />
-              <col style={{ width: "15%" }} />
-              <col style={{ width: "20%" }} />
-            </colgroup>
-            <thead>
-              <tr className="border-b" style={borderStyle}>
-                <th className="whitespace-nowrap px-2 py-1.5 text-left" style={cellStyle}>Category</th>
-                <th className="px-2 py-1.5 text-left" style={cellStyle}>Item</th>
-                <th className="px-2 py-1.5 text-center" style={cellStyle}>Qty</th>
-                <th className="px-2 py-1.5 text-right" style={cellStyle}>Total</th>
-              </tr>
-            </thead>
-            <tbody>
-              {breakdown.items.map((line, index) => (
-                <tr key={`${line.name}_${index}`} className="border-b last:border-none" style={borderStyle}>
-                  <td className="whitespace-nowrap px-2 py-1.5" style={cellStyle}>
-                    {line.categoryName ? (
-                      <span
-                        className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium"
-                        style={{ backgroundColor: line.categoryColor, color: contrastTextForFill(line.categoryColor) }}
-                      >
-                        {line.categoryName}
-                      </span>
-                    ) : null}
-                  </td>
-                  <td className="px-2 py-1.5" style={cellStyle}>
-                    <MarqueeText text={line.name} />
-                  </td>
-                  <td className="px-2 py-1.5 text-center" style={cellStyle}>{line.quantity}</td>
-                  <td className="px-2 py-1.5 text-right font-semibold" style={cellStyle}>{formatCurrencyValue(line.lineTotal)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-        <p className="mt-1 text-right text-[12px] font-bold" style={cellStyle}>Items Total: {formatCurrencyValue(breakdown.itemsTotal)}</p>
-      </div>
-      <div>
-        {sectionHeaderBar("Sheets")}
-        {breakdown.sheets.length === 0 ? (
-          <p className="text-[12px] italic" style={sectionLabelStyle}>No sheets required for this room.</p>
-        ) : (
-          <table className="w-full text-[12px]" style={{ tableLayout: "fixed" }}>
-            {/* Matches the Items table's own colgroup exactly — see its comment. */}
-            <colgroup>
-              <col style={{ width: "22%" }} />
-              <col style={{ width: "43%" }} />
-              <col style={{ width: "15%" }} />
-              <col style={{ width: "20%" }} />
-            </colgroup>
-            <thead>
-              <tr className="border-b" style={borderStyle}>
-                <th className="px-2 py-1.5 text-left" style={cellStyle}>Product</th>
-                <th className="px-2 py-1.5 text-left" style={cellStyle}>Sheet Size</th>
-                <th className="px-2 py-1.5 text-center" style={cellStyle}>Qty</th>
-                <th className="px-2 py-1.5 text-right" style={cellStyle}>Total</th>
-              </tr>
-            </thead>
-            <tbody>
-              {breakdown.sheets.map((line, index) => (
-                <tr key={`${line.productName}_${line.sheetSize}_${index}`} className="border-b last:border-none" style={borderStyle}>
-                  <td className="px-2 py-1.5" style={cellStyle}>{line.productName}</td>
-                  <td className="px-2 py-1.5" style={cellStyle}>{line.sheetSize || "—"}</td>
-                  <td className="px-2 py-1.5 text-center" style={cellStyle}>{line.count > 0 ? line.count : "—"}</td>
-                  <td className="px-2 py-1.5 text-right font-semibold" style={cellStyle}>{formatCurrencyValue(line.lineTotal)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-        <p className="mt-1 text-right text-[12px] font-bold" style={cellStyle}>Sheets Total: {formatCurrencyValue(breakdown.sheetsTotal)}</p>
-      </div>
-      {breakdown.otherTotal > 0 ? (
-        <p className="text-right text-[12px] font-bold" style={cellStyle}>Other costs: {formatCurrencyValue(breakdown.otherTotal)}</p>
-      ) : null}
-      <div className="border-t pt-2" style={{ borderTopColor: "var(--glass-border)" }}>
-        <p className="text-right text-[14px] font-bold" style={cellStyle}>Room Total: {formatCurrencyValue(breakdown.roomTotal)}</p>
-      </div>
+    <div
+      className="flex items-center justify-between gap-3 rounded-[10px] border px-3 py-3 text-[15px] font-semibold"
+      style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--text-main)" }}
+    >
+      <span>{label}</span>
+      <span className="tabular-nums">{value}</span>
     </div>
   );
 }
@@ -2274,9 +2146,7 @@ function RoomCostBreakdownTables({ breakdown }: { breakdown: RoomCostBreakdown }
 // Plain, self-contained CSS for the print-only root below — deliberately NOT the app's own CSS
 // custom properties (--glass-border etc.), which are only ever defined against this app's own
 // light/dark theme and can't be relied on to still resolve sensibly once everything else on the
-// page is hidden for print. Structurally mirrors RoomCostBreakdownTables' own classes/layout as
-// closely as a plain page can (same section header bar treatment, same Category/Item split with a
-// colored pill, same row borders) — printed-page colors are a bit darker/more visible than the
+// page is hidden for print. Set out as the pop-ups are, as closely as a plain page can — printed-page colors are a bit darker/more visible than the
 // on-screen --panel-muted/--glass-border tokens, which lean very light/translucent against the
 // modal's own glass background and would barely register as a "bar" at all against plain white
 // paper.
@@ -2325,47 +2195,14 @@ const ROOM_COST_BREAKDOWN_PRINT_MEDIA_CSS = `
 }
 `;
 
-// One room's Items/Sheets/Total, as plain HTML — shared by the single-room popup's own Print
-// button and the project popup's Print button (which concatenates one of these per room). Mirrors
-// RoomCostBreakdownTables' own layout exactly (same columns, same category pill treatment) so the
-// printed page matches what's on screen instead of reading as a generic, differently-laid-out table.
+// One room's totals as plain HTML, for its pop-up's Print button.
 function roomCostBreakdownRoomBlockHtml(roomName: string, breakdown: RoomCostBreakdown): string {
-  const sectionBar = (label: string) => `<div class="section-bar"><p>${escapeHtml(label)}</p></div>`;
-  // Same colgroup on both tables (widths must match exactly, not just the count) — see
-  // RoomCostBreakdownTables' own identical comment for why: it's what makes the Qty column of two
-  // otherwise entirely independent tables line up vertically on the printed page.
-  const colgroup = `<colgroup><col style="width:22%" /><col style="width:43%" /><col style="width:15%" /><col style="width:20%" /></colgroup>`;
-  const itemsTable = breakdown.items.length
-    ? `<table style="table-layout:fixed">${colgroup}<thead><tr><th class="category-cell">Category</th><th>Item</th><th class="center">Qty</th><th class="num">Total</th></tr></thead><tbody>${breakdown.items
-        .map(
-          (line) =>
-            `<tr><td class="category-cell">${
-              line.categoryName
-                ? `<span class="pill" style="background-color:${escapeHtml(line.categoryColor)};color:${contrastTextForFill(line.categoryColor)}">${escapeHtml(line.categoryName)}</span>`
-                : ""
-            }</td><td>${escapeHtml(line.name)}</td><td class="center">${line.quantity}</td><td class="num">${formatCurrencyValue(line.lineTotal)}</td></tr>`,
-        )
-        .join("")}</tbody></table>`
-    : `<p class="empty">No items assigned to this room.</p>`;
-  const sheetsTable = breakdown.sheets.length
-    ? `<table style="table-layout:fixed">${colgroup}<thead><tr><th>Product</th><th>Sheet Size</th><th class="center">Qty</th><th class="num">Total</th></tr></thead><tbody>${breakdown.sheets
-        .map(
-          (line) =>
-            `<tr><td>${escapeHtml(line.productName)}</td><td>${escapeHtml(line.sheetSize || "—")}</td><td class="center">${line.count > 0 ? line.count : "—"}</td><td class="num">${formatCurrencyValue(line.lineTotal)}</td></tr>`,
-        )
-        .join("")}</tbody></table>`
-    : `<p class="empty">No sheets required for this room.</p>`;
   return `
     <div class="room-block">
       <h1>${escapeHtml(roomName)}</h1>
-      ${sectionBar("Items")}
-      ${itemsTable}
-      <p class="subtotal">Items Total: ${formatCurrencyValue(breakdown.itemsTotal)}</p>
-      ${sectionBar("Sheets")}
-      ${sheetsTable}
-      <p class="subtotal">Sheets Total: ${formatCurrencyValue(breakdown.sheetsTotal)}</p>
-      ${breakdown.otherTotal > 0 ? `<p class="subtotal">Other costs: ${formatCurrencyValue(breakdown.otherTotal)}</p>` : ""}
-      <p class="room-total">Room Total: ${formatCurrencyValue(breakdown.roomTotal)}</p>
+      <div class="summary-row"><span>Fronts &amp; Panels</span><span>${formatCurrencyValue(breakdown.frontsAndPanelsTotal)}</span></div>
+      <div class="summary-row"><span>Materials</span><span>${formatCurrencyValue(breakdown.itemsTotal)}</span></div>
+      <div class="grand-total"><span>Room Total</span><span>${formatCurrencyValue(breakdown.roomTotal)}</span></div>
     </div>
   `;
 }
@@ -2557,6 +2394,9 @@ function formatBytes(bytes: number): string {
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
+
+// The Images card's room for its picture and thumbnails.
+const PROJECT_IMAGES_HEIGHT = 420;
 
 function formatProjectFileTotal(bytes: number): string {
   const value = Number.isFinite(bytes) ? Math.max(0, bytes) : 0;
@@ -8115,6 +7955,8 @@ function normalizeSalesItemCategories(raw: unknown): SalesItemCategoryRow[] {
                   : String(entry?.outputPrice ?? "").trim() || computeSalesItemsOutputPrice(entry?.price, entry?.markupPercent),
                 markupPercent: String(entry?.markupPercent ?? "").trim(),
                 customPrice,
+                isDefault: Boolean(entry?.isDefault),
+                defaultQuantity: Math.max(1, Math.round(Number(entry?.defaultQuantity)) || 1),
               };
             })
             .filter((entry) => entry.name)
@@ -8151,6 +7993,25 @@ function normalizeSalesItemCategories(raw: unknown): SalesItemCategoryRow[] {
       };
     })
     .filter((row) => row.name);
+}
+
+// What a new room starts with: the items Company Settings has as Default, each at its quantity. (One with a custom price
+// goes in at nothing — its price entered on its line, as any custom price's is changed.)
+function defaultSalesRoomItems(categories: SalesItemCategoryRow[]): SalesRoomItemSelection[] {
+  return categories.flatMap((category) =>
+    category.items
+      .filter((item) => item.isDefault)
+      .map((item) => ({
+        itemId: item.customPrice ? `${item.id}${SALES_ITEMS_CUSTOM_PRICE_ID_MARK}0` : item.id,
+        name: item.name,
+        categoryId: category.id,
+        categoryName: category.name,
+        categoryColor: category.color,
+        price: item.customPrice ? formatCurrencyValue(0) : item.price,
+        quantity: item.defaultQuantity,
+        ...(item.customPrice ? { customPrice: true, enteredPrice: formatCurrencyValue(0) } : {}),
+      })),
+  );
 }
 
 function normalizeSalesRoomItemSelections(raw: unknown): SalesRoomItemSelection[] {
@@ -9237,8 +9098,7 @@ export default function ProjectDetailsPage() {
   );
   const [roomCostBreakdownModalRoomName, setRoomCostBreakdownModalRoomName] = useState("");
   // Whole-project "how is this price made up" popup — opened from the "Project Cost" KPI tile and
-  // the ROOMS card's own Total figure. Every room starts collapsed (see its own render site's
-  // comment on why) — this tracks which ones the user has expanded, keyed by lowercased room name.
+  // the ROOMS card's own Total figure. Totals only: a bar for each thing that makes it up, and the project's total.
   const [isProjectCostBreakdownModalOpen, setIsProjectCostBreakdownModalOpen] = useState(false);
   const [projectCostBreakdownModalOrigin, setProjectCostBreakdownModalOrigin] = useState<GlassModalOrigin>(null);
   const projectCostBreakdownModalPanelRef = useRef<HTMLDivElement | null>(null);
@@ -9252,7 +9112,6 @@ export default function ProjectDetailsPage() {
     undefined,
     projectCostBreakdownModalOriginElRef,
   );
-  const [expandedProjectCostBreakdownRooms, setExpandedProjectCostBreakdownRooms] = useState<Record<string, boolean>>({});
   // Production › Specifications: the client-confirmed Specifications, in a pop-up (components/production-specifications-modal.tsx).
   const [isProductionSpecsModalOpen, setIsProductionSpecsModalOpen] = useState(false);
   const [productionSpecsModalOrigin, setProductionSpecsModalOrigin] = useState<GlassModalOrigin>(null);
@@ -11291,7 +11150,6 @@ export default function ProjectDetailsPage() {
   const projectImageViewerSuppressPinClickRef = useRef(false);
   const projectImageViewerElementRef = useRef<HTMLImageElement | null>(null);
   const projectImageViewerStageRef = useRef<HTMLDivElement | null>(null);
-  const projectImageThumbsRef = useRef<HTMLDivElement | null>(null);
   const projectImageViewportRef = useRef<HTMLDivElement | null>(null);
   const projectImagePreviewRef = useRef<HTMLImageElement | null>(null);
   const projectImageDragRef = useRef<{
@@ -11309,7 +11167,6 @@ export default function ProjectDetailsPage() {
     originX: 0,
     originY: 0,
   });
-  const [projectImageMeasuredHeight, setProjectImageMeasuredHeight] = useState(0);
   const [projectImageZoom, setProjectImageZoom] = useState(1);
   const [projectImagePan, setProjectImagePan] = useState({ x: 0, y: 0 });
   const [projectImageDragging, setProjectImageDragging] = useState(false);
@@ -11998,32 +11855,20 @@ export default function ProjectDetailsPage() {
     }));
     return merged;
   }, [companySalesProductNames, rawSalesProductRows]);
-  // Company Settings → Sales → Extra charges, each on or off for this project's quote: what staff have set in the
-  // Design tab's Extra Charges card (the sales payload's extraChargeSelections, by charge id), else the charge's own
-  // Default — so a Default charge is on for every project until it's turned off there.
+  // Company Settings → Sales → Operational Cost: all of them on every project (once it has a price — see
+  // displayedSalesExtraChargesTotal), not shown in the Design tab. (What a project saved when the Design tab had them on
+  // or off, and how many of each, no longer counts.)
   const salesExtraChargeRows = useMemo(() => {
     const raw = (companyDoc as Record<string, unknown> | null)?.salesExtraCharges;
-    const picks = ((salesPayload as Record<string, unknown>).extraChargeSelections ?? {}) as Record<string, unknown>;
-    // How many of each (the Design tab's Qty) — 1 until set.
-    const quantities = ((salesPayload as Record<string, unknown>).extraChargeQuantities ?? {}) as Record<string, unknown>;
     return (Array.isArray(raw) ? raw : [])
       .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
-      .map((item) => {
-        const id = String(item.id || "").trim();
-        const price = parseCurrencyNumber(item.price);
-        const savedQuantity = Number(quantities[id]);
-        const quantity = Number.isFinite(savedQuantity) && savedQuantity > 0 ? savedQuantity : 1;
-        return {
-          id,
-          name: String(item.name || "").trim(),
-          price,
-          quantity,
-          lineTotal: price * quantity,
-          selected: typeof picks[id] === "boolean" ? Boolean(picks[id]) : Boolean(item.isDefault),
-        };
-      })
+      .map((item) => ({
+        id: String(item.id || "").trim(),
+        name: String(item.name || "").trim(),
+        price: parseCurrencyNumber(item.price),
+      }))
       .filter((row) => row.id && row.name);
-  }, [companyDoc, salesPayload]);
+  }, [companyDoc]);
   const salesQuoteProjectText = useMemo(() => {
     const raw = (salesPayload as Record<string, unknown>).quoteProjectText;
     if (!raw || typeof raw !== "object") return {} as Record<string, string>;
@@ -13235,7 +13080,7 @@ export default function ProjectDetailsPage() {
   }, [companyDoc?.partTypes]);
   const salesViewLabels: Record<SalesNav, string> = {
     initial: "Design Initial Measure",
-    items: "Design Items",
+    items: "Design Materials",
     quote: "Design Quote",
     specifications: "Design Specifications",
     compare: "Design Upgrades",
@@ -15062,36 +14907,36 @@ export default function ProjectDetailsPage() {
         const prevRoom = beforeById.get(roomId);
         const roomLabel = room.name || "Room";
         if (!prevRoom) {
-          logProjectChange(`Items room added: ${roomLabel}`);
+          logProjectChange(`Materials room added: ${roomLabel}`);
           continue;
         }
         if (String(prevRoom.name || "") !== String(room.name || "")) {
-          logProjectChange(`Items — Room renamed: ${prevRoom.name || "Room"} → ${roomLabel}`);
+          logProjectChange(`Materials — Room renamed: ${prevRoom.name || "Room"} → ${roomLabel}`);
         }
         if (Boolean(prevRoom.included) !== Boolean(room.included)) {
-          logProjectChange(`Items — ${roomLabel}: ${room.included ? "Included" : "Excluded"}`);
+          logProjectChange(`Materials — ${roomLabel}: ${room.included ? "Included" : "Excluded"}`);
         }
         const prevItemsById = new Map(prevRoom.items.map((item) => [item.itemId, item]));
         const nextItemsById = new Map(room.items.map((item) => [item.itemId, item]));
         for (const [itemId, item] of nextItemsById) {
           const prevItem = prevItemsById.get(itemId);
           if (!prevItem) {
-            logProjectChange(`Items (${roomLabel}) — Added: ${item.name} x${item.quantity}`);
+            logProjectChange(`Materials (${roomLabel}) — Added: ${item.name} x${item.quantity}`);
             continue;
           }
           if (String(prevItem.quantity) !== String(item.quantity)) {
-            logProjectChange(`Items (${roomLabel}) — ${item.name}: Qty ${prevItem.quantity} → ${item.quantity}`);
+            logProjectChange(`Materials (${roomLabel}) — ${item.name}: Qty ${prevItem.quantity} → ${item.quantity}`);
           }
         }
         for (const [itemId, prevItem] of prevItemsById) {
           if (!nextItemsById.has(itemId)) {
-            logProjectChange(`Items (${roomLabel}) — Removed: ${prevItem.name}`);
+            logProjectChange(`Materials (${roomLabel}) — Removed: ${prevItem.name}`);
           }
         }
       }
       for (const [roomId, prevRoom] of beforeById) {
         if (!afterById.has(roomId)) {
-          logProjectChange(`Items room removed: ${prevRoom.name || "Room"}`);
+          logProjectChange(`Materials room removed: ${prevRoom.name || "Room"}`);
         }
       }
     }
@@ -15400,7 +15245,7 @@ export default function ProjectDetailsPage() {
     const taken = room ? takenOutOf(room.items, (item) => item.itemId === itemId) : [];
     setSalesItemsBoardRooms((prev) => removeItemFromSalesItemsRoom(prev, roomId, itemId));
     if (!taken[0]) return;
-    offerUndo(`${taken[0].item.name || "Item"} removed`, () =>
+    offerUndo(`${taken[0].item.name || "Material"} removed`, () =>
       setSalesItemsBoardRooms((prev) =>
         syncSalesItemsRoomTotals(prev.map((row) => (row.id === roomId ? { ...row, items: putBackAt(row.items, taken, (item) => item.itemId) } : row))),
       ),
@@ -15420,7 +15265,7 @@ export default function ProjectDetailsPage() {
           name: nextName,
           included: true,
           totalPrice: activeMoney(0),
-          items: [],
+          items: defaultSalesRoomItems(companyItemCategories),
         },
       ]);
     });
@@ -15452,7 +15297,7 @@ export default function ProjectDetailsPage() {
   const saveAndBackFromSalesItems = async () => {
     const ok = await persistSalesItemsRooms(salesItemsBoardRooms);
     if (!ok) {
-      setLockMessage("Could not save the room item selection.");
+      setLockMessage("Could not save the room's materials.");
       return;
     }
     setSalesNav("overview");
@@ -15692,7 +15537,7 @@ export default function ProjectDetailsPage() {
           }}
           className={`inline-flex shrink-0 items-center justify-center rounded-full border transition hover:brightness-95 disabled:opacity-60 ${touch ? "h-6 w-6" : "h-5 w-5"}`}
           style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
-          title="Remove item"
+          title="Remove material"
           aria-label={`Remove ${item.name}`}
         >
           <X size={12} strokeWidth={2.5} />
@@ -16217,7 +16062,7 @@ export default function ProjectDetailsPage() {
               <span
                 className="inline-flex h-7 min-w-[28px] items-center justify-center rounded-full px-2 text-[11px] font-bold"
                 style={badgeStyle}
-                title={`${itemCount} item${itemCount === 1 ? "" : "s"}`}
+                title={`${itemCount} material${itemCount === 1 ? "" : "s"}`}
               >
                 {itemCount}
               </span>
@@ -16358,7 +16203,7 @@ export default function ProjectDetailsPage() {
           <span
             className="inline-flex h-8 min-w-[32px] shrink-0 items-center justify-center rounded-full px-2 text-[12px] font-bold"
             style={badgeStyle}
-            title={`${itemCount} item${itemCount === 1 ? "" : "s"}`}
+            title={`${itemCount} material${itemCount === 1 ? "" : "s"}`}
           >
             {itemCount}
           </span>
@@ -16393,14 +16238,14 @@ export default function ProjectDetailsPage() {
                 style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
               >
                 <Plus size={18} strokeWidth={2.5} />
-                Add Item
+                Add Material
               </button>
             </div>
             <div className="px-3 pb-2">
               {room.items.length > 0 ? (
                 renderSalesItemsRoomGroups(room, true)
               ) : (
-                <EmptyState compact icon={<ListChecks size={16} />} title="No items yet" hint="Tap Add Item to pick some from the library." />
+                <EmptyState compact icon={<ListChecks size={16} />} title="No materials yet" hint="Tap Add Material to pick some from the library." />
               )}
             </div>
           </div>
@@ -18420,76 +18265,20 @@ export default function ProjectDetailsPage() {
       }, 0),
     [displayedSalesRoomRows],
   );
-  // Feeds the room/project cost-breakdown popups (RoomCostBreakdownTables) — one lookup, keyed by
-  // lowercased room name, built from the SAME data sources displayedSalesRoomRows itself already
-  // reads (salesRoomPricingByName for Sheets, salesItemsRoomPricingByName for Items via
-  // effectiveSalesItemsRooms), so the popup's own subtotals can never disagree with the room's
-  // displayed total. A product's misc charges and edge tape / lacquer are in its Sheets lines; anything
-  // still left over (normally nothing) shows as "Other costs".
+  // Feeds the room and project cost breakdown pop-ups — one lookup, keyed by lowercased room name, from what the room's
+  // displayed total is made of, so they can never disagree with it: its Materials, and the rest (its sheets, with each
+  // product's charges, edge tape and lacquer) its Fronts & Panels.
   const salesRoomCostBreakdownByName = useMemo(() => {
     const map: Record<string, RoomCostBreakdown> = {};
-    // An item's pill, as Design › Items groups it: its sub-category (the item library's — a room keeps only its
-    // category) in that sub-category's colour (else its category's); one with no sub-category, its category in the
-    // category's colour. An item whose category Company Settings no longer has keeps what the room saved.
-    const categoryById = new Map(companyItemCategories.map((category) => [String(category.id || "").trim().toLowerCase(), category]));
-    const itemPill = (item: SalesRoomItemSelection) => {
-      const category = categoryById.get(String(item.categoryId || "").trim().toLowerCase());
-      if (!category) return { name: item.categoryName, color: item.categoryColor };
-      const libraryId = salesItemsLibraryIdOf(item.itemId).toLowerCase();
-      const libraryItem =
-        category.items.find((libraryRow) => libraryRow.id.toLowerCase() === libraryId) ??
-        category.items.find((libraryRow) => libraryRow.name.trim().toLowerCase() === item.name.trim().toLowerCase());
-      const subcategory = libraryItem?.subcategory.trim() ?? "";
-      if (subcategory) return { name: subcategory, color: category.subcategoryColors[subcategory.toLowerCase()] || category.color || item.categoryColor };
-      return { name: category.name || item.categoryName, color: category.color || item.categoryColor };
-    };
     for (const row of displayedSalesRoomRows) {
       const key = String(row.name || "").trim().toLowerCase();
       const itemsRoom = effectiveSalesItemsRooms.find((r) => String(r.name || "").trim().toLowerCase() === key);
-      const items: RoomCostBreakdownItemLine[] = (itemsRoom?.items ?? []).map((item) => {
-        const unitPrice = parseCurrencyNumber(item.price);
-        const quantity = Math.max(0, Number(item.quantity) || 0);
-        const pill = itemPill(item);
-        return { name: item.name, categoryName: pill.name, categoryColor: pill.color, quantity, unitPrice, lineTotal: unitPrice * quantity };
-      });
-      const itemsTotal = items.reduce((sum, line) => sum + line.lineTotal, 0);
-
-      const sheets: RoomCostBreakdownSheetLine[] = salesRoomSheetAnalysis.sheetCountsByRoomAndProduct
-        .filter((entry) => entry.room.trim().toLowerCase() === key)
-        .map((entry) => {
-          const productPricing = productSheetPricingByName.get(entry.productName.trim().toLowerCase());
-          const unitPrice = productPricing?.options.find((option) => option.sheetSize === entry.sheetSize)?.price ?? 0;
-          return { productName: entry.productName, sheetSize: entry.sheetSize, count: entry.sheetCount, unitPrice, lineTotal: unitPrice * entry.sheetCount };
-        });
-      // Each product's misc charges and edge tape / lacquer (already in the room's total — see salesRoomSheetAnalysis)
-      // go into its sheet lines here, shared between its sizes by how many sheets each is.
-      for (const entry of salesRoomSheetAnalysis.extrasByRoomAndProduct) {
-        if (entry.room.trim().toLowerCase() !== key) continue;
-        const extra = entry.edgeTapeCost + entry.lacquerCost + entry.miscLines.reduce((sum, line) => sum + line.total, 0);
-        if (extra <= 0) continue;
-        const productKey = entry.productName.trim().toLowerCase();
-        const lines = sheets.filter((line) => line.productName.trim().toLowerCase() === productKey);
-        const lineSheets = lines.reduce((sum, line) => sum + line.count, 0);
-        if (lines.length === 0 || lineSheets <= 0) {
-          sheets.push({ productName: entry.productName, sheetSize: "", count: 0, unitPrice: 0, lineTotal: extra });
-          continue;
-        }
-        for (const line of lines) {
-          line.lineTotal += extra * (line.count / lineSheets);
-          line.unitPrice = line.lineTotal / line.count;
-        }
-      }
-      const sheetsTotal = sheets.reduce((sum, line) => sum + line.lineTotal, 0);
-
+      const itemsTotal = itemsRoom ? salesItemsRoomTotalValue(itemsRoom) : 0;
       const roomTotal = parseCurrencyNumber(row.totalPrice);
-      // Rounding aside, anything left over once Items and Sheets are taken away.
-      const leftover = roomTotal - itemsTotal - sheetsTotal;
-      const otherTotal = leftover > 0.005 ? leftover : 0;
-
-      map[key] = { items, itemsTotal, sheets, sheetsTotal, otherTotal, roomTotal };
+      map[key] = { frontsAndPanelsTotal: Math.max(0, roomTotal - itemsTotal), itemsTotal, roomTotal };
     }
     return map;
-  }, [displayedSalesRoomRows, effectiveSalesItemsRooms, salesRoomSheetAnalysis, productSheetPricingByName, companyItemCategories]);
+  }, [displayedSalesRoomRows, effectiveSalesItemsRooms]);
   // Every named row-group in the project's own LIVE Quote grid directly IS a toggleable "quote
   // extra" now — same on/off-a-whole-section idea as the Specifications sheet's own "Sections"
   // checklist, just surfaced here as a sidebar instead (see displayedQuoteGridExtras' own comment
@@ -18534,11 +18323,11 @@ export default function ProjectDetailsPage() {
     () => quoteCustomPriceRows.reduce((sum, row) => sum + parseCurrencyNumber(row.price), 0),
     [quoteCustomPriceRows],
   );
-  // The extra charges turned on for this project (Design tab → Extra Charges).
-  const displayedSalesExtraChargesTotal = useMemo(
-    () => salesExtraChargeRows.reduce((sum, row) => sum + (row.selected ? row.lineTotal : 0), 0),
-    [salesExtraChargeRows],
-  );
+  // Operational Cost: only once the project has a price of $1 or more — a new, empty project isn't priced by it.
+  const displayedSalesExtraChargesTotal = useMemo(() => {
+    if (displayedSalesRoomsTotal + displayedSalesQuoteExtrasTotal + displayedSalesQuoteCustomPriceTotal < 1) return 0;
+    return salesExtraChargeRows.reduce((sum, row) => sum + row.price, 0);
+  }, [displayedSalesQuoteCustomPriceTotal, displayedSalesQuoteExtrasTotal, displayedSalesRoomsTotal, salesExtraChargeRows]);
   const displayedSalesQuoteGrandTotal = useMemo(
     () => displayedSalesRoomsTotal + displayedSalesQuoteExtrasTotal + displayedSalesQuoteCustomPriceTotal + displayedSalesExtraChargesTotal,
     [displayedSalesQuoteExtrasTotal, displayedSalesQuoteCustomPriceTotal, displayedSalesRoomsTotal, displayedSalesExtraChargesTotal],
@@ -20881,7 +20670,8 @@ export default function ProjectDetailsPage() {
     }
   };
 
-  const projectImageAreaHeight = Math.max(420, projectImageMeasuredHeight || 0);
+  // The picture's height: the whole of the Images card's — less the thumbnails under it, with more than one.
+  const projectImageAreaHeight = projectImageUrls.length > 1 ? PROJECT_IMAGES_HEIGHT - 72 : PROJECT_IMAGES_HEIGHT;
 
   const clampProjectImagePan = (x: number, y: number, zoomLevel = projectImageZoom) => {
     const viewport = projectImageViewportRef.current;
@@ -20953,20 +20743,6 @@ export default function ProjectDetailsPage() {
       setProjectImagePan(clamped);
     }
   };
-
-  useEffect(() => {
-    const el = projectImageThumbsRef.current;
-    if (!el) return;
-    const update = () => {
-      const h = Math.ceil(el.scrollHeight || el.getBoundingClientRect().height);
-      setProjectImageMeasuredHeight(h > 0 ? h : 0);
-    };
-    update();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => update());
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [projectImageUrls.length]);
 
   useEffect(() => {
     const onGlobalWheel = (e: WheelEvent) => {
@@ -22709,7 +22485,7 @@ export default function ProjectDetailsPage() {
   const canAccessContacts =
     companyAccess.status === "ready" &&
     (canViewAllContacts || hasPermissionKey(companyAccess.permissionKeys, "clients.view"));
-  const [projectContact, setProjectContact] = useState<CompanyClientRow | null | undefined>(undefined);
+  const [savedProjectContact, setProjectContact] = useState<CompanyClientRow | null | undefined>(undefined);
   // false when the card shown is only derived from this project (no saved card to link or update).
   const [projectContactPersisted, setProjectContactPersisted] = useState(false);
   const [projectContactTick, setProjectContactTick] = useState(0);
@@ -22764,15 +22540,29 @@ export default function ProjectDetailsPage() {
   // page uses when none have been saved.
   const contactCategories = useMemo(() => {
     const raw = (companyDoc as Record<string, unknown> | null)?.contactCategories;
-    if (!Array.isArray(raw)) return DEFAULT_CONTACT_CATEGORIES;
-    return raw
-      .filter((item) => item && typeof item === "object")
-      .map((item) => ({
-        name: String((item as Record<string, unknown>).name ?? "").trim(),
-        color: String((item as Record<string, unknown>).color ?? "").trim() || CONTACT_NEUTRAL_COLOR,
-      }))
-      .filter((item) => item.name);
+    const rows = !Array.isArray(raw)
+      ? DEFAULT_CONTACT_CATEGORIES
+      : raw
+          .filter((item) => item && typeof item === "object")
+          .map((item) => ({
+            name: String((item as Record<string, unknown>).name ?? "").trim(),
+            color: String((item as Record<string, unknown>).color ?? "").trim() || CONTACT_NEUTRAL_COLOR,
+          }))
+          .filter((item) => item.name);
+    return withStaffContactCategory(rows, (name, color) => ({ name, color }));
   }, [companyDoc]);
+  // A staff member as the client (their email or phone, on their card or the project's client details) is under Staff,
+  // as on the Contacts page, whatever their saved card says: their saved card shown so — else their staff card.
+  const projectContact = useMemo(() => {
+    if (savedProjectContact === undefined) return undefined;
+    const member =
+      (savedProjectContact ? staffMemberMatching(savedProjectContact, companyMembers) : null) ??
+      staffMemberMatching({ email: project?.clientEmail, phone: project?.clientPhone }, companyMembers);
+    if (!member) return savedProjectContact;
+    return savedProjectContact && projectContactPersisted
+      ? { ...savedProjectContact, category: STAFF_CONTACT_CATEGORY }
+      : staffContactRow(member, projectContactCompanyId);
+  }, [companyMembers, project?.clientEmail, project?.clientPhone, projectContactCompanyId, projectContactPersisted, savedProjectContact]);
   const contactCategoryColor = projectContact?.category
     ? contactCategories.find((c) => c.name === projectContact.category)?.color || ""
     : "";
@@ -24308,10 +24098,10 @@ export default function ProjectDetailsPage() {
       return;
     }
     setAddRoomError("");
-    const nextRooms = [
+    const nextRooms = syncSalesItemsRoomTotals([
       ...persistedSalesItemsRooms,
-      { id: createSalesItemsRoomId(), name: next, included: true, totalPrice: "0.00", items: [] },
-    ];
+      { id: createSalesItemsRoomId(), name: next, included: true, totalPrice: "0.00", items: defaultSalesRoomItems(companyItemCategories) },
+    ]);
     const nextSales = {
       ...salesPayload,
       rooms: nextRooms,
@@ -24372,40 +24162,6 @@ export default function ProjectDetailsPage() {
     setIsSavingSalesRooms(true);
     await persistSalesPatch(nextSales);
     setIsSavingSalesRooms(false);
-  };
-
-  const onToggleSalesExtraCharge = async (chargeId: string, selected: boolean) => {
-    if (!project || isSavingSalesRooms || !salesAccess.edit) return;
-    const picks = ((salesPayload as Record<string, unknown>).extraChargeSelections ?? {}) as Record<string, unknown>;
-    const nextSales = {
-      ...salesPayload,
-      extraChargeSelections: { ...picks, [chargeId]: selected },
-    } as Record<string, unknown>;
-    // Same optimistic update as onToggleSalesRoomIncluded above — see its own comment.
-    setProject((prevProject) =>
-      prevProject
-        ? { ...prevProject, sales: nextSales as never, projectSettings: { ...(prevProject.projectSettings ?? {}), sales: nextSales } }
-        : prevProject,
-    );
-    setIsSavingSalesRooms(true);
-    await persistSalesPatch(nextSales);
-    setIsSavingSalesRooms(false);
-  };
-
-  const onSetSalesExtraChargeQuantity = async (chargeId: string, quantity: number) => {
-    if (!project || !salesAccess.edit) return;
-    const quantities = ((salesPayload as Record<string, unknown>).extraChargeQuantities ?? {}) as Record<string, unknown>;
-    const nextSales = {
-      ...salesPayload,
-      extraChargeQuantities: { ...quantities, [chargeId]: quantity },
-    } as Record<string, unknown>;
-    // Same optimistic update as onToggleSalesRoomIncluded above — see its own comment.
-    setProject((prevProject) =>
-      prevProject
-        ? { ...prevProject, sales: nextSales as never, projectSettings: { ...(prevProject.projectSettings ?? {}), sales: nextSales } }
-        : prevProject,
-    );
-    await persistSalesPatch(nextSales);
   };
 
   const onSaveQuoteCustomPriceRows = async (nextRows: { id: string; name: string; price: string }[]) => {
@@ -26906,10 +26662,10 @@ export default function ProjectDetailsPage() {
     if (newRoomNames.length) {
       await persistSalesPatch({
         ...salesPayload,
-        rooms: [
+        rooms: syncSalesItemsRoomTotals([
           ...persistedSalesItemsRooms,
-          ...newRoomNames.map((name) => ({ id: createSalesItemsRoomId(), name, included: true, totalPrice: "0.00", items: [] })),
-        ],
+          ...newRoomNames.map((name) => ({ id: createSalesItemsRoomId(), name, included: true, totalPrice: "0.00", items: defaultSalesRoomItems(companyItemCategories) })),
+        ]),
       } as Record<string, unknown>);
     }
 
@@ -40100,7 +39856,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         >
           {/* (Its title row the standard 56px — on a phone the search wraps under it.) */}
           <div className="flex h-[56px] min-w-0 flex-1 items-center gap-2">
-            <p className="shrink-0 text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Add Item</p>
+            <p className="shrink-0 text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Add Material</p>
             <span className="text-[14px] font-medium" style={{ color: "var(--text-muted)" }}>|</span>
             <p className="min-w-0 truncate text-[14px] font-medium" style={{ color: "var(--text-main)" }}>
               {activeSalesItemsRoom ? activeSalesItemsRoom.name : "Select a room first"}
@@ -40114,7 +39870,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             <input
               value={salesItemsAddSearch}
               onChange={(e) => onSalesItemsSearchChange(e.currentTarget.value, "add")}
-              placeholder="Search items"
+              placeholder="Search materials"
               className="h-full w-full bg-transparent text-[12.5px] outline-none"
               style={{ color: "var(--text-main)" }}
             />
@@ -40342,8 +40098,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <div className="px-5 py-4">
                 <p className="text-[13px]" style={{ color: "var(--text-main)" }}>
                   {clearSalesItemsConfirmKind === "all"
-                    ? "This removes every item from all rooms. The rooms themselves won't be deleted."
-                    : `This removes all items from "${activeSalesItemsRoom?.name || "this room"}". The room itself won't be deleted.`}
+                    ? "This removes every material from all rooms. The rooms themselves won't be deleted."
+                    : `This removes all materials from "${activeSalesItemsRoom?.name || "this room"}". The room itself won't be deleted.`}
                 </p>
                 <div className="mt-4 flex justify-end gap-2">
                   <button
@@ -40388,7 +40144,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               className="glass-modal-backdrop absolute inset-0"
             />
             <div ref={itemsRemoveConfirmPanelRef} className="glass-modal-panel relative z-[2147483647] w-[min(420px,96vw)] overflow-hidden">
-              <GlassModalHeader title="Remove item?" onClose={() => setItemsRemovePendingItem(null)} />
+              <GlassModalHeader title="Remove material?" onClose={() => setItemsRemovePendingItem(null)} />
               <div className="px-5 py-4">
                 <p className="text-[13px]" style={{ color: "var(--text-main)" }}>
                   This removes <b>{displayItemsRemovePendingItem.quantity}</b> of <b>{displayItemsRemovePendingItem.name}</b> from <b>{displayItemsRemovePendingItem.roomName}</b>
@@ -40570,7 +40326,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               compact
               icon={<ListChecks size={16} />}
               title="No rooms yet"
-              hint="Add a room to start assigning items to spaces like Kitchen, Bathroom, or Laundry."
+              hint="Add a room to start assigning materials to spaces like Kitchen, Bathroom, or Laundry."
             />
           </div>
         )}
@@ -40637,7 +40393,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   compact
                   icon={<ListChecks size={16} />}
                   title="No rooms yet"
-                  hint="Add a room (Summary › Add Room) to start assigning items to spaces like Kitchen, Bathroom, or Laundry."
+                  hint="Add a room (Summary › Add Room) to start assigning materials to spaces like Kitchen, Bathroom, or Laundry."
                 />
               </div>
             ) : null}
@@ -40667,7 +40423,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 <input
                   value={salesItemsSearch}
                   onChange={(e) => onSalesItemsSearchChange(e.currentTarget.value, "library")}
-                  placeholder="Search items"
+                  placeholder="Search materials"
                   className="h-full w-full bg-transparent text-[13px] outline-none"
                   style={{ color: "var(--text-main)" }}
                 />
@@ -40880,7 +40636,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <div className="grid grid-cols-2 gap-2">
                 {([
                   ["Rooms", salesItemsBoardRooms.length],
-                  ["Items", salesItemsTotalSelected],
+                  ["Materials", salesItemsTotalSelected],
                 ] as const).map(([label, value]) => (
                   <div
                     key={`summary_stat_${label}`}
@@ -40894,13 +40650,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </div>
               {renderSalesItemsSummaryListBubble(
                 "rooms",
-                "Items per room",
+                "Materials per room",
                 salesItemsBoardRooms.map((room) => ({
                   key: `summary_room_${room.id}`,
                   label: room.name,
                   value: room.items.reduce((sum, item) => sum + item.quantity, 0),
                 })),
-                { icon: <ListChecks size={16} />, title: "No rooms yet", hint: "Each room's item count shows here." },
+                { icon: <ListChecks size={16} />, title: "No rooms yet", hint: "Each room's material count shows here." },
               )}
               {renderSalesItemsSummaryListBubble(
                 "categories",
@@ -40911,7 +40667,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   value: row.quantity,
                   color: row.categoryColor,
                 })),
-                { icon: <ListChecks size={16} />, title: "No items selected yet", hint: "Items added to rooms are counted here by category." },
+                { icon: <ListChecks size={16} />, title: "No materials selected yet", hint: "Materials added to rooms are counted here by category." },
               )}
               {/* Clear Room / Clear All: side by side, each a bubble of its own (no container round them). */}
               <div className="grid grid-cols-2 gap-2">
@@ -41270,7 +41026,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       <tr className="border-b" style={{ borderBottomColor: "var(--glass-border)" }}>
                         <th className="px-2 py-2 text-left" style={{ color: "var(--text-main)" }}>Room</th>
                         <th className="px-2 py-2 text-left" style={{ color: "var(--text-main)" }}>Included</th>
-                        <th className="px-2 py-2 text-right" style={{ color: "var(--text-main)" }}>Items</th>
+                        <th className="px-2 py-2 text-right" style={{ color: "var(--text-main)" }}>Materials</th>
                         <th className="px-2 py-2 text-right" style={{ color: "var(--text-main)" }}>Cost</th>
                       </tr>
                     </thead>
@@ -41314,7 +41070,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             />
             <div
               ref={roomCostBreakdownModalPanelRef}
-              className="glass-modal-panel relative z-[2147483647] flex max-h-[80vh] w-[min(560px,96vw)] flex-col overflow-hidden"
+              className="glass-modal-panel relative z-[2147483647] flex max-h-[80vh] w-[min(480px,96vw)] flex-col overflow-hidden"
             >
               <div className="glass-modal-header flex h-[56px] shrink-0 items-center justify-between gap-3 px-5">
                 <p className="min-w-0 truncate text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
@@ -41350,7 +41106,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </div>
               <div className="glass-scroll min-h-0 flex-1 overflow-y-auto px-5 py-4">
                 {roomCostBreakdownModalBreakdown ? (
-                  <RoomCostBreakdownTables breakdown={roomCostBreakdownModalBreakdown} />
+                  <div className="space-y-2">
+                    <CostBreakdownBar label="Fronts & Panels" value={formatCurrencyValue(roomCostBreakdownModalBreakdown.frontsAndPanelsTotal)} />
+                    <CostBreakdownBar label="Materials" value={formatCurrencyValue(roomCostBreakdownModalBreakdown.itemsTotal)} />
+                    <CostBreakdownTotalBar label="Room Total" value={formatCurrencyValue(roomCostBreakdownModalBreakdown.roomTotal)} />
+                  </div>
                 ) : (
                   <EmptyState compact icon={<DollarSign size={16} />} title="No pricing data for this room" />
                 )}
@@ -41360,6 +41120,28 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           document.body,
         )
       : null;
+  // The project's price by what makes it up, just the totals: each included room's Fronts & Panels and Materials, then
+  // what's added to the rooms — what the quote adds, the Operational Costs, and what comes off or goes on. The Operational
+  // Costs have a bar only for those with Company Settings; to anyone else they're shared through the rooms' Fronts &
+  // Panels (by each room's share of the price; with no room priced, in Quote Extras) — not shown to them, and it all
+  // still adds up to the total.
+  const canSeeOperationalCost = isOwnerOrAdmin(effectiveRole) || hasPermissionKey(effectivePermissions, "company.settings");
+  const projectCostHiddenCharges = canSeeOperationalCost ? 0 : displayedSalesExtraChargesTotal;
+  const projectCostRooms = displayedSalesRoomRows.flatMap((row) => {
+    const breakdown = salesRoomCostBreakdownByName[String(row.name || "").trim().toLowerCase()];
+    if (!row.included || !breakdown) return [];
+    const share = displayedSalesRoomsTotal > 0 ? (projectCostHiddenCharges * breakdown.roomTotal) / displayedSalesRoomsTotal : 0;
+    return [{ name: row.name, frontsAndPanels: formatCurrencyValue(breakdown.frontsAndPanelsTotal + share), materials: formatCurrencyValue(breakdown.itemsTotal) }];
+  });
+  const projectCostQuoteExtras = displayedSalesQuoteExtrasTotal + (displayedSalesRoomsTotal > 0 ? 0 : projectCostHiddenCharges);
+  const projectCostDiscount = salesMinusOffQuoteTotalEnabled ? parseCurrencyNumber(displayedSalesQuoteDiscountTotal) : 0;
+  const projectCostBars: Array<{ label: string; value: string; danger?: boolean }> = [
+    ...(projectCostQuoteExtras > 0 ? [{ label: "Quote Extras", value: formatCurrencyValue(projectCostQuoteExtras) }] : []),
+    ...(displayedSalesQuoteCustomPriceTotal > 0 ? [{ label: "Custom Pricing", value: formatCurrencyValue(displayedSalesQuoteCustomPriceTotal) }] : []),
+    ...(canSeeOperationalCost && displayedSalesExtraChargesTotal > 0 ? [{ label: "Operational Costs", value: formatCurrencyValue(displayedSalesExtraChargesTotal) }] : []),
+    ...(projectCostDiscount > 0 ? [{ label: "Discount", value: `-${displayedSalesQuoteDiscountTotal}`, danger: true }] : []),
+    ...(salesGstPercent > 0 ? [{ label: salesGstLabel, value: formatCurrencyValue(displayedSalesQuoteGstTotal) }] : []),
+  ];
   const projectCostBreakdownModalPortal =
     shouldRenderProjectCostBreakdownModal && typeof document !== "undefined"
       ? createPortal(
@@ -41372,7 +41154,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             />
             <div
               ref={projectCostBreakdownModalPanelRef}
-              className="glass-modal-panel relative z-[2147483647] flex max-h-[85vh] w-[min(680px,96vw)] flex-col overflow-hidden"
+              className="glass-modal-panel relative z-[2147483647] flex max-h-[85vh] w-[min(480px,96vw)] flex-col overflow-hidden"
             >
               <div className="glass-modal-header flex h-[56px] shrink-0 items-center justify-between gap-3 px-5">
                 <p className="min-w-0 truncate text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Project Cost Breakdown</p>
@@ -41383,37 +41165,21 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     title="Print"
                     disabled={displayedSalesRoomRows.length === 0}
                     onClick={() => {
-                      // Always the FULL breakdown for every room, regardless of which ones are
-                      // currently expanded on screen — collapse/expand is a screen-space affordance
-                      // for a long list, not something a printed page should also make the reader
-                      // click through.
-                      const roomsHtml = displayedSalesRoomRows
-                        .map((row) => {
-                          const breakdown = salesRoomCostBreakdownByName[String(row.name || "").trim().toLowerCase()];
-                          if (!breakdown) return "";
-                          return roomCostBreakdownRoomBlockHtml(row.name + (row.included ? "" : " (Not Included)"), breakdown);
-                        })
-                        .join("");
-                      const discountAmount = parseCurrencyNumber(displayedSalesQuoteDiscountTotal);
                       const summaryHtml = `
                         <div class="room-block">
-                          <h1>Project Summary</h1>
-                          <div class="summary-row"><span>Rooms Subtotal</span><span>${formatCurrencyValue(displayedSalesRoomsTotal)}</span></div>
-                          ${displayedSalesQuoteExtrasTotal > 0 ? `<div class="summary-row"><span>Quote Extras</span><span>${formatCurrencyValue(displayedSalesQuoteExtrasTotal)}</span></div>` : ""}
-                          ${displayedSalesQuoteCustomPriceTotal > 0 ? `<div class="summary-row"><span>Custom Pricing</span><span>${formatCurrencyValue(displayedSalesQuoteCustomPriceTotal)}</span></div>` : ""}
-                          ${salesExtraChargeRows
-                            .filter((row) => row.selected && row.lineTotal !== 0)
+                          <h1>Project Cost Breakdown</h1>
+                          ${projectCostRooms
                             .map(
-                              (row) =>
-                                `<div class="summary-row"><span>${escapeHtml(row.name)}${row.quantity !== 1 ? ` × ${row.quantity}` : ""}</span><span>${formatCurrencyValue(row.lineTotal)}</span></div>`,
+                              (room) =>
+                                `<div class="section-bar"><p>${escapeHtml(room.name)}</p></div><div class="summary-row"><span>Fronts &amp; Panels</span><span>${room.frontsAndPanels}</span></div><div class="summary-row"><span>Materials</span><span>${room.materials}</span></div>`,
                             )
                             .join("")}
-                          ${salesMinusOffQuoteTotalEnabled && discountAmount > 0 ? `<div class="summary-row"><span>Discount</span><span>-${escapeHtml(displayedSalesQuoteDiscountTotal)}</span></div>` : ""}
-                          ${salesGstPercent > 0 ? `<div class="summary-row"><span>${salesGstLabel}</span><span>${formatCurrencyValue(displayedSalesQuoteGstTotal)}</span></div>` : ""}
+                          ${projectCostBars.length ? `<div style="margin-top:16px"></div>` : ""}
+                          ${projectCostBars.map((bar) => `<div class="summary-row"><span>${escapeHtml(bar.label)}</span><span>${escapeHtml(bar.value)}</span></div>`).join("")}
                           <div class="grand-total"><span>Project Total</span><span>${formatCurrencyValue(displayedSalesQuoteFinalTotal)}</span></div>
                         </div>
                       `;
-                      triggerCostBreakdownPrint("Project Cost Breakdown", roomsHtml + summaryHtml);
+                      triggerCostBreakdownPrint("Project Cost Breakdown", summaryHtml);
                     }}
                     className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border hover:brightness-95 disabled:opacity-50"
                     style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
@@ -41431,117 +41197,31 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 </div>
               </div>
               <div className="glass-scroll min-h-0 flex-1 overflow-y-auto px-5 py-4">
-                {displayedSalesRoomRows.length === 0 ? (
+                <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>Rooms</p>
+                {projectCostRooms.length === 0 ? (
                   <EmptyState compact icon={<DollarSign size={16} />} title="No rooms yet" hint="Each room's cost shows here once rooms are added." />
                 ) : (
                   <div className="space-y-2">
-                    {displayedSalesRoomRows.map((row) => {
-                      const roomKey = String(row.name || "").trim().toLowerCase();
-                      const breakdown = salesRoomCostBreakdownByName[roomKey];
-                      const isExpanded = Boolean(expandedProjectCostBreakdownRooms[roomKey]);
-                      return (
-                        <div key={row.name} className="overflow-hidden rounded-[10px] border" style={{ borderColor: "var(--glass-border)" }}>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setExpandedProjectCostBreakdownRooms((prev) => ({ ...prev, [roomKey]: !prev[roomKey] }))
-                            }
-                            className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left hover:brightness-95"
-                            style={{ backgroundColor: "var(--panel-muted)" }}
-                          >
-                            <span className="inline-flex items-center gap-2">
-                              {isExpanded ? <ChevronDown size={14} style={{ color: "var(--text-main)" }} /> : <ChevronRight size={14} style={{ color: "var(--text-main)" }} />}
-                              <span className="text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>{row.name}</span>
-                              {!row.included ? (
-                                <span
-                                  className="rounded-[6px] border px-1.5 py-0.5 text-[10px] font-bold uppercase"
-                                  style={{ borderColor: "var(--glass-border)", color: "var(--text-muted)" }}
-                                >
-                                  Not Included
-                                </span>
-                              ) : null}
-                            </span>
-                            <span className="text-[13px] font-bold" style={{ color: "var(--text-main)" }}>{row.totalPrice}</span>
-                          </button>
-                          {/* Grid-rows 0fr/1fr trick, not a plain conditional mount — animating to
-                              "height: auto" isn't something CSS transitions can do directly, and a
-                              JS-measured pixel height would need a ResizeObserver just to stay
-                              correct if the breakdown's own content ever changes size. A CSS grid
-                              track CAN animate all the way to its content's own natural size for
-                              free. The content stays mounted (not conditionally rendered) at all
-                              times so there's nothing to newly mount/fetch the instant this starts
-                              opening — min-h-0 on the inner wrapper is required for the 0fr row to
-                              actually reach zero height (grid items default to min-height:auto,
-                              which would otherwise floor it at the content's own height). The modal
-                              panel itself has no explicit height of its own (sized to its content,
-                              capped by max-h-[85vh] with internal scroll beyond that) — growing this
-                              track is what makes the WHOLE popup visibly grow in lockstep, with no
-                              separate animation needed on the panel. */}
-                          <div
-                            className="grid transition-[grid-template-rows] duration-300 ease-in-out"
-                            style={{ gridTemplateRows: isExpanded ? "1fr" : "0fr" }}
-                          >
-                            <div className="min-h-0 overflow-hidden">
-                              <div
-                                className="border-t px-3 py-3 transition-opacity duration-200"
-                                style={{ borderTopColor: "var(--glass-border)", opacity: isExpanded ? 1 : 0 }}
-                              >
-                                {breakdown ? <RoomCostBreakdownTables breakdown={breakdown} /> : null}
-                              </div>
-                            </div>
-                          </div>
+                    {projectCostRooms.map((room) => (
+                      <div key={room.name} className="overflow-hidden rounded-[10px] border text-[13px] font-medium" style={{ borderColor: "var(--glass-border)", color: "var(--text-main)" }}>
+                        <p className="px-3 py-2" style={{ backgroundColor: "var(--panel-muted)" }}>{room.name}</p>
+                        <div className="flex items-center justify-between gap-3 border-t px-3 py-2" style={{ borderTopColor: "var(--glass-border)" }}>
+                          <span>Fronts &amp; Panels</span>
+                          <span className="tabular-nums">{room.frontsAndPanels}</span>
                         </div>
-                      );
-                    })}
-                  </div>
-                )}
-                <div className="mt-4 space-y-1 border-t pt-3" style={{ borderTopColor: "var(--glass-border)" }}>
-                  <div className="flex items-center justify-between text-[12px]" style={{ color: "var(--text-main)" }}>
-                    <span>Rooms Subtotal</span>
-                    <span className="font-semibold">{formatCurrencyValue(displayedSalesRoomsTotal)}</span>
-                  </div>
-                  {displayedSalesQuoteExtrasTotal > 0 ? (
-                    <div className="flex items-center justify-between text-[12px]" style={{ color: "var(--text-main)" }}>
-                      <span>Quote Extras</span>
-                      <span className="font-semibold">{formatCurrencyValue(displayedSalesQuoteExtrasTotal)}</span>
-                    </div>
-                  ) : null}
-                  {displayedSalesQuoteCustomPriceTotal > 0 ? (
-                    <div className="flex items-center justify-between text-[12px]" style={{ color: "var(--text-main)" }}>
-                      <span>Custom Pricing</span>
-                      <span className="font-semibold">{formatCurrencyValue(displayedSalesQuoteCustomPriceTotal)}</span>
-                    </div>
-                  ) : null}
-                  {salesExtraChargeRows
-                    .filter((row) => row.selected && row.lineTotal !== 0)
-                    .map((row) => (
-                      <div key={row.id} className="flex items-center justify-between text-[12px]" style={{ color: "var(--text-main)" }}>
-                        <span>
-                          {row.name}
-                          {row.quantity !== 1 ? ` × ${row.quantity}` : ""}
-                        </span>
-                        <span className="font-semibold">{formatCurrencyValue(row.lineTotal)}</span>
+                        <div className="flex items-center justify-between gap-3 border-t px-3 py-2" style={{ borderTopColor: "var(--glass-border)" }}>
+                          <span>Materials</span>
+                          <span className="tabular-nums">{room.materials}</span>
+                        </div>
                       </div>
                     ))}
-                  {salesMinusOffQuoteTotalEnabled && parseCurrencyNumber(displayedSalesQuoteDiscountTotal) > 0 ? (
-                    <div className="flex items-center justify-between text-[12px]" style={{ color: "var(--danger-strong)" }}>
-                      <span>Discount</span>
-                      <span className="font-semibold">-{displayedSalesQuoteDiscountTotal}</span>
-                    </div>
-                  ) : null}
-                  {salesGstPercent > 0 ? (
-                    <div className="flex items-center justify-between text-[12px]" style={{ color: "var(--text-main)" }}>
-                      <span>{salesGstLabel}</span>
-                      <span className="font-semibold">{formatCurrencyValue(displayedSalesQuoteGstTotal)}</span>
-                    </div>
-                  ) : null}
-                  <div
-                    className="flex items-center justify-between border-t pt-2 text-[15px] font-bold"
-                    style={{ borderTopColor: "var(--glass-border)", color: "var(--text-main)" }}
-                  >
-                    <span>Project Total</span>
-                    <span>{formatCurrencyValue(displayedSalesQuoteFinalTotal)}</span>
                   </div>
+                )}
+                <div className="mt-3 space-y-2">
+                  {projectCostBars.map((bar) => (
+                    <CostBreakdownBar key={bar.label} label={bar.label} value={bar.value} danger={bar.danger} />
+                  ))}
+                  <CostBreakdownTotalBar label="Project Total" value={formatCurrencyValue(displayedSalesQuoteFinalTotal)} />
                 </div>
               </div>
             </div>
@@ -41777,7 +41457,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           document.body,
         )
       : null;
-  // The project's tab containers — General's, Design's (its stat cards, Rooms, Product, Extra Charges, Notes),
+  // The project's tab containers — General's, Design's (its stat cards, Rooms, Product, Notes),
   // Production's and Settings' — with the glass shine's neutral version (className "glass-shine glass-shine-neutral
   // glass-shine-panel" — lib/glass-shine.ts; no colour of their own; in dark mode the Reports page's see-through glass,
   // app/globals.css), still frosted.
@@ -41896,9 +41576,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           );
         })}
       </div>
-      {/* ROOMS, PRODUCT and EXTRA CHARGES in one row at xl: Product and Extra Charges each as wide as their content
-          (every name on one line), Rooms 430px but shrinking (down to 320px) when that keeps all three on the row — a card
-          only moves onto the next line when even that won't fit. Below xl they stack, full width. */}
+      {/* ROOMS and PRODUCT in one row at xl: Product as wide as its content (every name on one line), Rooms 430px but
+          shrinking (down to 320px) when that keeps both on the row — a card only moves onto the next line when even that
+          won't fit. Below xl they stack, full width. */}
       <div className="flex flex-wrap items-stretch gap-4">
         <section
           className="glass-shine glass-shine-neutral glass-shine-panel w-full overflow-hidden rounded-[18px] border xl:w-auto xl:min-w-[320px] xl:max-w-[430px] xl:flex-[1_1_320px]"
@@ -42141,55 +41821,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           </div>
         </section>
 
-        {/* Extra charges (Company Settings → Sales → Extra charges): each one turned on / off for this project's quote. */}
-        <section
-          className="glass-shine glass-shine-neutral glass-shine-panel w-full overflow-hidden rounded-[18px] border xl:w-max xl:min-w-[240px] xl:max-w-full"
-          style={tabContainerStyle}
-        >
-          <div
-            className="flex h-[50px] items-center justify-between gap-2 border-b px-4"
-            style={{ borderBottomColor: "var(--glass-border)", backgroundColor: isDarkMode ? "rgba(255,255,255,0.04)" : "rgba(15,23,42,0.025)" }}
-          >
-            <p className="text-[14px] font-medium tracking-[1px]" style={{ color: "var(--text-main)" }}>EXTRA CHARGES</p>
-          </div>
-          {/* Room between its columns (gap-x-5) and at its sides (px-4), so they don't run together. */}
-          <div className="px-4 py-3 text-[12px]">
-            {salesExtraChargeRows.length > 0 ? (
-              <>
-                <div className="mb-2 grid grid-cols-[40px_52px_1fr_auto] gap-x-5 text-[11px] font-bold" style={{ color: projectPalette.textMuted }}>
-                  <p></p><p className="text-center">Qty</p><p>Charge</p><p className="text-right">Price</p>
-                </div>
-                <div className="space-y-1">
-                  {salesExtraChargeRows.map((row) => (
-                    <div key={row.id} className="grid grid-cols-[40px_52px_1fr_auto] items-center gap-x-5 border-b py-2 last:border-none" style={{ borderBottomColor: projectPalette.border }}>
-                      <QuoteExtraToggleSwitch
-                        checked={row.selected}
-                        disabled={salesReadOnly || isSavingSalesRooms}
-                        onChange={(checked) => void onToggleSalesExtraCharge(row.id, checked)}
-                      />
-                      <ExtraChargeQuantityInput
-                        key={`${row.id}_${row.quantity}`}
-                        value={row.quantity}
-                        disabled={salesReadOnly}
-                        onCommit={(next) => void onSetSalesExtraChargeQuantity(row.id, next)}
-                      />
-                      <span className="font-semibold xl:whitespace-nowrap" style={{ color: projectPalette.text }}>{row.name}</span>
-                      <span
-                        className="whitespace-nowrap text-right font-medium tabular-nums"
-                        style={{ color: row.selected ? "var(--text-main)" : "var(--text-muted)" }}
-                        title={row.quantity !== 1 ? `${row.quantity} × ${formatCurrencyValue(row.price)}` : undefined}
-                      >
-                        {formatCurrencyValue(row.lineTotal)}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </>
-            ) : (
-              <EmptyState compact icon={<DollarSign size={16} />} title="No extra charges yet" hint="Add them in Company Settings → Sales." />
-            )}
-          </div>
-        </section>
       </div>
 
       {/* Design's own notes — set out as General's and Production's Notes cards. */}
@@ -57316,7 +56947,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           <div data-app-top-bar-content="true" className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center justify-between border-b px-4 md:px-5" style={{ borderColor: "var(--glass-border)" }}>
             <div className="inline-flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
               <ListChecks size={14} className="shrink-0" />
-              <span>Items</span>
+              <span>Materials</span>
               <span style={{ color: "var(--text-muted)" }}>|</span>
               <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
             </div>
@@ -57344,7 +56975,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               color: isSalesItemsLibraryOpen && !isSalesItemsLibraryClosing ? "var(--brand-strong)" : "var(--text-main)",
             }}
           >
-            Item Library
+            Material Library
             <ChevronDown
               size={13}
               style={{
@@ -65372,7 +65003,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                               value={createContactForm.category}
                                               options={[
                                                 { value: "", label: "Uncategorized" },
-                                                ...contactCategories.map((c) => ({ value: c.name, label: c.name, color: c.color })),
+                                                ...contactCategories.filter((c) => !isStaffContactCategory(c.name)).map((c) => ({ value: c.name, label: c.name, color: c.color })),
                                               ]}
                                               onChange={(next) => setCreateContactForm((prev) => ({ ...prev, category: next }))}
                                               ariaLabel="Contact category"
@@ -65503,9 +65134,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             </div>
                             {/* Their contact category, at the right of their name: a pill in its colour (as on the Contacts
                                 page), which is also its picker — a change saves to their contact card straight away, so
-                                it's changed company-wide (changeProjectContactCategory). With a saved card only; a staff
-                                contact stays under Staff. */}
-                            {projectContact && projectContactPersisted ? (
+                                it's changed company-wide (changeProjectContactCategory). With a saved card, or a staff
+                                member's; a staff member stays under Staff, it's locked. */}
+                            {projectContact && (projectContactPersisted || isStaffContactId(projectContact.id)) ? (
                               <GlassDropdown
                                 value={projectContact.category || ""}
                                 options={[
@@ -65521,7 +65152,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 onChange={(next) => void changeProjectContactCategory(next)}
                                 disabled={isStaffContactCategory(projectContact.category)}
                                 ariaLabel="Contact category"
-                                triggerTitle="Change their contact category (company-wide)"
+                                triggerTitle={isStaffContactCategory(projectContact.category) ? "A staff member stays under Staff" : "Change their contact category (company-wide)"}
                                 menuMinWidth={190}
                                 menuAlign="right"
                                 hideChevron
@@ -65746,7 +65377,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 setIsEditingProjectImageName(false);
                               }
                             }}
-                            className="pointer-events-auto h-8 w-full rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-center text-[14px] font-semibold text-[#0F172A] outline-none"
+                            className="pointer-events-auto h-8 w-full rounded-full border border-[var(--glass-border)] bg-[var(--panel-bg)] px-3 text-center text-[14px] font-semibold text-[#0F172A] outline-none"
                           />
                         ) : (
                           <button
@@ -65782,13 +65413,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       />
                       {isUploadingProjectImages && (
                         <div className="mr-1 hidden items-center gap-2 sm:flex">
-                          <div className="h-[8px] w-[160px] overflow-hidden rounded-full border border-[#CBD5E1] bg-white">
+                          <div className="h-[6px] w-[120px] overflow-hidden rounded-full" style={{ backgroundColor: "var(--panel-muted)" }}>
                             <div
-                              className="h-full rounded-full bg-[#2F6BFF] transition-[width] duration-150"
-                              style={{ width: `${projectImageUploadProgress}%` }}
+                              className="h-full rounded-full transition-[width] duration-150"
+                              style={{ width: `${projectImageUploadProgress}%`, backgroundColor: "var(--brand)" }}
                             />
                           </div>
-                          <span className="w-[40px] text-right text-[11px] font-bold" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>
+                          <span className="w-[36px] text-right text-[11px] font-medium" style={{ color: "var(--text-main)" }}>
                             {projectImageUploadProgress}%
                           </span>
                         </div>
@@ -65850,7 +65481,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     </div>
                   </div>
                   {(projectImageUrls.length > 0 || isLgUpViewport || isImagesExpandedMobile) && (
-                  <CardContent className="pt-4 pb-3" style={{ minHeight: Math.max(400, projectImageAreaHeight + 28) }}>
+                  <CardContent className="pt-4 pb-3" style={{ minHeight: PROJECT_IMAGES_HEIGHT + 28 }}>
                     {projectImageUrls.length === 0 ? (
                       // The viewer below assumes at least one image (thumbnail strip, prev/next,
                       // pan/zoom); shown on desktop now that this container stays visible even
@@ -65866,70 +65497,23 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           disabled={isDeletingProjectImage}
                           onFiles={(files) => void onUploadProjectImages(files)}
                           onBrowse={() => projectImagesInputRef.current?.click()}
-                          minHeight={Math.max(400, projectImageAreaHeight + 28) - 28}
+                          minHeight={PROJECT_IMAGES_HEIGHT}
                         />
                       ) : (
                         <EmptyState compact className="h-full min-h-[130px]" icon={<ImageIcon size={16} />} title="No images yet" />
                       )
                     ) : (
-                      <div className="flex items-start gap-3">
-                        <div className="w-[88px] flex-none">
-                          <div ref={projectImageThumbsRef} className="flex flex-col gap-[6px] pr-1">
-                          {projectImageItemsResolved.map((image, idx) => {
-                            const selected = idx === selectedProjectImageIndex;
-                            return (
-                              <button
-                                key={`${image.resolvedUrl}_${idx}`}
-                                type="button"
-                                onClick={() => setSelectedProjectImageIndex(idx)}
-                                className={`box-border flex w-full items-center justify-center overflow-hidden rounded-[8px] border transition ${
-                                  selected ? "border-[#2F6BFF]" : "border-[#D8DEE8] hover:border-[#94A3B8]"
-                                }`}
-                                style={{ backgroundColor: projectPalette.panelMuted }}
-                                title={String(image.name || "").trim() || `Image ${idx + 1}`}
-                              >
-                                <img
-                                  src={image.resolvedUrl}
-                                  alt={String(image.name || "").trim() || `Project image ${idx + 1}`}
-                                  className="block h-full w-full object-cover"
-                                  onLoad={() => {
-                                    const el = projectImageThumbsRef.current;
-                                    if (!el) return;
-                                    const h = Math.ceil(el.scrollHeight || el.getBoundingClientRect().height);
-                                    if (h > 0) setProjectImageMeasuredHeight(h);
-                                  }}
-                                />
-                              </button>
-                            );
-                          })}
-                          </div>
-                        </div>
+                      <div className="space-y-3">
+                        {/* The picture, on its own rounded panel: round glass arrows at its sides (and which it is of how many,
+                            at its foot) with more than one. Clicked, it opens large. */}
                         <div
-                          className="relative flex min-w-0 flex-1 items-center justify-center overflow-hidden"
-                          style={{ height: projectImageAreaHeight, maxHeight: projectImageAreaHeight }}
+                          className="relative flex w-0 min-w-full items-center justify-center overflow-hidden rounded-[14px]"
+                          style={{ height: projectImageAreaHeight, backgroundColor: projectPalette.panelMuted }}
                         >
-                          <button
-                            type="button"
-                            onClick={showPrevProjectImage}
-                            disabled={projectImageUrls.length <= 1}
-                            className="project-image-nav-arrow absolute left-2 top-1/2 z-10 inline-flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-[10px] border border-[#000000] p-0 shadow-[0_2px_6px_rgba(0,0,0,0.2)] backdrop-blur-[1px] transition duration-150 hover:translate-y-[-45%] hover:shadow-[0_1px_3px_rgba(0,0,0,0.16)] active:translate-y-[-40%] active:shadow-[0_0px_2px_rgba(0,0,0,0.14)] disabled:opacity-40"
-                            style={{ backgroundColor: "rgba(255,255,255,0.2)" }}
-                            title="Previous image"
-                          >
-                            <img
-                              src="/angle-left.png"
-                              alt="Previous"
-                              className="h-5 w-5 object-contain brightness-0"
-                              onError={(e) => {
-                                e.currentTarget.src = "/arrow-right.png";
-                                e.currentTarget.classList.add("-scale-x-100");
-                              }}
-                            />
-                          </button>
                           <div
                             ref={projectImageViewportRef}
                             className="flex h-full w-full items-center justify-center overflow-hidden"
-                            title="Alt + scroll to zoom, drag to pan"
+                            title="Click to open it large. Alt + scroll to zoom, drag to pan"
                             onClick={() => setProjectImageViewerOpen(true)}
                             onWheelCapture={onProjectImageWheel}
                             onWheel={onProjectImageWheel}
@@ -65938,40 +65522,89 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             onPointerUp={onProjectImagePointerEnd}
                             onPointerCancel={onProjectImagePointerEnd}
                             style={{
-                              cursor: projectImageZoom > 1 ? (projectImageDragging ? "grabbing" : "grab") : "default",
+                              cursor: projectImageZoom > 1 ? (projectImageDragging ? "grabbing" : "grab") : "zoom-in",
                             }}
                           >
                             <img
                               ref={projectImagePreviewRef}
                               src={currentProjectImageEntry?.resolvedUrl || projectImageUrls[selectedProjectImageIndex] || projectImageUrls[0]}
                               alt={String(currentProjectImageEntry?.name || "").trim() || "Selected project image"}
-                              className="block h-full w-auto object-contain"
+                              className="block max-h-full max-w-full object-contain"
                               style={{
-                                maxHeight: projectImageAreaHeight,
                                 transform: `translate(${projectImagePan.x}px, ${projectImagePan.y}px) scale(${projectImageZoom})`,
                                 transformOrigin: "center center",
                               }}
                               draggable={false}
                             />
                           </div>
-                          <button
-                            type="button"
-                            onClick={showNextProjectImage}
-                            disabled={projectImageUrls.length <= 1}
-                            className="project-image-nav-arrow absolute right-2 top-1/2 z-10 inline-flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-[10px] border border-[#000000] p-0 shadow-[0_2px_6px_rgba(0,0,0,0.2)] backdrop-blur-[1px] transition duration-150 hover:translate-y-[-45%] hover:shadow-[0_1px_3px_rgba(0,0,0,0.16)] active:translate-y-[-40%] active:shadow-[0_0px_2px_rgba(0,0,0,0.14)] disabled:opacity-40"
-                            style={{ backgroundColor: "rgba(255,255,255,0.2)" }}
-                            title="Next image"
-                          >
-                            <img
-                              src="/angle-right.png"
-                              alt="Next"
-                              className="h-5 w-5 object-contain brightness-0"
-                              onError={(e) => {
-                                e.currentTarget.src = "/arrow-right.png";
-                              }}
-                            />
-                          </button>
+                          {projectImageUrls.length > 1 ? (
+                            <>
+                              <span className="absolute left-2.5 top-1/2 z-10 -translate-y-1/2">
+                                <button
+                                  type="button"
+                                  onClick={showPrevProjectImage}
+                                  className="project-image-nav-arrow glass-shine glass-shine-neutral inline-flex h-9 w-9 items-center justify-center rounded-full border"
+                                  style={{ color: "var(--text-main)" }}
+                                  aria-label="Previous image"
+                                  title="Previous image"
+                                >
+                                  <ChevronLeft size={18} />
+                                </button>
+                              </span>
+                              <span className="absolute right-2.5 top-1/2 z-10 -translate-y-1/2">
+                                <button
+                                  type="button"
+                                  onClick={showNextProjectImage}
+                                  className="project-image-nav-arrow glass-shine glass-shine-neutral inline-flex h-9 w-9 items-center justify-center rounded-full border"
+                                  style={{ color: "var(--text-main)" }}
+                                  aria-label="Next image"
+                                  title="Next image"
+                                >
+                                  <ChevronRight size={18} />
+                                </button>
+                              </span>
+                              <span
+                                className="pointer-events-none absolute bottom-2.5 left-1/2 z-10 -translate-x-1/2 rounded-full border px-2.5 py-[3px] text-[11px] font-medium tabular-nums"
+                                style={{
+                                  borderColor: "var(--glass-border)",
+                                  backgroundColor: "var(--glass-bg-strong)",
+                                  backdropFilter: "blur(14px) saturate(200%)",
+                                  WebkitBackdropFilter: "blur(14px) saturate(200%)",
+                                  color: "var(--text-main)",
+                                }}
+                              >
+                                {selectedProjectImageIndex + 1} / {projectImageUrls.length}
+                              </span>
+                            </>
+                          ) : null}
                         </div>
+                        {/* The thumbnails, in a row under it — the one showing outlined in the brand colour. (w-0 min-w-full:
+                            as wide as the card, scrolling if they don't fit — they don't stretch the page's column.) */}
+                        {projectImageUrls.length > 1 ? (
+                          <div className="hide-native-scrollbar flex h-[60px] w-0 min-w-full gap-2 overflow-x-auto">
+                            {projectImageItemsResolved.map((image, idx) => {
+                              const selected = idx === selectedProjectImageIndex;
+                              return (
+                                <button
+                                  key={`${image.resolvedUrl}_${idx}`}
+                                  type="button"
+                                  onClick={() => setSelectedProjectImageIndex(idx)}
+                                  className="box-border h-full w-[84px] flex-none overflow-hidden rounded-[10px] border-2 transition-[border-color,opacity] hover:opacity-100"
+                                  style={{
+                                    backgroundColor: projectPalette.panelMuted,
+                                    borderColor: selected ? "var(--brand)" : "transparent",
+                                    opacity: selected ? 1 : 0.75,
+                                  }}
+                                  aria-label={String(image.name || "").trim() || `Image ${idx + 1}`}
+                                  aria-current={selected ? "true" : undefined}
+                                  title={String(image.name || "").trim() || `Image ${idx + 1}`}
+                                >
+                                  <img src={image.resolvedUrl} alt="" className="block h-full w-full rounded-[8px] object-cover" />
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ) : null}
                       </div>
                     )}
                   </CardContent>
@@ -66195,7 +65828,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 {/* In groups, each under its heading and a line (projectSubtabHeading): the sale itself, then the tools. */}
                 {[
                   { label: "Initial Measure", icon: Ruler, key: "initial" as const, group: "Sales" },
-                  { label: "Items", icon: ListChecks, key: "items" as const, group: "Sales" },
+                  { label: "Materials", icon: ListChecks, key: "items" as const, group: "Sales" },
                   { label: "Quote", icon: DollarSign, key: "quote" as const, group: "Sales" },
                   { label: "Specifications", icon: ClipboardList, key: "specifications" as const, group: "Sales" },
                   // The Calendar's events linked to this project (for those who can see the Calendar).
