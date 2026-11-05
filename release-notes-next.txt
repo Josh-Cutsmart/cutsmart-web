@@ -1,0 +1,39 @@
+Version: v0.6.1
+
+whatsNew: [
+<u><b>Phones</b></u>
+<ul>
+<li>Pop-ups slide up from the bottom and only take the room they need. Tap above one, or swipe it down, to close it</li>
+<li>Dragging on a Project Drawing no longer pulls down the menu or fades its title bar</li>
+</ul>
+
+<u><b>Calendar</b></u>
+<ul>
+<li>Drag an event to the top or bottom of the month and hold it there to move to the month before or after</li>
+</ul>
+
+<u><b>Contacts</b></u>
+<ul>
+<li>A contact card now has the last word on its active projects: the client's name, email, phone and address are brought into line when the project's opened</li>
+<li>A project no longer offers <b>Create Contact</b> when its client already has a card you can't see</li>
+<li>If a change to a contact can't reach all of their projects, the Contacts page says so</li>
+</ul>
+
+<u><b>Notifications</b></u>
+<ul>
+<li><b>Remind me in…</b> now sends the notification to your phone or computer again when it comes back, including for one-minute reminders</li>
+<li>Hear about it when someone joins with an access code you made</li>
+</ul>
+
+<u><b>Company Settings</b></u>
+<ul>
+<li>Click an access code to see everything about it: who made it and when, its role, who used it and whether they're still in the company</li>
+<li>The access code list has a <b>Created by</b> column, and shorter rows and buttons</li>
+</ul>
+
+<u><b>Joining a company</b></u>
+<ul>
+<li>Type your access code into two boxes, with the dash already there. It moves across as you type and back as you delete</li>
+<li>A <b>Master</b> button below them switches to one box for a master code of any length</li>
+</ul>
+]
