@@ -344,17 +344,43 @@ function clearOldRoleOverride(tx: Transaction, companyRef: DocumentReference, co
   if (toStr(overrides[uid])) tx.update(companyRef, { [`staffRoleIdsByUid.${uid}`]: FieldValue.delete() });
 }
 
+// The same code written the other way, with or without its middle dash: the join screen's two boxes send every code as
+// XXXX-XXXX, but a master code of 8 characters is stored without one (and someone may type an access code without it).
+function otherFormOfJoinKey(key: string): string {
+  if (/^[a-z0-9]{4}-[a-z0-9]{4}$/.test(key)) return key.replace("-", "");
+  if (/^[a-z0-9]{8}$/.test(key)) return `${key.slice(0, 4)}-${key.slice(4)}`;
+  return "";
+}
+
+// An access code that's just been used up, for telling whoever made it (app/api/company/join).
+export type UsedJoinCode = { createdByUid: string; code: string; label: string };
+function usedCodeFrom(record: JoinCodeRecord | null): UsedJoinCode | undefined {
+  return record?.createdByUid ? { createdByUid: record.createdByUid, code: record.code, label: record.label } : undefined;
+}
+
 // Joins a company with a code (master or temporary). A temporary code is used up by this join.
 export async function joinWithCode(
   db: Firestore,
   user: { uid: string; email: string; name: string },
   codeRaw: string,
-): Promise<{ ok: true; companyId: string } | { ok: false; error: string }> {
-  const key = joinCodeKeyFor(codeRaw);
-  if (!key) return { ok: false, error: "missing-code" };
-  const lookupRef = db.collection("companyJoinCodes").doc(key);
+): Promise<{ ok: true; companyId: string; usedCode?: UsedJoinCode } | { ok: false; error: string }> {
+  const typedKey = joinCodeKeyFor(codeRaw);
+  if (!typedKey) return { ok: false, error: "missing-code" };
   return db.runTransaction(async (tx) => {
-    const lookup = await tx.get(lookupRef);
+    // As typed, or else its other form.
+    let key = typedKey;
+    let lookupRef = db.collection("companyJoinCodes").doc(key);
+    let lookup = await tx.get(lookupRef);
+    const otherKey = otherFormOfJoinKey(typedKey);
+    if (!lookup.exists && otherKey) {
+      const otherRef = db.collection("companyJoinCodes").doc(otherKey);
+      const other = await tx.get(otherRef);
+      if (other.exists) {
+        key = otherKey;
+        lookupRef = otherRef;
+        lookup = other;
+      }
+    }
     const lookupData = (lookup.data() ?? {}) as Record<string, unknown>;
     const companyId = toStr(lookupData.companyId);
     if (!lookup.exists || !companyId || lookupData.active === false) return { ok: false as const, error: "no-such-code" };
@@ -403,6 +429,7 @@ export async function joinWithCode(
       );
       // An invite's code: joining with it accepts the invite.
       if (record?.inviteId) tx.delete(companyRef.collection("invites").doc(record.inviteId));
+      return { ok: true as const, companyId, usedCode: usedCodeFrom(record) };
     }
     return { ok: true as const, companyId };
   });
@@ -414,7 +441,7 @@ export async function joinWithInvite(
   user: { uid: string; email: string; name: string },
   companyId: string,
   inviteId: string,
-): Promise<{ ok: true; companyId: string } | { ok: false; error: string }> {
+): Promise<{ ok: true; companyId: string; usedCode?: UsedJoinCode } | { ok: false; error: string }> {
   if (!companyId || !inviteId || !user.email) return { ok: false, error: "missing-invite" };
   const companyRef = db.collection("companies").doc(companyId);
   const inviteRef = companyRef.collection("invites").doc(inviteId);
@@ -469,6 +496,7 @@ export async function joinWithInvite(
         { status: "used", usedByUid: user.uid, usedByName: user.name || user.email, usedByEmail: user.email, usedAtIso: nowIso },
         { merge: true },
       );
+      return { ok: true as const, companyId, usedCode: usedCodeFrom(recordFrom(linkedCode.id, (linkedCode.data() ?? {}) as Record<string, unknown>)) };
     }
     return { ok: true as const, companyId };
   });

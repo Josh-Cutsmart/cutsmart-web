@@ -107,6 +107,7 @@ import {
   saveProjectStatsContribution,
   saveGridVersion,
   saveProductComparison,
+  applyContactCardToProject,
   applyProjectClientDetailsToContact,
   createOrAttachManualCompanyClient,
   findCompanyClientForProject,
@@ -187,6 +188,7 @@ import { CutlistShapeThumbnail } from "@/components/cutlist-shape-thumbnail";
 import { CutlistCabinetPlanDrawing, CutlistCabinetPlanThumbnail, CutlistShapeDetail, CutlistShapeDrawing } from "@/components/cutlist-shape-drawing";
 import { shapeDrawingBlock, shapeDrawingOps, shapeDrawingOpsPngDataUrl, shapeDrawingPngDataUrl, shapeOutlinePolyline, type ShapeDrawing } from "@/lib/cutlist-shape-render";
 import { formatLacquerSqm, LACQUER_EDGE_THICKNESS_MM, lacquerPieceAreaMm2, lacquerSidesForProductType, mm2ToM2, type LacquerSides } from "@/lib/lacquer-area";
+import { completedStatusMatcher } from "@/lib/project-archive";
 import { isProjectArchived, projectArchivedAtIso, PROJECTS_ARCHIVED_EVENT, type ProjectsArchivedDetail } from "@/lib/project-archive";
 import { Skeleton, SkeletonGroup, SkeletonLines, SkeletonRows } from "@/components/skeleton";
 import { EmptyState } from "@/components/empty-state";
@@ -22407,6 +22409,7 @@ export default function ProjectDetailsPage() {
   // false when the card shown is only derived from this project (no saved card to link or update).
   const [projectContactPersisted, setProjectContactPersisted] = useState(false);
   const [projectContactTick, setProjectContactTick] = useState(0);
+  const contactCardCheckedRef = useRef(new Set<string>());
   const [isCreatingProjectContact, setIsCreatingProjectContact] = useState(false);
   const [createProjectContactError, setCreateProjectContactError] = useState("");
   const projectContactCompanyId = String(project?.companyId || "").trim();
@@ -22422,6 +22425,21 @@ export default function ProjectDetailsPage() {
     })
       .then((result) => {
         if (cancelled) return;
+        // The contact card has the last word on an active project's client details (name, email, phone and address): one
+        // that's out of step (an edit to the card that never reached it, say) is brought into line as it's opened, whoever
+        // opens it. Once each time it's opened, so a change made here isn't undone before it's reached the card. Not an
+        // archived or completed project: those are past jobs, left as they were.
+        const isActiveProject =
+          !isProjectArchived(project) &&
+          !completedStatusMatcher((companyDoc as Record<string, unknown> | null)?.projectStatuses)(project.statusLabel);
+        if (result?.persisted && isActiveProject && !isEditingClientDetails && !contactCardCheckedRef.current.has(project.id)) {
+          contactCardCheckedRef.current.add(project.id);
+          void applyContactCardToProject(project, result.contact, String(user?.displayName || user?.email || "Staff").trim() || "Staff").then((changed) => {
+            if (changed && Object.keys(changed).length) {
+              setProject((prev) => (prev && prev.id === project.id ? { ...prev, ...changed } : prev));
+            }
+          });
+        }
         // A card they aren't shown: left alone, and no Create Contact, as the client already has one.
         if (result?.hidden) {
           setProjectContact(undefined);

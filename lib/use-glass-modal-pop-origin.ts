@@ -19,6 +19,24 @@ export function captureGlassModalOrigin(e: ReactMouseEvent<HTMLElement>): GlassM
 // carrying the `.glass-modal-backdrop` class) fades in/out in lockstep.
 export type GlassModalPopOriginOptions = { duration?: number; easing?: string; closingEasing?: string };
 
+// On a phone a pop-up is a sheet (app/globals.css): it comes up from the bottom by itself (a CSS animation), and this just
+// sends it back down, rather than either growing out of the button or shrinking into it. `translate`, as the swipe down to
+// close moves it (components/modal-swipe-to-close.tsx), so a sheet swiped part way carries on from there.
+const SHEET_CLOSE_MS = 240;
+function isPhoneSheet(): boolean {
+  return window.matchMedia("(max-width: 639.98px)").matches;
+}
+function slideSheetDown(panel: HTMLElement, done: () => void): () => void {
+  // (The sheet itself: a pop-up's ref can be on a wrapper round it, as a lead's is, its side cards hidden on a phone.)
+  const sheet = panel.classList.contains("glass-modal-panel")
+    ? panel
+    : Array.from(panel.querySelectorAll<HTMLElement>(".glass-modal-panel")).find((el) => el.getClientRects().length > 0) ?? panel;
+  sheet.style.transition = `translate ${SHEET_CLOSE_MS}ms cubic-bezier(0.32, 0, 0.67, 0)`;
+  sheet.style.translate = "0 100%";
+  const timeout = window.setTimeout(done, SHEET_CLOSE_MS);
+  return () => window.clearTimeout(timeout);
+}
+
 function findGlassModalBackdrop(panel: HTMLElement): HTMLElement | null {
   const parent = panel.parentElement;
   if (!parent) return null;
@@ -293,6 +311,12 @@ export function useGlassModalPopOrigin(
         backdrop.style.transition = "";
         backdrop.style.opacity = "";
       }
+      if (isPhoneSheet()) {
+        // (Opened again as it was going down: back up.)
+        panel.style.transition = "";
+        panel.style.translate = "";
+        return;
+      }
       if (!activeOrigin) return;
       const panelRect = panel.getBoundingClientRect();
       const originCenterX = activeOrigin.left + activeOrigin.width / 2;
@@ -324,9 +348,10 @@ export function useGlassModalPopOrigin(
     // and fade the backdrop, then actually stop rendering once both finish.
     const backdrop = findGlassModalBackdrop(panel);
     if (backdrop) {
-      backdrop.style.transition = `opacity ${duration}ms ease`;
+      backdrop.style.transition = `opacity ${isPhoneSheet() ? SHEET_CLOSE_MS : duration}ms ease`;
       backdrop.style.opacity = "0";
     }
+    if (isPhoneSheet()) return slideSheetDown(panel, () => setShouldRender(false));
     if (!activeOrigin) {
       panel.style.transition = `opacity ${duration}ms ${closingEasing}`;
       panel.style.opacity = "0";
@@ -418,10 +443,11 @@ export function useGlassModalShrinkOnClose(
 
     const backdrop = findGlassModalBackdrop(panel);
     if (backdrop) {
-      backdrop.style.transition = `opacity ${duration}ms ease`;
+      backdrop.style.transition = `opacity ${isPhoneSheet() ? SHEET_CLOSE_MS : duration}ms ease`;
       backdrop.style.opacity = "0";
     }
 
+    if (isPhoneSheet()) return slideSheetDown(panel, () => setShouldRender(false));
     if (!origin) {
       panel.style.transition = `opacity ${duration}ms ${closingEasing}`;
       panel.style.opacity = "0";

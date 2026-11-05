@@ -4166,6 +4166,9 @@ export function KitchenDrawing({
 
   return (
     <div
+      // (A finger dragged on the drawing is working on it: never the phone's pull-down menu, which would also fade this
+      // screen's top bar — or a swipe open of the menu or Notifications.)
+      data-app-gesture-exempt="true"
       className="flex h-[100svh] flex-col bg-[var(--bg-app)]"
       onPointerDownCapture={() => {
         // (Whatever's about to change, the view stays where it is. Fit lets it go again.)
@@ -4186,11 +4189,25 @@ export function KitchenDrawing({
             ) : null;
           })()
         : null}
-      {/* The top bar, as the other Production screens'. */}
+      {/* The top bar, as the other Production screens' (CNC Cutlist's): its glass a fixed layer of its own, held steady, with
+          what's on it fixed over that, and room left for them above the toolbar. */}
+      <div
+        data-app-top-bar="true"
+        className="pointer-events-none fixed left-0 right-0 top-0 z-[90] h-[56px]"
+        style={{
+          backgroundColor: "var(--glass-bg-strong)",
+          backdropFilter: "blur(14px) saturate(220%)",
+          WebkitBackdropFilter: "blur(14px) saturate(220%)",
+          transform: "translateZ(0)",
+          WebkitTransform: "translateZ(0)",
+          willChange: "transform",
+        }}
+      />
+      <div aria-hidden="true" className="h-[56px] shrink-0" />
       <div
         data-app-top-bar-content="true"
-        className="flex h-[56px] shrink-0 items-center gap-3 px-3 md:px-5"
-        style={{ backgroundColor: "var(--glass-bg-strong)", backdropFilter: "blur(14px) saturate(220%)", WebkitBackdropFilter: "blur(14px) saturate(220%)", borderBottom: "1px solid var(--glass-border)" }}
+        className="fixed left-0 right-0 top-0 z-[100] flex h-[56px] items-center gap-3 px-3 md:px-5"
+        style={{ color: "var(--text-main)" }}
       >
         <div className="flex min-w-0 flex-1 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
           <Box size={15} className="shrink-0" />

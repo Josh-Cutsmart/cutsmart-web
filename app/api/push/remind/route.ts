@@ -9,7 +9,9 @@ import { NOTIFICATION_REMINDERS_COLLECTION } from "@/lib/push-server";
 // lib/firestore-data.ts).
 // Asking again for the same notification moves its reminder.
 
-const MIN_AHEAD_MS = 60 * 1000;
+// (The shortest reminder is a minute, already a little less by the time it gets here — a limit of a minute turned every
+// one of those away. This is only for one that's somehow already due.)
+const MIN_AHEAD_MS = 5 * 1000;
 const MAX_AHEAD_MS = 60 * 24 * 60 * 60 * 1000;
 
 export async function POST(request: NextRequest) {

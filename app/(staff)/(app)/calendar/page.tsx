@@ -2029,6 +2029,70 @@ function CalendarPageContent() {
     if (monthSettleTimerRef.current) window.clearTimeout(monthSettleTimerRef.current);
     monthSettleTimerRef.current = window.setTimeout(settleMonthScroller, 200);
   };
+  // Where the next or previous month starts in the scroller, from wherever it's resting (its snap rows, top to bottom).
+  const monthScrollTarget = (el: HTMLDivElement, dir: -1 | 1) => {
+    const current = el.scrollTop;
+    const elTop = el.getBoundingClientRect().top;
+    const tops = Array.from(el.querySelectorAll<HTMLElement>(":scope > .snap-start")).map(
+      (row) => current + row.getBoundingClientRect().top - elTop,
+    );
+    return dir > 0 ? tops.find((top) => top > current + 2) : [...tops].reverse().find((top) => top < current - 2);
+  };
+  // An event (or a project from the Schedule panel) dragged to the top or bottom of the month and held there: on to the
+  // month before or after, then a pause before the next — as a Kanban card held at the edge of the board moves it along.
+  const monthDragStepRef = useRef<(dir: -1 | 1) => void>(() => {});
+  useEffect(() => {
+    monthDragStepRef.current = (dir) => {
+      const el = monthScrollerRef.current;
+      if (!el) return;
+      const target = monthScrollTarget(el, dir);
+      if (target !== undefined) animateMonthScroll(el, target);
+    };
+  });
+  const isDraggingInMonth = view === "month" && Boolean(monthDragId || projectDragId);
+  useEffect(() => {
+    if (!isDraggingInMonth) return;
+    const EDGE_ZONE_PX = 40;
+    const HOLD_MS = 350;
+    // The glide's own 420ms, then the pause.
+    const NEXT_MONTH_MS = 420 + 1000;
+    let dir: -1 | 0 | 1 = 0;
+    let timer: number | null = null;
+    const stop = () => {
+      if (timer !== null) window.clearTimeout(timer);
+      timer = null;
+    };
+    const step = () => {
+      if (!dir) return;
+      monthDragStepRef.current(dir);
+      timer = window.setTimeout(step, NEXT_MONTH_MS);
+    };
+    const onDragOver = (event: DragEvent) => {
+      const el = monthScrollerRef.current;
+      if (!el) return;
+      const box = el.getBoundingClientRect();
+      // (Off to the side — over the Schedule panel, say — isn't the month's edge.)
+      const overMonth = event.clientX >= box.left && event.clientX <= box.right;
+      const next: -1 | 0 | 1 = !overMonth ? 0 : event.clientY <= box.top + EDGE_ZONE_PX ? -1 : event.clientY >= box.bottom - EDGE_ZONE_PX ? 1 : 0;
+      if (next === dir) return;
+      dir = next;
+      stop();
+      if (next) timer = window.setTimeout(step, HOLD_MS);
+    };
+    document.addEventListener("dragover", onDragOver);
+    return () => {
+      document.removeEventListener("dragover", onDragOver);
+      stop();
+    };
+  }, [isDraggingInMonth]);
+  // Moved far enough, the event's own chip is no longer among the months drawn — and a browser tells a removed element
+  // nothing when the drag ends. A mouse doesn't move during a drag, so its first move means it's over.
+  useEffect(() => {
+    if (!monthDragId) return;
+    window.addEventListener("mousemove", endDayDrag, { once: true });
+    return () => window.removeEventListener("mousemove", endDayDrag);
+  });
+
   // Mouse wheel / trackpad: exactly one month per gesture, smoothly — rather than leaving it to the
   // browser's snapping, which could run a fast wheel or a trackpad flick's momentum past several months.
   // The gesture's further wheel events (a flick keeps firing them for a moment) are ignored until it
@@ -2053,15 +2117,7 @@ function CalendarPageContent() {
       gesture.accumulated += e.deltaY;
       if (Math.abs(gesture.accumulated) < 24) return;
       gesture.locked = true;
-      // The month starts (snap rows) in the scroller, top to bottom; go to the next/previous one from
-      // wherever it's resting.
-      const current = el.scrollTop;
-      const elTop = el.getBoundingClientRect().top;
-      const tops = Array.from(el.querySelectorAll<HTMLElement>(":scope > .snap-start")).map(
-        (row) => current + row.getBoundingClientRect().top - elTop,
-      );
-      const target =
-        gesture.accumulated > 0 ? tops.find((top) => top > current + 2) : [...tops].reverse().find((top) => top < current - 2);
+      const target = monthScrollTarget(el, gesture.accumulated > 0 ? 1 : -1);
       if (target === undefined) return;
       animateMonthScroll(el, target);
     };

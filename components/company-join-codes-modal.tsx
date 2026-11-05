@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { GlassModalHeader } from "@/components/glass-modal-header";
-import { Check, Copy, Eye, EyeOff, KeyRound, Pencil, Plus, Search, Trash2 } from "lucide-react";
+import { Check, Copy, Eye, EyeOff, KeyRound, Plus, Search, Trash2 } from "lucide-react";
 import { glassFieldClass, primaryButtonClass, primaryButtonStyle, smallButtonClass } from "@/components/settings-ui";
 import { activeDateTime } from "@/lib/company-formats";
+import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { Skeleton, SkeletonGroup } from "@/components/skeleton";
 import { EmptyState } from "@/components/empty-state";
 import { useUndo } from "@/components/undo-bar";
@@ -37,12 +38,53 @@ const STATUS_STYLE: Record<string, { bg: string; fg: string }> = {
   revoked: { bg: "color-mix(in srgb, var(--text-main) 8%, transparent)", fg: "var(--text-muted)" },
 };
 
-function CopyButton({ value }: { value: string }) {
+// The buttons on a row of the list: low, so its rows can be.
+const ROW_BUTTON_CLASS = `${smallButtonClass} h-6! gap-1! rounded-[8px]! px-2! text-[11px]! font-medium!`;
+
+type CodeState = "waiting" | "used" | "revoked";
+const codeState = (record: JoinCodeRecord): CodeState => (record.status === "used" ? "used" : record.status === "revoked" ? "revoked" : "waiting");
+
+// A row's status, short: who used it, or that it's revoked or waiting. (Its dates are in its pop-up.)
+function codeStatusShort(record: JoinCodeRecord): string {
+  const state = codeState(record);
+  // (Their first name: there's little room, and their full name's in its pop-up.)
+  if (state === "used") return `Used by ${record.usedByName.split(/\s+/)[0] || record.usedByEmail || "someone"}`;
+  return state === "revoked" ? "Revoked" : "Not used yet";
+}
+
+// What a code's state means, in its pop-up.
+function codeStatusSentence(record: JoinCodeRecord): string {
+  const state = codeState(record);
+  if (state === "revoked") return "This code has been cancelled and can't be used to join.";
+  if (state === "used") return "This code has been used and can't be used again. Revoking it removes the person who joined with it.";
+  if (record.inviteId) return "Sent with an invite, and it's used up when they accept. They don't need to type it.";
+  return "Give this to one person to join your company with. It stops working once they've joined.";
+}
+
+// A date and how long ago: "Nov 5, 2026 | 8:39pm (3 days ago)".
+function whenText(iso: string): string {
+  const at = Date.parse(iso);
+  if (!Number.isFinite(at)) return "Not recorded";
+  const days = Math.floor((Date.now() - at) / 86_400_000);
+  const ago = days <= 0 ? "today" : days === 1 ? "yesterday" : `${days} days ago`;
+  return `${activeDateTime(iso)} (${ago})`;
+}
+
+function CodeFact({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <>
+      <dt className="font-medium" style={{ color: "var(--text-muted)" }}>{label}</dt>
+      <dd className="min-w-0 break-words font-medium" style={{ color: "var(--text-main)" }}>{children}</dd>
+    </>
+  );
+}
+
+function CopyButton({ value, className = smallButtonClass }: { value: string; className?: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <button
       type="button"
-      className={smallButtonClass}
+      className={className}
       onClick={() => {
         void navigator.clipboard?.writeText(value).then(() => {
           setCopied(true);
@@ -66,6 +108,7 @@ export function CompanyJoinCodesModal({
   onClose,
   onRevokeUsedCode,
   roleFor,
+  isStillMember,
 }: {
   companyId: string;
   companyName: string;
@@ -76,6 +119,7 @@ export function CompanyJoinCodesModal({
   onClose: () => void;
   onRevokeUsedCode: (record: JoinCodeRecord) => void;
   roleFor?: AccessCodeRoleLookup;
+  isStillMember?: (uid: string) => boolean | undefined;
 }) {
   const [showMaster, setShowMaster] = useState(false);
   const [changing, setChanging] = useState(false);
@@ -185,7 +229,7 @@ export function CompanyJoinCodesModal({
 
               <section className="space-y-2 border-t pt-4" style={{ borderColor: "var(--glass-border)" }}>
                 <p className="text-[15px] font-semibold" style={{ color: "var(--text-main)" }}>Access codes</p>
-                <AccessCodesList companyId={companyId} data={data} onReload={onReload} onRevokeUsedCode={onRevokeUsedCode} roleFor={roleFor} />
+                <AccessCodesList companyId={companyId} data={data} onReload={onReload} onRevokeUsedCode={onRevokeUsedCode} roleFor={roleFor} isStillMember={isStillMember} />
               </section>
               {error ? <p className="text-[12.5px] font-medium" style={{ color: "var(--danger)" }}>{error}</p> : null}
             </>
@@ -197,20 +241,24 @@ export function CompanyJoinCodesModal({
 }
 
 // The Access codes: one-person codes to join with (the server's "temporary" codes) — a new one made (who it's for, if
-// you like), each one's state (not used yet / who used it / revoked), copied, revoked (one already used: its person
-// removed too, by the page — onRevokeUsedCode) and, revoked, deleted. The Join key pop-up's, and Staff & Permissions'.
+// you like), each one's state (not used yet / who used it / revoked) and who made it, copied, revoked (one already used:
+// its person removed too, by the page — onRevokeUsedCode) and, revoked, deleted. A row opens that code's pop-up: everything
+// about it, and its name to change. The Join key pop-up's, and Staff & Permissions'.
 export function AccessCodesList({
   companyId,
   data,
   onReload,
   onRevokeUsedCode,
   roleFor,
+  isStillMember,
 }: {
   companyId: string;
   data: JoinCodesState | null;
   onReload: () => void;
   onRevokeUsedCode: (record: JoinCodeRecord) => void;
   roleFor?: AccessCodeRoleLookup;
+  // Whether someone's still in the company (undefined: not known yet).
+  isStillMember?: (uid: string) => boolean | undefined;
 }) {
   const [label, setLabel] = useState("");
   const [busy, setBusy] = useState("");
@@ -227,13 +275,13 @@ export function AccessCodesList({
   const [renaming, setRenaming] = useState<{ key: string; label: string } | null>(null);
   const [savedLabels, setSavedLabels] = useState<Record<string, string>>({});
   const labelOf = (record: JoinCodeRecord) => savedLabels[record.key] ?? record.label;
-  // Searched for: a code, its name, who it was sent to or who used it.
+  // Searched for: a code, its name, who made it, who it was sent to or who used it.
   const [query, setQuery] = useState("");
   const shownCodes = (() => {
     const q = query.trim().toLowerCase();
     if (!q) return temporaryCodes;
     return temporaryCodes.filter((row) =>
-      [row.code, labelOf(row), row.invitedEmail, row.usedByName, row.usedByEmail].some((value) => String(value ?? "").toLowerCase().includes(q)),
+      [row.code, labelOf(row), row.createdByName, row.invitedEmail, row.usedByName, row.usedByEmail].some((value) => String(value ?? "").toLowerCase().includes(q)),
     );
   })();
   // Its name saved (Enter, or clicking away) — unchanged, nothing's sent; couldn't be saved, it's back as it was, with why.
@@ -275,6 +323,7 @@ export function AccessCodesList({
 
   const revoke = async (record: JoinCodeRecord) => {
     if (record.status === "used") {
+      setDetailOpen(false);
       onRevokeUsedCode(record);
       return;
     }
@@ -307,6 +356,7 @@ export function AccessCodesList({
     }
     setConfirmDeleteKey("");
     setError("");
+    setDetailOpen(false);
     setHiddenKeys((prev) => [...prev, record.key]);
     const showAgain = () => setHiddenKeys((prev) => prev.filter((key) => key !== record.key));
     offerUndo(`Access code ${record.code} deleted`, showAgain, {
@@ -320,6 +370,62 @@ export function AccessCodesList({
         onReload();
       },
     });
+  };
+
+  // A code's pop-up: opens from its row, and goes back into it. (Its record kept while it closes, its code deleted or not.)
+  const [detailKey, setDetailKey] = useState("");
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailOrigin, setDetailOrigin] = useState<GlassModalOrigin>(null);
+  const detailPanelRef = useRef<HTMLDivElement | null>(null);
+  const shouldRenderDetail = useGlassModalPopOrigin(detailOpen, detailOrigin, detailPanelRef);
+  const detailRecord = (data?.codes ?? []).find((row) => row.key === detailKey) ?? null;
+  const openDetail = (record: JoinCodeRecord, event: ReactMouseEvent<HTMLElement>) => {
+    setDetailKey(record.key);
+    setDetailOrigin(captureGlassModalOrigin(event));
+    setConfirmRevokeKey("");
+    setConfirmDeleteKey("");
+    setError("");
+    setDetailOpen(true);
+  };
+  const closeDetail = () => setDetailOpen(false);
+  useEffect(() => {
+    if (!detailOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setDetailOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [detailOpen]);
+
+  // Revoke, Revoke & remove or Delete, as a code's state has it: on its row, and in its pop-up.
+  const renderCodeAction = (record: JoinCodeRecord, className: string) => {
+    const state = codeState(record);
+    const danger = { backgroundImage: "var(--danger-gradient)", color: "#fff", borderColor: "transparent" };
+    if (state === "revoked") {
+      return (
+        <button
+          type="button"
+          className={className}
+          disabled={busy === record.key}
+          onClick={() => remove(record)}
+          style={confirmDeleteKey === record.key ? danger : undefined}
+        >
+          <Trash2 size={12} />
+          {busy === record.key ? "Deleting…" : confirmDeleteKey === record.key ? "Delete code?" : "Delete"}
+        </button>
+      );
+    }
+    return (
+      <button
+        type="button"
+        className={className}
+        disabled={busy === record.key}
+        onClick={() => void revoke(record)}
+        style={confirmRevokeKey === record.key || state === "used" ? danger : undefined}
+      >
+        {busy === record.key ? "Revoking…" : confirmRevokeKey === record.key ? "Revoke code?" : state === "used" ? "Revoke & remove" : "Revoke"}
+      </button>
+    );
   };
 
   return (
@@ -378,123 +484,59 @@ export function AccessCodesList({
               </p>
             ) : null}
             {temporaryCodes.length ? (
-              // (Columns wider than a phone — Code | Name | Status | its buttons — every row a subgrid of the list's, so
-              // they line up, with headings over them. A phone: each row wraps as it needs.)
-              <div className="glass-scroll -mr-2 flex max-h-[380px] flex-col gap-1.5 overflow-y-auto pr-2 pt-1 sm:grid sm:grid-cols-[minmax(132px,auto)_minmax(0,1fr)_minmax(0,1fr)_auto] sm:content-start sm:gap-x-3">
+              // (Columns wider than a phone — Code | Name | Created by | Status | its buttons — every row a subgrid of the list's,
+              // so they line up, with headings over them. A phone: each row wraps as it needs.) A row opens its code's pop-up.
+              <div className="glass-scroll -mr-2 flex max-h-[380px] flex-col gap-1 overflow-y-auto pr-2 pt-1 sm:grid sm:grid-cols-[auto_minmax(0,1fr)_minmax(0,0.8fr)_minmax(0,1fr)_auto] sm:content-start sm:gap-x-3">
                 {shownCodes.length ? (
-                  <div className="hidden px-3 text-[11px] font-medium uppercase tracking-[0.6px] sm:col-span-4 sm:grid sm:grid-cols-subgrid" style={{ color: "var(--text-main)" }}>
+                  <div className="hidden px-3 text-[11px] font-medium uppercase tracking-[0.6px] sm:col-span-5 sm:grid sm:grid-cols-subgrid" style={{ color: "var(--text-main)" }}>
                     <span>Code</span>
                     <span>Name</span>
+                    <span>Created by</span>
                     <span>Status</span>
                     <span />
                   </div>
                 ) : null}
                 {shownCodes.map((record) => {
-                  const state = record.status === "used" ? "used" : record.status === "revoked" ? "revoked" : "waiting";
+                  const state = codeState(record);
                   const style = STATUS_STYLE[state];
-                  const statusText =
-                    state === "used"
-                      ? `Used by ${record.usedByName || record.usedByEmail || "someone"}${record.usedAtIso ? ` · ${activeDateTime(record.usedAtIso)}` : ""}`
-                      : state === "revoked"
-                        ? `Revoked${record.revokedAtIso ? ` · ${activeDateTime(record.revokedAtIso)}` : ""}`
-                        : "Not used yet";
-                  const role = record.roleId && roleFor ? roleFor(record.roleId) : null;
+                  const name = labelOf(record) || record.invitedEmail || "";
                   return (
                     <div
                       key={record.key}
-                      className="group/code flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-[12px] border px-3 py-2 sm:col-span-4 sm:grid sm:grid-cols-subgrid"
+                      onClick={(event) => openDetail(record, event)}
+                      className="flex cursor-pointer flex-wrap items-center gap-x-3 gap-y-1 rounded-[10px] border px-3 py-[3px] transition hover:bg-[var(--panel-muted)] sm:col-span-5 sm:grid sm:grid-cols-subgrid"
                       style={{ borderColor: "var(--glass-border)", opacity: state === "revoked" ? 0.65 : 1 }}
                     >
-                      {/* (The role they start in, if it has one: pointed at — there's no Role column.) */}
-                      <span className="font-mono text-[13.5px] font-semibold tracking-[1px]" style={{ color: "var(--text-main)" }} title={role ? `Starts as ${role.name}` : undefined}>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openDetail(record, event);
+                        }}
+                        aria-label={`Open access code ${record.code}`}
+                        className="text-left font-mono text-[12.5px] font-semibold tracking-[1px] hover:underline"
+                        style={{ color: "var(--text-main)" }}
+                      >
                         {record.code}
+                      </button>
+                      <span className="min-w-0 truncate text-[12.5px] font-medium" style={{ color: name ? "var(--text-main)" : "var(--text-muted)" }} title={name || undefined}>
+                        {name || "No name"}
                       </span>
-                      <span className="flex min-w-0 flex-col items-start">
-                      {/* Its name: click it to change it (the code itself stays). An invite's shows who it was sent to as well. */}
-                      {renaming?.key === record.key ? (
-                        <input
-                          value={renaming.label}
-                          onChange={(event) => setRenaming({ key: record.key, label: event.target.value })}
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter") {
-                              event.preventDefault();
-                              event.currentTarget.blur();
-                            } else if (event.key === "Escape") {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              setRenaming(null);
-                            }
-                          }}
-                          onBlur={() => void saveRename()}
-                          placeholder="Who's it for?"
-                          maxLength={80}
-                          aria-label={`Name for ${record.code}`}
-                          className={`${glassFieldClass} h-8! w-full min-w-[140px]`}
-                          autoFocus
-                          autoComplete="off"
-                          data-1p-ignore=""
-                          data-lpignore="true"
-                        />
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => setRenaming({ key: record.key, label: labelOf(record) })}
-                          className="group -ml-1.5 inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-[8px] px-1.5 py-0.5 text-[12.5px] font-medium transition hover:bg-[var(--panel-muted)]"
-                          style={{ color: labelOf(record) ? "var(--text-main)" : "var(--text-muted)" }}
-                          title="Rename"
-                        >
-                          <span className="truncate">{labelOf(record) || "Add a name"}</span>
-                          {/* (Only with the row pointed at, or the name focused — a touch screen, always: there's no pointing.) */}
-                          <Pencil size={12} className="shrink-0 opacity-0 transition group-hover/code:opacity-100 group-focus-visible:opacity-100 pointer-coarse:opacity-60" />
-                        </button>
-                      )}
-                      {record.inviteId ? (
-                        <span className="max-w-full truncate text-[11.5px] font-medium" style={{ color: "var(--text-muted)" }}>
-                          Invite · {record.invitedEmail}
-                        </span>
-                      ) : null}
+                      <span className="min-w-0 truncate text-[12.5px] font-medium" style={{ color: record.createdByName ? "var(--text-main)" : "var(--text-muted)" }} title={record.createdByName || undefined}>
+                        {record.createdByName || "Not recorded"}
                       </span>
                       <span className="min-w-0">
                         <span
-                          className="inline-block max-w-full truncate rounded-full px-2.5 py-0.5 align-middle text-[11.5px] font-semibold"
+                          className="inline-block max-w-full truncate rounded-full px-2 py-px align-middle text-[11px] font-medium"
                           style={{ backgroundColor: style.bg, color: style.fg }}
-                          title={statusText}
+                          title={codeStatusShort(record)}
                         >
-                          {statusText}
+                          {codeStatusShort(record)}
                         </span>
                       </span>
-                      <span className="ml-auto flex items-center justify-end gap-1.5">
-                        {state === "waiting" ? <CopyButton value={record.code} /> : null}
-                        {state !== "revoked" ? (
-                          <button
-                            type="button"
-                            className={smallButtonClass}
-                            disabled={busy === record.key}
-                            onClick={() => void revoke(record)}
-                            style={
-                              confirmRevokeKey === record.key || state === "used"
-                                ? { backgroundImage: "var(--danger-gradient)", color: "#fff", borderColor: "transparent" }
-                                : undefined
-                            }
-                          >
-                            {busy === record.key ? "Revoking…" : confirmRevokeKey === record.key ? "Revoke code?" : state === "used" ? "Revoke & remove" : "Revoke"}
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            className={smallButtonClass}
-                            disabled={busy === record.key}
-                            onClick={() => remove(record)}
-                            style={
-                              confirmDeleteKey === record.key
-                                ? { backgroundImage: "var(--danger-gradient)", color: "#fff", borderColor: "transparent" }
-                                : undefined
-                            }
-                          >
-                            <Trash2 size={13} />
-                            {busy === record.key ? "Deleting…" : confirmDeleteKey === record.key ? "Delete code?" : "Delete"}
-                          </button>
-                        )}
+                      <span className="ml-auto flex items-center justify-end gap-1" onClick={(event) => event.stopPropagation()}>
+                        {state === "waiting" ? <CopyButton value={record.code} className={ROW_BUTTON_CLASS} /> : null}
+                        {renderCodeAction(record, ROW_BUTTON_CLASS)}
                       </span>
                     </div>
                   );
@@ -504,6 +546,102 @@ export function AccessCodesList({
               <EmptyState compact icon={<KeyRound size={16} />} title="No access codes yet" hint="Codes you create show here, with who used them." />
             )}
       {error ? <p className="text-[12.5px] font-medium" style={{ color: "var(--danger)" }}>{error}</p> : null}
+      {shouldRenderDetail && detailRecord && typeof document !== "undefined"
+        ? createPortal(
+            <div className="fixed inset-0 z-[2147483646] flex items-center justify-center px-4">
+              <button type="button" aria-label="Close access code" onClick={closeDetail} className="glass-modal-backdrop absolute inset-0" />
+              <div
+                ref={detailPanelRef}
+                role="dialog"
+                aria-modal="true"
+                aria-label={`Access code ${detailRecord.code}`}
+                data-phone-keep-box="true"
+                className="glass-modal-panel relative z-[2147483647] flex max-h-[calc(100svh-32px)] w-[min(480px,96vw)] flex-col overflow-hidden"
+              >
+                <GlassModalHeader title="Access code" icon={<KeyRound />} onClose={closeDetail} />
+                {(() => {
+                  const record = detailRecord;
+                  const state = codeState(record);
+                  const style = STATUS_STYLE[state];
+                  const role = record.roleId && roleFor ? roleFor(record.roleId) : null;
+                  const stillHere = record.usedByUid && isStillMember ? isStillMember(record.usedByUid) : undefined;
+                  return (
+                    <>
+                      <div className="glass-scroll min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-mono text-[20px] font-semibold tracking-[1.5px]" style={{ color: "var(--text-main)" }}>
+                            {record.code}
+                          </span>
+                          <span className="rounded-full px-2.5 py-0.5 text-[11.5px] font-medium" style={{ backgroundColor: style.bg, color: style.fg }}>
+                            {state === "used" ? "Used" : state === "revoked" ? "Revoked" : "Not used yet"}
+                          </span>
+                          <span className="ml-auto">{state === "waiting" ? <CopyButton value={record.code} /> : null}</span>
+                        </div>
+                        <p className="text-[12.5px] font-medium leading-[1.5]" style={{ color: "var(--text-muted)" }}>
+                          {codeStatusSentence(record)}
+                        </p>
+                        <label className="block text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>
+                          Name
+                          <input
+                            value={renaming?.key === record.key ? renaming.label : labelOf(record)}
+                            onChange={(event) => setRenaming({ key: record.key, label: event.target.value })}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") {
+                                event.preventDefault();
+                                event.currentTarget.blur();
+                              } else if (event.key === "Escape") {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                setRenaming(null);
+                              }
+                            }}
+                            onBlur={() => void saveRename()}
+                            placeholder="Who's it for?"
+                            maxLength={80}
+                            className={`${glassFieldClass} mt-1`}
+                            autoComplete="off"
+                            data-1p-ignore=""
+                            data-lpignore="true"
+                          />
+                        </label>
+                        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-[13px]">
+                          <CodeFact label="Created by">{record.createdByName || "Not recorded"}</CodeFact>
+                          <CodeFact label="Created">{whenText(record.createdAtIso)}</CodeFact>
+                          <CodeFact label="How it was made">{record.inviteId ? "With an Add staff invite" : "Made by hand"}</CodeFact>
+                          {record.invitedEmail ? <CodeFact label="Invite sent to">{record.invitedEmail}</CodeFact> : null}
+                          <CodeFact label="Starts as">
+                            {role ? (
+                              <span className="inline-flex items-center gap-1.5">
+                                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: role.color }} />
+                                {role.name}
+                              </span>
+                            ) : (
+                              "Staff"
+                            )}
+                          </CodeFact>
+                          {state === "used" ? (
+                            <>
+                              <CodeFact label="Used by">{record.usedByName || record.usedByEmail || "Someone"}</CodeFact>
+                              {record.usedByEmail && record.usedByEmail !== record.usedByName ? <CodeFact label="Their email">{record.usedByEmail}</CodeFact> : null}
+                              <CodeFact label="Used">{whenText(record.usedAtIso)}</CodeFact>
+                              {stillHere !== undefined ? <CodeFact label="In the company">{stillHere ? "Yes, still here" : "No, they've left"}</CodeFact> : null}
+                            </>
+                          ) : null}
+                          {state === "revoked" ? <CodeFact label="Revoked">{whenText(record.revokedAtIso)}</CodeFact> : null}
+                        </dl>
+                        {error ? <p role="alert" className="text-[12.5px] font-medium" style={{ color: "var(--danger)" }}>{error}</p> : null}
+                      </div>
+                      <div className="flex items-center justify-end gap-2 border-t px-5 py-3" style={{ borderColor: "var(--glass-border)" }}>
+                        {renderCodeAction(record, smallButtonClass)}
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }

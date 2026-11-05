@@ -51,7 +51,7 @@ function readKeyboardInset(vv: VisualViewport): KeyboardInset {
 // keyboard (a full-screen pop-up's scroll area reaches down behind it).
 // A pop-up that reaches down behind the keyboard on a phone: a full-screen one (data-phone-fullscreen, and every pop-up
 // on a phone but those keeping their box), or a bottom sheet (data-phone-keep-box — the cutlist's) — see app/globals.css.
-const BEHIND_KEYBOARD_PANEL = '.glass-modal-panel[data-phone-fullscreen="true"], .glass-modal-panel[data-phone-keep-box="true"]';
+const BEHIND_KEYBOARD_PANEL = '.glass-modal-panel[data-phone-keep-box="true"]';
 
 function revealFocusedFieldInPanel(): void {
   const field = document.activeElement;
@@ -83,7 +83,7 @@ function revealFocusedFieldInPanel(): void {
 // keeping their box).
 function isPhoneFullscreenPanel(field: HTMLElement): boolean {
   const panel = field.closest<HTMLElement>(".glass-modal-panel");
-  return Boolean(panel) && panel!.dataset.phoneKeepBox !== "true" && window.matchMedia("(max-width: 639.98px)").matches;
+  return Boolean(panel) && panel!.dataset.phoneKeepBox !== "true" && panel!.dataset.phoneDrop !== "true" && window.matchMedia("(max-width: 639.98px)").matches;
 }
 
 // A notes box (data-keyboard-center — a lead's new note, a project's Notes cards) being typed in with the keyboard up:

@@ -203,6 +203,114 @@ function PinInput({
   );
 }
 
+const CODE_PART_LENGTH = 4;
+const cleanCodePart = (text: string) => text.toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+// The company code, as it's given out: XXXX-XXXX. Two boxes with a dash that can't be typed between them: the fourth character
+// moves on to the right box, and backspacing out of the right box carries on in the left. A whole code pasted into
+// either fills both. `value` is "LEFT-RIGHT".
+export function CompanyCodeBoxes({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const [visible, setVisible] = useState(false);
+  const leftRef = useRef<HTMLInputElement | null>(null);
+  const rightRef = useRef<HTMLInputElement | null>(null);
+  const [leftRaw = "", ...rest] = value.split("-");
+  const left = cleanCodePart(leftRaw);
+  const right = cleanCodePart(rest.join(""));
+  const send = (nextLeft: string, nextRight: string) => onChange(nextLeft || nextRight ? `${nextLeft}-${nextRight}` : "");
+  const focusAt = (input: HTMLInputElement | null, position: number) => {
+    if (!input) return;
+    input.focus();
+    // (After React has put the new text in.)
+    window.requestAnimationFrame(() => input.setSelectionRange(position, position));
+  };
+  const hide = { WebkitTextSecurity: visible ? "none" : "disc" } as CSSProperties;
+  return (
+    <div className="lg-field">
+      <span id="lg-company-code-label">Company code</span>
+      <div className="lg-code-boxes" role="group" aria-labelledby="lg-company-code-label">
+        <input
+          ref={leftRef}
+          className="lg-input lg-code-box"
+          type="text"
+          value={left}
+          placeholder="XXXX"
+          aria-label="Company code, first 4 characters"
+          style={hide}
+          {...NO_AUTOFILL}
+          autoCapitalize="characters"
+          onChange={(event) => {
+            const typed = cleanCodePart(event.target.value);
+            if (typed.length < CODE_PART_LENGTH) {
+              send(typed, right);
+              return;
+            }
+            // Full: on to the right box, with anything past the fourth character going in ahead of what's there.
+            const overflow = typed.slice(CODE_PART_LENGTH);
+            const nextRight = (overflow + right).slice(0, CODE_PART_LENGTH);
+            send(typed.slice(0, CODE_PART_LENGTH), nextRight);
+            if (event.target.selectionStart !== null && event.target.selectionStart >= CODE_PART_LENGTH) focusAt(rightRef.current, overflow.length);
+          }}
+          onPaste={(event) => {
+            const pasted = cleanCodePart(event.clipboardData.getData("text"));
+            if (pasted.length <= CODE_PART_LENGTH) return;
+            event.preventDefault();
+            send(pasted.slice(0, CODE_PART_LENGTH), pasted.slice(CODE_PART_LENGTH, CODE_PART_LENGTH * 2));
+            focusAt(rightRef.current, Math.min(pasted.length - CODE_PART_LENGTH, CODE_PART_LENGTH));
+          }}
+          onKeyDown={(event) => {
+            const input = event.currentTarget;
+            if (event.key === "ArrowRight" && input.selectionStart === left.length && input.selectionEnd === left.length) {
+              event.preventDefault();
+              focusAt(rightRef.current, 0);
+            }
+          }}
+        />
+        <span className="lg-code-dash" aria-hidden="true">
+          -
+        </span>
+        <div className="lg-input-wrap lg-code-right">
+          <input
+            ref={rightRef}
+            className="lg-input lg-code-box"
+            type="text"
+            value={right}
+            placeholder="XXXX"
+            aria-label="Company code, last 4 characters"
+            style={hide}
+            {...NO_AUTOFILL}
+            autoCapitalize="characters"
+            onChange={(event) => send(left, cleanCodePart(event.target.value).slice(0, CODE_PART_LENGTH))}
+            onPaste={(event) => {
+              const pasted = cleanCodePart(event.clipboardData.getData("text"));
+              if (pasted.length <= CODE_PART_LENGTH) return;
+              event.preventDefault();
+              send(pasted.slice(0, CODE_PART_LENGTH), pasted.slice(CODE_PART_LENGTH, CODE_PART_LENGTH * 2));
+              focusAt(rightRef.current, Math.min(pasted.length - CODE_PART_LENGTH, CODE_PART_LENGTH));
+            }}
+            onKeyDown={(event) => {
+              const input = event.currentTarget;
+              const atStart = input.selectionStart === 0 && input.selectionEnd === 0;
+              if (event.key === "Backspace" && atStart) {
+                // Out of the right box: carries on with the left box's last character.
+                event.preventDefault();
+                const nextLeft = left.slice(0, -1);
+                send(nextLeft, right);
+                focusAt(leftRef.current, nextLeft.length);
+              } else if (event.key === "ArrowLeft" && atStart) {
+                event.preventDefault();
+                focusAt(leftRef.current, left.length);
+              }
+            }}
+          />
+          <button type="button" className="lg-reveal" onClick={() => setVisible((v) => !v)} aria-label={visible ? "Hide company code" : "Show company code"}>
+            {visible ? <EyeOff size={17} /> : <Eye size={17} />}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Tells browsers and password managers to leave a field alone — no saved logins or addresses filled in.
 const NO_AUTOFILL = {
   autoComplete: "off",
@@ -304,6 +412,7 @@ export function LoginScreen() {
   const [confirmDeclineId, setConfirmDeclineId] = useState("");
   const [joinCode, setJoinCode] = useState("");
   const [companyName, setCompanyName] = useState("");
+  const [joinWithMaster, setJoinWithMaster] = useState(false);
   const [companyCode, setCompanyCode] = useState("");
   const [companyCodeConfirm, setCompanyCodeConfirm] = useState("");
 
@@ -646,6 +755,10 @@ export function LoginScreen() {
     if (!user?.uid) return;
     if (!joinCode.trim()) {
       setError("Enter your company code.");
+      return;
+    }
+    if (!joinWithMaster && !/^[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(joinCode)) {
+      setError("Enter all 8 characters of your company code.");
       return;
     }
     setBusy(true);
@@ -1063,7 +1176,29 @@ export function LoginScreen() {
         return (
           <form onSubmit={(event) => void onJoin(event)} noValidate autoComplete="off">
             {title("Join a company", "Enter the code your admin gave you")}
-            <PasswordField label="Company code" value={joinCode} onChange={setJoinCode} placeholder="The code from your admin" companyCode />
+            {joinWithMaster ? (
+              <PasswordField label="Master code" value={joinCode} onChange={setJoinCode} placeholder="The company's master code" companyCode />
+            ) : (
+              <CompanyCodeBoxes
+                value={joinCode}
+                onChange={(next) => {
+                  setJoinCode(next);
+                  if (error) setError("");
+                }}
+              />
+            )}
+            {/* A master code can be any length, so it has one full box instead of the access code's two. */}
+            <button
+              type="button"
+              className="lg-link lg-code-switch"
+              onClick={() => {
+                setJoinWithMaster((master) => !master);
+                setJoinCode("");
+                setError("");
+              }}
+            >
+              {joinWithMaster ? "Access code" : "Master"}
+            </button>
             {errorLine}
             <button type="submit" className="lg-primary" disabled={busy}>
               {busy ? "Joining…" : "Join company"}

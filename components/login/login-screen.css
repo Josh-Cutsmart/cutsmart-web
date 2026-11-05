@@ -509,6 +509,47 @@ circle.lg-lead-dot-won[data-on] {
   padding-right: 48px;
 }
 
+.lg-code-boxes {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.lg-code-boxes .lg-code-box,
+.lg-input-wrap .lg-code-box {
+  padding: 0 36px;
+  text-align: center;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+}
+
+.lg-code-box::placeholder {
+  font-weight: 500;
+  letter-spacing: 0.18em;
+}
+
+.lg-link.lg-code-switch {
+  display: flex;
+  width: fit-content;
+  height: 30px;
+  margin: 8px 0 0 auto;
+  padding: 0 12px;
+  border: 1px solid var(--lg-field-border);
+  border-radius: 999px;
+  background: var(--lg-field-bg);
+  font-size: 12px;
+  color: var(--text-main);
+}
+
+.lg-code-dash {
+  flex-shrink: 0;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text-muted);
+  user-select: none;
+}
+
 .lg-reveal {
   position: absolute;
   top: 50%;

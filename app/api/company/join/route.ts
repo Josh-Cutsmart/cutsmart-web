@@ -2,11 +2,14 @@ import { NextResponse, type NextRequest } from "next/server";
 import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
 import { verifyBearerUser } from "@/lib/api-auth";
 import { joinWithCode, joinWithInvite } from "@/lib/company-join-codes-server";
+import { addNotificationAndPush } from "@/lib/push-server";
 
 // Joining a company — the last step of signing up (components/login/login-screen.tsx), done here so
 // a temporary code can be used up as it's used (lib/company-join-codes-server.ts).
 // POST { code } — with a join code (master or temporary).
 // POST { inviteCompanyId, inviteId } — accepting an invite sent to this account's email.
+// An access code used up by either: whoever made it is told who joined with it (if they're still in the company, and it
+// wasn't them).
 
 function toStr(v: unknown): string {
   return String(v ?? "").trim();
@@ -25,5 +28,20 @@ export async function POST(request: NextRequest) {
   const result = toStr(body.inviteId)
     ? await joinWithInvite(adminDb, user, toStr(body.inviteCompanyId), toStr(body.inviteId))
     : await joinWithCode(adminDb, user, toStr(body.code));
-  return NextResponse.json(result, { status: result.ok ? 200 : 404 });
+  if (!result.ok) return NextResponse.json(result, { status: 404 });
+  const { usedCode, companyId } = result;
+  if (usedCode && usedCode.createdByUid !== user.uid) {
+    const company = adminDb.collection("companies").doc(companyId);
+    const creatorStillHere = (await company.collection("memberships").doc(usedCode.createdByUid).get().catch(() => null))?.exists;
+    if (creatorStillHere) {
+      const who = user.name || user.email || "Someone";
+      const named = usedCode.label ? ` (${usedCode.label})` : "";
+      await addNotificationAndPush(
+        usedCode.createdByUid,
+        { title: "Access code used", message: `${who} joined with your access code ${usedCode.code}${named}.`, type: "access_code_used", companyId },
+        new URL(request.url).origin,
+      );
+    }
+  }
+  return NextResponse.json({ ok: true, companyId });
 }

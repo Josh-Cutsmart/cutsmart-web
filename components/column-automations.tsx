@@ -984,17 +984,17 @@ function ColumnAutomationModal({
         role="dialog"
         aria-modal="true"
         aria-label={`Automate ${column}`}
-        // A phone: the whole screen (as the other pop-ups — data-phone-fullscreen, app/globals.css). A big screen: wide
+        // A phone: the whole screen (as the other pop-ups — data-phone-keep-box, app/globals.css). A big screen: wide
         // enough for each automation's sentence on one line.
-        data-phone-fullscreen="true"
-        className="glass-modal-panel relative flex h-full w-full flex-col overflow-hidden max-sm:rounded-none! max-sm:border-0! sm:h-auto sm:max-h-[min(760px,92vh)] sm:w-[min(680px,96vw)] lg:w-[min(1000px,94vw)]"
+        data-phone-keep-box="true"
+        className="glass-modal-panel relative flex w-full flex-col overflow-hidden sm:h-auto sm:max-h-[min(760px,92vh)] sm:w-[min(680px,96vw)] lg:w-[min(1000px,94vw)]"
       >
         {/* Themed by its column's colour, as the calendar's event pop-up is by its category's: a wash of it over the glass,
             behind everything in the pop-up (lib/popup-tint.ts). */}
         <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10" style={popupTintStyle(target.color)} />
         {/* As every pop-up's header (GlassModalHeader — the Schedule pop-up's): 56px, its icon and title in 14px bold
             capitals — the column it's for beside it; on a phone, under the notch. */}
-        <div className="glass-modal-header flex h-[56px] shrink-0 items-center gap-3 px-5 max-sm:h-[calc(56px+env(safe-area-inset-top))] max-sm:pt-[env(safe-area-inset-top)]">
+        <div className="glass-modal-header flex h-[56px] shrink-0 items-center gap-3 px-5">
           <div className="flex min-w-0 flex-1 items-center gap-2 text-[var(--text-main)]">
             <Zap size={16} className="shrink-0" />
             <p className="shrink-0 text-[14px] font-bold uppercase tracking-[1px]">Automate</p>
@@ -1398,7 +1398,7 @@ function ColumnAutomationModal({
             </span>
           </button>
         </div>
-        <div className="flex items-center gap-2 border-t border-[var(--glass-border)] px-5 py-3 max-sm:pb-[calc(12px+env(safe-area-inset-bottom))]">
+        <div className="flex items-center gap-2 border-t border-[var(--glass-border)] px-5 py-3">
           {/* (No Cancel: the X up in its header closes it.) */}
           <p className="min-w-0 flex-1 truncate text-[12px] font-medium text-[var(--danger)]">{error}</p>
           <button

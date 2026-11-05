@@ -144,6 +144,8 @@ const NOTIF_TYPE_ICONS: Record<string, LucideIcon> = {
   // a new version: an update (arrows in a circle); a role (Company Settings > Roles)
   app_version: RefreshCw,
   role_change: Shield,
+  // Company Settings > Staff & Permissions > Access codes
+  access_code_used: KeyRound,
 };
 // — or, for a kind not listed there, its category's (the same icons as User Settings > Notifications).
 const NOTIF_CATEGORY_ICONS: Record<string, LucideIcon> = {
@@ -1868,6 +1870,8 @@ export function GlobalAppTabsBar() {
       openWhatsNew(appVersionFromNotifTitle(row.title));
     } else if (row.type === "calendar_reminder" && row.eventId) {
       router.push(`/calendar?event=${encodeURIComponent(row.eventId)}`);
+    } else if (row.type === "access_code_used") {
+      router.push("/company-settings?section=staff");
     } else if (row.projectId) {
       router.push(`/projects/${row.projectId}`);
     } else if (String(row.type || "").startsWith("lead_")) {

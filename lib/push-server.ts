@@ -251,7 +251,8 @@ export const NOTIFICATION_REMINDERS_COLLECTION = "notificationReminders";
 
 // Sends the reminders that are due — called by the scheduled job. Each one goes once (it's deleted as it's
 // claimed), and only if the notification is still there and still set to come back at that time (not
-// cleared, or moved to another time since).
+// cleared, or moved to another time since). They asked for this one by name, so it goes whatever their choice for that
+// kind of notification is, and isn't held for their time between notifications.
 export async function flushDueNotificationReminders(siteOrigin: string): Promise<number> {
   if (!adminDb) return 0;
   const db = adminDb;
@@ -280,7 +281,7 @@ export async function flushDueNotificationReminders(siteOrigin: string): Promise
         url: pushNotificationUrl(data),
         tag: reminder.notificationId,
       },
-      { type: String(data.type || ""), siteOrigin },
+      { type: String(data.type || ""), siteOrigin, skipChoices: true, skipQuiet: true },
     ).catch(() => undefined);
     sent += 1;
   }

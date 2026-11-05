@@ -233,7 +233,7 @@ export function LeadDetailsModal({
     <div className="glass-modal-backdrop fixed inset-0 z-[1600] flex items-center justify-center px-4 py-4 max-sm:p-0" onClick={onClose}>
       {/* The pop-up, with its Checklists on its left and its Notes on its right — panels of the same look (a wide enough
           screen; smaller, they're inside it, under its details): all three open and close together. */}
-      <div ref={panelRef} onClick={(e) => e.stopPropagation()} className="flex items-stretch gap-3 max-sm:h-full max-sm:w-full">
+      <div ref={panelRef} onClick={(e) => e.stopPropagation()} className="flex items-stretch gap-3">
         <aside className="glass-modal-panel relative isolate hidden min-h-[440px] w-[320px] shrink-0 overflow-hidden xl:block" aria-label="Lead checklists">
           <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10" style={tint} />
           <div className="absolute inset-0 flex flex-col">
@@ -247,15 +247,15 @@ export function LeadDetailsModal({
           role="dialog"
           aria-modal="true"
           aria-label="Lead"
-          data-phone-fullscreen="true"
-          className="glass-modal-panel relative isolate flex max-h-[min(720px,90vh)] w-[min(560px,96vw)] flex-col overflow-hidden max-sm:h-full max-sm:max-h-none max-sm:w-full max-sm:rounded-none! max-sm:border-0!"
+          data-phone-keep-box="true"
+          className="glass-modal-panel relative isolate flex max-h-[min(720px,90vh)] w-[min(560px,96vw)] flex-col overflow-hidden"
         >
           <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10" style={tint} />
-          <div className="relative shrink-0 px-5 pb-3 pt-5 max-sm:pt-[calc(1.25rem+env(safe-area-inset-top))]">
+          <div className="relative shrink-0 px-5 pb-3 pt-5">
             <button
               type="button"
               onClick={onClose}
-              className={`${modalCloseButtonClass} absolute right-3 top-3 max-sm:top-[calc(0.75rem+env(safe-area-inset-top))]`}
+              className={`${modalCloseButtonClass} absolute right-3 top-3`}
               aria-label="Close lead"
             >
               <X size={16} />

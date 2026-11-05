@@ -3179,6 +3179,8 @@ export default function CompanySettingsPage() {
     const name = roleNameById.get(key);
     return name ? { name, color: roleColorById.get(key) || "#7D99B3" } : null;
   };
+  // A used code's pop-up: whether the person who joined with it is still here (undefined: the staff list isn't in yet).
+  const accessCodeIsStillMember = (uid: string) => (staff.length ? staff.some((row) => toStr(row.uid) === toStr(uid)) : undefined);
   const addStaffEmailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(addStaffEmail.trim());
 
   const openAddStaff = () => {
@@ -5534,6 +5536,7 @@ export default function CompanySettingsPage() {
                       onClose={() => setJoinCodesOpen(false)}
                       onRevokeUsedCode={(record) => void revokeUsedJoinCode(record)}
                       roleFor={accessCodeRoleFor}
+                      isStillMember={accessCodeIsStillMember}
                     />
                   ) : null}
                   <Panel title="Brand" icon={Palette} description="How your company appears on quotes, documents and across the app.">
@@ -7016,6 +7019,7 @@ export default function CompanySettingsPage() {
                           onReload={() => setJoinCodesReloadTick((tick) => tick + 1)}
                           onRevokeUsedCode={(record) => void revokeUsedJoinCode(record)}
                           roleFor={accessCodeRoleFor}
+                      isStillMember={accessCodeIsStillMember}
                         />
                       ) : joinCodesError ? (
                         <p className="text-[13px] font-medium" style={{ color: "var(--danger)" }}>

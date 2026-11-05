@@ -86,6 +86,7 @@ export const PUSH_NOTIFICATION_CATEGORIES: readonly PushNotificationCategory[] =
     types: [
       { type: "app_version", label: "New versions", description: "CutSmart has been updated." },
       { type: "role_change", label: "Role changes", description: "Your role in the company changes." },
+      { type: "access_code_used", label: "Access code used", description: "Someone joins the company with an access code you made." },
       { type: OTHER_PUSH_NOTIFICATION_TYPE, label: "Everything else", description: "Any other notification." },
     ],
   },
@@ -148,6 +149,7 @@ export function pushNotificationUrl(input: { type?: unknown; projectId?: unknown
   const eventId = String(input.eventId ?? "").trim();
   if (String(input.type ?? "") === "calendar_reminder" && eventId) return `/calendar?event=${encodeURIComponent(eventId)}`;
   const projectId = String(input.projectId ?? "").trim();
+  if (String(input.type ?? "") === "access_code_used") return "/company-settings?section=staff";
   const unlockRequesterUid = String(input.unlockRequesterUid ?? "").trim();
   if (projectId && unlockRequesterUid) return productionUnlockRequestUrl(projectId, unlockRequesterUid);
   if (projectId) return `/projects/${encodeURIComponent(projectId)}`;
@@ -415,6 +417,7 @@ const PUSH_GROUP_PHRASES: Record<string, [string, string]> = {
   specs_pending: ["specification waiting on a client", "specifications waiting on clients"],
   app_version: ["new version", "new versions"],
   role_change: ["role change", "role changes"],
+  access_code_used: ["access code used", "access codes used"],
 };
 
 export function pushGroupPhrase(type: unknown, count: number): string {

@@ -5289,6 +5289,40 @@ async function applyClientDetailsToProjects(
   return failed;
 }
 
+// What a project's Client Details say differently from its contact card — only what the card actually has (a card with
+// no phone says nothing about the project's), and not just a different way of writing it.
+export function contactCardDifferences(project: Project, card: CompanyClientRow): Array<keyof ClientDetailsPatch> {
+  const out: Array<keyof ClientDetailsPatch> = [];
+  const cardEmail = normalizeClientEmail(card.emailNormalized || card.email);
+  if (cardEmail && cardEmail !== normalizeClientEmail(project.clientEmail)) out.push("email");
+  const cardPhone = normalizeClientPhone(card.phone);
+  if (cardPhone && cardPhone !== normalizeClientPhone(project.clientPhone)) out.push("phone");
+  const cardAddress = normalizeClientAddressKey(card.address);
+  if (cardAddress && cardAddress !== normalizeClientAddressKey(project.clientAddress)) out.push("address");
+  const cardName = normalizeClientNameKey(card.name);
+  if (cardName && cardName !== normalizeClientNameKey(project.customer)) out.push("name");
+  return out;
+}
+
+// "Use contact's details" (a project's Client Details): those differences put on this project, without moving its "last
+// updated", with a line in its changelog. The project's new fields, for its page; null if it couldn't be saved.
+export async function applyContactCardToProject(project: Project, card: CompanyClientRow, actorName?: string): Promise<Partial<Project> | null> {
+  const details: ClientDetailsPatch = {};
+  for (const field of contactCardDifferences(project, card)) details[field] = String(card[field] ?? "").trim();
+  const { patch, changes } = projectPatchFromClientDetails(project, details);
+  if (!Object.keys(patch).length) return {};
+  try {
+    const ref = await resolveProjectDocRef(project);
+    if (!ref) return null;
+    await updateDoc(ref, patch);
+    void addProjectChange(project.id, actorName || "Staff", `${changes.join(", ")} (from the contact card)`);
+    return patch as Partial<Project>;
+  } catch (error) {
+    console.warn("[applyContactCardToProject] project write failed:", project.id, error);
+    return null;
+  }
+}
+
 function clientDetailsCardPayload(patch: ClientDetailsPatch, nowIso: string): Record<string, unknown> {
   const payload: Record<string, unknown> = { updatedAt: serverTimestamp(), updatedAtIso: nowIso };
   if (typeof patch.name === "string") payload.name = patch.name;

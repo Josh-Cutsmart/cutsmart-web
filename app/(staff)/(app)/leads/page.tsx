@@ -4335,7 +4335,7 @@ export default function LeadsPage() {
         <div
           ref={leadDetailModalPanelRef}
           onClick={(e) => e.stopPropagation()}
-          className="flex items-stretch gap-3 max-sm:h-full max-sm:w-full"
+          className="flex items-stretch gap-3"
         >
         {/* Its Checklists: as tall as the pop-up (at least 440px), scrolling inside. */}
         <aside className="glass-modal-panel relative isolate hidden min-h-[440px] w-[320px] shrink-0 overflow-hidden xl:block" aria-label="Lead checklists">
@@ -4344,24 +4344,24 @@ export default function LeadsPage() {
         </aside>
         <div
           // On a phone it takes the whole screen, square-cornered (its top and bottom clear of the notch / home bar) —
-          // and stays that way with the keyboard up, the keyboard over its bottom (data-phone-fullscreen, app/globals.css).
+          // and stays that way with the keyboard up, the keyboard over its bottom (data-phone-keep-box, app/globals.css).
           // (As tall as the screen it's laid out on — not 100dvh, which stays the full height on a phone that shrinks the
           // page for its keyboard instead, leaving the pop-up's bottom, and the notes box, behind the keyboard.)
-          data-phone-fullscreen="true"
-          className="glass-modal-panel relative isolate flex max-h-[min(720px,90vh)] w-[min(560px,96vw)] flex-col overflow-hidden max-sm:h-full max-sm:max-h-none max-sm:w-full max-sm:rounded-none! max-sm:border-0!"
+          data-phone-keep-box="true"
+          className="glass-modal-panel relative isolate flex max-h-[min(720px,90vh)] w-[min(560px,96vw)] flex-col overflow-hidden"
         >
           {/* Its status's colour washed across it, the X alone in the top right corner, the lead's name with its status (a
               dropdown pill) beside it and when and where it came in under it; then ways to reach them, its photos, and its
               details — one see-through card, each answer beside its question. */}
           <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10" style={popupTint} />
-          <div className="relative shrink-0 px-5 pb-3 pt-5 max-sm:pt-[calc(1.25rem+env(safe-area-inset-top))]">
+          <div className="relative shrink-0 px-5 pb-3 pt-5">
             <button
               type="button"
               onClick={() => {
                 setSelectedLeadId("");
                 setLeadFieldEdit(null);
               }}
-              className={`${modalCloseButtonClass} absolute right-3 top-3 max-sm:top-[calc(0.75rem+env(safe-area-inset-top))]`}
+              className={`${modalCloseButtonClass} absolute right-3 top-3`}
               aria-label="Close lead details"
             >
               <X size={16} />
@@ -4610,7 +4610,7 @@ export default function LeadsPage() {
           </div>
           {/* Its buttons along the bottom, under its fields: Archive on its own at the left (red outline — it takes the lead
               off the board), then Photos, who it's assigned to, and Create Project at the right. */}
-          <div className="flex shrink-0 flex-wrap items-center gap-2 border-t px-5 py-4 max-sm:pb-[calc(1rem+env(safe-area-inset-bottom))]" style={{ borderTopColor: "var(--glass-border)" }}>
+          <div className="flex shrink-0 flex-wrap items-center gap-2 border-t px-5 py-4" style={{ borderTopColor: "var(--glass-border)" }}>
             <button
               type="button"
               onClick={(e) => {
@@ -5634,11 +5634,11 @@ export default function LeadsPage() {
                 <button type="button" aria-label="Close create lead" onClick={closeLeadFormModal} className="glass-modal-backdrop absolute inset-0" />
                 <div
                   ref={leadFormModalPanelRef}
-                  // As the lead pop-up: the whole screen on a phone, keyboard up or not (data-phone-fullscreen, app/globals.css).
-                  data-phone-fullscreen="true"
-                  className="glass-modal-panel relative flex h-full w-full flex-col overflow-hidden max-sm:rounded-none! max-sm:border-0! sm:h-auto sm:max-h-[min(860px,92vh)] sm:w-[min(600px,96vw)]"
+                  // As the lead pop-up: the whole screen on a phone, keyboard up or not (data-phone-keep-box, app/globals.css).
+                  data-phone-keep-box="true"
+                  className="glass-modal-panel relative flex w-full flex-col overflow-hidden sm:h-auto sm:max-h-[min(860px,92vh)] sm:w-[min(600px,96vw)]"
                 >
-                  <div className="flex shrink-0 items-center gap-2 px-5 pb-3 pt-4 max-sm:pt-[calc(16px+env(safe-area-inset-top))]">
+                  <div className="flex shrink-0 items-center gap-2 px-5 pb-3 pt-4">
                     <h2 className="min-w-0 flex-1 truncate text-[20px] font-semibold" style={{ color: "var(--text-main)" }}>
                       Create Lead
                     </h2>
@@ -5722,7 +5722,7 @@ export default function LeadsPage() {
                         />
                       </div>
                       <div
-                        className="flex shrink-0 items-center gap-2 border-t px-5 py-3 max-sm:pb-[calc(12px+env(safe-area-inset-bottom))]"
+                        className="flex shrink-0 items-center gap-2 border-t px-5 py-3"
                         style={{ borderColor: "var(--glass-border)" }}
                       >
                         <p className="min-w-0 flex-1 text-[12.5px] font-medium" style={{ color: "var(--danger)" }}>

@@ -115,10 +115,10 @@ export function ProjectAccessModal({
         role="dialog"
         aria-modal="true"
         aria-label={`Project Permissions — ${given.name || "Project"}`}
-        data-phone-fullscreen="true"
-        className="glass-modal-panel relative z-[2147483647] flex h-full w-full flex-col overflow-hidden max-sm:rounded-none! max-sm:border-0! sm:h-auto sm:max-h-[92vh] sm:w-[min(1000px,94vw)]"
+        data-phone-keep-box="true"
+        className="glass-modal-panel relative z-[2147483647] flex w-full flex-col overflow-hidden sm:h-auto sm:max-h-[92vh] sm:w-[min(1000px,94vw)]"
       >
-        <GlassModalHeader title="Project Permissions" icon={<ShieldCheck />} onClose={onClose} className="max-sm:h-[calc(56px+env(safe-area-inset-top))] max-sm:pt-[env(safe-area-inset-top)]">
+        <GlassModalHeader title="Project Permissions" icon={<ShieldCheck />} onClose={onClose} className="max-sm:h-[calc(56px+env(safe-area-inset-top))]">
           {!canEdit ? (
             <span className="inline-flex items-center gap-1 text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>
               <Eye size={13} />

@@ -294,16 +294,17 @@ export function GlobalSearch({ pages, canOpenSettings }: { pages: GlobalSearchPa
         className="glass-modal-backdrop absolute inset-0 transition-opacity duration-200"
         style={{ opacity: shown ? 1 : 0 }}
       />
-      {/* Drops down from the very top of the screen, its top square to it (on a phone: the whole screen does). */}
+      {/* Drops down from the very top of the screen, its top square to it, on a phone too (the one pop-up there that isn't a sheet up from the bottom — data-phone-drop, app/globals.css). */}
       <div
-        className="pointer-events-none absolute inset-x-0 top-0 flex justify-center px-4 transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none max-sm:bottom-0 max-sm:p-0"
+        className="pointer-events-none absolute inset-x-0 top-0 flex justify-center px-4 transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none max-sm:p-0"
         style={{ transform: shown ? "translateY(0)" : "translateY(calc(-100% - 24px))" }}
       >
         <div
           role="dialog"
           aria-modal="true"
           aria-label="Search"
-          className="glass-modal-panel pointer-events-auto relative flex w-full max-w-[680px] flex-col overflow-hidden"
+          data-phone-drop="true"
+          className="glass-modal-panel pointer-events-auto max-sm:pt-[env(safe-area-inset-top)] relative flex w-full max-w-[680px] flex-col overflow-hidden"
           style={{ maxHeight: "min(640px, calc(100dvh - 12px))", borderTopLeftRadius: 0, borderTopRightRadius: 0, borderTopWidth: 0 }}
         >
           <div className="flex h-[56px] shrink-0 items-center gap-3 border-b px-4" style={{ borderColor: "var(--glass-border)" }}>

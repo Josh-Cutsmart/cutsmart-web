@@ -4697,10 +4697,10 @@ export function AppShell({
             role="dialog"
             aria-modal="true"
             aria-label={newProjectIsSmallJob ? "New Small Job" : "New Project"}
-            // A phone: the whole screen, keyboard up or not (as Leads' lead pop-up — data-phone-fullscreen, app/globals.css).
+            // A phone: the whole screen, keyboard up or not (as Leads' lead pop-up — data-phone-keep-box, app/globals.css).
             // Bigger: room for its cards side by side without scrolling (still within the screen's edges).
-            data-phone-fullscreen="true"
-            className="glass-modal-panel relative flex h-full w-full flex-col overflow-hidden max-sm:rounded-none! max-sm:border-0! sm:h-[min(880px,calc(100dvh_-_16px))] sm:w-[min(1160px,calc(100vw_-_16px))]"
+            data-phone-keep-box="true"
+            className="glass-modal-panel relative flex w-full flex-col overflow-hidden sm:h-[min(880px,calc(100dvh_-_16px))] sm:w-[min(1160px,calc(100vw_-_16px))]"
             onKeyDown={(e) => {
               if (e.key !== "Enter" || !(e.ctrlKey || e.metaKey)) return;
               e.preventDefault();
@@ -4709,7 +4709,7 @@ export function AppShell({
           >
             {/* As every pop-up's header (GlassModalHeader — the Schedule pop-up's): 56px, its icon and title in 14px bold
                 capitals; on a phone, under the notch. */}
-            <div className="glass-modal-header flex h-[56px] shrink-0 items-center gap-3 px-5 max-sm:h-[calc(56px+env(safe-area-inset-top))] max-sm:pt-[env(safe-area-inset-top)]">
+            <div className="glass-modal-header flex h-[56px] shrink-0 items-center gap-3 px-5">
               <div className="flex min-w-0 flex-1 items-center gap-2 text-[var(--text-main)]">
                 {newProjectIsSmallJob ? <Hammer size={16} className="shrink-0" /> : <FolderPlus size={16} className="shrink-0" />}
                 <p className="min-w-0 truncate text-[14px] font-bold uppercase tracking-[1px]">{newProjectIsSmallJob ? "New Small Job" : "New Project"}</p>
@@ -5490,7 +5490,7 @@ export function AppShell({
                   document.body,
                 )
               : null}
-            <div className="flex items-center gap-2 border-t border-[var(--glass-border)] px-4 py-3 max-sm:pb-[calc(12px+env(safe-area-inset-bottom))] sm:px-6 sm:py-4">
+            <div className="flex items-center gap-2 border-t border-[var(--glass-border)] px-4 py-3 sm:px-6 sm:py-4">
               {/* Where it'll start (its first status, and where) — or what's stopped it being created. */}
               <div className="min-w-0 flex-1">
                 {projectFormError && !newProjectInvalidField ? (
