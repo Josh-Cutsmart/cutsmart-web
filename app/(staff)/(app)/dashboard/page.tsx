@@ -37,6 +37,7 @@ import {
   type BoardCardSortInfo,
   type BoardSortMode,
 } from "@/lib/board-drop-order";
+import { stayStartedAtIso } from "@/lib/column-automations";
 import { BoardColumnSortMenu, BoardSortButton } from "@/components/board-sort-menu";
 import { readBoardSortPrefs, saveBoardSortPrefs } from "@/lib/board-sort-prefs";
 import { REOPEN_APP_TAB_SCOPE_EVENT, useAppTabs } from "@/lib/app-tabs-context";
@@ -147,13 +148,25 @@ function subStageSortKey(statusName: string, subStageName: string): string {
   return `${statusName} › ${subStageName}`;
 }
 
-function projectBoardSortInfo(project: Project): BoardCardSortInfo {
+// What a project is sorted by. When it came into its column is from its status history; moving between a column's
+// sub-stages isn't leaving the column. (A project from before that history was kept: its created date.)
+function projectSortInfoIn(project: Project, column: { status: string; subStage: string }): BoardCardSortInfo {
   const createdMs = Date.parse(String(project.createdAt || project.updatedAt || ""));
+  const dateMs = Number.isFinite(createdMs) ? createdMs : 0;
+  const enteredMs = Date.parse(stayStartedAtIso(column, project.statusHistory ?? []));
   return {
     key: boardSortKey(project.dashboardBoardOrder, project.createdAt || project.updatedAt),
-    dateMs: Number.isFinite(createdMs) ? createdMs : 0,
+    dateMs,
+    enteredMs: Number.isFinite(enteredMs) ? enteredMs : dateMs,
     name: String(project.name || ""),
   };
+}
+function projectBoardSortInfo(project: Project): BoardCardSortInfo {
+  return projectSortInfoIn(project, { status: String(project.statusLabel || ""), subStage: "" });
+}
+// On a column's sub-board: when it came into its sub-stage.
+function projectSubBoardSortInfo(project: Project): BoardCardSortInfo {
+  return projectSortInfoIn(project, { status: String(project.statusLabel || ""), subStage: String(project.dashboardSubStageId || "") });
 }
 function dashboardBoardPrefsStorageKey(uid: string) {
   return `${DASHBOARD_BOARD_PREFS_STORAGE_PREFIX}${String(uid || "").trim()}`;
@@ -1256,6 +1269,7 @@ export default function DashboardPage() {
                 dashboardSubStageId: previousSubStageId,
                 completedAtIso: project.completedAtIso,
                 dashboardBoardOrder: project.dashboardBoardOrder,
+                statusHistory: project.statusHistory,
               } as Project)
             : row,
         ),
@@ -1272,11 +1286,20 @@ export default function DashboardPage() {
     if (subStageUpdatingProjectId === project.id || !canEditProjectFromDashboard(project)) return;
     const previousSubStage = String((project as unknown as Record<string, unknown>).dashboardSubStageId ?? "");
     const orderPatch = boardOrder !== undefined ? { dashboardBoardOrder: boardOrder } : {};
+    const nowIso = new Date().toISOString();
+    const movedSubStage = subStageName.trim().toLowerCase() !== previousSubStage.trim().toLowerCase();
     setSubStageUpdatingProjectId(project.id);
     setAllProjects((prev) =>
       prev.map((row) =>
         row.id === project.id
-          ? ({ ...row, dashboardSubStageId: subStageName, updatedAt: new Date().toISOString(), ...orderPatch } as Project)
+          ? ({
+              ...row,
+              dashboardSubStageId: subStageName,
+              updatedAt: nowIso,
+              // Noted as the save does (updateProjectPatch), so a sub-board sorted by time in column has it right now.
+              ...(movedSubStage ? { statusHistory: [...(row.statusHistory ?? []), { status: row.statusLabel, subStage: subStageName, atIso: nowIso }] } : {}),
+              ...orderPatch,
+            } as Project)
           : row,
       ),
     );
@@ -1284,7 +1307,9 @@ export default function DashboardPage() {
     if (!ok) {
       setAllProjects((prev) =>
         prev.map((row) =>
-          row.id === project.id ? ({ ...row, dashboardSubStageId: previousSubStage, dashboardBoardOrder: project.dashboardBoardOrder } as Project) : row,
+          row.id === project.id
+            ? ({ ...row, dashboardSubStageId: previousSubStage, dashboardBoardOrder: project.dashboardBoardOrder, statusHistory: project.statusHistory } as Project)
+            : row,
         ),
       );
     }
@@ -1537,10 +1562,17 @@ export default function DashboardPage() {
     });
   // Where a dragged project lands in a column: the pointer's spot in a custom-order column, or where
   // the sort puts it in a sorted one (so its preview shows where it really goes).
-  const projectDropIndexFor = (mode: BoardSortMode, columnProjects: Project[], columnEl: Element, clientY: number, projectId: string): number => {
+  const projectDropIndexFor = (
+    mode: BoardSortMode,
+    columnProjects: Project[],
+    columnEl: Element,
+    clientY: number,
+    projectId: string,
+    sortInfo: (project: Project) => BoardCardSortInfo = projectBoardSortInfo,
+  ): number => {
     if (mode === "custom") return boardDropIndex(columnEl, clientY, projectId);
     const project = allProjects.find((row) => row.id === projectId);
-    return project ? sortedBoardDropIndex(columnProjects, project, mode, projectBoardSortInfo) : 0;
+    return project ? sortedBoardDropIndex(columnProjects, project, mode, sortInfo) : 0;
   };
   // The new place for a project dropped at dropIndex among a column's other cards — undefined when
   // the column is sorted (the sort places it) or it was dropped where it already is.
@@ -1577,7 +1609,7 @@ export default function DashboardPage() {
     // Each in its own order: the board-wide sort while one is set, else the sub-column's own.
     for (const col of columns) {
       const mode = projectBoardSort !== "custom" ? projectBoardSort : projectColumnSorts[subStageSortKey(openSubBoardColumnName, col.name)] ?? "custom";
-      col.projects = sortBoardCards(col.projects, mode, projectBoardSortInfo);
+      col.projects = sortBoardCards(col.projects, mode, projectSubBoardSortInfo);
     }
     return { columns };
   }, [dashboardStatusBoardColumns, openSubBoardColumnName, projectBoardSort, projectColumnSorts]);
@@ -2165,7 +2197,7 @@ export default function DashboardPage() {
               e.preventDefault();
               if (dragOverSubStageColumn !== col.key) setDragOverSubStageColumn(col.key);
               if (isCollapsed || !draggingSubStageProjectId) return;
-              const index = projectDropIndexFor(subSortMode, col.projects, e.currentTarget, e.clientY, draggingSubStageProjectId);
+              const index = projectDropIndexFor(subSortMode, col.projects, e.currentTarget, e.clientY, draggingSubStageProjectId, projectSubBoardSortInfo);
               setSubStageDropPreview((prev) => (prev && prev.column === col.key && prev.index === index ? prev : { column: col.key, index }));
             },
             onDragLeave: (e: ReactDragEvent<HTMLElement>) => {
@@ -2181,7 +2213,7 @@ export default function DashboardPage() {
                   ? null
                   : subStageDropPreview?.column === col.key
                     ? subStageDropPreview.index
-                    : projectDropIndexFor(subSortMode, col.projects, e.currentTarget, e.clientY, draggingSubStageProjectId || e.dataTransfer.getData("text/plain")),
+                    : projectDropIndexFor(subSortMode, col.projects, e.currentTarget, e.clientY, draggingSubStageProjectId || e.dataTransfer.getData("text/plain"), projectSubBoardSortInfo),
               ),
           };
           if (isCollapsed) {

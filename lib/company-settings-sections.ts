@@ -2,10 +2,10 @@
 // (plus key individual settings) and the section it's on. Used by the Company Settings page
 // (app/(staff)/(app)/company-settings/page.tsx) and the app's global search (components/global-search.tsx).
 import type React from "react";
-import { Building2, CalendarDays, CircleDollarSign, DatabaseBackup, Hammer, HardHat, Inbox, Layers3, LayoutDashboard, Link2, Package2, Users, Wrench } from "lucide-react";
+import { Building2, CalendarDays, CircleDollarSign, DatabaseBackup, Hammer, HardHat, Inbox, Layers3, LayoutDashboard, Link2, Package2, Users, Wrench, Zap } from "lucide-react";
 
 export type SettingsSection =
-  | "company" | "dashboard" | "smalljobs" | "calendar" | "leads" | "sales" | "production" | "nesting" | "materials"
+  | "company" | "dashboard" | "smalljobs" | "calendar" | "automations" | "leads" | "sales" | "production" | "nesting" | "materials"
   | "hardware" | "staff" | "integrations" | "backup";
 
 export const SETTINGS_SECTIONS: Array<{
@@ -21,6 +21,7 @@ export const SETTINGS_SECTIONS: Array<{
   // Same icon as the sidebar's Small Jobs item.
   { key: "smalljobs", label: "Small Jobs", group: "General", icon: Hammer, description: "The statuses your small jobs move through." },
   { key: "calendar", label: "Calendar", group: "General", icon: CalendarDays, description: "The categories events can belong to on the Calendar tab." },
+  { key: "automations", label: "Automations", group: "General", icon: Zap, description: "Every automation in the company, on the Dashboard's and Leads' columns." },
   { key: "leads", label: "Leads", group: "Sales", icon: Inbox, description: "Your lead forms, your leads email inbox and the statuses on your Leads board." },
   { key: "sales", label: "Sales", group: "Sales", icon: CircleDollarSign, description: "Quote & specs layouts, products, helpers and discounts." },
   { key: "production", label: "Production", group: "Workshop", icon: Wrench, description: "Cutlists, part types, gap allowances and production access." },
@@ -52,6 +53,7 @@ export const SETTINGS_SEARCH_INDEX: Array<{ section: SettingsSection; label: str
   { section: "calendar", card: "Workdays", label: "Workdays", keywords: "business days weekends" },
   { section: "calendar", card: "Workdays", label: "Show non-workdays", keywords: "hide weekends month week view" },
   { section: "calendar", card: "Public holidays", label: "Public holidays", keywords: "region anniversary day matariki labour christmas easter nz" },
+  { section: "automations", card: "Dashboard", label: "All automations", keywords: "automate rules notify email move assign tag columns statuses view all log runs history" },
   { section: "leads", card: "Lead forms", label: "Lead forms", keywords: "enquiry website embed questions create lead" },
   { section: "leads", card: "Leads email inbox", label: "Leads email inbox", keywords: "email address forward" },
   { section: "leads", card: "Lead statuses", label: "Lead statuses" },

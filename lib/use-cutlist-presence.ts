@@ -6,8 +6,8 @@ import { resolveProjectDocRef } from "@/lib/firestore-data";
 import type { Project } from "@/lib/types";
 import type { CutlistDataKind } from "@/lib/use-project-cutlist";
 
-// Who else is in a project's cutlist right now ("Anna is also editing") — or its Production › Order ("order"). Everyone
-// with it open (and able to edit it, `announce`) keeps an entry in cutlistData/{kind}Presence — one per open tab,
+// Who else is in a project's cutlist right now ("Anna is also editing", "Ben is also viewing") — or its Production › Order
+// ("order"). Everyone with it open keeps an entry in cutlistData/{kind}Presence, saying whether they can edit it — one per open tab,
 // refreshed once a minute while the tab is on screen (a write each time, and a read for everyone in that cutlist — kept
 // slow for that), and taken out when they leave it, hide the tab or close it. Shown: the others (not this person, in any of their tabs) whose entry was refreshed
 // within FRESH_MS, by when it was heard here — not the writer's clock, so a computer with its clock out doesn't make
@@ -16,9 +16,10 @@ import type { CutlistDataKind } from "@/lib/use-project-cutlist";
 // is cleared by the next person in, once it's 10 minutes old.
 // (cutlistData/{kind} is open to the project's company in firestore.rules — the same as the cutlist itself.)
 
-type PresenceEntry = { uid?: string; name?: string; at?: string };
-// Someone else in the cutlist: who (their emblem's colour is by it) and their name.
-export type CutlistPresencePerson = { uid: string; name: string };
+type PresenceEntry = { uid?: string; name?: string; at?: string; editing?: boolean };
+// Someone else in the cutlist: who (their emblem's colour is by it), their name, and whether they can edit it or are just
+// viewing (still locked, say: Unlock Edit moves them over straight away).
+export type CutlistPresencePerson = { uid: string; name: string; editing: boolean };
 
 const BEAT_MS = 60_000;
 // Two refreshes' time and a bit — one that's late or lost on the way doesn't drop anyone.
@@ -31,7 +32,7 @@ export function useCutlistPresence(
   project: Project | null,
   kind: CutlistDataKind | "order",
   open: boolean,
-  announce: boolean,
+  canEdit: boolean,
   me: { uid: string; name: string } | null,
 ): CutlistPresencePerson[] {
   const latestProjectRef = useRef(project);
@@ -57,36 +58,38 @@ export function useCutlistPresence(
 
     const refresh = () => {
       const nowMs = Date.now();
-      const byUid = new Map<string, string>();
+      const byUid = new Map<string, { name: string; editing: boolean }>();
       for (const [key, entry] of Object.entries(latest)) {
         if (key === tabKey || !entry || typeof entry !== "object" || entry.uid === uid) continue;
         const heardMs = heard.get(key)?.heardMs ?? 0;
         const writtenMs = Date.parse(String(entry.at || ""));
         if (!(nowMs - heardMs < FRESH_MS) || !(Math.abs(nowMs - writtenMs) < LEFT_OVER_MS)) continue;
         const entryUid = String(entry.uid || key);
-        if (!byUid.has(entryUid)) byUid.set(entryUid, String(entry.name || "").trim() || "Someone");
+        // (Editing in any of their tabs is editing. An entry from before this was noted: someone who could edit.)
+        const editing = entry.editing !== false || Boolean(byUid.get(entryUid)?.editing);
+        byUid.set(entryUid, { name: byUid.get(entryUid)?.name ?? (String(entry.name || "").trim() || "Someone"), editing });
       }
-      const people = [...byUid.entries()].map(([uid, name]) => ({ uid, name })).sort((a, b) => a.name.localeCompare(b.name));
-      const sameAs = (list: CutlistPresencePerson[]) => list.map((person) => `${person.uid}:${person.name}`).join("\n");
+      const people = [...byUid.entries()].map(([uid, person]) => ({ uid, ...person })).sort((a, b) => a.name.localeCompare(b.name));
+      const sameAs = (list: CutlistPresencePerson[]) => list.map((person) => `${person.uid}:${person.name}:${person.editing}`).join("\n");
       setOthers((prev) =>
         prev.key === listenKey && sameAs(prev.people) === sameAs(people) ? prev : { key: listenKey, people: people.length ? people : NO_ONE },
       );
     };
     const beat = () => {
       refresh();
-      if (!ref || !announce || document.hidden) return;
+      if (!ref || document.hidden) return;
       const nowMs = Date.now();
       const leftOver = Object.entries(latest)
         .filter(([key, entry]) => key !== tabKey && !(nowMs - Date.parse(String(entry?.at || "")) < LEFT_OVER_MS))
         .map(([key]) => [key, deleteField()]);
       void setDoc(
         ref,
-        { viewers: { ...Object.fromEntries(leftOver), [tabKey]: { uid, name, at: new Date(nowMs).toISOString() } } },
+        { viewers: { ...Object.fromEntries(leftOver), [tabKey]: { uid, name, at: new Date(nowMs).toISOString(), editing: canEdit } } },
         { merge: true },
       ).catch(() => undefined);
     };
     const leave = () => {
-      if (!ref || !announce) return;
+      if (!ref) return;
       void setDoc(ref, { viewers: { [tabKey]: deleteField() } }, { merge: true }).catch(() => undefined);
     };
     const onVisibility = () => (document.hidden ? leave() : beat());
@@ -122,13 +125,13 @@ export function useCutlistPresence(
       window.removeEventListener("pagehide", leave);
       leave();
     };
-  }, [listenKey, kind, announce, uid, name, tabKey]);
+  }, [listenKey, kind, canEdit, uid, name, tabKey]);
 
   return listenKey && others.key === listenKey ? others.people : NO_ONE;
 }
 
-// "Anna is also editing", "Anna and Ben are also editing", "Anna, Ben and 2 others are also editing".
-export function alsoEditingText(names: string[]): string {
+// "Anna is also editing", "Anna and Ben are also viewing", "Anna, Ben and 2 others are also editing".
+export function alsoHereText(names: string[], doing: "editing" | "viewing"): string {
   if (!names.length) return "";
   const who =
     names.length === 1
@@ -136,5 +139,5 @@ export function alsoEditingText(names: string[]): string {
       : names.length <= 3
         ? `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`
         : `${names.slice(0, 2).join(", ")} and ${names.length - 2} others`;
-  return `${who} ${names.length === 1 ? "is" : "are"} also editing`;
+  return `${who} ${names.length === 1 ? "is" : "are"} also ${doing}`;
 }

@@ -1,185 +1,94 @@
-Version: v0.5.9
+Version: v0.6.0
 
 highlights: [
-Global company search | Press Ctrl+K (⌘K on a Mac), or the magnifying glass up top, to find any project, small job, lead, contact, calendar event or setting — grouped, and only what you're allowed to see | /whats-new/v0.5.9/global-search.svg
-Column automations | Right-click a column and choose Automate: let people know when something comes in, move it on — straight away or after a while — assign it or tag it, only when your conditions are met | /whats-new/v0.5.9/column-automations.svg
-Lead to Project | Create Project on a lead fills the new project in for you — the client's details, notes, photos and answers — and the project keeps a link back to the lead | /whats-new/v0.5.9/lead-to-project.svg
-Schedule timeline | A project's Schedule shows its calendar events along a line, spaced as they are in time, with today among them and what's coming up next | /whats-new/v0.5.9/schedule-timeline.svg
-The Order, redesigned | Everything to order at a glance, Drawers, Hinges and Other side by side, and a Hardware Library to drag hinges and parts in from | /whats-new/v0.5.9/order-window.svg
+Project Drawings | Draw the kitchen in 3D from the project's own cutlist: drag in its cabinets, fronts and panels, snap them together, run the bench over them and measure anything | /whats-new/v0.6.0/project-drawings.svg
+Email automations | Have a column email the people you choose when something enters it, leaves it or has sat there a while, in your own words with the job's details filled in | /whats-new/v0.6.0/email-automations.svg
+Custom shapes and cabinets | Draw L shapes, notches, curves or any outline you like, and build a cabinet that works out its own parts. They carry through to the CNC, labels and print | /whats-new/v0.6.0/custom-shapes.svg
+True-shape nesting | On a CNC, pieces are laid out by their real outline, so smaller ones fill an L's corner or a U's middle. Nesting has a new layout on a computer too | /whats-new/v0.6.0/true-shape-nesting.svg
+Schedule a project | Drag a project or small job from a panel onto a day or an hour to book it in, with the ones that have nothing booked yet listed first | /whats-new/v0.6.0/schedule-a-project.svg
 ]
 
 whatsNew: [
+<u><b>Project Drawings</b></u>
+<ul>
+<li>A new <b>Drawing</b> in Production, under Planning: the kitchen in 3D, saved with the project</li>
+<li>The cutlist's pieces wait in a library down the left, each at its board's thickness — drag them onto the drawing</li>
+<li>Fronts dropped on the floor start a cabinet, sized from the fronts and your gap allowances. A cabinet from the cutlist comes in at its own size, drawn as its pieces</li>
+<li>Pieces snap together: overheads match the height of what's beside them, and base and overhead cabinets sit at the front of a panel, with room left for their fronts</li>
+<li><b>Move</b>, <b>Rotate</b>, <b>Extrude</b> and <b>Measure</b> tools — type a distance or an angle straight away, as it's already selected for you</li>
+<li><b>Measure</b> between points, edges or faces, and read the angle at a corner</li>
+<li>Each piece has corner points at its top and bottom: drag one onto another piece's and the two join exactly</li>
+<li>Options for each piece: <b>Wall or Base</b>, <b>Benchtop</b>, <b>Kick</b>, <b>Fronts</b>, <b>Show in drawing</b> and <b>Lock position</b></li>
+<li>One benchtop over each run, filled in round its corners, with overhangs you can type and faces you can pull out</li>
+<li>Turn a run round a corner at any angle, swing a panel across as a face panel, add kick boards, and leave a gap for a dishwasher or fridge</li>
+<li>A view cube, and <b>Ctrl+Z</b> (⌘Z) to step back</li>
+</ul>
+
+<u><b>Automations</b></u>
+<ul>
+<li><b>Email</b> as a new automation: send to staff, typed addresses, or whoever's <b>Assigned</b> or the <b>Creator</b></li>
+<li>Write the whole email yourself, subject and body, with placeholders for the project, the client and more</li>
+<li>Send it straight away, or after a wait you choose</li>
+<li>Notify or email more than one person: "notify Anna &amp; Ben when a project moves to Production"</li>
+<li><b>View All</b> shows every automation in the company, in Company Settings › <b>Automations</b></li>
+<li>A <b>Log</b> there shows each time an automation ran, when, and how it went</li>
+</ul>
+
 <u><b>Dashboard</b></u>
 <ul>
-<li>Right-click a project — its card, or its tab up top; on a phone or tablet, the <b>⋯</b> on its card — for <b>Open</b> (or straight to Design or Production), <b>Move</b>, <b>Change Assigned</b>, <b>Edit Tags</b> and <b>Archive</b></li>
-<li>Right-click a column and choose <b>Automate</b>: <b>Notify</b> people or roles when a project enters it, leaves it or has been in it a while — or <b>Move</b> it on, <b>Assign</b> it or <b>Tag</b> it</li>
-<li>Add <b>Only if…</b> to an automation — who it's assigned to, where it came from, its tags or its name — and it waits until that's true</li>
-<li>The Automate pop-up takes its column's colour, as the calendar's pop-ups take their category's</li>
-<li>A timed move can count from when each project moved in, so the ones already there count too</li>
-<li>Whoever moves a card is told what their move set off</li>
-<li>A status with sub-statuses shows the sub-status in a pill of its own — each half opens its own menu</li>
-<li>The list's status menu slides through to a status's sub-statuses</li>
-<li>Each board has its name over it, with a back arrow inside a sub-board</li>
-</ul>
-
-<u><b>Small Jobs</b></u>
-<ul>
-<li>A new page for quick jobs and small fixes — "Replace toekick", "Change hinges" — without a whole project</li>
-<li>Each has its client, notes and images, and its own statuses: Open and Closed to start with, yours in Company Settings › <b>Small Jobs</b></li>
-<li>Search and filter them, and turn one into a full project when it grows</li>
-<li>Kept off the Dashboard and out of Reports</li>
-</ul>
-
-<u><b>Reports</b></u>
-<ul>
-<li>A new page: leads converted, quote win rate, average job value and days to complete — each against the stretch before</li>
-<li>Quotes sent against won by week or month, the days spent in each stage, the pipeline now, each salesperson's figures and where your leads came from</li>
-<li>Choose which staff and projects your reports count, and <b>Reset stats</b> to start counting afresh</li>
-</ul>
-
-<u><b>Leads</b></u>
-<ul>
-<li><b>Create Project</b> fills the new project in from the lead — its name, the client's details, notes, photos, who it's assigned to and their other answers — and files the lead as converted</li>
-<li>Automations work here too — including moving a lead onto a Dashboard column, which makes it into a project there</li>
-<li>Copy buttons beside a lead's phone number and email</li>
-</ul>
-
-<u><b>Projects</b></u>
-<ul>
-<li><b>Schedule</b>: the project's calendar events along a timeline, spaced by date, with today and what's next — click one to open it in the Calendar</li>
-<li>A project made from a lead has a <b>Lead</b> button on its General tab, to see the lead it came from</li>
-<li>Copy buttons beside the client's phone, email and address</li>
-<li>The client's contact category in a pill beside their name — change it there and it's changed everywhere</li>
-<li>Every pop-up has the same header, and fills the screen on a phone</li>
-<li>In dark mode a project's cards are see-through dark glass, as Reports' are — and Production's Notes card matches the others</li>
-<li>Cutlist Entry's column headings are easy to read in dark mode, held at the top too</li>
+<li>Right-click a project — its card, or its tab up top; on a phone or tablet, the <b>⋯</b> on its card — to open it, <b>Move</b> it, <b>Change Assigned</b>, <b>Edit Tags</b>, <b>Archive</b> it or <b>View Access</b>, which shows its Project Permissions in a pop-up</li>
+<li>Sort a column by <b>Longest in column</b> or <b>Newest in column</b>, on Leads too</li>
 </ul>
 
 <u><b>Production</b></u>
 <ul>
-<li><b>Custom shapes</b>: set a part type to Custom in Company Settings and its pieces are drawn — an L corner, a U, a notch, an angled corner, or any shape you draw line by line (snapping to 45° and 90°). Tap any size to change it, any corner to round it, any edge to band it</li>
-<li>A shaped piece's cut size, banding and drawing go on its cutlist row, and its banding counts in the board's edge tape</li>
-<li>A Custom piece sits in the table of what it is — a custom cabinet at the bottom of Cabinetry, under <b>Custom</b> — with its sizes in their columns and its drawing in its drop-down</li>
-<li>Round a corner into a curve by dragging its handle, and a shape can't be drawn crossing itself</li>
-<li>Shaped pieces have a <b>Custom</b> table of their own — open one for a large drawing, <b>Edit shape</b> and <b>Download DXF</b> for the CNC</li>
-<li>Shaped pieces show as drawings in the CNC Cutlist, on the Nesting sheets, on labels and in the printed cutlist and Excel — with lacquer worked out from their true area</li>
-<li><b>Custom cabinets</b>: set "What is it?" to a cabinet, give it a height and shelves, and its backs, ends, top, bottom and shelves are worked out at the board's thickness — turn it round in 3D, and its parts go through the CNC Cutlist, Nesting, labels, edge tape and sheet counts</li>
-<li>Initial Measure takes shaped pieces and custom cabinets too</li>
-<li>The shape pop-up, laid out afresh: the drawing on the left, and beside it the piece's name, board, quantity, grain and information — set right there</li>
-<li><b>Add line</b>, then right-click a piece of the outline and <b>Delete line</b> to cut a notch, a step or a corner out of a shape — only what would go is lit up</li>
-<li>Type a length while drawing a line to make it exactly that long</li>
-<li>Angles at every corner that isn't square, and cut-outs measured from the edges — on screen and on paper</li>
-<li>Zoom and move round the drawing; in 3D, drag to move, right-drag to turn and scroll to zoom</li>
-<li>A custom cabinet starts at the project's Base Cab Height, and right-clicking an edge picks Doors, Back or End</li>
-<li><b>True-shape nesting</b> on a CNC: pieces are laid out by their real outline, so smaller pieces fill an L's corner or a U's middle and shapes fit into each other — never more sheets than before</li>
-<li><b>Export</b> a shape's drawing — 2D or 3D, as a PNG or PDF, with its sizes</li>
-<li>In 3D, click an edge to band it (a cabinet's to make it doors, a back or an end); right-drag in 2D turns straight into 3D</li>
-<li>Custom cabinets are <b>Base</b> or <b>Wall</b>, with <b>Full Top</b>, fixed and adjustable shelves — on their row and in the drawing. A Base one without a full top gets rails: one end to back, the other up to it, and a back rail</li>
-<li>A custom cabinet's doors edges are taped on every part along them — top, bottom and shelves — and every end's front</li>
-<li>A Custom piece goes into Cutlist Entry as soon as it's picked, and closing its drawing with changes asks first, with <b>Save &amp; close</b></li>
-<li>A room with nothing in its cutlist yet shows <b>Add your first piece</b> — press it and pick the part type (Initial Measure and Production)</li>
-<li>Cutlist Entry's column headings only show while there are rows being entered</li>
-<li>An empty Project Cutlist lists the project's rooms as buttons — one press takes you to that room's cutlist (Initial Measure and Production)</li>
-<li>The cutlists' boxes match their dropdowns, in dark mode too — no more see-through boxes with light text on a pale row</li>
-<li>Reload and the cutlist is as you left it: the same room, Entry or List, and the part types you folded away still folded (Initial Measure and Production)</li>
-<li>Type a sum in a Height, Width or Depth box — 50-16, 600x2, 1200/3 — and it's worked out when you click away (left to right, like a calculator)</li>
-<li><b>Contractor icons</b>: give each contractor an icon in Company Settings › Production › Contractors — it shows on their notes button, in the Contractors menu and on their notes</li>
-<li>Drawers: each drawer's depth is listed lowest height first, highest last</li>
-<li><b>Nesting</b> redesigned on a computer: your boards down the left (how full their sheets are, at a glance), the board's sheets in the middle — each with how much of it is used — and the sheet you pick open large on the right with its stats</li>
-<li><b>Small Jobs have a cutlist</b>: the same cutlist as a project's Production — press <b>Cutlist</b> at the top of the job's side buttons</li>
-<li>Small Jobs have <b>Boards</b> too — the same Board Settings as a project's Production, in a pop-up from the job's side buttons</li>
-<li>A cutlist with no rooms yet shows <b>Add Room</b> — and once it's made, that room's cutlist opens</li>
-<li>Opening Notifications clears the number on the bell — they stay unread in the list</li>
-<li>Phones: change a part's part type in its Edit sheet</li>
-<li>Phones: a new board opens straight away when it's added</li>
-<li>Phones: swiping a cutlist sheet closed no longer flashes it back up first</li>
-<li>Phones: + − × ÷ = over the number keypad while typing a Height, Width or Depth in the cutlist</li>
-<li>Phones: the pull-down menu at the top never opens over a pop-up, and it's harder to set off by accident — it has to be pulled further, mostly straight down, and held a moment before letting go does anything</li>
-<li>Phones: typing in a box brings it to the middle of the screen above the keyboard, with the page carrying on behind the keyboard instead of white</li>
-<li>A Small Job's title bar is glass as the page scrolls under it</li>
-<li>New Project: see-through glass cards, and text boxes like the cutlist's</li>
-<li>Nesting: leave out a single piece — untick it in the list, or hover it on the big sheet and press <b>Leave out</b> — with <b>Put back</b> to bring everything back. The Parts view lists every piece and the sheet it's on</li>
-<li>Drawers: click a drawer's weight to open its weights below it — click its weight in a closed box and the box opens with its weights showing. A weight you picked stays picked out once the box closes</li>
-<li><b>Order</b> redesigned: the order at a glance up top, Drawers, Hinges and Other side by side, then Boards and Misc</li>
-<li>Drag hinges and other parts in from the <b>Hardware Library</b>, or click one to add it</li>
-<li>Two people in the Order see each other's changes as they're made</li>
-<li>Empty Hinges and Other show a dashed box to add the first one</li>
-<li><b>Copy for cart</b>: the Order's hinges and other parts, a line each, ready to paste into your supplier's quick order — Blum's <b>Add items in bulk</b></li>
-<li>Copy a drawer's, hinge's or part's ID number straight from the Order</li>
-<li>A drawer's runner length is picked from the lengths its height comes in</li>
-<li><b>Labels</b>: a label for every piece, with a QR code — scan it with a phone to see the part, its room and its project</li>
-<li><b>Print</b>: the cutlist laid out like the old spreadsheet, a title sheet, and several prints together as one Project Folder</li>
-<li>Cutlist: <b>Select</b> parts to change their board or edging all at once, or delete them</li>
-<li>Cutlist: <b>Save &amp; Back</b> checks for a missing board, a zero quantity or a grain clash first</li>
-<li>Doors show a drawing of the door with its hinges — left, right, a mirrored pair or along the top</li>
-<li>Drawer heights stack in the list, beside their depths</li>
-</ul>
-
-<u><b>Contacts</b></u>
-<ul>
-<li>A quiet <b>Timeline</b> button on a contact: every project, quote and lead they've had, along one line</li>
-<li>Contacts that look like the same person are flagged at the top — review them side by side and merge, or mark them as not duplicates</li>
-<li>Copy buttons beside phone, email and address</li>
+<li><b>Custom shapes</b>: set a part type to Custom in Company Settings and its pieces are drawn — an L corner, a U, a notch, an angled corner, or any shape line by line. Type any size, and drag a corner into a curve</li>
+<li><b>Custom cabinets</b>: give a piece a height and shelves, and its backs, ends, top, bottom and shelves are worked out. Base or Wall, with Full Top, fixed and adjustable shelves, rails, and doors edges taped on every part</li>
+<li>Shapes and cabinets carry through the CNC Cutlist, Nesting, labels, print and Excel, with <b>Download DXF</b> for the CNC and <b>Export</b> as a PNG or PDF. Initial Measure takes them too</li>
+<li><b>True-shape nesting</b> on a CNC: pieces fit into each other by their real outline — never more sheets than before</li>
+<li><b>Nesting</b> redesigned on a computer: your boards on the left, their sheets in the middle and the one you pick open large. Leave out any piece, and see which sheet each one is on</li>
+<li><b>Small Jobs have a cutlist and Boards</b>, the same as a project's Production</li>
+<li><b>Copy for cart</b>: the Order's hinges and other parts, ready to paste into your supplier's quick order. Copy a single ID number from the Order too</li>
+<li>Type a sum in a Height, Width or Depth box — 50-16, 600x2, 1200/3 — and it's worked out when you click away</li>
+<li><b>Contractor icons</b>, set in Company Settings, on their notes button, menu and notes</li>
+<li><b>Viewing</b> and <b>Editing</b> bubbles in the Cutlist, Order and Initial Measure show who else is there, and they pop away as people leave</li>
+<li><b>Unlock Edit</b> requests can be answered from the notification: <b>Accept</b> or <b>Decline</b> right on it, or open it for a box with both</li>
 </ul>
 
 <u><b>Calendar</b></u>
 <ul>
-<li>NZ public holidays, worked out for every year — pick your region in Company Settings › <b>Calendar</b> for its anniversary day</li>
-<li>Today is outlined in blue</li>
-<li>Previous and Next slide the view along</li>
-<li><b>Schedule a project</b>: a panel of your projects and small jobs — the ones with nothing booked yet first — to drag onto a day, or an hour, to book it in — or onto an event to link it to that one (unlinked events that sound like it lift and glow while you drag)</li>
-<li>Typing a new event's title suggests the project it's about (just while you first type it), and clicking <b>Project</b> shows the closest straight away, with <b>Show all</b> for the rest</li>
-<li>The event pop-up: the times sit under the title, date and time wheels on phones, and the category list opens downwards</li>
-<li>The time wheel goes round and round, to any minute</li>
-<li>The event pop-up takes on more of its category's colour</li>
-<li>The date wheel shows the weekday, and its days and months scroll on into the month (and year) either side</li>
-<li>Add staff shows each person's coloured initials</li>
-<li>The month view fits more events in each day</li>
-<li>Scroll through months as fast as you like — the two months either side are always ready, with their events, so it doesn't bounce back</li>
-<li>Switching to Day, Week, Month or Year starts on today — not wherever you'd scrolled to</li>
-<li>Open a day from the month, week or year and a <b>‹</b> takes you back to it — at the bottom left on a phone, sliding in to the left of Today on a computer</li>
+<li><b>Schedule a project</b>: drag a project or small job onto a day or an hour to book it in, or onto an event to link it</li>
+<li>A new event's title suggests the project it's about</li>
+<li>Date and time wheels that keep on turning, with the weekday shown</li>
+<li>Months scroll as fast as you like, with no bouncing back</li>
+<li>Open a day from the month, week or year and a <b>‹</b> takes you back to it</li>
+</ul>
+
+<u><b>Notifications</b></u>
+<ul>
+<li><b>Remind me in…</b> keeps a notification in your list, with a <b>Reminder in 2h</b> bubble (its <b>X</b> cancels it), then brings it back as new at that time</li>
+<li>Opening Notifications clears the number on the bell, and they stay unread in the list</li>
 </ul>
 
 <u><b>Company Settings</b></u>
 <ul>
-<li>Staff &amp; Permissions: an <b>Audit log</b> of every role and permission change — who made it and when</li>
-<li>Staff &amp; Permissions: <b>Access codes</b> — make a one-person code to join with, name it (and rename it), search them, see who used each, and revoke one any time. Everyone you invite with <b>Add staff</b> gets one too, without having to type it</li>
-<li><b>Add staff</b>: their email, which access code (a new one, or one you've made) and the role they start in</li>
-<li><b>View as this role</b>: see the app as someone with that role would, until you press Exit</li>
-<li>Backup &amp; Output: <b>Full data export</b> — everything your company has, in one file to keep</li>
-<li>Hardware drawers, laid out afresh: hardware lengths and weights, how bottoms and backs are cut, then each height's own lengths and weights — click a height to tick just the ones it comes in</li>
-<li>Hardware: an ID number for each drawer height at each length and weight, and on each hinge and part — and an <b>Ordering</b> tab for how the Order copies them for your supplier's cart</li>
-<li>Hardware: removing a brand asks first</li>
-<li>Calendar: your <b>Public holidays</b> region</li>
-<li>Small Jobs: their own statuses</li>
-<li>Search finds every card</li>
+<li><b>Unlock Edit password</b>: choose what it starts with — the project name, the client's name, a word of your own or nothing — then your code. Spaces and capitals don't count</li>
+<li><b>Access codes</b>: make a one-person code to join with, name it, see who used it and revoke it any time. <b>Add staff</b> gives each person one, along with the role they start in</li>
+<li>Hardware drawers laid out afresh, with an ID number for each height, length and weight, and an <b>Ordering</b> tab for how the Order copies them for your supplier's cart</li>
 </ul>
 
 <u><b>App-Wide</b></u>
 <ul>
-<li>Search everything with <b>Ctrl+K</b> (⌘K on a Mac)</li>
-<li>Delete anything — a cutlist row, a board, a tag, an image, an event, a lead's note — and the yellow bar at the bottom offers <b>Undo</b> for a few seconds — and stays while your mouse is over it</li>
-<li>Soft placeholders while things load, instead of "Loading…" — on every page now</li>
-<li>An empty list says what goes there, with the button to add the first one</li>
-<li>The first project you open comes up quicker: the app fetches the project page ahead, while you're elsewhere</li>
-<li>Lose signal and a small bar at the top says so — your changes are kept on the device and saved when you're back, then <b>All changes saved</b></li>
-<li>Text is set the same way across the app, and reads properly in dark mode</li>
-<li>Dropdowns squeeze open from the button you pressed</li>
-<li>The page you're on glows in see-through glass in the sidebar</li>
-<li>Buttons like New event have the glass shine and rounded ends</li>
-<li>Each browser tab is named for its page — "Calendar · CutSmart", or the project's own name</li>
-<li>A link that goes nowhere, or a project that's been removed, shows a proper page with the way back — and if something goes wrong, the app says so and offers <b>Try again</b>, with the menu still there</li>
+<li>Delete anything — a cutlist row, a board, a tag, an image, an event — and the yellow bar offers <b>Undo</b> for a few seconds</li>
+<li>Lose signal and a small bar says so. Your changes are kept on the device and saved when you're back</li>
+<li>The first project you open comes up quicker</li>
+<li>A link that goes nowhere shows a proper page with the way back, and if something goes wrong the app offers <b>Try again</b></li>
 </ul>
 
 <u><b>Phones</b></u>
 <ul>
-<li>Swipe a pop-up down to close it — from its top, so a long one still scrolls</li>
-<li>With the keyboard up, a pop-up's own background carries on behind the keyboard instead of the page showing through</li>
-<li>Calendar: tapping a day in the year view opens that day, as the month view does</li>
-<li>A small buzz as you pick up a card or event and as it lands (Android)</li>
-<li>Cutlist: one glass bar along the top, with arrows to step between rooms</li>
-<li>Cutlist entry: rows show in full, edge to edge in their part type's colour — tap a row's top bar to fold it away</li>
-<li>Cutlist: rounded, glassy part type buttons, Add to Cutlist and search</li>
-<li>Full-screen pop-ups stay below the title bar</li>
+<li>Swipe a pop-up down to close it</li>
+<li>+ − × ÷ = over the number keypad while typing a size in the cutlist</li>
+<li>Typing in a box brings it to the middle of the screen, above the keyboard</li>
 </ul>
 ]

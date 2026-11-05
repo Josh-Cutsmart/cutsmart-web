@@ -1,7 +1,44 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { ArrowLeft, Box, ChevronDown, Eye, Layers, Link2Off, Plus, RotateCcw, RotateCw, Trash2, X } from "lucide-react";
+import {
+  ArrowLeft,
+  ArrowUpFromLine,
+  Box,
+  Check,
+  ChevronDown,
+  Eraser,
+  Eye,
+  EyeOff,
+  Grid3x3,
+  Hand,
+  Home,
+  Link2Off,
+  Magnet,
+  Maximize,
+  MousePointer2,
+  Move3d,
+  Orbit as OrbitIcon,
+  PanelBottom,
+  PanelTop,
+  Plus,
+  Redo2,
+  RotateCcw,
+  RotateCw,
+  Ruler,
+  Scaling,
+  Scan,
+  Search,
+  Settings2,
+  SlidersHorizontal,
+  Trash2,
+  Undo2,
+  X,
+  ZoomIn,
+  ZoomOut,
+  type LucideIcon,
+} from "lucide-react";
+import { GlassDropdown } from "@/components/glass-dropdown";
 import { GlassSwitch, Segmented } from "@/components/settings-ui";
 import { glassShineStyle } from "@/lib/glass-shine";
 import { useView3dGestures } from "@/lib/use-view-3d-gestures";
@@ -20,6 +57,10 @@ import {
 import { shapeGeometry, type CutlistShape } from "@/lib/cutlist-shape";
 import { turnCabinetView } from "@/components/cutlist-cabinet-3d";
 
+// Set out as a CAD program's window: a toolbar of tools across the top (Select, Move, Rotate, Extrude, Measure, the view,
+// what's shown), the library down the left, a view cube, and a status bar under the drawing. The view stays where it is
+// as things are dropped or changed — only Fit or Home moves it.
+//
 // Drawing (Planning › Drawing) — a kitchen, saved with the project (its drawings/kitchen doc, as it's changed). The
 // production cutlist's pieces in a library down the left — each at its board's thickness (Board Settings) — dropped onto
 // a kitchen drawn in 3D.
@@ -32,8 +73,29 @@ import { turnCabinetView } from "@/components/cutlist-cabinet-3d";
 //   it.
 // - A cabinet from the cutlist (Cabinetry) is a new one: dropped in at its own size, drawn as its pieces (any of them can
 //   be left off), with its sub parts on it. Fronts dropped onto it go on it.
-// - Whatever's dropped (or moved) by the side of something runs off that side; a custom cabinet locks on by its end and
-//   turns the run round its corner. Anything can be moved once it's in — dragged; the cabinets after it close up.
+// - Whatever's dropped goes on the face it's dropped on: off a side face, that side; on a front (or a top), the side of it
+//   the pointer's nearer — and on nothing, right where it's pointed. A custom cabinet locks on by its end and turns the
+//   run round its corner.
+// - A cabinet or fronts dropped on a tall panel (or a tall cabinet): on its top half, up as an overhead — its top on that
+//   one's top, its back on that one's back; on its bottom half, down on the floor beside it.
+// - Each piece's options, at the top of its panel: Base or Wall, Benchtop (an under-bench cabinet's on, an overhead's and a
+//   tall one's off, any of them either way), Kick, Fronts, Show in drawing, Lock position.
+// - An overhead run off anything — a cabinet, fronts, a panel, something tall — has its top on that one's, as it's dragged
+//   and when it's let go; just dropped near one, on the nearest's. Moved up or down after, it stays there.
+// - Run off a panel, a base cabinet or an overhead sits at the panel's front: its carcass in line, room left for its fronts
+//   and the panel's bit proud. Back from there with the Move tool, or a corner's dot dragged onto the panel's back corner.
+//   (Off a tall cabinet, an overhead's back goes on that one's back: against the wall.)
+// - Rotate, on a piece on its own: dragged, or an angle typed — turned that much more about its pivot (+ anticlockwise, seen
+//   from above), shown as it's typed, kept with Enter.
+// - Ctrl + scroll while a piece is dragged: it turns, 45° a notch — where it goes as it would, turned that much.
+// - Extrude: a face of the bench picked, then dragged or a distance typed — a side out (or in), the top up, the underneath
+//   down. Each kept with the piece it's over (BenchExtrusion).
+// - Measure: near a corner or an edge, locked to it — a point; in the middle of a face, that whole face. Two points: the
+//   distance between them (a third: the angle at the second). Two faces, or a face and a point: the true distance between
+//   them, always square. However far apart along them they are, the line of the one standing further out is carried across
+//   (dashed), and it's measured at the other — from that one to that line. Not parallel: still square, to the second, from
+//   the first's corner nearest it — and the angle. With Snap off (the toolbar): points anywhere, no faces, and a piece
+//   dragged doesn't snap to a side it's near, or into line with a run. Anything can be moved once it's in — dragged; the cabinets after it close up.
 // - Fronts line up along the cabinets' faces; a panel stands its fronts' thickness + 2mm in front of them.
 // - A corner (a right-click on something, or what's picked): what's run off something turned at the joint — in (its
 //   fronts towards the other's) or out, any angle — the nearest corners of its fronts and the other's kept the vertical
@@ -53,7 +115,9 @@ import { turnCabinetView } from "@/components/cutlist-cabinet-3d";
 // - Ctrl+Z (⌘Z): the last change undone — a press, a step back, as far back as it goes (not while typing in a box).
 // - Pivots: each piece's shown as a blue dot (the picked one's corners all, to pick from). A dot dragged onto another
 //   piece's: that piece moves (turned as it is, what runs off it with it) so its corner's on the other's — both pivots
-//   now; onto another of its own, or clicked: its pivot.
+//   now; onto another of its own, or clicked: its pivot. A pivot clicked: let go — and any other on that same spot, the
+//   pieces joined there. Blue is only ever a pivot that's been picked: with none, Rotate shows the corner it'll turn about
+//   as a blue ring.
 // - A gap (right-click a cabinet › Leave a gap): an empty space of its own width beside it — a dishwasher's, a fridge's —
 //   with the bench over it or not; a piece of its own, put there (not run off it).
 // - A panel dropped onto a cabinet's kick (or the kick under a face panel's false cabinet): a kick board — along it,
@@ -63,7 +127,8 @@ import { turnCabinetView } from "@/components/cutlist-cabinet-3d";
 // - A panel stood as the cutlist has it — its height up, its width its depth (a kick board's long side along); one with
 //   no height (a width and a depth) lies flat — its width along the run, its depth front to back. Turn it swaps them /
 //   stands it up.
-// - An overhead: a dot at all its corners, its bottom ones too — a panel's corner dragged onto one goes up to its underside.
+// - The picked piece: a dot at all its corners, top and bottom — and every piece's, while one's being dragged; a panel's
+//   corner dragged onto an overhead's bottom one goes up to its underside. Otherwise only a pivot that's been picked shows.
 // - An overhead cabinet (or a wall panel) dropped in: its top in line with the overhead it's run off (or the nearest one) — lifted or
 //   dropped to it; the first keeps its bottom where overheads start.
 // - A piece taken out (Remove, or Delete): the sub parts that came in with it go too — all of it back in the library.
@@ -110,7 +175,8 @@ export type KitchenGaps = {
   tallDoorGap: number;
   // Between drawers stacked.
   drawerGap: number;
-  // From under the bench to the top of a door or drawer — and a tall cabinet's top of door to its top.
+  // From under the bench to the top of a door or drawer — and a tall or wall cabinet's top of door to its top (with or
+  // without top scribers, as the project's set).
   benchGap: number;
   tallTopGap: number;
   baseCabHeight: number;
@@ -158,6 +224,12 @@ type KitchenItem = {
   panelKind?: PanelKind;
   // A panel stood the other way round from how it'd be laid by itself (its height and width swapped).
   turned?: boolean;
+  // Its options (not set: as goes with what it is — hasBench, hasKick). A panel's bench: only ever off.
+  benchOn?: boolean;
+  kickOn?: boolean;
+  frontsOn?: boolean;
+  // Not to be dragged, moved, turned or removed (what it's run off, moved, still takes it along).
+  locked?: boolean;
 };
 type PanelKind = "auto" | "base" | "tall" | "wall";
 // Its plan frame — a box's or a panel's origin the left end of its front line, x along it, y towards the front (the
@@ -185,14 +257,28 @@ type DropTarget =
   | { kind: "into"; itemId: string; place?: { col: number; row: number; side: "above" | "below" | "left" | "right" }; behind?: boolean }
   // (insert: what was on that side — it moves along, onto the far side of what's dropped.)
   // (turn: at its joint there — what keeps a piece that's moved turned the way it was.)
-  | { kind: "attach"; to: string; side: string; insert?: string; turn?: number }
+  // (lift, rel: where it sits on what it's run off, when that's set for it — a tall panel's top or bottom.)
+  | { kind: "attach"; to: string; side: string; insert?: string; turn?: number; lift?: number; rel?: { x: number; y: number; a: number } }
   // (aligned: put in line with the run beside it — its front on theirs, turned as they are.)
   | { kind: "free"; x: number; y: number; a: number; aligned?: boolean; wall?: boolean };
 // A Cabinetry one's pieces left off, by its unit — kept off till they're ticked back on.
 type OffPieces = Record<string, string[]>;
+// A face of the bench extruded (the Extrude tool): a side out (dist < 0: cut in) — its edge a to b, and which way's out, in
+// the frame of the piece it's kept with (`anchor`, what it moves with) — or the top up, the underneath down.
+type BenchExtrusion = { id: string; anchor: string; kind: "side" | "top" | "bottom"; a?: Vec; b?: Vec; n?: Vec; dist: number };
+type DrawTool = "select" | "move" | "rotate" | "extrude" | "measure";
+// A face clicked for measuring: its corners, which way it looks, and the point on it that was clicked. (Just a point, being
+// measured square to a face: that one corner, looking the way the face does.)
+type MeasureFace = { key: string; points: Array<[number, number, number]>; n: [number, number, number]; at: [number, number, number] };
+// A face of the bench picked, for extruding: its points as they are, and the same as a BenchExtrusion's.
+type BenchFace = { key: string; points: Array<[number, number, number]>; anchor: string; kind: "side" | "top" | "bottom"; a?: Vec; b?: Vec; n?: Vec };
+type Point3 = [number, number, number];
+// What can be hidden from the drawing (the Show menu).
+type DrawLayer = "base" | "wall" | "fronts" | "bench" | "kicks" | "floor";
 // How far the bench runs past the fronts' faces (the whole run), and past a panel's end (mm).
 type BenchSettings = { fronts: number; panels: number };
 const DEFAULT_BENCH: BenchSettings = { fronts: 20, panels: 20 };
+const HOME_VIEW: CabinetView = { yaw: -0.45, pitch: 0.32 };
 
 const KICK_MM = 150;
 // How far a cabinet's kick sits back from its front.
@@ -221,7 +307,10 @@ const WALL_GAP_MM = 600;
 const TALL_MIN_MM = 1400;
 const RAIL_DEPTH_MM = 100;
 // Dropped (or moved) this close to a free side of something (mm, to where it'd be): run off it.
-const SNAP_MM = 650;
+// How near (px on the screen) the pointer must be to a free side, over nothing, for a piece to snap to it — and to a
+// thin panel's edge, over something else. So it's the same however far it's zoomed.
+const SNAP_PX = 26;
+const THIN_SNAP_PX = 14;
 const PANEL_PROUD_MM = 2;
 // A panel up to this much taller than the cabinet beside it is still one under the bench (its top the cabinet's, what's
 // over going down past the bottom); taller than that, it's a tall one.
@@ -515,6 +604,16 @@ function columnsOf(item: KitchenItem, units: Map<string, KitchenUnit>, g: number
     });
 }
 
+// A cabinet's bench: as set; not set, an under-bench one has one, an overhead or a tall one doesn't.
+const hasBench = (item: KitchenItem, size: ItemSize) => item.benchOn ?? (item.level === "base" && !size.tall);
+// Its kick: on the floor, unless it's set off.
+const hasKick = (item: KitchenItem, size: ItemSize) => (item.level === "base" || size.tall) && item.kickOn !== false;
+
+// Lying flat, or as good as: its top and bottom corners too close to tell apart.
+const THIN_MM = 60;
+// How high its bottom corners are: a cabinet with a kick, the floor it stands on; else its own underside.
+const lowOf = (item: KitchenItem, size: ItemSize) => ((item.kind === "box" || item.kind === "custom") && hasKick(item, size) ? size.z0 - KICK_MM : size.z0);
+
 // A cabinet's size from what's in it (or the cutlist's, a Cabinetry one) — and the sums that make it, to show.
 function boxSize(item: KitchenItem, units: Map<string, KitchenUnit>, gaps: KitchenGaps, panelLeft: boolean, panelRight: boolean): ItemSize {
   const own = item.unitId ? units.get(item.unitId) : undefined;
@@ -523,7 +622,8 @@ function boxSize(item: KitchenItem, units: Map<string, KitchenUnit>, gaps: Kitch
   const tall = own ? own.height >= TALL_MIN_MM : all.some((f) => f.height >= TALL_MIN_MM);
   const g = tall ? gaps.tallDoorGap : gaps.doorGap;
   const dg = gaps.drawerGap;
-  const topGap = tall ? gaps.tallTopGap : gaps.benchGap;
+  // (A wall one has no bench over it: its top's gap the tall cabinets' — with or without top scribers.)
+  const topGap = tall || item.level === "wall" ? gaps.tallTopGap : gaps.benchGap;
   const padL = panelLeft ? g : g / 2;
   const padR = panelRight ? g : g / 2;
   const frontT = all.length ? Math.max(...all.map((f) => f.thicknessMm)) : 18;
@@ -570,6 +670,8 @@ const faceOutOf = (item: KitchenItem) => (item.at.kind === "attach" && item.at.s
 
 // Its plan as far as its corners go — a box's, a panel's or a gap's: left to right, back to the face of its fronts (a
 // panel's face), in its own frame.
+// On its own: turned about its pivot (its front left, if none's picked) — and what runs off it, with it.
+const ownPivotOf = (item: KitchenItem): Pivot => item.pivot ?? { x: 0, y: 1 };
 function footprintOf(x: KitchenItem, size: ItemSize): { x0: number; x1: number; y0: number; y1: number } | null {
   if (x.kind === "custom") return null;
   const front = x.kind === "panel" ? size.frontT + PANEL_PROUD_MM : x.kind === "gap" || x.fronts.length ? size.frontT : 0;
@@ -728,7 +830,14 @@ function layoutKitchen(items: KitchenItem[], units: Map<string, KitchenUnit>, ga
       // (Its top as it is — lifted or dropped, if it's been.)
       const nbId = next.left && sizes.get(next.left) ? next.left : next.right;
       const nbTop = nb ? nb.z0 + nb.height + (nbId ? byId.get(nbId)?.lift ?? 0 : 0) : undefined;
-      const baseTop = nbTop !== undefined && !nb?.tall && !nb?.panelAs ? nbTop : runTop;
+      // (Bench height: from a cabinet on the floor beside it — not an overhead beside it, whose top's no bench's.)
+      const onFloor = items.find((i) => {
+        if (i.level !== "base" || i.kind === "panel" || !sizes.has(i.id)) return false;
+        const off = (a: KitchenItem, b: KitchenItem) => a.at.kind === "attach" && a.at.to === b.id && (a.at.side === "left" || a.at.side === "right");
+        return off(i, item) || off(item, i);
+      });
+      const floorSize = onFloor ? sizes.get(onFloor.id) : undefined;
+      const baseTop = floorSize && !floorSize.tall ? floorSize.z0 + floorSize.height + (onFloor?.lift ?? 0) : runTop;
       // (Which way up: as the cutlist has it — its height up, its width its depth (along what it's run off); a kick
       // board, its long side along. No height — a width and a depth: lying flat, its width along the run, its depth front
       // to back, its thickness up. Turned, stood the other way round.)
@@ -751,7 +860,7 @@ function layoutKitchen(items: KitchenItem[], units: Map<string, KitchenUnit>, ga
         as === "tall"
           ? height
           : as === "wall"
-            ? nbTop !== undefined && item.level === "wall"
+            ? nbTop !== undefined && item.level === "wall" && (nb?.tall || (nbId ? byId.get(nbId)?.level : undefined) === "wall")
               ? nbTop
               : wallZ0(gaps) + Math.min(height, 720)
             : baseTop;
@@ -766,7 +875,7 @@ function layoutKitchen(items: KitchenItem[], units: Map<string, KitchenUnit>, ga
         depth: panelDepth,
         z0,
         tall: as === "tall",
-        bench: as === "base" && !onKick && !lying,
+        bench: as === "base" && !onKick && !lying && item.benchOn !== false,
         panelAs: as,
         frontT,
         padL: 0,
@@ -1033,6 +1142,7 @@ function kitchenModel(
   off: OffPieces,
   over: BenchSettings,
   bounds?: CabinetModel["bounds"] | null,
+  extrusions: BenchExtrusion[] = [],
 ) {
   const prisms: CabinetPrism[] = [];
   const colors = new Map<string, string>();
@@ -1151,10 +1261,8 @@ function kitchenModel(
         const door = prism.kind === "door";
         put(`${id}:${door ? `front:${prism.part}` : prism.part}`, poly, size.z0 + prism.z0, size.z0 + prism.z1, tint(door ? mixCabinetColor(u.color, "#FFFFFF", 0.25) : CARCASS), ghost);
       }
-      if (bottom && item.level === "base") {
-        put(`${id}:kick`, bottom, 0, size.z0, tint(CARCASS), ghost);
-        bench(item.id, bottom, size.z0 + size.height, ghost);
-      }
+      if (bottom && hasKick(item, size)) put(`${id}:kick`, bottom, 0, size.z0, tint(CARCASS), ghost);
+      if (bottom && hasBench(item, size)) bench(item.id, bottom, size.z0 + size.height, ghost);
       continue;
     }
     if (item.kind === "panel") {
@@ -1320,15 +1428,13 @@ function kitchenModel(
       // (A false cabinet: cut where anything real's in it — from where it first touches; its own fronts aside.)
       putCut(`${id}:carcass`, w(rect(0, -D, W, 0)), size.z0, top, tint(CARCASS), see, solidsBut(item.id).filter((b) => !b.placeholder));
     } else put(`${id}:carcass`, w(rect(0, -D, W, 0)), size.z0, top, tint(CARCASS), see);
-    if (item.level === "base" || size.tall) {
-      // (Its kick, set back under it — and over a base one, its bench.)
-      put(`${id}:kick`, w(rect(0, -D, W, -KICK_SETBACK_MM)), 0, KICK_MM, tint(CARCASS), see);
-      if (!size.tall) {
-        const faces = { front: item.fronts.length ? size.frontT : 0, back: -D, left: 0, right: W };
-        bench(item.id, w(rect(0, -D, W, size.frontT + over.fronts)), top, ghost, { frame, x0: 0, x1: W, y0: -D, y1: size.frontT + over.fronts, faces });
-      }
+    // (Its kick, set back under it — and its bench.)
+    if (hasKick(item, size)) put(`${id}:kick`, w(rect(0, -D, W, -KICK_SETBACK_MM)), 0, KICK_MM, tint(CARCASS), see);
+    if (hasBench(item, size)) {
+      const faces = { front: item.fronts.length ? size.frontT : 0, back: -D, left: 0, right: W };
+      bench(item.id, w(rect(0, -D, W, size.frontT + over.fronts)), top, ghost, { frame, x0: 0, x1: W, y0: -D, y1: size.frontT + over.fronts, faces });
     }
-    boxFronts(item, size, units, gaps).forEach((f, index) => {
+    if (item.frontsOn !== false) boxFronts(item, size, units, gaps).forEach((f, index) => {
       const t = Math.max(3, f.front.thicknessMm);
       put(`${id}:front:${index}`, w(rect(f.x0, 0, f.x1, t)), f.z0, f.z1, tint(f.front.color), ghost);
     });
@@ -1336,8 +1442,9 @@ function kitchenModel(
   // A corner turned in: the bench filled in between the two — their backs carried on till they meet.
   const benchSpan = (item: KitchenItem): [number, number] | null => {
     const size = laid.sizes.get(item.id);
-    if (!size || item.level !== "base") return null;
-    if (item.kind === "box") return size.tall ? null : [-size.depth, size.frontT + over.fronts];
+    if (!size) return null;
+    if (item.kind === "box") return hasBench(item, size) ? [-size.depth, size.frontT + over.fronts] : null;
+    if (item.level !== "base") return null;
     if (item.kind === "gap") return size.bench ? [-size.depth, size.frontT + over.fronts] : null;
     if (item.kind === "panel") return size.bench ? [size.frontT + PANEL_PROUD_MM - size.depth, size.frontT + over.fronts] : null;
     return null;
@@ -1392,7 +1499,17 @@ function kitchenModel(
     const rb = root(b);
     if (ra !== rb) runOf.set(ra, rb);
   };
-  for (const item of items) if (item.at.kind === "attach" && items.some((i) => i.id === (item.at.kind === "attach" ? item.at.to : ""))) join(item.id, item.at.to);
+  // (A bench up on an overhead or a tall cabinet is its own: not the one at bench height it's joined to, however it's joined.)
+  const benchUp = (i: KitchenItem) => {
+    const sz = laid.sizes.get(i.id);
+    return Boolean(sz && (i.kind === "box" || i.kind === "custom") && (i.level === "wall" || sz.tall) && hasBench(i, sz));
+  };
+  for (const item of items) {
+    if (item.at.kind !== "attach") continue;
+    const to = item.at.to;
+    const parent = items.find((i) => i.id === to);
+    if (parent && benchUp(parent) === benchUp(item)) join(item.id, to);
+  }
   // Two benches at an angle that run into each other (their ends meeting, near enough — whatever's joined to what): the
   // corner between them filled, their backs carried on till they meet. Two that just touch: one bench.
   const toSegment = (v: Vec, s0: Vec, s1: Vec) => {
@@ -1475,15 +1592,34 @@ function kitchenModel(
       join(strips[i].id, strips[j].id);
     }
   }
-  const runs = new Map<string, { polys: Vec[][]; top: number }>();
+  const runs = new Map<string, { polys: Vec[][]; cuts: Vec[][]; top: number; up: number; down: number }>();
   for (const b of benches) {
-    const run = runs.get(root(b.id)) ?? { polys: [], top: 0 };
+    const run = runs.get(root(b.id)) ?? { polys: [], cuts: [], top: 0, up: 0, down: 0 };
     run.polys.push(b.poly);
     run.top = Math.max(run.top, b.top);
     runs.set(root(b.id), run);
   }
+  // (What's been extruded, with the run of the piece each is kept with: a side's strip added or cut, the top or the
+  // underneath moved. A strip reaches a touch inside the edge, so it joins on.)
+  for (const e of extrusions) {
+    const run = runs.get(root(e.anchor));
+    const frame = laid.frames.get(e.anchor);
+    if (!run || !frame) continue;
+    if (e.kind === "top") run.up += e.dist;
+    else if (e.kind === "bottom") run.down += e.dist;
+    else if (e.a && e.b && e.n && e.dist) {
+      const a = toWorld(frame, e.a);
+      const b = toWorld(frame, e.b);
+      const out = rot(frame.a, e.n);
+      const inner = e.dist > 0 ? -0.5 : 0.5;
+      const strip = [add(a, mul(out, inner)), add(b, mul(out, inner)), add(b, mul(out, e.dist)), add(a, mul(out, e.dist))];
+      (e.dist > 0 ? run.polys : run.cuts).push(strip);
+    }
+  }
   for (const [runId, run] of runs) {
-    unionOutlines(run.polys).forEach((outline, k) => put(`bench:${runId}:${k}`, outline, run.top, run.top + BENCH_MM, BENCH));
+    const cutBy = run.cuts.map((poly) => (shoelace(poly) < 0 ? [...poly].reverse() : poly));
+    const outlines = unionOutlines(run.polys).flatMap((outline) => (cutBy.length ? differenceOutlines(outline, cutBy) : [outline]));
+    outlines.forEach((outline, k) => put(`bench:${runId}:${k}`, outline, run.top - run.down, run.top + BENCH_MM + run.up, BENCH));
   }
   // (The floor just round what's there — the view fits it — and some to start with when it's empty.)
   let minX = Infinity;
@@ -1506,7 +1642,20 @@ function kitchenModel(
     minY = -600;
     maxY = 300;
   }
-  put("room:floor", rect(minX - 250, minY - 250, maxX + 250, maxY + 450), -30, 0, "#E2E8F0");
+  // (A good way past what's there, under its grid — it doesn't end where they do.)
+  const floorMargin = 2500;
+  put(
+    "room:floor",
+    rect(
+      Math.min(minX, bounds?.minX ?? minX) - floorMargin,
+      Math.min(minY, bounds?.minY ?? minY) - floorMargin,
+      Math.max(maxX, bounds?.maxX ?? maxX) + floorMargin,
+      Math.max(maxY, bounds?.maxY ?? maxY) + floorMargin,
+    ),
+    -30,
+    0,
+    "#E2E8F0",
+  );
   const model: CabinetModel = {
     prisms,
     height: maxZ,
@@ -1605,6 +1754,48 @@ function frontPlaced(item: KitchenItem, u: KitchenUnit, place: { col: number; ro
   return withCols(item, cols);
 }
 // It put where a drop says.
+// An overhead where it's gone: its top on the top of what it's run off, whatever that is — a cabinet, fronts, a panel,
+// something tall. Run off nothing (`nearby`: when it's just gone in, not when it's been moved) — the nearest of those's, a
+// tall one only if it's right by it. Nothing about: where an overhead goes. What runs off it goes with it.
+function lineUpOverhead(items: KitchenItem[], id: string, units: Map<string, KitchenUnit>, gaps: KitchenGaps, nearby: boolean): KitchenItem[] {
+  const item = items.find((i) => i.id === id);
+  if (!item || item.level !== "wall" || item.kind === "gap") return items;
+  const laid = layoutKitchen(items, units, gaps);
+  const own = laid.sizes.get(id);
+  const ownAt = laid.frames.get(id);
+  if (!own || !ownAt || own.tall || (item.kind === "panel" && own.panelAs !== "wall")) return items;
+  const carried = descendants(items, id);
+  const upHigh = (i: KitchenItem) => {
+    const sz = laid.sizes.get(i.id);
+    return Boolean(sz) && i.id !== id && !carried.has(i.id) && i.kind !== "gap" && (i.level === "wall" || Boolean(sz?.tall) || sz?.panelAs === "wall");
+  };
+  let ref: KitchenItem | undefined;
+  if (item.at.kind === "attach") {
+    const to = item.at.to;
+    ref = items.find((i) => i.id === to && upHigh(i));
+  }
+  if (!ref && nearby) {
+    const here = toWorld(ownAt, localCentre(item, own, units));
+    let best = Infinity;
+    for (const other of items) {
+      const f = laid.frames.get(other.id);
+      const sz = laid.sizes.get(other.id);
+      if (!f || !sz || !upHigh(other)) continue;
+      const d = len(sub(toWorld(f, localCentre(other, sz, units)), here));
+      if (d < (sz.tall ? 1500 : 6000) && d < best) {
+        best = d;
+        ref = other;
+      }
+    }
+  }
+  const to = ref ? laid.sizes.get(ref.id) : undefined;
+  if (!to) return items;
+  const by = to.z0 + to.height - (own.z0 + own.height);
+  if (Math.abs(by) <= 0.5) return items;
+  // (A panel run off it follows by itself.)
+  return items.map((i) => (i.id === id || (carried.has(i.id) && i.level === "wall" && i.kind !== "panel") ? { ...i, lift: (i.lift ?? 0) + by } : i));
+}
+
 function applyTarget(items: KitchenItem[], x: KitchenItem, target: DropTarget, level: Level, units: Map<string, KitchenUnit>): KitchenItem[] {
   if (target.kind === "into" && target.behind && x.unitId) {
     // (A Cabinetry cabinet behind a front-made one's fronts: it's that cabinet now — its size — the fronts kept.)
@@ -1617,7 +1808,12 @@ function applyTarget(items: KitchenItem[], x: KitchenItem, target: DropTarget, l
     return u ? items.map((item) => (item.id === target.itemId ? (place ? frontPlaced(item, u, place) : withFront(item, u, units)) : item)) : items;
   }
   if (target.kind === "free") return [...items, { ...x, level, at: { kind: "free", x: target.x, y: target.y, a: target.a } }];
-  const placed: KitchenItem = { ...x, level, at: { kind: "attach", to: target.to, side: target.side, ...(target.turn ? { turn: target.turn } : {}) } };
+  const placed: KitchenItem = {
+    ...x,
+    level,
+    ...(target.lift !== undefined ? { lift: target.lift || undefined } : {}),
+    at: { kind: "attach", to: target.to, side: target.side, ...(target.turn ? { turn: target.turn } : {}), ...(target.rel ? { rel: target.rel } : {}) },
+  };
   const next = [...items, placed];
   if (!target.insert) return next;
   // (What was there runs off its far side now.)
@@ -1673,6 +1869,187 @@ function bakeTurn(items: KitchenItem[], id: string, units: Map<string, KitchenUn
   return items.map((i) => (i.id === id ? { ...i, at: { ...straightAt, turn: at.turn, rel: { x: d[0], y: d[1], a: turned.a - straight.a } } } : i));
 }
 
+// A tool on the toolbar: an icon, its name (and key) on hovering.
+const TEXT_FIELDS = 'input, textarea, select, [contenteditable="true"], [contenteditable=""]';
+// Whether a key's for the box it's pressed in, not the drawing. A measurement box (MeasureBox): letters never are (it only
+// takes numbers), and the rest aren't while nothing's been typed or dragged into it.
+function keyIsForField(event: KeyboardEvent, letter = false) {
+  const field = event.target instanceof HTMLElement ? event.target.closest(TEXT_FIELDS) : null;
+  if (!field) return false;
+  const box = field instanceof HTMLElement ? field.dataset.measureBox : undefined;
+  if (!box) return true;
+  return !letter && box === "busy";
+}
+
+// A box a measurement's typed in to finish what's under way: ready for it as soon as it's there — focused, what's in it
+// highlighted — and again after the drawing's clicked or dragged on, or its number's changed by anything but typing (Enter,
+// a drag). `idle`: nothing waiting in it, so the drawing's keys still work from it. `active` off: an ordinary box, that
+// only highlights when it's clicked. (On a touch screen it waits to be tapped: focusing it would bring the keyboard up.)
+function MeasureBox({
+  idle,
+  active = true,
+  value,
+  onChange,
+  onInput,
+  ...rest
+}: React.InputHTMLAttributes<HTMLInputElement> & { idle: boolean; active?: boolean }) {
+  const ref = useRef<HTMLInputElement>(null);
+  const typed = useRef<string | null>(null);
+  useEffect(() => {
+    if (!active || !window.matchMedia("(pointer: fine)").matches) return;
+    const ready = () => {
+      ref.current?.focus({ preventScroll: true });
+      ref.current?.select();
+    };
+    ready();
+    const onUp = (event: PointerEvent) => {
+      if (event.pointerType === "touch") return;
+      if (event.target instanceof Element && event.target.closest(TEXT_FIELDS)) return;
+      window.setTimeout(() => {
+        const now = document.activeElement;
+        if (now && now !== ref.current && now.closest(TEXT_FIELDS)) return;
+        ready();
+      }, 0);
+    };
+    window.addEventListener("pointerup", onUp);
+    return () => window.removeEventListener("pointerup", onUp);
+  }, [active]);
+  useEffect(() => {
+    const box = ref.current;
+    if (box && active && document.activeElement === box && value !== undefined && String(value) !== typed.current) box.select();
+  }, [active, value]);
+  return (
+    <input
+      {...rest}
+      ref={ref}
+      value={value}
+      data-measure-box={active ? (idle ? "idle" : "busy") : undefined}
+      onFocus={(e) => e.target.select()}
+      onBeforeInput={(e) => {
+        // (Only numbers go in: a letter would otherwise wipe what's highlighted.)
+        if (/[^0-9.-]/.test(e.data)) e.preventDefault();
+      }}
+      onChange={(e) => {
+        typed.current = e.target.value.replace(/[^0-9.-]/g, "");
+        onChange?.(e);
+      }}
+      onInput={(e) => {
+        if (active && value === undefined) e.currentTarget.dataset.measureBox = "busy";
+        onInput?.(e);
+      }}
+    />
+  );
+}
+
+function ToolButton({
+  icon: Icon,
+  label,
+  keys,
+  active,
+  disabled,
+  small,
+  onClick,
+}: {
+  icon: LucideIcon;
+  label: string;
+  keys?: string;
+  active?: boolean;
+  disabled?: boolean;
+  small?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={keys ? `${label} (${keys})` : label}
+      aria-label={label}
+      aria-pressed={active}
+      className={`inline-flex shrink-0 items-center justify-center rounded-[6px] border transition-colors disabled:opacity-35 ${small ? "h-[24px] w-[24px]" : "h-[30px] w-[30px]"} ${active ? "" : "border-transparent hover:bg-[var(--panel-muted)]"}`}
+      style={active ? { borderColor: "var(--brand)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" } : { color: "var(--text-main)" }}
+    >
+      <Icon size={small ? 14 : 17} strokeWidth={1.75} />
+    </button>
+  );
+}
+// A group of tools, named under them.
+function ToolGroup({ label, last, children }: { label: string; last?: boolean; children: React.ReactNode }) {
+  return (
+    <div className={`flex shrink-0 flex-col items-center gap-0.5 px-2 ${last ? "" : "border-r"}`} style={{ borderColor: "var(--glass-border)" }}>
+      <div className="flex items-center gap-0.5">{children}</div>
+      <span className="text-[9.5px] font-medium uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
+        {label}
+      </span>
+    </div>
+  );
+}
+// The view cube: which way the drawing's being looked at — a face clicked, looking at it square on.
+const CUBE_FACES: Array<{ label: string; n: Point3; u: Point3; v: Point3; view: CabinetView }> = [
+  { label: "FRONT", n: [0, 1, 0], u: [1, 0, 0], v: [0, 0, 1], view: { yaw: 0, pitch: 0 } },
+  { label: "BACK", n: [0, -1, 0], u: [1, 0, 0], v: [0, 0, 1], view: { yaw: Math.PI, pitch: 0 } },
+  { label: "RIGHT", n: [1, 0, 0], u: [0, 1, 0], v: [0, 0, 1], view: { yaw: -Math.PI / 2, pitch: 0 } },
+  { label: "LEFT", n: [-1, 0, 0], u: [0, 1, 0], v: [0, 0, 1], view: { yaw: Math.PI / 2, pitch: 0 } },
+  { label: "TOP", n: [0, 0, 1], u: [1, 0, 0], v: [0, 1, 0], view: { yaw: 0, pitch: Math.PI / 2 - 0.001 } },
+];
+function ViewCube({ view, onPick }: { view: CabinetView; onPick: (view: CabinetView) => void }) {
+  const [cy, sy] = [Math.cos(view.yaw), Math.sin(view.yaw)];
+  const [cp, sp] = [Math.cos(view.pitch), Math.sin(view.pitch)];
+  const turned = (p: Point3): Point3 => {
+    const x1 = p[0] * cy + p[1] * sy;
+    const z1 = -p[0] * sy + p[1] * cy;
+    return [x1, p[2] * cp - z1 * sp, p[2] * sp + z1 * cp];
+  };
+  const size = 86;
+  const scale = 22;
+  const at = (p: Point3): Vec => {
+    const t = turned(p);
+    return [size / 2 + t[0] * scale, size / 2 - t[1] * scale];
+  };
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ display: "block" }} role="group" aria-label="View cube">
+      {CUBE_FACES.filter((face) => turned(face.n)[2] > 0.02).map((face) => {
+        const corner = (a: number, b: number): Point3 => [0, 1, 2].map((i) => face.n[i] + a * face.u[i] + b * face.v[i]) as Point3;
+        const points = [corner(-1, -1), corner(1, -1), corner(1, 1), corner(-1, 1)].map(at);
+        const mid = at(face.n);
+        return (
+          <g key={face.label} onClick={() => onPick(face.view)} style={{ cursor: "pointer" }}>
+            <title>{`Look at the ${face.label.toLowerCase()}`}</title>
+            <polygon points={points.map((q) => q.join(",")).join(" ")} className="fill-[var(--panel-muted)] hover:fill-[var(--brand-soft)]" stroke="var(--text-muted)" strokeOpacity={0.55} strokeWidth={1} strokeLinejoin="round" />
+            <text x={mid[0]} y={mid[1]} fontSize={7.5} fontWeight={500} textAnchor="middle" dominantBaseline="middle" fill="var(--text-muted)" pointerEvents="none">
+              {face.label}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+// The nearest place on a flat face to a point on its plane: the point itself, if it's on the face.
+function nearestOnFace(face: Array<[number, number, number]>, n: Point3, q: Point3): Point3 {
+  const minus = (a: Point3, b: Point3): Point3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+  const dot3 = (a: Point3, b: Point3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const raw = minus(face[1], face[0]);
+  const size = Math.hypot(...raw) || 1;
+  const u: Point3 = [raw[0] / size, raw[1] / size, raw[2] / size];
+  const v: Point3 = [n[1] * u[2] - n[2] * u[1], n[2] * u[0] - n[0] * u[2], n[0] * u[1] - n[1] * u[0]];
+  const flat = (p: Point3): Vec => [dot3(minus(p, face[0]), u), dot3(minus(p, face[0]), v)];
+  const plan = face.map((p) => flat(p));
+  const at = flat(q);
+  if (inside(at, plan)) return q;
+  let best: { p: Point3; d: number } | null = null;
+  face.forEach((a, i) => {
+    const b = face[(i + 1) % face.length];
+    const e = minus(b, a);
+    const t = Math.max(0, Math.min(1, dot3(minus(q, a), e) / Math.max(1e-9, dot3(e, e))));
+    const p: Point3 = [a[0] + e[0] * t, a[1] + e[1] * t, a[2] + e[2] * t];
+    const d = Math.hypot(...minus(p, q));
+    if (!best || d < best.d) best = { p, d };
+  });
+  return best ? (best as { p: Point3; d: number }).p : q;
+}
+
 function readStored<T>(key: string, fallback: T, ok: (value: unknown) => boolean): T {
   try {
     const raw = typeof window !== "undefined" ? window.localStorage.getItem(key) : null;
@@ -1684,12 +2061,14 @@ function readStored<T>(key: string, fallback: T, ok: (value: unknown) => boolean
 }
 
 // What's kept of a drawing (the project's drawings/kitchen doc): what's placed where, the pieces left off, the bench.
-export type KitchenDrawingData = { items: unknown[]; off: Record<string, string[]>; bench: Record<string, unknown> };
+export type KitchenDrawingData = { items: unknown[]; off: Record<string, string[]>; bench: Record<string, unknown>; extrusions: unknown[] };
 const validItems = (value: unknown): KitchenItem[] =>
   Array.isArray(value)
     ? (value as KitchenItem[]).filter((item) => item && typeof item.id === "string" && item.at && Array.isArray(item.fronts))
     : [];
 const validOff = (value: unknown): OffPieces => (value && typeof value === "object" && !Array.isArray(value) ? (value as OffPieces) : {});
+const validExtrusions = (value: unknown): BenchExtrusion[] =>
+  Array.isArray(value) ? (value as BenchExtrusion[]).filter((e) => e && typeof e.id === "string" && typeof e.anchor === "string" && Number.isFinite(e.dist)) : [];
 const validBench = (value: unknown): BenchSettings =>
   value && typeof value === "object" && !Array.isArray(value) && typeof (value as BenchSettings).fronts === "number" ? { ...DEFAULT_BENCH, ...(value as BenchSettings) } : DEFAULT_BENCH;
 
@@ -1718,34 +2097,48 @@ export function KitchenDrawing({
   const storageKey = `cutsmart_kitchen_drawing_preview_v2_${projectId}`;
   const [items, setItems] = useState<KitchenItem[]>([]);
   const [offPieces, setOffPieces] = useState<OffPieces>({});
+  // A face of the bench extruded.
+  const [extrusions, setExtrusions] = useState<BenchExtrusion[]>([]);
   // Undo: what it was before each change (the latest last) — Ctrl+Z (⌘Z) goes back a step a press; a step back isn't
-  // itself remembered.
-  const historyRef = useRef<KitchenItem[][]>([]);
-  const lastItemsRef = useRef(items);
+  // itself remembered, only kept for Redo (Ctrl+Y, or Ctrl+Shift+Z), till something else is changed.
+  type DrawingStep = { items: KitchenItem[]; extrusions: BenchExtrusion[] };
+  const historyRef = useRef<DrawingStep[]>([]);
+  const redoRef = useRef<DrawingStep[]>([]);
+  const lastItemsRef = useRef<DrawingStep>({ items, extrusions });
   const undoingRef = useRef(false);
   useEffect(() => {
-    if (lastItemsRef.current === items) return;
+    if (lastItemsRef.current.items === items && lastItemsRef.current.extrusions === extrusions) return;
     if (!undoingRef.current) {
       historyRef.current.push(lastItemsRef.current);
       if (historyRef.current.length > 200) historyRef.current.shift();
+      redoRef.current = [];
     }
     undoingRef.current = false;
-    lastItemsRef.current = items;
-  }, [items]);
+    lastItemsRef.current = { items, extrusions };
+  }, [extrusions, items]);
+  const stepHistory = (from: { current: DrawingStep[] }, to: { current: DrawingStep[] }) => {
+    const step = from.current.pop();
+    if (!step) return false;
+    to.current.push(lastItemsRef.current);
+    undoingRef.current = true;
+    setItems(step.items);
+    setExtrusions(step.extrusions);
+    return true;
+  };
+  const undo = () => stepHistory(historyRef, redoRef);
+  const redo = () => stepHistory(redoRef, historyRef);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (!(event.ctrlKey || event.metaKey) || event.shiftKey || event.altKey || event.key.toLowerCase() !== "z" || event.repeat) return;
-      const target = event.target instanceof HTMLElement ? event.target : null;
-      if (target?.closest('input, textarea, select, [contenteditable="true"], [contenteditable=""]')) return;
-      const prev = historyRef.current.pop();
-      if (!prev) return;
-      event.preventDefault();
-      undoingRef.current = true;
-      setItems(prev);
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.repeat) return;
+      const key = event.key.toLowerCase();
+      const again = key === "y" || (key === "z" && event.shiftKey);
+      if (key !== "z" && !again) return;
+      if (keyIsForField(event)) return;
+      if (again ? redo() : undo()) event.preventDefault();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  });
   const [benchOver, setBenchOver] = useState<BenchSettings>(DEFAULT_BENCH);
   // Saved with the project: read as it opens ("loading" till then — "failed", it couldn't be: nothing saved over it),
   // then each change written a moment after it's made (and as it's left).
@@ -1779,13 +2172,14 @@ export function KitchenDrawing({
           brought = true;
         }
       }
-      const next = { items: validItems(data?.items), off: validOff(data?.off), bench: validBench(data?.bench) };
+      const next = { items: validItems(data?.items), off: validOff(data?.off), bench: validBench(data?.bench), extrusions: validExtrusions(data?.extrusions) };
       savedJsonRef.current = brought ? "" : JSON.stringify(next);
       undoingRef.current = true;
       historyRef.current = [];
       setItems(next.items);
       setOffPieces(next.off);
       setBenchOver(next.bench);
+      setExtrusions(next.extrusions);
       setSaveState("saved");
     });
     return () => {
@@ -1815,13 +2209,13 @@ export function KitchenDrawing({
   });
   useEffect(() => {
     if (!loaded || readOnly) return;
-    const data: KitchenDrawingData = { items, off: offPieces, bench: benchOver };
+    const data: KitchenDrawingData = { items, off: offPieces, bench: benchOver, extrusions };
     const json = JSON.stringify(data);
     if (json === savedJsonRef.current) return;
     pendingRef.current = { json, data };
     const timer = window.setTimeout(() => flushRef.current(), 900);
     return () => window.clearTimeout(timer);
-  }, [benchOver, items, loaded, offPieces, readOnly]);
+  }, [benchOver, extrusions, items, loaded, offPieces, readOnly]);
   // (Left with a change not written yet: written now.)
   useEffect(() => {
     const flush = flushRef.current;
@@ -1854,12 +2248,39 @@ export function KitchenDrawing({
   }, [benchEdge]);
   // Rotate: on, a drag on the drawing turns what's picked — as it's dragged (`rotating`: its turn at its joint, or its
   // frame on its own), snapping every 45°.
-  const [rotateTool, setRotateTool] = useState(false);
+  const [tool, setTool] = useState<DrawTool>("select");
+  const rotateTool = tool === "rotate";
   // Move: on, a drag on the drawing slides what's picked along the axis picked — `moveDraft`: how far so far (and as
   // typed), not kept till Enter (or the tick).
-  const [moveTool, setMoveTool] = useState(false);
+  const moveTool = tool === "move";
   const [moveAxis, setMoveAxis] = useState<MoveAxis>("x");
   const [moveDraft, setMoveDraft] = useState<{ id: string; delta: number; text: string } | null>(null);
+  // Extrude: the bench's face picked, how far so far (dragged, or typed — not kept till Enter), and the one under the pointer.
+  const [extrude, setExtrude] = useState<{ face: BenchFace; dist: number; text: string } | null>(null);
+  const [extrudeHover, setExtrudeHover] = useState<string | null>(null);
+  const extrudeDragRef = useRef<{ pointerId: number; face: BenchFace; out: Vec; startPlan: Vec; startY: number; z: number; base: number } | null>(null);
+  // Measure: its points so far (two, a length; three, the angle at the second) — and where the next would go.
+  const [measure, setMeasure] = useState<{ points: Point3[]; done: boolean } | null>(null);
+  const [measureHover, setMeasureHover] = useState<{ p: Point3; snapped: boolean; edge?: [Point3, Point3] } | null>(null);
+  // Snap (on the toolbar): off, a measurement's points go anywhere, and what's dragged doesn't snap.
+  const [snapOn, setSnapOn] = useState(true);
+  // Measuring between faces (or a face and a point): the first, the second; and the face under the pointer.
+  const [faceMeasure, setFaceMeasure] = useState<{ a: MeasureFace; b: MeasureFace | null } | null>(null);
+  const [faceHover, setFaceHover] = useState<MeasureFace | null>(null);
+  // Left-drag on the drawing: Orbit or Pan, on from the status bar, whatever it's over.
+  const [navTool, setNavTool] = useState<"orbit" | "pan" | null>(null);
+  // What's shown.
+  const [hiddenLayers, setHiddenLayers] = useState<ReadonlySet<DrawLayer>>(new Set());
+  const [hiddenItems, setHiddenItems] = useState<ReadonlySet<string>>(new Set());
+  const [xray, setXray] = useState(false);
+  const [showGrid, setShowGrid] = useState(true);
+  const [showDims, setShowDims] = useState(false);
+  const [showMenuAt, setShowMenuAt] = useState<{ left: number; top: number } | null>(null);
+  // The library's tabs and search; the settings panel; the properties panel folded away.
+  const [leftTab, setLeftTab] = useState<"library" | "browser">("library");
+  const [libSearch, setLibSearch] = useState("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [propsFolded, setPropsFolded] = useState(false);
   const moveDragRef = useRef<{ pointerId: number; id: string; axis: MoveAxis; startPlan: Vec; startY: number; z: number; base: number; dir: Vec } | null>(null);
 
   const [rotating, setRotating] = useState<{ id: string; turn?: number; free?: { x: number; y: number; a: number } } | null>(null);
@@ -1871,7 +2292,7 @@ export function KitchenDrawing({
   type CornerRef = { id: string; corner: Pivot; low?: boolean };
   const sameRef = (a: CornerRef | null | undefined, b: CornerRef | null | undefined) =>
     (!a && !b) || Boolean(a && b && a.id === b.id && a.corner.x === b.corner.x && a.corner.y === b.corner.y && Boolean(a.low) === Boolean(b.low));
-  const [pivotDrag, setPivotDrag] = useState<{ pointerId: number; from: CornerRef; over: CornerRef | null; x: number; y: number; moved: boolean } | null>(null);
+  const [pivotDrag, setPivotDrag] = useState<{ pointerId: number; from: CornerRef; over: CornerRef | null; x: number; y: number; moved: boolean; pointer?: Vec | null } | null>(null);
   // The right-click menu: on what, and where (px, in the drawing).
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const rightDownRef = useRef<{ x: number; y: number } | null>(null);
@@ -1909,46 +2330,99 @@ export function KitchenDrawing({
     const byType = new Map<string, KitchenUnit[]>();
     for (const u of units) {
       if (room !== "All rooms" && u.room !== room) continue;
+      if (libSearch.trim() && !`${u.name} ${u.partType}`.toLowerCase().includes(libSearch.trim().toLowerCase())) continue;
       byType.set(u.partType, [...(byType.get(u.partType) ?? []), u]);
     }
     const rank: Record<KitchenUnit["kind"], number> = { fronts: 0, cabinet: 1, custom: 2, panel: 3, other: 4 };
     return Array.from(byType.entries()).sort((a, b) => Math.min(...a[1].map((u) => rank[u.kind])) - Math.min(...b[1].map((u) => rank[u.kind])));
-  }, [units, room]);
+  }, [units, room, libSearch]);
 
+  // Ctrl + scroll while dragging a piece: how far it's been turned. Its drop, with that: on its own, turned about its
+  // middle; run off something, at its joint (not a custom cabinet, which locks on by its end).
+  const [dragTurn, setDragTurn] = useState(0);
+  const withDragTurn = (item: KitchenItem, target: DropTarget): DropTarget => {
+    if (!dragTurn || target.kind === "into" || item.kind === "custom") return target;
+    if (target.kind === "attach") return { ...target, turn: (target.turn ?? 0) + dragTurn };
+    const own = layoutKitchen([{ ...item, at: { kind: "free", x: 0, y: 0, a: 0 } }], unitMap, gaps).sizes.get(item.id);
+    if (!own) return target;
+    const c = localCentre(item, own, unitMap);
+    const mid = add([target.x, target.y], rot(target.a, c));
+    const a = target.a + dragTurn;
+    const o = sub(mid, rot(a, c));
+    return { kind: "free", x: o[0], y: o[1], a };
+  };
   // What's shown: as it is — or with what's being dropped or moved where it'd go.
   const draft = moveTool && moveDraft && moveDraft.id === selectedId ? moveDraft : null;
+  // (As it is — not as it's shown while something's dragged.)
+  const laidNow = useMemo(() => layoutKitchen(liveItems, unitMap, gaps), [gaps, liveItems, unitMap]);
+  // Rotate: an angle typed, for a piece on its own — and where that turns it, about its pivot; not kept till Enter.
+  const [rotateTyped, setRotateTyped] = useState<{ id: string; deg: number; text: string } | null>(null);
+  const turnTyped = rotateTool && rotateTyped && rotateTyped.id === selectedId ? rotateTyped : null;
+  const typedTurn = useMemo(() => {
+    if (!turnTyped) return null;
+    const item = liveItems.find((i) => i.id === turnTyped.id);
+    const frame = laidNow.frames.get(turnTyped.id);
+    const size_ = laidNow.sizes.get(turnTyped.id);
+    const print = item && size_ ? footprintOf(item, size_) : null;
+    if (!item || item.at.kind !== "free" || !frame || !print) return null;
+    const pivot = toWorld(frame, footprintCorner(print, ownPivotOf(item)));
+    // (The plan's y runs towards the front, so a plain + angle would look clockwise from above.)
+    const by = (-turnTyped.deg * Math.PI) / 180;
+    const o = add(pivot, rot(by, sub(frame.o, pivot)));
+    return { id: item.id, free: { x: o[0], y: o[1], a: frame.a + by } };
+  }, [laidNow, liveItems, turnTyped]);
   const shownItems = useMemo(() => {
     if (draft?.delta) return moveBy(liveItems, draft.id, moveAxis, draft.delta, unitMap, gaps);
-    if (rotating) {
+    const turning: typeof rotating = rotating ?? typedTurn;
+    if (turning) {
       return liveItems.map((item) =>
-        item.id !== rotating.id
+        item.id !== turning.id
           ? item
-          : rotating.free
-            ? { ...item, at: { kind: "free" as const, ...rotating.free } }
+          : turning.free
+            ? { ...item, at: { kind: "free" as const, ...turning.free } }
             : item.at.kind === "attach"
-              ? { ...item, at: { kind: "attach" as const, to: item.at.to, side: item.at.side, turn: rotating.turn } }
+              ? { ...item, at: { kind: "attach" as const, to: item.at.to, side: item.at.side, turn: turning.turn } }
               : item,
       );
     }
     if (moving) {
       const item = liveItems.find((i) => i.id === moving.id);
-      return item ? applyTarget(pullOut(liveItems, moving.id), item, moving.target, moving.level, unitMap) : liveItems;
+      return item ? lineUpOverhead(applyTarget(pullOut(liveItems, moving.id), item, withDragTurn(item, moving.target), moving.level, unitMap), moving.id, unitMap, gaps, false) : liveItems;
     }
     if (dropPreview) {
       const u = unitMap.get(dropPreview.unitId);
-      return u ? applyTarget(liveItems, itemFor(u, dropPreview.level, GHOST_ID), dropPreview.target, dropPreview.level, unitMap) : liveItems;
+      if (!u) return liveItems;
+      const ghost = itemFor(u, dropPreview.level, GHOST_ID);
+      return lineUpOverhead(applyTarget(liveItems, ghost, withDragTurn(ghost, dropPreview.target), dropPreview.level, unitMap), GHOST_ID, unitMap, gaps, true);
     }
     return liveItems;
-  }, [draft, dropPreview, gaps, liveItems, moveAxis, moving, rotating, unitMap]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dragTurn, draft, dropPreview, gaps, liveItems, moveAxis, moving, rotating, typedTurn, unitMap]);
   const laid = useMemo(() => layoutKitchen(shownItems, unitMap, gaps), [gaps, shownItems, unitMap]);
-  // (As it is — not as it's shown while something's dragged.)
-  const laidNow = useMemo(() => layoutKitchen(liveItems, unitMap, gaps), [gaps, liveItems, unitMap]);
   const selected = liveItems.find((item) => item.id === selectedId) ?? null;
-  const { model, colors, translucentParts, benchStrips } = useMemo(
-    () => kitchenModel(shownItems, unitMap, gaps, laid, offPieces, benchOver, heldBounds),
-    [benchOver, gaps, heldBounds, laid, offPieces, shownItems, unitMap],
+  const shownExtrusions = useMemo(
+    () => (extrude?.dist ? [...extrusions, { ...extrude.face, id: "__draft", dist: extrude.dist }] : extrusions),
+    [extrude, extrusions],
   );
-  const faces = useMemo(() => cabinetModelFaces(model), [model]);
+  const { model, colors, translucentParts, benchStrips } = useMemo(
+    () => kitchenModel(shownItems, unitMap, gaps, laid, offPieces, benchOver, heldBounds, shownExtrusions),
+    [benchOver, gaps, heldBounds, laid, offPieces, shownExtrusions, shownItems, unitMap],
+  );
+  // (What's been hidden, left out — it can't be clicked or dropped on either.)
+  const partHidden = useMemo(() => {
+    const levelOf = new Map(shownItems.map((item) => [item.id, item.level]));
+    return (part: string) => {
+      if (part.startsWith("room:")) return hiddenLayers.has("floor");
+      if (part.startsWith("bench:")) return hiddenLayers.has("bench");
+      if (hiddenLayers.has("fronts") && part.includes(":front:")) return true;
+      if (hiddenLayers.has("kicks") && part.endsWith("kick")) return true;
+      const id = itemOfPart(part);
+      if (!id) return false;
+      const level = levelOf.get(id);
+      return hiddenItems.has(id) || Boolean(level && hiddenLayers.has(level));
+    };
+  }, [hiddenItems, hiddenLayers, shownItems]);
+  const faces = useMemo(() => cabinetModelFaces(model).filter((face) => !partHidden(face.part)), [model, partHidden]);
   const hostRef = useRef<HTMLDivElement | null>(null);
   // (The drawing's box, as it's put up — watched for its size from then: not from the first effect, which can run before
   // it's there.)
@@ -1963,14 +2437,205 @@ export function KitchenDrawing({
   }, [hostEl]);
   const projected = useMemo(() => projectCabinetFaces(model, faces, view, size), [faces, model, size, view]);
 
-  const { attachTo, handlers, transform, zoom, resetZoom, cursor } = useView3dGestures({
+  const { attachTo, handlers, transform, zoom, resetZoom, zoomBy, cursor } = useView3dGestures({
     onTurn: (dx, dy) => setView((prev) => turnCabinetView(prev, dx, dy)),
     onTap: (x, y) => {
+      if (tool === "measure") {
+        const at = measurePointAt(x, y);
+        const face = at ? null : measureFaceAt(x, y);
+        // (A point, as what's measured to a face looking this way.)
+        const asFace = (q: Point3, n: Point3, key: string): MeasureFace => ({ key, points: [q], n, at: q });
+        const openFace = faceMeasure && !faceMeasure.b ? faceMeasure.a : null;
+        const openPoint = measure && !measure.done && measure.points.length === 1 ? measure.points[0] : null;
+        if (face) {
+          setMeasure(null);
+          if (openPoint) setFaceMeasure({ a: asFace(openPoint, face.n, "point"), b: face });
+          else if (openFace) {
+            if (openFace.key !== face.key) setFaceMeasure({ a: openFace, b: face });
+          } else setFaceMeasure({ a: face, b: null });
+        } else if (at) {
+          if (openFace) setFaceMeasure({ a: openFace, b: asFace(at.p, openFace.n, "point") });
+          else {
+            setFaceMeasure(null);
+            setMeasure((prev) => (!prev || prev.done ? { points: [at.p], done: false } : { points: [...prev.points, at.p], done: prev.points.length + 1 >= 3 }));
+          }
+        }
+        return;
+      }
+      if (tool === "extrude") {
+        if (!extrude?.dist) setExtrude(null);
+        return;
+      }
       setSelectedId(null);
       setBenchEdge(benchEdgeAt(x, y));
       setBenchEdgeText("");
     },
+    leftTurns: navTool === "orbit",
+    middlePans: true,
   });
+  // A point on the screen, through to a plane — in the drawing (mm).
+  function pointOnPlane(clientX: number, clientY: number, n: Point3, p0: Point3): Point3 | null {
+    const point = svgPoint(clientX, clientY);
+    if (!point) return null;
+    const { k, centre } = cabinetViewProjector(model, view, size);
+    const [cy, sy] = [Math.cos(view.yaw), Math.sin(view.yaw)];
+    const [cp, sp] = [Math.cos(view.pitch), Math.sin(view.pitch)];
+    const across: Point3 = [cy, sy, 0];
+    const up: Point3 = [sy * sp, -cy * sp, cp];
+    const towards: Point3 = [-sy * cp, cy * cp, sp];
+    const x = (point[0] - size.width / 2) / k;
+    const y = (size.height / 2 - point[1]) / k;
+    const at = (d: number): Point3 => [0, 1, 2].map((i) => centre[i] + x * across[i] + y * up[i] + d * towards[i]) as Point3;
+    const dot3 = (a: Point3, b: Point3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    const facing = dot3(n, towards);
+    if (Math.abs(facing) < 1e-4) return null;
+    const onScreen = at(0);
+    return at(dot3(n, [p0[0] - onScreen[0], p0[1] - onScreen[1], p0[2] - onScreen[2]]) / facing);
+  }
+  // Where a measurement's point goes, under the pointer. Snap on: a corner or the middle of an edge of the face it's over
+  // (else of anything just there), or an edge, if it's near one — nothing otherwise (in the middle of a face: that face,
+  // measureFaceAt). A thin face's reach is less, so the face itself can still be had. Snap off: right there, on the face
+  // it's over or the floor.
+  function measurePointAt(clientX: number, clientY: number): { p: Point3; snapped: boolean; edge?: [Point3, Point3] } | null {
+    const point = svgPoint(clientX, clientY);
+    if (!point) return null;
+    let over: (typeof projected)[number] | undefined;
+    for (let i = projected.length - 1; i >= 0 && !over; i -= 1) {
+      if (!projected[i].part.startsWith("room:") && inside(point, projected[i].screen)) over = projected[i];
+    }
+    if (!snapOn) {
+      const p = over ? pointOnPlane(clientX, clientY, over.normal as Point3, over.points[0] as Point3) : pointOnPlane(clientX, clientY, [0, 0, 1], [0, 0, 0]);
+      return p ? { p, snapped: false } : null;
+    }
+    type Near = { p: Point3; d: number };
+    // (Something else's corner or edge that lands within the face it's over is behind that face: not to be picked.)
+    const hiddenBy = (face: (typeof projected)[number], on: Vec) => Boolean(over && face !== over && inside(on, over.screen));
+    const cornerNear = (face: (typeof projected)[number], reach: number) => {
+      let best: Near | null = null;
+      face.points.forEach((p, i) => {
+        const j = (i + 1) % face.points.length;
+        const s0 = face.screen[i];
+        const s1 = face.screen[j];
+        const q = face.points[j];
+        const options: Array<[Point3, Vec]> = [
+          [[p[0], p[1], p[2]], [s0[0], s0[1]]],
+          [[(p[0] + q[0]) / 2, (p[1] + q[1]) / 2, (p[2] + q[2]) / 2], [(s0[0] + s1[0]) / 2, (s0[1] + s1[1]) / 2]],
+        ];
+        for (const [at, on] of options) {
+          const d = len(sub(on, point));
+          if (d <= reach && !hiddenBy(face, on) && (!best || d < (best as Near).d)) best = { p: at, d };
+        }
+      });
+      return best as Near | null;
+    };
+    const edgeNear = (face: (typeof projected)[number], reach: number) => {
+      let best: { p: Point3; d: number; edge: [Point3, Point3] } | null = null;
+      face.points.forEach((p, i) => {
+        const j = (i + 1) % face.points.length;
+        const s0: Vec = [face.screen[i][0], face.screen[i][1]];
+        const e = sub([face.screen[j][0], face.screen[j][1]], s0);
+        const t = Math.max(0, Math.min(1, dot(sub(point, s0), e) / Math.max(1e-9, dot(e, e))));
+        const on = add(s0, mul(e, t));
+        const d = len(sub(point, on));
+        const q = face.points[j];
+        if (d <= reach && !hiddenBy(face, on) && (!best || d < (best as { d: number }).d)) {
+          best = { p: [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t, p[2] + (q[2] - p[2]) * t], d, edge: [p as Point3, q as Point3] };
+        }
+      });
+      return best as { p: Point3; d: number; edge: [Point3, Point3] } | null;
+    };
+    // (How narrow the face it's over is, on the screen.)
+    const narrow = over
+      ? Math.min(
+          Math.max(...over.screen.map((q) => q[0])) - Math.min(...over.screen.map((q) => q[0])),
+          Math.max(...over.screen.map((q) => q[1])) - Math.min(...over.screen.map((q) => q[1])),
+        ) * zoom.z
+      : Infinity;
+    const onFace = over ? cornerNear(over, Math.min(16, Math.max(5, narrow * 0.3)) / zoom.z) : null;
+    if (onFace) return { p: onFace.p, snapped: true };
+    let nearby: Near | null = null;
+    for (const face of projected) {
+      if (face.part.startsWith("room:")) continue;
+      const hit = cornerNear(face, Math.min(10, Math.max(5, narrow * 0.3)) / zoom.z);
+      if (hit && (!nearby || hit.d < nearby.d)) nearby = hit;
+    }
+    if (nearby) return { p: nearby.p, snapped: true };
+    const edgeReach = Math.min(10, narrow * 0.2) / zoom.z;
+    const onEdge = over ? edgeNear(over, edgeReach) : null;
+    if (onEdge) return { p: onEdge.p, snapped: true, edge: onEdge.edge };
+    let edgeBy: { p: Point3; d: number; edge: [Point3, Point3] } | null = null;
+    for (const face of projected) {
+      if (face.part.startsWith("room:")) continue;
+      const hit = edgeNear(face, edgeReach);
+      if (hit && (!edgeBy || hit.d < edgeBy.d)) edgeBy = hit;
+    }
+    return edgeBy ? { p: edgeBy.p, snapped: true, edge: edgeBy.edge } : null;
+  }
+  // The face under the pointer, for measuring from — the floor, if there's nothing else there.
+  function measureFaceAt(clientX: number, clientY: number): MeasureFace | null {
+    const point = svgPoint(clientX, clientY);
+    if (!point || !snapOn) return null;
+    let over: (typeof projected)[number] | undefined;
+    for (let i = projected.length - 1; i >= 0 && !over; i -= 1) if (inside(point, projected[i].screen)) over = projected[i];
+    if (!over) return null;
+    const size3 = Math.hypot(over.normal[0], over.normal[1], over.normal[2]) || 1;
+    const n: Point3 = [over.normal[0] / size3, over.normal[1] / size3, over.normal[2] / size3];
+    const at = pointOnPlane(clientX, clientY, n, over.points[0] as Point3);
+    if (!at) return null;
+    return { key: over.key, points: over.points.map((q) => [q[0], q[1], q[2]] as Point3), n, at };
+  }
+  // The bench's face under the pointer, if it's what's in front there.
+  function benchFaceAt(clientX: number, clientY: number): BenchFace | null {
+    const point = svgPoint(clientX, clientY);
+    if (!point) return null;
+    let face: (typeof projected)[number] | undefined;
+    for (let i = projected.length - 1; i >= 0 && !face; i -= 1) if (!projected[i].part.startsWith("room:") && inside(point, projected[i].screen)) face = projected[i];
+    if (!face || !face.part.startsWith("bench:")) return null;
+    const anchor = face.part.split(":")[1];
+    const frame = laid.frames.get(anchor);
+    if (!frame || anchor === GHOST_ID) return null;
+    const points = face.points.map((q) => [q[0], q[1], q[2]] as [number, number, number]);
+    const base = { key: face.key, points, anchor };
+    if (face.normal[2] > 0.5) return { ...base, kind: "top" };
+    if (face.normal[2] < -0.5) return { ...base, kind: "bottom" };
+    const toLocal = (q: Vec) => rot(-frame.a, sub(q, frame.o));
+    return {
+      ...base,
+      kind: "side",
+      a: toLocal([points[0][0], points[0][1]]),
+      b: toLocal([points[1][0], points[1][1]]),
+      n: rot(-frame.a, [face.normal[0], face.normal[1]]),
+    };
+  }
+  // The extrusion so far, kept — it's in the bench from here.
+  const commitExtrude = () => {
+    if (extrude?.dist) {
+      const { anchor, kind, a, b, n } = extrude.face;
+      setExtrusions((prev) => [...prev, { id: newId(), anchor, kind, a, b, n, dist: extrude.dist }]);
+    }
+    setExtrude(null);
+  };
+  // A press on the bench's face (or its arrow): dragged from here, that face out or in.
+  const startExtrudeDrag = (event: ReactPointerEvent<Element>, face: BenchFace, base: number) => {
+    const frame = laidNow.frames.get(face.anchor);
+    if (!frame) return;
+    try {
+      hostRef.current?.setPointerCapture(event.pointerId);
+    } catch {
+      // (Already let go.)
+    }
+    const z = (Math.min(...face.points.map((q) => q[2])) + Math.max(...face.points.map((q) => q[2]))) / 2;
+    extrudeDragRef.current = {
+      pointerId: event.pointerId,
+      face,
+      out: face.n ? rot(frame.a, face.n) : [0, 0],
+      startPlan: planPointAt(event.clientX, event.clientY, z),
+      startY: svgPoint(event.clientX, event.clientY)?.[1] ?? 0,
+      z,
+      base,
+    };
+    if (!heldBounds) setHeldBounds(model.bounds);
+  };
   // The bench edge under a click: the bench face in front there — its outline's edge nearest where it was clicked (on
   // its top).
   function benchEdgeAt(clientX: number, clientY: number): { a: Vec; b: Vec; z: number } | null {
@@ -2031,6 +2696,24 @@ export function KitchenDrawing({
     );
     setBenchEdge(null);
   };
+  // Ctrl + scroll, while a piece is being dragged: it turns, a notch at a time, not the view zooming (or the browser's).
+  const pieceInHand = Boolean(libDrag?.started || moving);
+  useEffect(() => {
+    if (!pieceInHand) return;
+    let scrolled = 0;
+    const onWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      event.stopPropagation();
+      scrolled += event.deltaY;
+      if (Math.abs(scrolled) < 50) return;
+      const by = scrolled > 0 ? Math.PI / 4 : -Math.PI / 4;
+      scrolled = 0;
+      setDragTurn((turn) => turn + by);
+    };
+    window.addEventListener("wheel", onWheel, { passive: false, capture: true });
+    return () => window.removeEventListener("wheel", onWheel, { capture: true });
+  }, [pieceInHand]);
   // A point on the screen, in the drawing's px (before its zoom).
   const svgPoint = (clientX: number, clientY: number): Vec | null => {
     const box = hostRef.current?.getBoundingClientRect();
@@ -2053,10 +2736,12 @@ export function KitchenDrawing({
   const targetAt = (clientX: number, clientY: number, x: KitchenItem, u: KitchenUnit | undefined, base: KitchenItem[]): { target: DropTarget; level: Level } => {
     const bounds = heldBounds ?? model.bounds;
     const baseLaid = layoutKitchen(base, unitMap, gaps);
-    const baseModel = kitchenModel(base, unitMap, gaps, baseLaid, offPieces, benchOver, bounds).model;
-    const seen = projectCabinetFaces(baseModel, cabinetModelFaces(baseModel), view, size);
+    const baseModel = kitchenModel(base, unitMap, gaps, baseLaid, offPieces, benchOver, bounds, extrusions).model;
+    const seen = projectCabinetFaces(baseModel, cabinetModelFaces(baseModel).filter((face) => !partHidden(face.part)), view, size);
     const point = svgPoint(clientX, clientY) ?? [0, 0];
     const projector = cabinetViewProjector(baseModel, view, size);
+    // (A snap's reach on the screen, in mm — the same on the screen however far it's zoomed.)
+    const mmPerPx = 1 / Math.max(1e-6, projector.k * zoom.z);
     // (The point on the plan under it, at a height.)
     const planAt = (z: number): Vec => {
       const cy = Math.cos(view.yaw);
@@ -2080,12 +2765,47 @@ export function KitchenDrawing({
         hitFace = seen[i];
       }
     }
-    // (Off a side of something: and what was there moves along to after it.)
-    const offSide = (h: KitchenItem, side: string): DropTarget => {
-      const child = base.find((c) => c.at.kind === "attach" && c.at.to === h.id && c.at.side === side);
+    // (Aimed up on the wall, over a base cabinet — not on it: against the wall behind it, below. Anything else: what's
+    // under the pointer.)
+    const aimedLevel = u ? levelFor(u, placing) : x.level;
+    if (hit && aimedLevel === "wall" && hit.level === "base" && x.kind !== "panel" && !baseLaid.sizes.get(hit.id)?.tall && baseLaid.sizes.get(hit.id)?.panelAs !== "wall") {
+      hit = undefined;
+      hitFace = undefined;
+    }
+    // (Off a side of something: and what was there at that height moves along to after it.)
+    const offSide = (h: KitchenItem, side: string, level: Level = h.level): Extract<DropTarget, { kind: "attach" }> => {
+      const child = base.find((c) => c.at.kind === "attach" && c.at.to === h.id && c.at.side === side && c.level === level);
       if (child) return { kind: "attach", to: h.id, side, insert: child.id };
-      if (h.at.kind === "attach" && baseLaid.plug.get(h.id) === side) return { kind: "attach", to: h.at.to, side: h.at.side, insert: h.id };
+      if (level === h.level && h.at.kind === "attach" && baseLaid.plug.get(h.id) === side) return { kind: "attach", to: h.at.to, side: h.at.side, insert: h.id };
       return { kind: "attach", to: h.id, side };
+    };
+    // Onto a tall panel or cabinet: its top half, up as an overhead — its top on that one's top (and off a panel, at its
+    // front; off a cabinet, its back on its back); its bottom half, down at the bottom with it.
+    const upOnTall = (h: KitchenItem, side: string, hSize: ItemSize): { target: DropTarget; level: Level } | null => {
+      const own = layoutKitchen([{ ...x, level: "wall", lift: undefined, at: { kind: "free", x: 0, y: 0, a: 0 } }], unitMap, gaps).sizes.get(x.id);
+      if (!own || own.tall || own.height >= hSize.height) return null;
+      return {
+        target: { ...offSide(h, side, "wall"), lift: hSize.z0 + hSize.height - (own.z0 + own.height), ...(h.kind === "panel" ? {} : { rel: { x: 0, y: own.depth - hSize.depth, a: 0 } }) },
+        level: "wall",
+      };
+    };
+    // (A side an overhead's snapped to, of something tall on the floor: up as on it.)
+    const upIfTall = (t: DropTarget, level: Level): { target: DropTarget; level: Level } => {
+      const h = t.kind === "attach" ? byId.get(t.to) : undefined;
+      const hSize = h ? baseLaid.sizes.get(h.id) : undefined;
+      if (level !== "wall" || t.kind !== "attach" || !h || !hSize?.tall || h.level !== "base") return { target: t, level };
+      return upOnTall(h, t.side, hSize) ?? { target: t, level: h.level };
+    };
+    const offTall = (h: KitchenItem, side: string, hSize: ItemSize, hFrame: Frame): { target: DropTarget; level: Level } => {
+      const plain = { target: offSide(h, side), level: aimedLevel === "wall" && hSize.panelAs === "wall" ? ("wall" as const) : h.level };
+      if ((x.kind !== "box" && x.kind !== "custom") || !hSize.tall) return plain;
+      const mid = toWorld(hFrame, localCentre(h, hSize, unitMap));
+      const foot = projector.project([mid[0], mid[1], hSize.z0]) as Vec;
+      const head = projector.project([mid[0], mid[1], hSize.z0 + hSize.height]) as Vec;
+      const rise = sub(head, foot);
+      const high = dot(sub(point, foot), rise) / Math.max(1e-6, dot(rise, rise)) > 0.5;
+      if (!high) return { target: { ...offSide(h, side, "base"), lift: hSize.z0 }, level: "base" };
+      return upOnTall(h, side, hSize) ?? plain;
     };
     // The free side nearest the pointer, and how far (mm): each looked for at its own height — where it's seen — and on
     // the floor beside it (the nearer), measured to the whole side (its front corner to its back), one the pointer's
@@ -2093,12 +2813,16 @@ export function KitchenDrawing({
     const freeSideNear = (level: Level | null): { target: DropTarget; d: number } | null => {
       let best: { target: DropTarget; d: number } | null = null;
       for (const item of base) {
-        if (level && item.level !== level) continue;
         const s = baseLaid.sizes.get(item.id);
         if (!s) continue;
-        const looks = [planAt(s.z0 + s.height / 2), planAt(item.level === "wall" ? s.z0 : 0)];
+        // (An overhead, by something tall on the floor: its side's as good as an overhead's.)
+        const upBeside = level === "wall" && item.level === "base" && s.tall && (x.kind === "box" || x.kind === "custom");
+        if (level && item.level !== level && !upBeside) continue;
+        const looks = [planAt(s.z0 + s.height / 2), planAt(item.level === "wall" ? s.z0 : 0), ...(upBeside ? [planAt(wallZ0(gaps) + 360)] : [])];
         for (const socket of baseLaid.sockets.get(item.id) ?? []) {
-          const taken = base.some((c) => c.at.kind === "attach" && c.at.to === item.id && c.at.side === socket.id) || baseLaid.plug.get(item.id) === socket.id;
+          const taken = upBeside
+            ? base.some((c) => c.at.kind === "attach" && c.at.to === item.id && c.at.side === socket.id && c.level === "wall")
+            : base.some((c) => c.at.kind === "attach" && c.at.to === item.id && c.at.side === socket.id) || baseLaid.plug.get(item.id) === socket.id;
           if (taken) continue;
           const back = sub(socket.p, mul(socket.f, s.depth));
           const e = sub(back, socket.p);
@@ -2171,10 +2895,12 @@ export function KitchenDrawing({
     }
     if (hit && hs && hf) {
       const midZ = hs.z0 + hs.height / 2;
-      // (Right by a free side — a panel's, say — though it's over the next thing: that side.)
+      // (Right by a panel's free edge — too thin to land on — though it's over the next thing: that edge.)
       const near = freeSideNear(hit.level);
-      if (near && near.d < 100) return { target: near.target, level: hit.level };
-      // (Over a side or an end of it — the face the pointer's on looking that way: run off that one.)
+      if (snapOn && near && near.target.kind === "attach" && near.target.to !== hit.id && byId.get(near.target.to)?.kind === "panel" && near.d < THIN_SNAP_PX * mmPerPx) {
+        return upIfTall(near.target, hit.level);
+      }
+      // A side face: that side. (Looking that way, near enough.)
       const normal = hitFace?.normal;
       if (normal && Math.abs(normal[2]) < 0.5) {
         const looking = unit([normal[0], normal[1]]);
@@ -2182,14 +2908,14 @@ export function KitchenDrawing({
           const d = dot(sk.n, looking);
           return d > 0.7 && (!best || d > best.d) ? { id: sk.id, d } : best;
         }, null);
-        if (facing) return { target: offSide(hit, facing.id), level: hit.level };
+        if (facing) return offTall(hit, facing.id, hs, hf);
       }
       if (hit.kind === "custom" || isFacePanel(hit)) {
         const plan = planAt(midZ);
         const nearest = (baseLaid.sockets.get(hit.id) ?? []).reduce<Socket | null>((best, s) => (!best || len(sub(s.p, plan)) < len(sub(best.p, plan)) ? s : best), null);
-        if (nearest) return { target: offSide(hit, nearest.id), level: hit.level };
+        if (nearest) return offTall(hit, nearest.id, hs, hf);
       } else {
-        // (How far along its front it is: 0 its left end, 1 its right.)
+        // A front or a top (or a panel's edge): the side of it the pointer's nearer, seen along it — 0 its left end, 1 its right.
         const left = toWorld(hf, [0, 0]);
         const right = toWorld(hf, [hs.width, 0]);
         const sl = projector.project([left[0], left[1], midZ]);
@@ -2197,7 +2923,7 @@ export function KitchenDrawing({
         const along = sub(sr, sl);
         const t = dot(sub(point, sl), along) / Math.max(1e-6, dot(along, along));
         if (u?.kind === "fronts" && hit.kind === "box" && t >= 0.22 && t <= 0.78) return { target: { kind: "into", itemId: hit.id }, level: hit.level };
-        return { target: offSide(hit, t < 0.5 ? "left" : "right"), level: hit.level };
+        return offTall(hit, t < 0.5 ? "left" : "right", hs, hf);
       }
     }
     const level = u ? levelFor(u, placing) : x.level;
@@ -2205,10 +2931,10 @@ export function KitchenDrawing({
     // way off.)
     const onFloor = planAt(level === "wall" ? wallZ0(gaps) + 360 : 0);
     const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
-    const plan: Vec = [clamp(onFloor[0], bounds.minX - 1000, bounds.maxX + 1000), clamp(onFloor[1], bounds.minY - 1000, bounds.maxY + 1000)];
+    const plan: Vec = [clamp(onFloor[0], bounds.minX - 8000, bounds.maxX + 8000), clamp(onFloor[1], bounds.minY - 8000, bounds.maxY + 8000)];
     if (!xSize) return { target: { kind: "free", x: plan[0], y: plan[1], a: 0 }, level };
     const best = freeSideNear(level);
-    if (best && best.d < SNAP_MM) return { target: best.target, level };
+    if (snapOn && best && best.d < SNAP_PX * mmPerPx) return upIfTall(best.target, level);
     // (Up on the wall, over or near a base cabinet: against the wall behind it — its back on that one's back, turned as
     // it is — where along it the pointer is.)
     if (level === "wall" && x.kind !== "custom") {
@@ -2239,7 +2965,7 @@ export function KitchenDrawing({
       const s = baseLaid.sizes.get(item.id);
       if (!frame || !s) continue;
       const d = len(sub(toWorld(frame, localCentre(item, s, unitMap)), plan));
-      if (d < nearest) {
+      if (d < nearest && d < 2500) {
         nearest = d;
         a = item.kind === "custom" ? 0 : frame.a;
       }
@@ -2270,35 +2996,15 @@ export function KitchenDrawing({
         next = [...next, { ...itemFor(p, level), at: { kind: "attach", to: x.id, side: free[i] } }];
       });
     }
-    // (An overhead: its top in line with the overhead it's run off — else the nearest — lifted or dropped to it.)
-    if (level === "wall" && target.kind !== "into" && (x.kind === "box" || x.kind === "custom" || x.kind === "panel")) {
-      const laidNext = layoutKitchen(next, unitMap, gaps);
-      const own = x.kind === "panel" && laidNext.sizes.get(x.id)?.panelAs !== "wall" ? undefined : laidNext.sizes.get(x.id);
-      const ownAt = laidNext.frames.get(x.id);
-      const overhead = (i: KitchenItem) => i.id !== x.id && i.level === "wall" && (i.kind === "box" || i.kind === "custom") && !laidNext.sizes.get(i.id)?.tall;
-      const beside = target.kind === "attach" ? next.find((i) => i.id === target.to && overhead(i)) : undefined;
-      const nearest =
-        beside ??
-        (ownAt
-          ? next
-              .filter(overhead)
-              .map((i) => ({ i, d: Math.hypot(...sub(laidNext.frames.get(i.id)?.o ?? [1e9, 1e9], ownAt.o)) }))
-              .filter((c) => c.d < 6000)
-              .sort((a, b) => a.d - b.d)[0]?.i
-          : undefined);
-      const ref = nearest ? laidNext.sizes.get(nearest.id) : undefined;
-      if (own && ref) {
-        const by = ref.z0 + ref.height - (own.z0 + own.height);
-        if (Math.abs(by) > 0.5) next = next.map((i) => (i.id === x.id ? { ...i, lift: (i.lift ?? 0) + by } : i));
-      }
-    }
+    next = lineUpOverhead(next, x.id, unitMap, gaps, true);
     // (Fronts made into a cabinet: as deep as a real cabinet it's run off — else, overhead, how deep it is asked.)
     if (u.kind === "fronts" && target.kind !== "into") {
       const beside = target.kind === "attach" ? liveItems.find((i) => i.id === target.to) : undefined;
       const realDepth = beside && beside.kind === "box" && beside.unitId ? laidNow.sizes.get(beside.id)?.depth : undefined;
-      if (realDepth) next = next.map((i) => (i.id === x.id ? { ...i, depthMm: realDepth } : i));
+      if (realDepth && beside?.level === level) next = next.map((i) => (i.id === x.id ? { ...i, depthMm: realDepth } : i));
       else if (level === "wall") setDepthAsk({ id: x.id, text: String(WALL_DEPTH) });
     }
+    if (!heldBounds) setHeldBounds(model.bounds);
     setItems(next);
     setSelectedId(target.kind === "into" ? target.itemId : x.id);
   };
@@ -2318,6 +3024,72 @@ export function KitchenDrawing({
     if (anchor && side) return { target: { kind: "attach", to: anchor.id, side }, level: anchor.level };
     return { target: { kind: "free", x: 0, y: 0, a: 0 }, level: levelFor(u, placing) };
   };
+
+  // The view, gently, to one looking this way (the shortest way round).
+  const viewAnimRef = useRef(0);
+  const goToView = (to: CabinetView) => {
+    window.cancelAnimationFrame(viewAnimRef.current);
+    const from = view;
+    let yawBy = (to.yaw - from.yaw) % (2 * Math.PI);
+    if (yawBy > Math.PI) yawBy -= 2 * Math.PI;
+    if (yawBy < -Math.PI) yawBy += 2 * Math.PI;
+    const start = performance.now();
+    const step = (now: number) => {
+      const t = Math.min(1, (now - start) / 240);
+      const eased = 1 - (1 - t) * (1 - t) * (1 - t);
+      setView({ yaw: from.yaw + yawBy * eased, pitch: from.pitch + (to.pitch - from.pitch) * eased });
+      if (t < 1) viewAnimRef.current = window.requestAnimationFrame(step);
+    };
+    viewAnimRef.current = window.requestAnimationFrame(step);
+  };
+  // Fit: the view round what's there — and from now till something's changed. (Otherwise it stays put.)
+  const fitView = () => {
+    setHeldBounds(null);
+    resetZoom();
+  };
+  const goHome = () => {
+    goToView(HOME_VIEW);
+    fitView();
+  };
+  const chooseTool = (next: DrawTool) => {
+    setTool((now) => (now === next ? "select" : next));
+    // (Nothing picked to get in the way of a face or a point being clicked.)
+    if (next === "measure" || next === "extrude") setSelectedId(null);
+    setMoveDraft(null);
+    setRotateTyped(null);
+    setExtrude(null);
+    setExtrudeHover(null);
+    setMeasure(null);
+    setMeasureHover(null);
+    setFaceMeasure(null);
+    setFaceHover(null);
+    setBenchEdge(null);
+    setNavTool(null);
+    setMenu(null);
+  };
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;
+      const key = event.key.toLowerCase();
+      if (keyIsForField(event, /^[a-z]$/.test(key))) return;
+      if (key === "escape") {
+        if (measure) setMeasure(null);
+        else if (faceMeasure) setFaceMeasure(null);
+        else if (extrude) setExtrude(null);
+        else if (tool !== "select") chooseTool(tool);
+        else setSelectedId(null);
+        return;
+      }
+      const tools: Record<string, DrawTool> = { v: "select", m: "move", r: "rotate", e: "extrude", i: "measure" };
+      // (Not typed into a box that it brings up, or that's already there.)
+      if (tools[key] || key === "h" || key === "f") event.preventDefault();
+      if (tools[key]) chooseTool(tools[key] === tool ? "select" : tools[key]);
+      else if (key === "h") goHome();
+      else if (key === "f") fitView();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 
   // Moving what's in it: a press on something (the left button, or a finger) and a drag — let go where it's to go. A
   // press that doesn't move picks it. Anywhere else, the view's own gestures.
@@ -2347,11 +3119,17 @@ export function KitchenDrawing({
   const startRotate = (event: ReactPointerEvent<HTMLDivElement>): boolean => {
     const item = selected;
     if (!rotateTool || !item || item.kind === "custom") return false;
+    // (An angle waiting: kept, and that's all this press does.)
+    if (typedTurn) {
+      lockTurn();
+      return true;
+    }
     const over = itemAt(event.clientX, event.clientY);
     if (over && over !== item.id) {
       setSelectedId(over);
       return true;
     }
+    if (item.locked) return true;
     const size_ = laidNow.sizes.get(item.id);
     const frame = laidNow.frames.get(item.id);
     if (!size_ || !frame) return false;
@@ -2413,7 +3191,7 @@ export function KitchenDrawing({
   // On its own near a run facing (near enough) the way it does: in line with it — its front on that run's front line,
   // turned exactly as it is — wherever along it it's put.
   const inLine = (item: KitchenItem, target: DropTarget, base: KitchenItem[]): DropTarget => {
-    if (target.kind !== "free" || item.kind === "custom") return target;
+    if (!snapOn || target.kind !== "free" || item.kind === "custom") return target;
     const others = layoutKitchen(base, unitMap, gaps);
     const size_ = layoutKitchen([{ ...item, at: { kind: "free", x: 0, y: 0, a: 0 } }], unitMap, gaps).sizes.get(item.id);
     const mid = size_ ? add([target.x, target.y], rot(target.a, localCentre(item, size_, unitMap))) : ([target.x, target.y] as Vec);
@@ -2430,7 +3208,8 @@ export function KitchenDrawing({
       if (len(sub(mid, toWorld(f, localCentre(other, s2, unitMap)))) > 3000) continue;
       const out = rot(f.a, [0, 1]);
       const off = dot(sub([target.x, target.y], f.o), out);
-      if (Math.abs(off) < 400 && (!best || Math.abs(off) < Math.abs(best.off))) best = { off, a: f.a, out };
+      const reach = SNAP_PX / Math.max(1e-6, cabinetViewProjector(model, view, size).k * zoom.z);
+      if (Math.abs(off) < reach && (!best || Math.abs(off) < Math.abs(best.off))) best = { off, a: f.a, out };
     }
     if (!best) return target;
     const o = sub([target.x, target.y], mul(best.out, best.off));
@@ -2450,6 +3229,7 @@ export function KitchenDrawing({
         return true;
       }
     }
+    if (item.locked) return true;
     const axis = arrow ?? moveAxis;
     let base = draft?.delta ?? 0;
     if (axis !== moveAxis) {
@@ -2479,6 +3259,10 @@ export function KitchenDrawing({
     setHeldBounds(model.bounds);
     return true;
   };
+  const lockTurn = () => {
+    if (typedTurn) update(typedTurn.id, { at: { kind: "free", ...typedTurn.free } });
+    setRotateTyped(null);
+  };
   const lockMove = () => {
     if (draft?.delta) setItems(moveBy(liveItems, draft.id, moveAxis, draft.delta, unitMap, gaps));
     setMoveDraft(null);
@@ -2486,6 +3270,30 @@ export function KitchenDrawing({
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.target instanceof Element && event.target.closest("button, input, [data-kitchen-menu], [data-kitchen-pivot], [data-kitchen-gizmo]")) return;
     setMenu(null);
+    setShowMenuAt(null);
+    const pressing = event.pointerType !== "mouse" || event.button === 0;
+    // (Orbit or Pan on: just that.)
+    if (navTool) {
+      handlers.onPointerDown(event);
+      return;
+    }
+    if (tool === "measure") {
+      handlers.onPointerDown(event);
+      return;
+    }
+    if (tool === "extrude") {
+      const face = pressing ? benchFaceAt(event.clientX, event.clientY) : null;
+      if (!face) {
+        handlers.onPointerDown(event);
+        return;
+      }
+      const same = extrude && extrude.face.key === face.key;
+      if (!same && extrude?.dist) commitExtrude();
+      const held = same ? extrude.face : face;
+      if (!same) setExtrude({ face, dist: 0, text: "0" });
+      startExtrudeDrag(event, held, same ? extrude.dist : 0);
+      return;
+    }
     if ((event.pointerType !== "mouse" || event.button === 0) && startRotate(event)) return;
     if ((event.pointerType !== "mouse" || event.button === 0) && startMove(event)) return;
     if (event.pointerType === "mouse" && event.button === 2) rightDownRef.current = { x: event.clientX, y: event.clientY };
@@ -2503,6 +3311,29 @@ export function KitchenDrawing({
     handlers.onPointerDown(event);
   };
   const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const pushing = extrudeDragRef.current;
+    if (pushing && pushing.pointerId === event.pointerId) {
+      let by: number;
+      if (pushing.face.kind === "side") by = dot(sub(planPointAt(event.clientX, event.clientY, pushing.z), pushing.startPlan), pushing.out);
+      else {
+        const y = svgPoint(event.clientX, event.clientY)?.[1] ?? pushing.startY;
+        const k = cabinetViewProjector(model, view, size).k;
+        const up = (pushing.startY - y) / Math.max(1e-6, k * Math.max(0.2, Math.cos(view.pitch)));
+        by = pushing.face.kind === "top" ? up : -up;
+      }
+      const mm = Math.round(pushing.base + by);
+      setExtrude((prev) => (prev ? { ...prev, dist: mm, text: String(mm) } : prev));
+      return;
+    }
+    if (tool === "measure" && event.buttons === 0) {
+      const at = measurePointAt(event.clientX, event.clientY);
+      setMeasureHover(at);
+      setFaceHover(at ? null : measureFaceAt(event.clientX, event.clientY));
+    }
+    if (tool === "extrude" && event.buttons === 0) {
+      const key = benchFaceAt(event.clientX, event.clientY)?.key ?? null;
+      setExtrudeHover((prev) => (prev === key ? prev : key));
+    }
     const sliding = moveDragRef.current;
     if (sliding && sliding.pointerId === event.pointerId) {
       let delta: number;
@@ -2533,16 +3364,26 @@ export function KitchenDrawing({
       return;
     }
     if (pivotDrag && pivotDrag.pointerId === event.pointerId) {
-      const over = dotNear(event.clientX, event.clientY);
       const moved = pivotDrag.moved || Math.hypot(event.clientX - pivotDrag.x, event.clientY - pivotDrag.y) > 4;
-      if (!sameRef(over, pivotDrag.over) || moved !== pivotDrag.moved) setPivotDrag({ ...pivotDrag, over, moved });
+      // (Starting off from a spot it shares with a dot of what's picked: it's what's picked that's dragged.)
+      let from = pivotDrag.from;
+      if (moved && !pivotDrag.moved && from.id !== selectedId) {
+        const at = allDots.find((d) => sameRef(d.ref, from));
+        const gap = (d: { x: number; y: number }) => (at ? len(sub([d.x, d.y], [at.x, at.y])) * zoom.z : Infinity);
+        const mine = allDots.filter((d) => d.ref.id === selectedId && gap(d) < 9).sort((a, b) => gap(a) - gap(b))[0];
+        if (mine) from = mine.ref;
+      }
+      const over = dotNear(event.clientX, event.clientY, from.id);
+      setPivotDrag({ ...pivotDrag, from, over, moved, pointer: svgPoint(event.clientX, event.clientY) });
       return;
     }
     const drag = moveRef.current;
     if (drag && drag.pointerId === event.pointerId) {
+      if (liveItems.find((i) => i.id === drag.id)?.locked) return;
       if (!drag.moved && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < 5) return;
       if (!drag.moved) {
         drag.moved = true;
+        setDragTurn(0);
         setHeldBounds(model.bounds);
         setSelectedId(drag.id);
       }
@@ -2561,10 +3402,14 @@ export function KitchenDrawing({
     setHoverPart((prev) => (prev === part ? prev : part));
   };
   const onPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const pushing = extrudeDragRef.current;
+    if (pushing && pushing.pointerId === event.pointerId) {
+      extrudeDragRef.current = null;
+      return;
+    }
     const sliding = moveDragRef.current;
     if (sliding && sliding.pointerId === event.pointerId) {
       moveDragRef.current = null;
-      setHeldBounds(null);
       return;
     }
     const turning = rotateRef.current;
@@ -2576,11 +3421,12 @@ export function KitchenDrawing({
         else commitTurn(item, rotating.turn ?? 0);
       }
       setRotating(null);
-      setHeldBounds(null);
       return;
     }
     if (pivotDrag && pivotDrag.pointerId === event.pointerId) {
-      if (event.type === "pointerup") dropCorner(pivotDrag.from, pivotDrag.moved ? pivotDrag.over : pivotDrag.from);
+      // (Where it was let go counts, whatever was last heard.)
+      const last = pivotDrag.moved ? dotNear(event.clientX, event.clientY, pivotDrag.from.id) ?? pivotDrag.over : pivotDrag.from;
+      if (event.type === "pointerup") dropCorner(pivotDrag.from, last);
       setPivotDrag(null);
       return;
     }
@@ -2589,11 +3435,10 @@ export function KitchenDrawing({
       moveRef.current = null;
       const item = liveItems.find((i) => i.id === drag.id);
       if (drag.moved && moving && item && event.type === "pointerup") {
-        setItems(bakeTurn(applyTarget(pullOut(liveItems, drag.id), item, moving.target, moving.level, unitMap), item.id, unitMap, gaps));
+        setItems(bakeTurn(lineUpOverhead(applyTarget(pullOut(liveItems, drag.id), item, withDragTurn(item, moving.target), moving.level, unitMap), drag.id, unitMap, gaps, false), item.id, unitMap, gaps));
       }
       else if (!drag.moved) setSelectedId(drag.id);
       setMoving(null);
-      setHeldBounds(null);
       return;
     }
     handlers.onPointerUp(event);
@@ -2610,7 +3455,7 @@ export function KitchenDrawing({
     setItems((prev) =>
       prev.map((c) => {
         if (c.id !== id) return c;
-        if (c.at.kind !== "free") return { ...c, depthMm: mm };
+        if (c.at.kind !== "free") return { ...c, depthMm: mm, at: c.at.rel ? { ...c.at, rel: { ...c.at.rel, y: c.at.rel.y + mm - was } } : c.at };
         const o = add([c.at.x, c.at.y], mul(rot(c.at.a, [0, 1]), mm - was));
         return { ...c, depthMm: mm, at: { ...c.at, x: o[0], y: o[1] } };
       }),
@@ -2622,6 +3467,7 @@ export function KitchenDrawing({
     return { kind: "free", x: frame.o[0], y: frame.o[1], a: frame.a };
   };
   const remove = (id: string) => {
+    if (liveItems.find((i) => i.id === id)?.locked) return;
     // (The sub parts that came in with a Cabinetry cabinet — its panels, run off it — go with it. What else ran off it
     // closes up onto what it ran off — or, with nothing there, stays where it is.)
     const item = liveItems.find((i) => i.id === id);
@@ -2637,8 +3483,9 @@ export function KitchenDrawing({
     if (!selectedId) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Delete" && event.key !== "Backspace") return;
-      const target = event.target instanceof HTMLElement ? event.target : null;
-      if (target?.closest('input, textarea, select, [contenteditable="true"], [contenteditable=""]')) return;
+      if (keyIsForField(event)) return;
+      // (Backspace, in a measurement box, is only ever for the number.)
+      if (event.key === "Backspace" && event.target instanceof HTMLElement && event.target.closest("[data-measure-box]")) return;
       event.preventDefault();
       remove(selectedId);
     };
@@ -2649,7 +3496,7 @@ export function KitchenDrawing({
     const item = liveItems.find((i) => i.id === id);
     const s = laidNow.sizes.get(id);
     const frame = laidNow.frames.get(id);
-    if (!item || !s || !frame) return;
+    if (!item || !s || !frame || item.locked) return;
     // (Turned about its middle.)
     const c = localCentre(item, s, unitMap);
     const mid = toWorld(frame, c);
@@ -2680,50 +3527,29 @@ export function KitchenDrawing({
     if (Math.abs(turn) < 1e-6) return update(item.id, { at: straightAt });
     setItems(bakeTurn(liveItems.map((i) => (i.id === item.id ? { ...i, at: { ...straightAt, turn } } : i)), item.id, unitMap, gaps));
   };
-  // On its own: turned about its pivot (its front left, if none's picked) — and what runs off it, with it.
-  const ownPivotOf = (item: KitchenItem): Pivot => item.pivot ?? { x: 0, y: 1 };
   const nameOf = (item: KitchenItem) => {
     const u = item.unitId ? unitMap.get(item.unitId) : item.fronts[0] ? unitMap.get(item.fronts[0]) : undefined;
     return item.kind === "gap" ? `Gap ${item.gapMm ?? 600}mm` : u?.name || (item.kind === "panel" ? "Panel" : "Cabinet");
   };
   // The turn controls: Rotate (drag on the drawing — any angle, snapping every 45°), Straight, and the angle typed — at its
   // joint; on its own, Rotate. Its pivot: its blue dot.
-  const rotateButton = (
-    <button
-      type="button"
-      onClick={() => {
-        setRotateTool((on) => !on);
-        setMoveTool(false);
-        setMoveDraft(null);
-      }}
-      className={`inline-flex h-7 items-center justify-center gap-1 rounded-full border px-3 text-[11.5px] font-medium ${rotateTool ? "glass-shine text-white" : "glass-shine glass-shine-neutral"}`}
-      style={rotateTool ? glassShineStyle("#2563EB") : { color: "var(--text-main)" }}
-      title="Then drag on the drawing to turn what's picked — any angle, snapping every 45°"
-    >
-      <RotateCw size={12} />
-      {rotateTool ? "Rotating — drag" : "Rotate"}
-    </button>
-  );
-  const moveButton = (
-    <button
-      type="button"
-      onClick={() => {
-        setMoveTool((on) => !on);
-        setRotateTool(false);
-        setMoveDraft(null);
-      }}
-      className={`inline-flex h-7 items-center justify-center gap-1 rounded-full border px-3 text-[11.5px] font-medium ${moveTool ? "glass-shine text-white" : "glass-shine glass-shine-neutral"}`}
-      style={moveTool ? glassShineStyle("#2563EB") : { color: "var(--text-main)" }}
-      title="Then pick an axis and drag on the drawing to slide what's picked that way — or type how far, and Enter"
-    >
-      <ArrowLeft size={12} className="rotate-180" />
-      {moveTool ? "Moving" : "Move"}
-    </button>
-  );
   const cornerControls = (item: KitchenItem) => {
     const joint = jointOf(item);
     const pill = "glass-shine glass-shine-neutral inline-flex h-7 items-center justify-center rounded-full border px-3 text-[11.5px] font-medium";
-    if (item.kind === "custom" && !joint) return null;
+    if (item.locked) {
+      return item.kind === "custom" ? null : (
+        <p className="text-[11.5px] font-medium" style={{ color: "var(--text-muted)" }}>
+          Locked — switch Lock position off to turn it.
+        </p>
+      );
+    }
+    if (!joint) {
+      return item.kind === "custom" ? null : (
+        <p className="text-[11.5px] font-medium" style={{ color: "var(--text-muted)" }}>
+          Turn it with Rotate on the toolbar: drag, or type an angle. It turns about its blue dot (none picked: its front left), and what runs off it turns with it.
+        </p>
+      );
+    }
     return (
       <div className="space-y-2">
         <p className="text-[11.5px] font-medium" style={{ color: "var(--text-muted)" }}>
@@ -2732,8 +3558,6 @@ export function KitchenDrawing({
             : "Turns about its blue dot (its front left, if none's picked) — what runs off it turns with it."}
         </p>
         <div className="flex items-center gap-1.5">
-          {rotateButton}
-          {moveButton}
           {joint ? (
             <button type="button" onClick={() => joint.set(0)} className={pill} style={{ color: "var(--text-main)" }}>
               Straight
@@ -2743,8 +3567,10 @@ export function KitchenDrawing({
         {joint ? (
           <label className="flex items-center gap-2 text-[12px] font-medium" style={{ color: "var(--text-main)" }}>
             <span className="flex-1">Angle (in +, out −)</span>
-            <input
+            <MeasureBox
               key={`${item.id}_${joint.degrees}`}
+              idle
+              active={rotateTool}
               type="number"
               step={1}
               min={-180}
@@ -2755,7 +3581,14 @@ export function KitchenDrawing({
                 if (Number.isFinite(deg) && deg !== joint.degrees) joint.set(deg);
               }}
               onKeyDown={(e) => {
-                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                const box = e.target as HTMLInputElement;
+                if (e.key === "Enter") box.blur();
+                if (e.key === "Escape" && box.dataset.measureBox === "busy") {
+                  e.stopPropagation();
+                  box.value = String(joint.degrees);
+                  box.dataset.measureBox = "idle";
+                  box.select();
+                }
               }}
               className="h-7 w-[72px] rounded-full border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2.5 text-right text-[12px] font-medium text-[var(--text-main)]"
             />
@@ -2766,6 +3599,66 @@ export function KitchenDrawing({
     );
   };
   // What kind of panel it is — auto (from its height), or set.
+  // Its options, on or off, one to a row.
+  const optionRow = (label: string, hint: string, checked: boolean, onChange: (on: boolean) => void, key = label) => (
+    <label key={key} className="flex items-center justify-between gap-2 text-[12.5px] font-medium" style={{ color: "var(--text-main)" }}>
+      <span className="min-w-0">
+        {label}
+        <span className="block text-[11px]" style={{ color: "var(--text-muted)" }}>
+          {hint}
+        </span>
+      </span>
+      <GlassSwitch size="sm" checked={checked} onChange={onChange} ariaLabel={label} />
+    </label>
+  );
+  const pieceOptions = (item: KitchenItem, size: ItemSize) => {
+    const cabinet = item.kind === "box" || item.kind === "custom";
+    const hidden = hiddenItems.has(item.id);
+    return (
+      <div className="mt-3 space-y-2.5 rounded-[12px] border px-3 py-2.5" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}>
+        <Segmented
+          value={item.level}
+          onChange={(level) => {
+            if (item.locked || level === item.level) return;
+            // (Up on the wall, or down: on its own from there, where it is, at that level's height — an overhead's lined up
+            // with what's there.)
+            const to = item.at.kind === "attach" ? item.at.to : "";
+            const parent = liveItems.find((i) => i.id === to);
+            const next = liveItems.map((c) => (c.id === item.id ? { ...c, level, lift: undefined, ...(parent && parent.level !== level ? { at: freeAt(item.id) } : {}) } : c));
+            setItems(lineUpOverhead(next, item.id, unitMap, gaps, true));
+          }}
+          options={[
+            { value: "base", label: "Base" },
+            { value: "wall", label: "Wall" },
+          ]}
+          pill
+          fill
+          flip
+        />
+        {cabinet
+          ? optionRow("Benchtop", "A bench on top of it.", hasBench(item, size), (on) => update(item.id, { benchOn: on === (item.level === "base" && !size.tall) ? undefined : on }))
+          : null}
+        {item.kind === "panel" && size.panelAs === "base" && !item.lift
+          ? optionRow("Benchtop", "The bench runs over it.", item.benchOn !== false, (on) => update(item.id, { benchOn: on ? undefined : false }))
+          : null}
+        {cabinet && (item.level === "base" || size.tall)
+          ? optionRow("Kick", "The board along the floor under it.", hasKick(item, size), (on) => update(item.id, { kickOn: on ? undefined : false }))
+          : null}
+        {item.kind === "box" && item.fronts.length
+          ? optionRow("Fronts", "See inside it — they stay on it, just not shown.", item.frontsOn !== false, (on) => update(item.id, { frontsOn: on ? undefined : false }))
+          : null}
+        {optionRow("Show in drawing", "Off: hidden till it's switched back on (the Browser tab lists it).", !hidden, (on) =>
+          setHiddenItems((prev) => {
+            const next = new Set(prev);
+            if (on) next.delete(item.id);
+            else next.add(item.id);
+            return next;
+          }),
+        )}
+        {optionRow("Lock position", "Can't be dragged, moved, turned or removed.", Boolean(item.locked), (on) => update(item.id, { locked: on || undefined }))}
+      </div>
+    );
+  };
   const panelKindControl = (item: KitchenItem) =>
     item.kind === "panel" ? (
       <div className="space-y-1.5">
@@ -2845,6 +3738,7 @@ export function KitchenDrawing({
             step={1}
             value={gapDraft}
             onChange={(e) => setGapDraft(e.target.value)}
+            onFocus={(e) => e.target.select()}
             className="h-7 w-[76px] rounded-full border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2.5 text-right text-[12px] font-medium text-[var(--text-main)]"
             aria-label="Gap width (mm)"
           />
@@ -2872,6 +3766,7 @@ export function KitchenDrawing({
             min={1}
             step={1}
             defaultValue={item.gapMm ?? 600}
+            onFocus={(e) => e.target.select()}
             onBlur={(e) => {
               const mm = Math.round(Number(e.target.value));
               if (Number.isFinite(mm) && mm > 0 && mm !== item.gapMm) update(item.id, { gapMm: mm });
@@ -2899,63 +3794,89 @@ export function KitchenDrawing({
   const menuItem = menu ? liveItems.find((i) => i.id === menu.id) ?? null : null;
   // Its pivot's two corners on the drawing (on what it's run off, at its top) — clicked to pick one.
   // The dots on the drawing (at each piece's top): each piece's pivot, blue — and the picked one's corners, all of them
-  // (bigger), to pick from (its pivot, on its own, its front left till one's picked).
+  // (bigger), to pick from. With no pivot picked, none's blue; Rotate rings the corner it'd turn about (`fallback`). The
+  // pivots last, so on top: a click on a spot two dots share gets the pivot, not the plain corner over it.
   const allDots = (() => {
-    if (moving || dropPreview || rotating) return [];
+    if (moving || dropPreview || rotating || typedTurn || tool === "measure" || tool === "extrude") return [];
     const projector = cabinetViewProjector(model, view, size);
     return liveItems.flatMap((item) => {
       const f = laidNow.frames.get(item.id);
       const s2 = laidNow.sizes.get(item.id);
       const print = s2 ? footprintOf(item, s2) : null;
       if (!f || !s2 || !print) return [];
+      if (partHidden(`item:${item.id}:carcass`)) return [];
       const picked = item.id === selectedId;
-      const pivot = item.pivot ?? (picked && item.at.kind === "free" ? ownPivotOf(item) : null);
-      // (An overhead: a dot at every corner, top and bottom, always — to put a panel up to its underside.)
-      const overhead = item.level === "wall" && (item.kind === "box" || item.kind === "custom") && !s2.tall;
+      const pivot = item.pivot ?? null;
+      const turnsAbout = picked && tool === "rotate" && !item.pivot && item.at.kind === "free" ? ownPivotOf(item) : null;
+      // (A dot at every corner, top and bottom: when it's picked, or a dot's being dragged, somewhere to drop it. Otherwise
+      // just its pivot, if it has one.)
+      const hasLow = item.kind === "box" || item.kind === "custom" || item.kind === "panel";
       return ([0, 1] as const).flatMap((x) =>
         ([0, 1] as const).flatMap((y) => {
           const onCorner = Boolean(pivot && pivot.x === x && pivot.y === y);
-          const isPivot = onCorner && !(overhead && pivot?.low);
+          const onLow = onCorner && hasLow && Boolean(pivot?.low);
+          const isPivot = onCorner && !onLow;
           const at = toWorld(f, footprintCorner(print, { x, y }));
-          const low = overhead ? (() => {
-            const [sx, sy] = projector.project([at[0], at[1], s2.z0 - 2]);
-            return [{ key: `${item.id}_${x}${y}_low`, ref: { id: item.id, corner: { x, y } as Pivot, low: true }, x: sx, y: sy, picked, pivot: onCorner && Boolean(pivot?.low) }];
+          const low = hasLow && (picked || onLow || pivotDrag) ? (() => {
+            const [sx, sy] = projector.project([at[0], at[1], lowOf(item, s2) - 2]);
+            return [{ key: `${item.id}_${x}${y}_low`, ref: { id: item.id, corner: { x, y } as Pivot, low: true }, x: sx, y: sy, picked, pivot: onLow, fallback: false }];
           })() : [];
-          if (!picked && !isPivot && !overhead) return low;
+          if (!picked && !isPivot && !pivotDrag) return low;
           const [sx, sy] = projector.project([at[0], at[1], s2.z0 + s2.height + (s2.bench ? BENCH_MM : 0) + 2]);
-          return [{ key: `${item.id}_${x}${y}`, ref: { id: item.id, corner: { x, y } as Pivot }, x: sx, y: sy, picked, pivot: isPivot }, ...low];
+          const fallback = Boolean(turnsAbout && turnsAbout.x === x && turnsAbout.y === y);
+          const up = { key: `${item.id}_${x}${y}`, ref: { id: item.id, corner: { x, y } as Pivot }, x: sx, y: sy, picked, pivot: isPivot, fallback };
+          // (Lying flat, the two nearly on each other: its top the one that's pressed.)
+          return s2.height < THIN_MM ? [...low, up] : [up, ...low];
         }),
       );
-    });
+    }).sort((a, b) => Number(a.pivot) - Number(b.pivot));
   })();
-  // The dot nearest the pointer (within a little of it), while one's dragged.
-  const dotNear = (clientX: number, clientY: number): CornerRef | null => {
+  // The dot nearest the pointer (within a little of it), while one's dragged — another piece's before its own, which is
+  // often right beside the one it's being lined up with; its own only with no other there.
+  const dotNear = (clientX: number, clientY: number, own: string): CornerRef | null => {
     const point = svgPoint(clientX, clientY);
     if (!point) return null;
     let best: { ref: CornerRef; d: number } | null = null;
+    let bestOwn: { ref: CornerRef; d: number } | null = null;
     for (const dot_ of allDots) {
       const d = len(sub([dot_.x, dot_.y], point)) * zoom.z;
-      if (d < 22 && (!best || d < best.d)) best = { ref: dot_.ref, d };
+      if (d >= 30) continue;
+      if (dot_.ref.id === own) {
+        if (!bestOwn || d < bestOwn.d) bestOwn = { ref: dot_.ref, d };
+      } else if (!best || d < best.d) best = { ref: dot_.ref, d };
     }
-    return best?.ref ?? null;
+    return best?.ref ?? bestOwn?.ref ?? null;
   };
   // A dot let go: onto another piece's — this piece moved so its corner's on that one (turned as it is, what runs off it
-  // with it, no longer run off anything; not when that one's run off this — moving this would move it), both corners now
-  // their pivots; onto one of its own, or just clicked — its pivot.
+  // with it, no longer run off anything — and that one, if it ran off this, left where it is, or it'd move with it), both
+  // corners now their pivots (a thin panel onto a bottom corner: its top, whichever of its dots it was — up against that
+  // underside, not sunk into it); onto one of its own, or just clicked — its pivot; its pivot clicked — let go, with any other
+  // on that spot (and what's picked left as it was). Up or down as well, whatever they are, so the corners truly meet — and
+  // what runs off it with it.
   const dropCorner = (from: CornerRef, onto: CornerRef | null) => {
     if (!onto) return;
     const item = liveItems.find((i) => i.id === from.id);
     if (!item) return;
-    setSelectedId(item.id);
+    // (Locked: its corners can still be its pivot, but it's not going anywhere.)
+    if (item.locked && onto.id !== from.id) return;
     if (onto.id === from.id) {
-      // (Its pivot clicked: let go. Another of its corners — clicked, or dragged to: that one.)
-      const clicked = onto === from;
       const already = Boolean(item.pivot && item.pivot.x === onto.corner.x && item.pivot.y === onto.corner.y && Boolean(item.pivot.low) === Boolean(onto.low));
-      update(item.id, { pivot: clicked && already ? undefined : { x: onto.corner.x, y: onto.corner.y, ...(onto.low ? { low: true } : {}) } });
+      if (already && sameRef(onto, from)) {
+        const here = allDots.find((d) => sameRef(d.ref, from));
+        const letGo = new Set([item.id]);
+        if (here) for (const d of allDots) if (d.pivot && len(sub([d.x, d.y], [here.x, here.y])) * zoom.z < 4) letGo.add(d.ref.id);
+        setItems((prev) => prev.map((c) => (letGo.has(c.id) ? { ...c, pivot: undefined } : c)));
+        return;
+      }
+      setSelectedId(item.id);
+      update(item.id, { pivot: { x: onto.corner.x, y: onto.corner.y, ...(onto.low ? { low: true } : {}) } });
       return;
     }
+    setSelectedId(item.id);
     const other = liveItems.find((i) => i.id === onto.id);
-    if (!other || descendants(liveItems, item.id).has(other.id)) return;
+    if (!other) return;
+    if (from.low && onto.low && (laidNow.sizes.get(item.id)?.height ?? THIN_MM) < THIN_MM) from = { id: from.id, corner: from.corner };
+    const carriedAlong = descendants(liveItems, item.id).has(other.id);
     const af = laidNow.frames.get(other.id);
     const as = laidNow.sizes.get(other.id);
     const bf = laidNow.frames.get(item.id);
@@ -2969,20 +3890,24 @@ export function KitchenDrawing({
       i.id === item.id
         ? { ...i, pivot: { x: from.corner.x, y: from.corner.y, ...(from.low ? { low: true } : {}) }, at: { kind: "free" as const, x: o[0], y: o[1], a: bf.a } }
         : i.id === other.id
-          ? { ...i, pivot: { x: onto.corner.x, y: onto.corner.y, ...(onto.low ? { low: true } : {}) } }
+          ? { ...i, pivot: { x: onto.corner.x, y: onto.corner.y, ...(onto.low ? { low: true } : {}) }, at: carriedAlong ? freeAt(other.id) : i.at }
           : i,
     );
-    // (An overhead's bottom corner in it: up or down too — the one corner's height the other's: a panel's top up to an
-    // overhead's underside, or an overhead's underside down onto a panel's top.)
-    if (from.low || onto.low) {
-      const laidNext = layoutKitchen(next, unitMap, gaps);
-      const zOf = (ref: CornerRef) => {
-        const sz = laidNext.sizes.get(ref.id);
-        return sz ? sz.z0 + (ref.low ? 0 : sz.height) : null;
-      };
-      const want = zOf(onto);
-      const have = zOf(from);
-      if (want !== null && have !== null && Math.abs(want - have) > 0.5) next = next.map((i) => (i.id === item.id ? { ...i, lift: (i.lift ?? 0) + want - have } : i));
+    const laidNext = layoutKitchen(next, unitMap, gaps);
+    const zOf = (ref: CornerRef) => {
+      const sz = laidNext.sizes.get(ref.id);
+      const of = next.find((i) => i.id === ref.id);
+      return sz && of ? (ref.low ? lowOf(of, sz) : sz.z0 + sz.height) : null;
+    };
+    const want = zOf(onto);
+    const have = zOf(from);
+    if (want !== null && have !== null && Math.abs(want - have) > 0.5) {
+      // (Never through the floor: down as far as that, and no further.)
+      const own = laidNext.sizes.get(item.id);
+      const by = Math.max(want - have, own ? -lowOf(next.find((i) => i.id === item.id) ?? item, own) : want - have);
+      const carried = descendants(next, item.id);
+      // (A panel at bench or overhead height run off it follows by itself.)
+      next = next.map((i) => (i.id === item.id || (carried.has(i.id) && (i.kind !== "panel" || laidNext.sizes.get(i.id)?.tall)) ? { ...i, lift: (i.lift ?? 0) + by } : i));
     }
     setItems(next);
   };
@@ -3012,13 +3937,14 @@ export function KitchenDrawing({
           key: face.key,
           points: face.screen.map((p) => `${Math.round(p[0] * 10) / 10},${Math.round(p[1] * 10) / 10}`).join(" "),
           fill,
-          fillOpacity: isGhost ? 0.3 : see ? 0.35 : 1,
+          room,
+          fillOpacity: isGhost ? 0.3 : room ? 0.45 : see ? 0.35 : xray ? 0.28 : 1,
           stroke: picked || isGhost ? "#1D4ED8" : room ? "#475569" : "#000000",
           strokeOpacity: room ? 0.18 : picked || isGhost ? 0.9 : 0.85,
           dash: see ? "4 3" : undefined,
         };
       }),
-    [colors, dropPreview, hoverPart, moving, projected, selectedId, translucentParts],
+    [colors, dropPreview, hoverPart, moving, projected, selectedId, translucentParts, xray],
   );
 
   const hint = (() => {
@@ -3029,8 +3955,8 @@ export function KitchenDrawing({
       const deg = Math.round(((rotating.turn ?? 0) * (joint?.sign ?? 1) * 180) / Math.PI);
       return deg === 0 ? "Straight" : `${deg > 0 ? "In" : "Out"} ${Math.abs(deg)}°`;
     }
-    if (rotateTool && selected) return "Rotate: drag on the drawing";
-    if (moveTool && selected) return draft?.delta ? `Move ${moveAxis.toUpperCase()}: ${draft.delta} mm — Enter to lock it in` : `Move ${moveAxis.toUpperCase()}: drag on the drawing`;
+    if (turnTyped) return `Turn ${turnTyped.deg}° — Enter to keep it`;
+    if (draft?.delta) return `Move ${moveAxis.toUpperCase()}: ${draft.delta} mm — Enter to lock it in`;
     const t = moving?.target ?? dropPreview?.target;
     if (!t) return "";
     if (t.kind === "into") return t.behind ? "Put behind these fronts" : t.place ? { above: "Above it", below: "Below it", left: "Left of it", right: "Right of it" }[t.place.side] : "Add to this cabinet";
@@ -3041,7 +3967,6 @@ export function KitchenDrawing({
   })();
   const endDrop = () => {
     setDropPreview(null);
-    setHeldBounds(null);
     setHoverPart(null);
   };
   // A library piece dragged: over the drawing — where it'd go, shown; let go there — in it goes. Anywhere else, nothing.
@@ -3081,7 +4006,7 @@ export function KitchenDrawing({
     const found = preview && preview.unitId === u.id ? preview : targetAt(event.clientX, event.clientY, ghost, u, liveItems);
     const level = found.level;
     const target = preview && preview.unitId === u.id ? preview.target : inLine({ ...ghost, level }, found.target, liveItems);
-    commitUnit(u, target, level);
+    commitUnit(u, withDragTurn({ ...ghost, level }, target), level);
   };
   useEffect(() => {
     libHandlersRef.current = { move: libDragMove, up: libDragUp };
@@ -3111,8 +4036,142 @@ export function KitchenDrawing({
   const cabinetPieces = selectedUnit?.kind === "cabinet" ? kitchenCabinetryPieces(selectedUnit) : [];
   const piecesOff = new Set(selectedUnit ? offPieces[selectedUnit.id] ?? [] : []);
 
+  // The measurement as it stands: its points, the next following the pointer till it's finished.
+  const measurePoints: Point3[] = measure ? (measure.done || !measureHover ? measure.points : [...measure.points, measureHover.p]) : [];
+  const measureLength = (a: Point3, b: Point3) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+  const measureAngle =
+    measurePoints.length >= 3
+      ? (() => {
+          const [a, m, b] = measurePoints;
+          const u1: Point3 = [a[0] - m[0], a[1] - m[1], a[2] - m[2]];
+          const u2: Point3 = [b[0] - m[0], b[1] - m[1], b[2] - m[2]];
+          const lengths = Math.hypot(...u1) * Math.hypot(...u2);
+          return lengths > 0 ? (Math.acos(Math.max(-1, Math.min(1, (u1[0] * u2[0] + u1[1] * u2[1] + u1[2] * u2[2]) / lengths))) * 180) / Math.PI : 0;
+        })()
+      : null;
+  // Face to face: the second face (or the one under the pointer, till it's clicked), and what they come to, always square
+  // to them. Facing the same way, the one standing further out is the one whose line's carried across: measured at the
+  // other — `from` on it, `to` on the further one's line, `carriedFrom` where that line leaves its face. Looking up and
+  // down at side faces, it's measured at a height they share, if they do, so the line carried across stays level. Not
+  // parallel: square to the second, from the point on the first.
+  const faceSecond = faceMeasure
+    ? (faceMeasure.b ??
+      (faceHover && faceHover.key !== faceMeasure.a.key
+        ? faceHover
+        : measureHover
+          ? { key: "point", points: [measureHover.p], n: faceMeasure.a.n, at: measureHover.p }
+          : null))
+    : null;
+  const faceResult = (() => {
+    if (!faceMeasure || !faceSecond) return null;
+    const dot3 = (p: Point3, q: Point3) => p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
+    const gap = (p: Point3, q: Point3): Point3 => [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
+    const cosine = dot3(faceMeasure.a.n, faceSecond.n);
+    const parallel = Math.abs(cosine) > 0.9995;
+    const firstToSecond = dot3(gap(faceSecond.at, faceMeasure.a.at), faceMeasure.a.n);
+    // (`near`: where it's measured. `far`: whose line's carried across.)
+    const swap = parallel && cosine > 0 && firstToSecond < 0;
+    const near = swap ? faceSecond : faceMeasure.a;
+    const far = swap ? faceMeasure.a : faceSecond;
+    const along: Point3 = parallel ? near.n : far.n;
+    let start: Point3 = [...near.at];
+    // (At an angle: from its corner nearest the other's plane, wherever it was clicked.)
+    if (!parallel) {
+      start = near.points.reduce<Point3>((best, q) => (Math.abs(dot3(gap(far.at, q as Point3), along)) < Math.abs(dot3(gap(far.at, best), along)) ? (q as Point3) : best), near.points[0] as Point3);
+    }
+    if (parallel && Math.abs(near.n[2]) < 0.5) {
+      const zs = (face: MeasureFace) => face.points.map((q) => q[2]);
+      const low = Math.max(Math.min(...zs(near)), Math.min(...zs(far)));
+      const high = Math.min(Math.max(...zs(near)), Math.max(...zs(far)));
+      if (low <= high) start[2] = Math.max(low, Math.min(high, start[2]));
+    }
+    const signed = dot3(gap(far.at, start), along);
+    const to: Point3 = [start[0] + along[0] * signed, start[1] + along[1] * signed, start[2] + along[2] * signed];
+    const carriedFrom = far.points.length < 3 ? far.at : nearestOnFace(far.points, far.n, to);
+    return { distance: Math.abs(signed), from: start, to, carriedFrom, parallel, angle: (Math.acos(Math.min(1, Math.abs(cosine))) * 180) / Math.PI };
+  })();
+  const fmtMm = (mm: number) => `${(Math.round(mm * 10) / 10).toLocaleString()} mm`;
+  const drawProjector = cabinetViewProjector(model, view, size);
+  // The floor's grid: a line each 500mm, stronger each metre.
+  const gridLines = (() => {
+    const floor = model.prisms.find((prism) => prism.part === "room:floor");
+    if (!floor || !showGrid || hiddenLayers.has("floor")) return [];
+    const xs = floor.polygon.map((q) => q[0]);
+    const ys = floor.polygon.map((q) => q[1]);
+    const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+    const step = 500;
+    const lines: Array<{ key: string; a: number[]; b: number[]; major: boolean }> = [];
+    for (let x = Math.ceil(x0 / step) * step; x <= x1; x += step) lines.push({ key: `x${x}`, a: drawProjector.project([x, y0, 0]), b: drawProjector.project([x, y1, 0]), major: x % 1000 === 0 });
+    for (let y = Math.ceil(y0 / step) * step; y <= y1; y += step) lines.push({ key: `y${y}`, a: drawProjector.project([x0, y, 0]), b: drawProjector.project([x1, y, 0]), major: y % 1000 === 0 });
+    return lines;
+  })();
+  // The size of what's picked, drawn along its edges (Dimensions on).
+  const dimLines = (() => {
+    if (!showDims || !selected) return [];
+    const f = laid.frames.get(selected.id);
+    const sz = laid.sizes.get(selected.id);
+    const print = sz ? footprintOf(selected, sz) : null;
+    if (!f || !sz || !print) return [];
+    const top = sz.z0 + sz.height;
+    const c = (x: number, y: number) => toWorld(f, [x, y]);
+    const fl = c(print.x0, print.y1);
+    const fr = c(print.x1, print.y1);
+    const bl = c(print.x0, print.y0);
+    const line = (a: Point3, b: Point3) => ({ a: drawProjector.project(a), b: drawProjector.project(b), label: `${Math.round(measureLength(a, b))}` });
+    return [line([fl[0], fl[1], sz.z0], [fr[0], fr[1], sz.z0]), line([fl[0], fl[1], sz.z0], [fl[0], fl[1], top]), line([fl[0], fl[1], top], [bl[0], bl[1], top])];
+  })();
+  // The bench's face picked, as it is with how far it's gone so far, and where its arrow goes.
+  const extrudeShape = (() => {
+    if (!extrude) return null;
+    const { face, dist } = extrude;
+    const frame = laid.frames.get(face.anchor);
+    const out = face.kind === "side" && face.n && frame ? rot(frame.a, face.n) : ([0, 0] as Vec);
+    const rise = face.kind === "top" ? dist : face.kind === "bottom" ? -dist : 0;
+    const moved = face.points.map((q): Point3 => [q[0] + out[0] * dist, q[1] + out[1] * dist, q[2] + rise]);
+    const mid = moved.reduce<Point3>((sum, q) => [sum[0] + q[0] / moved.length, sum[1] + q[1] / moved.length, sum[2] + q[2] / moved.length], [0, 0, 0]);
+    const start = drawProjector.project(mid) as Vec;
+    const tipAt: Point3 = face.kind === "side" ? [mid[0] + out[0] * 200, mid[1] + out[1] * 200, mid[2]] : [mid[0], mid[1], mid[2] + (face.kind === "top" ? 200 : -200)];
+    const dir = unit(sub(drawProjector.project(tipAt) as Vec, start));
+    return { points: moved.map((q) => drawProjector.project(q) as Vec), start, dir };
+  })();
+  const hoveredFace = tool === "extrude" && extrudeHover && extrude?.face.key !== extrudeHover ? projected.find((face) => face.key === extrudeHover) : undefined;
+  const statusText = (() => {
+    if (navTool === "orbit") return "Orbit: drag to turn the view";
+    if (navTool === "pan") return "Pan: drag to move the view";
+    if (tool === "measure") {
+      if (!snapOn) return !measure || measure.done ? "Measure: click anywhere (Snap is off)" : measure.points.length === 1 ? "Measure: click the second point" : "Measure: click a third point for an angle, or right-click to finish";
+      if (faceMeasure && !faceMeasure.b) return "Measure: click another face, a corner or an edge — they needn't line up";
+      if (measure && !measure.done) return measure.points.length === 1 ? "Measure: click a second point, or a face" : "Measure: click a third point for an angle, or right-click to finish";
+      return "Measure: click a corner or an edge for a point, or the middle of a face for that face";
+    }
+    if (tool === "extrude") return extrude ? "Extrude: drag the face or type a distance, then Enter" : "Extrude: click a face of the benchtop";
+    if (tool === "move") return selected ? "Move: drag an arrow, or type a distance, then Enter" : "Move: click a piece";
+    if (tool === "rotate") return selected ? "Rotate: drag on the drawing (snaps every 45°), or type an angle, then Enter" : "Rotate: click a piece";
+    if (pieceInHand) return `Let go to place it — Ctrl + scroll turns it${dragTurn ? ` (${Math.round((((dragTurn * 180) / Math.PI) % 360 + 360) % 360)}°)` : ""}`;
+    if (selected && selectedSize) return `${nameOf(selected)}  ${Math.round(selectedSize.width)} × ${Math.round(selectedSize.height)} × ${Math.round(selectedSize.depth)}`;
+    return "Drag a piece onto a face, or onto the floor. Right-click a piece for its options.";
+  })();
+  const LAYERS: Array<[DrawLayer, string]> = [
+    ["base", "Base cabinets"],
+    ["wall", "Overheads"],
+    ["fronts", "Fronts"],
+    ["bench", "Benchtop"],
+    ["kicks", "Kicks"],
+    ["floor", "Floor and grid"],
+  ];
+  const propsShown = Boolean(selected && selectedSize && !propsFolded && tool !== "extrude" && tool !== "measure");
+  const floatingPanelClass =
+    "hide-native-scrollbar absolute right-3 top-[104px] z-20 flex max-h-[calc(100%-116px)] w-[272px] flex-col overflow-y-auto rounded-[12px] border p-3 shadow-lg max-lg:inset-x-2 max-lg:bottom-2 max-lg:top-auto max-lg:max-h-[55%] max-lg:w-auto";
+  const floatingPanelStyle = { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" };
+
   return (
-    <div className="flex h-[100svh] flex-col bg-[var(--bg-app)]">
+    <div
+      className="flex h-[100svh] flex-col bg-[var(--bg-app)]"
+      onPointerDownCapture={() => {
+        // (Whatever's about to change, the view stays where it is. Fit lets it go again.)
+        if (!heldBounds) setHeldBounds(model.bounds);
+      }}
+    >
       {/* The library piece being dragged, following the pointer. */}
       {libDrag?.started
         ? (() => {
@@ -3172,119 +4231,276 @@ export function KitchenDrawing({
         </button>
       </div>
 
-      <div className="grid min-h-0 flex-1 gap-4 p-4 max-lg:grid-cols-1 max-lg:grid-rows-[minmax(0,1fr)_260px] lg:grid-cols-[300px_minmax(0,1fr)_320px]">
+      {/* The toolbar: icons in groups, each named under it. */}
+      <div className="hide-native-scrollbar flex shrink-0 items-stretch overflow-x-auto border-b px-1.5 py-1" style={{ backgroundColor: "var(--panel-bg)", borderColor: "var(--glass-border)" }}>
+        <ToolGroup label="Edit">
+          <ToolButton icon={Undo2} label="Undo" keys="Ctrl+Z" onClick={undo} />
+          <ToolButton icon={Redo2} label="Redo" keys="Ctrl+Y" onClick={redo} />
+        </ToolGroup>
+        <ToolGroup label="Select">
+          <ToolButton icon={MousePointer2} label="Select" keys="V" active={tool === "select"} onClick={() => chooseTool("select")} />
+        </ToolGroup>
+        <ToolGroup label="Modify">
+          <ToolButton icon={Move3d} label="Move" keys="M" active={tool === "move"} onClick={() => chooseTool("move")} />
+          <ToolButton icon={RotateCw} label="Rotate" keys="R" active={tool === "rotate"} onClick={() => chooseTool("rotate")} />
+          <ToolButton icon={ArrowUpFromLine} label="Extrude a benchtop face" keys="E" active={tool === "extrude"} onClick={() => chooseTool("extrude")} />
+          <ToolButton
+            icon={Link2Off}
+            label="Unhook what's picked, so it stays put on its own"
+            disabled={!selected || selected.at.kind !== "attach"}
+            onClick={() => selected && update(selected.id, { at: freeAt(selected.id) })}
+          />
+          <ToolButton icon={Trash2} label="Remove what's picked" keys="Delete" disabled={!selected} onClick={() => selected && remove(selected.id)} />
+        </ToolGroup>
+        <ToolGroup label="Inspect">
+          <ToolButton icon={Ruler} label="Measure — between points, faces, or a point and a face (3 points for an angle)" keys="I" active={tool === "measure"} onClick={() => chooseTool("measure")} />
+          <ToolButton icon={Magnet} label="Snap: measuring locks to corners and edges, and dragged pieces snap to sides" active={snapOn} onClick={() => setSnapOn((on) => !on)} />
+          <ToolButton icon={Scaling} label="Show the size of what's picked" active={showDims} onClick={() => setShowDims((on) => !on)} />
+        </ToolGroup>
+        <ToolGroup label="View">
+          <ToolButton icon={Home} label="Home view" keys="H" onClick={goHome} />
+          <ToolButton icon={Maximize} label="Fit everything in view" keys="F" onClick={fitView} />
+          <ToolButton icon={Grid3x3} label="Grid" active={showGrid} onClick={() => setShowGrid((on) => !on)} />
+          <ToolButton icon={Scan} label="See through" active={xray} onClick={() => setXray((on) => !on)} />
+          <ToolButton
+            icon={Eye}
+            label="What's shown"
+            active={Boolean(showMenuAt) || hiddenLayers.size > 0}
+            onClick={() => {
+              const box = document.querySelector(`[aria-label="What's shown"]`)?.getBoundingClientRect();
+              setShowMenuAt((open) => (open || !box ? null : { left: box.left, top: box.bottom + 18 }));
+            }}
+          />
+        </ToolGroup>
+        <ToolGroup label="Drop level">
+          <ToolButton icon={PanelBottom} label="A front or panel dropped on the floor is a base one" active={placing === "base"} onClick={() => setPlacing("base")} />
+          <ToolButton icon={PanelTop} label="A front or panel dropped on the floor is an overhead" active={placing === "wall"} onClick={() => setPlacing("wall")} />
+        </ToolGroup>
+        <ToolGroup label="Settings" last>
+          <ToolButton icon={Settings2} label="Benchtop overhangs and gaps" active={settingsOpen} onClick={() => setSettingsOpen((open) => !open)} />
+          <ToolButton
+            icon={Eraser}
+            label="Clear the drawing"
+            disabled={!liveItems.length}
+            onClick={() => {
+              if (!window.confirm("Clear the drawing? Everything in it is taken out (Ctrl+Z puts it back).")) return;
+              setItems([]);
+              setExtrusions([]);
+              setSelectedId(null);
+              setMenu(null);
+            }}
+          />
+        </ToolGroup>
+      </div>
+      {showMenuAt ? (
+        <div className="fixed z-40 w-[190px] rounded-[10px] border p-1.5 shadow-lg" style={{ ...floatingPanelStyle, left: showMenuAt.left, top: showMenuAt.top }}>
+          {LAYERS.map(([layer, label]) => (
+            <label key={layer} className="flex cursor-pointer items-center gap-2 rounded-[6px] px-2 py-1.5 text-[12px] font-medium hover:bg-[var(--panel-muted)]" style={{ color: "var(--text-main)" }}>
+              <input
+                type="checkbox"
+                className="h-3.5 w-3.5 accent-[var(--brand)]"
+                checked={!hiddenLayers.has(layer)}
+                onChange={(e) =>
+                  setHiddenLayers((prev) => {
+                    const next = new Set(prev);
+                    if (e.target.checked) next.delete(layer);
+                    else next.add(layer);
+                    return next;
+                  })
+                }
+              />
+              {label}
+            </label>
+          ))}
+        </div>
+      ) : null}
+
+      <div className="flex min-h-0 flex-1 max-lg:flex-col-reverse">
         {/* The library: the cutlist's pieces, by part type — dragged onto the drawing, or + (onto what's picked, or after
-            the last one). How many of each are in it already. */}
-        <aside className="glass-shine glass-shine-neutral flex min-h-0 flex-col overflow-hidden rounded-[18px] border p-2 max-lg:order-2" style={{ borderColor: "var(--glass-border)" }}>
-          <div className="flex shrink-0 items-center gap-2 px-2 pb-2 pt-1">
-            <Layers size={14} style={{ color: "var(--text-muted)" }} />
-            <p className="flex-1 text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>
-              Pieces
-            </p>
-            <select
-              value={room}
-              onChange={(e) => setRoom(e.target.value)}
-              className="h-7 max-w-[130px] rounded-full border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[11px] font-medium text-[var(--text-main)]"
-            >
-              {rooms.map((r) => (
-                <option key={r}>{r}</option>
-              ))}
-            </select>
+            the last one) — and the browser: what's in the drawing. */}
+        <aside className="flex w-[264px] shrink-0 flex-col border-r max-lg:h-[230px] max-lg:w-full max-lg:border-r-0 max-lg:border-t" style={{ backgroundColor: "var(--panel-bg)", borderColor: "var(--glass-border)" }}>
+          <div className="flex shrink-0 gap-1 p-1.5">
+            {(
+              [
+                ["library", "Library"],
+                ["browser", "Browser"],
+              ] as const
+            ).map(([tab, label]) => (
+              <button
+                key={tab}
+                type="button"
+                onClick={() => setLeftTab(tab)}
+                className="h-7 flex-1 rounded-[7px] border text-[12px] font-medium"
+                style={
+                  leftTab === tab
+                    ? { borderColor: "var(--brand)", backgroundColor: "var(--brand-soft)", color: "var(--text-main)" }
+                    : { borderColor: "var(--glass-border)", color: "var(--text-muted)" }
+                }
+              >
+                {label}
+              </button>
+            ))}
           </div>
-          <p className="shrink-0 px-2 pb-2 text-[11px] font-medium" style={{ color: "var(--text-muted)" }}>
-            Drag onto the floor to start, by the side of something to run off it — or fronts onto the middle of a cabinet to put them on it.
-          </p>
-          <div className="hide-native-scrollbar min-h-0 flex-1 space-y-2 overflow-y-auto px-1 pb-1">
-            {groups.length ? (
-              groups.map(([partType, list]) => {
-                const color = list[0]?.color ?? "#CBD5E1";
-                const open = !collapsed[partType];
-                return (
-                  <div key={partType} className="overflow-hidden rounded-[12px] border" style={{ borderColor: mixCabinetColor(color, "#0F172A", 0.12) }}>
-                    <button
-                      type="button"
-                      onClick={() => setCollapsed((prev) => ({ ...prev, [partType]: open }))}
-                      className="flex w-full items-center gap-2 px-2.5 py-2 text-left text-[12px] font-semibold"
-                      style={{ backgroundColor: color, color: "#0F172A" }}
+          {leftTab === "library" ? (
+            <>
+              <div className="flex shrink-0 items-center gap-1.5 px-1.5 pb-1.5">
+                <label className="flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-[7px] border px-2" style={{ borderColor: "var(--glass-border)" }}>
+                  <Search size={13} className="shrink-0" style={{ color: "var(--text-muted)" }} />
+                  <input
+                    value={libSearch}
+                    onChange={(e) => setLibSearch(e.target.value)}
+                    placeholder="Search pieces"
+                    className="min-w-0 flex-1 border-0 bg-transparent p-0 text-[12px] font-medium shadow-none outline-none"
+                    style={{ color: "var(--text-main)" }}
+                    aria-label="Search pieces"
+                  />
+                </label>
+                <GlassDropdown
+                  value={room}
+                  options={rooms.map((r) => ({ value: r, label: r }))}
+                  onChange={setRoom}
+                  ariaLabel="Room"
+                  menuMinWidth={150}
+                  menuAlign="right"
+                  triggerClassName="cs-own-fill h-7 max-w-[108px] shrink-0 justify-between rounded-[7px] border px-2 text-[11.5px] font-medium"
+                  triggerStyle={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                />
+              </div>
+              <div className="hide-native-scrollbar min-h-0 flex-1 overflow-y-auto pb-2">
+                {groups.length ? (
+                  groups.map(([partType, list]) => {
+                    const color = list[0]?.color ?? "#CBD5E1";
+                    const open = !collapsed[partType];
+                    return (
+                      <div key={partType}>
+                        <button
+                          type="button"
+                          onClick={() => setCollapsed((prev) => ({ ...prev, [partType]: open }))}
+                          className="flex h-7 w-full items-center gap-1.5 px-2 text-left text-[11.5px] font-medium hover:bg-[var(--panel-muted)]"
+                          style={{ color: "var(--text-main)" }}
+                          aria-expanded={open}
+                        >
+                          <ChevronDown size={13} style={{ transform: open ? undefined : "rotate(-90deg)", color: "var(--text-muted)" }} />
+                          <span className="h-2.5 w-2.5 shrink-0 rounded-[3px]" style={{ backgroundColor: color }} />
+                          <span className="min-w-0 flex-1 truncate">{partType}</span>
+                          <span style={{ color: "var(--text-muted)" }}>{list.reduce((sum, u) => sum + u.quantity, 0)}</span>
+                        </button>
+                        {open
+                          ? list.map((u) => {
+                              const used = usedCount.get(u.id) ?? 0;
+                              const placeable = u.kind !== "other" && used < u.quantity;
+                              return (
+                                <div
+                                  key={u.id}
+                                  onPointerDown={(e) => {
+                                    if (!placeable || (e.pointerType === "mouse" && e.button !== 0)) return;
+                                    if (e.target instanceof Element && e.target.closest("button")) return;
+                                    // (No text picked up, no browser drag — ours.)
+                                    if (e.pointerType === "mouse") e.preventDefault();
+                                    const held = { unitId: u.id, pointerId: e.pointerId, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, started: false };
+                                    setDragTurn(0);
+                                    libDragRef.current = held;
+                                    setLibDrag(held);
+                                    const move = (event: PointerEvent) => libHandlersRef.current?.move(event);
+                                    const up = (event: PointerEvent) => {
+                                      if (event.pointerId !== held.pointerId) return;
+                                      window.removeEventListener("pointermove", move);
+                                      window.removeEventListener("pointerup", up);
+                                      window.removeEventListener("pointercancel", up);
+                                      libHandlersRef.current?.up(event);
+                                    };
+                                    window.addEventListener("pointermove", move);
+                                    window.addEventListener("pointerup", up);
+                                    window.addEventListener("pointercancel", up);
+                                  }}
+                                  className={`group/piece flex select-none items-center gap-2 py-1 pl-[30px] pr-1.5 hover:bg-[var(--panel-muted)] ${placeable ? "cursor-grab active:cursor-grabbing" : ""}`}
+                                  style={{ opacity: placeable || u.kind === "other" ? (libDrag?.started && libDrag.unitId === u.id ? 0.55 : 1) : 0.45, touchAction: "pan-y" }}
+                                  title={u.kind === "other" ? "Can't be placed in the drawing" : `${used} of ${u.quantity} in the drawing`}
+                                >
+                                  <div className="min-w-0 flex-1">
+                                    <p className="truncate text-[12px] font-medium" style={{ color: "var(--text-main)" }}>{u.name || u.partType}</p>
+                                    <p className="truncate text-[10.5px] font-medium" style={{ color: "var(--text-muted)" }}>{unitText(u)}</p>
+                                  </div>
+                                  <span className="shrink-0 text-[10.5px] font-medium tabular-nums" style={{ color: "var(--text-muted)" }}>
+                                    {used}/{u.quantity}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    disabled={!placeable}
+                                    onClick={() => {
+                                      const { target, level } = plusTarget(u);
+                                      commitUnit(u, target, level);
+                                    }}
+                                    className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] opacity-0 hover:bg-[var(--panel-bg)] focus-visible:opacity-100 group-hover/piece:opacity-100 disabled:hidden max-lg:opacity-100"
+                                    style={{ color: "var(--text-main)" }}
+                                    aria-label="Add to the drawing"
+                                    title={selected && u.kind === "fronts" && selected.kind === "box" ? "Add to the cabinet picked" : selected ? "Add next to what's picked" : "Add to the drawing"}
+                                  >
+                                    <Plus size={14} />
+                                  </button>
+                                </div>
+                              );
+                            })
+                          : null}
+                      </div>
+                    );
+                  })
+                ) : (
+                  <p className="px-3 py-6 text-center text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>
+                    {libSearch.trim() ? "No pieces match that." : "Nothing in the production cutlist yet."}
+                  </p>
+                )}
+              </div>
+            </>
+          ) : (
+            <div className="hide-native-scrollbar min-h-0 flex-1 overflow-y-auto pb-2">
+              {liveItems.length ? (
+                liveItems.map((item) => {
+                  const off = hiddenItems.has(item.id);
+                  const color = (item.unitId ? unitMap.get(item.unitId)?.color : item.fronts[0] ? unitMap.get(item.fronts[0])?.color : undefined) ?? "#CBD5E1";
+                  return (
+                    <div
+                      key={item.id}
+                      className="flex h-7 items-center gap-1.5 px-1.5"
+                      style={{ backgroundColor: selectedId === item.id ? "var(--brand-soft)" : undefined, opacity: off ? 0.5 : 1 }}
                     >
-                      <span className="min-w-0 flex-1 truncate">{partType}</span>
-                      <span className="opacity-75">{list.reduce((sum, u) => sum + u.quantity, 0)}</span>
-                      <ChevronDown size={14} style={{ transform: open ? undefined : "rotate(-90deg)" }} />
-                    </button>
-                    {open
-                      ? list.map((u) => {
-                          const used = usedCount.get(u.id) ?? 0;
-                          const placeable = u.kind !== "other" && used < u.quantity;
-                          return (
-                            <div
-                              key={u.id}
-                              onPointerDown={(e) => {
-                                if (!placeable || (e.pointerType === "mouse" && e.button !== 0)) return;
-                                if (e.target instanceof Element && e.target.closest("button")) return;
-                                // (No text picked up, no browser drag — ours.)
-                                if (e.pointerType === "mouse") e.preventDefault();
-                                const held = { unitId: u.id, pointerId: e.pointerId, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, started: false };
-                                libDragRef.current = held;
-                                setLibDrag(held);
-                                const move = (event: PointerEvent) => libHandlersRef.current?.move(event);
-                                const up = (event: PointerEvent) => {
-                                  if (event.pointerId !== held.pointerId) return;
-                                  window.removeEventListener("pointermove", move);
-                                  window.removeEventListener("pointerup", up);
-                                  window.removeEventListener("pointercancel", up);
-                                  libHandlersRef.current?.up(event);
-                                };
-                                window.addEventListener("pointermove", move);
-                                window.addEventListener("pointerup", up);
-                                window.addEventListener("pointercancel", up);
-                              }}
-                              className={`flex select-none items-center gap-2 border-t px-2.5 py-2 ${placeable ? "cursor-grab active:cursor-grabbing" : ""}`}
-                              style={{
-                                backgroundColor: mixCabinetColor(color, "#FFFFFF", 0.78),
-                                borderColor: mixCabinetColor(color, "#0F172A", 0.08),
-                                opacity: placeable || u.kind === "other" ? (libDrag?.started && libDrag.unitId === u.id ? 0.55 : 1) : 0.5,
-                                touchAction: "pan-y",
-                              }}
-                              title={u.kind === "other" ? "Can't be placed in the drawing" : undefined}
-                            >
-                              <div className="min-w-0 flex-1">
-                                <p className="truncate text-[12px] font-medium text-slate-900">{u.name || u.partType}</p>
-                                <p className="truncate text-[10.5px] text-slate-600">{unitText(u)}</p>
-                              </div>
-                              <span className="shrink-0 text-[11px] font-semibold text-slate-700" title={`${used} of ${u.quantity} in the drawing`}>
-                                {used}/{u.quantity}
-                              </span>
-                              <button
-                                type="button"
-                                disabled={!placeable}
-                                onClick={() => {
-                                  const { target, level } = plusTarget(u);
-                                  commitUnit(u, target, level);
-                                }}
-                                className="glass-shine inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-white disabled:opacity-35"
-                                style={glassShineStyle("#16A34A")}
-                                aria-label="Add to the drawing"
-                                title={selected && u.kind === "fronts" && selected.kind === "box" ? "Add to the cabinet picked" : selected ? "Add next to what's picked" : "Add to the drawing"}
-                              >
-                                <Plus size={14} strokeWidth={2.6} />
-                              </button>
-                            </div>
-                          );
-                        })
-                      : null}
-                  </div>
-                );
-              })
-            ) : (
-              <p className="px-2 py-6 text-center text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>
-                Nothing in the production cutlist yet.
-              </p>
-            )}
-          </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setHiddenItems((prev) => {
+                            const next = new Set(prev);
+                            if (off) next.delete(item.id);
+                            else next.add(item.id);
+                            return next;
+                          })
+                        }
+                        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] hover:bg-[var(--panel-muted)]"
+                        style={{ color: "var(--text-muted)" }}
+                        aria-label={off ? `Show ${nameOf(item)}` : `Hide ${nameOf(item)}`}
+                        title={off ? "Show it" : "Hide it"}
+                      >
+                        {off ? <EyeOff size={13} /> : <Eye size={13} />}
+                      </button>
+                      <button type="button" onClick={() => { setSelectedId(item.id); setPropsFolded(false); }} className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[12px] font-medium" style={{ color: "var(--text-main)" }}>
+                        <span className="h-2.5 w-2.5 shrink-0 rounded-[3px]" style={{ backgroundColor: color }} />
+                        <span className="min-w-0 flex-1 truncate">{nameOf(item)}</span>
+                        <span className="shrink-0 text-[10.5px]" style={{ color: "var(--text-muted)" }}>{item.level === "wall" ? "Overhead" : "Base"}</span>
+                      </button>
+                    </div>
+                  );
+                })
+              ) : (
+                <p className="px-3 py-6 text-center text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>
+                  Nothing in the drawing yet.
+                </p>
+              )}
+            </div>
+          )}
         </aside>
 
-        {/* The kitchen in 3D. */}
-        <section className="glass-shine glass-shine-neutral relative min-h-0 overflow-hidden rounded-[18px] border max-lg:order-1" style={{ borderColor: "var(--glass-border)" }}>
+        {/* The kitchen in 3D, and the status bar under it. */}
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <div className="relative min-h-0 flex-1 overflow-hidden" style={{ backgroundColor: "var(--panel-bg)" }}>
           <div
             ref={(el) => {
               hostRef.current = el;
@@ -3292,19 +4508,49 @@ export function KitchenDrawing({
               if (el) setHostEl((prev) => (prev === el ? prev : el));
             }}
             className="absolute inset-0"
-            style={{ touchAction: "none", cursor: rotating ? "grabbing" : rotateTool && selected ? "crosshair" : moveTool && selected ? "move" : moving ? "grabbing" : hoverPart ? "move" : cursor }}
+            style={{
+              touchAction: "none",
+              cursor: navTool
+                ? cursor
+                : tool === "measure"
+                  ? "crosshair"
+                  : tool === "extrude"
+                    ? extrudeHover
+                      ? "pointer"
+                      : cursor
+                    : rotating
+                      ? "grabbing"
+                      : rotateTool && selected
+                        ? "crosshair"
+                        : moveTool && selected
+                          ? "move"
+                          : hoverPart
+                            ? "pointer"
+                            : cursor,
+            }}
             {...handlers}
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
             onPointerCancel={onPointerUp}
-            onPointerLeave={() => setHoverPart(null)}
+            onPointerLeave={() => {
+              setHoverPart(null);
+              setMeasureHover(null);
+              setFaceHover(null);
+              setExtrudeHover(null);
+            }}
             onContextMenu={(event) => {
               event.preventDefault();
               // (A right-click — not the end of a right-drag that turned the view.)
               const down = rightDownRef.current;
               rightDownRef.current = null;
               if (down && Math.hypot(event.clientX - down.x, event.clientY - down.y) > 5) return;
+              // (Measuring: the measurement finished as it is — then cleared.)
+              if (tool === "measure") {
+                setFaceMeasure(null);
+                setMeasure((prev) => (!prev || prev.done || prev.points.length < 2 ? null : { ...prev, done: true }));
+                return;
+              }
               const id = itemAt(event.clientX, event.clientY);
               const box = hostRef.current?.getBoundingClientRect();
               if (!id || !box) {
@@ -3312,12 +4558,18 @@ export function KitchenDrawing({
                 return;
               }
               setSelectedId(id);
-              setMenu({ id, x: Math.min(event.clientX - box.left, size.width - 300), y: Math.min(event.clientY - box.top, size.height - 230) });
+              setMenu({ id, x: Math.min(event.clientX - box.left, size.width - 300), y: Math.min(event.clientY - box.top, size.height - 320) });
             }}
           >
-            <svg width={size.width} height={size.height} viewBox={`0 0 ${size.width} ${size.height}`} className="absolute inset-0 select-none" role="img" aria-label="The kitchen in 3D">
+            <svg width={size.width} height={size.height} viewBox={`0 0 ${size.width} ${size.height}`} className="absolute inset-0 select-none" style={{ display: "block" }}>
               <g transform={transform}>
-                {drawn.map((face) => (
+                {drawn.filter((face) => face.room).map((face) => (
+                  <polygon key={face.key} points={face.points} fill={face.fill} fillOpacity={face.fillOpacity} stroke="none" />
+                ))}
+                {gridLines.map((line) => (
+                  <line key={line.key} x1={line.a[0]} y1={line.a[1]} x2={line.b[0]} y2={line.b[1]} stroke="var(--text-muted)" strokeOpacity={line.major ? 0.22 : 0.09} strokeWidth={0.7} vectorEffect="non-scaling-stroke" />
+                ))}
+                {drawn.filter((face) => !face.room).map((face) => (
                   <polygon
                     key={face.key}
                     points={face.points}
@@ -3331,12 +4583,123 @@ export function KitchenDrawing({
                     vectorEffect="non-scaling-stroke"
                   />
                 ))}
+                {/* Extrude: the face under the pointer; the one picked, where it's got to, and its arrow. */}
+                {hoveredFace ? <polygon points={hoveredFace.screen.map((q) => q.join(",")).join(" ")} fill="#F97316" fillOpacity={0.25} stroke="#F97316" strokeWidth={1.2} vectorEffect="non-scaling-stroke" pointerEvents="none" /> : null}
+                {extrudeShape ? (
+                  <g>
+                    <polygon points={extrudeShape.points.map((q) => q.join(",")).join(" ")} fill="#F97316" fillOpacity={0.4} stroke="#EA580C" strokeWidth={1.5} vectorEffect="non-scaling-stroke" pointerEvents="none" />
+                    {(() => {
+                      const { start, dir } = extrudeShape;
+                      const end = add(start, mul(dir, 58 / zoom.z));
+                      const head = 10 / zoom.z;
+                      const back = sub(end, mul(dir, head));
+                      const side = mul(perp(dir), head * 0.55);
+                      return (
+                        <g
+                          data-kitchen-gizmo="true"
+                          style={{ cursor: "grab" }}
+                          onPointerDown={(e) => {
+                            e.stopPropagation();
+                            if (extrude) startExtrudeDrag(e, extrude.face, extrude.dist);
+                          }}
+                        >
+                          <title>Drag to extrude</title>
+                          <line x1={start[0]} y1={start[1]} x2={end[0]} y2={end[1]} stroke="transparent" strokeWidth={16} vectorEffect="non-scaling-stroke" />
+                          <line x1={start[0]} y1={start[1]} x2={back[0]} y2={back[1]} stroke="#EA580C" strokeWidth={2.5} vectorEffect="non-scaling-stroke" />
+                          <polygon points={[end, add(back, side), sub(back, side)].map((q) => q.join(",")).join(" ")} fill="#EA580C" />
+                        </g>
+                      );
+                    })()}
+                  </g>
+                ) : null}
+                {/* The size of what's picked. */}
+                {dimLines.map((line) => {
+                  const mid: Vec = [(line.a[0] + line.b[0]) / 2, (line.a[1] + line.b[1]) / 2];
+                  return (
+                    <g key={`${line.a.join()}_${line.b.join()}`} pointerEvents="none">
+                      <line x1={line.a[0]} y1={line.a[1]} x2={line.b[0]} y2={line.b[1]} stroke="#2563EB" strokeWidth={1.4} vectorEffect="non-scaling-stroke" />
+                      <text x={mid[0]} y={mid[1]} fontSize={11 / zoom.z} fontWeight={500} textAnchor="middle" dominantBaseline="middle" fill="#1D4ED8" stroke="var(--panel-bg)" strokeWidth={3 / zoom.z} paintOrder="stroke">
+                        {line.label}
+                      </text>
+                    </g>
+                  );
+                })}
+                {/* Face to face: the faces; the line square between them; the second's plane carried across to meet it. */}
+                {tool === "measure"
+                  ? (() => {
+                      const shape = (face: MeasureFace) => face.points.map((q) => drawProjector.project(q as Point3).join(",")).join(" ");
+                      const hover = faceHover && faceHover.key !== faceMeasure?.a.key && faceHover.key !== faceMeasure?.b?.key ? faceHover : null;
+                      const from = faceResult ? (drawProjector.project(faceResult.from) as Vec) : null;
+                      const to = faceResult ? (drawProjector.project(faceResult.to) as Vec) : null;
+                      const other = faceResult ? (drawProjector.project(faceResult.carriedFrom) as Vec) : null;
+                      const across = from && to ? mul(perp(unit(sub(to, from))), 5 / zoom.z) : null;
+                      return (
+                        <g pointerEvents="none">
+                          {hover ? <polygon points={shape(hover)} fill="#16A34A" fillOpacity={0.2} stroke="#16A34A" strokeWidth={1.2} vectorEffect="non-scaling-stroke" /> : null}
+                          {faceMeasure && faceMeasure.a.points.length > 2 ? <polygon points={shape(faceMeasure.a)} fill="#DC2626" fillOpacity={0.25} stroke="#DC2626" strokeWidth={1.4} vectorEffect="non-scaling-stroke" /> : null}
+                          {faceMeasure?.b && faceMeasure.b.points.length > 2 ? <polygon points={shape(faceMeasure.b)} fill="#DC2626" fillOpacity={0.25} stroke="#DC2626" strokeWidth={1.4} vectorEffect="non-scaling-stroke" /> : null}
+                          {other && to && len(sub(other, to)) > 0.5 ? <line x1={other[0]} y1={other[1]} x2={to[0]} y2={to[1]} stroke="#DC2626" strokeWidth={1.2} strokeDasharray="6 4" vectorEffect="non-scaling-stroke" /> : null}
+                          {from && to && across ? (
+                            <>
+                              <line x1={from[0]} y1={from[1]} x2={to[0]} y2={to[1]} stroke="#DC2626" strokeWidth={1.8} vectorEffect="non-scaling-stroke" />
+                              {[from, to].map((end, i) => (
+                                <line key={i} x1={end[0] - across[0]} y1={end[1] - across[1]} x2={end[0] + across[0]} y2={end[1] + across[1]} stroke="#DC2626" strokeWidth={1.8} vectorEffect="non-scaling-stroke" />
+                              ))}
+                              <text x={(from[0] + to[0]) / 2} y={(from[1] + to[1]) / 2 - 8 / zoom.z} fontSize={12 / zoom.z} fontWeight={500} textAnchor="middle" fill="#B91C1C" stroke="var(--panel-bg)" strokeWidth={3 / zoom.z} paintOrder="stroke">
+                                {faceResult ? fmtMm(faceResult.distance) : ""}
+                              </text>
+                            </>
+                          ) : null}
+                        </g>
+                      );
+                    })()
+                  : null}
+                {/* The measurement: its points, the lines between them, what they come to. */}
+                {tool === "measure" ? (
+                  <g pointerEvents="none">
+                    {measurePoints.slice(1).map((q, i) => {
+                      const a = drawProjector.project(measurePoints[i]);
+                      const b = drawProjector.project(q);
+                      return (
+                        <g key={`m${i}`}>
+                          <line x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} stroke="#DC2626" strokeWidth={1.6} vectorEffect="non-scaling-stroke" />
+                          <text x={(a[0] + b[0]) / 2} y={(a[1] + b[1]) / 2 - 8 / zoom.z} fontSize={12 / zoom.z} fontWeight={500} textAnchor="middle" fill="#B91C1C" stroke="var(--panel-bg)" strokeWidth={3 / zoom.z} paintOrder="stroke">
+                            {fmtMm(measureLength(measurePoints[i], q))}
+                          </text>
+                        </g>
+                      );
+                    })}
+                    {measureAngle !== null ? (
+                      <text x={drawProjector.project(measurePoints[1])[0]} y={drawProjector.project(measurePoints[1])[1] + 18 / zoom.z} fontSize={12 / zoom.z} fontWeight={500} textAnchor="middle" fill="#B91C1C" stroke="var(--panel-bg)" strokeWidth={3 / zoom.z} paintOrder="stroke">
+                        {`${Math.round(measureAngle * 10) / 10}°`}
+                      </text>
+                    ) : null}
+                    {measurePoints.map((q, i) => {
+                      const a = drawProjector.project(q);
+                      return <circle key={`p${i}`} cx={a[0]} cy={a[1]} r={3.5 / zoom.z} fill="#FFFFFF" stroke="#DC2626" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />;
+                    })}
+                    {measureHover?.edge ? (
+                      <line
+                        x1={drawProjector.project(measureHover.edge[0])[0]}
+                        y1={drawProjector.project(measureHover.edge[0])[1]}
+                        x2={drawProjector.project(measureHover.edge[1])[0]}
+                        y2={drawProjector.project(measureHover.edge[1])[1]}
+                        stroke="#16A34A"
+                        strokeWidth={2.2}
+                        vectorEffect="non-scaling-stroke"
+                      />
+                    ) : null}
+                    {measureHover ? (
+                      <circle cx={drawProjector.project(measureHover.p)[0]} cy={drawProjector.project(measureHover.p)[1]} r={(measureHover.snapped ? 5 : 3) / zoom.z} fill={measureHover.snapped ? "#16A34A" : "none"} fillOpacity={0.35} stroke={measureHover.snapped ? "#15803D" : "#DC2626"} strokeWidth={1.4} vectorEffect="non-scaling-stroke" />
+                    ) : null}
+                  </g>
+                ) : null}
                 {/* Each piece's pivot, blue, and the picked one's corners — a dot dragged onto another piece's snaps them
                     together; onto another of its own (or clicked), it's that piece's pivot. */}
                 {allDots.map((pin) => {
                   const dragging = Boolean(pivotDrag) && sameRef(pivotDrag?.from, pin.ref);
                   const target = Boolean(pivotDrag?.moved && pivotDrag.over && sameRef(pivotDrag.over, pin.ref));
-                  const r = target ? 7 : pin.pivot ? (pin.picked ? 6 : 4.5) : pin.picked ? 3.5 : 2.6;
+                  const r = target ? 7 : pin.pivot || pin.fallback ? (pin.picked ? 6 : 4.5) : pin.picked ? 3.5 : 2.6;
                   return (
                     <g
                       key={pin.key}
@@ -3353,7 +4716,7 @@ export function KitchenDrawing({
                         setPivotDrag({ pointerId: e.pointerId, from: pin.ref, over: pin.ref, x: e.clientX, y: e.clientY, moved: false });
                       }}
                     >
-                      <title>{pin.pivot ? "Its pivot — click to let it go, or drag onto another piece's pivot to snap them together" : "A corner — click for its pivot, or drag onto another piece's pivot"}</title>
+                      <title>{pin.pivot ? "Its pivot — click to let it go, or drag onto another piece's pivot to snap them together" : pin.fallback ? "It turns about this corner, with no pivot picked — click to make it its pivot" : "A corner — click for its pivot, or drag onto another piece's pivot"}</title>
                       <circle cx={pin.x} cy={pin.y} r={9 / zoom.z} fill="transparent" />
                       <circle
                         cx={pin.x}
@@ -3361,8 +4724,8 @@ export function KitchenDrawing({
                         r={r / zoom.z}
                         fill={target ? "#16A34A" : pin.pivot || dragging ? "#2563EB" : "#FFFFFF"}
                         fillOpacity={pin.picked || pin.pivot || target || dragging ? 1 : 0.8}
-                        stroke={target ? "#15803D" : pin.pivot || dragging ? "#1D4ED8" : "#64748B"}
-                        strokeWidth={pin.pivot || target ? 1.6 : 1}
+                        stroke={target ? "#15803D" : pin.pivot || pin.fallback || dragging ? "#1D4ED8" : "#64748B"}
+                        strokeWidth={pin.pivot || pin.fallback || target ? 1.6 : 1}
                         strokeOpacity={pin.picked || pin.pivot || target ? 1 : 0.7}
                         vectorEffect="non-scaling-stroke"
                       />
@@ -3371,7 +4734,7 @@ export function KitchenDrawing({
                 })}
                 {/* Move: the arrows on what's picked — X along it (red), Y in and out (green), Z up (blue) — dragged to slide
                     it that way. (Drawn where it's shown, so they go with it.) */}
-                {moveTool && selected && !moving && !dropPreview && !rotating
+                {moveTool && selected && !selected.locked && !moving && !dropPreview && !rotating
                   ? (() => {
                       const f = laid.frames.get(selected.id);
                       const sz = laid.sizes.get(selected.id);
@@ -3437,14 +4800,98 @@ export function KitchenDrawing({
                   ? (() => {
                       const from = allDots.find((d) => sameRef(d.ref, pivotDrag.from));
                       const over = pivotDrag.over ? allDots.find((d) => sameRef(d.ref, pivotDrag.over)) : null;
-                      return from && over && over !== from ? (
-                        <line x1={from.x} y1={from.y} x2={over.x} y2={over.y} stroke="#16A34A" strokeWidth={1.6} strokeDasharray="4 3" vectorEffect="non-scaling-stroke" pointerEvents="none" />
+                      if (!from) return null;
+                      if (over && over !== from) {
+                        return <line x1={from.x} y1={from.y} x2={over.x} y2={over.y} stroke="#16A34A" strokeWidth={1.6} strokeDasharray="4 3" vectorEffect="non-scaling-stroke" pointerEvents="none" />;
+                      }
+                      // (Nothing under it yet: the line to the pointer, so the drag can be seen.)
+                      return pivotDrag.pointer ? (
+                        <line x1={from.x} y1={from.y} x2={pivotDrag.pointer[0]} y2={pivotDrag.pointer[1]} stroke="#64748B" strokeWidth={1.2} strokeDasharray="4 3" vectorEffect="non-scaling-stroke" pointerEvents="none" />
                       ) : null;
                     })()
                   : null}
               </g>
             </svg>
           </div>
+          {/* The view cube. */}
+          <div className="absolute right-3 top-3 z-10">
+            <ViewCube
+              view={view}
+              onPick={(next) => {
+                goToView(next);
+                fitView();
+              }}
+            />
+          </div>
+          {/* What's measured, in words. */}
+          {tool === "measure" && measurePoints.length >= 2 ? (
+            <div className="absolute left-3 top-3 z-20 min-w-[170px] rounded-[10px] border px-3 py-2 text-[12px] font-medium shadow-lg" style={{ ...floatingPanelStyle, color: "var(--text-main)" }}>
+              <div className="flex items-center justify-between gap-3">
+                <span style={{ color: "var(--text-muted)" }}>{measureAngle !== null ? "Angle" : "Distance"}</span>
+                <span className="tabular-nums">{measureAngle !== null ? `${Math.round(measureAngle * 10) / 10}°` : fmtMm(measureLength(measurePoints[0], measurePoints[1]))}</span>
+              </div>
+              {measureAngle === null ? (
+                <div className="mt-1 flex gap-2 text-[11px] tabular-nums" style={{ color: "var(--text-muted)" }}>
+                  {(["X", "Y", "Z"] as const).map((axis, i) => (
+                    <span key={axis}>
+                      {axis} {Math.round(Math.abs(measurePoints[0][i] - measurePoints[1][i]))}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          {/* Face to face, in words. */}
+          {tool === "measure" && faceResult ? (
+            <div className="absolute left-3 top-3 z-20 min-w-[190px] rounded-[10px] border px-3 py-2 text-[12px] font-medium shadow-lg" style={{ ...floatingPanelStyle, color: "var(--text-main)" }}>
+              <div className="flex items-center justify-between gap-3">
+                <span style={{ color: "var(--text-muted)" }}>{faceMeasure?.a.points.length === 1 || (faceSecond?.points.length ?? 3) === 1 ? "Point to face" : "Face to face"}</span>
+                <span className="tabular-nums">{fmtMm(faceResult.distance)}</span>
+              </div>
+              {!faceResult.parallel ? (
+                <p className="mt-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
+                  Not parallel: {Math.round(faceResult.angle * 10) / 10}° apart. Measured square to the second face, from the first&apos;s nearest corner.
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+          {/* Extrude: how far — dragged or typed; Enter or the tick keeps it, Esc or the cross puts it back. */}
+          {extrude ? (
+            <div className="absolute left-1/2 top-3 z-20 flex -translate-x-1/2 items-center gap-1.5 whitespace-nowrap rounded-[10px] border px-2.5 py-1.5 shadow-lg" style={floatingPanelStyle}>
+              <span className="text-[12px] font-medium" style={{ color: "var(--text-main)" }}>
+                Extrude {extrude.face.kind === "side" ? "side" : extrude.face.kind === "top" ? "top" : "underneath"}
+              </span>
+              <MeasureBox
+                idle={!extrude.dist && extrude.text === "0"}
+                type="text"
+                inputMode="decimal"
+                value={extrude.text}
+                onChange={(e) => {
+                  const text = e.target.value.replace(/[^0-9.-]/g, "");
+                  const dist = Number.parseFloat(text);
+                  setExtrude({ ...extrude, text, dist: Number.isFinite(dist) ? dist : 0 });
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") commitExtrude();
+                  if (e.key === "Escape") {
+                    e.stopPropagation();
+                    setExtrude(null);
+                  }
+                }}
+                className="h-7 w-[76px] rounded-[7px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-right text-[12px] font-medium text-[var(--text-main)]"
+                aria-label="Distance (mm)"
+              />
+              <span className="text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>
+                mm
+              </span>
+              <button type="button" onClick={commitExtrude} className="inline-flex h-7 w-7 items-center justify-center rounded-[7px] text-white" style={{ backgroundColor: "#16A34A" }} aria-label="Keep it" title="Keep it (Enter)">
+                <Check size={14} />
+              </button>
+              <button type="button" onClick={() => setExtrude(null)} className="inline-flex h-7 w-7 items-center justify-center rounded-[7px] hover:bg-[var(--panel-muted)]" style={{ color: "var(--text-main)" }} aria-label="Cancel" title="Cancel (Esc)">
+                <X size={14} />
+              </button>
+            </div>
+          ) : null}
           {/* An overhead cabinet made from fronts just dropped: how deep — Enter (or the tick) sets it, Esc keeps it as is. */}
           {depthAsk && liveItems.some((i) => i.id === depthAsk.id) ? (
             <div
@@ -3480,7 +4927,7 @@ export function KitchenDrawing({
                   setDepth(depthAsk.id, Number.parseFloat(depthAsk.text));
                   setDepthAsk(null);
                 }}
-                className="inline-flex h-7 w-7 items-center justify-center rounded-full text-white"
+                className="glass-shine inline-flex h-7 w-7 items-center justify-center rounded-full border text-white"
                 style={glassShineStyle("#16A34A")}
                 aria-label="Set it"
                 title="Set it (Enter)"
@@ -3508,6 +4955,7 @@ export function KitchenDrawing({
                 autoFocus
                 value={benchEdgeText}
                 placeholder="mm"
+                onFocus={(e) => e.target.select()}
                 onChange={(e) => setBenchEdgeText(e.target.value.replace(/[^0-9.-]/g, ""))}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
@@ -3528,7 +4976,7 @@ export function KitchenDrawing({
                   const mm = Number.parseFloat(benchEdgeText);
                   if (Number.isFinite(mm)) setBenchEdgeOverhang(mm);
                 }}
-                className="inline-flex h-7 w-7 items-center justify-center rounded-full text-white"
+                className="glass-shine inline-flex h-7 w-7 items-center justify-center rounded-full border text-white"
                 style={glassShineStyle("#16A34A")}
                 aria-label="Set it"
                 title="Set it (Enter)"
@@ -3544,7 +4992,7 @@ export function KitchenDrawing({
             </div>
           ) : null}
           {/* Move: the axis, how far (dragged, or typed) — Enter or the tick locks it in, Esc or the cross puts it back. */}
-          {moveTool && selected ? (
+          {moveTool && selected && !selected.locked ? (
             <div
               className="absolute bottom-12 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full border px-2 py-1 shadow-lg"
               style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-bg-strong)", backdropFilter: "blur(14px) saturate(200%)", WebkitBackdropFilter: "blur(14px) saturate(200%)" }}
@@ -3559,14 +5007,15 @@ export function KitchenDrawing({
                     lockMove();
                     setMoveAxis(axis);
                   }}
-                  className="inline-flex h-7 w-8 items-center justify-center rounded-full text-[12px] font-semibold"
+                  className={`inline-flex h-7 w-8 items-center justify-center rounded-full text-[12px] font-semibold ${axis === moveAxis ? "glass-shine border" : ""}`}
                   style={axis === moveAxis ? { ...glassShineStyle("#2563EB"), color: "#FFFFFF" } : { color: "var(--text-main)" }}
                   title={axis === "x" ? "Along it" : axis === "y" ? "In and out" : "Up and down"}
                 >
                   {axis.toUpperCase()}
                 </button>
               ))}
-              <input
+              <MeasureBox
+                idle={!draft}
                 type="text"
                 inputMode="decimal"
                 value={draft?.text ?? "0"}
@@ -3575,10 +5024,12 @@ export function KitchenDrawing({
                   const delta = Number.parseFloat(text);
                   setMoveDraft({ id: selected.id, delta: Number.isFinite(delta) ? delta : 0, text });
                 }}
-                onFocus={(e) => e.target.select()}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") lockMove();
-                  if (e.key === "Escape") setMoveDraft(null);
+                  if (e.key === "Escape" && draft) {
+                    e.stopPropagation();
+                    setMoveDraft(null);
+                  }
                 }}
                 className="h-7 w-[84px] rounded-full border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2.5 text-right text-[12px] font-medium text-[var(--text-main)]"
                 aria-label="How far (mm)"
@@ -3586,7 +5037,7 @@ export function KitchenDrawing({
               <span className="text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>
                 mm
               </span>
-              <button type="button" onClick={lockMove} className="inline-flex h-7 w-7 items-center justify-center rounded-full text-white" style={glassShineStyle("#16A34A")} aria-label="Lock it in" title="Lock it in (Enter)">
+              <button type="button" onClick={lockMove} className="glass-shine inline-flex h-7 w-7 items-center justify-center rounded-full border text-white" style={glassShineStyle("#16A34A")} aria-label="Lock it in" title="Lock it in (Enter)">
                 ✓
               </button>
               <button type="button" onClick={() => setMoveDraft(null)} className="inline-flex h-7 w-7 items-center justify-center rounded-full hover:bg-[var(--panel-muted)]" style={{ color: "var(--text-main)" }} aria-label="Put it back" title="Put it back (Esc)">
@@ -3594,9 +5045,50 @@ export function KitchenDrawing({
               </button>
             </div>
           ) : null}
+          {/* Rotate, on a piece on its own: how far to turn it — Enter or the tick keeps it, Esc or the cross puts it back. */}
+          {rotateTool && selected && !selected.locked && selected.kind !== "custom" && selected.at.kind === "free" ? (
+            <div
+              className="absolute bottom-12 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full border py-1 pl-3.5 pr-2 shadow-lg"
+              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-bg-strong)", backdropFilter: "blur(14px) saturate(200%)", WebkitBackdropFilter: "blur(14px) saturate(200%)" }}
+            >
+              <span className="whitespace-nowrap text-[12px] font-medium" style={{ color: "var(--text-main)" }}>
+                Turn by
+              </span>
+              <MeasureBox
+                idle={!turnTyped}
+                type="text"
+                inputMode="decimal"
+                value={turnTyped?.text ?? "0"}
+                onChange={(e) => {
+                  const text = e.target.value.replace(/[^0-9.-]/g, "");
+                  const deg = Number.parseFloat(text);
+                  setRotateTyped({ id: selected.id, deg: Number.isFinite(deg) ? deg : 0, text });
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") lockTurn();
+                  if (e.key === "Escape" && turnTyped) {
+                    e.stopPropagation();
+                    setRotateTyped(null);
+                  }
+                }}
+                className="h-7 w-[72px] rounded-full border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2.5 text-right text-[12px] font-medium text-[var(--text-main)]"
+                aria-label="Turn by (degrees)"
+                title="+ anticlockwise, − clockwise, seen from above"
+              />
+              <span className="text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>
+                °
+              </span>
+              <button type="button" onClick={lockTurn} className="glass-shine inline-flex h-7 w-7 items-center justify-center rounded-full border text-white" style={glassShineStyle("#16A34A")} aria-label="Keep it" title="Keep it (Enter)">
+                ✓
+              </button>
+              <button type="button" onClick={() => setRotateTyped(null)} className="inline-flex h-7 w-7 items-center justify-center rounded-full hover:bg-[var(--panel-muted)]" style={{ color: "var(--text-main)" }} aria-label="Put it back" title="Put it back (Esc)">
+                <X size={13} />
+              </button>
+            </div>
+          ) : null}
           {/* Where what's dragged will go. */}
           {hint ? (
-            <div className="pointer-events-none absolute left-1/2 top-3 z-10 -translate-x-1/2 rounded-full px-3 py-1 text-[12px] font-semibold text-white" style={glassShineStyle("var(--brand)")}>
+            <div className="glass-shine pointer-events-none absolute left-1/2 top-3 z-10 -translate-x-1/2 rounded-full border px-3 py-1 text-[12px] font-semibold text-white" style={glassShineStyle("var(--brand)")}>
               {hint}
             </div>
           ) : null}
@@ -3663,88 +5155,29 @@ export function KitchenDrawing({
           ) : null}
           {!liveItems.length && !dropPreview ? (
             <div className="pointer-events-none absolute inset-x-0 bottom-6 z-10 flex justify-center px-6">
-              <p className="rounded-full px-4 py-2 text-center text-[12.5px] font-medium" style={{ backgroundColor: "color-mix(in srgb, var(--panel-bg) 85%, transparent)", color: "var(--text-main)" }}>
-                Drag a front, a cabinet or a panel from Pieces onto the floor to start.
+              <p className="rounded-[8px] px-3 py-1.5 text-center text-[12px] font-medium" style={{ backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}>
+                Drag a front, a cabinet or a panel from the library onto the floor to start.
               </p>
             </div>
           ) : null}
-          <button
-            type="button"
-            onClick={() => {
-              setView({ yaw: -0.45, pitch: 0.32 });
-              resetZoom();
-            }}
-            className="glass-shine glass-shine-neutral absolute left-3 top-3 z-10 inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-[12px] font-medium text-[var(--text-main)]"
-          >
-            <RotateCcw size={13} />
-            Reset view
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setSelectedId(null);
-              setMenu(null);
-            }}
-            className="glass-shine glass-shine-neutral absolute left-3 top-[52px] z-10 inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-[12px] font-medium text-[var(--text-main)]"
-            title="Benchtop settings — in the panel on the right"
-          >
-            <Layers size={13} />
-            Benchtop
-          </button>
-          <div className="absolute left-3 top-[92px] z-10">{rotateButton}</div>
-          <div className="absolute left-3 top-[128px] z-10">{moveButton}</div>
-          {liveItems.length ? (
-            <button
-              type="button"
-              onClick={() => {
-                if (!window.confirm("Clear the drawing? Everything in it is taken out (Ctrl+Z puts it back).")) return;
-                setItems([]);
-                setSelectedId(null);
-                setMenu(null);
-                setView({ yaw: -0.45, pitch: 0.32 });
-                resetZoom();
-              }}
-              className="glass-shine glass-shine-neutral absolute left-3 top-[168px] z-10 inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-[12px] font-medium"
-              style={{ color: "var(--danger)" }}
-            >
-              <Trash2 size={13} />
-              Clear
+          {/* What's picked: floating over the drawing, so the drawing doesn't move. */}
+          {selected && selectedSize && propsFolded && tool !== "extrude" && tool !== "measure" ? (
+            <button type="button" onClick={() => setPropsFolded(false)} className="absolute right-3 top-[104px] z-20 inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2.5 text-[12px] font-medium shadow-lg" style={{ ...floatingPanelStyle, color: "var(--text-main)" }}>
+              <SlidersHorizontal size={13} />
+              Properties
             </button>
           ) : null}
-          {/* What a drop on the floor starts. */}
-          <div className="absolute right-3 top-3 z-10 w-[170px]" title="What a drop on the floor starts">
-            <Segmented
-              value={placing}
-              onChange={setPlacing}
-              options={[
-                { value: "base", label: "Base" },
-                { value: "wall", label: "Wall" },
-              ]}
-              pill
-              fill
-              flip
-            />
-          </div>
-          <div
-            className="pointer-events-none absolute bottom-3 right-3 z-10 rounded-full border px-3 py-1 text-[11.5px] font-medium max-sm:hidden"
-            style={{ borderColor: "var(--glass-border)", backgroundColor: "color-mix(in srgb, var(--panel-bg) 85%, transparent)", color: "var(--text-muted)" }}
-          >
-            Drag something to move it · right-click it for corners · right-drag to turn · scroll to zoom
-          </div>
-        </section>
-
-        {/* What's picked: what's in it, how its size is worked out (the gaps it's at), and what can be done to it. */}
-        <aside className="glass-shine glass-shine-neutral hide-native-scrollbar flex min-h-0 flex-col overflow-y-auto rounded-[18px] border p-3 max-lg:hidden" style={{ borderColor: "var(--glass-border)" }}>
-          {selected && selectedSize ? (
-            <>
+          {propsShown && selected && selectedSize ? (
+            <div className={floatingPanelClass} style={floatingPanelStyle} onPointerDown={(e) => e.stopPropagation()}>
               <div className="flex items-center gap-2">
                 <p className="flex-1 text-[14px] font-semibold first-letter:uppercase" style={{ color: "var(--text-main)" }}>
                   {selectedTitle}
                 </p>
-                <button type="button" onClick={() => setSelectedId(null)} className="inline-flex h-7 w-7 items-center justify-center rounded-full hover:bg-[var(--panel-muted)]" aria-label="Close">
+                <button type="button" onClick={() => setPropsFolded(true)} className="inline-flex h-7 w-7 items-center justify-center rounded-full hover:bg-[var(--panel-muted)]" aria-label="Close">
                   <X size={14} />
                 </button>
               </div>
+              {pieceOptions(selected, selectedSize)}
               {selected.kind === "box" && !selected.unitId ? (
                 <label className="mt-3 flex items-center gap-2 text-[12px] font-medium" style={{ color: "var(--text-main)" }}>
                   <span className="flex-1">
@@ -3758,6 +5191,7 @@ export function KitchenDrawing({
                     type="text"
                     inputMode="decimal"
                     defaultValue={String(Math.round(selectedSize.depth))}
+                    onFocus={(e) => e.target.select()}
                     onBlur={(e) => {
                       const mm = Number.parseFloat(e.target.value);
                       if (Number.isFinite(mm) && Math.abs(mm - selectedSize.depth) > 0.5) setDepth(selected.id, mm);
@@ -3910,28 +5344,11 @@ export function KitchenDrawing({
                   {cornerControls(selected)}
                 </div>
               ) : null}
-              <div className="mt-3">
-                <Segmented
-                  value={selected.level}
-                  onChange={(level) => {
-                    // (Up on the wall, or down: on its own from there, where it is.)
-                    const to = selected.at.kind === "attach" ? selected.at.to : "";
-                    const parent = liveItems.find((i) => i.id === to);
-                    update(selected.id, { level, ...(parent && parent.level !== level ? { at: freeAt(selected.id) } : {}) });
-                  }}
-                  options={[
-                    { value: "base", label: "Base" },
-                    { value: "wall", label: "Wall" },
-                  ]}
-                  pill
-                  fill
-                  flip
-                />
-              </div>
-              <div className="mt-2 grid grid-cols-3 gap-2">
+              <div className="mt-3 grid grid-cols-3 gap-2">
                 {selected.at.kind === "attach" ? (
                   <button
                     type="button"
+                    disabled={selected.locked}
                     onClick={() => update(selected.id, { at: freeAt(selected.id) })}
                     className="glass-shine glass-shine-neutral col-span-2 inline-flex h-9 items-center justify-center gap-1.5 rounded-full border text-[12.5px] font-medium"
                     style={{ color: "var(--text-main)" }}
@@ -3942,18 +5359,19 @@ export function KitchenDrawing({
                   </button>
                 ) : (
                   <>
-                    <button type="button" onClick={() => turn(selected.id, -Math.PI / 2)} className="glass-shine glass-shine-neutral inline-flex h-9 items-center justify-center rounded-full border" style={{ color: "var(--text-main)" }} aria-label="Turn left" title="Turn it (and what runs off it) a quarter left">
+                    <button type="button" disabled={selected.locked} onClick={() => turn(selected.id, -Math.PI / 2)} className="glass-shine glass-shine-neutral inline-flex h-9 items-center justify-center rounded-full border disabled:opacity-50" style={{ color: "var(--text-main)" }} aria-label="Turn left" title="Turn it (and what runs off it) a quarter left">
                       <RotateCcw size={15} />
                     </button>
-                    <button type="button" onClick={() => turn(selected.id, Math.PI / 2)} className="glass-shine glass-shine-neutral inline-flex h-9 items-center justify-center rounded-full border" style={{ color: "var(--text-main)" }} aria-label="Turn right" title="Turn it (and what runs off it) a quarter right">
+                    <button type="button" disabled={selected.locked} onClick={() => turn(selected.id, Math.PI / 2)} className="glass-shine glass-shine-neutral inline-flex h-9 items-center justify-center rounded-full border disabled:opacity-50" style={{ color: "var(--text-main)" }} aria-label="Turn right" title="Turn it (and what runs off it) a quarter right">
                       <RotateCw size={15} />
                     </button>
                   </>
                 )}
                 <button
                   type="button"
+                  disabled={selected.locked}
                   onClick={() => remove(selected.id)}
-                  className="glass-shine inline-flex h-9 items-center justify-center gap-1.5 rounded-full border text-[12.5px] font-medium text-white"
+                  className="glass-shine inline-flex h-9 items-center justify-center gap-1.5 rounded-full border text-[12.5px] font-medium text-white disabled:opacity-50"
                   style={glassShineStyle("var(--danger)")}
                   aria-label="Remove"
                   title="Remove"
@@ -3961,27 +5379,16 @@ export function KitchenDrawing({
                   <Trash2 size={14} />
                 </button>
               </div>
-            </>
-          ) : (
-            <div className="flex flex-1 flex-col items-center justify-center gap-2 px-4 text-center">
-              <span className="inline-flex h-10 w-10 items-center justify-center rounded-full" style={{ backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}>
-                <Eye size={18} />
-              </span>
-              <p className="text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>
-                Click a cabinet
-              </p>
-              <p className="text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>
-                See its size and how it&apos;s worked out from its fronts and the project&apos;s gaps. Drag it to move it.
-              </p>
-              <div className="mt-3 w-full rounded-[12px] border px-3 py-2 text-left text-[11.5px] font-medium leading-[1.6]" style={{ borderColor: "var(--glass-border)", color: "var(--text-main)" }}>
-                <p className="mb-0.5 text-[10.5px] font-semibold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
-                  This project&apos;s gaps
-                </p>
-                <p>Between doors: {gaps.doorGap} (tall {gaps.tallDoorGap})</p>
-                <p>Between drawers: {gaps.drawerGap}</p>
-                <p>Under the bench: {gaps.benchGap}</p>
-                <p>Tall, to the top: {gaps.tallTopGap}</p>
-                <p>Panels: front thickness + {PANEL_PROUD_MM} proud</p>
+            </div>
+          ) : null}
+          {/* The benchtop's overhangs, and the project's gaps. */}
+          {settingsOpen && !propsShown ? (
+            <div className={floatingPanelClass} style={floatingPanelStyle} onPointerDown={(e) => e.stopPropagation()}>
+              <div className="mb-2 flex items-center">
+                <p className="flex-1 text-[13px] font-medium" style={{ color: "var(--text-main)" }}>Settings</p>
+                <button type="button" onClick={() => setSettingsOpen(false)} className="inline-flex h-7 w-7 items-center justify-center rounded-[7px] hover:bg-[var(--panel-muted)]" style={{ color: "var(--text-main)" }} aria-label="Close">
+                  <X size={14} />
+                </button>
               </div>
               {/* Benchtop settings: how far it runs past the fronts, and past the panels. */}
               <div className="w-full rounded-[12px] border px-3 py-2.5 text-left" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}>
@@ -4005,6 +5412,7 @@ export function KitchenDrawing({
                       min={0}
                       step={1}
                       defaultValue={benchOver[key]}
+                      onFocus={(e) => e.target.select()}
                       onBlur={(e) => {
                         const mm = Number(e.target.value);
                         if (Number.isFinite(mm) && mm >= 0 && mm !== benchOver[key]) setBenchOver((prev) => ({ ...prev, [key]: mm }));
@@ -4019,9 +5427,37 @@ export function KitchenDrawing({
                   </label>
                 ))}
               </div>
+              <div className="mt-3 w-full rounded-[12px] border px-3 py-2 text-left text-[11.5px] font-medium leading-[1.6]" style={{ borderColor: "var(--glass-border)", color: "var(--text-main)" }}>
+                <p className="mb-0.5 text-[10.5px] font-semibold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
+                  This project&apos;s gaps
+                </p>
+                <p>Between doors: {gaps.doorGap} (tall {gaps.tallDoorGap})</p>
+                <p>Between drawers: {gaps.drawerGap}</p>
+                <p>Under the bench: {gaps.benchGap}</p>
+                <p>Tall and overheads, to the top: {gaps.tallTopGap}</p>
+                <p>Panels: front thickness + {PANEL_PROUD_MM} proud</p>
+              </div>
+              {extrusions.length ? (
+                <button type="button" onClick={() => setExtrusions([])} className="mt-2 h-8 rounded-[8px] border text-[12px] font-medium hover:bg-[var(--panel-muted)]" style={{ borderColor: "var(--glass-border)", color: "var(--text-main)" }}>
+                  Remove {extrusions.length} extrusion{extrusions.length === 1 ? "" : "s"}
+                </button>
+              ) : null}
             </div>
-          )}
-        </aside>
+          ) : null}
+          </div>
+          {/* The status bar: what the tool's asking for; the view's tools; the units. */}
+          <div className="flex h-[30px] shrink-0 items-center gap-2 border-t px-2.5 text-[11.5px] font-medium" style={{ backgroundColor: "var(--panel-bg)", borderColor: "var(--glass-border)", color: "var(--text-muted)" }}>
+            <span className="min-w-0 flex-1 truncate">{statusText}</span>
+            <span className="flex shrink-0 items-center gap-0.5">
+              <ToolButton small icon={OrbitIcon} label="Orbit: left-drag turns the view (or right-drag, any time)" active={navTool === "orbit"} onClick={() => setNavTool((now) => (now === "orbit" ? null : "orbit"))} />
+              <ToolButton small icon={Hand} label="Pan: left-drag moves the view (or middle-drag, any time)" active={navTool === "pan"} onClick={() => setNavTool((now) => (now === "pan" ? null : "pan"))} />
+              <ToolButton small icon={ZoomIn} label="Zoom in (or scroll)" onClick={() => zoomBy(1.25)} />
+              <ToolButton small icon={ZoomOut} label="Zoom out (or scroll)" onClick={() => zoomBy(0.8)} />
+              <ToolButton small icon={Maximize} label="Fit everything in view" keys="F" onClick={fitView} />
+            </span>
+            <span className="hidden flex-1 justify-end sm:flex">Units: mm</span>
+          </div>
+        </section>
       </div>
     </div>
   );

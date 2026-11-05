@@ -129,6 +129,52 @@ export async function sendStaffEmail({ to, subject, text, html, attachments }: S
   }
 }
 
+// An email automation's email (lib/column-automation-email-server.ts): one copy to each address, in one go, so they don't
+// see each other. From "<company> via CutSmart". Its subject and body are the company's own words, with what the project
+// holds filled in, so they're escaped here.
+export async function sendAutomationEmails({
+  to,
+  companyName,
+  subject,
+  body,
+}: {
+  to: string[];
+  companyName: string;
+  subject: string;
+  body: string;
+}): Promise<SendVerificationEmailResult> {
+  const apiKey = readEnvValue(process.env.RESEND_API_KEY);
+  const sender = senderFromEnv(process.env.RESEND_FROM_EMAIL);
+  if (!apiKey || !sender) {
+    return { ok: false, error: "missing-resend-config" };
+  }
+  const recipients = Array.from(new Set(to.map((address) => String(address || "").trim()).filter(Boolean)));
+  if (!recipients.length) {
+    return { ok: false, error: "missing-recipient" };
+  }
+  const address = sender.match(/<(.+)>/)?.[1] ?? sender;
+  const name = companyName.replace(/[<>"\r\n]/g, " ").replace(/\s+/g, " ").trim().slice(0, 60);
+  const from = name ? `"${name} via CutSmart" <${address}>` : `CutSmart <${address}>`;
+  const cleanSubject = subject.replace(/[\r\n]+/g, " ").trim().slice(0, 200);
+  const footer = `Sent automatically${name ? ` by ${name}` : ""} using CutSmart.`;
+  const text = `${body}\n\n${footer}`;
+  const escape = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  const html = `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;max-width:520px;margin:0 auto;padding:24px;color:#111111">
+  <p style="margin:0 0 14px;font-size:14px;line-height:1.5;color:#111111;white-space:pre-line">${escape(body)}</p>
+  <p style="margin:18px 0 0;font-size:12px;line-height:1.5;color:#6b7280">${escape(footer)}</p>
+</div>`;
+  try {
+    const resend = new Resend(apiKey);
+    const { error } = await resend.batch.send(recipients.map((recipient) => ({ from, to: recipient, subject: cleanSubject, text, html })));
+    if (error) {
+      return { ok: false, error: error.message || "resend-send-failed" };
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "resend-send-failed" };
+  }
+}
+
 // "Forgot your password?" (app/api/auth/password-reset): a link to set a new one. The link is only ever to
 // CutSmart's own reset page (the caller makes it); it works for an hour, once.
 export async function sendPasswordResetEmail({ to, link }: { to: string; link: string }): Promise<SendVerificationEmailResult> {

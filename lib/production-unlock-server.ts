@@ -104,7 +104,39 @@ export async function answerUnlockRequest(projectRef: DocumentReference, request
   return expiryIso;
 }
 
-// ---- The notification's Approve/Deny buttons can't sign in (they run in the background, from the
+// Answered: noted on the notification of everyone it went to (read, now there's nothing left to do), so its Accept and
+// Decline go from all of them. Never gets in the way of the answer itself.
+export async function markUnlockNotificationsAnswered(
+  approverUids: string[],
+  request: { projectId: string; requesterUid: string; requestedAtIso: string },
+  answer: { decision: "approve" | "deny"; byName: string },
+): Promise<void> {
+  if (!adminDb) return;
+  const db = adminDb;
+  const nowIso = new Date().toISOString();
+  await Promise.all(
+    approverUids.map(async (uid) => {
+      try {
+        const found = await db
+          .collection("users")
+          .doc(uid)
+          .collection("notifications")
+          .where("unlockRequesterUid", "==", request.requesterUid)
+          .where("unlockRequestedAtIso", "==", request.requestedAtIso)
+          .get();
+        await Promise.all(
+          found.docs
+            .filter((docSnap) => str(docSnap.data()?.projectId) === request.projectId)
+            .map((docSnap) => docSnap.ref.update({ unlockAnswer: answer, read: true, readAtIso: nowIso })),
+        );
+      } catch (error) {
+        console.warn("[production-unlock] couldn't note the answer on a notification:", error);
+      }
+    }),
+  );
+}
+
+// ---- The notification's Accept/Decline buttons can't sign in (they run in the background, from the
 // phone's notification), so each approver's notification carries its own token: signed by the server,
 // naming the project, the request, and the approver it was sent to, and valid for 2 days.
 

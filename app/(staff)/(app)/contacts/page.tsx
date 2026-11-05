@@ -914,6 +914,8 @@ function ClientsPageInner() {
         return next;
       });
       setSaveError("Couldn't save that change — it was reverted. Please try again.");
+    } else if (result.projectsMissed) {
+      setSaveError("Saved on this contact, but it couldn't be updated on all of their projects. Check their projects, or try again.");
     }
   };
 

@@ -2,7 +2,7 @@
 
 import { activeDate, activeDateTime } from "@/lib/company-formats";
 import { haptic } from "@/lib/haptics";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type ReactNode, type RefObject, type TouchEvent as ReactTouchEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type ReactNode, type RefObject, type TouchEvent as ReactTouchEvent } from "react";
 import { createPortal } from "react-dom";
 import { usePathname, useRouter } from "next/navigation";
 import {
@@ -20,6 +20,7 @@ import {
   LayoutDashboard,
   Lock,
   Mail,
+  AlarmClock,
   Menu,
   Minus,
   Plus,
@@ -45,7 +46,7 @@ import { DEV_TEST_LIST_KINDS, devTestListSample, isDevTestNotificationText } fro
 import { useSwipeToClose } from "@/lib/use-swipe-to-close";
 import { openWhatsNew } from "@/components/whats-new-sheet";
 import { swallowNextClick } from "@/lib/swallow-dismiss-click";
-import { bounceOriginElement } from "@/lib/use-glass-modal-pop-origin";
+import { bounceOriginElement, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { GlassDropdown } from "@/components/glass-dropdown";
 import { Skeleton, SkeletonGroup } from "@/components/skeleton";
 import { REOPEN_APP_TAB_SCOPE_EVENT, useAppTabs, type AppWorkspaceTab } from "@/lib/app-tabs-context";
@@ -55,8 +56,13 @@ import { prefetchProjectById, projectViewableByUser } from "@/lib/firestore-data
 import { readUserNotificationDoc, restoreUserNotificationDoc } from "@/lib/undo-restore-misc";
 import { useUndo } from "@/components/undo-bar";
 import { ProjectTabQuickActions, projectQuickActionsAttrs } from "@/components/project-quick-actions-menu";
+import { UnlockRequestBox, unlockAnswerText } from "@/components/unlock-request-box";
+import { authorizedFetch } from "@/lib/api-fetch";
+import { announceUnlockAnswered } from "@/lib/project-actions";
 import {
   addUserNotification,
+  cancelUserNotificationReminder,
+  notifReminderWaiting,
   deleteUserNotification,
   fetchOlderUserNotifications,
   subscribeUserNotifications,
@@ -64,8 +70,10 @@ import {
   markUserNotificationRead,
   setAllUserNotificationsRead,
   setUserNotificationRead,
+  setUserNotificationUnlockAnswer,
   snoozeUserNotification,
   type UserNotificationRow,
+  type UserNotificationUnlockAnswer,
 } from "@/lib/firestore-data";
 
 
@@ -86,6 +94,29 @@ function relativeNotifTime(iso: string) {
   const days = Math.floor(hours / 24);
   if (days < 7) return `${days}d`;
   return activeDate(iso);
+}
+
+// How long until a notification's "Remind me in…" comes round: "45m", "3h", "2d" — "" when none's waiting.
+function notifReminderIn(row: UserNotificationRow) {
+  if (!notifReminderWaiting(row)) return "";
+  const minutes = Math.max(1, Math.ceil((Date.parse(row.snoozedUntilIso as string) - Date.now()) / 60000));
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.ceil(minutes / 60);
+  if (hours < 48) return `${hours}h`;
+  return `${Math.ceil(hours / 24)}d`;
+}
+
+// A production unlock request that's still to be answered, with what it takes to answer it here. (One from before those
+// were noted just opens its project, whose Production tab has the request.)
+function canAnswerUnlockHere(row: UserNotificationRow) {
+  return row.type === "production_unlock_request" && Boolean(row.unlockRequesterUid && row.projectId && row.companyId) && !row.unlockAnswer;
+}
+const UNLOCK_BUTTON_CLASS = "inline-flex h-7 items-center justify-center rounded-full px-3 text-[12px] font-medium transition hover:brightness-105 max-lg:h-9 max-lg:px-4 max-lg:text-[13.5px]";
+const UNLOCK_DECLINE_STYLE = { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" } as const;
+
+// What the pop-ups know a notification by: a reminder that's come round counts as a new one, so it pops up again.
+function notifSeenKey(row: UserNotificationRow) {
+  return row.snoozedUntilIso && row.createdAtIso === row.snoozedUntilIso ? `${row.id}@${row.snoozedUntilIso}` : row.id;
 }
 
 // Each notification's icon: the one the app uses for what it's about —
@@ -238,6 +269,7 @@ function NotifToast({
   message,
   bellRef,
   dismiss = false,
+  actions,
   onOpen,
   onDone,
 }: {
@@ -248,6 +280,8 @@ function NotifToast({
   message: string;
   bellRef: RefObject<HTMLElement | null>;
   dismiss?: boolean;
+  // Buttons under its message (a production unlock request's Accept and Decline). `close`: for one that's done with it.
+  actions?: (close: () => void) => ReactNode;
   onOpen: () => void;
   onDone: () => void;
 }) {
@@ -362,6 +396,7 @@ function NotifToast({
           ) : null}
         </span>
       </button>
+      {actions ? <div className="flex items-center gap-2 pb-3 pl-[64px] pr-3">{actions(() => setLeaving(true))}</div> : null}
       <button
         type="button"
         onClick={() => setLeaving(true)}
@@ -460,7 +495,7 @@ export function GlobalAppTabsBar() {
   // at most at once.
   const [notifToasts, setNotifToasts] = useState<NotifToastItem[]>([]);
   // The notifications the last check found (null before the first: those were already there, so none of
-  // them pops up). One that wasn't there before is new — including one a "Remind me" brings back.
+  // them pops up), by notifSeenKey. One that wasn't there before is new — and so is one a "Remind me" brings back.
   const seenNotifIdsRef = useRef<Set<string> | null>(null);
   // Checks for new notifications straight away (set by the polling below) — e.g. when a push arrives.
   const loadNotifsNowRef = useRef<(() => void) | null>(null);
@@ -486,6 +521,36 @@ export function GlobalAppTabsBar() {
     setNotifHasOlder(page.hasOlder);
     setNotifRows((prev) => [...prev, ...page.rows.filter((row) => !prev.some((item) => item.id === row.id))]);
   };
+  const closeUnlockBox = useCallback(() => setUnlockBoxOpen(false), []);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const requesterUid = String(params.get("unlockRequest") || "").trim();
+    const projectId = decodeURIComponent(String(pathname || "").match(/^\/projects\/([^/?#]+)/)?.[1] ?? "");
+    if (!requesterUid || !projectId) return;
+    const seenKey = `${projectId}|${requesterUid}`;
+    if (!unlockAddressesSeenRef.current.has(seenKey)) {
+      unlockAddressesSeenRef.current.add(seenKey);
+      unlockFromAddressRef.current = { projectId, requesterUid };
+    }
+    params.delete("unlockRequest");
+    const rest = params.toString();
+    window.history.replaceState(window.history.state, "", `${window.location.pathname}${rest ? `?${rest}` : ""}`);
+  }, [pathname]);
+  useEffect(() => {
+    const wanted = unlockFromAddressRef.current;
+    if (!wanted || !isNotifListLoaded) return;
+    unlockFromAddressRef.current = null;
+    const row = notifRows.find(
+      (item) => item.type === "production_unlock_request" && item.projectId === wanted.projectId && item.unlockRequesterUid === wanted.requesterUid,
+    );
+    // (Not found: the project's Production tab has the request too.)
+    if (!row) return;
+    setUnlockBoxOrigin(null);
+    setUnlockBox({ row, error: "" });
+    setUnlockBoxOpen(true);
+    setNotifRows((prev) => prev.map((item) => (item.id === row.id ? { ...item, read: true } : item)));
+    if (user?.uid) void markUserNotificationRead(user.uid, row.id);
+  }, [isNotifListLoaded, notifRows, user?.uid]);
   const isNotifOpenRef = useRef(isNotifOpen);
   useEffect(() => {
     isNotifOpenRef.current = isNotifOpen;
@@ -546,6 +611,17 @@ export function GlobalAppTabsBar() {
   // A notification's own menu — right-click it, or press and hold on a phone: Mark as read / unread, Clear,
   // Remind me in… (how many hours or days, kept for next time).
   const [notifMenu, setNotifMenu] = useState<{ row: UserNotificationRow; left: number; top: number; width: number } | null>(null);
+  // A production unlock request's box (components/unlock-request-box.tsx), and any being answered right now.
+  const [unlockBox, setUnlockBox] = useState<{ row: UserNotificationRow; error: string } | null>(null);
+  const [unlockBoxOpen, setUnlockBoxOpen] = useState(false);
+  const [unlockBoxOrigin, setUnlockBoxOrigin] = useState<GlassModalOrigin>(null);
+  const unlockBoxPanelRef = useRef<HTMLDivElement | null>(null);
+  const shouldRenderUnlockBox = useGlassModalPopOrigin(unlockBoxOpen, unlockBoxOrigin, unlockBoxPanelRef);
+  const [unlockAnswering, setUnlockAnswering] = useState<Record<string, "approve" | "deny">>({});
+  // A phone or desktop notification of one, tapped: its project opens with unlockRequest on the address — taken off it straight
+  // away, and its box opened once the list has loaded.
+  const unlockFromAddressRef = useRef<{ projectId: string; requesterUid: string } | null>(null);
+  const unlockAddressesSeenRef = useRef(new Set<string>());
   // The list's filter: "all", "unread", or a category's id (renderNotifFilters).
   const [notifFilter, setNotifFilter] = useState("all");
   const notifMenuRef = useRef<HTMLDivElement | null>(null);
@@ -1022,9 +1098,9 @@ export function GlobalAppTabsBar() {
       // Any unread one that wasn't there last time pops up in the corner (on a computer, while the list
       // itself isn't open).
       const seen = seenNotifIdsRef.current;
-      seenNotifIdsRef.current = new Set(rows.map((row) => row.id));
+      seenNotifIdsRef.current = new Set(rows.map(notifSeenKey));
       if (seen && !isNotifOpenRef.current && canPopUpNotifications()) {
-        const fresh = rows.filter((row) => !row.read && !seen.has(row.id));
+        const fresh = rows.filter((row) => !row.read && !seen.has(notifSeenKey(row)) && !notifReminderWaiting(row));
         if (fresh.length > 0) {
           setNotifToasts((prev) => [...fresh, ...prev.filter((toast) => !fresh.some((row) => row.id === toast.id))].slice(0, 3));
         }
@@ -1724,13 +1800,70 @@ export function GlobalAppTabsBar() {
     NOTIF_TYPE_ICONS[String(row.type ?? "")] ?? NOTIF_CATEGORY_ICONS[pushNotificationCategoryOf(row.type)] ?? Bell;
   const notifTitleOf = (row: UserNotificationRow) =>
     row.type === "app_version" ? `New version ${appVersionFromNotifTitle(row.title)}` : row.title || "Notification";
+  // ---- A production unlock request: its box, and answering it (from the box, its row or its pop-up).
+  const openUnlockBox = (row: UserNotificationRow, originEl?: HTMLElement | null) => {
+    const rect = originEl?.getBoundingClientRect();
+    setUnlockBoxOrigin(rect ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height } : null);
+    setUnlockBox({ row, error: "" });
+    setUnlockBoxOpen(true);
+  };
+  const answerUnlockRequest = async (row: UserNotificationRow, decision: "approve" | "deny") => {
+    const uid = user?.uid;
+    if (!uid || !canAnswerUnlockHere(row) || unlockAnswering[row.id]) return;
+    setUnlockAnswering((prev) => ({ ...prev, [row.id]: decision }));
+    const fail = () => {
+      // (Shown in its box, wherever it was answered from.)
+      setUnlockBox({ row, error: "Couldn't answer that request. Check your connection and try again." });
+      setUnlockBoxOrigin(null);
+      setUnlockBoxOpen(true);
+    };
+    try {
+      const response = await authorizedFetch("/api/production-unlock/respond", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          companyId: row.companyId,
+          projectId: row.projectId,
+          requesterUid: row.unlockRequesterUid,
+          requestedAtIso: row.unlockRequestedAtIso,
+          decision,
+        }),
+      });
+      const json = (await response.json().catch(() => null)) as { ok?: boolean; alreadyAnswered?: boolean; expiryIso?: string | null } | null;
+      if (!response.ok || !json?.ok) {
+        fail();
+        return;
+      }
+      const myName = String(user?.displayName || "").trim();
+      const answer: UserNotificationUnlockAnswer = json.alreadyAnswered ? { decision: "answered" } : { decision, ...(myName ? { byName: myName } : {}) };
+      setNotifRows((prev) => prev.map((item) => (item.id === row.id ? { ...item, read: true, unlockAnswer: answer } : item)));
+      void markUserNotificationRead(uid, row.id);
+      // (The server's noted it on everyone's, but that's only best-effort: theirs at least has it for sure.)
+      void setUserNotificationUnlockAnswer(uid, row.id, answer);
+      if (!json.alreadyAnswered) {
+        // Done: its box goes, if it was open. (Already answered, it stays, to say so.)
+        setUnlockBoxOpen(false);
+        announceUnlockAnswered({ projectId: String(row.projectId), requesterUid: String(row.unlockRequesterUid), expiryIso: json.expiryIso ?? null });
+      }
+    } catch {
+      fail();
+    } finally {
+      setUnlockAnswering((prev) => {
+        const next = { ...prev };
+        delete next[row.id];
+        return next;
+      });
+    }
+  };
   // Opening one (its row in the list, or its pop-up): it's read, and to what it's about.
-  const openNotification = (row: UserNotificationRow) => {
+  const openNotification = (row: UserNotificationRow, originEl?: HTMLElement | null) => {
     if (!user?.uid) return;
     setNotifRows((prev) => prev.map((item) => (item.id === row.id ? { ...item, read: true } : item)));
     void markUserNotificationRead(user.uid, row.id);
     setIsNotifOpen(false);
-    if (row.type === "app_version") {
+    if (row.type === "production_unlock_request" && row.unlockRequesterUid && row.projectId) {
+      openUnlockBox(row, originEl);
+    } else if (row.type === "app_version") {
       // Straight to that version's What's New page, over whatever page this is.
       openWhatsNew(appVersionFromNotifTitle(row.title));
     } else if (row.type === "calendar_reminder" && row.eventId) {
@@ -1797,25 +1930,34 @@ export function GlobalAppTabsBar() {
     offerUndo("Notification cleared", async () => {
       const data = await saved;
       if (!data) return;
-      seenNotifIdsRef.current?.add(row.id);
+      seenNotifIdsRef.current?.add(notifSeenKey(row));
       if (!(await restoreUserNotificationDoc(uid, row.id, data))) return;
       setNotifRows((prev) =>
         prev.some((item) => item.id === row.id) ? prev : [...prev.slice(0, Math.max(0, at)), row, ...prev.slice(Math.max(0, at))],
       );
     });
   }
-  // Remind me in…: gone from the list until then, then back as new and unread — and sent to their
-  // phone/desktop again then (the scheduled job).
+  // Remind me in…: it stays in the list as it is, then goes to the top as new and unread at that time, popped up
+  // as a new one is — and sent to their phone/desktop again then (the scheduled job).
   function remindNotifLater(row: UserNotificationRow) {
     setNotifMenu(null);
     const uid = user?.uid;
     if (!uid) return;
     const dueAtMs = Date.now() + remindAmount * REMIND_UNITS[remindUnit].ms;
-    setNotifRows((prev) => prev.filter((item) => item.id !== row.id));
-    // Gone until it's due, so it pops up as new then (see the polling's seenNotifIdsRef).
-    seenNotifIdsRef.current?.delete(row.id);
-    void snoozeUserNotification(uid, row.id, new Date(dueAtMs).toISOString()).then((ok) => {
+    const dueAtIso = new Date(dueAtMs).toISOString();
+    setNotifRows((prev) => prev.map((item) => (item.id === row.id ? { ...item, snoozedUntilIso: dueAtIso, remindsUnread: true } : item)));
+    void snoozeUserNotification(uid, row.id, dueAtIso).then((ok) => {
       if (ok) requestNotificationReminderPush(row.id, dueAtMs);
+    });
+  }
+  // The X on its "Reminder in…" chip: it stays as it is, with no reminder.
+  function cancelNotifReminder(row: UserNotificationRow) {
+    const uid = user?.uid;
+    if (!uid) return;
+    setNotifRows((prev) => prev.map((item) => (item.id === row.id ? { ...item, snoozedUntilIso: undefined, remindsUnread: undefined } : item)));
+    void cancelUserNotificationReminder(uid, row.id).then((ok) => {
+      // Not saved, so the reminder's still on: shown again.
+      if (!ok) setNotifRows((prev) => prev.map((item) => (item.id === row.id ? { ...item, snoozedUntilIso: row.snoozedUntilIso, remindsUnread: row.remindsUnread } : item)));
     });
   }
   const remindMax = REMIND_UNITS[remindUnit].max;
@@ -1959,6 +2101,7 @@ export function GlobalAppTabsBar() {
                 const color = notifColorOf(row.type);
                 const unread = !row.read;
                 const menuOpen = notifMenu?.row.id === row.id;
+                const reminderIn = notifReminderIn(row);
                 return (
                   <button
                     key={row.id}
@@ -1973,13 +2116,13 @@ export function GlobalAppTabsBar() {
                     onTouchMove={moveNotifLongPress}
                     onTouchEnd={endNotifLongPress}
                     onTouchCancel={endNotifLongPress}
-                    onClick={() => {
+                    onClick={(event) => {
                       // Letting go of a press-and-hold (its menu's open) isn't a tap on it.
                       if (suppressNotifClickRef.current === row.id) {
                         suppressNotifClickRef.current = "";
                         return;
                       }
-                      openNotification(row);
+                      openNotification(row, event.currentTarget);
                     }}
                     className="relative flex w-full items-start gap-3 overflow-hidden rounded-[16px] border px-3 py-3 text-left transition hover:-translate-y-px hover:shadow-[var(--shadow-glass)] max-lg:px-3.5 max-lg:py-3.5"
                     // Press and hold opens its menu, not the phone's own text selection / callout.
@@ -2021,6 +2164,84 @@ export function GlobalAppTabsBar() {
                         <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: color }} />
                         {notifCategoryLabelOf(row.type)}
                       </span>
+                      {reminderIn ? (
+                        <span
+                          className="ml-1.5 mt-2 inline-flex items-center gap-1 rounded-full border px-2 py-[1px] text-[10.5px] font-medium max-lg:text-[11.5px]"
+                          style={{ borderColor: "var(--glass-border)", color: "var(--text-muted)" }}
+                          title={formatNotificationTime(row.snoozedUntilIso as string)}
+                        >
+                          <AlarmClock size={11} />
+                          Reminder in {reminderIn}
+                          {/* (A span, not a button: the whole notification is one.) Only the X: never opens it or its menu. */}
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            aria-label="Cancel reminder"
+                            title="Cancel reminder"
+                            className="-mr-1 ml-0.5 inline-flex h-4 w-4 cursor-pointer items-center justify-center rounded-full transition hover:bg-[color-mix(in_srgb,var(--text-main)_12%,transparent)] max-lg:h-5 max-lg:w-5"
+                            onMouseDown={(event) => event.stopPropagation()}
+                            onContextMenu={(event) => event.stopPropagation()}
+                            onTouchStart={(event) => event.stopPropagation()}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              cancelNotifReminder(row);
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key !== "Enter" && event.key !== " ") return;
+                              event.preventDefault();
+                              event.stopPropagation();
+                              cancelNotifReminder(row);
+                            }}
+                          >
+                            <X size={11} />
+                          </span>
+                        </span>
+                      ) : null}
+                      {row.type === "production_unlock_request" && row.unlockAnswer ? (
+                        <span
+                          className="ml-1.5 mt-2 inline-flex items-center gap-1 rounded-full border px-2 py-[1px] text-[10.5px] font-medium max-lg:text-[11.5px]"
+                          style={{ borderColor: "var(--glass-border)", color: "var(--text-muted)" }}
+                        >
+                          <Check size={11} />
+                          {unlockAnswerText(row.unlockAnswer)}
+                        </span>
+                      ) : null}
+                      {canAnswerUnlockHere(row) ? (
+                        <span className="mt-2 flex items-center gap-2">
+                          {(["approve", "deny"] as const).map((decision) => {
+                            const answering = unlockAnswering[row.id];
+                            const accept = decision === "approve";
+                            const press = () => {
+                              if (!answering) void answerUnlockRequest(row, decision);
+                            };
+                            return (
+                              <span
+                                key={decision}
+                                role="button"
+                                tabIndex={0}
+                                aria-disabled={Boolean(answering)}
+                                className={`${accept ? "glass-shine text-white" : "border"} ${UNLOCK_BUTTON_CLASS} cursor-pointer ${answering ? "opacity-55" : ""}`}
+                                style={accept ? glassShineStyle("var(--brand-strong)") : UNLOCK_DECLINE_STYLE}
+                                onMouseDown={(event) => event.stopPropagation()}
+                                onContextMenu={(event) => event.stopPropagation()}
+                                onTouchStart={(event) => event.stopPropagation()}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  press();
+                                }}
+                                onKeyDown={(event) => {
+                                  if (event.key !== "Enter" && event.key !== " ") return;
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  press();
+                                }}
+                              >
+                                {answering === decision ? (accept ? "Accepting..." : "Declining...") : accept ? "Accept" : "Decline"}
+                              </span>
+                            );
+                          })}
+                        </span>
+                      ) : null}
                     </span>
                   </button>
                 );
@@ -2115,8 +2336,26 @@ export function GlobalAppTabsBar() {
     );
   }
 
+  const unlockBoxRow = unlockBox ? notifRows.find((item) => item.id === unlockBox.row.id) ?? unlockBox.row : null;
   return (
     <>
+      {shouldRenderUnlockBox && unlockBox && unlockBoxRow ? (
+        <UnlockRequestBox
+          row={unlockBoxRow}
+          answering={unlockAnswering[unlockBoxRow.id]}
+          error={unlockBox.error}
+          panelRef={unlockBoxPanelRef}
+          onAnswer={(decision) => {
+            setUnlockBox((prev) => (prev ? { ...prev, error: "" } : prev));
+            void answerUnlockRequest(unlockBoxRow, decision);
+          }}
+          onOpenProject={() => {
+            setUnlockBoxOpen(false);
+            router.push(`/projects/${unlockBoxRow.projectId}?tab=production`);
+          }}
+          onClose={closeUnlockBox}
+        />
+      ) : null}
       {notifToasts.length > 0 && typeof document !== "undefined"
         ? createPortal(
             <div aria-live="polite" className="pointer-events-none fixed right-4 top-[60px] z-[1500] flex w-[340px] flex-col gap-2">
@@ -2129,6 +2368,36 @@ export function GlobalAppTabsBar() {
                   message={row.type === "app_version" ? "" : row.message || ""}
                   bellRef={notifBtnRef}
                   dismiss={isNotifOpen}
+                  actions={
+                    canAnswerUnlockHere(row)
+                      ? (close) => (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                close();
+                                void answerUnlockRequest(row, "approve");
+                              }}
+                              className={`glass-shine ${UNLOCK_BUTTON_CLASS} text-white`}
+                              style={glassShineStyle("var(--brand-strong)")}
+                            >
+                              Accept
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                close();
+                                void answerUnlockRequest(row, "deny");
+                              }}
+                              className={`${UNLOCK_BUTTON_CLASS} border`}
+                              style={UNLOCK_DECLINE_STYLE}
+                            >
+                              Decline
+                            </button>
+                          </>
+                        )
+                      : undefined
+                  }
                   onOpen={() => {
                     if (row.testUrl) router.push(row.testUrl);
                     else openNotification(row);

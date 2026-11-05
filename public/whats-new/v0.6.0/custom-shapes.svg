@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" width="640" height="360" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title>An L-shaped piece is drawn with its sizes and a rounded corner, beside a custom corner cabinet that works out its own ends, top, bottom and L-shaped shelves</title>
+  <style>
+    .outline { stroke-dasharray: 1200; animation: outline 8s ease-in-out infinite both; }
+    @keyframes outline { 0%, 4% { stroke-dashoffset: 1200; fill-opacity: 0; } 28% { stroke-dashoffset: 0; fill-opacity: 0; } 34%, 92% { stroke-dashoffset: 0; fill-opacity: 1; opacity: 1; } 97%, 100% { stroke-dashoffset: 0; fill-opacity: 1; opacity: 0; } }
+    .d1 { animation: d1 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes d1 { 0%, 28% { opacity: 0; transform: translateY(4px); } 33%, 92% { opacity: 1; transform: translateY(0); } 96%, 100% { opacity: 0; transform: translateY(0); } }
+    .d2 { animation: d2 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes d2 { 0%, 32% { opacity: 0; transform: translateY(4px); } 37%, 92% { opacity: 1; transform: translateY(0); } 96%, 100% { opacity: 0; transform: translateY(0); } }
+    .d3 { animation: d3 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes d3 { 0%, 36% { opacity: 0; transform: translateY(4px); } 41%, 92% { opacity: 1; transform: translateY(0); } 96%, 100% { opacity: 0; transform: translateY(0); } }
+    .rnd { animation: rnd 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes rnd { 0%, 40% { opacity: 0; transform: translateY(4px); } 45%, 92% { opacity: 1; transform: translateY(0); } 96%, 100% { opacity: 0; transform: translateY(0); } }
+    .cab { animation: cab 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes cab { 0%, 50% { opacity: 0; transform: translateY(10px); } 55%, 92% { opacity: 1; transform: translateY(0); } 96%, 100% { opacity: 0; transform: translateY(0); } }
+    .s1 { animation: s1 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes s1 { 0%, 58% { opacity: 0; transform: translateY(-6px); } 63%, 92% { opacity: 1; transform: translateY(0); } 96%, 100% { opacity: 0; transform: translateY(0); } }
+    .s2 { animation: s2 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes s2 { 0%, 63% { opacity: 0; transform: translateY(-6px); } 68%, 92% { opacity: 1; transform: translateY(0); } 96%, 100% { opacity: 0; transform: translateY(0); } }
+    .tag1 { animation: tag1 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes tag1 { 0%, 70% { opacity: 0; transform: translateY(10px); } 75%, 92% { opacity: 1; transform: translateY(0); } 96%, 100% { opacity: 0; transform: translateY(0); } }
+    .tag2 { animation: tag2 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes tag2 { 0%, 75% { opacity: 0; transform: translateY(10px); } 80%, 92% { opacity: 1; transform: translateY(0); } 96%, 100% { opacity: 0; transform: translateY(0); } }
+
+  </style>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#EEF3FB"/>
+      <stop offset="1" stop-color="#E1E9F7"/>
+    </linearGradient>
+    <filter id="pop" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#0F172A" flood-opacity=".14"/>
+    </filter>
+  </defs>
+  <rect width="640" height="360" fill="url(#bg)"/>
+  <rect x="18" y="18" width="296" height="324" rx="18" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+  <rect x="326" y="18" width="296" height="324" rx="18" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/>
+  <text x="36" y="44" font-size="13" font-weight="600" fill="#0F172A" text-anchor="start">Custom shape</text><text x="344" y="44" font-size="13" font-weight="600" fill="#0F172A" text-anchor="start">Custom corner cabinet</text>
+  <path class="outline" d="M70 86 L250 86 Q262 86 262 98 L262 186 L166 186 L166 300 L70 300 Z" fill="#DBEAFE" stroke="#2563EB" stroke-width="2.4" stroke-linejoin="round"/>
+  <g class="d1"><rect x="132" y="66" width="62" height="22" rx="11.0" fill="#EFF6FF"/><text x="163.0" y="81.0" text-anchor="middle" font-size="11" font-weight="600" fill="#2563EB">1200</text></g>
+  <g class="d2"><rect x="214" y="194" width="48" height="22" rx="11.0" fill="#EFF6FF"/><text x="238.0" y="209.0" text-anchor="middle" font-size="11" font-weight="600" fill="#2563EB">600</text></g>
+  <g class="d3"><rect x="36" y="200" width="48" height="22" rx="11.0" fill="#EFF6FF"/><text x="60.0" y="215.0" text-anchor="middle" font-size="11" font-weight="600" fill="#2563EB">900</text></g>
+  <g class="rnd"><circle cx="258" cy="90" r="6" fill="#FFFFFF" stroke="#2563EB" stroke-width="2"/></g>
+  <g class="cab"><polygon points="474.0,186.0 588.3,252.0 588.3,120.0 474.0,54.0" fill="#F1F5F9" stroke="#475569" stroke-width=".8" stroke-linejoin="round"/><polygon points="474.0,186.0 359.7,252.0 359.7,120.0 474.0,54.0" fill="#E2E8F0" stroke="#475569" stroke-width=".8" stroke-linejoin="round"/><polygon points="588.3,252.0 531.2,285.0 531.2,282.4 588.3,249.4" fill="#CBD5E1" stroke="#475569" stroke-width=".8" stroke-linejoin="round"/><polygon points="474.0,252.0 531.2,285.0 531.2,282.4 474.0,249.4" fill="#FFFFFF" stroke="#475569" stroke-width=".8" stroke-linejoin="round"/><polygon points="474.0,252.0 416.8,285.0 416.8,282.4 474.0,249.4" fill="#CBD5E1" stroke="#475569" stroke-width=".8" stroke-linejoin="round"/><polygon points="359.7,252.0 416.8,285.0 416.8,282.4 359.7,249.4" fill="#FFFFFF" stroke="#475569" stroke-width=".8" stroke-linejoin="round"/><polygon points="474.0,183.4 588.3,249.4 531.2,282.4 474.0,249.4 416.8,282.4 359.7,249.4" fill="#E7E5E4" stroke="#475569" stroke-width=".8" stroke-linejoin="round"/></g>
+  <g class="s1"><polygon points="583.7,209.1 531.2,239.5 531.2,236.8 583.7,206.5" fill="#CBD5E1" stroke="#475569" stroke-width=".8" stroke-linejoin="round"/><polygon points="474.0,206.5 531.2,239.5 531.2,236.8 474.0,203.8" fill="#FFFFFF" stroke="#475569" stroke-width=".8" stroke-linejoin="round"/><polygon points="474.0,206.5 416.8,239.5 416.8,236.8 474.0,203.8" fill="#CBD5E1" stroke="#475569" stroke-width=".8" stroke-linejoin="round"/><polygon points="364.3,209.1 416.8,239.5 416.8,236.8 364.3,206.5" fill="#FFFFFF" stroke="#475569" stroke-width=".8" stroke-linejoin="round"/><polygon points="474.0,143.1 583.7,206.5 531.2,236.8 474.0,203.8 416.8,236.8 364.3,206.5" fill="#E7E5E4" stroke="#475569" stroke-width=".8" stroke-linejoin="round"/></g>
+  <g class="s2"><polygon points="583.7,166.2 531.2,196.6 531.2,193.9 583.7,163.6" fill="#CBD5E1" stroke="#475569" stroke-width=".8" stroke-linejoin="round"/><polygon points="474.0,163.6 531.2,196.6 531.2,193.9 474.0,160.9" fill="#FFFFFF" stroke="#475569" stroke-width=".8" stroke-linejoin="round"/><polygon points="474.0,163.6 416.8,196.6 416.8,193.9 474.0,160.9" fill="#CBD5E1" stroke="#475569" stroke-width=".8" stroke-linejoin="round"/><polygon points="364.3,166.2 416.8,196.6 416.8,193.9 364.3,163.6" fill="#FFFFFF" stroke="#475569" stroke-width=".8" stroke-linejoin="round"/><polygon points="474.0,100.2 583.7,163.6 531.2,193.9 474.0,160.9 416.8,193.9 364.3,163.6" fill="#E7E5E4" stroke="#475569" stroke-width=".8" stroke-linejoin="round"/></g>
+  <g class="cab"><polygon points="528.9,283.7 531.2,285.0 531.2,153.0 528.9,151.7" fill="#FFFFFF" stroke="#475569" stroke-width=".8" stroke-linejoin="round"/><polygon points="531.2,285.0 588.3,252.0 588.3,120.0 531.2,153.0" fill="#CBD5E1" stroke="#475569" stroke-width=".8" stroke-linejoin="round"/><polygon points="528.9,151.7 531.2,153.0 588.3,120.0 586.0,118.7" fill="#E2E8F0" stroke="#475569" stroke-width=".8" stroke-linejoin="round"/><polygon points="359.7,252.0 416.8,285.0 416.8,153.0 359.7,120.0" fill="#FFFFFF" stroke="#475569" stroke-width=".8" stroke-linejoin="round"/><polygon points="416.8,285.0 419.1,283.7 419.1,151.7 416.8,153.0" fill="#CBD5E1" stroke="#475569" stroke-width=".8" stroke-linejoin="round"/><polygon points="359.7,120.0 416.8,153.0 419.1,151.7 362.0,118.7" fill="#E2E8F0" stroke="#475569" stroke-width=".8" stroke-linejoin="round"/><polygon points="588.3,122.6 531.2,155.6 531.2,153.0 588.3,120.0" fill="#CBD5E1" stroke="#475569" stroke-width=".8" stroke-linejoin="round"/><polygon points="474.0,122.6 531.2,155.6 531.2,153.0 474.0,120.0" fill="#FFFFFF" stroke="#475569" stroke-width=".8" stroke-linejoin="round"/><polygon points="474.0,122.6 416.8,155.6 416.8,153.0 474.0,120.0" fill="#CBD5E1" stroke="#475569" stroke-width=".8" stroke-linejoin="round"/><polygon points="359.7,122.6 416.8,155.6 416.8,153.0 359.7,120.0" fill="#FFFFFF" stroke="#475569" stroke-width=".8" stroke-linejoin="round"/><polygon points="474.0,54.0 588.3,120.0 531.2,153.0 474.0,120.0 416.8,153.0 359.7,120.0" fill="#E2E8F0" stroke="#475569" stroke-width=".8" stroke-linejoin="round"/></g>
+  <g class="tag1"><rect x="344" y="306" width="104" height="24" rx="12.0" fill="#EFF6FF"/><text x="396.0" y="321.8" text-anchor="middle" font-size="10.5" font-weight="600" fill="#2563EB">Parts worked out</text></g>
+  <g class="tag2"><rect x="456" y="306" width="148" height="24" rx="12.0" fill="#ECFDF5"/><text x="530.0" y="321.8" text-anchor="middle" font-size="10.5" font-weight="600" fill="#047857">CNC, labels and print</text></g>
+</svg>

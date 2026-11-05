@@ -15,10 +15,11 @@ import {
   columnAutomationStayMs,
   columnMoveSetOffByMove,
   columnMoveTarget,
+  hasAutomationAudience,
+  tellsPeople,
   COLUMN_AUTOMATION_BACKFILLS_FIELD,
   COLUMN_AUTOMATION_NOTIFICATION_TYPE,
   COLUMN_MOVE_CHAIN_LIMIT,
-  hasColumnAutomationRecipients,
   HAS_WAITING_COLUMN_AUTOMATIONS_FIELD,
   isInAutomationColumn,
   itemStayStartedAtIso,
@@ -34,7 +35,11 @@ import {
   type BoardSpot,
   type ColumnAutomation,
   type ColumnAutomationBoard,
+  type ColumnAutomationRunFields,
+  type ColumnAutomationTrigger,
 } from "@/lib/column-automations";
+import { sendColumnAutomationEmail } from "@/lib/column-automation-email-server";
+import { recordColumnAutomationRun } from "@/lib/column-automation-runs-server";
 import { convertLeadToProject } from "@/lib/lead-convert-server";
 import { isBonusPeriodKey } from "@/lib/completion-bonus";
 import { leadNameForNotification } from "@/lib/lead-notify-server";
@@ -55,7 +60,8 @@ import { addNotificationAndPush, isCompanyMemberUid } from "@/lib/push-server";
 // - a lead moved on to one of the Dashboard's columns: converted to a project there (lib/lead-convert-server.ts) — the
 //   project's own column automations then, as any project new into a column;
 // - assign and tag automations: done as something enters their column, before it's told (so "the person it's
-//   assigned to" is whoever it was just assigned to) and moved on.
+//   assigned to" is whoever it was just assigned to) and moved on;
+// - email automations: as notify ones, but emailed to the addresses saved on them (lib/column-automation-email-server.ts).
 // Each automation only if its conditions hold (automationConditionsMet) — a timed move's when it entered (its timer only
 // started then), not again when it's due. One whose conditions didn't hold as it entered waits (on it — lib/
 // column-automations.ts), looked at again as what they look at changes (recheckWaitingColumnAutomations: a lead's
@@ -96,6 +102,11 @@ async function contextFor(companyId: string, siteOrigin: string, companyData?: R
   };
 }
 
+// A run, noted for the log.
+const noteRun = (ctx: Ctx, automation: ColumnAutomation, item: { id: string; name: string }, event: ColumnAutomationTrigger, fields: ColumnAutomationRunFields) =>
+  recordColumnAutomationRun(ctx.db, ctx.companyId, automation, item, event, fields);
+const moveLabel = (rule: ColumnAutomation) => columnAutomationColumnLabel(columnMoveTarget(rule));
+
 async function isMember(ctx: Pick<Ctx, "companyId" | "members">, uid: string): Promise<boolean> {
   if (!ctx.members.has(uid)) ctx.members.set(uid, await isCompanyMemberUid(ctx.companyId, uid));
   return ctx.members.get(uid)!;
@@ -103,7 +114,7 @@ async function isMember(ctx: Pick<Ctx, "companyId" | "members">, uid: string): P
 
 // Everyone a notify one tells, as the company is now: its people (still in it), and everyone in its roles — each
 // member's role as the company has it (Company Settings' staffRoleIdsByUid, else their membership's).
-async function recipientsOf(ctx: Ctx, automation: ColumnAutomation, assigneeUid = ""): Promise<string[]> {
+async function recipientsOf(ctx: Ctx, automation: ColumnAutomation, assigneeUid = "", creatorUid = ""): Promise<string[]> {
   if (automation.notifyRoleIds.length && !ctx.memberRoles) {
     const overrides = (ctx.companyData.staffRoleIdsByUid ?? {}) as Record<string, unknown>;
     const memberships = await ctx.db.collection("companies").doc(ctx.companyId).collection("memberships").get().catch(() => null);
@@ -116,7 +127,7 @@ async function recipientsOf(ctx: Ctx, automation: ColumnAutomation, assigneeUid 
     });
   }
   const recipients: string[] = [];
-  for (const uid of columnAutomationRecipients(automation, ctx.memberRoles ?? [], assigneeUid)) {
+  for (const uid of columnAutomationRecipients(automation, ctx.memberRoles ?? [], assigneeUid, creatorUid)) {
     if (await isMember(ctx, uid)) recipients.push(uid);
   }
   return recipients;
@@ -137,6 +148,19 @@ async function tellMove(
 ) {
   for (const { automation, event } of automationsSetOffByMove(ctx.automations, board, from, to)) {
     if (!automationConditionsMet(automation, facts, from)) continue;
+    if (automation.action === "email") {
+      await sendColumnAutomationEmail({
+        db: ctx.db,
+        companyId: ctx.companyId,
+        companyData: ctx.companyData,
+        automation,
+        projectRef: ctx.db.collection("companies").doc(ctx.companyId).collection("jobs").doc(item.id),
+        projectName: item.name,
+        siteOrigin: ctx.siteOrigin,
+        movedTo: to,
+      });
+      continue;
+    }
     const text = columnAutomationNotificationText({
       board,
       event,
@@ -144,7 +168,7 @@ async function tellMove(
       column: columnAutomationColumnLabel(automation),
       movedTo: columnAutomationColumnLabel(to),
     });
-    const recipients = new Set(await recipientsOf(ctx, automation, facts.assignedToUid));
+    const recipients = new Set(await recipientsOf(ctx, automation, facts.assignedToUid, facts.createdByUid));
     if (actorUid && depth > 0) recipients.delete(actorUid);
     else if (actorUid && (await isMember(ctx, actorUid))) recipients.add(actorUid);
     for (const uid of recipients) {
@@ -154,6 +178,7 @@ async function tellMove(
         ctx.siteOrigin,
       );
     }
+    await noteRun(ctx, automation, item, event, { toUids: [...recipients] });
   }
 }
 
@@ -194,12 +219,16 @@ async function afterMove(
     await ref
       .update({ [SCHEDULED_COLUMN_MOVE_FIELD]: scheduled, [SCHEDULED_COLUMN_MOVE_DUE_FIELD]: scheduled.dueAtIso })
       .catch(() => undefined);
+    await noteRun(ctx, rule, item, "enters", { outcome: "scheduled", to: moveLabel(rule), dueAtIso: scheduled.dueAtIso });
     return to;
   }
   if (depth >= COLUMN_MOVE_CHAIN_LIMIT) return to;
   if (converts) {
     const projectId = await convertAndCarryOn(ctx, ref, (here) => same(here.status, to.status), columnMoveTarget(rule), depth + 1, undefined, actorUid);
-    if (projectId) await tellActor(projectId);
+    if (projectId) {
+      await noteRun(ctx, rule, item, "enters", { to: moveLabel(rule), note: "Converted to a project." });
+      await tellActor(projectId);
+    }
     return to;
   }
   // (Still where it was just moved — nothing else has moved it since.)
@@ -213,7 +242,10 @@ async function afterMove(
     undefined,
     actorUid,
   );
-  if (moved) await tellActor();
+  if (moved) {
+    await noteRun(ctx, rule, item, "enters", { to: moveLabel(rule) });
+    await tellActor();
+  }
   return moved ?? to;
 }
 
@@ -264,13 +296,16 @@ async function doColumnActions(
             ctx.siteOrigin,
           );
         }
+        await noteRun(ctx, automation, item, "enters", { toUids: [uid] });
       } else if (automation.action === "tag" && board === "projects") {
         if (next.tags.some((tag) => same(tag, automation.tagValue))) continue;
         await ref.update({ tags: FieldValue.arrayUnion(automation.tagValue), updatedAtIso: new Date().toISOString() });
         next.tags.push(automation.tagValue);
+        await noteRun(ctx, automation, item, "enters", { to: automation.tagValue });
       }
     } catch (error) {
       console.error("[column-automations] assign/tag failed:", error);
+      await noteRun(ctx, automation, item, "enters", { outcome: "failed", to: automation.tagValue, note: error instanceof Error ? error.message : "It couldn't be saved." });
     }
   }
   return next;
@@ -536,6 +571,10 @@ export async function recheckWaitingColumnAutomations(input: {
       input.actorUid,
     );
     for (const { automation } of ready) {
+      if (automation.action === "email") {
+        await sendColumnAutomationEmail({ db: ctx.db, companyId: ctx.companyId, companyData: ctx.companyData, automation, projectRef: ref, projectName: name, siteOrigin: ctx.siteOrigin, movedTo: here });
+        continue;
+      }
       if (automation.action !== "notify") continue;
       const text = columnAutomationNotificationText({
         board,
@@ -544,13 +583,15 @@ export async function recheckWaitingColumnAutomations(input: {
         column: columnAutomationColumnLabel(automation),
         movedTo: columnAutomationColumnLabel(here),
       });
-      for (const uid of await recipientsOf(ctx, automation, facts.assignedToUid)) {
+      const told = await recipientsOf(ctx, automation, facts.assignedToUid, facts.createdByUid);
+      for (const uid of told) {
         await addNotificationAndPush(
           uid,
           { ...text, type: COLUMN_AUTOMATION_NOTIFICATION_TYPE, ...(isLeads ? { leadId: item.id } : { projectId: item.id }), companyId: ctx.companyId },
           ctx.siteOrigin,
         );
       }
+      await noteRun(ctx, automation, item, "enters", { toUids: told });
     }
     let finalStatus = here.status;
     const move = ready.find(({ automation }) => automation.action === "move");
@@ -562,13 +603,18 @@ export async function recheckWaitingColumnAutomations(input: {
         // Its time in the column's not up yet: its timer, from when it entered (whoever set it off told when it moves).
         const scheduled = scheduledColumnMoveFor(rule, here, Date.now(), startedMs, input.actorUid);
         await ref.update({ [SCHEDULED_COLUMN_MOVE_FIELD]: scheduled, [SCHEDULED_COLUMN_MOVE_DUE_FIELD]: scheduled.dueAtIso });
+        await noteRun(ctx, rule, item, "enters", { outcome: "scheduled", to: moveLabel(rule), dueAtIso: scheduled.dueAtIso });
       } else if (isLeads && rule.moveToBoard === "projects") {
         const projectId = await convertAndCarryOn(ctx, ref, isStillThere, columnMoveTarget(rule), 1, undefined, input.actorUid);
-        if (projectId) await tellMoveNotice(ctx, board, item, here, rule, input.actorUid, projectId);
+        if (projectId) {
+          await noteRun(ctx, rule, item, "enters", { to: moveLabel(rule), note: "Converted to a project." });
+          await tellMoveNotice(ctx, board, item, here, rule, input.actorUid, projectId);
+        }
       } else {
         const moved = await applyMove(ctx, board, ref, isStillThere, columnMoveTarget(rule), 1, undefined, input.actorUid);
         if (moved) {
           finalStatus = moved.status;
+          await noteRun(ctx, rule, item, "enters", { to: moveLabel(rule) });
           await tellMoveNotice(ctx, board, item, here, rule, input.actorUid);
         }
       }
@@ -600,12 +646,12 @@ export async function runColumnAutomationStays(options: { siteOrigin: string; no
     .catch(() => false);
   if (!claimedRun) return { ...result, skipped: true };
 
-  const companies = await db.collection("companies").select("columnAutomations", "staffRoleIdsByUid").get();
+  const companies = await db.collection("companies").select("columnAutomations", "staffRoleIdsByUid", "companyName", "name", "timeZone", "dateFormat").get();
   for (const companySnap of companies.docs) {
     const companyId = companySnap.id;
     const ctx = await contextFor(companyId, options.siteOrigin, (companySnap.data() ?? {}) as Record<string, unknown>);
     const stays = (ctx?.automations ?? []).filter(
-      (automation) => automation.action === "notify" && automation.trigger === "stays" && hasColumnAutomationRecipients(automation),
+      (automation) => tellsPeople(automation) && automation.trigger === "stays" && hasAutomationAudience(automation),
     );
     if (!ctx || !stays.length) continue;
     result.companies += 1;
@@ -626,6 +672,8 @@ export async function runColumnAutomationStays(options: { siteOrigin: string; no
         const started = itemStayStartedAtIso(automation, data) || automation.updatedAtIso;
         const startedMs = Date.parse(started);
         if (!Number.isFinite(startedMs) || now - startedMs < columnAutomationStayMs(automation)) continue;
+        // (An email that waits: not for what was already there when it was set — that'd all go out at once.)
+        if (automation.action === "email" && startedMs < Date.parse(automation.emailsFromIso || automation.updatedAtIso)) continue;
         const sentMap = (data.columnAutomationsSent ?? {}) as Record<string, unknown>;
         if (sentMap[automation.id] === started) continue;
         const itemName = isLeads ? await leadNameForNotification(companyId, data, "A lead") : str(data.name) || "A project";
@@ -642,6 +690,11 @@ export async function runColumnAutomationStays(options: { siteOrigin: string; no
           })
           .catch(() => false);
         if (!claimed) continue;
+        if (automation.action === "email") {
+          const sent = await sendColumnAutomationEmail({ db, companyId, companyData: ctx.companyData, automation, projectRef: itemSnap.ref, projectName: itemName, siteOrigin: options.siteOrigin });
+          if (sent) result.sent += 1;
+          continue;
+        }
         const text = columnAutomationNotificationText({
           board: automation.board,
           event: "stays",
@@ -650,7 +703,8 @@ export async function runColumnAutomationStays(options: { siteOrigin: string; no
           duration: columnAutomationDurationLabel(automation),
         });
         const itemId = str(data.id) || itemSnap.id;
-        for (const uid of await recipientsOf(ctx, automation, str(data.assignedToUid))) {
+        const told = await recipientsOf(ctx, automation, str(data.assignedToUid), str(data.createdByUid));
+        for (const uid of told) {
           await addNotificationAndPush(
             uid,
             {
@@ -663,6 +717,7 @@ export async function runColumnAutomationStays(options: { siteOrigin: string; no
           );
           result.sent += 1;
         }
+        await noteRun(ctx, automation, { id: itemId, name: itemName }, "stays", { toUids: told });
       }
     }
   }
@@ -720,7 +775,7 @@ export async function runScheduledColumnMoves(options: { siteOrigin: string; now
   const nowIso = new Date(nowMs).toISOString();
   const companies = await db
     .collection("companies")
-    .select("columnAutomations", "projectStatuses", "projectArchiveAfter", "staffRoleIdsByUid", COLUMN_AUTOMATION_BACKFILLS_FIELD)
+    .select("columnAutomations", "projectStatuses", "projectArchiveAfter", "staffRoleIdsByUid", "companyName", "name", "timeZone", "dateFormat", COLUMN_AUTOMATION_BACKFILLS_FIELD)
     .get();
   for (const companySnap of companies.docs) {
     const companyData = (companySnap.data() ?? {}) as Record<string, unknown>;
@@ -784,6 +839,11 @@ export async function runScheduledColumnMoves(options: { siteOrigin: string; now
           : await applyMove(ctx, board, itemSnap.ref, isStillThere, columnMoveTarget(automation), 1, dueAtIso);
         if (moved) {
           result.moved += 1;
+          const movedName = board === "leads" ? await leadNameForNotification(ctx.companyId, data, "A lead") : str(data.name) || "A project";
+          await noteRun(ctx, automation, { id: str(data.id) || itemSnap.id, name: movedName }, "enters", {
+            to: moveLabel(automation),
+            ...(converts ? { note: "Converted to a project." } : {}),
+          });
           // Whoever's move set its timer off: told it's moved on, now that it has.
           const byUid = str(scheduled.byUid);
           if (byUid) {

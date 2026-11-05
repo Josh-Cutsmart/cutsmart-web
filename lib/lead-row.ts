@@ -154,6 +154,7 @@ export function buildLeadRow(
     convertedAtIso: leadIsoString(data.convertedAtIso, "") || undefined,
     source: toStr(data.source) || "zapier-form",
     status: toStr(data.status) || "New",
+    statusChangedAtIso: leadIsoString(data.statusChangedAtIso, "") || undefined,
     assignedToUid: toStr(data.assignedToUid),
     assignedToName: toStr(data.assignedToName || data.assignedTo),
     assignedTo: toStr(data.assignedTo || data.assignedToName),

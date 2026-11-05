@@ -39,7 +39,7 @@ import { hasPermissionKey, invalidateCompanyAccessCache, isOwnerOrAdmin, useComp
 import { downloadCompanyExport, type CompanyExportProgress } from "@/lib/company-export";
 import { appendRoleAudit, describeRoleChanges, newRoleAuditEntry, normalizeRoleAuditLog, type RoleAuditEntry } from "@/lib/role-audit";
 import { setViewAsRole } from "@/lib/view-as-role";
-import { ColumnAutomationButton, useColumnAutomations } from "@/components/column-automations";
+import { ColumnAutomationButton, ColumnAutomationsOverview, useColumnAutomations } from "@/components/column-automations";
 import { invalidateCompanyRoleOverridesCache } from "@/lib/membership";
 import { type RoleRow, normalizeRoles, normalizeRoleKey } from "@/lib/company-roles";
 import { QUOTE_TEMPLATE_PLACEHOLDERS } from "@/lib/quote-template-placeholders";
@@ -48,6 +48,7 @@ import SpecsGridEditor from "@/components/specs-grid-editor-lazy";
 import { type SpecsGrid, createEmptyGrid, normalizeSpecsGrid } from "@/lib/specs-grid-types";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { GlassDropdown, type GlassDropdownOption } from "@/components/glass-dropdown";
+import { normalizeUnlockPrefixMode, UNLOCK_PREFIX_OPTIONS, unlockPasswordFor, type UnlockPrefixMode } from "@/lib/production-unlock-password";
 import { DragGhostLayer, useDragGhost } from "@/lib/use-drag-ghost";
 import {
   CALENDAR_RETENTION_OPTIONS,
@@ -2463,6 +2464,8 @@ export default function CompanySettingsPage() {
     tallVerticalGapDoorsPanels: "",
   });
   const [unlockSuffix, setUnlockSuffix] = useState("");
+  const [unlockPrefix, setUnlockPrefix] = useState<UnlockPrefixMode>("project");
+  const [unlockWord, setUnlockWord] = useState("");
   const [unlockHours, setUnlockHours] = useState("6");
   const [zapierLeads, setZapierLeads] = useState<ZapierLeadsSettings>({ enabled: false, webhookSecret: "", fieldLayout: [] });
   const [zapierCopyStatus, setZapierCopyStatus] = useState("");
@@ -2730,6 +2733,8 @@ export default function CompanySettingsPage() {
         setMachines(normalizeMachines((doc as Record<string, unknown>).machines, normalizeMachineNestingSettings(nestingRaw), edgeSettings as MachineEdgebandingSettings));
         setGapAllowances(normalizeGapAllowancesSettings(doc.gapAllowancesSettings));
         setUnlockSuffix(toStr(doc.productionUnlockPasswordSuffix));
+        setUnlockPrefix(normalizeUnlockPrefixMode(doc.productionUnlockPasswordPrefix));
+        setUnlockWord(toStr(doc.productionUnlockPasswordWord));
         setUnlockHours(toStr(doc.productionUnlockDurationHours, "6"));
         const integrationsDoc =
           doc.integrations && typeof doc.integrations === "object"
@@ -4116,6 +4121,8 @@ export default function CompanySettingsPage() {
           initialMeasure: cutlistInitial,
         },
         cutlistColumnOrder,
+        productionUnlockPasswordPrefix: unlockPrefix,
+        productionUnlockPasswordWord: unlockWord,
         productionUnlockPasswordSuffix: unlockSuffix,
         productionUnlockDurationHours: unlockHours,
       },
@@ -4496,6 +4503,8 @@ export default function CompanySettingsPage() {
         tallTopOfDoorToTopNoScribers: toStr(gapAllowances.tallTopOfDoorToTopNoScribers),
         tallVerticalGapDoorsPanels: toStr(gapAllowances.tallVerticalGapDoorsPanels),
       },
+      productionUnlockPasswordPrefix: unlockPrefix,
+      productionUnlockPasswordWord: unlockWord.trim(),
       productionUnlockPasswordSuffix: unlockSuffix.replace(/\D/g, ""),
       productionUnlockDurationHours: Number(unlockHours || 6),
       roles: roles
@@ -4682,6 +4691,8 @@ export default function CompanySettingsPage() {
           roundNearestMeters: edgebandingRoundNearestMeters,
         },
         gapAllowancesSettings: gapAllowances,
+        productionUnlockPasswordPrefix: unlockPrefix,
+        productionUnlockPasswordWord: unlockWord,
         productionUnlockPasswordSuffix: unlockSuffix,
         productionUnlockDurationHours: unlockHours,
         roles,
@@ -5170,6 +5181,8 @@ export default function CompanySettingsPage() {
     edgebandingRoundDirection,
     edgebandingRoundNearestMeters,
     unlockSuffix,
+    unlockPrefix,
+    unlockWord,
     unlockHours,
   ]);
 
@@ -5887,6 +5900,15 @@ export default function CompanySettingsPage() {
                 </div>
               )}
 
+                {active === "automations" && (
+                  <ColumnAutomationsOverview
+                    automations={projectAutomations.automations}
+                    projectColumns={projectAutomationColumns}
+                    leadColumns={leadAutomationColumns}
+                    canEdit={projectAutomations.canAutomate}
+                    onEdit={(board, target, source) => (board === "leads" ? leadAutomations : projectAutomations).open(target, source)}
+                  />
+                )}
                 {active === "integrations" && (
                   <div className="grid gap-[18px] max-lg:grid-cols-1 xl:grid-cols-2">
                     <Panel
@@ -6532,9 +6554,34 @@ export default function CompanySettingsPage() {
                     </div>
                   </Panel>
                   <div className="grid content-start gap-[18px] max-lg:grid-cols-1">
-                    <Panel title="Production access" icon={KeyRound} description="Temporary unlock codes for editing a production cutlist.">
-                      <FieldRow label="Unlock suffix" hint="Added to the end of each generated unlock code.">
-                        <input value={unlockSuffix} onChange={(e) => setUnlockSuffix(e.target.value)} className={`${fieldInputClass} max-w-[160px]`} />
+                    <Panel title="Production access" icon={KeyRound} description="The password for Unlock Edit, which lets someone edit a production cutlist for a while.">
+                      <FieldRow label="Password starts with" hint="The first part of the password. Spaces and capitals don't count.">
+                        <GlassDropdown
+                          value={unlockPrefix}
+                          options={UNLOCK_PREFIX_OPTIONS}
+                          onChange={(next) => setUnlockPrefix(normalizeUnlockPrefixMode(next))}
+                          ariaLabel="Password starts with"
+                          disabled={!canEditCompanySettings}
+                          menuMinWidth={220}
+                          triggerClassName={`${fieldInputClass} max-w-[220px] justify-between`}
+                        />
+                      </FieldRow>
+                      {unlockPrefix === "custom" ? (
+                        <FieldRow label="Your word">
+                          <input value={unlockWord} onChange={(e) => setUnlockWord(e.target.value)} placeholder="e.g. workshop" className={`${fieldInputClass} max-w-[220px]`} />
+                        </FieldRow>
+                      ) : null}
+                      <FieldRow label="Then the code" hint="Numbers, added to the end of the password.">
+                        <input value={unlockSuffix} inputMode="numeric" onChange={(e) => setUnlockSuffix(e.target.value)} className={`${fieldInputClass} max-w-[160px]`} />
+                      </FieldRow>
+                      <FieldRow label="Example" hint={unlockPrefix === "client" ? "A project with no client uses its name instead." : undefined}>
+                        <span className="inline-flex items-center gap-1.5 rounded-[10px] px-2.5 py-1.5 text-[12px] font-semibold" style={{ backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}>
+                          <Eye size={14} />{" "}
+                          {unlockPasswordFor(
+                            { mode: unlockPrefix, word: unlockWord, code: unlockSuffix.replace(/\D/g, "") },
+                            { name: "Smith Kitchen", customer: "Jane Smith" },
+                          ) || "Add a code"}
+                        </span>
                       </FieldRow>
                       <FieldRow label="Unlock lasts for">
                         <span className="relative inline-flex w-[120px] items-center">
@@ -7741,7 +7788,7 @@ export default function CompanySettingsPage() {
                               <ColumnAutomationButton
                                 count={projectAutomations.countFor(row.name.trim())}
                                 disabled={!row.name.trim()}
-                                onOpen={() => projectAutomations.open({ status: row.name.trim(), subStage: "", color: row.color || "#64748B" })}
+                                onOpen={(button) => projectAutomations.open({ status: row.name.trim(), subStage: "", color: row.color || "#64748B" }, button)}
                               />
                             ) : null}
                             {(row.subStages ?? []).length > 0 ? (
@@ -7789,8 +7836,8 @@ export default function CompanySettingsPage() {
                                     <ColumnAutomationButton
                                       count={projectAutomations.countFor(row.name.trim(), sub.name.trim())}
                                       disabled={!row.name.trim() || !sub.name.trim()}
-                                      onOpen={() =>
-                                        projectAutomations.open({ status: row.name.trim(), subStage: sub.name.trim(), color: sub.color || "#64748B" })
+                                      onOpen={(button) =>
+                                        projectAutomations.open({ status: row.name.trim(), subStage: sub.name.trim(), color: sub.color || "#64748B" }, button)
                                       }
                                     />
                                   ) : null}
@@ -8441,7 +8488,7 @@ export default function CompanySettingsPage() {
                             <ColumnAutomationButton
                               count={leadAutomations.countFor(row.name.trim())}
                               disabled={!row.name.trim()}
-                              onOpen={() => leadAutomations.open({ status: row.name.trim(), subStage: "", color: row.color || "#64748B" })}
+                              onOpen={(button) => leadAutomations.open({ status: row.name.trim(), subStage: "", color: row.color || "#64748B" }, button)}
                             />
                           ) : null}
                           <button

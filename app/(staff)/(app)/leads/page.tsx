@@ -132,6 +132,11 @@ function leadDateMs(lead: CompanyLeadRow): number {
   const ms = Date.parse(lead.createdAtIso || lead.submittedAtIso || lead.updatedAtIso || "");
   return Number.isFinite(ms) ? ms : 0;
 }
+// When it came into its column (one that's never moved: when it came in at all).
+function leadEnteredMs(lead: CompanyLeadRow): number {
+  const ms = Date.parse(lead.statusChangedAtIso || "");
+  return Number.isFinite(ms) ? ms : leadDateMs(lead);
+}
 const LEADS_BOARD_PREFS_STORAGE_PREFIX = "cutsmart_leads_board_prefs:";
 const LEAD_ARCHIVE_UPDATED_EVENT = "cutsmart_lead_archive_updated";
 type StatusRow = { name: string; color: string };
@@ -1384,6 +1389,7 @@ export default function LeadsPage() {
     (lead: CompanyLeadRow): BoardCardSortInfo => ({
       key: leadBoardKey(lead),
       dateMs: leadDateMs(lead),
+      enteredMs: leadEnteredMs(lead),
       name: leadClientName(getLeadDynamicFields(lead), fieldLayoutForLead(lead)) || lead.name || lead.email || lead.phone || "",
     }),
     [fieldLayoutForLead],
@@ -2427,16 +2433,20 @@ export default function LeadsPage() {
     // the pre-change status forever (this is what made dragging a card back
     // to its previous column silently no-op: the drop handler's "already in
     // this status" check compared against the stale cached status).
+    const movedAtIso = new Date().toISOString();
+    const statusPatch: Partial<CompanyLeadRow> = {
+      status: nextStatus,
+      updatedAtIso: movedAtIso,
+      ...(nextStatus.trim().toLowerCase() !== String(lead.status || "").trim().toLowerCase() ? { statusChangedAtIso: movedAtIso } : {}),
+    };
     const patchDetailCache = () =>
-      setLeadDetailsById((prev) =>
-        prev[lead.id] ? { ...prev, [lead.id]: { ...prev[lead.id], status: nextStatus, updatedAtIso: new Date().toISOString() } } : prev,
-      );
+      setLeadDetailsById((prev) => (prev[lead.id] ? { ...prev, [lead.id]: { ...prev[lead.id], ...statusPatch } } : prev));
     if (isTemporarySampleLead(lead)) {
       sampleLeadsRef.current[lead.companyId] = (sampleLeadsRef.current[lead.companyId] || []).map((row) =>
-        row.id === lead.id ? { ...row, status: nextStatus, updatedAtIso: new Date().toISOString() } : row,
+        row.id === lead.id ? { ...row, ...statusPatch } : row,
       );
       persistSampleLeads(lead.companyId, sampleLeadsRef.current[lead.companyId]);
-      setLeads((prev) => prev.map((row) => (row.id === lead.id ? { ...row, status: nextStatus, updatedAtIso: new Date().toISOString() } : row)));
+      setLeads((prev) => prev.map((row) => (row.id === lead.id ? { ...row, ...statusPatch } : row)));
       patchDetailCache();
       return;
     }
@@ -2451,7 +2461,7 @@ export default function LeadsPage() {
       }),
     }).catch(() => null);
     if (response?.ok) {
-      setLeads((prev) => prev.map((row) => (row.id === lead.id ? { ...row, status: nextStatus, updatedAtIso: new Date().toISOString() } : row)));
+      setLeads((prev) => prev.map((row) => (row.id === lead.id ? { ...row, ...statusPatch } : row)));
       patchDetailCache();
       void loadLeads(lead.companyId);
     }
@@ -2501,12 +2511,14 @@ export default function LeadsPage() {
     } else if (sameStatus) {
       return;
     }
+    const movedAtIso = new Date().toISOString();
     const move: Partial<CompanyLeadRow> = {
       status: statusName,
-      updatedAtIso: new Date().toISOString(),
+      updatedAtIso: movedAtIso,
+      ...(sameStatus ? {} : { statusChangedAtIso: movedAtIso }),
       ...(boardOrder !== undefined ? { boardOrder } : {}),
     };
-    const previous: Partial<CompanyLeadRow> = { status: lead.status, updatedAtIso: lead.updatedAtIso, boardOrder: lead.boardOrder };
+    const previous: Partial<CompanyLeadRow> = { status: lead.status, updatedAtIso: lead.updatedAtIso, statusChangedAtIso: lead.statusChangedAtIso, boardOrder: lead.boardOrder };
     // The detail cache too — getLeadById() prefers it (see onSelectLeadStatus).
     const applyToLead = (patch: Partial<CompanyLeadRow>) => {
       setLeads((prev) => prev.map((row) => (row.id === lead.id ? { ...row, ...patch } : row)));
@@ -2548,7 +2560,10 @@ export default function LeadsPage() {
       void loadLeads(lead.companyId);
       return;
     }
-    if (saved?.automatedStatus) applyToLead({ status: saved.automatedStatus, updatedAtIso: new Date().toISOString() });
+    if (saved?.automatedStatus) {
+      const automatedAtIso = new Date().toISOString();
+      applyToLead({ status: saved.automatedStatus, updatedAtIso: automatedAtIso, statusChangedAtIso: automatedAtIso });
+    }
   };
 
   const leadDropIndexFor = (columnName: string, columnLeads: CompanyLeadRow[], columnEl: Element, clientY: number, leadId: string): number => {

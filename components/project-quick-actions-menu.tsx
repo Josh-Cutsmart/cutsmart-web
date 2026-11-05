@@ -3,9 +3,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { usePathname, useRouter } from "next/navigation";
-import { Archive, ArrowRightLeft, Check, ChevronLeft, ChevronRight, ExternalLink, Factory, Lock, PencilRuler, Plus, Tag, UserCheck, X } from "lucide-react";
+import { Archive, ArrowRightLeft, Check, ChevronLeft, ChevronRight, ExternalLink, Factory, Lock, PencilRuler, Plus, ShieldCheck, Tag, UserCheck, X } from "lucide-react";
 import { GLASS_MENU_CLASS, GLASS_MENU_ROW_CLASS, GLASS_MENU_STYLE } from "@/components/glass-dropdown";
 import { GlassModalHeader } from "@/components/glass-modal-header";
+import { ProjectAccessModal } from "@/components/project-access-modal";
 import { Skeleton, SkeletonGroup } from "@/components/skeleton";
 import { StatusMenuPanels, type StatusMenuStatus } from "@/components/status-menu-panels";
 import { useFloatingNotice } from "@/components/floating-notice";
@@ -40,7 +41,8 @@ import type { Project } from "@/lib/types";
 
 // A project's quick actions: right-click one of the Dashboard's cards (or list rows), or a project's tab in the top bar, and
 // a glass menu opens at the pointer — Open, Open Design, Open Production, then Move ›, Change Assigned › and Edit Tags ›
-// (each slides the menu over to its own panel, a back row at its top, as a status menu's sub-statuses do), then Archive.
+// (each slides the menu over to its own panel, a back row at its top, as a status menu's sub-statuses do), then View Access
+// (its Project Permissions, in a pop-up — the project isn't opened), then Archive.
 // Each is done as the Dashboard or the project page does it (lib/project-actions.ts), and only offered to someone who can.
 
 // Which project elements a menu answers ("dashboard": a Dashboard card or row; "tabs": a project's tab in the top bar),
@@ -125,6 +127,8 @@ export const NO_PROJECT_QUICK_ACTIONS: ProjectQuickActionsAccess = {
   assign: false,
   tags: false,
   archive: false,
+  viewAccess: false,
+  editAccess: false,
 };
 
 function initials(text: string) {
@@ -288,6 +292,14 @@ export function ProjectQuickActionsMenu({
     });
   };
 
+  // View Access: its Project Permissions, grown out of the menu's row and shrunk back to where that was.
+  const [accessOpen, setAccessOpen] = useState(false);
+  const [accessTarget, setAccessTarget] = useState<{ project: Project; canEdit: boolean } | null>(null);
+  const [accessOrigin, setAccessOrigin] = useState<GlassModalOrigin>(null);
+  const accessPanelRef = useRef<HTMLDivElement | null>(null);
+  const shouldRenderAccess = useGlassModalPopOrigin(accessOpen, accessOrigin, accessPanelRef);
+  const closeAccess = useCallback(() => setAccessOpen(false), []);
+
   const archiveName = archiveTarget?.name ?? "";
   return (
     <>
@@ -308,8 +320,16 @@ export function ProjectQuickActionsMenu({
           onMove={onMove}
           onAssign={(target, uid) => void assign(target, uid)}
           onSaveTags={saveTags}
+          onViewAccess={(target, origin) => {
+            setAccessTarget({ project: target, canEdit: access.editAccess });
+            setAccessOrigin(origin);
+            setAccessOpen(true);
+          }}
           onArchive={askToArchive}
         />
+      ) : null}
+      {shouldRenderAccess && accessTarget ? (
+        <ProjectAccessModal key={accessTarget.project.id} project={accessTarget.project} canEdit={accessTarget.canEdit} panelRef={accessPanelRef} onClose={closeAccess} />
       ) : null}
       {shouldRenderArchiveConfirm && archiveTarget && typeof document !== "undefined"
         ? createPortal(
@@ -400,6 +420,7 @@ function QuickActionsPopup({
   onMove,
   onAssign,
   onSaveTags,
+  onViewAccess,
   onArchive,
 }: {
   request: ProjectQuickActionsRequest;
@@ -416,6 +437,7 @@ function QuickActionsPopup({
   onMove: (project: Project, status: string, subStage?: string) => void;
   onAssign: (project: Project, uid: string) => void;
   onSaveTags: (project: Project, nextTags: string[], previousTags: string[]) => Promise<boolean>;
+  onViewAccess: (project: Project, origin: GlassModalOrigin) => void;
   onArchive: (project: Project, origin: GlassModalOrigin) => void;
 }) {
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -572,10 +594,21 @@ function QuickActionsPopup({
       {row({ icon: <ExternalLink size={14} />, label: "Open", onClick: open })}
       {access.design ? row({ icon: <PencilRuler size={14} />, label: "Open Design", onClick: () => openTab("sales") }) : null}
       {access.production ? row({ icon: <Factory size={14} />, label: "Open Production", onClick: () => openTab("production") }) : null}
-      {access.move || access.assign || access.tags ? <MenuDivider /> : null}
+      {access.move || access.assign || access.tags || access.viewAccess ? <MenuDivider /> : null}
       {access.move ? row({ icon: <ArrowRightLeft size={14} />, label: "Move", sub: true, onClick: () => slideTo("move") }) : null}
       {access.assign ? row({ icon: <UserCheck size={14} />, label: "Change Assigned", sub: true, onClick: () => slideTo("assign") }) : null}
       {access.tags ? row({ icon: <Tag size={14} />, label: "Edit Tags", sub: true, onClick: () => slideTo("tags") }) : null}
+      {access.viewAccess
+        ? row({
+            icon: <ShieldCheck size={14} />,
+            label: "View Access",
+            onClick: (event) => {
+              const rect = event.currentTarget.getBoundingClientRect();
+              onClose();
+              onViewAccess(target, { left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+            },
+          })
+        : null}
       {access.archive ? (
         <>
           <MenuDivider />

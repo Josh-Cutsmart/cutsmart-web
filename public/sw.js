@@ -137,8 +137,8 @@ self.addEventListener("notificationclick", (event) => {
           const body = result.alreadyAnswered
             ? "Someone has already answered this request."
             : result.decision === "approve"
-              ? `Approved — ${who} can edit production for ${result.hours} hour${result.hours === 1 ? "" : "s"}.`
-              : `Denied — ${who} has been told.`;
+              ? `Accepted — ${who} can edit production for ${result.hours} hour${result.hours === 1 ? "" : "s"}.`
+              : `Declined — ${who} has been told.`;
           await self.registration.showNotification("CutSmart", { body, icon: "/icon-192.png", tag: `${event.notification.tag || "action"}_done` });
         } catch {
           await self.clients.openWindow(target);

@@ -54,6 +54,12 @@ import {
   scheduledColumnMoveFor,
   type BoardSpot,
   type ColumnAutomation,
+  type ColumnAutomationRun,
+  type ColumnAutomationRunFields,
+  type ColumnAutomationTrigger,
+  COLUMN_AUTOMATION_RUNS_COLLECTION,
+  columnAutomationRunFor,
+  normalizeColumnAutomationRun,
 } from "@/lib/column-automations";
 import { fetchCompanyAccess, type CompanyAccessInfo } from "@/lib/membership";
 import { mockChanges, mockCutlists, mockProjects, mockQuotes } from "@/lib/mock-data";
@@ -1498,6 +1504,8 @@ export interface CompanyMemberOption {
   joinedVia?: string;
 }
 
+export type UserNotificationUnlockAnswer = { decision: "approve" | "deny" | "answered"; byName?: string };
+
 export interface UserNotificationRow {
   id: string;
   title: string;
@@ -1509,8 +1517,17 @@ export interface UserNotificationRow {
   companyId?: string;
   // A calendar reminder's event.
   eventId?: string;
-  // "Remind me in…" (the notification's menu): hidden until then, and shown as new from that time.
+  // "Remind me in…" (the notification's menu): stays in the list as it is until then, and shows as new from that time.
   snoozedUntilIso?: string;
+  // Set by Remind me in…: it comes back unread, even if it was read before then. readAtIso: when it was last marked read
+  // (read since it came back, it stays read).
+  remindsUnread?: boolean;
+  readAtIso?: string;
+  // A production unlock request's: whose it is and which one (so it can be answered from the notification), and once it's
+  // been answered, how (by anyone it went to — app/api/production-unlock/respond).
+  unlockRequesterUid?: string;
+  unlockRequestedAtIso?: string;
+  unlockAnswer?: UserNotificationUnlockAnswer;
   // Dev mode's test notification (the "test in … s" at the top of Notifications) — for testing only, so it's
   // removed once it's been seen.
   devTest?: boolean;
@@ -2529,6 +2546,48 @@ export async function saveColumnAutomations(companyId: string, automations: Colu
 export const PROJECT_COLUMN_MOVED_EVENT = "cutsmart:project-column-moved";
 export type ProjectColumnMovedDetail = { projectId: string; status: string; subStage: string };
 
+// A run the app made (a project's automations run here as it's moved), noted for Company Settings' Automations log — by
+// whoever's move set it off. Not waited for, and nothing's held up if it can't be written. (An email's is noted by the
+// server, which sends it.)
+function logColumnAutomationRun(companyId: string, automation: ColumnAutomation, item: { id: string; name: string }, event: ColumnAutomationTrigger, fields: ColumnAutomationRunFields): void {
+  if (!db) return;
+  const byName = String(auth?.currentUser?.displayName || auth?.currentUser?.email || "").trim();
+  void setDoc(doc(collection(db, "companies", companyId, COLUMN_AUTOMATION_RUNS_COLLECTION)), columnAutomationRunFor(automation, item, event, { byName, ...fields })).catch((error) => {
+    console.warn("[logColumnAutomationRun] failed:", error);
+  });
+}
+
+// The log, newest first: `count` of them, from before `beforeIso` if it's given. null: it couldn't be read.
+export async function fetchColumnAutomationRuns(companyId: string, count: number, beforeIso = ""): Promise<ColumnAutomationRun[] | null> {
+  const cid = String(companyId || "").trim();
+  if (!db || !cid) return null;
+  try {
+    const runs = collection(db, "companies", cid, COLUMN_AUTOMATION_RUNS_COLLECTION);
+    const snap = await getDocs(beforeIso ? query(runs, where("atIso", "<", beforeIso), orderBy("atIso", "desc"), limit(count)) : query(runs, orderBy("atIso", "desc"), limit(count)));
+    return snap.docs.map((row) => normalizeColumnAutomationRun(row.id, (row.data() ?? {}) as Record<string, unknown>));
+  } catch (error) {
+    console.warn("[fetchColumnAutomationRuns] failed:", error);
+    return null;
+  }
+}
+
+// An email automation's email, asked of the server: which automation and which project, nothing else — it sends what's
+// saved on the automation (app/api/automations/email). Waited for before the project's moved on, as it checks where it is.
+// (The Preview's calls to the server are held: nothing's sent from it.)
+async function requestColumnAutomationEmail(companyId: string, projectId: string, automationId: string, from: BoardSpot | null): Promise<void> {
+  try {
+    const idToken = await auth?.currentUser?.getIdToken();
+    if (!idToken) return;
+    await fetch("/api/automations/email", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+      body: JSON.stringify({ companyId, projectId, automationId, from }),
+    });
+  } catch (error) {
+    console.warn("[requestColumnAutomationEmail] failed:", error);
+  }
+}
+
 // A project moved on the Dashboard (or created, or a small job turned into one — `from` null): its columns' automations
 // (lib/column-automations.ts), each only if its conditions hold. First the assign and tag ones of the column it went
 // into (assigned to their person — told — and given their tag), then the people those of the columns it left and went
@@ -2558,6 +2617,7 @@ export async function notifyColumnAutomationMove(input: {
     const automations = normalizeColumnAutomations(companyDoc?.columnAutomations);
     const actorUid = String(auth?.currentUser?.uid || "").trim();
     let sent = 0;
+    const runItem = { id: input.item.id, name: input.item.name || "A project" };
     // What its automations' conditions look at — who it's assigned to, its tags, its name — as it is now.
     const projectRef = await resolveProjectDocRef({ id: input.item.id, companyId: cid } as Project);
     const stored = projectRef ? (((await getDoc(projectRef).catch(() => null))?.data() ?? {}) as Record<string, unknown>) : {};
@@ -2573,6 +2633,10 @@ export async function notifyColumnAutomationMove(input: {
       ? (await fetchCompanyMembers(cid).catch(() => [] as CompanyMemberOption[])).map((member) => ({ uid: member.uid, roleId: member.roleId || member.role }))
       : [];
     for (const { automation, event } of setOff) {
+      if (automation.action === "email") {
+        await requestColumnAutomationEmail(cid, input.item.id, automation.id, input.from);
+        continue;
+      }
       const text = columnAutomationNotificationText({
         board: input.board,
         event,
@@ -2583,12 +2647,13 @@ export async function notifyColumnAutomationMove(input: {
       // Whoever moved it as well — once, if they're one of its people. Not when this move was an automation's, set off
       // by theirs (depth): its own notice tells them (the "Moved into …" below, from the move before), where it went —
       // not twice.
-      const recipients = new Set(columnAutomationRecipients(automation, members, facts.assignedToUid));
+      const recipients = new Set(columnAutomationRecipients(automation, members, facts.assignedToUid, facts.createdByUid));
       if (actorUid && (input.depth ?? 0) > 0) recipients.delete(actorUid);
       else if (actorUid) recipients.add(actorUid);
       for (const uid of recipients) {
         if (await addUserNotification(uid, { ...text, type: COLUMN_AUTOMATION_NOTIFICATION_TYPE, projectId: input.item.id, companyId: cid })) sent += 1;
       }
+      logColumnAutomationRun(cid, automation, runItem, event, { toUids: [...recipients] });
     }
     // What waits on its conditions in this column (those that didn't hold — recheckProjectColumnAutomations looks again
     // as they change) — instead of what waited in the one it left.
@@ -2599,6 +2664,11 @@ export async function notifyColumnAutomationMove(input: {
     const moveRule = columnMoveSetOffByMove(automations, input.board, input.from, input.to, facts);
     if (moveRule) {
       const outcome = await runColumnMoveAutomation(cid, input.item.id, moveRule, input.to, input.depth ?? 0, actorUid);
+      const movesTo = columnAutomationColumnLabel(columnMoveTarget(moveRule));
+      if (outcome === "moved") logColumnAutomationRun(cid, moveRule, runItem, "enters", { to: movesTo });
+      if (outcome === "scheduled") {
+        logColumnAutomationRun(cid, moveRule, runItem, "enters", { outcome: "scheduled", to: movesTo, dueAtIso: new Date(Date.now() + columnAutomationStayMs(moveRule)).toISOString() });
+      }
       // Whoever moved it: told it's moved on, once it has — straight away, or (on a timer) by the scheduled job when it
       // does, not ahead of it.
       if (outcome === "moved" && actorUid) {
@@ -2640,10 +2710,12 @@ async function doProjectColumnActions(
         const assigned = columnAutomationAssignedText({ board: "projects", itemName: item.name || "A project", column: columnAutomationColumnLabel(automation) });
         await addUserNotification(member.uid, { ...assigned, type: "project_assigned", projectId: item.id, companyId });
       }
+      logColumnAutomationRun(companyId, automation, { id: item.id, name: item.name || "A project" }, "enters", { toUids: [member.uid] });
     } else if (automation.action === "tag" && !facts.tags.some((tag) => tag.toLowerCase() === automation.tagValue.toLowerCase())) {
       await updateDoc(projectRef, { tags: arrayUnion(automation.tagValue), updatedAtIso: new Date().toISOString() });
       facts.tags.push(automation.tagValue);
       void resyncCompanyProjectTagUsage(companyId);
+      logColumnAutomationRun(companyId, automation, { id: item.id, name: item.name || "A project" }, "enters", { to: automation.tagValue });
     }
   }
   return facts;
@@ -2697,9 +2769,14 @@ export async function recheckProjectColumnAutomations(companyId: string, project
         column: columnAutomationColumnLabel(automation),
         movedTo: columnAutomationColumnLabel(here),
       });
-      for (const uid of columnAutomationRecipients(automation, members, facts.assignedToUid)) {
+      const told = columnAutomationRecipients(automation, members, facts.assignedToUid, facts.createdByUid);
+      for (const uid of told) {
         await addUserNotification(uid, { ...text, type: COLUMN_AUTOMATION_NOTIFICATION_TYPE, projectId, companyId: cid });
       }
+      logColumnAutomationRun(cid, automation, item, "enters", { toUids: told });
+    }
+    for (const { automation, from } of ready) {
+      if (automation.action === "email") await requestColumnAutomationEmail(cid, projectId, automation.id, from);
     }
     const move = ready.find(({ automation }) => automation.action === "move");
     if (!move) return;
@@ -2710,10 +2787,12 @@ export async function recheckProjectColumnAutomations(companyId: string, project
       // Its time in the column's not up yet: its timer, from when it entered (whoever set it off told when it moves).
       const scheduled = scheduledColumnMoveFor(rule, here, Date.now(), startedMs, actorUid);
       await updateDoc(projectRef, { [SCHEDULED_COLUMN_MOVE_FIELD]: scheduled, [SCHEDULED_COLUMN_MOVE_DUE_FIELD]: scheduled.dueAtIso });
+      logColumnAutomationRun(cid, rule, item, "enters", { outcome: "scheduled", to: columnAutomationColumnLabel(columnMoveTarget(rule)), dueAtIso: scheduled.dueAtIso });
       return;
     } else if ((await runColumnMoveAutomation(cid, projectId, { ...rule, moveAfter: false }, here, 0)) !== "moved") {
       return;
     }
+    logColumnAutomationRun(cid, rule, item, "enters", { to: columnAutomationColumnLabel(columnMoveTarget(rule)) });
     if (actorUid) {
       const notice = columnAutomationMoveNoticeText({
         board: "projects",
@@ -4896,7 +4975,7 @@ export async function findCompanyClientForProject(
   companyId: string,
   project: Project,
   filter?: CompanyClientViewerFilter,
-): Promise<{ contact: CompanyClientRow; persisted: boolean } | null> {
+): Promise<{ contact: CompanyClientRow; persisted: boolean; hidden?: boolean } | null> {
   const cid = String(companyId || "").trim();
   if (!db || !cid) return null;
   if (!normalizeClientEmail(project.clientEmail) && !normalizeClientPhone(project.clientPhone) && !String(project.customer || "").trim()) {
@@ -4937,9 +5016,10 @@ export async function findCompanyClientForProject(
   // may only be saved on one of them.
   const best = { ...candidates[0] };
   best.category = best.category || candidates.find((row) => row.category)?.category || "";
+  // hidden: they have a saved card, just not one this viewer is shown (not for a viewer to show, or to offer to create).
   return filter?.includeAll || viewerOnProject || candidates.some((row) => canViewerAccessCompanyClientRow(row, filter))
     ? { contact: best, persisted: true }
-    : null;
+    : { contact: best, persisted: true, hidden: true };
 }
 
 export type ManualCompanyClientInput = {
@@ -5171,9 +5251,10 @@ async function applyClientDetailsToProjects(
   before: { name: string; email: string; phone: string; address: string },
   patch: ClientDetailsPatch,
   options: { linkToId?: string; skipProjectId?: string; actorName?: string },
-): Promise<void> {
+): Promise<number> {
   const cid = String(companyId || "").trim();
-  if (!db || !cid || !Object.keys(patch).length) return;
+  if (!db || !cid || !Object.keys(patch).length) return 0;
+  let failed = 0;
   const beforeRow = {
     name: before.name,
     email: before.email,
@@ -5192,14 +5273,20 @@ async function applyClientDetailsToProjects(
       if (!Object.keys(projectPatch).length) return;
       try {
         const ref = await resolveProjectDocRef(project);
-        if (!ref) return;
+        if (!ref) {
+          failed += 1;
+          console.warn("[applyClientDetailsToProjects] couldn't find the project's document:", project.id);
+          return;
+        }
         await updateDoc(ref, projectPatch);
         if (changes.length) void addProjectChange(project.id, options.actorName || "Staff", `${changes.join(", ")} (from the contact card)`);
       } catch (error) {
+        failed += 1;
         console.warn("[applyClientDetailsToProjects] project write failed:", project.id, error);
       }
     }),
   );
+  return failed;
 }
 
 function clientDetailsCardPayload(patch: ClientDetailsPatch, nowIso: string): Record<string, unknown> {
@@ -5305,7 +5392,7 @@ export async function updateCompanyClientProfile(
   filter?: CompanyClientViewerFilter,
   contact?: CompanyClientRow | null,
   actorName?: string,
-): Promise<{ ok: boolean }> {
+): Promise<{ ok: boolean; projectsMissed?: boolean }> {
   const cid = String(companyId || "").trim();
   const id = String(clientId || "").trim();
   if (!db || !cid || !id) return { ok: false };
@@ -5352,18 +5439,21 @@ export async function updateCompanyClientProfile(
     // details from before the change; the projects not linked to a card yet are linked to this one.
     const details = clientDetailsOnly(patch);
     const beforeRow = contact ?? targets[0] ?? null;
-    const onProjects = async (cardIds: string[], linkToId: string) => {
-      if (!Object.keys(details).length || !beforeRow) return;
+    // Whether any of their projects missed the change (the card's saved either way): for the page to say so.
+    const onProjects = async (cardIds: string[], linkToId: string): Promise<boolean> => {
+      if (!Object.keys(details).length || !beforeRow) return false;
       try {
-        await applyClientDetailsToProjects(
+        const failed = await applyClientDetailsToProjects(
           cid,
           new Set(cardIds),
           { name: beforeRow.name, email: beforeRow.email || beforeRow.emailNormalized, phone: beforeRow.phone, address: beforeRow.address },
           details,
           { linkToId, actorName },
         );
-      } catch {
-        // The card's saved; its projects are best effort.
+        return failed > 0;
+      } catch (error) {
+        console.warn("[updateCompanyClientProfile] couldn't update the client's projects:", error);
+        return true;
       }
     };
 
@@ -5372,8 +5462,7 @@ export async function updateCompanyClientProfile(
         await setDoc(doc(db, "companies", cid, "clients", target.id), payload, { merge: true });
       }
       const targetIds = targets.map((target) => target.id);
-      await onProjects([id, ...targetIds], targetIds.includes(id) ? id : targetIds[0]);
-      return { ok: true };
+      return { ok: true, projectsMissed: await onProjects([id, ...targetIds], targetIds.includes(id) ? id : targetIds[0]) };
     }
     if (!contact) return { ok: false };
 
@@ -5382,8 +5471,7 @@ export async function updateCompanyClientProfile(
     const existingAtId = await getDoc(doc(db, "companies", cid, "clients", id));
     if (existingAtId.exists()) {
       await setDoc(doc(db, "companies", cid, "clients", id), payload, { merge: true });
-      await onProjects([id], id);
-      return { ok: true };
+      return { ok: true, projectsMissed: await onProjects([id], id) };
     }
 
     await ensureCompanyClientsSection(cid);
@@ -5414,8 +5502,7 @@ export async function updateCompanyClientProfile(
       },
       { merge: true },
     );
-    await onProjects([id], id);
-    return { ok: true };
+    return { ok: true, projectsMissed: await onProjects([id], id) };
   } catch {
     return { ok: false };
   }
@@ -5706,6 +5793,8 @@ export type CompanyLeadRow = {
   // How a lead added by hand came in (Phone call, Walk-in, …).
   sourceDetail?: string;
   status: string;
+  // When it went into its status (the board's Longest / Newest in column).
+  statusChangedAtIso?: string;
   assignedToUid?: string;
   assignedToName?: string;
   assignedTo?: string;
@@ -5916,6 +6005,7 @@ export async function fetchCompanyLeads(companyId: string): Promise<CompanyLeadR
         convertedAtIso: toIsoString(data.convertedAtIso, "") || undefined,
         source: String(data.source ?? "").trim() || "zapier-form",
         status: normalizeLeadStatus(data.status),
+        statusChangedAtIso: toIsoString(data.statusChangedAtIso, "") || undefined,
         assignedToUid: String(data.assignedToUid ?? "").trim() || undefined,
         assignedToName: String(data.assignedToName ?? data.assignedTo ?? "").trim() || undefined,
         assignedTo: String(data.assignedTo ?? data.assignedToName ?? "").trim() || undefined,
@@ -6398,11 +6488,29 @@ function userNotificationFromDoc(docSnap: QueryDocumentSnapshot): UserNotificati
     companyId: String(data.companyId ?? "").trim() || undefined,
     eventId: String(data.eventId ?? "").trim() || undefined,
     snoozedUntilIso: String(data.snoozedUntilIso ?? "").trim() || undefined,
+    remindsUnread: data.remindsUnread === true ? true : undefined,
+    readAtIso: String(data.readAtIso ?? "").trim() || undefined,
+    unlockRequesterUid: String(data.unlockRequesterUid ?? "").trim() || undefined,
+    unlockRequestedAtIso: String(data.unlockRequestedAtIso ?? "").trim() || undefined,
+    unlockAnswer:
+      data.unlockAnswer && typeof data.unlockAnswer === "object" ? (data.unlockAnswer as UserNotificationUnlockAnswer) : undefined,
     devTest: data.devTest === true ? true : undefined,
   };
 }
 
-// One someone asked to be reminded about (snoozeUserNotification) stays hidden until its time, then shows as new
+// Whether a "Remind me in…" on this notification hasn't come round yet.
+export function notifReminderWaiting(row: Pick<UserNotificationRow, "snoozedUntilIso">): boolean {
+  return Boolean(row.snoozedUntilIso) && Date.parse(row.snoozedUntilIso as string) > Date.now();
+}
+
+// A reminder that's come round is unread until it's been read since then, whatever it was before.
+function remindedAndUnread(row: Pick<UserNotificationRow, "snoozedUntilIso" | "remindsUnread" | "readAtIso">, now: number): boolean {
+  if (!row.remindsUnread || !row.snoozedUntilIso) return false;
+  const until = Date.parse(row.snoozedUntilIso);
+  return until <= now && !(Date.parse(row.readAtIso || "") >= until);
+}
+
+// One someone asked to be reminded about (snoozeUserNotification) stays where it is until its time, then shows as new
 // from then — at the top, timed from when it came back. Newest first; only this company's when companyId is given.
 //
 // companyId is optional only for callers that genuinely want everything (there are none left in this codebase —
@@ -6414,8 +6522,11 @@ function userNotificationFromDoc(docSnap: QueryDocumentSnapshot): UserNotificati
 function shownUserNotifications(rows: UserNotificationRow[], companyId: string): UserNotificationRow[] {
   const now = Date.now();
   const shown = rows
-    .filter((row) => !(row.snoozedUntilIso && Date.parse(row.snoozedUntilIso) > now))
-    .map((row) => (row.snoozedUntilIso ? { ...row, createdAtIso: row.snoozedUntilIso } : row))
+    .map((row) =>
+      row.snoozedUntilIso && Date.parse(row.snoozedUntilIso) <= now
+        ? { ...row, createdAtIso: row.snoozedUntilIso, read: row.read && !remindedAndUnread(row, now) }
+        : row,
+    )
     .sort((a, b) => (Date.parse(b.createdAtIso) || 0) - (Date.parse(a.createdAtIso) || 0));
   return companyId ? shown.filter((row) => row.companyId === companyId) : shown;
 }
@@ -6602,13 +6713,24 @@ export async function setAllUserNotificationsRead(uid: string, read: boolean, co
     // Just the ones that aren't that already (it used to read the whole inbox, every time), written 400 at a time (a
     // batch takes at most 500).
     const snap = await getDocs(query(collection(database, "users", userId, "notifications"), where("read", "==", !read)));
-    const changing = snap.docs.filter(
+    // A reminder that's come round counts as unread without being stored as it (remindedAndUnread).
+    const reminded = read ? await getDocs(query(collection(database, "users", userId, "notifications"), where("remindsUnread", "==", true))) : null;
+    const now = Date.now();
+    const remindedUnread = (reminded?.docs ?? []).filter((docSnap) => {
+      const data = (docSnap.data() ?? {}) as Record<string, unknown>;
+      return (
+        data.read === true &&
+        remindedAndUnread({ snoozedUntilIso: String(data.snoozedUntilIso ?? ""), remindsUnread: true, readAtIso: String(data.readAtIso ?? "") }, now)
+      );
+    });
+    const changing = [...snap.docs, ...remindedUnread].filter(
       (docSnap) => !scopeCompanyId || String((docSnap.data() ?? {}).companyId ?? "").trim() === scopeCompanyId,
     );
     for (let i = 0; i < changing.length; i += 400) {
       const batch = writeBatch(database);
       for (const docSnap of changing.slice(i, i + 400)) {
-        batch.update(docSnap.ref, { read: Boolean(read), updatedAt: serverTimestamp(), updatedAtIso: new Date().toISOString() });
+        const nowIso = new Date().toISOString();
+        batch.update(docSnap.ref, { read: Boolean(read), ...(read ? { readAtIso: nowIso } : {}), updatedAt: serverTimestamp(), updatedAtIso: nowIso });
       }
       await batch.commit();
     }
@@ -6662,7 +6784,7 @@ export async function setUserNotificationRead(uid: string, notificationId: strin
   const id = String(notificationId || "").trim();
   if (!db || !userId || !id) return false;
   try {
-    await updateDoc(doc(db, "users", userId, "notifications", id), { read: Boolean(read) });
+    await updateDoc(doc(db, "users", userId, "notifications", id), { read: Boolean(read), ...(read ? { readAtIso: new Date().toISOString() } : {}) });
     return true;
   } catch {
     return false;
@@ -6682,8 +6804,8 @@ export async function deleteUserNotification(uid: string, notificationId: string
   }
 }
 
-// A notification's menu: Remind me in… — hidden from their list until `untilIso`, then back as new and
-// unread (fetchUserNotifications). Their phone/desktop is sent it again then too, by the scheduled job
+// A notification's menu: Remind me in… — it stays in their list as it is, then at `untilIso` goes to the top as new
+// and unread (shownUserNotifications). Their phone/desktop is sent it again then too, by the scheduled job
 // (requestNotificationReminderPush in lib/push-client.ts).
 export async function snoozeUserNotification(uid: string, notificationId: string, untilIso: string): Promise<boolean> {
   const userId = String(uid || "").trim();
@@ -6691,8 +6813,40 @@ export async function snoozeUserNotification(uid: string, notificationId: string
   if (!db || !userId || !id || !Number.isFinite(Date.parse(untilIso))) return false;
   try {
     await updateDoc(doc(db, "users", userId, "notifications", id), {
-      read: false,
       snoozedUntilIso: untilIso,
+      remindsUnread: true,
+      updatedAt: serverTimestamp(),
+      updatedAtIso: new Date().toISOString(),
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// A production unlock request found to be already answered: noted on theirs, so its buttons go.
+export async function setUserNotificationUnlockAnswer(uid: string, notificationId: string, answer: UserNotificationUnlockAnswer): Promise<boolean> {
+  const userId = String(uid || "").trim();
+  const id = String(notificationId || "").trim();
+  if (!db || !userId || !id) return false;
+  try {
+    await updateDoc(doc(db, "users", userId, "notifications", id), { unlockAnswer: answer });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// The X on a notification's "Reminder in…" chip: it just stays where it is. (The scheduled job sends nothing for it
+// then — flushDueNotificationReminders checks it's still set to come back at that time.)
+export async function cancelUserNotificationReminder(uid: string, notificationId: string): Promise<boolean> {
+  const userId = String(uid || "").trim();
+  const id = String(notificationId || "").trim();
+  if (!db || !userId || !id) return false;
+  try {
+    await updateDoc(doc(db, "users", userId, "notifications", id), {
+      snoozedUntilIso: deleteField(),
+      remindsUnread: deleteField(),
       updatedAt: serverTimestamp(),
       updatedAtIso: new Date().toISOString(),
     });

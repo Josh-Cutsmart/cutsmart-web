@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" width="640" height="360" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title>A Production column automation emails Anna and the project's creator two days after a project enters; the email goes out in the company's own wording and shows in the Log</title>
+  <style>
+    .rule { animation: rule 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes rule { 0%, 2% { opacity: 0; transform: translateY(10px); } 7%, 92% { opacity: 1; transform: translateY(0); } 96%, 100% { opacity: 0; transform: translateY(0); } }
+    .mail { animation: mail 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes mail { 0%, 42% { opacity: 0; transform: translateY(10px); } 47%, 92% { opacity: 1; transform: translateY(0); } 96%, 100% { opacity: 0; transform: translateY(0); } }
+    .log { animation: log 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes log { 0%, 76% { opacity: 0; transform: translateY(10px); } 81%, 92% { opacity: 1; transform: translateY(0); } 96%, 100% { opacity: 0; transform: translateY(0); } }
+    .env { animation: env 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes env { 0%, 26% { opacity: 0; transform: translate(0, 0) scale(.8); } 30% { opacity: 1; transform: translate(0, 0) scale(1); } 42% { opacity: 1; transform: translate(0, 66px) scale(1); } 46%, 100% { opacity: 0; transform: translate(0, 66px) scale(.8); } }
+    .who0 { animation: who0 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes who0 { 0%, 8% { opacity: 0; transform: translateY(4px); } 13%, 92% { opacity: 1; transform: translateY(0); } 96%, 100% { opacity: 0; transform: translateY(0); } }
+    .who1 { animation: who1 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes who1 { 0%, 13% { opacity: 0; transform: translateY(4px); } 18%, 92% { opacity: 1; transform: translateY(0); } 96%, 100% { opacity: 0; transform: translateY(0); } }
+    .sub { animation: sub 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes sub { 0%, 50% { opacity: 0; transform: translateY(4px); } 55%, 92% { opacity: 1; transform: translateY(0); } 96%, 100% { opacity: 0; transform: translateY(0); } }
+    .l1 { animation: l1 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes l1 { 0%, 55% { opacity: 0; transform: translateY(4px); } 60%, 92% { opacity: 1; transform: translateY(0); } 96%, 100% { opacity: 0; transform: translateY(0); } }
+    .l2 { animation: l2 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes l2 { 0%, 60% { opacity: 0; transform: translateY(4px); } 65%, 92% { opacity: 1; transform: translateY(0); } 96%, 100% { opacity: 0; transform: translateY(0); } }
+    .l3 { animation: l3 8s cubic-bezier(.22, 1, .36, 1) infinite both; }
+    @keyframes l3 { 0%, 65% { opacity: 0; transform: translateY(4px); } 70%, 92% { opacity: 1; transform: translateY(0); } 96%, 100% { opacity: 0; transform: translateY(0); } }
+
+  </style>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#EEF3FB"/>
+      <stop offset="1" stop-color="#E1E9F7"/>
+    </linearGradient>
+    <filter id="pop" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#0F172A" flood-opacity=".14"/>
+    </filter>
+  </defs>
+  <rect width="640" height="360" fill="url(#bg)"/>
+  <g class="rule"><rect x="24" y="18" width="592" height="58" rx="16" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/><circle cx="52" cy="47" r="13" fill="#DBEAFE"/><rect x="45" y="42" width="14" height="10" rx="2" fill="none" stroke="#2563EB" stroke-width="1.6"/><path d="M45.5 43 L52 48 L58.5 43" fill="none" stroke="#2563EB" stroke-width="1.6"/><text x="76" y="51" font-size="12.5" font-weight="600" fill="#0F172A" text-anchor="start">Email</text></g>
+  <g class="who0"><rect x="114" y="34" width="58" height="26" rx="13.0" fill="#F1F5F9" stroke="#CBD5E1"/><text x="143.0" y="51.1" text-anchor="middle" font-size="11.5" font-weight="600" fill="#0F172A">Anna</text></g>
+  <g class="who1"><text x="178" y="51" font-size="12" font-weight="500" fill="#64748B" text-anchor="start">&amp;</text><rect x="192" y="34" width="68" height="26" rx="13.0" fill="#F1F5F9" stroke="#CBD5E1"/><text x="226.0" y="51.1" text-anchor="middle" font-size="11.5" font-weight="600" fill="#0F172A">Creator</text></g>
+  <g class="rule"><text x="268" y="51" font-size="12" font-weight="500" fill="#334155" text-anchor="start">when it enters</text><rect x="356" y="34" width="96" height="26" rx="13" fill="#EEF2FF"/><circle cx="370" cy="47" r="4.5" fill="#2563EB"/><text x="380" y="51" font-size="11.5" font-weight="600" fill="#0F172A" text-anchor="start">Production</text><text x="460" y="51" font-size="12" font-weight="500" fill="#334155" text-anchor="start">after</text><rect x="494" y="34" width="62" height="26" rx="13.0" fill="#F1F5F9" stroke="#CBD5E1"/><text x="525.0" y="51.1" text-anchor="middle" font-size="11.5" font-weight="600" fill="#0F172A">2 days</text></g>
+  <g class="env"><rect x="302" y="84" width="36" height="26" rx="5" fill="#2563EB"/><path d="M304 87 L320 99 L336 87" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linejoin="round"/></g>
+  <g class="mail"><rect x="96" y="150" width="448" height="146" rx="16" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/></g>
+  <g class="sub"><text x="116" y="176" font-size="10.5" font-weight="600" fill="#64748B" text-anchor="start">Subject</text><text x="166" y="176" font-size="12.5" font-weight="600" fill="#0F172A" text-anchor="start">Smith Kitchen is ready for its next step</text><line x1="116" y1="188" x2="524" y2="188" stroke="#E2E8F0"/></g>
+  <g class="l1"><text x="116" y="210" font-size="12" font-weight="500" fill="#334155" text-anchor="start">Hi team,</text></g>
+  <g class="l2"><text x="116" y="232" font-size="12" font-weight="500" fill="#334155" text-anchor="start">Smith Kitchen for Daniel Smith has been in Production for 2 days.</text></g>
+  <g class="l3"><text x="116" y="254" font-size="12" font-weight="500" fill="#334155" text-anchor="start">Assigned to Liam Chen. Have a look when you get a minute.</text><rect x="116" y="264" width="86" height="22" rx="11.0" fill="#EFF6FF"/><text x="159.0" y="278.8" text-anchor="middle" font-size="10.5" font-weight="600" fill="#2563EB">Your wording</text></g>
+  <g class="log"><rect x="176" y="308" width="288" height="36" rx="18" fill="#FFFFFF" stroke="#D9E2F1" filter="url(#pop)"/><circle cx="196" cy="326" r="6" fill="#16A34A"/><path d="M193 326 L195.4 328.4 L199.4 323.6" fill="none" stroke="#FFFFFF" stroke-width="1.6"/><text x="210" y="330" font-size="12" font-weight="500" fill="#0F172A" text-anchor="start">Log: emailed 2 people, just now</text></g>
+</svg>

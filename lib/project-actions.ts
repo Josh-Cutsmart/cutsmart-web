@@ -83,7 +83,16 @@ export function statusMoveLocalPatch(
   const completedAtIso = isCompletedStatus(status)
     ? (isCompletedStatus(project.statusLabel) && String(project.completedAtIso || "").trim()) || nowIso
     : "";
-  return { statusLabel: status, dashboardSubStageId: subStageId, updatedAt: nowIso, completedAtIso: completedAtIso || undefined };
+  // Noted in its history as the save does (updateProjectStatus), so a board sorted by time in column has it right now.
+  const same = (a: unknown, b: unknown) => String(a ?? "").trim().toLowerCase() === String(b ?? "").trim().toLowerCase();
+  const moved = !same(status, project.statusLabel) || !same(subStageId, project.dashboardSubStageId);
+  return {
+    statusLabel: status,
+    dashboardSubStageId: subStageId,
+    updatedAt: nowIso,
+    completedAtIso: completedAtIso || undefined,
+    ...(moved ? { statusHistory: [...(project.statusHistory ?? []), { status, subStage: subStageId, atIso: nowIso }] } : {}),
+  };
 }
 
 // Saves a move to another status (and sub-status), as the Dashboard's status menu does. Refused while the job's locked
@@ -232,6 +241,9 @@ export type ProjectQuickActionsAccess = {
   assign: boolean;
   tags: boolean;
   archive: boolean;
+  // View Access: its Project Permissions — seeing them, and changing them — as on its Settings tab.
+  viewAccess: boolean;
+  editAccess: boolean;
 };
 
 export function projectQuickActionsAccess(
@@ -253,6 +265,8 @@ export function projectQuickActionsAccess(
     assign: canEdit && settings.edit,
     tags: canEdit && !smallJob,
     archive: canEdit,
+    viewAccess: settings.view,
+    editAccess: changeable && settings.edit,
   };
 }
 
@@ -262,6 +276,15 @@ export function projectQuickActionsAccess(
 // archiving undone): what changed, for an open Dashboard to show it straight away.
 export const PROJECT_PATCHED_EVENT = "cutsmart:project-patched";
 export type ProjectPatchedDetail = { projectId: string; patch: Partial<Project> };
+
+// An unlock request answered from its notification (the top bar's), for that project's page if it's open.
+export const UNLOCK_ANSWERED_EVENT = "cutsmart:unlock-answered";
+export type UnlockAnsweredDetail = { projectId: string; requesterUid: string; expiryIso: string | null };
+
+export function announceUnlockAnswered(detail: UnlockAnsweredDetail): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent<UnlockAnsweredDetail>(UNLOCK_ANSWERED_EVENT, { detail }));
+}
 
 export function announceProjectPatched(projectId: string, patch: Partial<Project>): void {
   if (typeof window === "undefined") return;

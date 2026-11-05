@@ -94,8 +94,8 @@ async function buildTest(sample: string, siteOrigin: string): Promise<{ type: st
       ...(sample === "production_unlock_request"
         ? {
             actions: [
-              { action: "approve", title: "Approve" },
-              { action: "deny", title: "Deny" },
+              { action: "approve", title: "Accept" },
+              { action: "deny", title: "Decline" },
             ],
             actionUrl: "/api/push/dev-test",
             actionToken: DEV_TEST_ACTION_TOKEN,

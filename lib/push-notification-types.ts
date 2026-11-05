@@ -138,10 +138,18 @@ export function isPushNotificationWanted(userData: Record<string, unknown> | und
 
 // Where tapping the notification takes them: the event for a calendar reminder, the project it's about,
 // Leads for a lead, the What's New page for a new version, or the Dashboard.
-export function pushNotificationUrl(input: { type?: unknown; projectId?: unknown; leadId?: unknown; eventId?: unknown; title?: unknown }): string {
+// Where a production unlock request's push opens: its project, and on it the box to accept or decline
+// (components/global-app-tabs-bar.tsx reads unlockRequest).
+export function productionUnlockRequestUrl(projectId: string, requesterUid: string): string {
+  return `/projects/${encodeURIComponent(projectId)}?tab=production&unlockRequest=${encodeURIComponent(requesterUid)}`;
+}
+
+export function pushNotificationUrl(input: { type?: unknown; projectId?: unknown; leadId?: unknown; eventId?: unknown; title?: unknown; unlockRequesterUid?: unknown }): string {
   const eventId = String(input.eventId ?? "").trim();
   if (String(input.type ?? "") === "calendar_reminder" && eventId) return `/calendar?event=${encodeURIComponent(eventId)}`;
   const projectId = String(input.projectId ?? "").trim();
+  const unlockRequesterUid = String(input.unlockRequesterUid ?? "").trim();
+  if (projectId && unlockRequesterUid) return productionUnlockRequestUrl(projectId, unlockRequesterUid);
   if (projectId) return `/projects/${encodeURIComponent(projectId)}`;
   if (String(input.leadId ?? "").trim() || String(input.type ?? "").startsWith("lead_")) return "/leads";
   if (String(input.type ?? "") === "app_version") {

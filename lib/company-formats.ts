@@ -1,4 +1,7 @@
 import { useSyncExternalStore } from "react";
+import { DEFAULT_DATE_FORMAT, formatDate, MONTHS, normalizeDateFormat, type DateFormat } from "@/lib/date-format";
+
+export { DATE_FORMAT_OPTIONS, DEFAULT_DATE_FORMAT, formatDate, normalizeDateFormat, type DateFormat } from "@/lib/date-format";
 
 // The company's regional formats — currency, measurement unit and date format — chosen in
 // Company Settings > Company > Regional formats, and the helpers that apply them everywhere a price,
@@ -20,12 +23,8 @@ export const CURRENCY_OPTIONS: CurrencyOption[] = [
   { code: "SGD", label: "SGD — Singapore Dollar", locale: "en-SG" },
 ];
 
-export const DATE_FORMAT_OPTIONS = ["DD/MM/YYYY", "MM/DD/YYYY", "YYYY-MM-DD", "D MMM YYYY", "MMM D, YYYY"] as const;
-export type DateFormat = (typeof DATE_FORMAT_OPTIONS)[number];
-
 export const DEFAULT_CURRENCY = "NZD";
 export const DEFAULT_UNIT: MeasurementUnit = "mm";
-export const DEFAULT_DATE_FORMAT: DateFormat = "DD/MM/YYYY";
 
 export function normalizeCurrencyCode(raw: unknown): string {
   const text = String(raw ?? "").trim().toUpperCase();
@@ -36,11 +35,6 @@ export function normalizeCurrencyCode(raw: unknown): string {
 export function normalizeMeasurementUnit(raw: unknown): MeasurementUnit {
   const text = String(raw ?? "").trim().toLowerCase();
   return text === "in" || text === "inch" || text === "inches" || text === '"' ? "in" : "mm";
-}
-
-export function normalizeDateFormat(raw: unknown): DateFormat {
-  const text = String(raw ?? "").trim();
-  return (DATE_FORMAT_OPTIONS as readonly string[]).includes(text) ? (text as DateFormat) : DEFAULT_DATE_FORMAT;
 }
 
 // Every currency is formatted with the same digit style (1,234.50) and only its symbol changes. Saved
@@ -105,31 +99,6 @@ export function formatLength(mm: number | string | null | undefined, unit: Measu
   const value = mmToUnit(n, unit);
   const text = unit === "in" ? String(Math.round(value * 100) / 100) : String(Math.round(value * 10) / 10);
   return options?.withUnit === false ? text : `${text} ${unitLabel(unit)}`;
-}
-
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-// Formats a date (Date, ISO string or timestamp) in the company's date format, in the viewer's own
-// local time zone.
-export function formatDate(value: Date | string | number | null | undefined, format: DateFormat = DEFAULT_DATE_FORMAT): string {
-  if (value == null || value === "") return "";
-  const d = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(d.getTime())) return "";
-  const dd = String(d.getDate()).padStart(2, "0");
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const y = d.getFullYear();
-  switch (format) {
-    case "MM/DD/YYYY":
-      return `${mm}/${dd}/${y}`;
-    case "YYYY-MM-DD":
-      return `${y}-${mm}-${dd}`;
-    case "D MMM YYYY":
-      return `${d.getDate()} ${MONTHS[d.getMonth()]} ${y}`;
-    case "MMM D, YYYY":
-      return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${y}`;
-    default:
-      return `${dd}/${mm}/${y}`;
-  }
 }
 
 // ---------------------------------------------------------------------------------------------------

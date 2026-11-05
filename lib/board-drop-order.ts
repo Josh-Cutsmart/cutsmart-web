@@ -66,12 +66,15 @@ export function withBoardDropPreview<T extends { id: string }, N>(
 // others are each user's own choice, per column (the sort button on the column) or for the whole board
 // (the toolbar's Sort button, which overrides every column while it's set). See
 // components/board-sort-menu.tsx.
-export type BoardSortMode = "custom" | "oldest" | "newest" | "az" | "za";
-export const BOARD_SORT_MODES: readonly BoardSortMode[] = ["custom", "oldest", "newest", "az", "za"];
+// "longest" and "recent" go by when a card came into the column it's in, the others by its created date or name.
+export type BoardSortMode = "custom" | "oldest" | "newest" | "longest" | "recent" | "az" | "za";
+export const BOARD_SORT_MODES: readonly BoardSortMode[] = ["custom", "oldest", "newest", "longest", "recent", "az", "za"];
 export const BOARD_SORT_LABELS: Record<BoardSortMode, string> = {
   custom: "Custom order",
   oldest: "Oldest – Newest",
   newest: "Newest – Oldest",
+  longest: "Longest in column",
+  recent: "Newest in column",
   az: "A – Z",
   za: "Z – A",
 };
@@ -90,13 +93,15 @@ export function normalizeBoardColumnSorts(value: unknown): Record<string, BoardS
   return out;
 }
 
-// What a board needs to know about a card to order it.
-export type BoardCardSortInfo = { key: number; dateMs: number; name: string };
+// What a board needs to know about a card to order it. enteredMs: when it came into the column it's in.
+export type BoardCardSortInfo = { key: number; dateMs: number; enteredMs: number; name: string };
 
 export function compareBoardCards(mode: BoardSortMode, a: BoardCardSortInfo, b: BoardCardSortInfo): number {
   let result = 0;
   if (mode === "oldest") result = a.dateMs - b.dateMs;
   else if (mode === "newest") result = b.dateMs - a.dateMs;
+  else if (mode === "longest") result = a.enteredMs - b.enteredMs;
+  else if (mode === "recent") result = b.enteredMs - a.enteredMs;
   else if (mode === "az") result = a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true });
   else if (mode === "za") result = b.name.localeCompare(a.name, undefined, { sensitivity: "base", numeric: true });
   return result || a.key - b.key;
@@ -109,14 +114,16 @@ export function sortBoardCards<T>(items: T[], mode: BoardSortMode, info: (item: 
 }
 
 // Where a card lands in a sorted (not custom-order) column: how many of the column's other cards
-// sort ahead of it — so its preview shows where the sort will actually put it.
+// sort ahead of it — so its preview shows where the sort will actually put it. One dragged in from another column
+// counts as having just come into this one.
 export function sortedBoardDropIndex<T extends { id: string }>(
   columnItems: T[],
   dragged: T,
   mode: BoardSortMode,
   info: (item: T) => BoardCardSortInfo,
 ): number {
-  const draggedInfo = info(dragged);
+  const fromElsewhere = !columnItems.some((item) => item.id === dragged.id);
+  const draggedInfo = { ...info(dragged), ...(fromElsewhere ? { enteredMs: Date.now() } : {}) };
   return columnItems.filter((item) => item.id !== dragged.id && compareBoardCards(mode, info(item), draggedInfo) < 0).length;
 }
 

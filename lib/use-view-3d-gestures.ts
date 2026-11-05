@@ -69,7 +69,17 @@ export function useView3dGestures({
   onTurn,
   onTap,
   startTurn = null,
-}: { onTurn?: (dx: number, dy: number) => void; onTap?: (clientX: number, clientY: number) => void; startTurn?: View3dTurnStart | null } = {}) {
+  leftTurns = false,
+  middlePans = false,
+}: {
+  onTurn?: (dx: number, dy: number) => void;
+  onTap?: (clientX: number, clientY: number) => void;
+  startTurn?: View3dTurnStart | null;
+  // The left button turns it, not moves it (an Orbit tool on). The middle button moves it, not turns it — Shift and the
+  // middle button turning it (as in CAD programs).
+  leftTurns?: boolean;
+  middlePans?: boolean;
+} = {}) {
   const [zoom, setZoom] = useState<View3dZoom>(NO_ZOOM);
   const [host, setHost] = useState<HTMLElement | null>(null);
   const coarse = useSyncExternalStore(subscribeCoarsePointer, readCoarsePointer, () => false);
@@ -136,7 +146,9 @@ export function useView3dGestures({
       // (The middle button: no autoscroll.)
       if (event.button === 1) event.preventDefault();
       event.currentTarget.setPointerCapture(event.pointerId);
-      startDrag(event, event.button === 0 ? "move" : "turn", event.button === 0);
+      const leftMode = leftTurns ? "turn" : "move";
+      const middleMode = middlePans && !event.shiftKey ? "move" : "turn";
+      startDrag(event, event.button === 0 ? leftMode : event.button === 1 ? middleMode : "turn", event.button === 0);
       return;
     }
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -216,6 +228,11 @@ export function useView3dGestures({
     zoom,
     zoomed: zoom.z !== 1 || zoom.x !== 0 || zoom.y !== 0,
     resetZoom: () => setZoom(NO_ZOOM),
+    // (About the view's middle.)
+    zoomBy: (factor: number) => {
+      const box = host?.getBoundingClientRect();
+      zoomAt((box?.width ?? 0) / 2, (box?.height ?? 0) / 2, factor);
+    },
     cursor: dragging === "turn" ? orbitCursorValue() : dragging === "move" ? "grabbing" : "grab",
     coarse,
   };

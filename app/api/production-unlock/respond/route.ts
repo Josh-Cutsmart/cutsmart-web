@@ -5,6 +5,7 @@ import { getProjectDocRefAdmin } from "@/lib/specs-share";
 import {
   answerUnlockRequest,
   displayNameIn,
+  markUnlockNotificationsAnswered,
   pendingUnlockRequests,
   productionUnlockApproverUids,
   unlockDurationHours,
@@ -12,10 +13,11 @@ import {
 } from "@/lib/production-unlock-server";
 import { addNotificationAndPush } from "@/lib/push-server";
 
-// Approve or deny a production unlock request (lib/production-unlock-server.ts). Two ways in:
-// - the notification's Approve/Deny buttons (public/sw.js): { token, decision } — the signed token names
+// Accept or decline a production unlock request (lib/production-unlock-server.ts). Two ways in:
+// - the phone or desktop notification's buttons (public/sw.js): { token, decision } — the signed token names
 //   the approver, project and request, since the button can't sign in;
-// - the project page: { companyId, projectId, requesterUid, decision } as the signed-in approver.
+// - in the app (the project page, or the notification in the top bar): { companyId, projectId, requesterUid, decision } as
+//   the signed-in approver, with requestedAtIso if it's answering one particular request (a notification).
 // Either way the approver must (still) be allowed to approve, and the request must still be pending.
 export async function POST(request: NextRequest) {
   if (!adminDb || !hasFirebaseAdminConfig) {
@@ -39,6 +41,7 @@ export async function POST(request: NextRequest) {
     companyId = String(body.companyId ?? "").trim();
     projectId = String(body.projectId ?? "").trim();
     requesterUid = String(body.requesterUid ?? "").trim();
+    tokenRequestedAtIso = String(body.requestedAtIso ?? "").trim();
     if (!companyId || !projectId || !requesterUid) return NextResponse.json({ ok: false, error: "missing-fields" }, { status: 400 });
     const access = await requireCompanyMember(request, companyId);
     if (!access) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
@@ -50,11 +53,12 @@ export async function POST(request: NextRequest) {
   if (!projectRef || !projectSnap?.exists) return NextResponse.json({ ok: false, error: "project-not-found" }, { status: 404 });
   const projectData = (projectSnap.data() ?? {}) as Record<string, unknown>;
   const pending = pendingUnlockRequests(projectData)[requesterUid];
-  // Already answered (by someone else, or from another device) — or a newer request than this token's.
+  // Already answered (by someone else, or from another device) — or a newer request than the one being answered.
   if (!pending || (tokenRequestedAtIso && pending.requestedAtIso !== tokenRequestedAtIso)) {
     return NextResponse.json({ ok: true, alreadyAnswered: true });
   }
-  if (approverUid === requesterUid || !(await productionUnlockApproverUids(companyId, projectData)).includes(approverUid)) {
+  const approverUids = await productionUnlockApproverUids(companyId, projectData);
+  if (approverUid === requesterUid || !approverUids.includes(approverUid)) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
 
@@ -68,15 +72,16 @@ export async function POST(request: NextRequest) {
   await addNotificationAndPush(
     requesterUid,
     {
-      title: approve ? "Production unlocked" : "Unlock request denied",
+      title: approve ? "Production unlocked" : "Unlock request declined",
       message: approve
-        ? `${approverName} approved your request — you can edit production on "${projectName}" for ${hours} hour${hours === 1 ? "" : "s"}.`
-        : `${approverName} denied your request to unlock production on "${projectName}".`,
+        ? `${approverName} accepted your request — you can edit production on "${projectName}" for ${hours} hour${hours === 1 ? "" : "s"}.`
+        : `${approverName} declined your request to unlock production on "${projectName}".`,
       type: "production_unlock_response",
       projectId,
       companyId,
     },
     new URL(request.url).origin,
   );
+  await markUnlockNotificationsAnswered(approverUids, { projectId, requesterUid, requestedAtIso: pending.requestedAtIso }, { decision, byName: approverName });
   return NextResponse.json({ ok: true, decision, expiryIso, requesterName: pending.name || "They", hours });
 }

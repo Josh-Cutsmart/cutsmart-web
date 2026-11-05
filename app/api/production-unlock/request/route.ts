@@ -4,6 +4,7 @@ import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
 import { listCompanyMemberAccess, requireCompanyMember } from "@/lib/api-company-access";
 import { getProjectDocRefAdmin } from "@/lib/specs-share";
 import { displayNameIn, productionUnlockApproverUids, signUnlockActionToken } from "@/lib/production-unlock-server";
+import { productionUnlockRequestUrl } from "@/lib/push-notification-types";
 import { sendPushToUser } from "@/lib/push-server";
 
 // "Request unlock" (the project page's Unlock Edit pop-up): records the signed-in user's request on the
@@ -45,6 +46,9 @@ export async function POST(request: NextRequest) {
           type: "production_unlock_request",
           projectId,
           companyId,
+          // So it can be answered from the notification itself.
+          unlockRequesterUid: access.uid,
+          unlockRequestedAtIso: requestedAtIso,
           read: false,
           createdAt: new Date(requestedAtIso),
           createdAtIso: requestedAtIso,
@@ -57,13 +61,13 @@ export async function POST(request: NextRequest) {
           {
             title: "Production unlock request",
             body: `${requesterName} asked to unlock production on "${projectName}".`,
-            url: `/projects/${encodeURIComponent(projectId)}?tab=production`,
+            url: productionUnlockRequestUrl(projectId, access.uid),
             tag: `unlock_${projectId}_${access.uid}_${ref.id}`,
             ...(token
               ? {
                   actions: [
-                    { action: "approve", title: "Approve" },
-                    { action: "deny", title: "Deny" },
+                    { action: "approve", title: "Accept" },
+                    { action: "deny", title: "Decline" },
                   ],
                   actionUrl: "/api/production-unlock/respond",
                   actionToken: token,

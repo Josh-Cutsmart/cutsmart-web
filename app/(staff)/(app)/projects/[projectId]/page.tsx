@@ -26,6 +26,8 @@ import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
 import { InitialMeasureCloseSummaryModal } from "@/components/initial-measure-close-summary-modal";
 import { ProductionCutlistCloseSummaryModal } from "@/components/production-cutlist-close-summary-modal";
 import { ProductionUnlockCountdown } from "@/components/production-unlock-countdown";
+import { ProjectPermissionsBoard } from "@/components/project-permissions-board";
+import { notifyProjectPermissionChange, projectPermissionChangeText, projectPermissionRows, projectSettingsWithPermission, type ProjectAccessValue } from "@/lib/project-permissions";
 import { ProtectedRoute } from "@/components/protected-route";
 import { isAnyPopupOpen } from "@/components/scroll-lock-watcher";
 import { QuoteDocumentEditor } from "@/components/quote-document-editor";
@@ -142,6 +144,7 @@ import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-co
 import { SubscribeBellIcon } from "@/components/subscribe-bell-icon";
 import { useFloatingNotice } from "@/components/floating-notice";
 import { useUndo } from "@/components/undo-bar";
+import { UNLOCK_ANSWERED_EVENT, type UnlockAnsweredDetail } from "@/lib/project-actions";
 import { notifyProjectAssignment, PROJECT_PATCHED_EVENT, projectAssignmentPatch, projectTagChangeActions, type ProjectPatchedDetail } from "@/lib/project-actions";
 import { AcceptQuoteOnBehalfModal, SubmitSpecsOnBehalfModal, type OnBehalfPrepared, type OnBehalfResult } from "@/components/client-on-behalf-modals";
 import { actedByLabel } from "@/lib/on-behalf";
@@ -149,7 +152,9 @@ import { bonusLockMessage, fetchBonusLock } from "@/lib/completed-projects";
 import { completionBonusSettingsFrom } from "@/lib/completion-bonus";
 import { useProjectCutlistRaw, type CutlistSyncState } from "@/lib/use-project-cutlist";
 import { useProjectOrderLive, type OrderLists } from "@/lib/use-project-order-live";
-import { alsoEditingText, useCutlistPresence, type CutlistPresencePerson } from "@/lib/use-cutlist-presence";
+import { cleanUnlockPassword, unlockPasswordFor } from "@/lib/production-unlock-password";
+import { useCutlistPresence, type CutlistPresencePerson } from "@/lib/use-cutlist-presence";
+import { CutlistPresenceBubbles } from "@/components/cutlist-presence-bubbles";
 import { mergeCutlistRows } from "@/lib/cutlist-merge";
 import { downloadCutlistExcel } from "@/lib/cutlist-excel";
 import { buildCutlistPrintPdf, drawShapeDrawingOps } from "@/lib/cutlist-print-pdf";
@@ -9156,11 +9161,6 @@ export default function ProjectDetailsPage() {
   const quotePreviewPageRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const quotePreviewScrollRef = useRef<HTMLDivElement | null>(null);
   const projectImageNameInputRef = useRef<HTMLInputElement | null>(null);
-  const projectPermissionScrollRefs = useRef<Record<"no_access" | "view" | "edit", HTMLDivElement | null>>({
-    no_access: null,
-    view: null,
-    edit: null,
-  });
   const [quoteProjectTextPagination, setQuoteProjectTextPagination] = useState<{ blockId: string; chunks: string[] } | null>(null);
   const [quoteContainerPagination, setQuoteContainerPagination] = useState<{
     pageEntries: Array<
@@ -9867,30 +9867,6 @@ export default function ProjectDetailsPage() {
       };
   const projectTabAreaBg = "transparent";
   const productionContainerHeaderBg = isDarkMode ? "rgba(255,255,255,0.04)" : "rgba(15,23,42,0.025)";
-  const [projectPermissionSearch, setProjectPermissionSearch] = useState<{
-    no_access: string;
-    view: string;
-    edit: string;
-  }>({
-    no_access: "",
-    view: "",
-    edit: "",
-  });
-  const [draggingProjectPermissionUid, setDraggingProjectPermissionUid] = useState("");
-  const [projectPermissionDropColumn, setProjectPermissionDropColumn] = useState<"" | "no_access" | "view" | "edit">("");
-  // On a phone (isPhoneViewport), Settings > Project Permissions' three columns are tabs in one row: this
-  // one open, taking the width; the others closed to a narrow strip. Edit to start with.
-  const [openProjectPermissionColumn, setOpenProjectPermissionColumn] = useState<"no_access" | "view" | "edit">("edit");
-  const projectPermissionDragGhost = useDragGhost();
-  const [projectPermissionColumnOverflow, setProjectPermissionColumnOverflow] = useState<{
-    no_access: boolean;
-    view: boolean;
-    edit: boolean;
-  }>({
-    no_access: false,
-    view: false,
-    edit: false,
-  });
   const [companyMembers, setCompanyMembers] = useState<CompanyMemberOption[]>([]);
   const [staffIconColorByUid, setStaffIconColorByUid] = useState<Record<string, string>>({});
   // Scoped to the project's OWN company, not necessarily the user's "active" one — a user can
@@ -9914,33 +9890,6 @@ export default function ProjectDetailsPage() {
   useCompanyFormats();
   const [companyDoc, setCompanyDoc] = useState<Record<string, unknown> | null>(null);
   const [companyDocLoaded, setCompanyDocLoaded] = useState(false);
-  useEffect(() => {
-    const measure = () => {
-      setProjectPermissionColumnOverflow((prev) => {
-        const next = {
-          no_access: false,
-          view: false,
-          edit: false,
-        };
-        (Object.keys(next) as Array<keyof typeof next>).forEach((key) => {
-          const element = projectPermissionScrollRefs.current[key];
-          next[key] = Boolean(element && element.scrollHeight > element.clientHeight + 1);
-        });
-        if (
-          prev.no_access === next.no_access &&
-          prev.view === next.view &&
-          prev.edit === next.edit
-        ) {
-          return prev;
-        }
-        return next;
-      });
-    };
-    measure();
-    if (typeof window === "undefined") return;
-    window.addEventListener("resize", measure);
-    return () => window.removeEventListener("resize", measure);
-  }, [projectPermissionSearch, draggingProjectPermissionUid, savingProjectPermissionUid, companyMembers.length, project?.projectSettings, openProjectPermissionColumn]);
   const [salesNav, setSalesNav] = useState<SalesNav>("overview");
   const [productionNav, setProductionNav] = useState<ProductionNav>("overview");
   const [projectManagementChecklistTemplates, setProjectManagementChecklistTemplates] = useState<ChecklistTemplate[]>([]);
@@ -11564,7 +11513,11 @@ export default function ProjectDetailsPage() {
   const canDeleteProject = generalAccess.edit;
   const canEditTags = generalAccess.edit;
   const productionUnlockRemainingSeconds = getProductionUnlockRemainingSeconds(project, user?.uid);
-  const productionUnlockSuffix = toStr(companyDoc?.productionUnlockPasswordSuffix);
+  const productionUnlockSettings = {
+    mode: companyDoc?.productionUnlockPasswordPrefix,
+    word: companyDoc?.productionUnlockPasswordWord,
+    code: companyDoc?.productionUnlockPasswordSuffix,
+  };
   const productionUnlockDurationHours = Math.max(
     1,
     Math.min(168, Number(toStr(companyDoc?.productionUnlockDurationHours, "6")) || 6),
@@ -12842,8 +12795,8 @@ export default function ProjectDetailsPage() {
     // job's Boards pop-up: its boards' sheet counts.)
     resolvedTab === "production" || isProductionPrintModalOpen || Boolean(searchParams.get("part")) || isSmallJobBoardsOpen,
   );
-  // Who else has the cutlist open right now (lib/use-cutlist-presence.ts): "Anna is also editing", in its top bar. Only
-  // people who can edit it count themselves in; anyone with it open sees them.
+  // Who else has the cutlist open right now (lib/use-cutlist-presence.ts), in its top bar: those who can edit it under
+  // Editing, those who can only look (still locked, say) under Viewing.
   const cutlistPresenceMe = useMemo(
     () =>
       user?.uid
@@ -12909,54 +12862,19 @@ export default function ProjectDetailsPage() {
   // How wide each cutlist's list is — so its columns keep their usual widths whenever they fit (the list's tables).
   const [cutlistListWrapRef, cutlistListWrapWidth] = useMeasuredWidth();
   const [initialCutlistListWrapRef, initialCutlistListWrapWidth] = useMeasuredWidth();
-  // In its top bar, before the save chip: a pulsing green dot (as the Quote's Live Quote), then each of them — their
-  // emblem, in their colour (as the project's Creator / Assigned), and their name (first name only on a phone or
-  // tablet). Two at most; more, as "+N".
-  const renderCutlistAlsoEditing = (people: CutlistPresencePerson[], compact: boolean) => {
-    const text = alsoEditingText(people.map((person) => person.name));
-    if (!text) return null;
-    const shown = people.slice(0, 2);
-    const more = people.length - shown.length;
-    const colorOf = (uid: string) =>
-      staffPickerMembers.find((member) => member.uid === uid)?.color ||
-      toStr((companyDoc as Record<string, unknown> | null)?.themeColor) ||
-      "#7D99B3";
-    return (
-      <span
-        role="status"
-        title={text}
-        aria-label={text}
-        className={`glass-bar-pop inline-flex ${compact ? "h-8" : "h-9"} min-w-0 shrink-0 items-center gap-2 rounded-full border pl-3 pr-2.5 text-[12px] font-medium normal-case tracking-normal`}
-        style={{
-          borderColor: "var(--glass-border)",
-          backgroundColor: "var(--glass-modal-bg)",
-          backdropFilter: "blur(16px) saturate(200%)",
-          WebkitBackdropFilter: "blur(16px) saturate(200%)",
-          boxShadow: "inset 0 1px 0 var(--glass-highlight), var(--shadow-glass)",
-          color: "var(--text-main)",
-        }}
-      >
-        <span className="relative flex h-2.5 w-2.5 shrink-0">
-          <span className="absolute inline-flex h-full w-full animate-ping rounded-full opacity-75" style={{ backgroundColor: "#22C55E" }} />
-          <span className="relative inline-flex h-2.5 w-2.5 rounded-full" style={{ backgroundColor: "#16A34A" }} />
-        </span>
-        {shown.map((person) => (
-          <span key={person.uid} className="inline-flex min-w-0 items-center gap-1.5">
-            <span
-              className="glass-shine inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white"
-              style={glassShineStyle(colorOf(person.uid))}
-            >
-              {initials(person.name)}
-            </span>
-            <span className={`truncate ${compact ? "max-w-[72px]" : "max-w-[160px]"}`}>
-              {compact ? person.name.split(/\s+/)[0] : person.name}
-            </span>
-          </span>
-        ))}
-        {more > 0 ? <span className="shrink-0" style={{ color: "var(--text-muted)" }}>+{more}</span> : null}
-      </span>
-    );
-  };
+  // In its top bar, before the save chip (components/cutlist-presence-bubbles.tsx).
+  const renderCutlistAlsoHere = (people: CutlistPresencePerson[], compact: boolean) => (
+    <CutlistPresenceBubbles
+      people={people}
+      compact={compact}
+      initialsOf={initials}
+      colorOf={(uid) =>
+        staffPickerMembers.find((member) => member.uid === uid)?.color ||
+        toStr((companyDoc as Record<string, unknown> | null)?.themeColor) ||
+        "#7D99B3"
+      }
+    />
+  );
   const isOnSalesTab = resolvedTab === "sales" && salesAccess.view;
   const isOnQuoteGridPage = isOnSalesTab && salesNav === "quote";
   const isOnSpecsSheetPage = isOnSalesTab && salesNav === "specifications";
@@ -22504,6 +22422,11 @@ export default function ProjectDetailsPage() {
     })
       .then((result) => {
         if (cancelled) return;
+        // A card they aren't shown: left alone, and no Create Contact, as the client already has one.
+        if (result?.hidden) {
+          setProjectContact(undefined);
+          return;
+        }
         setProjectContact(result?.contact ?? null);
         setProjectContactPersisted(Boolean(result?.persisted));
         // Link the project to its card by the card's own id (project.clientId), so from now on the two
@@ -23022,34 +22945,7 @@ export default function ProjectDetailsPage() {
     const targetUid = String(uidValue || "").trim();
     if (!targetUid) return;
 
-    const normalizedAccess = String(accessValue || "").trim().toLowerCase();
-    const nextAccess =
-      normalizedAccess === "edit" ? "edit" : normalizedAccess === "view" ? "view" : "";
-
-    const currentSettings = ((project.projectSettings ?? {}) as Record<string, unknown>) || {};
-    const rawMap =
-      (currentSettings.projectPermissionsByUid as Record<string, unknown> | undefined) ??
-      (currentSettings.userAccessByUid as Record<string, unknown> | undefined) ??
-      (currentSettings.memberAccessByUid as Record<string, unknown> | undefined) ??
-      {};
-    const nextMap: Record<string, string> = {};
-    for (const [rawUid, rawPermission] of Object.entries(rawMap)) {
-      const cleanUid = String(rawUid || "").trim();
-      const cleanPermission = String(rawPermission || "").trim().toLowerCase();
-      if (!cleanUid) continue;
-      if (cleanPermission === "view" || cleanPermission === "edit") {
-        nextMap[cleanUid] = cleanPermission;
-      }
-    }
-    if (nextAccess) nextMap[targetUid] = nextAccess;
-    else delete nextMap[targetUid];
-
-    const nextProjectSettings = {
-      ...currentSettings,
-      projectPermissionsByUid: nextMap,
-    };
-    delete (nextProjectSettings as Record<string, unknown>).userAccessByUid;
-    delete (nextProjectSettings as Record<string, unknown>).memberAccessByUid;
+    const { settings: nextProjectSettings, oldAccess, nextAccess } = projectSettingsWithPermission(project, targetUid, accessValue);
 
     setSavingProjectPermissionUid(targetUid);
     const ok = await updateProjectPatch(project, {
@@ -23064,42 +22960,15 @@ export default function ProjectDetailsPage() {
             }
           : prev,
       );
-      const accessLabel = (value: string) => (value === "edit" ? "Edit" : value === "view" ? "View" : "No Access");
       const targetMember = companyMembers.find((member) => String(member.uid || "").trim() === targetUid);
-      const oldAccess = String(rawMap[targetUid] || "").trim().toLowerCase();
-      logProjectChange(
-        `Permissions — ${targetMember?.displayName || "Staff"}: ${accessLabel(oldAccess)} → ${accessLabel(nextAccess)}`,
-      );
-      // Given access (or it changed between viewer and editor): let them know — not when it's taken away.
-      if (nextAccess && nextAccess !== oldAccess && targetUid !== user?.uid) {
-        const role = nextAccess === "edit" ? "an editor" : "a viewer";
-        void addUserNotification(targetUid, {
-          title: oldAccess ? "Project access changed" : "Added to a project",
-          message: oldAccess
-            ? `${user?.displayName || "A teammate"} made you ${role} on "${project.name || "a project"}".`
-            : `${user?.displayName || "A teammate"} added you to "${project.name || "a project"}" as ${role}.`,
-          type: "project_access",
-          projectId: project.id,
-          companyId: project.companyId,
-        });
-      }
+      logProjectChange(projectPermissionChangeText(targetMember?.displayName ?? "", oldAccess, nextAccess));
+      notifyProjectPermissionChange(project, targetUid, oldAccess, nextAccess, user?.uid, user?.displayName ?? "");
       setLockMessage("");
     } else {
       setLockMessage("Could not save project permissions.");
     }
     setSavingProjectPermissionUid("");
   };
-  const onDropProjectPermissionUser = async (accessValue: "no_access" | "view" | "edit") => {
-    const draggedUid = String(draggingProjectPermissionUid || "").trim();
-    if (!draggedUid) return;
-    const draggedRow = permissionRows.find((row) => row.uid === draggedUid);
-    setProjectPermissionDropColumn("");
-    setDraggingProjectPermissionUid("");
-    projectPermissionDragGhost.end();
-    if (!draggedRow || draggedRow.isLocked || draggedRow.accessValue === accessValue) return;
-    await onChangeProjectPermissionUser(draggedUid, accessValue);
-  };
-
   const commitClientDetails = async () => {
     if (!project || !generalAccess.edit) return;
     const patch: Partial<Project> = {};
@@ -24323,8 +24192,8 @@ export default function ProjectDetailsPage() {
     if (!project || !user?.uid || isGrantingUnlock) {
       return;
     }
-    const expectedPassword = `${toStr(project.name)}${productionUnlockSuffix}`.trim().toLowerCase();
-    const enteredPassword = String(unlockEditPassword || "").trim().toLowerCase();
+    const expectedPassword = unlockPasswordFor(productionUnlockSettings, project);
+    const enteredPassword = cleanUnlockPassword(unlockEditPassword);
     if (!enteredPassword) {
       setUnlockEditError("Enter the unlock password.");
       return;
@@ -36623,7 +36492,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   className="h-8 rounded-[9px] border px-3 text-[12px] font-semibold hover:brightness-95 disabled:opacity-55"
                   style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                 >
-                  Deny
+                  Decline
                 </button>
                 <button
                   type="button"
@@ -36632,7 +36501,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   className="h-8 rounded-[9px] border px-3 text-[12px] font-semibold text-white hover:brightness-95 disabled:opacity-55"
                   style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
                 >
-                  {isAnswering ? "Saving..." : `Approve (${productionUnlockDurationHours}h)`}
+                  {isAnswering ? "Saving..." : `Accept (${productionUnlockDurationHours}h)`}
                 </button>
               </div>
             </div>
@@ -38464,8 +38333,30 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       setProject((prev) => (prev && prev.id === projectId ? ({ ...prev, ...patch } as Project) : prev));
       if (Array.isArray(patch.tags)) setProjectTags(patch.tags.slice(0, 5));
     };
+    // An unlock request answered from its notification (the top bar's): off the banner here, and their unlock noted.
+    const onUnlockAnswered = (event: Event) => {
+      const { projectId, requesterUid, expiryIso } = (event as CustomEvent<UnlockAnsweredDetail>).detail ?? {};
+      if (projectId !== openProjectId || !requesterUid) return;
+      setProject((prev) => {
+        if (!prev || prev.id !== projectId) return prev;
+        const requests = { ...(prev.productionUnlockRequests ?? {}) };
+        delete requests[requesterUid];
+        const settings = (prev.projectSettings ?? {}) as Record<string, unknown>;
+        return {
+          ...prev,
+          productionUnlockRequests: requests,
+          projectSettings: expiryIso
+            ? { ...settings, productionTempEdit: { ...((settings.productionTempEdit ?? {}) as Record<string, unknown>), [requesterUid]: expiryIso } }
+            : settings,
+        };
+      });
+    };
     window.addEventListener(PROJECT_PATCHED_EVENT, onProjectPatched);
-    return () => window.removeEventListener(PROJECT_PATCHED_EVENT, onProjectPatched);
+    window.addEventListener(UNLOCK_ANSWERED_EVENT, onUnlockAnswered);
+    return () => {
+      window.removeEventListener(PROJECT_PATCHED_EVENT, onProjectPatched);
+      window.removeEventListener(UNLOCK_ANSWERED_EVENT, onUnlockAnswered);
+    };
   }, [openProjectId]);
   useEffect(() => {
     if (!projectUnavailable) return;
@@ -41881,83 +41772,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     </>
   );
 
-  const permissionRows = (() => {
-    const currentSettings = ((project?.projectSettings ?? {}) as Record<string, unknown>) || {};
-    const rawMap =
-      (currentSettings.projectPermissionsByUid as Record<string, unknown> | undefined) ??
-      (currentSettings.userAccessByUid as Record<string, unknown> | undefined) ??
-      (currentSettings.memberAccessByUid as Record<string, unknown> | undefined) ??
-      {};
-    const normalizedMap = new Map<string, "view" | "edit">();
-    for (const [rawUid, rawPermission] of Object.entries(rawMap)) {
-      const cleanUid = String(rawUid || "").trim();
-      const cleanPermission = String(rawPermission || "").trim().toLowerCase();
-      if (!cleanUid) continue;
-      if (cleanPermission === "view" || cleanPermission === "edit") {
-        normalizedMap.set(cleanUid, cleanPermission);
-      }
-    }
-
-    const rowsSource = companyMembers.length
-      ? companyMembers.map((member) => ({
-          uid: member.uid,
-          displayName: member.displayName,
-          role: member.roleId || member.role,
-        }))
-      : [
-          {
-            uid: user?.uid ?? "current",
-            displayName: user?.displayName || project?.createdByName || "Current User",
-            role: effectiveRole,
-          },
-        ];
-
-    const seen = new Set<string>();
-    return rowsSource
-      .filter((row) => {
-        const uid = String(row.uid || "").trim();
-        if (!uid || seen.has(uid)) return false;
-        seen.add(uid);
-        return true;
-      })
-      .map((row) => {
-        const rowUid = String(row.uid || "").trim();
-        const rowRole = String(row.role || "").trim().toLowerCase();
-        const isCreatorUser =
-          String(project?.createdByUid ?? "").trim() !== "" &&
-          rowUid === String(project?.createdByUid ?? "").trim();
-        const isAssignedUser =
-          String(project?.assignedToUid ?? "").trim() !== "" &&
-          rowUid === String(project?.assignedToUid ?? "").trim();
-        const isPrivilegedRole = rowRole === "owner" || rowRole === "admin";
-        const directAccess = normalizedMap.get(rowUid) ?? "";
-        const accessValue = isCreatorUser || isAssignedUser || isPrivilegedRole ? "edit" : directAccess || "no_access";
-        const accessLabel = accessValue === "edit" ? "Edit" : accessValue === "view" ? "View" : "No Access";
-        return {
-          ...row,
-          accessValue,
-          accessLabel,
-          isLocked: isCreatorUser || isAssignedUser || isPrivilegedRole,
-        };
-      });
-  })();
-  const projectPermissionColumns = [
-    { key: "no_access", label: "No Access" },
-    { key: "view", label: "View" },
-    { key: "edit", label: "Edit" },
-  ].map((column) => {
-    const searchValue = String(projectPermissionSearch[column.key as "no_access" | "view" | "edit"] || "").trim().toLowerCase();
-    const rows = permissionRows.filter((row) => {
-      if (row.accessValue !== column.key) return false;
-      if (!searchValue) return true;
-      return String(row.displayName || "").toLowerCase().includes(searchValue);
-    });
-    return {
-      ...column,
-      searchValue,
-      rows,
-    };
-  });
+  const permissionRows = projectPermissionRows(
+    project,
+    companyMembers.length
+      ? companyMembers.map((member) => ({ uid: member.uid, displayName: member.displayName, role: member.roleId || member.role }))
+      : [{ uid: user?.uid ?? "current", displayName: user?.displayName || project?.createdByName || "Current User", role: effectiveRole }],
+  );
   const selectedNestingSheet = (() => {
     if (!nestingSheetPreview) return null;
     const group = nestingBoardLayouts.find((g) => g.boardKey === nestingSheetPreview.boardKey);
@@ -47209,7 +47029,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       tallDoorGap: gapOf(projectGapAllowancesDraft.tallVerticalGapDoorsPanels, companyGaps.tallVerticalGapDoorsPanels, 2),
       drawerGap: gapOf(projectGapAllowancesDraft.baseHorizontalGapNormalHandles, companyGaps.baseHorizontalGapNormalHandles, 2),
       benchGap: gapOf(projectGapAllowancesDraft.baseBelowBenchToTopOfDoorDrawer, companyGaps.baseBelowBenchToTopOfDoorDrawer, 4),
-      tallTopGap: gapOf(projectGapAllowancesDraft.tallTopOfDoorToTopNoScribers, companyGaps.tallTopOfDoorToTopNoScribers, 2),
+      // (Top of door to top of cabinet, tall and wall ones: with Cabinetry's Top Scribers ticked, its top-scribers gap.)
+      tallTopGap: productionForm.cabinetry.topScribers
+        ? gapOf(projectGapAllowancesDraft.tallTopOfDoorToTopWithScribers, companyGaps.tallTopOfDoorToTopWithScribers, 2)
+        : gapOf(projectGapAllowancesDraft.tallTopOfDoorToTopNoScribers, companyGaps.tallTopOfDoorToTopNoScribers, 2),
       baseCabHeight: toNum(productionForm.cabinetry.baseCabHeight) || 720,
       tallCabHeight: toNum(productionForm.cabinetry.tallCabHeight) || 2100,
     };
@@ -47776,7 +47599,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              {renderCutlistAlsoEditing(orderAlsoEditing, isCompactProjectViewport)}
+              {renderCutlistAlsoHere(orderAlsoEditing, isCompactProjectViewport)}
               {renderOrderSaveStatus(!isCompactProjectViewport)}
               {renderSaveAndBackButton(() => void onSaveAndBackFromOrder(), isCompactProjectViewport)}
             </div>
@@ -48638,7 +48461,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                {renderCutlistAlsoEditing(initialAlsoEditing, true)}
+                {renderCutlistAlsoHere(initialAlsoEditing, true)}
                 {renderCutlistSaveStatus("initialMeasure", false)}
                 {renderCutlistPrintButton(false, "initialMeasure")}
                 {renderCutlistExcelButton("initialMeasure", false)}
@@ -48856,7 +48679,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-            {renderCutlistAlsoEditing(initialAlsoEditing, isCompactProjectViewport)}
+            {renderCutlistAlsoHere(initialAlsoEditing, isCompactProjectViewport)}
             {renderCutlistSaveStatus("initialMeasure", !isCompactProjectViewport)}
             {renderCutlistPrintButton(!isCompactProjectViewport, "initialMeasure")}
             {renderCutlistExcelButton("initialMeasure", !isCompactProjectViewport)}
@@ -51271,7 +51094,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                {renderCutlistAlsoEditing(productionAlsoEditing, true)}
+                {renderCutlistAlsoHere(productionAlsoEditing, true)}
                 {renderCutlistSaveStatus("production", false)}
                 {renderCutlistPrintButton(false)}
                 {renderCutlistExcelButton("production", false)}
@@ -51775,7 +51598,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              {renderCutlistAlsoEditing(productionAlsoEditing, isCompactProjectViewport)}
+              {renderCutlistAlsoHere(productionAlsoEditing, isCompactProjectViewport)}
               {renderCutlistSaveStatus("production", true)}
               {renderCutlistPrintButton(true)}
               {renderCutlistExcelButton("production", true)}
@@ -68661,207 +68484,48 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     <CardTitle className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Project Permissions</CardTitle>
                   </CardHeader>
                 <CardContent className="px-0 pt-3 text-[12px]">
-                  <DragGhostLayer controller={projectPermissionDragGhost} />
-                  <div className={isPhoneViewport ? "flex" : "grid grid-cols-3 gap-0"}>
-                    {projectPermissionColumns.map((column) => {
-                      const columnKey = column.key as "no_access" | "view" | "edit";
-                      const isDropActive = projectPermissionDropColumn === column.key;
-                      // Phones: tabs in one row (openProjectPermissionColumn). The open one takes the width;
-                      // the others close to a narrow strip with just their name and count, sliding aside —
-                      // tap one to slide it open. A dragged card can be dropped straight onto a closed one.
-                      // Tablets and up: the three columns side by side.
-                      const asTab = isPhoneViewport;
-                      const isClosedTab = asTab && openProjectPermissionColumn !== columnKey;
+                  <ProjectPermissionsBoard
+                    rows={permissionRows}
+                    canEdit={settingsAccess.edit}
+                    savingUid={savingProjectPermissionUid}
+                    onChange={(uid: string, access: ProjectAccessValue) => void onChangeProjectPermissionUser(uid, access)}
+                    colorOf={(uid) => {
+                      const member = companyMembers.find((entry) => String(entry.uid || "").trim() === uid);
                       return (
-                        <div
-                          key={column.key}
-                          onDragOver={(event) => {
-                            if (!settingsAccess.edit || !draggingProjectPermissionUid) return;
-                            event.preventDefault();
-                            if (projectPermissionDropColumn !== column.key) {
-                              setProjectPermissionDropColumn(column.key as "no_access" | "view" | "edit");
-                            }
-                          }}
-                          onDrop={(event) => {
-                            if (!settingsAccess.edit) return;
-                            event.preventDefault();
-                            void onDropProjectPermissionUser(column.key as "no_access" | "view" | "edit");
-                          }}
-                          className={`flex h-[468px] flex-col transition ${asTab ? "min-w-0 overflow-hidden" : ""} ${isClosedTab ? "px-0 py-3" : "px-4 py-3"}`}
-                          style={{
-                            backgroundColor: isDropActive ? (isDarkMode ? "#1f2d40" : "#EEF4FF") : "transparent",
-                            borderRight:
-                              column.key !== "edit"
-                                ? `1px solid ${projectPalette.border}`
-                                : undefined,
-                            ...(asTab
-                              ? {
-                                  flexGrow: isClosedTab ? 0 : 1,
-                                  flexShrink: 0,
-                                  flexBasis: 52,
-                                  transition: "flex-grow 320ms cubic-bezier(0.22, 1, 0.36, 1), background-color 150ms ease",
-                                }
-                              : {}),
-                          }}
-                        >
-                          {isClosedTab ? (
-                            <button
-                              type="button"
-                              onClick={() => setOpenProjectPermissionColumn(columnKey)}
-                              className="flex h-full w-full flex-col items-center gap-3"
-                              aria-label={`${column.label} (${column.rows.length})`}
-                            >
-                              <span className="rounded-full border px-2 py-[2px] text-[11px] font-bold" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.textMuted }}>
-                                {column.rows.length}
-                              </span>
-                              <span
-                                className="whitespace-nowrap text-[12px] font-medium uppercase"
-                                style={{ writingMode: "vertical-rl", letterSpacing: "0.12em", color: "var(--text-main)" }}
-                              >
-                                {column.label}
-                              </span>
-                            </button>
-                          ) : (
-                          <>
-                          <div className="mb-3 flex items-center justify-between gap-2">
-                            <p className="text-[12px] font-medium uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>{column.label}</p>
-                            <span className="rounded-full border px-2 py-[2px] text-[11px] font-bold" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.textMuted }}>
-                              {column.rows.length}
-                            </span>
-                          </div>
-                          {projectPermissionColumnOverflow[column.key as "no_access" | "view" | "edit"] ? (
-                            <input
-                              value={projectPermissionSearch[column.key as "no_access" | "view" | "edit"]}
-                              onChange={(e) =>
-                                setProjectPermissionSearch((prev) => ({
-                                  ...prev,
-                                  [column.key]: e.target.value,
-                                }))
-                              }
-                              placeholder="Search staff"
-                              className="mb-3 h-9 w-full rounded-[10px] border px-3 text-[12px] outline-none"
-                              style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
-                            />
-                          ) : null}
-                          <div
-                            ref={(node) => {
-                              projectPermissionScrollRefs.current[column.key as "no_access" | "view" | "edit"] = node;
-                            }}
-                            className="min-h-0 flex-1 overflow-y-auto"
-                          >
-                            <div className="space-y-2">
-                            {column.rows.map((row) => {
-                              const isDragging = draggingProjectPermissionUid === row.uid;
-                              const isSaving = savingProjectPermissionUid === row.uid;
-                              const draggable = settingsAccess.edit && !row.isLocked && !isSaving;
-                              const name = toStr(row.displayName, "CU");
-                              const parts = name.split(/\s+/).filter(Boolean);
-                              const initials =
-                                parts.length >= 2
-                                  ? `${parts[0]?.[0] ?? ""}${parts[1]?.[0] ?? ""}`.toUpperCase()
-                                  : `${parts[0]?.[0] ?? name[0] ?? ""}`.toUpperCase();
-                              const member = companyMembers.find((entry) => String(entry.uid || "").trim() === row.uid);
-                              const iconColor =
-                                toStr(staffIconColorByUid[row.uid]) ||
-                                toStr(member?.badgeColor) ||
-                                toStr(member?.userColor) ||
-                                toStr((companyDoc as Record<string, unknown> | null)?.themeColor) ||
-                                "#7D99B3";
-                              const rowElId = `project-permission-row-${row.uid}`;
-                              return (
-                                <div
-                                  key={row.uid}
-                                  id={rowElId}
-                                  draggable={draggable}
-                                  onDragStart={(event) => {
-                                    if (!draggable) return;
-                                    setDraggingProjectPermissionUid(row.uid);
-                                    setProjectPermissionDropColumn(column.key as "no_access" | "view" | "edit");
-                                    event.dataTransfer.effectAllowed = "move";
-                                    event.dataTransfer.setData("text/plain", row.uid);
-                                    if (projectPermissionDragGhost.transparentImageRef.current) {
-                                      event.dataTransfer.setDragImage(projectPermissionDragGhost.transparentImageRef.current, 0, 0);
-                                    }
-                                    projectPermissionDragGhost.spawn(event, rowElId, { label: name, color: iconColor });
-                                  }}
-                                  onDragEnd={() => {
-                                    setDraggingProjectPermissionUid("");
-                                    setProjectPermissionDropColumn("");
-                                    projectPermissionDragGhost.end();
-                                  }}
-                                  className={`rounded-[12px] border px-3 py-2 shadow-[0_1px_2px_rgba(16,24,40,0.04)] transition ${
-                                    draggable ? "cursor-grab active:cursor-grabbing" : ""
-                                  } ${isDragging ? "opacity-60" : ""}`}
-                                  style={{
-                                    borderColor: isDragging ? "#8FB4FF" : projectPalette.border,
-                                    backgroundColor: row.isLocked ? projectPalette.panelMuted : projectPalette.panelBg,
-                                  }}
-                                >
-                                  <div className="flex items-center justify-between gap-3">
-                                    <div className="min-w-0 flex items-center gap-2">
-                                      <div
-                                        className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-extrabold text-white"
-                                        style={{ backgroundColor: iconColor }}
-                                        title="User icon"
-                                      >
-                                        {initials || "CU"}
-                                      </div>
-                                      <div className="min-w-0 flex items-center gap-2">
-                                        <p className="min-w-0 truncate font-semibold" style={{ color: projectPalette.textSoft }}>{row.displayName}</p>
-                                        {productionUnlockUiReady && (
-                                          <ProductionUnlockCountdown project={project} uid={row.uid}>
-                                            {(unlockLabel) => (
-                                              <>
-                                                <span className="shrink-0 rounded-full border px-2 py-[2px] text-[10px] font-bold uppercase tracking-[0.6px]" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted, color: projectPalette.textSoft }}>
-                                                  {unlockLabel}
-                                                </span>
-                                                {canManageProductionTempUnlocks && (
-                                                  <button
-                                                    type="button"
-                                                    onClick={() => void onRemoveProductionTempUnlock(row.uid, row.displayName)}
-                                                    className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-[#F1B8B8] bg-[#FCEAEA] text-[#B42318] hover:bg-[#F9DCDC]"
-                                                    title="Remove temporary production edit access"
-                                                    aria-label={`Remove temporary production edit access for ${row.displayName}`}
-                                                  >
-                                                    <X size={11} strokeWidth={2.6} />
-                                                  </button>
-                                                )}
-                                              </>
-                                            )}
-                                          </ProductionUnlockCountdown>
-                                        )}
-                                      </div>
-                                    </div>
-                                    {row.isLocked ? (
-                                      <span className="shrink-0 rounded-full border px-2 py-[2px] text-[10px] font-bold uppercase tracking-[0.6px]" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted, color: projectPalette.textMuted }}>
-                                        Locked
-                                      </span>
-                                    ) : null}
-                                  </div>
-                                </div>
-                              );
-                            })}
-                            {isDropActive && draggingProjectPermissionUid ? (
-                              <div className="rounded-[12px] border border-dashed border-[#8FB4FF] bg-[#EAF1FF] px-3 py-2 shadow-[inset_0_0_0_1px_rgba(143,180,255,0.18)]">
-                                <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.6px] text-[#24589A]">
-                                  <span className="inline-block h-2 w-2 rounded-full bg-[#5B8DEF]" />
-                                  Drop Here
-                                </div>
-                              </div>
-                            ) : null}
-                            {column.rows.length === 0 ? (
-                              <div className="rounded-[12px] border border-dashed" style={{ borderColor: projectPalette.border }}>
-                                <EmptyState compact icon={<Users size={16} />} title="No staff in this column" />
-                              </div>
-                            ) : null}
-                            </div>
-                          </div>
-                          </>
-                          )}
-                        </div>
+                        toStr(staffIconColorByUid[uid]) ||
+                        toStr(member?.badgeColor) ||
+                        toStr(member?.userColor) ||
+                        toStr((companyDoc as Record<string, unknown> | null)?.themeColor) ||
+                        "#7D99B3"
                       );
-                    })}
-                  </div>
+                    }}
+                    palette={projectPalette}
+                    isPhone={isPhoneViewport}
+                    rowExtras={(row) =>
+                      productionUnlockUiReady ? (
+                        <ProductionUnlockCountdown project={project} uid={row.uid}>
+                          {(unlockLabel) => (
+                            <>
+                              <span className="shrink-0 rounded-full border px-2 py-[2px] text-[10px] font-bold uppercase tracking-[0.6px]" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted, color: projectPalette.textSoft }}>
+                                {unlockLabel}
+                              </span>
+                              {canManageProductionTempUnlocks && (
+                                <button
+                                  type="button"
+                                  onClick={() => void onRemoveProductionTempUnlock(row.uid, row.displayName)}
+                                  className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-[#F1B8B8] bg-[#FCEAEA] text-[#B42318] hover:bg-[#F9DCDC]"
+                                  title="Remove temporary production edit access"
+                                  aria-label={`Remove temporary production edit access for ${row.displayName}`}
+                                >
+                                  <X size={11} strokeWidth={2.6} />
+                                </button>
+                              )}
+                            </>
+                          )}
+                        </ProductionUnlockCountdown>
+                      ) : null
+                    }
+                  />
                 </CardContent>
               </section>
 

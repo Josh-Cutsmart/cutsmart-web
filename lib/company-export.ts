@@ -9,7 +9,7 @@ import { db } from "@/lib/firebase";
 import { collection, doc, getDoc, getDocs } from "@/lib/firestore-client";
 
 // Under the company, each one's own list.
-const COMPANY_COLLECTIONS = ["memberships", "clients", "leads", "calendarEvents", "completedProjects", "companyStats"] as const;
+const COMPANY_COLLECTIONS = ["memberships", "clients", "leads", "calendarEvents", "completedProjects", "companyStats", "automationRuns"] as const;
 // Under each project.
 const PROJECT_COLLECTIONS = [
   "quoteGridVersions",

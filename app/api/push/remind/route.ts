@@ -5,7 +5,8 @@ import { NOTIFICATION_REMINDERS_COLLECTION } from "@/lib/push-server";
 
 // "Remind me in…" on one of your own notifications (the top bar's Notifications menu): the scheduled job
 // sends it to your phone/desktop again at that time (flushDueNotificationReminders in lib/push-server.ts).
-// The notification itself is hidden until then by the app (snoozeUserNotification in lib/firestore-data.ts).
+// The notification itself stays in the list, and comes back as new then, in the app (snoozeUserNotification in
+// lib/firestore-data.ts).
 // Asking again for the same notification moves its reminder.
 
 const MIN_AHEAD_MS = 60 * 1000;

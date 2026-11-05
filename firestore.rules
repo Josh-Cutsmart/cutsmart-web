@@ -261,6 +261,12 @@ service cloud.firestore {
         }
       }
 
+      // Column automations' log (Company Settings › Automations): added to as they run, never changed.
+      match /automationRuns/{runId} {
+        allow read, create: if isCompanyMember(companyId);
+        allow update, delete: if false;
+      }
+
       // Invites: used by Staff & Permissions "Add Staff" and Join Company invite flow
       match /invites/{inviteId} {
         allow create, update: if isCompanyMember(companyId);
