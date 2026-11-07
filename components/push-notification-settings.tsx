@@ -466,7 +466,7 @@ export function PushNotificationSettings({
       if (next) {
         setStatus(await enablePushOnThisDevice());
       } else {
-        await disablePushOnThisDevice();
+        await disablePushOnThisDevice({ byUser: true });
         setStatus("off");
       }
     } finally {

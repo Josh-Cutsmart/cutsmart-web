@@ -58,54 +58,54 @@
 
 # Someone is given access to a project for the first time. {role} is "an editor" or "a viewer".
 [project_access.added]
-title: Project
+title: Added to project
 message: {person} added you to "{project}" as {role}.
 
 # Someone's access changes between viewer and editor.
 [project_access.changed]
-title: Project
+title: Project access change
 message: {person} made you {role} on "{project}".
 
 [project_assigned]
-title: Project
+title: assigned to project
 message: You were assigned to "{project}".
 
 # A column automation assigned it.
 [project_assigned.automation]
-title: Project
+title: assigned to project
 message: "{project}" was assigned to you.
 
 [project_unassigned]
-title: Project
+title: unassigned from project
 message: You were removed from "{project}".
 
 # The buttons only show on Android and computers.
 [production_unlock_request]
-title: Project
+title: Project unlock request
 message: {person} asked to unlock production on "{project}".
 button_accept: Accept
 button_decline: Decline
 
 # {hours} reads like "2 hours".
 [production_unlock_response.accepted]
-title: Project
+title: Project request accepted
 message: {person} accepted your request — you can edit production on "{project}" for {hours}.
 
 [production_unlock_response.declined]
-title: Project
+title: Project request declined
 message: {person} declined your request to unlock production on "{project}".
 
 # What shows after tapping Accept or Decline on the notification itself. {person} asked, {hours} reads like "2 hours".
 [production_unlock_tap.accepted]
-title: Project
+title: Project request accepted
 message: Accepted — {person} can edit production for {hours}.
 
 [production_unlock_tap.declined]
-title: Project
+title: Project request declined
 message: Declined — {person} has been told.
 
 [production_unlock_tap.already_answered]
-title: Project
+title: Project request already answered
 message: Someone has already answered this request.
 
 

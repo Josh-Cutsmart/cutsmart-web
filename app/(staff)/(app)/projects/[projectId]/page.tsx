@@ -13003,6 +13003,7 @@ export default function ProjectDetailsPage() {
   }, [projectLive.docPath]);
   // Who else is on this page of the project (lib/use-cutlist-presence.ts), for the pages the cutlist's and Order's don't
   // cover: each page its own, by the tab and what's open in it.
+  // (Each its own name, and none the same as the cutlists' or Order's above: "production" is the Production cutlist's.)
   const pagePresenceKind: string | null =
     resolvedTab === "general"
       ? "general"
@@ -13026,7 +13027,7 @@ export default function ProjectDetailsPage() {
               : productionNav === "drawing"
                 ? "drawing"
                 : productionNav === "overview"
-                  ? "production"
+                  ? "productionOverview"
                   : null
             : null;
   const pageAlsoHere = useCutlistPresence(

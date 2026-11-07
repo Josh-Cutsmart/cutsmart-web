@@ -83,6 +83,20 @@ function clearPanelScrollRoom(): void {
 function revealFocusedFieldInPanel(): void {
   const field = document.activeElement;
   if (!(field instanceof HTMLElement) || !field.closest(".glass-modal-panel")) return;
+  scrollFocusedFieldIntoPanelView(field);
+  // A short pop-up can sit wholly behind the keyboard, or have a scrolling part too short to bring the box up: room on the
+  // pop-up itself makes it taller, which puts it on top of the keyboard.
+  const vv = window.visualViewport;
+  const panel = field.closest<HTMLElement>(".glass-modal-panel");
+  if (!vv || !panel || panel.dataset.phoneDrop === "true" || !window.matchMedia("(max-width: 639.98px)").matches) return;
+  if (panel.getAttribute("data-keyboard-scroll-pad") === "true" || !document.documentElement.hasAttribute(KEYBOARD_OPEN_ATTR)) return;
+  if (field.getBoundingClientRect().bottom + REVEAL_MARGIN_PX <= vv.offsetTop + vv.height) return;
+  panel.setAttribute("data-keyboard-scroll-pad", "true");
+  panel.setAttribute(AUTO_SCROLL_PAD_ATTR, "true");
+  scrollFocusedFieldIntoPanelView(field);
+}
+
+function scrollFocusedFieldIntoPanelView(field: HTMLElement): void {
   // (A pop-up reaching behind the keyboard: the field centred in what's visible above it, as a page's are. A capped one's
   // scroll area is all above it already: just into view.)
   const vv = window.visualViewport;
@@ -227,7 +241,8 @@ function centerFocusedNotesBox(): void {
 // typed in, and the keyboard's up or the box isn't all in view. A phone can still be moving what's visible for a moment
 // after the keyboard's come up (iOS revealing the field its own way, after the box was centred), and one that shrinks
 // the page itself for the keyboard never reports it as up at all.
-const SETTLE_CHECKS_MS = [180, 450, 900];
+const SETTLE_CHECKS_MS = [180, 450, 900, 1400];
+const REREAD_AFTER_HOLD_MS = [0, 60, 160, 320, 640];
 
 function notesBoxOutOfView(box: HTMLElement): boolean {
   const vv = window.visualViewport;
@@ -241,10 +256,16 @@ function notesBoxOutOfView(box: HTMLElement): boolean {
 // reaching the bottom of the screen and running under the keyboard, and the box is brought into view by scrolling what it's in
 // (centerFocusedNotesBox, revealFocusedFieldInPanel). Not for a box in a bar pinned over the page: scrolling can't move that, so
 // the phone's slide is the only way it can be seen. true: it was put back.
+let lastScreenHoldMs = 0;
+// (Not again straight away: if the phone won't have it, what's shown follows where the phone's put things instead.)
+const SCREEN_HOLD_GAP_MS = 800;
+
 function holdScreenStillForKeyboard(): boolean {
+  if (Date.now() - lastScreenHoldMs < SCREEN_HOLD_GAP_MS) return false;
   const field = document.activeElement;
   if (!(field instanceof HTMLElement) || !isTextEntry(field) || !window.matchMedia("(pointer: coarse)").matches) return false;
   if (!field.closest(".glass-modal-panel") && inPinnedBar(field)) return false;
+  lastScreenHoldMs = Date.now();
   window.scrollTo(0, 0);
   return true;
 }
@@ -299,6 +320,7 @@ export function usePublishKeyboardInsetVars(): void {
         : focusInPhoneFullscreenPanel()
           ? SETTLE_CHECKS_MS.map((ms) =>
               window.setTimeout(() => {
+                schedule();
                 if (document.activeElement !== field || !last?.keyboardOpen) return;
                 giveFocusedPanelScrollRoom();
                 revealFocusedFieldInPanel();
@@ -311,12 +333,16 @@ export function usePublishKeyboardInsetVars(): void {
       // Pinch-zoom also shrinks the visual viewport, but at a scale above 1 — that isn't the keyboard.
       const keyboardOpen = vv.scale <= 1.01 && window.innerHeight - vv.height > KEYBOARD_OPEN_MIN_PX;
       if (keyboardOpen && vv.offsetTop > 0 && holdScreenStillForKeyboard()) {
-        // (What it does to the screen comes back round through the viewport's own events.)
         giveFocusedPanelScrollRoom();
-        window.setTimeout(() => {
-          if (focusedKeyboardCenterBox()) centerFocusedNotesBox();
-          else revealFocusedFieldInPanel();
-        }, 0);
+        // Looked at again a few times: a phone doesn't always say it's moved back, and what's on screen would stay placed for
+        // where it was (a pop-up pushed down behind the keyboard) until something else made it say so, like touching the screen.
+        REREAD_AFTER_HOLD_MS.forEach((ms) =>
+          window.setTimeout(() => {
+            schedule();
+            if (focusedKeyboardCenterBox()) centerFocusedNotesBox();
+            else revealFocusedFieldInPanel();
+          }, ms),
+        );
       }
       const next: PublishedViewport = {
         ...readKeyboardInset(vv),

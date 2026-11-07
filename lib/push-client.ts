@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 import { authorizedFetch } from "@/lib/api-fetch";
+import { auth } from "@/lib/firebase";
 import { isIosDevice } from "@/lib/pwa-install";
 
 // Phone/desktop notifications, device side (web push — the server side is lib/push-server.ts). They're
@@ -51,6 +52,32 @@ function deviceLabel(): string {
   return "Device";
 }
 
+// Whether this person wants notifications on this device: remembered here, by person, from when they turn them on until they
+// turn them off themselves. A device takes one person's notifications at a time, so signing out, or someone else turning them
+// on here, takes them off it. Without this they stayed off when that person came back, which looked like the switch turning
+// itself off. Now they come back on as the app opens (refreshPushOnAppOpen). Someone else signing in here is unaffected: it's
+// theirs that's looked at.
+const pushWantedKey = (uid: string) => `cutsmart_push_wanted:${uid}`;
+function isPushWanted(uid: string): boolean {
+  try {
+    return Boolean(uid) && window.localStorage.getItem(pushWantedKey(uid)) === "1";
+  } catch {
+    return false;
+  }
+}
+function rememberPushWanted(uid: string, wanted: boolean): void {
+  if (!uid) return;
+  try {
+    if (wanted) window.localStorage.setItem(pushWantedKey(uid), "1");
+    else window.localStorage.removeItem(pushWantedKey(uid));
+  } catch {
+    // (Not remembered: they stay as they are, and can be turned on again by hand.)
+  }
+}
+const signedInUid = () => String(auth?.currentUser?.uid || "");
+// The check as the app opens, while it's running: what's shown waits for it.
+let refreshRunning: Promise<void> | null = null;
+
 let registrationPromise: Promise<ServiceWorkerRegistration | null> | null = null;
 // The service worker (public/sw.js) that shows notifications and opens the app when one is tapped.
 export function registerPushServiceWorker(): Promise<ServiceWorkerRegistration | null> {
@@ -98,6 +125,7 @@ export async function readPushDeviceStatus(): Promise<PushDeviceStatus> {
   if (!VAPID_PUBLIC_KEY) return "unconfigured";
   if (isIosDevice() && !isStandalone()) return "needs-install";
   if (!isPushSupported()) return "unsupported";
+  await refreshRunning?.catch(() => undefined);
   if (Notification.permission === "denied") return "blocked";
   if (Notification.permission !== "granted") return "off";
   const subscription = await currentSubscription();
@@ -141,12 +169,16 @@ export async function enablePushOnThisDevice(): Promise<PushDeviceStatus> {
       return "off";
     }
   }
-  return (await saveSubscription(subscription, "enable")) === true ? "on" : "off";
+  const on = (await saveSubscription(subscription, "enable")) === true;
+  if (on) rememberPushWanted(signedInUid(), true);
+  return on ? "on" : "off";
 }
 
-// Turns them off here (also on sign-out, so the next person to sign in on this device doesn't get them).
-export async function disablePushOnThisDevice(): Promise<void> {
+// Turns them off here (also on sign-out, so the next person to sign in on this device doesn't get them). byUser: they turned
+// the switch off themselves, so they stay off; signing out, they come back on when this person next signs in here.
+export async function disablePushOnThisDevice(options?: { byUser?: boolean }): Promise<void> {
   serverAnswer = null;
+  if (options?.byUser) rememberPushWanted(signedInUid(), false);
   if (!isPushSupported()) return;
   const subscription = await currentSubscription();
   if (!subscription) return;
@@ -160,13 +192,39 @@ export async function disablePushOnThisDevice(): Promise<void> {
 
 // When the app opens: keeps this device's push address current (they can change) — only if it's
 // already this user's — and clears the unread badge on the app icon.
-export async function refreshPushOnAppOpen(): Promise<void> {
+export function refreshPushOnAppOpen(uid: string): Promise<void> {
+  refreshRunning = refreshPushNow(uid).finally(() => {
+    refreshRunning = null;
+  });
+  return refreshRunning;
+}
+
+async function refreshPushNow(uid: string): Promise<void> {
   if (!isPushSupported() || !VAPID_PUBLIC_KEY) return;
-  await registerPushServiceWorker();
+  const registration = await registerPushServiceWorker();
   clearAppIconBadge();
   if (Notification.permission !== "granted") return;
   const subscription = await currentSubscription();
-  if (subscription) await saveSubscription(subscription, "refresh");
+  if (subscription) {
+    const active = await saveSubscription(subscription, "refresh");
+    // On for them here: remembered (someone who turned them on before this was kept).
+    if (active === true) rememberPushWanted(uid, true);
+    // Off for them here, but they want them: someone else had this device meanwhile, or the record's gone.
+    else if (active === false && isPushWanted(uid)) await saveSubscription(subscription, "enable");
+    return;
+  }
+  // No push address here but they want them: taken off as they signed out, or the phone dropped it. Permission's already
+  // given, so no asking. (A phone that won't allow this without a tap: they stay off, and the switch still works.)
+  if (!registration || !isPushWanted(uid)) return;
+  try {
+    const fresh = await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+    });
+    await saveSubscription(fresh, "enable");
+  } catch {
+    // (As above.)
+  }
 }
 
 export function clearAppIconBadge(): void {
@@ -210,7 +268,7 @@ export function requestNotificationReminderPush(notificationId: string, dueAtMs:
 export function usePushNotificationsOnAppOpen(uid: string | undefined): void {
   useEffect(() => {
     if (!uid) return;
-    void refreshPushOnAppOpen();
+    void refreshPushOnAppOpen(uid);
     checkCalendarRemindersNow();
     const reminderTimer = window.setInterval(checkCalendarRemindersNow, 5 * 60 * 1000);
     const onVisible = () => {

@@ -140,7 +140,7 @@ export function AccountSetup({
     try {
       if (next) setPushStatus(await enablePushOnThisDevice());
       else {
-        await disablePushOnThisDevice();
+        await disablePushOnThisDevice({ byUser: true });
         setPushStatus("off");
       }
     } catch {
