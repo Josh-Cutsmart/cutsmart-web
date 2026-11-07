@@ -57,6 +57,9 @@ const BEHIND_KEYBOARD_PANEL = '.glass-modal-panel[data-phone-keep-box="true"]';
 // keyboard covers (data-keyboard-scroll-pad — app/globals.css), so the field being typed in can reach the middle of what's
 // visible. Marked as it's needed, and taken off as the keyboard goes.
 const AUTO_SCROLL_PAD_ATTR = "data-keyboard-scroll-pad-auto";
+const ASSUMED_ROOM_ATTR = "data-keyboard-scroll-room";
+const ASSUMED_ROOM_SHARE = 0.6;
+const ASSUMED_VISIBLE_SHARE = 0.52;
 
 function giveFocusedPanelScrollRoom(): void {
   const field = document.activeElement;
@@ -68,6 +71,11 @@ function giveFocusedPanelScrollRoom(): void {
     const { overflowY } = getComputedStyle(node);
     if (overflowY === "auto" || overflowY === "scroll") scroller = node;
   }
+  // (Set here as well as by the stylesheet: that waits on the keyboard being reported as up, and a phone doesn't always say.)
+  if (expectsKeyboard(field) && !scroller.hasAttribute(ASSUMED_ROOM_ATTR)) {
+    scroller.setAttribute(ASSUMED_ROOM_ATTR, "true");
+    scroller.style.setProperty("padding-bottom", `${Math.round(window.innerHeight * ASSUMED_ROOM_SHARE)}px`, "important");
+  }
   if (scroller.getAttribute("data-keyboard-scroll-pad") === "true") return;
   scroller.setAttribute("data-keyboard-scroll-pad", "true");
   scroller.setAttribute(AUTO_SCROLL_PAD_ATTR, "true");
@@ -78,6 +86,17 @@ function clearPanelScrollRoom(): void {
     node.removeAttribute(AUTO_SCROLL_PAD_ATTR);
     node.removeAttribute("data-keyboard-scroll-pad");
   });
+  document.querySelectorAll<HTMLElement>(`[${ASSUMED_ROOM_ATTR}]`).forEach((node) => {
+    node.removeAttribute(ASSUMED_ROOM_ATTR);
+    node.style.removeProperty("padding-bottom");
+  });
+}
+
+// Where the bottom of what can be seen is, for a box in a phone's pop-up. A box that brings the keyboard up: never lower than the
+// top half of the screen, whatever the phone reports, because it doesn't always report the keyboard, or not straight away.
+function visibleBottomFor(field: HTMLElement, vv: VisualViewport): number {
+  const height = expectsKeyboard(field) ? Math.min(vv.height, window.innerHeight * ASSUMED_VISIBLE_SHARE) : vv.height;
+  return vv.offsetTop + height;
 }
 
 function revealFocusedFieldInPanel(): void {
@@ -89,11 +108,70 @@ function revealFocusedFieldInPanel(): void {
   const vv = window.visualViewport;
   const panel = field.closest<HTMLElement>(".glass-modal-panel");
   if (!vv || !panel || panel.dataset.phoneDrop === "true" || !window.matchMedia("(max-width: 639.98px)").matches) return;
-  if (panel.getAttribute("data-keyboard-scroll-pad") === "true" || !document.documentElement.hasAttribute(KEYBOARD_OPEN_ATTR)) return;
-  if (field.getBoundingClientRect().bottom + REVEAL_MARGIN_PX <= vv.offsetTop + vv.height) return;
-  panel.setAttribute("data-keyboard-scroll-pad", "true");
-  panel.setAttribute(AUTO_SCROLL_PAD_ATTR, "true");
-  scrollFocusedFieldIntoPanelView(field);
+  if (field.getBoundingClientRect().bottom + REVEAL_MARGIN_PX <= visibleBottomFor(field, vv)) return;
+  if (panel.getAttribute("data-keyboard-scroll-pad") !== "true" && document.documentElement.hasAttribute(KEYBOARD_OPEN_ATTR)) {
+    panel.setAttribute("data-keyboard-scroll-pad", "true");
+    panel.setAttribute(AUTO_SCROLL_PAD_ATTR, "true");
+    scrollFocusedFieldIntoPanelView(field);
+  }
+  liftPanelToField(field, panel, vv);
+}
+
+// Scrolling hasn't brought it above the keyboard: the whole pop-up moved up until it is. Taken off as the keyboard goes.
+const PANEL_LIFT_ATTR = "data-keyboard-lifted";
+function liftPanelToField(field: HTMLElement, panel: HTMLElement, vv: VisualViewport): void {
+  const over = field.getBoundingClientRect().bottom + REVEAL_MARGIN_PX - visibleBottomFor(field, vv);
+  if (over <= 0) return;
+  const lifted = Number.parseFloat(panel.dataset.keyboardLifted ?? "0") || 0;
+  const next = lifted + over;
+  panel.dataset.keyboardLifted = String(next);
+  panel.style.translate = `0 ${-next}px`;
+}
+function clearPanelLifts(): void {
+  document.querySelectorAll<HTMLElement>(`[${PANEL_LIFT_ATTR}]`).forEach((panel) => {
+    panel.removeAttribute(PANEL_LIFT_ATTR);
+    panel.style.translate = "";
+  });
+}
+
+// Dev mode only, while the keyboard's up: what the phone is reporting, along the top of the screen. To work out a box the
+// keyboard still hides on a real phone, which a simulated keyboard can't show.
+let keyboardReadout: HTMLElement | null = null;
+function showKeyboardReadout(vv: VisualViewport): void {
+  let devOn = false;
+  try {
+    devOn = window.localStorage.getItem("cutsmart-dev-mode") === "1";
+  } catch {
+    devOn = false;
+  }
+  const field = document.activeElement;
+  if (!devOn || !(field instanceof HTMLElement) || !isTextEntry(field)) {
+    keyboardReadout?.remove();
+    keyboardReadout = null;
+    return;
+  }
+  if (!keyboardReadout) {
+    keyboardReadout = document.createElement("div");
+    keyboardReadout.style.cssText =
+      "position:fixed;left:0;right:0;top:0;z-index:2147483647;padding:4px 8px;font:11px/1.3 monospace;background:rgba(0,0,0,.8);color:#fff;pointer-events:none;white-space:pre-wrap";
+    document.body.appendChild(keyboardReadout);
+  }
+  const panel = field.closest<HTMLElement>(".glass-modal-panel");
+  let scroller: HTMLElement | null = null;
+  for (let node = field.parentElement; node && node !== panel; node = node.parentElement) {
+    const { overflowY } = getComputedStyle(node);
+    if (overflowY === "auto" || overflowY === "scroll") scroller = node;
+  }
+  const r = field.getBoundingClientRect();
+  const root = getComputedStyle(document.documentElement);
+  keyboardReadout.style.transform = `translateY(${vv.offsetTop}px)`;
+  keyboardReadout.textContent = [
+    `win ${window.innerHeight} scrollY ${Math.round(window.scrollY)} | vv h ${Math.round(vv.height)} top ${Math.round(vv.offsetTop)} scale ${vv.scale.toFixed(2)}`,
+    `vars inset ${root.getPropertyValue("--keyboard-inset-px")} top ${root.getPropertyValue("--keyboard-offset-top-px")} open ${document.documentElement.hasAttribute(KEYBOARD_OPEN_ATTR)}`,
+    `box ${Math.round(r.top)}-${Math.round(r.bottom)} sees to ${Math.round(vv.offsetTop + vv.height)} aims for ${Math.round(visibleBottomFor(field, vv))}`,
+    panel ? `panel ${Math.round(panel.getBoundingClientRect().top)}-${Math.round(panel.getBoundingClientRect().bottom)} lift ${panel.dataset.keyboardLifted ?? 0} pad ${getComputedStyle(panel).paddingBottom}` : "no panel",
+    scroller ? `scroll ${Math.round(scroller.scrollTop)}/${scroller.scrollHeight - scroller.clientHeight} pad ${getComputedStyle(scroller).paddingBottom}` : "no scroller",
+  ].join("\n");
 }
 
 function scrollFocusedFieldIntoPanelView(field: HTMLElement): void {
@@ -102,7 +180,7 @@ function scrollFocusedFieldIntoPanelView(field: HTMLElement): void {
   const vv = window.visualViewport;
   const behindKeyboard = Boolean(field.closest(BEHIND_KEYBOARD_PANEL)) || isPhoneFullscreenPanel(field);
   const visibleTop = vv && behindKeyboard ? vv.offsetTop : -Infinity;
-  const visibleBottom = vv && behindKeyboard ? vv.offsetTop + vv.height : Infinity;
+  const visibleBottom = vv && behindKeyboard ? visibleBottomFor(field, vv) : Infinity;
   for (let node = field.parentElement; node; node = node.parentElement) {
     const { overflowY } = getComputedStyle(node);
     if ((overflowY === "auto" || overflowY === "scroll") && node.scrollHeight > node.clientHeight) {
@@ -145,6 +223,12 @@ const TEXT_INPUT_TYPES = new Set(["", "text", "search", "email", "tel", "url", "
 function isTextEntry(el: HTMLElement): boolean {
   if (el.isContentEditable || el instanceof HTMLTextAreaElement) return true;
   return el instanceof HTMLInputElement && TEXT_INPUT_TYPES.has(el.type) && !el.readOnly;
+}
+
+// A box a touch screen's keyboard comes up for (a date or time shows the phone's own picker instead).
+function expectsKeyboard(el: HTMLElement): boolean {
+  if (!isTextEntry(el) || !window.matchMedia("(pointer: coarse)").matches) return false;
+  return !(el instanceof HTMLInputElement && (el.type === "date" || el.type === "time" || el.type === "datetime-local"));
 }
 
 function inPinnedBar(el: HTMLElement): boolean {
@@ -243,6 +327,9 @@ function centerFocusedNotesBox(): void {
 // the page itself for the keyboard never reports it as up at all.
 const SETTLE_CHECKS_MS = [180, 450, 900, 1400];
 const REREAD_AFTER_HOLD_MS = [0, 60, 160, 320, 640];
+const FIELD_WATCH_MS = 3500;
+const FIELD_WATCH_EVERY_MS = 150;
+const FOCUS_OUT_WAIT_MS = 150;
 
 function notesBoxOutOfView(box: HTMLElement): boolean {
   const vv = window.visualViewport;
@@ -367,6 +454,7 @@ export function usePublishKeyboardInsetVars(): void {
           last.visibleHeightPx !== next.visibleHeightPx ||
           (last.offsetTopPx !== next.offsetTopPx && focusInPhoneFullscreenPanel()));
       last = next;
+      showKeyboardReadout(vv);
       root.style.setProperty("--keyboard-inset-px", `${next.insetPx}px`);
       root.style.setProperty("--keyboard-offset-top-px", `${next.offsetTopPx}px`);
       if (next.keyboardOpen) {
@@ -380,6 +468,7 @@ export function usePublishKeyboardInsetVars(): void {
       if (keyboardWent) {
         clearKeyboardRoom();
         clearPanelScrollRoom();
+        clearPanelLifts();
       }
       if (next.keyboardOpen) giveFocusedPanelScrollRoom();
       if (keyboardCameOrResized && focusedKeyboardCenterBox()) {
@@ -396,7 +485,41 @@ export function usePublishKeyboardInsetVars(): void {
     // Another field tapped in a phone's full-screen pop-up, or into a notes box, while the keyboard's up (no viewport
     // change to go on): into view — a notes box to the middle — once it has the focus.
     let revealFrame: number | null = null;
+    let watchTimer: number | null = null;
+    let watchUntil = 0;
+    const stopWatch = () => {
+      if (watchTimer !== null) window.clearInterval(watchTimer);
+      watchTimer = null;
+    };
+    // A box tapped in a phone's pop-up: for the next few seconds it's kept above the keyboard, read afresh each time, until they
+    // touch the screen to do something else. A phone can move things late, or not say that it has.
+    const watchFocusedField = () => {
+      watchUntil = Date.now() + FIELD_WATCH_MS;
+      if (watchTimer !== null) return;
+      watchTimer = window.setInterval(() => {
+        const field = document.activeElement;
+        if (Date.now() > watchUntil || !(field instanceof HTMLElement) || !focusInPhoneFullscreenPanel() || !expectsKeyboard(field)) {
+          stopWatch();
+          return;
+        }
+        schedule();
+        showKeyboardReadout(vv);
+        if (focusedKeyboardCenterBox()) {
+          if (notesBoxOutOfView(field)) centerFocusedNotesBox();
+          return;
+        }
+        giveFocusedPanelScrollRoom();
+        const rect = field.getBoundingClientRect();
+        if (rect.top < vv.offsetTop || rect.bottom + REVEAL_MARGIN_PX > visibleBottomFor(field, vv)) revealFocusedFieldInPanel();
+      }, FIELD_WATCH_EVERY_MS);
+    };
     const onFocusIn = () => {
+      clearPanelLifts();
+      const tapped = document.activeElement;
+      if (focusInPhoneFullscreenPanel() && tapped instanceof HTMLElement && expectsKeyboard(tapped)) {
+        giveFocusedPanelScrollRoom();
+        watchFocusedField();
+      }
       // (A notes box: checked on again as the keyboard comes up and things settle, whether it's reported up yet or not.)
       if (focusedKeyboardCenterBox() || focusInPhoneFullscreenPanel()) settleNotesBox();
       if (!last?.keyboardOpen || revealFrame !== null) return;
@@ -408,6 +531,18 @@ export function usePublishKeyboardInsetVars(): void {
         else revealFocusedFieldInPanel();
       });
     };
+    // Finished typing in a pop-up. (With the keyboard reported as up, it's taken away as that goes.)
+    const onFocusOut = () => {
+      window.setTimeout(() => {
+        const field = document.activeElement;
+        showKeyboardReadout(vv);
+        if (field instanceof HTMLElement && isTextEntry(field) && field.closest(".glass-modal-panel")) return;
+        stopWatch();
+        if (last?.keyboardOpen) return;
+        clearPanelScrollRoom();
+        clearPanelLifts();
+      }, FOCUS_OUT_WAIT_MS);
+    };
     // The page itself resized while a notes box is being typed in — a phone that shrinks it for the keyboard rather than
     // covering it: checked on as above.
     const onWindowResize = () => {
@@ -417,11 +552,18 @@ export function usePublishKeyboardInsetVars(): void {
     vv.addEventListener("resize", schedule);
     vv.addEventListener("scroll", schedule);
     document.addEventListener("focusin", onFocusIn);
+    document.addEventListener("focusout", onFocusOut);
+    document.addEventListener("touchmove", stopWatch, { passive: true, capture: true });
     window.addEventListener("resize", onWindowResize);
     return () => {
       vv.removeEventListener("resize", schedule);
       vv.removeEventListener("scroll", schedule);
       document.removeEventListener("focusin", onFocusIn);
+      document.removeEventListener("focusout", onFocusOut);
+      document.removeEventListener("touchmove", stopWatch, { capture: true });
+      stopWatch();
+      keyboardReadout?.remove();
+      keyboardReadout = null;
       window.removeEventListener("resize", onWindowResize);
       if (frame !== null) cancelAnimationFrame(frame);
       if (revealFrame !== null) cancelAnimationFrame(revealFrame);
@@ -429,6 +571,7 @@ export function usePublishKeyboardInsetVars(): void {
       root.removeAttribute(KEYBOARD_OPEN_ATTR);
       clearKeyboardRoom();
       clearPanelScrollRoom();
+      clearPanelLifts();
     };
   }, []);
 }
