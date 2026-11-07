@@ -37,7 +37,7 @@ import {
 import { isPreviewMode } from "@/lib/preview-mode";
 import { useBoardStickyRef } from "@/lib/board-sticky-scroll";
 import { collapseBoardColumnAnimated, expandBoardColumnAnimated } from "@/lib/board-column-collapse";
-import { BoardColumnFrame, ColumnCollapseChevrons } from "@/components/board-column-frame";
+import { BoardColumnCards, BoardColumnFrame, ColumnCollapseChevrons } from "@/components/board-column-frame";
 import { columnAutomationAttrs, useColumnAutomations } from "@/components/column-automations";
 import { BoardTitleBar } from "@/components/board-title-bar";
 import { attachBoardArrowKeyScroll } from "@/lib/board-arrow-key-scroll";
@@ -5544,7 +5544,7 @@ export default function LeadsPage() {
                             />
                           </div>
                         </div>
-                        <div className="glass-scroll board-column-scroll flex-1 space-y-2.5 overflow-y-hidden p-2.5" style={{ scrollbarWidth: "none" }}>
+                        <BoardColumnCards>
                           {(() => {
                             // While a lead is dragged over this column: a faded copy of it, in the spot it will land.
                             const previewIndex = leadDropPreview?.column === column.name ? leadDropPreview.index : null;
@@ -5568,7 +5568,7 @@ export default function LeadsPage() {
                                 ) : null,
                             );
                           })()}
-                        </div>
+                        </BoardColumnCards>
                       </div>
                     </BoardColumnFrame>
                   );
@@ -5599,9 +5599,9 @@ export default function LeadsPage() {
                           {leadStatusBoardColumns.otherLeads.length}
                         </span>
                       </div>
-                      <div className="glass-scroll board-column-scroll flex-1 space-y-2.5 overflow-y-hidden p-2.5" style={{ scrollbarWidth: "none" }}>
+                      <BoardColumnCards>
                         {leadStatusBoardColumns.otherLeads.map((lead) => renderLeadCard(lead, { compact: isBoardCardsCompact }))}
-                      </div>
+                      </BoardColumnCards>
                     </div>
                   </BoardColumnFrame>
                 )}

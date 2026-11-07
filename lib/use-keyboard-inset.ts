@@ -326,23 +326,68 @@ function focusedKeyboardCenterBox(): HTMLElement | null {
 }
 
 // The cursor in an editor: above the keyboard as it's typed, whatever size the editor's grown to.
-function keepCaretClear(field: HTMLElement): void {
-  const vv = window.visualViewport;
+function caretRectIn(field: HTMLElement): { top: number; bottom: number } | null {
   const selection = window.getSelection();
-  if (!vv || !isPhoneWidth() || !field.isContentEditable || !selection?.rangeCount) return;
+  if (!field.isContentEditable || !selection?.rangeCount) return null;
   const range = selection.getRangeAt(0).cloneRange();
-  if (!field.contains(range.endContainer)) return;
+  if (!field.contains(range.endContainer)) return null;
   range.collapse(false);
   const rects = range.getClientRects();
-  let bottom = rects.length ? rects[rects.length - 1].bottom : 0;
-  if (!bottom) {
-    // (An empty line has no position of its own: where the line is.)
-    const node = range.endContainer;
-    const line = node instanceof HTMLElement ? node : node.parentElement;
-    if (!line || line.getBoundingClientRect().height > CARET_LINE_MOST_PX) return;
-    bottom = line.getBoundingClientRect().bottom;
+  const last = rects.length ? rects[rects.length - 1] : null;
+  if (last && last.bottom) return last;
+  // (An empty line has no position of its own: where the line is.)
+  const node = range.endContainer;
+  const line = node instanceof HTMLElement ? node : node.parentElement;
+  if (!line || line.getBoundingClientRect().height > CARET_LINE_MOST_PX) return null;
+  return line.getBoundingClientRect();
+}
+
+// Where what can be seen starts, for this box: under the top of whatever scrolls it, and the headers stuck over that.
+const STUCK_HEADERS = '[data-title-bar-stuck], .glass-page-header, [data-title-bar="true"]';
+function visibleTopFor(field: HTMLElement, vv: VisualViewport): number {
+  let top = vv.offsetTop;
+  for (let node = field.parentElement; node && node !== document.body; node = node.parentElement) {
+    const { overflowY } = getComputedStyle(node);
+    if (overflowY !== "auto" && overflowY !== "scroll") continue;
+    top = Math.max(top, node.getBoundingClientRect().top);
+    node.querySelectorAll<HTMLElement>(STUCK_HEADERS).forEach((bar) => {
+      if (getComputedStyle(bar).position === "sticky" && !bar.contains(field)) top = Math.max(top, bar.getBoundingClientRect().bottom);
+    });
   }
-  let over = bottom + REVEAL_MARGIN_PX - visibleBottomFor(field, vv);
+  if (!field.closest(".glass-modal-panel")) {
+    const appBar = document.querySelector<HTMLElement>('[data-app-top-bar="true"]');
+    if (appBar) top = Math.max(top, appBar.getBoundingClientRect().bottom);
+  }
+  return top;
+}
+
+// Dragged out of sight while it still has the focus. What's being typed at, that is: the cursor in an editor; the box otherwise, or
+// for a box too tall to all fit (a cursor in a plain box can't be told), only once none of it's showing.
+function typingOutOfSight(field: HTMLElement, vv: VisualViewport): boolean {
+  const top = visibleTopFor(field, vv);
+  const bottom = visibleBottomFor(field, vv);
+  const caret = caretRectIn(field);
+  if (caret) return caret.top < top || caret.bottom > bottom;
+  const rect = field.getBoundingClientRect();
+  if (rect.height > bottom - top) return rect.bottom <= top || rect.top >= bottom;
+  return rect.top < top || rect.bottom > bottom;
+}
+
+function keepCaretClear(field: HTMLElement): void {
+  const vv = window.visualViewport;
+  if (!vv || !isPhoneWidth()) return;
+  const caret = caretRectIn(field);
+  if (!caret) return;
+  // Dragged down past it: back up to it. (Below, as it's typed: further on.)
+  let above = visibleTopFor(field, vv) + REVEAL_MARGIN_PX - caret.top;
+  for (let node: HTMLElement | null = field; node && node !== document.body && above > 0.5; node = node.parentElement) {
+    const style = getComputedStyle(node);
+    if (style.overflowY !== "auto" && style.overflowY !== "scroll") continue;
+    const before = node.scrollTop;
+    node.scrollTop -= above;
+    above -= before - node.scrollTop;
+  }
+  let over = caret.bottom + REVEAL_MARGIN_PX - visibleBottomFor(field, vv);
   for (let node: HTMLElement | null = field; node && node !== document.body && over > 0.5; node = node.parentElement) {
     const style = getComputedStyle(node);
     if (style.overflowY !== "auto" && style.overflowY !== "scroll") continue;
@@ -726,9 +771,15 @@ export function usePublishKeyboardInsetVars(): void {
         const grew = typedField === field && Math.abs(height - typedHeight) > 1;
         typedField = field;
         typedHeight = height;
-        if (grew) placeFocusedField();
+        if (grew || typingOutOfSight(field, vv)) placeFocusedField();
         else keepCaretClear(field);
       });
+    };
+    // About to type in a box they've dragged away from: back to it before the letter goes in, so the phone doesn't slide the screen
+    // up to show it first.
+    const onAboutToType = () => {
+      const field = document.activeElement;
+      if (field instanceof HTMLElement && isPhoneWidth() && expectsKeyboard(field) && typingOutOfSight(field, vv)) placeFocusedField();
     };
     // A box tapped where the keyboard's about to cover it. Left to itself a phone slides the whole screen up to show it, and past
     // the page's bottom edge nothing's drawn, so a plain colour shows behind the see-through keyboard instead of what's on the
@@ -804,6 +855,7 @@ export function usePublishKeyboardInsetVars(): void {
     document.addEventListener("focusin", onFocusIn);
     document.addEventListener("focusout", onFocusOut);
     document.addEventListener("input", onTyped);
+    document.addEventListener("beforeinput", onAboutToType);
     document.addEventListener("touchstart", onTapStart, { passive: true, capture: true });
     document.addEventListener("touchmove", onTapMove, { passive: true, capture: true });
     document.addEventListener("touchend", onTapEnd, { passive: false, capture: true });
@@ -815,6 +867,7 @@ export function usePublishKeyboardInsetVars(): void {
       document.removeEventListener("focusin", onFocusIn);
       document.removeEventListener("focusout", onFocusOut);
       document.removeEventListener("input", onTyped);
+      document.removeEventListener("beforeinput", onAboutToType);
       document.removeEventListener("touchstart", onTapStart, { capture: true });
       document.removeEventListener("touchmove", onTapMove, { capture: true });
       document.removeEventListener("touchend", onTapEnd, { capture: true });

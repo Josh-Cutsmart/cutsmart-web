@@ -55,6 +55,28 @@ export function BoardColumnFrame({
   );
 }
 
+// A column's cards, in the part of it that scrolls. They always stop short of the column's bottom edge by the same 10px as its
+// sides, leaving a bar of the column's own colour across the bottom however far they run on. Its bottom edge moves up while the
+// board's scrolling into place (see above), so the part that cuts the cards off moves with it by the same trick: the clip
+// (data-board-column-cards-clip) moved up by the shift, the list inside it (data-board-column-cards) moved back down by the same,
+// lib/board-sticky-scroll.ts moving all four together. The clip's a see-through box reaching up over the column's header
+// meanwhile, so only the list takes the pointer. (10px: the list's own px-2.5. Nothing under its last card, the bar being that gap.)
+//
+// .glass-scroll.flex-1 and .board-column-scroll: how lib/board-sticky-scroll.ts and lib/board-drag-scroll.ts find the list.
+export function BoardColumnCards({ children }: { children: ReactNode }) {
+  return (
+    <div data-board-column-cards-clip="true" className="pointer-events-none mb-2.5 flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div
+        data-board-column-cards="true"
+        className="glass-scroll board-column-scroll pointer-events-auto min-h-0 flex-1 space-y-2.5 overflow-y-hidden px-2.5 pt-2.5"
+        style={{ scrollbarWidth: "none" }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
 // The collapse button's arrows (lucide's ChevronsRightLeft, ><), drawn so each arrow can turn round
 // on its own spot: flipped, they're exactly ChevronsLeftRight (<>), the collapsed strip's expand
 // button — which is how the button turns from one into the other as a column collapses or expands

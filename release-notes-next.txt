@@ -4,6 +4,7 @@ whatsNew: [
 <u><b>Phones</b></u>
 <ul>
 <li>On every page and pop-up, the box you're typing in moves up above the keyboard as soon as you tap it, and everything else carries on under the keyboard</li>
+<li>Start typing in a box you've scrolled away from and the screen goes back to it</li>
 <li>An event's Notes box grows as you type</li>
 <li>Sticky headers keep their background when you scroll the keyboard away</li>
 <li>An event's pop-up keeps its colour all the way to the bottom of the screen</li>
@@ -26,6 +27,7 @@ whatsNew: [
 <u><b>Dashboard</b></u>
 <ul>
 <li>Cards added, moved or changed by anyone show as it happens, and the latest show the first time you open it</li>
+<li>Cards stop short of the bottom of a Dashboard or Leads column by the same gap as its sides, when they run off the end</li>
 </ul>
 
 <u><b>Cutlists</b></u>

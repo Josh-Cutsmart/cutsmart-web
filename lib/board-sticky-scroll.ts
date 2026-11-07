@@ -94,16 +94,20 @@ export function useBoardStickyRef(
         });
       };
       const getColumns = (): HTMLElement[] => Array.from(el.querySelectorAll<HTMLElement>("[data-board-column]"));
+      // (cardsClip and cards: what cuts a column's cards off above its bottom edge, moving as lift and drop do. Not there on a
+      // collapsed column, and new when one's expanded.)
       const getMoved = (col: HTMLElement) => ({
         lift: col.querySelector<HTMLElement>("[data-board-column-lift]"),
         drop: col.querySelector<HTMLElement>("[data-board-column-drop]"),
+        cardsClip: col.querySelector<HTMLElement>("[data-board-column-cards-clip]"),
+        cards: col.querySelector<HTMLElement>("[data-board-column-cards]"),
       });
 
       // --- Applying the shift
       // Scroll-linked: each column's two moves as animations on the page's scroll timeline, from
       // keyframes over the whole scroll range. Recreated only when those keyframes change (the
       // key), or for columns that weren't there before.
-      const columnAnimations = new WeakMap<HTMLElement, { key: string; animations: Animation[] }>();
+      const columnAnimations = new WeakMap<HTMLElement, { key: string; cardsClip: HTMLElement | null; animations: Animation[] }>();
       const animatedColumns = new Set<HTMLElement>();
       const stopAnimations = (col: HTMLElement) => {
         columnAnimations.get(col)?.animations.forEach((animation) => animation.cancel());
@@ -114,11 +118,16 @@ export function useBoardStickyRef(
       const staticShift = new WeakMap<HTMLElement, number>();
       const setStaticShift = (col: HTMLElement, shift: number) => {
         if (columnAnimations.has(col)) stopAnimations(col);
+        const { lift, drop, cardsClip, cards } = getMoved(col);
+        const up = shift ? `translate3d(0, ${-shift}px, 0)` : "";
+        const down = shift ? `translate3d(0, ${shift}px, 0)` : "";
+        // (Its cards can be new with the same shift: a column just expanded.)
+        if (cardsClip && cardsClip.style.transform !== up) cardsClip.style.transform = up;
+        if (cards && cards.style.transform !== down) cards.style.transform = down;
         if (staticShift.get(col) === shift) return;
         staticShift.set(col, shift);
-        const { lift, drop } = getMoved(col);
-        if (lift) lift.style.transform = shift ? `translate3d(0, ${-shift}px, 0)` : "";
-        if (drop) drop.style.transform = shift ? `translate3d(0, ${shift}px, 0)` : "";
+        if (lift) lift.style.transform = up;
+        if (drop) drop.style.transform = down;
       };
       // The page's scroll timeline; id goes into the keyframes' key, so a new one (the page scrolling
       // with a different element after a resize) means new animations.
@@ -136,15 +145,17 @@ export function useBoardStickyRef(
         key: string,
         scrollTimeline: AnimationTimeline,
       ) => {
-        if (columnAnimations.get(col)?.key === key) return;
+        const { lift, drop, cardsClip, cards } = getMoved(col);
+        const current = columnAnimations.get(col);
+        if (current?.key === key && current.cardsClip === cardsClip) return;
         stopAnimations(col);
         if (staticShift.has(col)) {
           staticShift.delete(col);
-          const { lift, drop } = getMoved(col);
           if (lift) lift.style.transform = "";
           if (drop) drop.style.transform = "";
+          if (cardsClip) cardsClip.style.transform = "";
+          if (cards) cards.style.transform = "";
         }
-        const { lift, drop } = getMoved(col);
         const animations: Animation[] = [];
         const options: KeyframeAnimationOptions = { timeline: scrollTimeline, fill: "both", easing: "linear" };
         if (lift) {
@@ -153,7 +164,13 @@ export function useBoardStickyRef(
         if (drop) {
           animations.push(drop.animate(frames.map((f) => ({ offset: f.offset, transform: `translate3d(0, ${f.shift}px, 0)` })), options));
         }
-        columnAnimations.set(col, { key, animations });
+        if (cardsClip) {
+          animations.push(cardsClip.animate(frames.map((f) => ({ offset: f.offset, transform: `translate3d(0, ${-f.shift}px, 0)` })), options));
+        }
+        if (cards) {
+          animations.push(cards.animate(frames.map((f) => ({ offset: f.offset, transform: `translate3d(0, ${f.shift}px, 0)` })), options));
+        }
+        columnAnimations.set(col, { key, cardsClip, animations });
         animatedColumns.add(col);
       };
       const resetShifts = () => {

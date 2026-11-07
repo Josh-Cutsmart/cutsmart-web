@@ -16,7 +16,7 @@ import { attachBoardArrowKeyScroll } from "@/lib/board-arrow-key-scroll";
 import { attachBoardDragScroll } from "@/lib/board-drag-scroll";
 import { useBoardStickyRef } from "@/lib/board-sticky-scroll";
 import { collapseBoardColumnAnimated, expandBoardColumnAnimated } from "@/lib/board-column-collapse";
-import { BoardColumnFrame, ColumnCollapseChevrons, getBoardColumnVisibleRect } from "@/components/board-column-frame";
+import { BoardColumnCards, BoardColumnFrame, ColumnCollapseChevrons, getBoardColumnVisibleRect } from "@/components/board-column-frame";
 import { BoardTitleBar } from "@/components/board-title-bar";
 import { columnAutomationAttrs, useColumnAutomations } from "@/components/column-automations";
 import { SPLIT_STATUS_PILL_CLASS, SplitStatusPillContent } from "@/components/status-pill-split";
@@ -2072,7 +2072,7 @@ export default function DashboardPage() {
               horizontal panning for any touch starting inside the list rather than handing it to
               the board's horizontal scroller, which blocked swiping between columns. See
               setCardListsScrollable in lib/board-sticky-scroll.ts. */}
-          <div className="glass-scroll board-column-scroll flex-1 space-y-2.5 overflow-y-hidden p-2.5" style={{ scrollbarWidth: "none" }}>
+          <BoardColumnCards>
             {/* An empty column is just empty — no "No projects." in it. */}
             {options.projects.length === 0 && !options.dropPreviewProject ? null : (
               withBoardDropPreview(
@@ -2093,7 +2093,7 @@ export default function DashboardPage() {
                   ) : null,
               )
             )}
-          </div>
+          </BoardColumnCards>
         </div>
       </BoardColumnFrame>
     );
@@ -2463,9 +2463,9 @@ export default function DashboardPage() {
                 {dashboardStatusBoardColumns.otherProjects.length}
               </span>
             </div>
-            <div className="glass-scroll board-column-scroll flex-1 space-y-2.5 overflow-y-hidden p-2.5" style={{ scrollbarWidth: "none" }}>
+            <BoardColumnCards>
               {dashboardStatusBoardColumns.otherProjects.map((project) => renderProjectBoardCard(project, "#64748B"))}
-            </div>
+            </BoardColumnCards>
           </div>
         </BoardColumnFrame>
       )}
