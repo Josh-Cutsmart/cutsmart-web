@@ -1,4 +1,23 @@
 Version: v0.6.2
 
 whatsNew: [
+<u><b>Dashboard and Leads</b></u>
+<ul>
+<li>A new <b>Users</b> filter beside Sort: tick the people whose projects or leads you want to see (or Unassigned). Works in the list and the columns, and it's remembered</li>
+<li>A column's sort menu now says when the whole board's Sort is in charge, and what it's set to</li>
+</ul>
+
+<u><b>Phones</b></u>
+<ul>
+<li>Swiping sideways along a row of tabs or filters, or a wide table, scrolls it instead of opening a side menu (the Archive's tabs and months)</li>
+<li>Tapping the page you're already on in the side menu closes the menu</li>
+<li>Contacts' title bar, search and the top bar are see-through like the other pages, with your contacts scrolling behind them</li>
+<li>User Settings' back button is round and green like the others, and Archive Project matches the other buttons</li>
+</ul>
+
+<u><b>Everywhere</b></u>
+<ul>
+<li>The Log Out pop-up's buttons match the rest of the app</li>
+<li>Search only shows its loading wheel the first time. After that it updates quietly while your last results are already there</li>
+</ul>
 ]

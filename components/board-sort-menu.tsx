@@ -2,9 +2,9 @@
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import { ArrowUpDown, Check } from "lucide-react";
+import { ArrowUpDown, Check, Users } from "lucide-react";
 import { swallowNextClick } from "@/lib/swallow-dismiss-click";
-import { BOARD_SORT_LABELS, BOARD_SORT_MODES, type BoardSortMode } from "@/lib/board-drop-order";
+import { BOARD_SORT_LABELS, BOARD_SORT_MODES, UNASSIGNED_USER_FILTER_ID, type BoardSortMode } from "@/lib/board-drop-order";
 
 // The Kanban boards' (Leads, Dashboard) sort menus: a sort button on each column (the sort choices,
 // for that column) and a Sort button in the toolbar (the same choices, for the whole
@@ -99,6 +99,36 @@ function SortOptionRows({
   );
 }
 
+// One person in the Users filter (or Everyone / Unassigned): their initial in their colour, a tick when they're showing.
+// Several can be ticked at once, so picking one leaves the menu open.
+function UserFilterRow({ label, color, checked, onPick }: { label: string; color?: string; checked: boolean; onPick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onPick}
+      role="menuitemcheckbox"
+      aria-checked={checked}
+      className="flex h-9 w-full items-center gap-2 border-t px-3 text-left text-[12px] font-medium transition-colors hover:bg-[color-mix(in_srgb,var(--text-main)_7%,transparent)] max-md:h-11 max-md:px-4 max-md:text-[15px]"
+      style={{ borderColor: "var(--glass-border)", color: checked ? "var(--brand-strong)" : "var(--text-main)" }}
+    >
+      {color ? (
+        <span
+          aria-hidden="true"
+          className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white max-md:h-6 max-md:w-6 max-md:text-[11px]"
+          style={{ backgroundColor: color }}
+        >
+          {label.trim().charAt(0).toUpperCase() || "?"}
+        </span>
+      ) : null}
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      {checked ? <Check size={14} className="shrink-0 max-md:h-[17px] max-md:w-[17px]" /> : null}
+    </button>
+  );
+}
+
+// A person the board's cards can be assigned to, for the Users filter.
+export type BoardFilterUser = { id: string; name: string; color?: string };
+
 // The sort button at the right of a column's header: Custom order / Oldest – Newest / Newest – Oldest /
 // A – Z / Z – A, for this column. `overriddenBy` is the board-wide sort when one is set (the column's own
 // choice is kept, and applies again once the board sort is back to "Per column").
@@ -143,9 +173,17 @@ export function BoardColumnSortMenu({
       {menuPos && typeof document !== "undefined"
         ? createPortal(
             <div ref={menuRef} className={MENU_CLASS} style={{ ...MENU_STYLE, transformOrigin: `${Math.round(menuPos.originX)}px 0%`, left: menuPos.left, top: menuPos.top, width: MENU_WIDTH }}>
+              {/* The toolbar's Sort set for the whole board: said so, with what it's set to. (A choice below is kept for this
+                  column, for once the board's back to Per column.) */}
               {overriddenBy && overriddenBy !== "custom" ? (
-                <p className="border-b px-3 py-2 text-[11px] leading-snug" style={{ borderColor: "var(--glass-border)", color: "var(--text-muted)" }}>
-                  The whole board is sorted {BOARD_SORT_LABELS[overriddenBy]} — this column&apos;s choice applies once that&apos;s back to Per column.
+                <p
+                  className="border-b px-3 py-2 text-[12px] font-medium leading-snug max-md:px-4 max-md:py-2.5 max-md:text-[14px]"
+                  style={{ borderColor: "var(--glass-border)", color: "var(--text-main)" }}
+                >
+                  Column sorted by board setting:{" "}
+                  <span className="font-semibold" style={{ color: "var(--brand-strong)" }}>
+                    {BOARD_SORT_LABELS[overriddenBy]}
+                  </span>
                 </p>
               ) : null}
               <SortOptionRows
@@ -222,6 +260,93 @@ export function BoardSortButton({
                   setMenuPos(null);
                 }}
               />
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
+  );
+}
+
+// The Dashboard's and Leads' Users filter, its own button in their toolbars (beside Sort): only the projects or leads
+// assigned to the people ticked, and/or nobody's (Unassigned) — Everyone (none ticked) shows them all. Several at once,
+// so picking one leaves the menu open. Lit up (the blue fill) while it's filtering.
+export function BoardUserFilterButton({
+  users,
+  value,
+  onChange,
+  className,
+  labelClassName,
+  style,
+}: {
+  users: BoardFilterUser[];
+  value: string[];
+  onChange: (ids: string[]) => void;
+  className?: string;
+  // On the button's text — e.g. hiding it on a phone for an icon-only button.
+  labelClassName?: string;
+  style?: CSSProperties;
+}) {
+  const [menuPos, setMenuPos] = useState<MenuPos | null>(null);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  useCloseOnOutsidePress(Boolean(menuPos), [buttonRef, menuRef], () => setMenuPos(null));
+  const isFiltering = value.length > 0;
+  const toggle = (id: string) => onChange(value.includes(id) ? value.filter((other) => other !== id) : [...value, id]);
+  // "All users"; the one person (or Unassigned) when it's just them; else how many.
+  const onlyOne = value.length === 1 ? value[0] : "";
+  const label = !isFiltering
+    ? "All users"
+    : onlyOne
+      ? onlyOne === UNASSIGNED_USER_FILTER_ID
+        ? "Unassigned"
+        : users.find((user) => user.id === onlyOne)?.name || "1 user"
+      : `${value.length} users`;
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={(e) => {
+          if (menuPos) setMenuPos(null);
+          else setMenuPos(menuPosUnder(e.currentTarget));
+        }}
+        className={className ?? "inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full border px-3 text-[12px] font-semibold transition hover:brightness-95"}
+        style={
+          isFiltering
+            ? { ...style, backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)", color: "#fff" }
+            : { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)", ...style }
+        }
+        title="Show only some people's"
+        aria-label={`Filter by user: ${label}`}
+      >
+        <Users size={14} className="shrink-0" />
+        <span className={`max-w-[140px] truncate ${labelClassName ?? ""}`}>{label}</span>
+      </button>
+      {menuPos && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              ref={menuRef}
+              className={MENU_CLASS}
+              style={{
+                ...MENU_STYLE,
+                transformOrigin: `${Math.round(menuPos.originX)}px 0%`,
+                left: menuPos.left,
+                top: menuPos.top,
+                width: MENU_WIDTH,
+                // (With a long list of people: scrolls, rather than running off the screen.)
+                maxHeight: `calc(100dvh - ${Math.round(menuPos.top) + 12}px)`,
+                overflowY: "auto",
+              }}
+            >
+              <div className="[&>button:first-child]:border-t-0">
+                <UserFilterRow label="Everyone" checked={!isFiltering} onPick={() => onChange([])} />
+                {users.map((user) => (
+                  <UserFilterRow key={user.id} label={user.name} color={user.color || "#64748B"} checked={value.includes(user.id)} onPick={() => toggle(user.id)} />
+                ))}
+                <UserFilterRow label="Unassigned" checked={value.includes(UNASSIGNED_USER_FILTER_ID)} onPick={() => toggle(UNASSIGNED_USER_FILTER_ID)} />
+              </div>
             </div>,
             document.body,
           )

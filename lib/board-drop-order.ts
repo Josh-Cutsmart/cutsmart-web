@@ -107,6 +107,21 @@ export function compareBoardCards(mode: BoardSortMode, a: BoardCardSortInfo, b: 
   return result || a.key - b.key;
 }
 
+// The Dashboard's and Leads' Users filter (components/board-sort-menu.tsx, BoardUserFilterButton): the people whose
+// cards and rows they show, by uid — none chosen: everyone's. UNASSIGNED_USER_FILTER_ID stands for those nobody's
+// assigned to.
+export const UNASSIGNED_USER_FILTER_ID = "__unassigned__";
+
+export function normalizeBoardUserFilter(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(value.map((id) => String(id ?? "").trim()).filter(Boolean))).slice(0, 200);
+}
+
+export function passesBoardUserFilter(filter: readonly string[], assignedUid: unknown): boolean {
+  if (!filter.length) return true;
+  return filter.includes(String(assignedUid ?? "").trim() || UNASSIGNED_USER_FILTER_ID);
+}
+
 export function sortBoardCards<T>(items: T[], mode: BoardSortMode, info: (item: T) => BoardCardSortInfo): T[] {
   const withInfo = items.map((item) => ({ item, info: info(item) }));
   withInfo.sort((a, b) => compareBoardCards(mode, a.info, b.info));

@@ -98,13 +98,15 @@ import {
   boardSortKey,
   normalizeBoardColumnSorts,
   normalizeBoardSortMode,
+  normalizeBoardUserFilter,
+  passesBoardUserFilter,
   sortBoardCards,
   sortedBoardDropIndex,
   withBoardDropPreview,
   type BoardCardSortInfo,
   type BoardSortMode,
 } from "@/lib/board-drop-order";
-import { BoardColumnSortMenu, BoardSortButton } from "@/components/board-sort-menu";
+import { BoardColumnSortMenu, BoardSortButton, BoardUserFilterButton, type BoardFilterUser } from "@/components/board-sort-menu";
 import { useHomeScreenApp } from "@/lib/home-screen-app";
 import { useAppTabs } from "@/lib/app-tabs-context";
 
@@ -461,6 +463,8 @@ export default function LeadsPage() {
   // (the toolbar's Sort — overrides every column while it's set). "custom" = the dragged order.
   const [leadColumnSorts, setLeadColumnSorts] = useState<Record<string, BoardSortMode>>({});
   const [leadBoardSort, setLeadBoardSort] = useState<BoardSortMode>("custom");
+  // The toolbar's Users filter: whose leads show (list and columns), by assigned uid — none: everyone's.
+  const [leadUserFilter, setLeadUserFilter] = useState<string[]>([]);
   const [isBoardCardsCompact, setIsBoardCardsCompact] = useState(false);
   const [compactCardOverrides, setCompactCardOverrides] = useState<Record<string, boolean>>({});
   const [isToolbarExpanded, setIsToolbarExpanded] = useState(true);
@@ -511,6 +515,7 @@ export default function LeadsPage() {
     let nextCollapsed: Record<string, boolean> = {};
     let nextColumnSorts: Record<string, BoardSortMode> = {};
     let nextBoardSort: BoardSortMode = "custom";
+    let nextUserFilter: string[] = [];
     let nextCompact = false;
     let nextCardOverrides: Record<string, boolean> = {};
     // Toolbar defaults to expanded for anyone who's never touched the
@@ -528,6 +533,7 @@ export default function LeadsPage() {
         }
         nextColumnSorts = normalizeBoardColumnSorts(parsed.columnSorts);
         nextBoardSort = normalizeBoardSortMode(parsed.boardSort);
+        nextUserFilter = normalizeBoardUserFilter(parsed.userFilter);
         nextCompact = Boolean(parsed.compactCards);
         if (parsed.compactCardOverrides && typeof parsed.compactCardOverrides === "object") {
           nextCardOverrides = parsed.compactCardOverrides as Record<string, boolean>;
@@ -543,6 +549,7 @@ export default function LeadsPage() {
     setCollapsedStatusColumns(nextCollapsed);
     setLeadColumnSorts(nextColumnSorts);
     setLeadBoardSort(nextBoardSort);
+    setLeadUserFilter(nextUserFilter);
     setIsBoardCardsCompact(nextCompact);
     setCompactCardOverrides(nextCardOverrides);
     setIsToolbarExpanded(nextToolbarExpanded);
@@ -564,6 +571,7 @@ export default function LeadsPage() {
           collapsedColumns: collapsedStatusColumns,
           columnSorts: leadColumnSorts,
           boardSort: leadBoardSort,
+          userFilter: leadUserFilter,
           compactCards: isBoardCardsCompact,
           compactCardOverrides,
           toolbarExpanded: isToolbarExpanded,
@@ -571,7 +579,7 @@ export default function LeadsPage() {
         }),
       );
     } catch {}
-  }, [collapsedStatusColumns, leadColumnSorts, leadBoardSort, isBoardCardsCompact, compactCardOverrides, isToolbarExpanded, leadsViewMode, boardPrefsHydrated, currentUserUid, activeCompanyId]);
+  }, [collapsedStatusColumns, leadColumnSorts, leadBoardSort, leadUserFilter, isBoardCardsCompact, compactCardOverrides, isToolbarExpanded, leadsViewMode, boardPrefsHydrated, currentUserUid, activeCompanyId]);
   // The sort choices are saved on the user's own profile (lib/board-sort-prefs.ts), so they follow
   // them to any device — the browser copy above only shows them straight away while that loads.
   // Nothing is saved until the profile's copy has loaded (null), so it's never overwritten unseen.
@@ -589,6 +597,7 @@ export default function LeadsPage() {
       savedLeadSortPrefsRef.current = JSON.stringify(prefs);
       setLeadColumnSorts(prefs.columnSorts);
       setLeadBoardSort(prefs.boardSort);
+      setLeadUserFilter(prefs.userFilter);
     });
     return () => {
       cancelled = true;
@@ -596,12 +605,12 @@ export default function LeadsPage() {
   }, [currentUserUid, activeCompanyId]);
   useEffect(() => {
     if (!currentUserUid || !activeCompanyId || savedLeadSortPrefsRef.current === null) return;
-    const prefs = { columnSorts: leadColumnSorts, boardSort: leadBoardSort };
+    const prefs = { columnSorts: leadColumnSorts, boardSort: leadBoardSort, userFilter: leadUserFilter };
     const serialized = JSON.stringify(prefs);
     if (serialized === savedLeadSortPrefsRef.current) return;
     savedLeadSortPrefsRef.current = serialized;
     void saveBoardSortPrefs(currentUserUid, "leads", activeCompanyId, prefs);
-  }, [currentUserUid, activeCompanyId, leadColumnSorts, leadBoardSort]);
+  }, [currentUserUid, activeCompanyId, leadColumnSorts, leadBoardSort, leadUserFilter]);
   // The board column row is `position: sticky` (see its className below) — it scrolls up with
   // the page along with the header/toolbar above it until its own top edge reaches just below the
   // fixed nav bar(s), then locks there; only the columns' own internal scroll moves after that.
@@ -1278,6 +1287,7 @@ export default function LeadsPage() {
       if (statusFilter !== "all" && String(lead.status || "").trim().toLowerCase() !== statusFilter) {
         return false;
       }
+      if (canViewOtherLeads && !passesBoardUserFilter(leadUserFilter, lead.assignedToUid)) return false;
       if (!query) {
         return true;
       }
@@ -1316,11 +1326,11 @@ export default function LeadsPage() {
       });
     }
     return sorted;
-  }, [fieldLayoutForLead, leads, listOrder, search, statusFilter]);
+  }, [fieldLayoutForLead, leads, listOrder, search, statusFilter, canViewOtherLeads, leadUserFilter]);
 
   // The list view shows a page of rows at a time, the next page coming in as it's scrolled near the bottom (or straight
   // away while there's nothing to scroll) — back to one page whenever the search, filter, order or page size changes.
-  const listRevealKey = `${search}|${statusFilter}|${listOrder}|${listPageSize}`;
+  const listRevealKey = `${search}|${statusFilter}|${listOrder}|${listPageSize}|${leadUserFilter.join(",")}`;
   const [listReveal, setListReveal] = useState({ key: "", count: 20 });
   const listVisibleCount = listReveal.key === listRevealKey ? listReveal.count : listPageSize;
   const visibleListLeads = useMemo(() => filteredLeads.slice(0, listVisibleCount), [filteredLeads, listVisibleCount]);
@@ -1402,6 +1412,7 @@ export default function LeadsPage() {
     const byKey = new Map(columns.map((col) => [col.name.trim().toLowerCase(), col]));
     const otherLeads: CompanyLeadRow[] = [];
     for (const lead of searchFilteredLeads) {
+      if (canViewOtherLeads && !passesBoardUserFilter(leadUserFilter, lead.assignedToUid)) continue;
       const col = byKey.get(String(lead.status || "").trim().toLowerCase());
       if (col) col.leads.push(lead);
       else otherLeads.push(lead);
@@ -1410,7 +1421,24 @@ export default function LeadsPage() {
       col.leads = sortBoardCards(col.leads, leadBoardSort !== "custom" ? leadBoardSort : leadColumnSorts[col.name] ?? "custom", leadSortInfo);
     }
     return { columns, otherLeads: sortBoardCards(otherLeads, leadBoardSort, leadSortInfo) };
-  }, [searchFilteredLeads, leadStatusRows, leadBoardSort, leadColumnSorts, leadSortInfo]);
+  }, [searchFilteredLeads, leadStatusRows, leadBoardSort, leadColumnSorts, leadSortInfo, canViewOtherLeads, leadUserFilter]);
+  // The people leads can be assigned to, for the Users filter (A – Z, each in their colour) — none for someone who only
+  // sees their own (it isn't shown to them).
+  const leadFilterUsers = useMemo<BoardFilterUser[] | undefined>(
+    () =>
+      canViewOtherLeads
+        ? companyMembers
+            .map((member) => ({
+              id: String(member.uid || "").trim(),
+              name: String(member.displayName || member.membershipDisplayName || member.email || "").trim() || "Unnamed",
+              color: member.userColor || member.badgeColor || undefined,
+            }))
+            .filter((member) => member.id)
+            .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }))
+        : undefined,
+    [canViewOtherLeads, companyMembers],
+  );
+  const leadUserFilterInUse = canViewOtherLeads ? leadUserFilter : [];
 
   const newCount = filteredLeads.filter((lead) => String(lead.status || "").trim().toLowerCase() === "new").length;
   // The stat cards: on or off with User Settings' Stat Cards (the Dashboard's own switch).
@@ -4899,6 +4927,17 @@ export default function LeadsPage() {
                     </button>
                   </>
                 )}
+                {/* Whose leads show — its own filter, in both views (not for someone who only sees their own). */}
+                {leadFilterUsers ? (
+                  <BoardUserFilterButton
+                    users={leadFilterUsers}
+                    value={leadUserFilterInUse}
+                    onChange={setLeadUserFilter}
+                    className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border transition hover:brightness-95"
+                    labelClassName="hidden"
+                    style={{ backgroundColor: leadsToolbarPalette.panelBg, color: leadsToolbarPalette.textMuted, borderColor: leadsToolbarPalette.border }}
+                  />
+                ) : null}
               </div>
               {/* Phone: Create Lead, as a floating round + at the bottom right of the screen (the Calendar's New event) —
                   portalled so it's fixed to the screen whatever the page around it does. */}
@@ -5035,6 +5074,16 @@ export default function LeadsPage() {
                   }}
                 />
               )}
+              {/* Whose leads show: its own filter, in both views (white like the rest, blue while it's filtering). */}
+              {leadFilterUsers ? (
+                <BoardUserFilterButton
+                  users={leadFilterUsers}
+                  value={leadUserFilterInUse}
+                  onChange={setLeadUserFilter}
+                  className="order-last inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full border px-3 text-[12px] font-semibold transition hover:brightness-95 max-sm:hidden"
+                  style={{ backgroundColor: leadsToolbarPalette.panelBg, color: leadsToolbarPalette.textMuted, borderColor: leadsToolbarPalette.border }}
+                />
+              ) : null}
               {leadsViewMode === "grid" && (
                 // Which status to show (All, then each status with its colour) and the order — the same dropdown, the same
                 // look. Beside the rest on a computer; on a phone, their own line under it.

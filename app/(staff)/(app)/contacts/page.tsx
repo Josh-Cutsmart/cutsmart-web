@@ -446,6 +446,26 @@ function ClientsPageInner() {
   // the list to that letter. Letters with no contacts are dimmed and skipped (the touch lands on the next
   // letter that has some).
   const listScrollRef = useRef<HTMLDivElement | null>(null);
+  // The list's glass header (title bar, search and filter): on a phone the list scrolls up under it and the top tab bar,
+  // as other pages do under theirs, so they show what's behind them. How tall it is: how far the list reaches up.
+  const listHeaderRef = useRef<HTMLDivElement | null>(null);
+  const [listHeaderEl, setListHeaderEl] = useState<HTMLDivElement | null>(null);
+  const [listHeaderPx, setListHeaderPx] = useState(110);
+  // ...and whether the list has scrolled up under it (on a phone, the header's glass shows then — below).
+  const [listScrolledUnder, setListScrolledUnder] = useState(false);
+  // (Measured once it's on the page — it isn't while the page is still loading — and again whenever it changes height.)
+  const onListHeaderNode = useCallback((node: HTMLDivElement | null) => {
+    listHeaderRef.current = node;
+    setListHeaderEl(node);
+  }, []);
+  useLayoutEffect(() => {
+    if (!listHeaderEl) return;
+    const measure = () => setListHeaderPx(Math.round(listHeaderEl.getBoundingClientRect().height));
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(listHeaderEl);
+    return () => observer.disconnect();
+  }, [listHeaderEl]);
   const letterStripRef = useRef<HTMLDivElement | null>(null);
   const isScrubbingStripRef = useRef(false);
   const stripClearTimerRef = useRef<number | null>(null);
@@ -466,7 +486,9 @@ function ClientsPageInner() {
     setActiveStripLetter(letter);
     const target = scroller.querySelector<HTMLElement>(`[data-letter="${letter}"]`);
     if (!target) return;
-    scroller.scrollTop += target.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+    // (Just below the header: on a phone the list runs on up under it.)
+    const visibleTop = Math.max(scroller.getBoundingClientRect().top, listHeaderRef.current?.getBoundingClientRect().bottom ?? 0);
+    scroller.scrollTop += target.getBoundingClientRect().top - visibleTop;
   };
   const endStripScrub = () => {
     isScrubbingStripRef.current = false;
@@ -1274,18 +1296,39 @@ function ClientsPageInner() {
         // the stage above the bar (z 96, the bar's 95) while a contact is showing, so the drawer and its
         // shadow are over it too.
         <div
-          className="app-top-bar-sidebar-offset fixed bottom-0 left-0 right-0 top-12 overflow-clip md:overflow-visible"
+          className="app-top-bar-sidebar-offset fixed bottom-0 left-0 right-0 top-0 overflow-clip md:top-12 md:overflow-visible"
           style={{ color: text, backgroundColor: pageBg, zIndex: isDesktopViewport && activeClientId ? 96 : undefined }}
         >
           {/* LIST PANE */}
           <div
             ref={listPaneRef}
-            className={`absolute inset-0 flex flex-col ${STAGE_SLIDE_CLASS} ${skipStageTransition ? "!transition-none" : ""} data-[swipe-dragging=true]:!transition-none md:![transform:none]`}
+            className={`absolute inset-0 flex flex-col max-md:pt-12 ${STAGE_SLIDE_CLASS} ${skipStageTransition ? "!transition-none" : ""} data-[swipe-dragging=true]:!transition-none md:![transform:none]`}
             style={{ transform: isDetailOpen ? "translate3d(-100%, 0, 0)" : "translate3d(0, 0, 0)" }}
             aria-hidden={isDetailOpen && !isDesktopViewport}
             inert={isDetailOpen && !isDesktopViewport}
           >
-            <div className="glass-page-header relative z-[2] shrink-0">
+            {/* Phone: the top tab bar and this header as one bar (as Project details' and Changelog's) — one sheet of the
+                top tab bar's glass behind them both, on the moment the list scrolls up under them (no fade), with its line
+                along the bottom; the bars themselves clear, no lines between them. The top tab bar's own glass is off on
+                this page then (globals.css, data-joins-top-bar). Under the header (z-2), over the list. */}
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-x-0 top-0 z-[1] md:hidden"
+              style={{
+                height: 48 + listHeaderPx,
+                backgroundColor: "color-mix(in srgb, var(--bg-app) 40%, transparent)",
+                backdropFilter: "blur(12px) saturate(220%)",
+                WebkitBackdropFilter: "blur(12px) saturate(220%)",
+                boxShadow: "inset 0 -1px 0 var(--glass-border)",
+                opacity: listScrolledUnder ? 1 : 0,
+              }}
+            />
+            <div
+              ref={onListHeaderNode}
+              data-joins-top-bar={isDesktopViewport ? undefined : "true"}
+              // (Phone: clear, with no line under it — over the sheet above. Computer: its own glass, as before.)
+              className="glass-page-header relative z-[2] shrink-0 max-md:!border-b-0 max-md:!bg-transparent max-md:![-webkit-backdrop-filter:none] max-md:![backdrop-filter:none]"
+            >
               {/* The title bar — no line under it: it runs straight on into the bar below (the column headings; on a
                   phone, the search and filter). */}
               <div className="flex min-h-[56px] items-center justify-between gap-3 px-4 py-2 md:px-5">
@@ -1355,7 +1398,7 @@ function ClientsPageInner() {
                   the 1px border; expanded: pl-0 + justify-start, the same 1px) so it doesn't jump
                   when it expands. */}
               <div
-                className="flex items-center justify-between gap-2 border-b px-4 py-2 md:hidden"
+                className="flex items-center justify-between gap-2 px-4 py-2 md:hidden"
                 style={{ borderColor: border }}
               >
                 <button
@@ -1441,8 +1484,17 @@ function ClientsPageInner() {
             <div className="relative flex min-h-0 flex-1 flex-col">
             <div
               ref={listScrollRef}
-              className="glass-scroll min-h-0 flex-1 overflow-x-auto overflow-y-auto overscroll-contain"
+              // (On a phone it reaches up under the header and the top tab bar — their glass then shows the list behind it
+              // — and starts as far down as they reach. It's the page's scroller there, so the top tab bar watches it to fade
+              // its glass in once the list scrolls under it, as it does over every other page: data-app-scroll-root.)
+              data-app-scroll-root={isDesktopViewport ? undefined : "true"}
+              onScroll={(event) => {
+                const under = event.currentTarget.scrollTop > 2;
+                if (under !== listScrolledUnder) setListScrolledUnder(under);
+              }}
+              className="glass-scroll min-h-0 flex-1 overflow-x-auto overflow-y-auto overscroll-contain max-md:mt-[calc(var(--list-under)*-1)] max-md:pt-[var(--list-under)]"
               style={{
+                ["--list-under" as string]: `${48 + listHeaderPx}px`,
                 backgroundColor: pageBg,
                 // The fixed stage sits outside <main>, so it supplies the bottom safe-area / keyboard room <main> would have.
                 paddingBottom: "calc(12px + var(--keyboard-inset-px, 0px) + env(safe-area-inset-bottom, 0px))",
@@ -1621,7 +1673,7 @@ function ClientsPageInner() {
             onTouchMove={onDetailTouchMove}
             onTouchEnd={onDetailTouchEnd}
             onTouchCancel={onDetailTouchEnd}
-            className={`cs-contact-pane @container absolute inset-y-0 right-0 z-[5] flex w-full touch-pan-y flex-col overflow-hidden md:-top-12 md:w-[min(440px,100%)] md:border-l md:border-[var(--glass-border)] ${STAGE_SLIDE_CLASS} ${skipStageTransition ? "!transition-none" : ""} motion-reduce:!transition-none data-[swipe-dragging=true]:!transition-none`}
+            className={`cs-contact-pane @container absolute inset-y-0 right-0 z-[5] flex w-full touch-pan-y flex-col overflow-hidden max-md:top-12 md:-top-12 md:w-[min(440px,100%)] md:border-l md:border-[var(--glass-border)] ${STAGE_SLIDE_CLASS} ${skipStageTransition ? "!transition-none" : ""} motion-reduce:!transition-none data-[swipe-dragging=true]:!transition-none`}
             style={
               {
                 transform: isDetailOpen ? "translate3d(0, 0, 0)" : "translate3d(100%, 0, 0)",

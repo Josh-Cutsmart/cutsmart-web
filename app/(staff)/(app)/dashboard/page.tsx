@@ -32,6 +32,8 @@ import {
   boardSortKey,
   normalizeBoardColumnSorts,
   normalizeBoardSortMode,
+  normalizeBoardUserFilter,
+  passesBoardUserFilter,
   sortBoardCards,
   sortedBoardDropIndex,
   withBoardDropPreview,
@@ -39,7 +41,7 @@ import {
   type BoardSortMode,
 } from "@/lib/board-drop-order";
 import { stayStartedAtIso } from "@/lib/column-automations";
-import { BoardColumnSortMenu, BoardSortButton } from "@/components/board-sort-menu";
+import { BoardColumnSortMenu, BoardSortButton, BoardUserFilterButton, type BoardFilterUser } from "@/components/board-sort-menu";
 import { readBoardSortPrefs, saveBoardSortPrefs } from "@/lib/board-sort-prefs";
 import { REOPEN_APP_TAB_SCOPE_EVENT, useAppTabs } from "@/lib/app-tabs-context";
 import {
@@ -392,6 +394,8 @@ export default function DashboardPage() {
   // (the toolbar's Sort — overrides every column while it's set). "custom" = the dragged order.
   const [projectColumnSorts, setProjectColumnSorts] = useState<Record<string, BoardSortMode>>({});
   const [projectBoardSort, setProjectBoardSort] = useState<BoardSortMode>("custom");
+  // The toolbar's Users filter: whose projects it shows (list and columns), by assigned uid — none: everyone's.
+  const [projectUserFilter, setProjectUserFilter] = useState<string[]>([]);
   // The company the board's projects were loaded for (its sort choices are saved per company).
   const [dashboardCompanyId, setDashboardCompanyId] = useState("");
   const [collapsedProjectStatusColumns, setCollapsedProjectStatusColumns] = useState<Record<string, boolean>>({});
@@ -611,6 +615,7 @@ export default function DashboardPage() {
           openSubBoardColumnName?: unknown;
           columnSorts?: unknown;
           boardSort?: unknown;
+          userFilter?: unknown;
         };
         if (parsed.viewMode === "board" || parsed.viewMode === "list") setDashboardViewMode(parsed.viewMode);
         if (parsed.collapsedColumns && typeof parsed.collapsedColumns === "object") {
@@ -621,6 +626,7 @@ export default function DashboardPage() {
         }
         setProjectColumnSorts(normalizeBoardColumnSorts(parsed.columnSorts));
         setProjectBoardSort(normalizeBoardSortMode(parsed.boardSort));
+        setProjectUserFilter(normalizeBoardUserFilter(parsed.userFilter));
         // Restore straight into "revealed" — fully open, no shatter animation to replay (there's no
         // real click event here to capture an origin rect from). onCloseSubBoard already falls back
         // to an instant close (no animation) when subBoardZoomOrigin is null, which is exactly this
@@ -648,9 +654,10 @@ export default function DashboardPage() {
         openSubBoardColumnName,
         columnSorts: projectColumnSorts,
         boardSort: projectBoardSort,
+        userFilter: projectUserFilter,
       }),
     );
-  }, [user?.uid, boardPrefsHydrated, dashboardViewMode, collapsedProjectStatusColumns, collapsedSubStageColumns, openSubBoardColumnName, projectColumnSorts, projectBoardSort]);
+  }, [user?.uid, boardPrefsHydrated, dashboardViewMode, collapsedProjectStatusColumns, collapsedSubStageColumns, openSubBoardColumnName, projectColumnSorts, projectBoardSort, projectUserFilter]);
   // The sort choices are saved on the user's own profile (lib/board-sort-prefs.ts), so they follow
   // them to any device — the browser copy above only shows them straight away while that loads.
   // Nothing is saved until the profile's copy has loaded (null), so it's never overwritten unseen.
@@ -669,6 +676,7 @@ export default function DashboardPage() {
       savedProjectSortPrefsRef.current = JSON.stringify(prefs);
       setProjectColumnSorts(prefs.columnSorts);
       setProjectBoardSort(prefs.boardSort);
+      setProjectUserFilter(prefs.userFilter);
     });
     return () => {
       cancelled = true;
@@ -677,12 +685,12 @@ export default function DashboardPage() {
   useEffect(() => {
     const uid = user?.uid;
     if (!uid || !dashboardCompanyId || savedProjectSortPrefsRef.current === null) return;
-    const prefs = { columnSorts: projectColumnSorts, boardSort: projectBoardSort };
+    const prefs = { columnSorts: projectColumnSorts, boardSort: projectBoardSort, userFilter: projectUserFilter };
     const serialized = JSON.stringify(prefs);
     if (serialized === savedProjectSortPrefsRef.current) return;
     savedProjectSortPrefsRef.current = serialized;
     void saveBoardSortPrefs(uid, "dashboard", dashboardCompanyId, prefs);
-  }, [user?.uid, dashboardCompanyId, projectColumnSorts, projectBoardSort]);
+  }, [user?.uid, dashboardCompanyId, projectColumnSorts, projectBoardSort, projectUserFilter]);
   const isDarkMode = themeMode === "dark";
   const dashboardPalette = isDarkMode
     ? {
@@ -1557,6 +1565,7 @@ export default function DashboardPage() {
       if (applyQuickFilter && quickFilter !== "all" && statusLabel.trim().toLowerCase() !== quickFilter) {
         return false;
       }
+      if (!passesBoardUserFilter(projectUserFilter, project.assignedToUid)) return false;
 
       const tagsText = (project.tags || []).join(" ");
       const haystack = `${project.name} ${assignedDisplayName(project)} ${statusLabel} ${tagsText}`.toLowerCase();
@@ -1572,7 +1581,7 @@ export default function DashboardPage() {
     const openRows = rows.filter((r) => !isCompletedStatus(r.statusLabel));
     const completeRows = rows.filter((r) => isCompletedStatus(r.statusLabel));
     return [...openRows, ...completeRows];
-  }, [dashboardViewMode, isCompletedStatus, liveProjects, quickFilter, search]);
+  }, [dashboardViewMode, isCompletedStatus, liveProjects, quickFilter, search, projectUserFilter]);
   const showProjectsLoadingState = isLoading && filtered.length === 0;
 
   // Reset how many rows are revealed whenever the filtered result set changes
@@ -1580,7 +1589,7 @@ export default function DashboardPage() {
   // filter itself is untouched by this, only how much of it is shown.
   useEffect(() => {
     setVisibleCount(pageSize);
-  }, [search, quickFilter, pageSize]);
+  }, [search, quickFilter, pageSize, projectUserFilter]);
 
   const visibleProjects = useMemo(() => filtered.slice(0, visibleCount), [filtered, visibleCount]);
 
@@ -1601,6 +1610,19 @@ export default function DashboardPage() {
     }
     return { columns, otherProjects: sortBoardCards(otherProjects, projectBoardSort, projectBoardSortInfo) };
   }, [filtered, statusRows, projectBoardSort, projectColumnSorts]);
+  // The people projects can be assigned to, for the Users filter (A – Z, each in their colour).
+  const boardFilterUsers = useMemo<BoardFilterUser[]>(
+    () =>
+      companyMembers
+        .map((member) => ({
+          id: String(member.uid || "").trim(),
+          name: String(member.displayName || member.membershipDisplayName || member.email || "").trim() || "Unnamed",
+          color: creatorColorByUid[String(member.uid || "").trim()] || member.userColor || member.badgeColor || undefined,
+        }))
+        .filter((member) => member.id)
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" })),
+    [companyMembers, creatorColorByUid],
+  );
   // A column's order for this user: the board-wide sort while one is set, else the column's own.
   const projectColumnSortFor = (columnName: string): BoardSortMode =>
     projectBoardSort !== "custom" ? projectBoardSort : projectColumnSorts[columnName] ?? "custom";
@@ -3021,7 +3043,7 @@ export default function DashboardPage() {
                     out of the way (same as it did as a button row) while the search bar is
                     focused and expanded — taking the row's gap before it along with it
                     (peer-focus-within:-ml-2), so none's left over beside the bar. */}
-                <div className="relative z-0 order-2 flex flex-1 translate-x-0 justify-center overflow-hidden transition-[opacity,flex-grow,transform,margin] duration-200 peer-focus-within:pointer-events-none peer-focus-within:-ml-2 peer-focus-within:flex-none peer-focus-within:w-0 peer-focus-within:translate-x-6 peer-focus-within:opacity-0 peer-data-[opening=true]:pointer-events-none peer-data-[opening=true]:-ml-2 peer-data-[opening=true]:flex-none peer-data-[opening=true]:w-0 peer-data-[opening=true]:translate-x-6 peer-data-[opening=true]:opacity-0 sm:hidden">
+                <div className="relative z-0 order-2 flex flex-1 translate-x-0 justify-center gap-2 overflow-hidden transition-[opacity,flex-grow,transform,margin] duration-200 peer-focus-within:pointer-events-none peer-focus-within:-ml-2 peer-focus-within:flex-none peer-focus-within:w-0 peer-focus-within:translate-x-6 peer-focus-within:opacity-0 peer-data-[opening=true]:pointer-events-none peer-data-[opening=true]:-ml-2 peer-data-[opening=true]:flex-none peer-data-[opening=true]:w-0 peer-data-[opening=true]:translate-x-6 peer-data-[opening=true]:opacity-0 sm:hidden">
                   {dashboardViewMode === "board" ? (
                     // Columns: no status filter (the columns are the statuses) — the up/down sort button here instead,
                     // just its icon in a circle.
@@ -3068,6 +3090,15 @@ export default function DashboardPage() {
                       <ListFilter size={16} style={{ color: quickFilter === "all" ? dashboardPalette.textMuted : "#FFFFFF" }} />
                     </button>
                   )}
+                  {/* Whose projects show — its own filter, in both views. */}
+                  <BoardUserFilterButton
+                    users={boardFilterUsers}
+                    value={projectUserFilter}
+                    onChange={setProjectUserFilter}
+                    className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border transition hover:brightness-95"
+                    labelClassName="hidden"
+                    style={{ backgroundColor: dashboardPalette.panelBg, color: dashboardPalette.textMuted, borderColor: dashboardPalette.border }}
+                  />
                 </div>
                 <button
                   type="button"
@@ -3121,6 +3152,14 @@ export default function DashboardPage() {
                     }}
                   />
                 )}
+                {/* Whose projects show: its own filter, in both views (white like the rest, blue while it's filtering). */}
+                <BoardUserFilterButton
+                  users={boardFilterUsers}
+                  value={projectUserFilter}
+                  onChange={setProjectUserFilter}
+                  className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full border px-3 text-[12px] font-semibold transition hover:brightness-95 max-sm:hidden sm:order-1"
+                  style={{ backgroundColor: dashboardPalette.panelBg, color: dashboardPalette.textMuted, borderColor: dashboardPalette.border }}
+                />
                 {dashboardViewMode === "list" && (
                   // Hidden on mobile — infinite scroll (see the load-more-near-bottom effect
                   // further down) already reveals more projects automatically as the user

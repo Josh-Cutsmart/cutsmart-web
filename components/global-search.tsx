@@ -344,7 +344,9 @@ export function GlobalSearch({ pages, canOpenSettings }: { pages: GlobalSearchPa
                 <X size={13} strokeWidth={2.5} />
               </button>
             ) : null}
-            {loading ? (
+            {/* Only while there's nothing to search yet (the first time). Brought up to date after that, it's done quietly: the
+                last results are already there to search meanwhile. */}
+            {loading && !items.length ? (
               <span
                 aria-hidden="true"
                 className="h-4 w-4 shrink-0 animate-spin rounded-full border-2"

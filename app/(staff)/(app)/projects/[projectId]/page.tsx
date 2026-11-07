@@ -68894,8 +68894,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       setIsDeleteProjectModalOpen(true);
                     }}
                     disabled={isDeleting || !canDeleteProject}
-                    className="h-9 w-full rounded-[10px] border px-4 text-[15px] font-normal text-white transition hover:brightness-95 disabled:opacity-60 md:hidden"
-                    style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
+                    // The glass shine in red, round-ended, as the desktop Archive button beside the status.
+                    className="glass-shine h-10 w-full rounded-full border px-4 text-[14px] font-semibold text-white transition hover:brightness-105 disabled:opacity-60 md:hidden"
+                    style={glassShineStyle("#EF4444")}
                   >
                     Archive Project
                   </button>

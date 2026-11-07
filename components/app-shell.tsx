@@ -1329,7 +1329,19 @@ export function AppShell({
       mainOpenDragRef.current.kind = null;
       return;
     }
-    const horizontalScroller = (event.target as HTMLElement | null)?.closest<HTMLElement>('[data-horizontal-swipe-scroll="true"]') ?? null;
+    // ...or anything else that scrolls sideways and has further to go (a row of tabs or filters too wide for the screen,
+    // a wide table, as in the Archive): a sideways swipe on it scrolls it, rather than opening a side menu.
+    const sidewaysScroller = (from: HTMLElement | null): HTMLElement | null => {
+      for (let node = from; node && node !== event.currentTarget; node = node.parentElement) {
+        if (node.scrollWidth <= node.clientWidth + 1) continue;
+        const overflowX = getComputedStyle(node).overflowX;
+        if (overflowX === "auto" || overflowX === "scroll") return node;
+      }
+      return null;
+    };
+    const horizontalScroller =
+      (event.target as HTMLElement | null)?.closest<HTMLElement>('[data-horizontal-swipe-scroll="true"]') ??
+      sidewaysScroller(event.target as HTMLElement | null);
     const touch = event.touches[0];
     if (!touch) return;
     mainSwipeStartRef.current = {
@@ -3916,6 +3928,11 @@ export function AppShell({
                               <Link
                                 key={item.href}
                                 href={item.href}
+                                // The page that's already open: nothing to go to, so the menu just closes onto it. (Any other closes
+                                // as its page opens — the pathname effect.)
+                                onClick={() => {
+                                  if (active) setMobileNavOpen(false);
+                                }}
                                 className={cn(
                                   "flex items-center gap-3 rounded-[12px] px-4 py-3.5 text-[17px] font-medium transition",
                                   // Selected: see-through glass (globals.css .nav-active-glass), as the computer's sidebar.
@@ -5558,8 +5575,9 @@ export function AppShell({
                 <button
                   type="button"
                   onClick={() => setShowLogoutConfirm(false)}
-                  className="inline-flex h-10 items-center justify-center rounded-[10px] border px-4 text-[12px] font-semibold hover:brightness-95"
-                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+                  // (The pop-ups' own buttons: round, in the glass shine — plain for Cancel, red for Log Out.)
+                  className="glass-shine glass-shine-neutral inline-flex h-9 items-center justify-center rounded-full px-4 text-[12px] font-medium transition hover:brightness-95"
+                  style={{ color: "var(--text-main)" }}
                 >
                   Cancel
                 </button>
@@ -5569,8 +5587,8 @@ export function AppShell({
                     setShowLogoutConfirm(false);
                     void logout();
                   }}
-                  className="inline-flex h-10 items-center justify-center rounded-[10px] border px-4 text-[12px] font-semibold text-white hover:brightness-95"
-                  style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
+                  className="glass-shine inline-flex h-9 items-center justify-center rounded-full px-4 text-[12px] font-medium text-white transition hover:brightness-95"
+                  style={glassShineStyle("var(--danger)")}
                 >
                   Log Out
                 </button>

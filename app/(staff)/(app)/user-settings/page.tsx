@@ -38,6 +38,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useAppTabs } from "@/lib/app-tabs-context";
+import { glassShineStyle } from "@/lib/glass-shine";
 import { isIosDevice, promptPwaInstall, usePwaInstall } from "@/lib/pwa-install";
 import { auth } from "@/lib/firebase";
 import {
@@ -1324,8 +1325,9 @@ export default function UserSettingsPage() {
           await saveProfile("manual");
           router.push("/dashboard");
         }}
-        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95 disabled:opacity-55"
-        style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+        // (Round and green in the glass shine, as every other top bar's back button.)
+        className="glass-shine inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border hover:brightness-95 disabled:opacity-55"
+        style={glassShineStyle("#16A34A")}
         aria-label={isSaving ? "Saving..." : "Save & Back"}
       >
         <ChevronLeft size={18} color="#ffffff" strokeWidth={2.5} />
