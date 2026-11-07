@@ -60,6 +60,7 @@ const AUTO_SCROLL_PAD_ATTR = "data-keyboard-scroll-pad-auto";
 const ASSUMED_ROOM_ATTR = "data-keyboard-scroll-room";
 const ASSUMED_ROOM_SHARE = 0.6;
 const ASSUMED_VISIBLE_SHARE = 0.52;
+const MOST_SCROLLER_TOP_SHARE = 0.3;
 
 function giveFocusedPanelScrollRoom(): void {
   const field = document.activeElement;
@@ -137,6 +138,8 @@ function clearPanelLifts(): void {
 // Dev mode only, while the keyboard's up: what the phone is reporting, along the top of the screen. To work out a box the
 // keyboard still hides on a real phone, which a simulated keyboard can't show.
 let keyboardReadout: HTMLElement | null = null;
+let watchTicks = 0;
+let fieldAim = "none";
 function showKeyboardReadout(vv: VisualViewport): void {
   let devOn = false;
   try {
@@ -166,11 +169,12 @@ function showKeyboardReadout(vv: VisualViewport): void {
   const root = getComputedStyle(document.documentElement);
   keyboardReadout.style.transform = `translateY(${vv.offsetTop}px)`;
   keyboardReadout.textContent = [
-    `win ${window.innerHeight} scrollY ${Math.round(window.scrollY)} | vv h ${Math.round(vv.height)} top ${Math.round(vv.offsetTop)} scale ${vv.scale.toFixed(2)}`,
+    `screen ${window.screen.height} win ${window.innerHeight} scrollY ${Math.round(window.scrollY)} | vv h ${Math.round(vv.height)} top ${Math.round(vv.offsetTop)} scale ${vv.scale.toFixed(2)}`,
     `vars inset ${root.getPropertyValue("--keyboard-inset-px")} top ${root.getPropertyValue("--keyboard-offset-top-px")} open ${document.documentElement.hasAttribute(KEYBOARD_OPEN_ATTR)}`,
     `box ${Math.round(r.top)}-${Math.round(r.bottom)} sees to ${Math.round(vv.offsetTop + vv.height)} aims for ${Math.round(visibleBottomFor(field, vv))}`,
     panel ? `panel ${Math.round(panel.getBoundingClientRect().top)}-${Math.round(panel.getBoundingClientRect().bottom)} lift ${panel.dataset.keyboardLifted ?? 0} pad ${getComputedStyle(panel).paddingBottom}` : "no panel",
     scroller ? `scroll ${Math.round(scroller.scrollTop)}/${scroller.scrollHeight - scroller.clientHeight} pad ${getComputedStyle(scroller).paddingBottom}` : "no scroller",
+    `checks ${watchTicks} aim ${fieldAim}`,
   ].join("\n");
 }
 
@@ -185,17 +189,34 @@ function scrollFocusedFieldIntoPanelView(field: HTMLElement): void {
     const { overflowY } = getComputedStyle(node);
     if ((overflowY === "auto" || overflowY === "scroll") && node.scrollHeight > node.clientHeight) {
       const box = node.getBoundingClientRect();
-      const top = Math.max(box.top, visibleTop);
-      const bottom = Math.min(box.bottom, visibleBottom);
       const rect = field.getBoundingClientRect();
-      if (behindKeyboard && bottom - top > rect.height + REVEAL_MARGIN_PX * 2) {
-        const target = top + (bottom - top - rect.height) / 2;
-        node.scrollTop += rect.top - target;
-      } else if (rect.bottom > bottom) node.scrollTop += rect.bottom - bottom + REVEAL_MARGIN_PX;
-      else if (rect.top < top) node.scrollTop -= top - rect.top + REVEAL_MARGIN_PX;
+      if (vv && behindKeyboard && expectsKeyboard(field)) {
+        aimFieldInScroller(rect, box, node, vv);
+      } else {
+        const top = Math.max(box.top, visibleTop);
+        const bottom = Math.min(box.bottom, visibleBottom);
+        if (behindKeyboard && bottom - top > rect.height + REVEAL_MARGIN_PX * 2) {
+          const target = top + (bottom - top - rect.height) / 2;
+          node.scrollTop += rect.top - target;
+        } else if (rect.bottom > bottom) node.scrollTop += rect.bottom - bottom + REVEAL_MARGIN_PX;
+        else if (rect.top < top) node.scrollTop -= top - rect.top + REVEAL_MARGIN_PX;
+      }
     }
     if (node.classList.contains("glass-modal-panel")) return;
   }
+}
+
+// A box the keyboard's coming up for, in what it scrolls in: to the middle of the part of that above the keyboard. Worked out from
+// where the box is inside what scrolls it, which is the same wherever the screen's been moved to, and the screen's position only
+// within limits, so a wrong number from the phone can't leave it behind the keyboard.
+function aimFieldInScroller(rect: DOMRect, box: DOMRect, node: HTMLElement, vv: VisualViewport): void {
+  const aimTop = Math.min(Math.max(box.top - vv.offsetTop, 0), window.innerHeight * MOST_SCROLLER_TOP_SHARE);
+  const aimHeight = Math.min(vv.height, window.innerHeight * ASSUMED_VISIBLE_SHARE) - aimTop;
+  const middle = Math.max(REVEAL_MARGIN_PX, (aimHeight - rect.height) / 2);
+  const inBox = Math.min(middle, Math.max(REVEAL_MARGIN_PX, (box.height - rect.height) / 2));
+  const delta = rect.top - box.top - inBox;
+  if (Math.abs(delta) >= 1) node.scrollTop += delta;
+  fieldAim = `${Math.round(node.scrollTop)} (moved ${Math.round(delta)})`;
 }
 
 // A phone's pop-up shown as the whole screen without being marked so (globals.css: every pop-up on a phone but those
@@ -284,7 +305,8 @@ function centerFocusedNotesBox(): void {
   const vv = window.visualViewport;
   if (!box || !vv) return;
   const visibleTop = vv.offsetTop;
-  const visibleBottom = vv.offsetTop + vv.height;
+  const active = document.activeElement;
+  const visibleBottom = active instanceof HTMLElement ? visibleBottomFor(active, vv) : vv.offsetTop + vv.height;
   // Each scroll area it's in, innermost first — not the document itself (on a phone the page scrolls in <main>; moving
   // the document as well just shifts everything, fixed bars and all, out from under the visible area).
   const areas: HTMLElement[] = [];
@@ -330,6 +352,8 @@ const REREAD_AFTER_HOLD_MS = [0, 60, 160, 320, 640];
 const FIELD_WATCH_MS = 3500;
 const FIELD_WATCH_EVERY_MS = 150;
 const FOCUS_OUT_WAIT_MS = 150;
+const TAP_MOVE_PX = 10;
+const TAP_MOST_MS = 500;
 
 function notesBoxOutOfView(box: HTMLElement): boolean {
   const vv = window.visualViewport;
@@ -495,6 +519,7 @@ export function usePublishKeyboardInsetVars(): void {
     // touch the screen to do something else. A phone can move things late, or not say that it has.
     const watchFocusedField = () => {
       watchUntil = Date.now() + FIELD_WATCH_MS;
+      watchTicks = 0;
       if (watchTimer !== null) return;
       watchTimer = window.setInterval(() => {
         const field = document.activeElement;
@@ -508,9 +533,9 @@ export function usePublishKeyboardInsetVars(): void {
           if (notesBoxOutOfView(field)) centerFocusedNotesBox();
           return;
         }
+        watchTicks += 1;
         giveFocusedPanelScrollRoom();
-        const rect = field.getBoundingClientRect();
-        if (rect.top < vv.offsetTop || rect.bottom + REVEAL_MARGIN_PX > visibleBottomFor(field, vv)) revealFocusedFieldInPanel();
+        revealFocusedFieldInPanel();
       }, FIELD_WATCH_EVERY_MS);
     };
     const onFocusIn = () => {
@@ -543,6 +568,46 @@ export function usePublishKeyboardInsetVars(): void {
         clearPanelLifts();
       }, FOCUS_OUT_WAIT_MS);
     };
+    // A box tapped where the keyboard's about to cover it. Left to itself a phone slides the whole screen up to show it, and past
+    // the page's bottom edge nothing's drawn, so a plain colour shows behind the see-through keyboard instead of what's on the
+    // page. So the tap's taken over: the box gets the focus and is moved up in the same moment, before the phone looks, and with it
+    // already clear of the keyboard the phone has no reason to slide anything. (The cursor goes to the end of what's in it; another
+    // tap, in a box that already has the focus, places it as usual.)
+    let tap: { field: HTMLElement; x: number; y: number; at: number } | null = null;
+    const onTapStart = (event: TouchEvent) => {
+      tap = null;
+      if (event.touches.length !== 1 || !(event.target instanceof Element)) return;
+      const field = event.target.closest<HTMLElement>("input, textarea");
+      if (!field) return;
+      const touch = event.touches[0];
+      tap = { field, x: touch.clientX, y: touch.clientY, at: Date.now() };
+    };
+    const onTapMove = (event: TouchEvent) => {
+      if (!tap) return;
+      const touch = event.touches[0];
+      if (Math.abs(touch.clientX - tap.x) > TAP_MOVE_PX || Math.abs(touch.clientY - tap.y) > TAP_MOVE_PX) tap = null;
+    };
+    const onTapEnd = (event: TouchEvent) => {
+      const current = tap;
+      tap = null;
+      if (!current || !event.cancelable || Date.now() - current.at > TAP_MOST_MS) return;
+      const { field } = current;
+      const control = field as HTMLInputElement | HTMLTextAreaElement;
+      if (document.activeElement === field || control.disabled || control.readOnly || !field.isConnected) return;
+      if (!expectsKeyboard(field) || !window.matchMedia("(max-width: 639.98px)").matches) return;
+      if (!field.closest(".glass-modal-panel") && inPinnedBar(field)) return;
+      if (field.getBoundingClientRect().bottom + REVEAL_MARGIN_PX <= visibleBottomFor(field, vv)) return;
+      event.preventDefault();
+      field.focus({ preventScroll: true });
+      if (document.activeElement !== field) return;
+      if (focusedKeyboardCenterBox()) centerFocusedNotesBox();
+      else {
+        giveFocusedPanelScrollRoom();
+        revealFocusedFieldInPanel();
+      }
+      // (What the tap would have done, other than moving the focus.)
+      field.click();
+    };
     // The page itself resized while a notes box is being typed in — a phone that shrinks it for the keyboard rather than
     // covering it: checked on as above.
     const onWindowResize = () => {
@@ -553,6 +618,9 @@ export function usePublishKeyboardInsetVars(): void {
     vv.addEventListener("scroll", schedule);
     document.addEventListener("focusin", onFocusIn);
     document.addEventListener("focusout", onFocusOut);
+    document.addEventListener("touchstart", onTapStart, { passive: true, capture: true });
+    document.addEventListener("touchmove", onTapMove, { passive: true, capture: true });
+    document.addEventListener("touchend", onTapEnd, { passive: false, capture: true });
     document.addEventListener("touchmove", stopWatch, { passive: true, capture: true });
     window.addEventListener("resize", onWindowResize);
     return () => {
@@ -560,6 +628,9 @@ export function usePublishKeyboardInsetVars(): void {
       vv.removeEventListener("scroll", schedule);
       document.removeEventListener("focusin", onFocusIn);
       document.removeEventListener("focusout", onFocusOut);
+      document.removeEventListener("touchstart", onTapStart, { capture: true });
+      document.removeEventListener("touchmove", onTapMove, { capture: true });
+      document.removeEventListener("touchend", onTapEnd, { capture: true });
       document.removeEventListener("touchmove", stopWatch, { capture: true });
       stopWatch();
       keyboardReadout?.remove();
