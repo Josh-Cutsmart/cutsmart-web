@@ -20,7 +20,7 @@ import { GlassActionMenu, GlassDropdown, type GlassActionMenuItem, GLASS_MENU_CL
 import { StatusMenuPanels, statusMenuRowCount, type StatusMenuStatus } from "@/components/status-menu-panels";
 import { SPLIT_STATUS_PILL_CLASS, SplitStatusPillContent } from "@/components/status-pill-split";
 import { PartLabelPreview } from "@/components/part-label";
-import { buildPartLabelsPdf, clashedEdgesFor, DEFAULT_LABEL_SIZE_ID, LABEL_SIZE_STORAGE_KEY, LABEL_SIZES, labelSizeById, type PartLabel } from "@/lib/part-labels";
+import { buildPartLabelsPdf, clashedEdgesFor, DEFAULT_LABEL_SIZE_ID, hingeMarksFromTheirEnds, LABEL_SIZE_STORAGE_KEY, LABEL_SIZES, labelSizeById, partLabelsPrintHtml, shapeSideLengthsMm, type LabelHingeMark, type LabelPrintLayout, type PartLabel } from "@/lib/part-labels";
 import { BoardColumnFrame, ColumnCollapseChevrons } from "@/components/board-column-frame";
 import { collapseBoardColumnAnimated, expandBoardColumnAnimated } from "@/lib/board-column-collapse";
 import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
@@ -37,6 +37,7 @@ import { activeDate, activeDateTime, activeLength, activeMoney, activeUnit, acti
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LeadDetailsModal } from "@/components/lead-details-modal";
 import { DoorHingeDiagram, HingeSideToggle } from "@/components/door-hinge-diagram";
+import { DoorHingeZoom } from "@/components/door-hinge-zoom";
 import { useFloatingStickyHeader } from "@/lib/use-floating-sticky-header";
 import { useAppTabs } from "@/lib/app-tabs-context";
 import { useAuth } from "@/lib/auth-context";
@@ -16903,8 +16904,8 @@ export default function ProjectDetailsPage() {
     const betweenGap = Math.max(0, toNum(String(row.doorBetweenGap ?? resolvedBetweenGap)));
     const panelGap = Math.max(0, toNum(String(projectGapAllowancesDraft.baseVerticalGapDoorsPanels ?? "")));
     const grainSource = String(row.grainValue ?? "").trim();
-    const parentClashLeft = String(row.clashLeft ?? splitClashing(String(row.clashing ?? "")).left ?? "").trim();
-    const parentClashRight = String(row.clashRight ?? splitClashing(String(row.clashing ?? "")).right ?? "").trim();
+    const parentClashLeft = String(row.clashLeft || splitClashing(String(row.clashing ?? "")).left || "").trim();
+    const parentClashRight = String(row.clashRight || splitClashing(String(row.clashing ?? "")).right || "").trim();
 
     const grainValueForPiece = (pieceHeight: number, pieceWidth: number, pieceDepth = 0) => {
       if (!grainSource) return "";
@@ -31661,7 +31662,7 @@ export default function ProjectDetailsPage() {
     if (inline) {
       return (
         <div className="flex items-center gap-[10px] whitespace-nowrap pt-[6px] text-[12px]" style={{ color: text }}>
-          <DoorHingeDiagram
+          <DoorHingeZoom
             height={doorHeight}
             width={doorWidth}
             up={upValues}
@@ -33667,15 +33668,17 @@ export default function ProjectDetailsPage() {
       const down = normalizeDoorHingeValues(row.hingesDown);
       if (row.bankGroupId || !isDoorPartType(row.partType) || (up.length === 0 && down.length === 0)) return null;
       const mark = (value: string, from: "start" | "end") => ({ at: toNum(value), from, text: lengthText(value) });
+      // (As the label shows them, each from its own end. The cutlist keeps them as entered.)
+      const fromTheirEnds = (marks: LabelHingeMark[], length: unknown) => hingeMarksFromTheirEnds(marks, toNum(length), (mm) => lengthText(String(mm)));
       const side = normalizeHingeSideValue(row.hingeSide);
       if (side === "Top") {
-        return { side: "top", tag: "Top hinged", marks: [...up.map((value) => mark(value, "start")), ...down.map((value) => mark(value, "end"))] };
+        return { side: "top", tag: "Top hinged", marks: fromTheirEnds([...up.map((value) => mark(value, "start")), ...down.map((value) => mark(value, "end"))], row.width) };
       }
       const hand = side === "RH" || (side === "Mirror" && copy % 2 === 0) ? "RH" : side === "LH" || side === "Mirror" ? "LH" : "";
       return {
         side: hand === "RH" ? "right" : "left",
         tag: hand ? `${hand} hinges` : "Hinges",
-        marks: [...down.map((value) => mark(value, "start")), ...up.map((value) => mark(value, "end"))],
+        marks: fromTheirEnds([...down.map((value) => mark(value, "start")), ...up.map((value) => mark(value, "end"))], row.height),
       };
     };
     const made: Array<{ id: number; order: number; label: PartLabel }> = [];
@@ -33731,7 +33734,7 @@ export default function ProjectDetailsPage() {
             grain,
             clashed: clash.edges,
             clashCode: clash.code,
-            ...(labelShape ? { shape: labelShape } : {}),
+            ...(labelShape ? { shape: labelShape, shapeSides: shapeSideLengthsMm(labelShape).map((mm) => lengthText(formatShapeMm(mm))) } : {}),
             hinges: withHinges ? hingesFor(row, copy) : null,
             info,
             copy,
@@ -33850,6 +33853,29 @@ export default function ProjectDetailsPage() {
   // some; kept while the project's open) and its search. On a computer it slides away (its bubbles out, then the labels
   // over into its room); on a phone it's a page of its own, over the labels.
   const [hiddenPartLabels, setHiddenPartLabels] = useState<Record<string, boolean>>({});
+  // ...what each person's ticked and unticked kept for them on this device, by project, so it's the same after a reload. (Saved first
+  // in this order so the first render's empty list isn't saved over what's about to be read.)
+  const hiddenPartLabelsKey = user?.uid && params.projectId ? `cutsmart.web.labels.hidden.${user.uid}.${params.projectId}` : "";
+  const hiddenPartLabelsLoadedKey = useRef("");
+  useEffect(() => {
+    if (!hiddenPartLabelsKey || hiddenPartLabelsLoadedKey.current !== hiddenPartLabelsKey) return;
+    try {
+      if (Object.keys(hiddenPartLabels).length) window.localStorage.setItem(hiddenPartLabelsKey, JSON.stringify(hiddenPartLabels));
+      else window.localStorage.removeItem(hiddenPartLabelsKey);
+    } catch {
+      // Storage unavailable: it just won't be remembered.
+    }
+  }, [hiddenPartLabels, hiddenPartLabelsKey]);
+  useEffect(() => {
+    if (!hiddenPartLabelsKey || hiddenPartLabelsLoadedKey.current === hiddenPartLabelsKey) return;
+    hiddenPartLabelsLoadedKey.current = hiddenPartLabelsKey;
+    try {
+      const saved: unknown = JSON.parse(window.localStorage.getItem(hiddenPartLabelsKey) ?? "null");
+      setHiddenPartLabels(saved && typeof saved === "object" && !Array.isArray(saved) ? (saved as Record<string, boolean>) : {});
+    } catch {
+      setHiddenPartLabels({});
+    }
+  }, [hiddenPartLabelsKey]);
   const [partLabelSearch, setPartLabelSearch] = useState("");
   // ...and how each person left it, remembered on this device (as the Order tab's hardware library): the part types
   // folded away ("type:<part type>"), the parts opened out to their own labels ("part:<project>:<part>"), and — on a
@@ -43666,23 +43692,47 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       labelsPanelTimeoutRef.current = null;
     }, 360);
   };
-  // The labels shown (all, or a room's) as a PDF, each its own page the label's size — to print (straight from the
-  // click, as the other production prints), or to download.
-  const onOutputPartLabels = (mode: "print" | "download") => {
+  // The labels shown (all, or a room's), printed straight from the click: a page of them for the browser to lay out for whatever paper's
+  // picked in the print window (partLabelsPrintHtml), in a frame of its own so nothing else on this page comes with it. An iPhone or iPad
+  // doesn't reliably print a frame: A4 sheets as a PDF there.
+  const onPrintPartLabels = () => {
+    const labels = shownPartLabels;
+    if (!labels.length) return;
+    if (/iPad|iPhone|iPod/.test(navigator.userAgent)) {
+      withPdfExportModules((modules) => {
+        const blob = buildPartLabelsPdf(modules.jsPDF, labels, partLabelSize, partLabelLogo, "a4");
+        if (blob) modules.openPdfBlobInPrintWindow(blob);
+      });
+      return;
+    }
+    document.getElementById("part-labels-print-frame")?.remove();
+    const frame = document.createElement("iframe");
+    frame.id = "part-labels-print-frame";
+    frame.title = "Labels to print";
+    frame.setAttribute("aria-hidden", "true");
+    frame.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;";
+    frame.onload = () => {
+      const printing = frame.contentWindow;
+      if (!printing) return;
+      printing.addEventListener("afterprint", () => frame.remove(), { once: true });
+      printing.focus();
+      printing.print();
+    };
+    frame.srcdoc = partLabelsPrintHtml(labels, partLabelSize, partLabelLogo);
+    document.body.appendChild(frame);
+  };
+  // ...or downloaded, as a PDF: a file has to have its layout set, so which it's for is picked from the Download menu.
+  const onDownloadPartLabels = (layout: LabelPrintLayout) => {
     const labels = shownPartLabels;
     if (!labels.length) return;
     withPdfExportModules((modules) => {
-      const blob = buildPartLabelsPdf(modules.jsPDF, labels, partLabelSize, partLabelLogo);
+      const blob = buildPartLabelsPdf(modules.jsPDF, labels, partLabelSize, partLabelLogo, layout);
       if (!blob) return;
-      if (mode === "print") {
-        modules.openPdfBlobInPrintWindow(blob);
-        return;
-      }
       const safeProject = (project?.name || "project").replace(/[\\/:*?"<>|]/g, "_").replace(/\s+/g, "_").slice(0, 64);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `${safeProject}_labels_${partLabelSize.id}.pdf`;
+      a.download = `${safeProject}_labels_${partLabelSize.id}${layout === "a4" ? "_A4" : ""}.pdf`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -55124,7 +55174,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 ariaLabel="Label size"
                 menuAlign="right"
                 menuMinWidth={210}
-                triggerTitle="The size of the labels in your label printer"
+                triggerTitle="The size of the labels. Printing fits as many as the paper takes"
                 triggerClassName={`${pillClass} ${large ? "max-w-[220px]" : "max-w-[120px]"}`}
                 triggerStyle={pillStyle}
               />
@@ -55132,12 +55182,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 icon: Printer,
                 label: "Print labels",
                 title: shownPartLabels.length ? "Print labels" : "No labels to print",
-                onClick: () => onOutputPartLabels("print"),
+                onClick: onPrintPartLabels,
                 disabled: shownPartLabels.length === 0,
                 large,
               })}
               {renderTopBarDownloadMenu(
-                [{ key: "pdf", label: "PDF (.pdf)", icon: <FileText size={14} />, onSelect: () => onOutputPartLabels("download") }],
+                [
+                  { key: "pdf", label: "PDF, one per page", icon: <FileText size={14} />, onSelect: () => onDownloadPartLabels("roll") },
+                  { key: "pdf-a4", label: "PDF, A4 sheets", icon: <FileText size={14} />, onSelect: () => onDownloadPartLabels("a4") },
+                ],
                 large,
                 "Download labels",
               )}

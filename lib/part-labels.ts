@@ -2,7 +2,7 @@
 
 import type { jsPDF as JsPdf } from "jspdf";
 import qrcode from "qrcode-generator";
-import { formatShapeMetres, shapeGeometry, type CutlistShape, type ShapePoint } from "@/lib/cutlist-shape";
+import { formatShapeMetres, placeShapeLabels, segmentArcPoints, shapeGeometry, type CutlistShape, type ShapePoint } from "@/lib/cutlist-shape";
 import { shapeBandedPolylines, shapeOutlinePolyline } from "@/lib/cutlist-shape-render";
 import type { PrintTitleLogo } from "@/lib/print-title-page";
 
@@ -11,14 +11,15 @@ import type { PrintTitleLogo } from "@/lib/print-title-page";
 //  - the part's ID (as the CNC Cutlist and the Nesting sheets number it) in a black tile, its name, and what it's part
 //    of / its room / its part type; the company's logo top right;
 //  - the piece's outline, to scale, with an X on each edge that's clashed and its clashing (1L1S) under it — a door's
-//    hinges drawn on it too, each with where it goes;
+//    hinges drawn on it too, each with where it goes, and marked Front (they're drilled from the other side);
 //  - its size, each number with which it is (H, W, D) over it; its board; its information lines;
 //  - along the bottom: the project and who it's for, and which of its copies it is (2 of 4);
 //  - with qrUrl: a QR code in the bottom right of its body — scanned with a phone's camera, it opens the part in its
 //    project (Production › Labels' "QR codes").
 // Laid out once (layoutPartLabel: plain shapes and text, in mm, from the label's top left) and drawn from that both on
-// screen (components/part-label.tsx) and into the PDF that prints them (one label a page, the page the label's size),
-// so the two are always the same. Black and grey only: label printers are mostly thermal, black on white.
+// screen (components/part-label.tsx) and into what prints them, so they're always the same: printed, as many as fit whatever paper's
+// picked in the print window (partLabelsPrintHtml); downloaded, a PDF of one label a page, the page the label's size, or as many as fit
+// on each A4 sheet (labelSheetLayout). Black and grey only: label printers are mostly thermal, black on white.
 
 export type LabelSize = { id: string; name: string; width: number; height: number };
 
@@ -35,11 +36,66 @@ export const DEFAULT_LABEL_SIZE_ID = "100x75";
 // The size last picked, on this device.
 export const LABEL_SIZE_STORAGE_KEY = "cutsmart_part_label_size";
 
+// A PDF's layout: a label printer's roll (one label a page, the page the label's size), or filling A4 sheets.
+export type LabelPrintLayout = "roll" | "a4";
+
+const A4_SHORT_MM = 210;
+const A4_LONG_MM = 297;
+// What an ordinary printer can't reach, all round.
+const SHEET_MARGIN_MM = 5;
+
+// Labels on an A4 sheet: as many of this size as fit, upright on the page, whichever way round the page holds the most (upright, if
+// they're the same). In the middle of the page, edge to edge.
+export function labelSheetLayout(size: LabelSize) {
+  const fit = (pageW: number, pageH: number) => ({
+    pageW,
+    pageH,
+    columns: Math.max(1, Math.floor((pageW - 2 * SHEET_MARGIN_MM) / size.width)),
+    rows: Math.max(1, Math.floor((pageH - 2 * SHEET_MARGIN_MM) / size.height)),
+  });
+  const upright = fit(A4_SHORT_MM, A4_LONG_MM);
+  const sideways = fit(A4_LONG_MM, A4_SHORT_MM);
+  const best = sideways.columns * sideways.rows > upright.columns * upright.rows ? sideways : upright;
+  return {
+    ...best,
+    orientation: best === upright ? ("portrait" as const) : ("landscape" as const),
+    perSheet: best.columns * best.rows,
+    left: (best.pageW - best.columns * size.width) / 2,
+    top: (best.pageH - best.rows * size.height) / 2,
+  };
+}
+
 export function labelSizeById(id: string | null | undefined): LabelSize {
   return LABEL_SIZES.find((size) => size.id === id) ?? LABEL_SIZES.find((size) => size.id === DEFAULT_LABEL_SIZE_ID) ?? LABEL_SIZES[0];
 }
 
 export type LabelEdge = "top" | "right" | "bottom" | "left";
+
+export type LabelHingeMark = { at: number; from: "start" | "end"; text: string };
+
+// A door's hinges as the label shows them, however they were entered: the one nearest each end measured from that end, so a 500 door's
+// Up 100 and Up 400 read 100 and 100, one from each end. Hinges between those stay measured as entered. A door with just one: from its
+// nearer end. Any that's off the door (or a door with no size): left as entered, to be seen as it was typed.
+export function hingeMarksFromTheirEnds(marks: LabelHingeMark[], lengthMm: number, textOf: (mm: number) => string): LabelHingeMark[] {
+  const placed = marks.map((mark) => ({ mark, along: mark.from === "start" ? mark.at : lengthMm - mark.at }));
+  if (!(lengthMm > 0) || placed.some(({ along }) => !(along >= 0 && along <= lengthMm))) return marks;
+  const measuredFrom = (mark: LabelHingeMark, along: number, from: "start" | "end"): LabelHingeMark => {
+    if (mark.from === from) return mark;
+    const at = Math.round((from === "start" ? along : lengthMm - along) * 10) / 10;
+    return { at, from, text: textOf(at) };
+  };
+  placed.sort((a, b) => a.along - b.along);
+  if (placed.length === 1) {
+    const { mark, along } = placed[0];
+    const nearer = along === lengthMm - along ? mark.from : along < lengthMm - along ? "start" : "end";
+    return [measuredFrom(mark, along, nearer)];
+  }
+  return placed.map(({ mark, along }, index) => {
+    if (index === 0) return measuredFrom(mark, along, "start");
+    if (index === placed.length - 1) return measuredFrom(mark, along, "end");
+    return mark;
+  });
+}
 
 export type PartLabel = {
   key: string;
@@ -66,8 +122,9 @@ export type PartLabel = {
   clashed: LabelEdge[];
   clashCode: string;
   // A door's hinges: the edge they're on, its side (LH, RH, Top), and each — how far along (mm) from that edge's start
-  // (its top, or its left on a top-hinged door) or its end, and that distance as written.
-  hinges: { side: LabelEdge; tag: string; marks: Array<{ at: number; from: "start" | "end"; text: string }> } | null;
+  // (its top, or its left on a top-hinged door) or its end, and that distance as written (see hingeMarksFromTheirEnds). Each has an
+  // arrow on the door to the end it's measured from.
+  hinges: { side: LabelEdge; tag: string; marks: LabelHingeMark[] } | null;
   info: string[];
   copy: number;
   copies: number;
@@ -78,7 +135,19 @@ export type PartLabel = {
   // A Custom piece: the shape it's cut to (lib/cutlist-shape.ts) — drawn as its real outline (its x across the label,
   // its y down it, onto wideMm × tallMm), its banded runs marked as clashed edges are. (Its clashed / clashCode empty.)
   shape?: CutlistShape | null;
+  // ...and each of its sides' length end to end, by edge, as the cutlist writes lengths (shapeSideLengthsMm gives them in mm).
+  shapeSides?: string[];
 };
+
+// A shape's sides' lengths (mm), end to end, by edge. None if it isn't a shape that can be drawn.
+export function shapeSideLengthsMm(shape: CutlistShape | null | undefined): number[] {
+  if (!shape) return [];
+  try {
+    return shapeGeometry(shape).edges.map((edge) => edge.vertexLength);
+  } catch {
+    return [];
+  }
+}
 
 // The edges a clashing's long / short edges are: a tall piece's long edges its sides, a wide one's its top and bottom —
 // one of them the right / bottom one (so 1L1S is a corner: its two edges meeting there), two both.
@@ -140,13 +209,15 @@ function fitText(text: string, maxWidth: number, sizePt: number, bold = false): 
 }
 
 // Broken into lines that fit (a word too long for one: cut) — at most `maxLines`, the last cut (…) if there's more.
-function wrapText(text: string, maxWidth: number, sizePt: number, bold = false, maxLines = Infinity): string[] {
+// (maxWidth can be each line's own, by its number: a line beside the QR code has less room than one above it.)
+function wrapText(text: string, maxWidth: number | ((lineIndex: number) => number), sizePt: number, bold = false, maxLines = Infinity): string[] {
+  const widthOf = (lineIndex: number) => (typeof maxWidth === "number" ? maxWidth : maxWidth(lineIndex));
   const words = String(text || "").trim().split(/\s+/).filter(Boolean);
   const lines: string[] = [];
   let line = "";
   for (const word of words) {
     const next = line ? `${line} ${word}` : word;
-    if (measureLabelText(next, sizePt, bold) <= maxWidth || !line) {
+    if (measureLabelText(next, sizePt, bold) <= widthOf(lines.length) || !line) {
       line = next;
     } else {
       lines.push(line);
@@ -156,10 +227,10 @@ function wrapText(text: string, maxWidth: number, sizePt: number, bold = false, 
   if (line) lines.push(line);
   if (lines.length > maxLines) {
     const kept = lines.slice(0, maxLines);
-    kept[maxLines - 1] = fitText(lines.slice(maxLines - 1).join(" "), maxWidth, sizePt, bold);
+    kept[maxLines - 1] = fitText(lines.slice(maxLines - 1).join(" "), widthOf(maxLines - 1), sizePt, bold);
     return kept;
   }
-  return lines.map((each) => fitText(each, maxWidth, sizePt, bold));
+  return lines.map((each, index) => fitText(each, widthOf(index), sizePt, bold));
 }
 
 export function layoutPartLabel(label: PartLabel, size: LabelSize, logo: { width: number; height: number } | null): LabelOp[] {
@@ -226,7 +297,7 @@ export function layoutPartLabel(label: PartLabel, size: LabelSize, logo: { width
   addText(fitText(personText, footW - projectShownW, footSize), m + projectShownW, footBase, footSize, { color: SOFT });
 
   // ---- The middle: the outline beside (on a tall label: over) its sizes, board and information — and its QR code
-  // (if it has one) in the bottom right corner, the details beside it narrowed to leave it room.
+  // (if it has one) in the bottom right corner, just the details level with it going round it.
   const bodyTop = divider + 2 * k;
   const bodyBottom = footRule - 2 * k;
   const qr = label.qrUrl ? qrModules(label.qrUrl) : null;
@@ -234,21 +305,28 @@ export function layoutPartLabel(label: PartLabel, size: LabelSize, logo: { width
     const diagramH = (bodyBottom - bodyTop) * 0.42;
     drawOutline(ops, label, { x: m, y: bodyTop, w: W - 2 * m, h: diagramH }, k);
     const detailsY = bodyTop + diagramH + 2.5 * k;
-    const qrSize = qr ? clamp(Math.min(bodyBottom - detailsY, (W - 2 * m) * 0.36), 0, 26) : 0;
-    const qrShown = qr && qrSize >= 11;
+    const qrSize = qr ? clamp(Math.min(bodyBottom - detailsY, (W - 2 * m) * 0.36), 0, QR_MOST_MM) : 0;
+    const qrShown = qr && qrSize >= QR_LEAST_MM;
     if (qrShown) drawQr(ops, qr, W - m - qrSize, bodyBottom - qrSize, qrSize);
-    drawDetails(ops, label, { x: m, y: detailsY, w: W - 2 * m - (qrShown ? qrSize + 2.5 * k : 0), bottom: bodyBottom }, k, 17 * k, addText);
+    const qrCorner = qrShown ? { left: W - m - qrSize, top: bodyBottom - qrSize } : null;
+    drawDetails(ops, label, { x: m, y: detailsY, w: W - 2 * m, bottom: bodyBottom }, k, 13 * k, addText, qrCorner);
   } else {
     const diagramW = (W - 2 * m) * 0.4;
     drawOutline(ops, label, { x: m, y: bodyTop, w: diagramW, h: bodyBottom - bodyTop }, k);
     const detailsX = m + diagramW + 3.5 * k;
-    const qrSize = qr ? clamp(Math.min(bodyBottom - bodyTop, (W - m - detailsX) * 0.42), 0, 24) : 0;
-    const qrShown = qr && qrSize >= 11;
+    const qrSize = qr ? clamp(Math.min(bodyBottom - bodyTop, (W - m - detailsX) * 0.42), 0, QR_MOST_MM) : 0;
+    const qrShown = qr && qrSize >= QR_LEAST_MM;
     if (qrShown) drawQr(ops, qr, W - m - qrSize, bodyBottom - qrSize, qrSize);
-    drawDetails(ops, label, { x: detailsX, y: bodyTop, w: W - m - detailsX - (qrShown ? qrSize + 2.5 * k : 0), bottom: bodyBottom }, k, 16 * k, addText);
+    const qrCorner = qrShown ? { left: W - m - qrSize, top: bodyBottom - qrSize } : null;
+    drawDetails(ops, label, { x: detailsX, y: bodyTop, w: W - m - detailsX, bottom: bodyBottom }, k, 12 * k, addText, qrCorner);
   }
   return ops;
 }
+
+// A QR code's size on a label: small enough to leave its details the room, big enough for a phone to read off a label printer's
+// dots. Under the least, none.
+const QR_MOST_MM = 15;
+const QR_LEAST_MM = 11;
 
 // A link's QR code, as rows of dark (true) and light modules — worked out once a link (every copy of a part has the same).
 const qrCache = new Map<string, boolean[][]>();
@@ -318,6 +396,13 @@ function pointAlongLine(line: ShapePoint[], t: number): ShapePoint | null {
   return null;
 }
 
+// Front on a door's drawing: this size on a 100 × 50 label. Smaller than the least and it won't read there.
+const FRONT_MOST_PT = 6;
+const FRONT_LEAST_PT = 4.5;
+// A hinge's arrow: how far past its cup, and from the next arrow.
+const ARROW_GAP_K = 0.8;
+const ARROW_LANE_K = 1;
+
 // The piece's outline, to scale, in the middle of its box: its clashed edges' Xs, its grain's arrow, a door's hinges
 // (each with where it goes, beside its edge) — and its clashing and hinge side under it. A Custom piece: its real outline
 // (its shape's), each banded run drawn heavier with an X across it, and how much is banded under it.
@@ -335,8 +420,22 @@ function drawOutline(ops: LabelOp[], label: PartLabel, box: { x: number; y: numb
     }
   }
   const shaped = labelShapeLines(label.shape);
+  // A shape's sides' lengths: room for them all round it.
+  const sideSize = 5.6 * k;
+  const sideH = sideSize * LABEL_PT * 0.85;
+  const sideTexts = shaped ? label.shapeSides ?? [] : [];
+  if (sideTexts.length) {
+    const widest = Math.max(0, ...sideTexts.map((text) => measureLabelText(text, sideSize)));
+    reserve.left += widest + 0.6 * k;
+    reserve.right += widest + 0.6 * k;
+    reserve.top += sideH + 0.6 * k;
+    reserve.bottom += sideH + 0.6 * k;
+  }
   const clashCode = shaped ? (shaped.bandedMm > 0 ? `${formatShapeMetres(shaped.bandedMm)}m` : "") : label.clashCode;
-  const caption = clashCode || hinges?.tag ? captionSize * LABEL_PT * 1.35 : 0;
+  // (A door's hinges are drawn on its front, and drilled from the other side. Front's on the door, or if there's no room for it
+  // there, beside its side under it.)
+  const hasHingeMarks = Boolean(hinges && hinges.marks.length > 0);
+  const caption = clashCode || hinges?.tag || hasHingeMarks ? captionSize * LABEL_PT * 1.35 : 0;
   const availW = box.w - reserve.left - reserve.right;
   const availH = box.h - reserve.top - reserve.bottom - caption;
   if (availW < 3 || availH < 3) return;
@@ -382,6 +481,47 @@ function drawOutline(ops: LabelOp[], label: PartLabel, box: { x: number; y: numb
         if (mark) crossAt(mark[0], mark[1]);
       }
     }
+    // Each side's length, just outside its middle (a curve's: the middle of its curve), clear of the others and in the drawing's box:
+    // one that's had to move has a fine line back to its side.
+    if (sideTexts.length && label.shape) {
+      const clearOfEdge = markHalf + 0.3 * k;
+      const room = { width: box.w, height: box.h - caption };
+      const requests = shapeGeometry(label.shape).edges.flatMap((edge) => {
+        const text = sideTexts[edge.index];
+        if (!text || edge.vertexLength < 1e-6) return [];
+        const curve = edge.curve ? segmentArcPoints(edge.curve) : [];
+        const middle: ShapePoint = curve.length
+          ? curve[Math.floor(curve.length / 2)]
+          : [(edge.startVertex[0] + edge.endVertex[0]) / 2, (edge.startVertex[1] + edge.endVertex[1]) / 2];
+        const anchor = at(middle);
+        const width = measureLabelText(text, sideSize);
+        const out = clearOfEdge + (Math.abs(edge.normal[0]) * width + Math.abs(edge.normal[1]) * sideH) / 2;
+        return [
+          {
+            id: String(edge.index),
+            text,
+            width,
+            height: sideH,
+            x: anchor[0] - box.x + edge.normal[0] * out,
+            y: anchor[1] - box.y + edge.normal[1] * out,
+            anchor: [anchor[0] - box.x, anchor[1] - box.y] as ShapePoint,
+            normal: edge.normal,
+          },
+        ];
+      });
+      for (const side of placeShapeLabels(requests, room, { gap: 0.3 * k, step: 0.7 * k, reach: 14, margin: 0 })) {
+        const cx = side.cx + box.x;
+        const cy = side.cy + box.y;
+        if (side.moved) {
+          const fromX = clamp(side.anchor[0] + box.x, cx - side.width / 2, cx + side.width / 2);
+          const fromY = clamp(side.anchor[1] + box.y, cy - sideH / 2, cy + sideH / 2);
+          if (Math.hypot(fromX - (side.anchor[0] + box.x), fromY - (side.anchor[1] + box.y)) > clearOfEdge + 0.4 * k) {
+            ops.push({ kind: "line", x1: fromX, y1: fromY, x2: side.anchor[0] + box.x, y2: side.anchor[1] + box.y, stroke: SOFT, lineWidth: 0.15 });
+          }
+        }
+        ops.push({ kind: "text", x: cx, y: cy + sideH * 0.42, text: side.text, size: sideSize, color: INK, align: "center" });
+      }
+    }
   } else {
     ops.push({ kind: "rect", x: ox, y: oy, w: dw, h: dh, stroke: INK, lineWidth: 0.4 });
   }
@@ -417,6 +557,7 @@ function drawOutline(ops: LabelOp[], label: PartLabel, box: { x: number; y: numb
     crossAt(cx, cy);
   }
 
+  let frontOnDoor = false;
   // A door's hinges, to scale: each a 35 mm cup, its centre 22.5 mm in from the hinged edge and exactly as far along it
   // as the cutlist says (never smaller than a dot). Its distance is beside it outside the edge, a fine line from there
   // to the cup's centre.
@@ -449,17 +590,76 @@ function drawOutline(ops: LabelOp[], label: PartLabel, box: { x: number; y: numb
         ops.push({ kind: "text", x: cx, y: oy + dh + markHalf + 0.4 * k + hingeSize * LABEL_PT * 0.72, text: mark.text, size: hingeSize, color: INK, align: "center" });
       }
     }
+    // An arrow on the door from each hinge to the end it's measured from: just past the cups, the shortest nearest them so one's line
+    // across to its arrow doesn't cross another's. Ones that don't overlap share a line (a pair's, one from each end).
+    const inward = hinges.side === "left" || hinges.side === "top" ? 1 : -1;
+    const alongOf = (mark: LabelHingeMark) => clamp(mark.from === "start" ? mark.at * perMm : span - mark.at * perMm, 0, span);
+    const reachOf = (mark: LabelHingeMark) => (mark.from === "start" ? alongOf(mark) : span - alongOf(mark));
+    const laneRuns: Array<Array<[number, number]>> = [];
+    const arrows = [...hinges.marks].sort((a, b) => reachOf(a) - reachOf(b)).map((mark) => {
+      const along = alongOf(mark);
+      const run: [number, number] = mark.from === "start" ? [0, along] : [along, span];
+      let lane = laneRuns.findIndex((runs) => runs.every(([from, to]) => run[1] < from || run[0] > to));
+      if (lane < 0) lane = laneRuns.push([]) - 1;
+      laneRuns[lane].push(run);
+      return { mark, lane };
+    });
+    arrows.forEach(({ mark, lane }) => {
+      const along = alongOf(mark);
+      const away = inset + r + ARROW_GAP_K * k + lane * ARROW_LANE_K * k;
+      const end = mark.from === "start" ? 0 : span;
+      const reach = Math.abs(end - along);
+      const head = Math.min(0.9 * k, reach * 0.4);
+      const tip = end === 0 ? 1 : -1;
+      if (vertical) {
+        const edgeX = hinges.side === "left" ? ox : ox + dw;
+        const cupX = edgeX + inward * (inset + r);
+        const x = clamp(edgeX + inward * away, ox + 0.3, ox + dw - 0.3);
+        ops.push({ kind: "line", x1: cupX, y1: oy + along, x2: x, y2: oy + along, stroke: INK, lineWidth: 0.2 });
+        ops.push({ kind: "line", x1: x, y1: oy + along, x2: x, y2: oy + end, stroke: INK, lineWidth: 0.2 });
+        for (const wing of [-1, 1]) ops.push({ kind: "line", x1: x, y1: oy + end, x2: x + wing * head * 0.6, y2: oy + end + tip * head, stroke: INK, lineWidth: 0.2 });
+      } else {
+        const edgeY = hinges.side === "top" ? oy : oy + dh;
+        const cupY = edgeY + inward * (inset + r);
+        const y = clamp(edgeY + inward * away, oy + 0.3, oy + dh - 0.3);
+        ops.push({ kind: "line", x1: ox + along, y1: cupY, x2: ox + along, y2: y, stroke: INK, lineWidth: 0.2 });
+        ops.push({ kind: "line", x1: ox + along, y1: y, x2: ox + end, y2: y, stroke: INK, lineWidth: 0.2 });
+        for (const wing of [-1, 1]) ops.push({ kind: "line", x1: ox + end, y1: y, x2: ox + end + tip * head, y2: y + wing * head * 0.6, stroke: INK, lineWidth: 0.2 });
+      }
+    });
+
+    // Front, in the middle of the door, clear of its hinges and their arrows either side, on white so it reads over the grain's arrow.
+    if (hasHingeMarks) {
+      const clear = inset + r + (laneRuns.length ? ARROW_GAP_K * k + laneRuns.length * ARROW_LANE_K * k : 0);
+      const spaceW = vertical ? dw - 2 * clear : dw;
+      const spaceH = vertical ? dh : dh - 2 * clear;
+      const frontMost = FRONT_MOST_PT * k;
+      const frontSize = Math.min(frontMost, (spaceW * 0.92 * frontMost) / Math.max(0.01, measureLabelText("Front", frontMost, true)), (spaceH * 0.92) / (LABEL_PT * 1.1));
+      if (frontSize >= FRONT_LEAST_PT) {
+        const midX = ox + dw / 2;
+        const midY = oy + dh / 2;
+        const frontW = measureLabelText("Front", frontSize, true);
+        const frontH = frontSize * LABEL_PT;
+        ops.push({ kind: "rect", x: midX - frontW / 2 - 0.5 * k, y: midY - frontH * 0.62, w: frontW + 1 * k, h: frontH * 1.24, fill: "#FFFFFF" });
+        ops.push({ kind: "text", x: midX, y: midY + frontH * 0.36, text: "Front", size: frontSize, bold: true, color: INK, align: "center" });
+        frontOnDoor = true;
+      }
+    }
   }
 
-  // Under it: its clashing (bold), then its hinges' side.
+  // Under it: its clashing (bold), then its hinges' side (and Front, if it couldn't go on the door).
   if (caption) {
     const base = oy + dh + reserve.bottom + captionSize * LABEL_PT * 1.05;
-    const tag = hinges?.tag ? `${clashCode ? "  ·  " : ""}${hinges.tag}` : "";
-    const codeW = measureLabelText(clashCode, captionSize, true);
-    const tagW = measureLabelText(tag, captionSize);
+    const tagWords = [hinges?.tag, hasHingeMarks && !frontOnDoor ? "Front" : ""].filter(Boolean).join(" · ");
+    const tag = tagWords ? `${clashCode ? "  ·  " : ""}${tagWords}` : "";
+    // (Too wide for its box, smaller: it can't run off the label.)
+    const naturalW = measureLabelText(clashCode, captionSize, true) + measureLabelText(tag, captionSize);
+    const fittedSize = naturalW > box.w ? (captionSize * box.w) / naturalW : captionSize;
+    const codeW = measureLabelText(clashCode, fittedSize, true);
+    const tagW = measureLabelText(tag, fittedSize);
     const startX = clamp(ox + dw / 2 - (codeW + tagW) / 2, box.x, box.x + box.w - codeW - tagW);
-    if (clashCode) ops.push({ kind: "text", x: startX, y: base, text: clashCode, size: captionSize, bold: true, color: INK });
-    if (tag) ops.push({ kind: "text", x: startX + codeW, y: base, text: tag, size: captionSize, color: SOFT });
+    if (clashCode) ops.push({ kind: "text", x: startX, y: base, text: clashCode, size: fittedSize, bold: true, color: INK });
+    if (tag) ops.push({ kind: "text", x: startX + codeW, y: base, text: tag, size: fittedSize, color: SOFT });
   }
 }
 
@@ -471,19 +671,25 @@ function drawDetails(
   k: number,
   valueSizeMax: number,
   addText: (text: string, x: number, y: number, sizePt: number, options?: { bold?: boolean; color?: string; align?: "left" | "center" | "right" }) => void,
+  // The QR code's top left, in the corner: only a line level with it has less room.
+  qrCorner: { left: number; top: number } | null = null,
 ) {
   if (box.w <= 4) return;
+  // The width a line with its baseline at `base` can have (its descenders counted, in `sizePt`).
+  const widthAt = (base: number, sizePt: number) =>
+    qrCorner && base + sizePt * LABEL_PT * 0.28 + 0.8 * k > qrCorner.top ? qrCorner.left - 2.5 * k - box.x : box.w;
   let y = box.y;
   const sizes = label.sizes.filter((part) => part.value);
   if (sizes.length) {
-    const captionSize = 6.5 * k;
+    const captionSize = 5.6 * k;
     const separator = " × ";
-    const widthAt = (sizePt: number) =>
+    const sizesWidth = (sizePt: number) =>
       sizes.reduce((sum, part, index) => sum + measureLabelText(part.value, sizePt, true) + (index ? measureLabelText(separator, sizePt, true) : 0), 0);
     let valueSize = valueSizeMax;
-    const natural = widthAt(valueSize);
-    if (natural > box.w) valueSize *= box.w / natural;
+    const natural = sizesWidth(valueSize);
     const captionBase = y + captionSize * LABEL_PT * 0.75;
+    const sizesRoom = widthAt(captionBase + 0.8 * k + valueSize * LABEL_PT * 0.74, valueSize);
+    if (natural > sizesRoom) valueSize *= sizesRoom / natural;
     const valueBase = captionBase + 0.8 * k + valueSize * LABEL_PT * 0.74;
     let x = box.x;
     sizes.forEach((part, index) => {
@@ -498,12 +704,13 @@ function drawDetails(
     });
     y = valueBase + 2.6 * k;
   }
-  // Its board: over two lines if it needs them.
+  // Its board: over two lines if it needs them, three if it's going round the QR code.
   if (label.board) {
-    const boardSize = 8.6 * k;
+    const boardSize = 7.2 * k;
+    const boardBase = (index: number) => y + boardSize * LABEL_PT * (0.74 + index * 1.15);
     let base = y;
-    for (const [index, line] of wrapText(label.board, box.w, boardSize, true, 2).entries()) {
-      const next = y + boardSize * LABEL_PT * (0.74 + index * 1.15);
+    for (const [index, line] of wrapText(label.board, (index) => widthAt(boardBase(index), boardSize), boardSize, true, qrCorner ? 3 : 2).entries()) {
+      const next = boardBase(index);
       if (next > box.bottom) break;
       addText(line, box.x, next, boardSize, { bold: true });
       base = next;
@@ -511,22 +718,48 @@ function drawDetails(
     if (base === y) return;
     y = base + 1.8 * k;
   }
-  const infoSize = 7.6 * k;
+  const infoSize = 6.4 * k;
   const lineH = infoSize * LABEL_PT * 1.28;
-  const lines = label.info.flatMap((line) => wrapText(line, box.w, infoSize));
+  const lineBase = (index: number) => y + lineH * index + infoSize * LABEL_PT * 0.74;
+  const lines: string[] = [];
+  for (const info of label.info) {
+    const startAt = lines.length;
+    lines.push(...wrapText(info, (index) => widthAt(lineBase(startAt + index), infoSize), infoSize));
+  }
   const room = Math.floor((box.bottom - y) / lineH);
   if (room <= 0 || !lines.length) return;
   const shown = lines.length > room ? [...lines.slice(0, Math.max(0, room - 1)), `+${lines.length - room + 1} more`] : lines;
   shown.forEach((line, index) => {
-    addText(line, box.x, y + lineH * index + infoSize * LABEL_PT * 0.74, infoSize, { color: index === shown.length - 1 && lines.length > room ? SOFT : INK });
+    addText(line, box.x, lineBase(index), infoSize, { color: index === shown.length - 1 && lines.length > room ? SOFT : INK });
   });
 }
 
 type JsPdfCtor = typeof import("jspdf").jsPDF;
 
-// The labels to print: one a page, each page the label's size — so a label printer prints one label for each.
-export function buildPartLabelsPdf(jsPDF: JsPdfCtor, labels: PartLabel[], size: LabelSize, logo: PrintTitleLogo | null): Blob | null {
+// The labels to print: one a page, each page the label's size — so a label printer prints one label for each. Or filling A4 sheets,
+// a faint line round each to cut along.
+export function buildPartLabelsPdf(
+  jsPDF: JsPdfCtor,
+  labels: PartLabel[],
+  size: LabelSize,
+  logo: PrintTitleLogo | null,
+  layout: LabelPrintLayout = "roll",
+): Blob | null {
   if (!labels.length) return null;
+  if (layout === "a4") {
+    const sheet = labelSheetLayout(size);
+    const doc = new jsPDF({ orientation: sheet.orientation, unit: "mm", format: "a4", compress: true });
+    doc.setLineCap("round");
+    labels.forEach((label, index) => {
+      const place = index % sheet.perSheet;
+      if (index > 0 && place === 0) doc.addPage("a4", sheet.orientation);
+      const x = sheet.left + (place % sheet.columns) * size.width;
+      const y = sheet.top + Math.floor(place / sheet.columns) * size.height;
+      drawLabelOp(doc, { kind: "rect", x, y, w: size.width, h: size.height, stroke: CUT_LINE, lineWidth: 0.1 }, logo);
+      for (const op of layoutPartLabel(label, size, logo)) drawLabelOp(doc, movedLabelOp(op, x, y), logo);
+    });
+    return doc.output("blob");
+  }
   const orientation = size.width > size.height ? "landscape" : "portrait";
   const doc = new jsPDF({ orientation, unit: "mm", format: [size.width, size.height], compress: true });
   doc.setLineCap("round");
@@ -535,6 +768,57 @@ export function buildPartLabelsPdf(jsPDF: JsPdfCtor, labels: PartLabel[], size: 
     for (const op of layoutPartLabel(label, size, logo)) drawLabelOp(doc, op, logo);
   });
   return doc.output("blob");
+}
+
+const CUT_LINE = "#BDBDBD";
+
+// A little off a label each way when it's printed to fit the paper. Exactly the paper's size, rounding can tip it onto a page of its own.
+const FIT_TRIM_MM = 0.3;
+// Paper this much wider than a label is a sheet of them, not a label printer's roll.
+const SHEET_WIDER_BY_MM = 30;
+
+const escapeXml = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+function labelOpsSvg(ops: LabelOp[], size: LabelSize, logo: PrintTitleLogo | null): string {
+  const shapes = ops.map((op) => {
+    if (op.kind === "rect") {
+      return `<rect x="${op.x}" y="${op.y}" width="${op.w}" height="${op.h}" rx="${op.radius ?? 0}" fill="${op.fill ?? "none"}" stroke="${op.stroke ?? "none"}" stroke-width="${op.lineWidth ?? 0.3}"/>`;
+    }
+    if (op.kind === "line") return `<line x1="${op.x1}" y1="${op.y1}" x2="${op.x2}" y2="${op.y2}" stroke="${op.stroke}" stroke-width="${op.lineWidth}" stroke-linecap="round"/>`;
+    if (op.kind === "circle") return `<circle cx="${op.cx}" cy="${op.cy}" r="${op.r}" fill="none" stroke="${op.stroke}" stroke-width="${op.lineWidth}"/>`;
+    if (op.kind === "text") {
+      const anchor = op.align === "center" ? "middle" : op.align === "right" ? "end" : "start";
+      return `<text x="${op.x}" y="${op.y}" font-size="${op.size * LABEL_PT}" font-weight="${op.bold ? 700 : 400}" fill="${op.color}" text-anchor="${anchor}" xml:space="preserve">${escapeXml(op.text)}</text>`;
+    }
+    return logo ? `<image href="${logo.dataUrl}" x="${op.x}" y="${op.y}" width="${op.w}" height="${op.h}" preserveAspectRatio="xMidYMid meet"/>` : "";
+  });
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size.width} ${size.height}" preserveAspectRatio="xMidYMid meet">${shapes.join("")}</svg>`;
+}
+
+// The labels as a page for the browser to print, its layout left to the paper picked in the print window: each label its real size,
+// flowing across and down, so a label printer's page takes one and an A4 sheet as many as fit (the browser lays it out again as the
+// paper's changed there). Paper smaller than a label: the label shrunk to fit it. On a sheet, a margin for what an ordinary printer
+// can't reach and a faint line to cut along.
+export function partLabelsPrintHtml(labels: PartLabel[], size: LabelSize, logo: PrintTitleLogo | null): string {
+  const cells = labels.map((label) => `<div class="label">${labelOpsSvg(layoutPartLabel(label, size, logo), size, logo)}</div>`).join("");
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Labels</title><style>
+@page { margin: 0; }
+html, body { margin: 0; padding: 0; background: #fff; }
+body { font-family: Arial, Helvetica, sans-serif; text-align: center; line-height: 0; font-size: 0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+.label { display: inline-block; vertical-align: top; box-sizing: border-box; width: ${size.width - FIT_TRIM_MM}mm; height: ${size.height - FIT_TRIM_MM}mm; max-width: 100vw; max-height: calc(100vh - ${FIT_TRIM_MM}mm); overflow: hidden; break-inside: avoid; page-break-inside: avoid; }
+.label svg { display: block; width: 100%; height: 100%; }
+@media (min-width: ${size.width + SHEET_WIDER_BY_MM}mm) {
+  @page { margin: ${SHEET_MARGIN_MM}mm; }
+  .label { outline: 0.1mm solid ${CUT_LINE}; outline-offset: -0.05mm; }
+}
+</style></head><body>${cells}</body></html>`;
+}
+
+// A label's shape or text, for a label whose top left is at (dx, dy) on the page.
+function movedLabelOp(op: LabelOp, dx: number, dy: number): LabelOp {
+  if (op.kind === "line") return { ...op, x1: op.x1 + dx, y1: op.y1 + dy, x2: op.x2 + dx, y2: op.y2 + dy };
+  if (op.kind === "circle") return { ...op, cx: op.cx + dx, cy: op.cy + dy };
+  return { ...op, x: op.x + dx, y: op.y + dy };
 }
 
 function drawLabelOp(doc: JsPdf, op: LabelOp, logo: PrintTitleLogo | null) {
