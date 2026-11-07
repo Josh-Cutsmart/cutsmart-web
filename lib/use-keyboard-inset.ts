@@ -747,14 +747,22 @@ export function usePublishKeyboardInsetVars(): void {
       });
     };
     // Finished typing in a pop-up. (With the keyboard reported as up, it's taken away as that goes.)
-    const onFocusOut = () => {
+    const onFocusOut = (event: FocusEvent) => {
+      // (What lost the focus: only a box that brings up an on-screen keyboard can have taken one away.)
+      const left = event.target;
       window.setTimeout(() => {
         const field = document.activeElement;
         showKeyboardReadout(vv);
         if (field instanceof HTMLElement && expectsKeyboard(field)) return;
         stopWatch();
-        refreshHeadersAfterKeyboard();
-        if (last?.keyboardOpen) return;
+        if (last?.keyboardOpen) {
+          // Its box gone but the keyboard still reported as up: the phone hasn't said it's closed, so the headers are redrawn
+          // from here. (When it has said so, `publish` has redrawn them already.) Only for a box that brings a keyboard up:
+          // the redraw tells the page the window's resized, which also closes any menu that's open. Any other focus change,
+          // such as the right-click that opens a menu, mustn't set it off.
+          if (left instanceof HTMLElement && expectsKeyboard(left)) refreshHeadersAfterKeyboard();
+          return;
+        }
         clearKeyboardRoom();
         clearPanelScrollRoom();
         clearPanelLifts();

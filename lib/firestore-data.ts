@@ -1,3 +1,5 @@
+import { authorizedFetch } from "@/lib/api-fetch";
+import { splitProtectedCompanyPatch } from "@/lib/company-protected-settings";
 import { cachedValue, invalidateCompanyCache, invalidateUserCache, readCompanyDocCached, readUserDocCached } from "@/lib/firestore-cache";
 import { fetchBonusLock, noteProjectCompleted, noteProjectDeleted, noteProjectReopened } from "@/lib/completed-projects";
 import {
@@ -3132,18 +3134,38 @@ export async function restoreGridVersion(project: Project, kind: GridVersionKind
 // data, rather than this module doing it implicitly.
 type CutlistDataKind = "production" | "initialMeasure";
 
-export async function fetchCutlistData(project: Project, kind: CutlistDataKind): Promise<{ rows: unknown[]; rev: number } | null> {
-  const ref = await resolveProjectDocRef(project);
-  if (!ref) return null;
+// One document beside a project, read so that a read which failed is never taken for "there isn't one": the hooks that
+// move old data to its own place, or start a sheet from the template, would save that emptiness over what's really there.
+// `data`: the document's (null: there's no such document). null itself: it couldn't be read. That's the read failing, or
+// only this device's copy answering "none" (a document made since, on another device, wouldn't be in it). (The CutSmart
+// Preview's copy is the whole database: its "none" stands.)
+async function readProjectSubDoc(ref: DocumentReference, label: string): Promise<{ data: Record<string, unknown> | null } | null> {
   try {
-    const snap = await getDoc(doc(ref, "cutlistData", kind));
-    if (!snap.exists()) return null;
-    const data = snap.data() as Record<string, unknown>;
-    return { rows: Array.isArray(data.rows) ? data.rows : [], rev: cutlistDataRev(data) };
+    const snap = await getDoc(ref);
+    if (snap.exists()) return { data: snap.data() as Record<string, unknown> };
+    return snap.metadata.fromCache && !isPreviewMode() ? null : { data: null };
   } catch (error) {
-    console.warn(`[fetchCutlistData] ${kind} read failed:`, error);
+    console.warn(`[${label}] read failed:`, error);
     return null;
   }
+}
+
+// A cutlist's rows as stored (`stored` null: none saved in their own place yet). null: they couldn't be read.
+export async function readCutlistData(
+  project: Project,
+  kind: CutlistDataKind,
+): Promise<{ stored: { rows: unknown[]; rev: number } | null } | null> {
+  const ref = await resolveProjectDocRef(project);
+  if (!ref) return null;
+  const read = await readProjectSubDoc(doc(ref, "cutlistData", kind), `readCutlistData ${kind}`);
+  if (!read) return null;
+  if (!read.data) return { stored: null };
+  return { stored: { rows: Array.isArray(read.data.rows) ? read.data.rows : [], rev: cutlistDataRev(read.data) } };
+}
+
+// (Just to look at, such as an email's copy of it: none and couldn't be read alike.)
+export async function fetchCutlistData(project: Project, kind: CutlistDataKind): Promise<{ rows: unknown[]; rev: number } | null> {
+  return (await readCutlistData(project, kind))?.stored ?? null;
 }
 
 // Writes the subcollection doc AND clears the legacy embedded field on the parent job doc in one
@@ -3365,10 +3387,39 @@ function letGoOfflineCutlistChange(uid: string, path: string, kind: KeptListKind
   }
   offlineCutlistChanged();
 }
-// Turned down by the server: it would be every time — let go of, rather than kept trying.
-function dropOfflineCutlistChange(uid: string, path: string, kind: KeptListKind) {
+// Turned down by the server (no permission, too big, the project gone). Trying it again would only be turned down again, and
+// every save after it would carry it along and be turned down too. It isn't thrown away, though: it's put aside on this
+// device (setAsideRefusedSave), out of the way of the saves after it. (Only if it's still the one that was sent: one kept
+// since, another save waiting its turn, is left to be tried.)
+function setAsideRefusedCutlistChange(uid: string, path: string, kind: KeptListKind, sent: OfflineCutlistChange, error: unknown) {
+  const now = readOfflineCutlistChange(uid, path, kind);
+  if (now && now.stamp === sent.stamp) setAsideRefusedSave(offlineCutlistKey(uid, path, kind), error);
+}
+// A refused save's kept copy, moved to REFUSED_SAVE_KEY + its own key, with why and when, so the work in it can still be got
+// back. The last few for each cutlist or sheet are kept. If there's no room left to move it, it stays where it is and goes
+// again with the next save: better than lost.
+const REFUSED_SAVE_KEY = "cutsmart_refused_save:";
+const REFUSED_SAVES_KEPT = 3;
+function setAsideRefusedSave(key: string, error: unknown) {
+  if (typeof window === "undefined") return;
   try {
-    window.localStorage.removeItem(offlineCutlistKey(uid, path, kind));
+    const kept = window.localStorage.getItem(key);
+    if (kept === null) return;
+    const asideKey = `${REFUSED_SAVE_KEY}${key}`;
+    let earlier: unknown[] = [];
+    try {
+      const parsed: unknown = JSON.parse(window.localStorage.getItem(asideKey) || "[]");
+      earlier = Array.isArray(parsed) ? parsed : [];
+    } catch {
+      earlier = [];
+    }
+    const refused = {
+      refusedCode: String((error as { code?: unknown } | null)?.code ?? "unknown"),
+      refusedAtIso: new Date().toISOString(),
+      kept: JSON.parse(kept) as unknown,
+    };
+    window.localStorage.setItem(asideKey, JSON.stringify([...earlier, refused].slice(-REFUSED_SAVES_KEPT)));
+    window.localStorage.removeItem(key);
   } catch {
     return;
   }
@@ -3494,7 +3545,7 @@ async function writeCutlistMerged(
         return { rows, rev };
       });
     } catch (error) {
-      if (kept && uid && cutlistWriteTurnedDown(error)) dropOfflineCutlistChange(uid, ref.path, kind);
+      if (kept && uid && cutlistWriteTurnedDown(error)) setAsideRefusedCutlistChange(uid, ref.path, kind, kept, error);
       throw error;
     }
     if (kept && uid) letGoOfflineCutlistChange(uid, ref.path, kind, kept);
@@ -3652,18 +3703,19 @@ const SALES_GRID_LEGACY_KEY: Record<SalesGridKind, string> = {
   specifications: "specificationsGrid",
 };
 
-export async function fetchSalesGridData(project: Project, kind: SalesGridKind): Promise<{ grid: SpecsGrid } | null> {
+// A live sheet as stored (`stored` null: none in its own place yet, or one that can't be made sense of). null: it couldn't
+// be read.
+export async function readSalesGridData(project: Project, kind: SalesGridKind): Promise<{ stored: { grid: SpecsGrid } | null } | null> {
   const ref = await resolveProjectDocRef(project);
   if (!ref) return null;
-  try {
-    const snap = await getDoc(doc(ref, "salesGrids", kind));
-    if (!snap.exists()) return null;
-    const grid = normalizeSpecsGrid((snap.data() as Record<string, unknown>).grid);
-    return grid ? { grid } : null;
-  } catch (error) {
-    console.warn(`[fetchSalesGridData] ${kind} read failed:`, error);
-    return null;
-  }
+  const read = await readProjectSubDoc(doc(ref, "salesGrids", kind), `readSalesGridData ${kind}`);
+  if (!read) return null;
+  const grid = read.data ? normalizeSpecsGrid(read.data.grid) : null;
+  return { stored: grid ? { grid } : null };
+}
+
+export async function fetchSalesGridData(project: Project, kind: SalesGridKind): Promise<{ grid: SpecsGrid } | null> {
+  return (await readSalesGridData(project, kind))?.stored ?? null;
 }
 
 // Writes the subcollection doc AND clears the legacy nested field (both the live `sales`/
@@ -3877,15 +3929,12 @@ function letGoKeptDoc<T>(path: string, kind: KeptDocKind, sent: KeptDoc<T>, merg
   }
   offlineCutlistChanged();
 }
-function dropKeptDoc(path: string, kind: KeptDocKind) {
+// Turned down by the server: put aside as a cutlist's change is (setAsideRefusedSave), if it's still the one that was sent.
+function setAsideRefusedKeptDoc<T>(path: string, kind: KeptDocKind, sent: KeptDoc<T>, error: unknown) {
   const uid = keptGridUid();
   if (!uid) return;
-  try {
-    window.localStorage.removeItem(keptDocKey(uid, path, kind));
-  } catch {
-    // (Nothing more to do.)
-  }
-  offlineCutlistChanged();
+  const now = readKeptDoc<T>(path, kind);
+  if (now && now.stamp === sent.stamp) setAsideRefusedSave(keptDocKey(uid, path, kind), error);
 }
 function writeSalesGridMerged(database: NonNullable<typeof db>, ref: DocumentReference, kind: SalesGridKind, base: SpecsGrid | null, here: SpecsGrid): Promise<SpecsGrid> {
   return runTransaction(database, async (transaction) => {
@@ -3955,7 +4004,7 @@ async function saveKeptDocMerged<T>(
     } catch (error) {
       if (keptDocTurnedDown(error)) {
         console.warn(`[saveKeptDocMerged] ${kind} turned down:`, error);
-        dropKeptDoc(ref.path, kind);
+        setAsideRefusedKeptDoc(ref.path, kind, sent, error);
         return { ok: false, grid: here, reachedServer: false };
       }
       console.warn(`[saveKeptDocMerged] ${kind} couldn't reach the server — kept on this device till it can:`, error);
@@ -4003,16 +4052,18 @@ export async function sendKeptSalesGrids(): Promise<void> {
     waiting.map(({ path, kind }) =>
       inKeptDocTurn(path, kind, async () => {
         const ref = doc(database, path);
+        const sent = readKeptDoc<unknown>(path, kind);
+        if (!sent) return;
         try {
           if (kind === "drawing_kitchen") {
-            const sent = readKeptDoc<Record<string, unknown>>(path, kind);
-            if (sent) letGoKeptDoc(path, kind, sent, await writeDrawingMerged(database, ref, sent.base, sent.here));
+            const drawing = sent as KeptDoc<Record<string, unknown>>;
+            letGoKeptDoc(path, kind, drawing, await writeDrawingMerged(database, ref, drawing.base, drawing.here));
           } else {
-            const sent = readKeptDoc<SpecsGrid>(path, kind);
-            if (sent) letGoKeptDoc(path, kind, sent, await writeSalesGridMerged(database, ref, kind, sent.base, sent.here));
+            const grid = sent as KeptDoc<SpecsGrid>;
+            letGoKeptDoc(path, kind, grid, await writeSalesGridMerged(database, ref, kind, grid.base, grid.here));
           }
         } catch (error) {
-          if (keptDocTurnedDown(error)) dropKeptDoc(path, kind);
+          if (keptDocTurnedDown(error)) setAsideRefusedKeptDoc(path, kind, sent, error);
           else console.warn(`[sendKeptSalesGrids] ${kind} couldn't reach the server:`, error);
         }
       }),
@@ -4077,17 +4128,15 @@ export function subscribeProjectDrawing(
 // fields so opening a project doesn't download this — capped or not — on every single load.
 export type ProjectMediaKind = "images" | "files";
 
-export async function fetchProjectMediaData(project: Project, kind: ProjectMediaKind): Promise<Record<string, unknown> | null> {
+// Images' or files' document (`data` null: none in its own place yet). null: it couldn't be read.
+export async function readProjectMediaData(project: Project, kind: ProjectMediaKind): Promise<{ data: Record<string, unknown> | null } | null> {
   const ref = await resolveProjectDocRef(project);
   if (!ref) return null;
-  try {
-    const snap = await getDoc(doc(ref, "projectMedia", kind));
-    if (!snap.exists()) return null;
-    return snap.data() as Record<string, unknown>;
-  } catch (error) {
-    console.warn(`[fetchProjectMediaData] ${kind} read failed:`, error);
-    return null;
-  }
+  return readProjectSubDoc(doc(ref, "projectMedia", kind), `readProjectMediaData ${kind}`);
+}
+
+export async function fetchProjectMediaData(project: Project, kind: ProjectMediaKind): Promise<Record<string, unknown> | null> {
+  return (await readProjectMediaData(project, kind))?.data ?? null;
 }
 
 export async function saveProjectImagesData(
@@ -4408,6 +4457,24 @@ export async function saveCompanyMemberRole(
   }
   if (!nextRoleId) {
     return { ok: false, error: "role-empty" };
+  }
+
+  // Through the server, which checks who's asking (app/api/company/member-role): firestore.rules doesn't let the app change roles. (The
+  // Preview has no server, and its database is only in this browser.)
+  if (!isPreviewMode()) {
+    try {
+      const res = await authorizedFetch("/api/company/member-role", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyId: cid, uid: userId, roleId: nextRoleId }),
+      });
+      const result = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!result.ok) return { ok: false, error: String(result.error || "company-role-write-failed") };
+      invalidateCompanyCache(cid);
+      return { ok: true };
+    } catch {
+      return { ok: false, error: "network" };
+    }
   }
 
   const patch = {
@@ -6617,10 +6684,24 @@ export async function saveCompanyDocPatchDetailed(
     // normalization.
     const sanitizedPatch = JSON.parse(JSON.stringify(patch)) as Record<string, unknown>;
     invalidateCompanyCache(cid);
+    // What each role can do and the integrations go through the server, which checks who's asking (firestore.rules doesn't let the app
+    // change them). First, so a refusal stops the save rather than leaving it half done. (The Preview has no server, and its database is
+    // only in this browser.)
+    const { protectedPatch, rest } = isPreviewMode() ? { protectedPatch: {}, rest: sanitizedPatch } : splitProtectedCompanyPatch(sanitizedPatch);
+    if (Object.keys(protectedPatch).length) {
+      const res = await authorizedFetch("/api/company/protected-settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyId: cid, ...protectedPatch }),
+      });
+      const result = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!result.ok) return { ok: false, error: String(result.error || "company-settings-save-failed") };
+      if (!Object.keys(rest).length) return { ok: true };
+    }
     await setDoc(
       doc(db, "companies", cid),
       {
-        ...sanitizedPatch,
+        ...rest,
         updatedAt: serverTimestamp(),
         updatedAtIso: new Date().toISOString(),
       },

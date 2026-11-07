@@ -4,12 +4,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { doc, getDoc, onSnapshot } from "@/lib/firestore-client";
 import type { Project, ProjectImageItem } from "@/lib/types";
 import {
-  fetchProjectMediaData,
+  readProjectMediaData,
   normalizeProjectImageItems,
   resolveProjectDocRef,
   saveProjectFilesData,
   saveProjectImagesData,
 } from "@/lib/firestore-data";
+
+// How long till images and files that couldn't be read are tried again.
+const LOAD_RETRY_MS = 15000;
 
 export interface ProjectMediaState {
   status: "idle" | "loading" | "ready" | "error";
@@ -67,11 +70,26 @@ export function useProjectMedia(project: Project | null): ProjectMediaState {
       if (!cancelled) setState((prev) => ({ ...prev, status: "loading", error: null }));
 
       try {
-        const [imagesDoc, filesDoc] = await Promise.all([
-          fetchProjectMediaData(project, "images"),
-          fetchProjectMediaData(project, "files"),
+        const [imagesRead, filesRead] = await Promise.all([
+          readProjectMediaData(project, "images"),
+          readProjectMediaData(project, "files"),
         ]);
         if (cancelled) return;
+        // Couldn't be read: not loaded (and tried again, below), never shown as none, which the next upload or delete
+        // would save over the real ones.
+        if (!imagesRead || !filesRead) {
+          setState({
+            status: "error",
+            projectImages: [],
+            projectImageItems: [],
+            projectFiles: [],
+            liveRev: 0,
+            error: new Error("Images and files couldn't be read"),
+          });
+          return;
+        }
+        const imagesDoc = imagesRead.data;
+        const filesDoc = filesRead.data;
 
         let projectImages: string[] = Array.isArray(imagesDoc?.projectImages)
           ? (imagesDoc.projectImages as unknown[]).map(String).filter(Boolean)
@@ -97,11 +115,12 @@ export function useProjectMedia(project: Project | null): ProjectMediaState {
               : [];
             projectImageItems = legacyItems;
             projectImages = legacyDirect.length ? legacyDirect : legacyItems.map((item) => item.url);
-            void saveProjectImagesData(project, projectImages, projectImageItems);
+            // (Moved to their own place only when there's something to move: a save of none could replace ones this missed.)
+            if (projectImages.length || projectImageItems.length) void saveProjectImagesData(project, projectImages, projectImageItems);
           }
           if (needsLegacyFiles) {
             projectFiles = Array.isArray(rawData?.projectFiles) ? (rawData?.projectFiles as Record<string, unknown>[]) : [];
-            void saveProjectFilesData(project, projectFiles);
+            if (projectFiles.length) void saveProjectFilesData(project, projectFiles);
           }
         }
 
@@ -145,6 +164,18 @@ export function useProjectMedia(project: Project | null): ProjectMediaState {
       unsubscribes.forEach((unsubscribe) => unsubscribe());
     };
   }, [projectKey, retryTick]);
+
+  // Couldn't be read: tried again by itself, the moment the browser's back online and every so often till then.
+  useEffect(() => {
+    if (state.status !== "error") return;
+    const again = () => setRetryTick((tick) => tick + 1);
+    const timer = window.setTimeout(again, LOAD_RETRY_MS);
+    window.addEventListener("online", again);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("online", again);
+    };
+  }, [state.status]);
 
   const retry = useCallback(() => setRetryTick((tick) => tick + 1), []);
 

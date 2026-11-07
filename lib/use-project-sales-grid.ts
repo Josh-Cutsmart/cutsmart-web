@@ -7,7 +7,7 @@ import { normalizeSpecsGrid, type SpecsGrid } from "@/lib/specs-grid-types";
 import { mergeSpecsGrids } from "@/lib/specs-grid-merge";
 import {
   extractLegacySalesFieldFromRawDoc,
-  fetchSalesGridData,
+  readSalesGridData,
   hasKeptSalesGrid,
   keepSalesGridEdit,
   readKeptSalesGrid,
@@ -52,6 +52,8 @@ const LEGACY_KEY_BY_KIND: Record<SalesGridKind, string> = {
 // The database on this device's copy for a moment, as the listener starts, isn't being offline: only once it's stayed so
 // this long (as a cutlist's).
 const CACHE_ONLY_OFFLINE_AFTER_MS = 2000;
+// How long till a sheet that couldn't be read is tried again (its Retry button aside).
+const LOAD_RETRY_MS = 15000;
 
 // Lazily fetches one project's live Quote grid or Specifications grid from its own subcollection
 // doc (fetchSalesGridData/saveSalesGridData in lib/firestore-data.ts), only once `enabled` (the
@@ -171,8 +173,15 @@ export function useProjectSalesGrid(project: Project | null, kind: SalesGridKind
           setDocPath(ref.path);
         }
         const kept = ref ? readKeptSalesGrid(ref.path, kind) : null;
-        const stored = await fetchSalesGridData(currentProject, kind);
+        const read = await readSalesGridData(currentProject, kind);
         if (cancelled) return;
+        // Couldn't be read: the error (Retry, and tried again by itself, below), never "no sheet yet", which the page
+        // would start from the template and save over the real one.
+        if (!read) {
+          setState({ status: "error", grid: null, error: new Error("The sheet couldn't be read") });
+          return;
+        }
+        const stored = read.stored;
         if (stored) {
           baseRef.current = stored.grid;
           // (Edits from last time still waiting on this device: on top of what's there now.)
@@ -214,6 +223,18 @@ export function useProjectSalesGrid(project: Project | null, kind: SalesGridKind
       setCacheOnlySettled(false);
     };
   }, [project?.id, kind, enabled, retryTick]);
+
+  // Couldn't be read: tried again by itself, the moment the browser's back online and every so often till then.
+  useEffect(() => {
+    if (state.status !== "error") return;
+    const again = () => setRetryTick((tick) => tick + 1);
+    const timer = window.setTimeout(again, LOAD_RETRY_MS);
+    window.addEventListener("online", again);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("online", again);
+    };
+  }, [state.status]);
 
   const retry = useCallback(() => setRetryTick((tick) => tick + 1), []);
   const setGridOptimistic = useCallback((grid: SpecsGrid) => {

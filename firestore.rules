@@ -19,6 +19,22 @@ service cloud.firestore {
       return isCompanyMember(companyId);
     }
 
+    // Who owns the company and who can do what in it, its join codes and its integrations' secrets: the app can read these but
+    // not change them, or any member could make themselves owner. Only what actually changes counts, so a save that sends one
+    // of these unchanged is fine. Changed on the server, which checks who's asking: app/api/company/member-role,
+    // app/api/company/protected-settings, app/api/company/join-codes. Fixed once the company's created, the rest.
+    function protectedCompanyFields() {
+      return [
+        'id', 'ownerUid', 'ownerId', 'createdAt', 'createdAtIso',
+        'companyCode', 'companyPassword', 'joinCode', 'joinPassword',
+        'staffRoleIdsByUid', 'roles', 'integrations'
+      ];
+    }
+
+    function changesProtectedCompanyFields() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasAny(protectedCompanyFields());
+    }
+
     function onlyUserColorFieldsOnCreate() {
       return request.resource.data.keys().hasOnly([
         'userColor', 'updatedAt', 'updatedAtIso'
@@ -46,36 +62,11 @@ service cloud.firestore {
       );
     }
 
-    // Validate join code key on membership create
-    function hasValidJoinCodeForCompany(companyId) {
-      return request.resource.data.joinCodeKey is string
-        && exists(/databases/$(database)/documents/companyJoinCodes/$(request.resource.data.joinCodeKey))
-        && get(/databases/$(database)/documents/companyJoinCodes/$(request.resource.data.joinCodeKey)).data.companyId == companyId;
-    }
-
-    // Allow owner bootstrap membership right after creating company
-    function isOwnerBootstrapForCompany(companyId) {
-      return request.resource.data.roleId is string
-        && request.resource.data.roleId.lower() == "owner"
-        && exists(/databases/$(database)/documents/companies/$(companyId))
-        && get(/databases/$(database)/documents/companies/$(companyId)).data.ownerUid == request.auth.uid;
-    }
-
-    // Join-code lookup docs (safe for non-members)
+    // Join codes: server only (lib/company-join-codes-server.ts, lib/company-create-server.ts). Each document's
+    // id is a code, so reading them would hand anyone every company's code, and writing them would let
+    // someone point a company's code at their own.
     match /companyJoinCodes/{codeKey} {
-      allow read: if signedIn();
-
-      // Written once, right after creating a company, by that company's own owner (see
-      // onCreateCompany in app/(staff)/company-onboarding/page.tsx) — same trust pattern as
-      // isOwnerBootstrapForCompany above: the caller must already own the company this code
-      // points at. Used to be `if false` with no exception at all, which made company creation
-      // fail with permission-denied for every single user, always.
-      allow create, update: if signedIn()
-        && request.resource.data.companyId is string
-        && exists(/databases/$(database)/documents/companies/$(request.resource.data.companyId))
-        && get(/databases/$(database)/documents/companies/$(request.resource.data.companyId)).data.ownerUid == request.auth.uid;
-
-      allow delete: if false;
+      allow read, write: if false;
     }
 
     // Global rule to allow collectionGroup("invites") lookups for signed-in users
@@ -114,11 +105,25 @@ service cloud.firestore {
       allow read, write: if signedIn();
     }
 
-    // Allow each user to store their own profile
+    // Fields of users/{uid} only server code sets: a role or permissions there were counted as yours in
+    // every company (lib/membership.ts merges them in), `verified` is set by /api/verify/user/confirm,
+    // and which company is yours by the join, create and remove-member routes. Writing them yourself
+    // could make you owner or admin, skip verifying your email, or claim another company.
+    function serverOnlyUserFields() {
+      return [
+        'role', 'roleId', 'permissions', 'permissionKeys', 'rolePermissions', 'grants',
+        'permissionMap', 'rolePermissionsMap', 'grantsMap',
+        'verified', 'verifiedAt', 'companyId', 'activeCompanyId', 'company'
+      ];
+    }
+
+    // Each user keeps their own profile, apart from the fields above. (Sending one of them unchanged
+    // is fine.)
     match /users/{uid} {
       allow read: if isSelf(uid);
-      allow create: if isSelf(uid);
-      allow update: if isSelf(uid);
+      allow create: if isSelf(uid) && !request.resource.data.keys().hasAny(serverOnlyUserFields());
+      allow update: if isSelf(uid)
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(serverOnlyUserFields());
       allow delete: if false;
 
       // Per-user notification inbox (bell icon / Company Settings > Notifications). Reads and
@@ -146,20 +151,18 @@ service cloud.firestore {
 
     match /companies/{companyId} {
       allow read: if isCompanyMember(companyId);
-      allow update: if canEditCompany(companyId);
-      allow create: if signedIn();
+      allow update: if canEditCompany(companyId) && !changesProtectedCompanyFields();
+      // Created on the server, with its owner (lib/company-create-server.ts).
+      allow create: if false;
       allow delete: if false;
 
       match /memberships/{uid} {
         allow read: if isSelf(uid) || isCompanyMember(companyId);
 
-        // Secure create:
-        // - self only
-        // - either owner bootstrap OR valid join code
-        allow create: if isSelf(uid) && (
-          isOwnerBootstrapForCompany(companyId) ||
-          hasValidJoinCodeForCompany(companyId)
-        );
+        // Joining and creating a company both happen on the server, which decides the role
+        // (app/api/company/join, app/api/company/create). Writing your own membership here would let you
+        // choose it.
+        allow create: if false;
 
         // keep your existing color-only self update rule
         allow update: if isSelf(uid) && onlyUserColorFieldsOnUpdate();

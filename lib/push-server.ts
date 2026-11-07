@@ -392,14 +392,10 @@ export async function pushStoredNotification(
   return result;
 }
 
-// Whether `uid` belongs to `companyId` (a membership doc, or an older account's own user doc naming it).
+// Whether `uid` belongs to `companyId`: a membership doc. (Not their own user doc naming it: anyone can write that.)
 export async function isCompanyMemberUid(companyId: string, uid: string): Promise<boolean> {
   if (!adminDb || !companyId || !uid) return false;
-  const [membershipSnap, userSnap] = await Promise.all([
-    adminDb.collection("companies").doc(companyId).collection("memberships").doc(uid).get(),
-    adminDb.collection("users").doc(uid).get(),
-  ]);
-  return membershipSnap.exists || String(userSnap.data()?.companyId ?? "").trim() === companyId;
+  return (await adminDb.collection("companies").doc(companyId).collection("memberships").doc(uid).get()).exists;
 }
 
 // Adds a notification to someone's Notifications list from the server (what addUserNotification does in

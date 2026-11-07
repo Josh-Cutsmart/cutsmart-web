@@ -1,5 +1,6 @@
 "use client";
 
+import { notesToDisplayHtml, plainTextToNotesHtml } from "@/lib/notes-html";
 import { setActiveCompanyFormats } from "@/lib/company-formats";
 import { GlobalSearch } from "@/components/global-search";
 import { ViewAsRoleBanner } from "@/components/view-as-role-banner";
@@ -404,14 +405,6 @@ function escapeHtml(value: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
-}
-
-function notesToDisplayHtml(value: unknown): string {
-  const raw = String(value ?? "");
-  if (!raw.trim()) return "";
-  const looksLikeHtml = /<\/?[a-z][\s\S]*>/i.test(raw);
-  if (looksLikeHtml) return raw;
-  return escapeHtml(raw).replace(/\n/g, "<br />");
 }
 
 function notesHtmlIsEmpty(value: string): boolean {
@@ -1880,7 +1873,8 @@ export function AppShell({
       setClientPhone(formatMobileLikeDesktop(String(detail.clientPhone || "")));
       setClientEmail(String(detail.clientEmail || "").trim());
       setProjectAddress(String(detail.projectAddress || "").trim());
-      setProjectNotes(String(detail.projectNotes || "").trim());
+      // (A lead's answer or email: plain text, so it's shown exactly as typed, never as page code.)
+      setProjectNotes(plainTextToNotesHtml(detail.projectNotes));
       setSourceLeadId(String(detail.sourceLeadId || "").trim());
       setPrefilledLeadNotes(Array.isArray(detail.leadNotes) ? detail.leadNotes.map((text) => String(text || "").trim()).filter(Boolean) : []);
       setLeadNotesImported(false);

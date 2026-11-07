@@ -5,9 +5,9 @@ import { verifyBearerUid } from "@/lib/api-auth";
 // Server-side (Admin SDK) "is the caller a member of this company, and what can they do there" check
 // for API routes. The caller is identified by their Firebase ID token (Authorization: Bearer …, see
 // verifyBearerUid) — never by a uid/companyId/scope in the query string or body, which anyone can
-// send. Mirrors the client's own resolution in lib/membership.ts (fetchCompanyAccess): the company
-// membership doc (with the company's staffRoleIdsByUid override applied), the permissions of that
-// role from the company's roles list, merged with the account-level role/permissions on users/{uid}.
+// send. From the company membership doc (with the company's staffRoleIdsByUid override applied) and
+// the permissions of that role from the company's roles list. Nothing from the caller's own users/{uid}
+// counts: anyone can write their own profile, so a company or role named there would let anyone in.
 
 export type ApiCompanyAccess = {
   uid: string;
@@ -67,58 +67,40 @@ function rolePermissionKeys(companyData: Record<string, unknown>, roleId: string
   return [];
 }
 
-const ROLE_PRIORITY: Record<string, number> = { owner: 3, admin: 2 };
-function strongerRole(a: string, b: string): string {
-  return (ROLE_PRIORITY[b] ?? 0) > (ROLE_PRIORITY[a] ?? 0) ? b : a;
-}
-
-// The signed-in caller's access to `companyId`, or null if they aren't signed in or aren't part of
-// that company. "Part of" = a membership doc in the company, or (older accounts) their own user doc
-// naming this company.
+// The signed-in caller's access to `companyId`, or null if they aren't signed in or don't have a
+// membership in that company.
 export async function requireCompanyMember(request: NextRequest, companyId: string): Promise<ApiCompanyAccess | null> {
   const cid = toStr(companyId);
   if (!adminDb || !cid) return null;
   const uid = await verifyBearerUid(request);
   if (!uid) return null;
   const companyRef = adminDb.collection("companies").doc(cid);
-  const [membershipSnap, companySnap, userSnap] = await Promise.all([
-    companyRef.collection("memberships").doc(uid).get(),
-    companyRef.get(),
-    adminDb.collection("users").doc(uid).get(),
-  ]);
-  if (!companySnap.exists) return null;
-  const userData = (userSnap.exists ? userSnap.data() : {}) as Record<string, unknown>;
-  if (!membershipSnap.exists && toStr(userData.companyId) !== cid) return null;
-
+  const [membershipSnap, companySnap] = await Promise.all([companyRef.collection("memberships").doc(uid).get(), companyRef.get()]);
+  if (!companySnap.exists || !membershipSnap.exists) return null;
   return resolveMemberAccess(
     (companySnap.data() ?? {}) as Record<string, unknown>,
     uid,
-    (membershipSnap.exists ? membershipSnap.data() : {}) as Record<string, unknown>,
-    userData,
+    (membershipSnap.data() ?? {}) as Record<string, unknown>,
   );
 }
 
-// What `uid` can do in a company, from the company doc, their membership doc and their user doc (the
-// part of requireCompanyMember after it has read those) — also used to work out who should hear about
+// What `uid` can do in a company, from the company doc and their membership doc (the part of
+// requireCompanyMember after it has read those) — also used to work out who should hear about
 // something (e.g. a new lead) without them being the caller.
 export function resolveMemberAccess(
   companyData: Record<string, unknown>,
   uid: string,
   membershipData: Record<string, unknown>,
-  userData: Record<string, unknown>,
 ): ApiCompanyAccess {
   const overrides = (companyData.staffRoleIdsByUid ?? {}) as Record<string, unknown>;
   const roleId = normalizeRoleId(overrides[uid] ?? membershipData.roleId ?? membershipData.role);
   const permissionKeys = normalizePermissionKeys([
     ...collectPermissionKeys(membershipData),
     ...(roleId ? rolePermissionKeys(companyData, roleId) : []),
-    ...collectPermissionKeys(userData),
   ]);
   const lowered = new Set(permissionKeys.map((key) => key.toLowerCase()));
   const derived = lowered.has("company.*") || lowered.has("company.settings") || lowered.has("projects.status") || lowered.has("users.manage") ? "admin" : "staff";
-  const accountRole = normalizeRoleId(userData.roleId ?? userData.role);
-  const role = strongerRole(roleId || derived, accountRole || "staff");
-  return { uid, role, permissionKeys };
+  return { uid, role: roleId || derived, permissionKeys };
 }
 
 export type CompanyMemberAccessRow = { access: ApiCompanyAccess; displayName: string };
@@ -141,7 +123,7 @@ export async function listCompanyMemberAccess(companyId: string): Promise<Compan
     const userData = (userSnaps[index]?.exists ? userSnaps[index].data() : {}) as Record<string, unknown>;
     const nameOverrides = (companyData.staffDisplayNamesByUid ?? {}) as Record<string, unknown>;
     return {
-      access: resolveMemberAccess(companyData, member.uid, member.data, userData),
+      access: resolveMemberAccess(companyData, member.uid, member.data),
       displayName: toStr(nameOverrides[member.uid]) || toStr(member.data.displayName ?? member.data.name) || toStr(userData.displayName) || toStr(member.data.email),
     };
   });

@@ -6,7 +6,7 @@ import type { Project } from "@/lib/types";
 import {
   cutlistDataRev,
   extractLegacySalesFieldFromRawDoc,
-  fetchCutlistData,
+  readCutlistData,
   hasOfflineCutlistChange,
   parseCutlistRows,
   reportCutlistListenerFromCache,
@@ -43,6 +43,8 @@ export type CutlistSyncState = { offline: boolean; pending: boolean };
 // The database on this device's copy for a moment — as a listener starts, before the server's caught up with it — isn't
 // being offline: only once it's stayed so this long.
 const CACHE_ONLY_OFFLINE_AFTER_MS = 2000;
+// How long till rows that couldn't be read are tried again.
+const LOAD_RETRY_MS = 15000;
 
 // Lazily fetches one project's cutlist rows from their own subcollection (fetchCutlistData/
 // saveCutlistData in lib/firestore-data.ts), only once `enabled` (the owning tab is actually
@@ -165,8 +167,15 @@ export function useProjectCutlistRaw(
       if (!cancelled) setStateRaw((prev) => ({ ...prev, status: "loading", error: null }));
 
       try {
-        const stored = await fetchCutlistData(project, kind);
+        const read = await readCutlistData(project, kind);
         if (cancelled) return;
+        // Couldn't be read: not loaded (and tried again, below), never shown as an empty cutlist, which would be saved
+        // over the real one.
+        if (!read) {
+          setState({ status: "error", rawRows: [], rev: 0, error: new Error("The cutlist couldn't be read") });
+          return;
+        }
+        const stored = read.stored;
         if (stored) {
           setState({ status: "ready", rawRows: stored.rows, rev: stored.rev, error: null });
           void listen();
@@ -195,8 +204,9 @@ export function useProjectCutlistRaw(
         if (cancelled) return;
         setState({ status: "ready", rawRows: legacyRows, rev: 0, error: null });
         // Self-heal: write straight to the subcollection now that we've read the legacy data,
-        // instead of waiting for the user to make an actual edit.
-        void saveCutlistData(project, kind, legacyRows);
+        // instead of waiting for the user to make an actual edit. Only when there's something to move: with
+        // nothing in the old place, nothing's written (a save of none would replace rows this read missed).
+        if (legacyRows.length) void saveCutlistData(project, kind, legacyRows);
         void listen();
       } catch (error) {
         if (cancelled) return;
@@ -216,6 +226,18 @@ export function useProjectCutlistRaw(
       reportCutlistListenerFromCache(false);
     };
   }, [projectKey, kind, enabled, retryTick, setState]);
+
+  // Couldn't be read: tried again by itself, the moment the browser's back online and every so often till then.
+  useEffect(() => {
+    if (state.status !== "error") return;
+    const again = () => setRetryTick((tick) => tick + 1);
+    const timer = window.setTimeout(again, LOAD_RETRY_MS);
+    window.addEventListener("online", again);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("online", again);
+    };
+  }, [state.status]);
 
   const retry = useCallback(() => setRetryTick((tick) => tick + 1), []);
   const setRawRowsOptimistic = useCallback(

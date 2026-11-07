@@ -4,12 +4,9 @@ import {
   collectionGroup,
   deleteDoc,
   doc,
-  getDoc,
   getDocs,
   limit,
   query,
-  serverTimestamp,
-  setDoc,
   where,
 } from "@/lib/firestore-client";
 import { authorizedFetch } from "@/lib/api-fetch";
@@ -29,100 +26,6 @@ export type CompanyInvite = {
 };
 
 type OnboardingUser = { uid: string; email?: string | null; displayName?: string | null };
-
-const DEFAULT_COMPANY_ROLE_DEFS = [
-  {
-    id: "owner",
-    name: "Owner",
-    color: "#1F2937",
-    permissions: {
-      "company.*": true,
-      "company.dashboard.view": true,
-      "clients.view": true,
-      "clients.view.all": true,
-      "leads.view": true,
-      "leads.view.others": true,
-      "projects.create": true,
-      "projects.view": true,
-      "projects.view.others": true,
-      "projects.edit.others": true,
-      "projects.status": true,
-      "projects.create.others": true,
-      "sales.view": true,
-      "sales.edit": true,
-      "production.view": true,
-      "production.edit": true,
-      "production.key": true,
-      "staff.add": true,
-      "staff.remove": true,
-      "staff.change.role": true,
-      "staff.change.display_name": true,
-      "company.settings": true,
-      "company.report": true,
-      "projects.automate": true,
-      "dashboard.complete.bonus": true,
-    },
-  },
-  {
-    id: "admin",
-    name: "Admin",
-    color: "#2F6BFF",
-    permissions: {
-      "company.*": true,
-      "company.dashboard.view": true,
-      "clients.view": true,
-      "clients.view.all": true,
-      "leads.view": true,
-      "leads.view.others": true,
-      "projects.create": true,
-      "projects.view": true,
-      "projects.view.others": true,
-      "projects.edit.others": true,
-      "projects.status": true,
-      "projects.create.others": true,
-      "sales.view": true,
-      "sales.edit": true,
-      "production.view": true,
-      "production.edit": true,
-      "production.key": true,
-      "staff.add": true,
-      "staff.remove": true,
-      "staff.change.role": true,
-      "staff.change.display_name": true,
-      "company.settings": true,
-      "company.report": true,
-      "projects.automate": true,
-      "dashboard.complete.bonus": true,
-    },
-  },
-  {
-    id: "staff",
-    name: "Staff",
-    color: "#7D99B3",
-    permissions: {
-      "company.dashboard.view": true,
-      "calendar.view": true,
-    },
-  },
-] as const;
-
-function randToken(length: number) {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let out = "";
-  for (let i = 0; i < length; i += 1) {
-    out += chars[Math.floor(Math.random() * chars.length)];
-  }
-  return out;
-}
-
-function companyIdFromName(name: string) {
-  const seed = String(name || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .slice(0, 16);
-  return `cmp_${seed || "new"}_${randToken(6).toLowerCase()}`;
-}
 
 function joinCodeKeyFromInput(v: string) {
   return String(v || "")
@@ -209,94 +112,32 @@ export async function declineCompanyInvite(invite: CompanyInvite): Promise<strin
   }
 }
 
-// Creates a company with this user as its owner. Returns an error message, or "" when created.
+// Creates a company with this user as its owner, through the server (app/api/company/create). Returns an error message, or "" when
+// created.
+const CREATE_COMPANY_ERRORS: Record<string, string> = {
+  "missing-name": "Enter a company name.",
+  "missing-code": "Pick a company code.",
+  "code-too-short": "Your company code needs at least 4 characters.",
+  "invalid-code": "That code can't be used. Try letters and numbers.",
+  "code-taken": "That code is taken. Pick another one.",
+};
+
 export async function createCompany(user: OnboardingUser, name: string, code: string): Promise<string> {
-  if (!db) return "Can't reach the database.";
   const companyName = String(name || "").trim();
   const joinCode = String(code || "").trim();
-  if (!companyName) return "Enter a company name.";
-  if (!joinCode) return "Pick a company code.";
+  if (!companyName) return CREATE_COMPANY_ERRORS["missing-name"];
+  if (!joinCode) return CREATE_COMPANY_ERRORS["missing-code"];
   try {
-    const joinCodeKey = joinCodeKeyFromInput(joinCode);
-    // A code another company already uses would send their staff here instead.
-    const existing = await getDoc(doc(db, "companyJoinCodes", joinCodeKey)).catch(() => null);
-    if (existing?.exists() && String((existing.data() as Record<string, unknown>)?.companyId ?? "").trim()) {
-      return "That code is taken. Pick another one.";
-    }
-    const companyId = companyIdFromName(companyName);
-    const ownerName = String(user.displayName || user.email || "Owner").trim();
-    const nowIso = new Date().toISOString();
-
-    await setDoc(
-      doc(db, "companies", companyId),
-      {
-        name: companyName,
-        companyName,
-        applicationPreferences: { companyName },
-        roles: DEFAULT_COMPANY_ROLE_DEFS,
-        id: companyId,
-        ownerUid: user.uid,
-        ownerId: user.uid,
-        companyCode: joinCode,
-        companyPassword: joinCode,
-        joinCode,
-        joinPassword: joinCode,
-        createdAt: serverTimestamp(),
-        createdAtIso: nowIso,
-        updatedAt: serverTimestamp(),
-        updatedAtIso: nowIso,
-      },
-      { merge: true },
-    );
-    await setDoc(
-      doc(db, "companyJoinCodes", joinCodeKey),
-      {
-        id: joinCodeKey,
-        companyId,
-        companyName,
-        active: true,
-        updatedAt: serverTimestamp(),
-        updatedAtIso: nowIso,
-        createdAt: serverTimestamp(),
-        createdAtIso: nowIso,
-      },
-      { merge: true },
-    );
-    await setDoc(
-      doc(db, "companies", companyId, "memberships", user.uid),
-      {
-        uid: user.uid,
-        email: user.email || "",
-        displayName: ownerName,
-        role: "owner",
-        roleId: "owner",
-        createdAt: serverTimestamp(),
-        createdAtIso: nowIso,
-        updatedAt: serverTimestamp(),
-        updatedAtIso: nowIso,
-      },
-      { merge: true },
-    );
-    await setDoc(
-      doc(db, "companies", companyId, "clients", "__meta"),
-      {
-        id: "__meta",
-        companyId,
-        type: "clients-meta",
-        createdAt: serverTimestamp(),
-        createdAtIso: nowIso,
-        updatedAt: serverTimestamp(),
-        updatedAtIso: nowIso,
-      },
-      { merge: true },
-    );
+    const res = await authorizedFetch("/api/company/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: companyName, code: joinCode, displayName: user.displayName || "" }),
+    });
+    const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; companyId?: string };
+    const companyId = String(data.companyId ?? "").trim();
+    if (!data.ok || !companyId) return CREATE_COMPANY_ERRORS[String(data.error ?? "")] ?? "Couldn't create the company. Try again.";
     invalidateUserCache(user.uid);
     invalidateCompanyCache();
-    await setDoc(
-      doc(db, "users", user.uid),
-      { email: user.email || "", displayName: ownerName, companyId, updatedAt: serverTimestamp(), updatedAtIso: nowIso },
-      { merge: true },
-    );
     rememberActiveCompany(companyId);
     return "";
   } catch {

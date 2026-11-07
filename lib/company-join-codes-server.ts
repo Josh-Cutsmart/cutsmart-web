@@ -6,8 +6,9 @@ import { checkJoinCodeRole, companyRoleIdsOf, joinRoleIdFor, type JoinRoleSetter
 // A company's join codes (Company Settings > Company > Join key), handled server-side only.
 //
 // - companyJoinCodes/{key}: the lookup a code is joined with. It only exists while the code can be
-//   used — firestore.rules lets a membership be created only with a key that's here and points at
-//   that company — so deleting it is what stops a code working.
+//   used, so deleting it is what stops a code working. Server only: firestore.rules doesn't let the app
+//   read or write it, nor create memberships at all, so joining always comes through here, with its
+//   role checks and one-person codes.
 // - companies/{companyId}/joinCodes/{key}: the company's own record of each code: master or
 //   temporary, who it was for, who used it and when, and whether it was revoked. Not readable by the
 //   app directly; GET /api/company/join-codes lists it for owners/admins.
@@ -346,7 +347,7 @@ function clearOldRoleOverride(tx: Transaction, companyRef: DocumentReference, co
 
 // The same code written the other way, with or without its middle dash: the join screen's two boxes send every code as
 // XXXX-XXXX, but a master code of 8 characters is stored without one (and someone may type an access code without it).
-function otherFormOfJoinKey(key: string): string {
+export function otherFormOfJoinKey(key: string): string {
   if (/^[a-z0-9]{4}-[a-z0-9]{4}$/.test(key)) return key.replace("-", "");
   if (/^[a-z0-9]{8}$/.test(key)) return `${key.slice(0, 4)}-${key.slice(4)}`;
   return "";

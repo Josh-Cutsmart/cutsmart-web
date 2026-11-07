@@ -1,5 +1,6 @@
 "use client";
 
+import { notesToDisplayHtml } from "@/lib/notes-html";
 import { notificationText } from "@/lib/notification-messages";
 import { createContext, Fragment, startTransition, useCallback, useContext, useDeferredValue, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type FocusEvent as ReactFocusEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type TouchEvent as ReactTouchEvent, type WheelEvent as ReactWheelEvent, useSyncExternalStore } from "react";
 import { GlassModalHeader } from "@/components/glass-modal-header";
@@ -128,8 +129,8 @@ import {
   saveProjectChecklist,
   deleteProjectChecklist,
   saveSalesGridData,
-  saveProjectImagesData,
-  saveProjectFilesData,
+  saveProjectImagesData as saveProjectImagesDataNow,
+  saveProjectFilesData as saveProjectFilesDataNow,
   updateGridVersionGrid,
   updateProductComparison,
   settingsWithChanges,
@@ -2563,14 +2564,6 @@ function escapeHtml(value: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
-}
-
-function notesToDisplayHtml(value: unknown): string {
-  const raw = String(value ?? "");
-  if (!raw.trim()) return "";
-  const looksLikeHtml = /<\/?[a-z][\s\S]*>/i.test(raw);
-  if (looksLikeHtml) return raw;
-  return escapeHtml(raw).replace(/\n/g, "<br />");
 }
 
 function formatPartCount(value: number): string {
@@ -19979,6 +19972,35 @@ export default function ProjectDetailsPage() {
   // result into `project` state once, below, so every existing project.projectImageItems/
   // .projectImages/.projectFiles read site keeps working unchanged.
   const projectMediaState = useProjectMedia(project);
+  // Images and files are saved as whole lists: before they've loaded, a save would replace the real ones with only what's on
+  // screen. So none is made till they have (the caller then says it couldn't save).
+  const saveProjectImagesData = (...args: Parameters<typeof saveProjectImagesDataNow>) =>
+    projectMediaState.status === "ready" ? saveProjectImagesDataNow(...args) : Promise.resolve(false);
+  const saveProjectFilesData = (...args: Parameters<typeof saveProjectFilesDataNow>) =>
+    projectMediaState.status === "ready" ? saveProjectFilesDataNow(...args) : Promise.resolve(false);
+  // A cutlist's rows, or the images and files, that couldn't be read: said so, not shown as if there were none. (They load by
+  // themselves once they can: lib/use-project-cutlist.ts, lib/use-project-media.ts. Left as it is while they're tried again.)
+  const loadFailureMessage =
+    productionCutlistState.status === "error" || initialCutlistState.status === "error"
+      ? "The cutlist couldn't be loaded. Check your connection: it will load by itself once it can, and nothing in it is saved till then."
+      : projectMediaState.status === "error"
+        ? "Images and files couldn't be loaded. Check your connection: they'll load by themselves once they can."
+        : "";
+  const loadRetrying =
+    productionCutlistState.status === "loading" || initialCutlistState.status === "loading" || projectMediaState.status === "loading";
+  const shownLoadFailureRef = useRef("");
+  useEffect(() => {
+    if (loadRetrying && shownLoadFailureRef.current) return;
+    if (loadFailureMessage) {
+      shownLoadFailureRef.current = loadFailureMessage;
+      setLockMessage(loadFailureMessage);
+      return;
+    }
+    const shown = shownLoadFailureRef.current;
+    if (!shown) return;
+    shownLoadFailureRef.current = "";
+    setLockMessage((current) => (current === shown ? "" : current));
+  }, [loadFailureMessage, loadRetrying]);
   useEffect(() => {
     if (!project?.id) {
       projectMediaHydratedForProjectIdRef.current = null;
@@ -26068,8 +26090,15 @@ export default function ProjectDetailsPage() {
     const known = (kind === "production" ? productionCutlistState : initialCutlistState).latest();
     return keepCutlistChange(project, kind, cutlistChangeFor(kind, nextRows), known.rawRows);
   };
+  // A cutlist whose rows couldn't be read (loadFailureMessage): what's on screen isn't it, so nothing's saved from it.
+  const cutlistNotLoaded = (kind: "production" | "initialMeasure") => {
+    const state = kind === "production" ? productionCutlistState : initialCutlistState;
+    const synced = (kind === "production" ? productionSyncedRowsRef : initialSyncedRowsRef).current;
+    return state.status === "error" && !(project && synced?.projectId === project.id);
+  };
   // One save at a time, in the order they're made (as Initial Measure's) — each put onto the one before it.
   const persistCutlistContainer = (nextRows: CutlistRow[]): Promise<boolean> => {
+    if (cutlistNotLoaded("production")) return Promise.resolve(false);
     noteCutlistSessionChange("production", nextRows);
     const kept = keepCutlistChangeNow("production", nextRows);
     const next = persistCutlistRowsChainRef.current
@@ -26161,6 +26190,10 @@ export default function ProjectDetailsPage() {
           if (qtyDeltaByCategory.drawer) void bumpCompanyStatCounter(project.companyId, "drawersQuantity", qtyDeltaByCategory.drawer);
           if (qtyDeltaByCategory.panel) void bumpCompanyStatCounter(project.companyId, "panelsQuantity", qtyDeltaByCategory.panel);
         }
+      } else {
+        // (Turned down, or not reaching the database: the rows stay on screen, a copy's kept on this device, and the next save
+        // takes these changes with it.)
+        setLockMessage("Couldn't save the cutlist. Your changes are still on screen and a copy is kept on this device, so don't reload. Make another change to try again.");
       }
       return ok;
     } finally {
@@ -26169,6 +26202,7 @@ export default function ProjectDetailsPage() {
   };
   const persistCutlistRows = async (nextRows: CutlistRow[]) => persistCutlistContainer(nextRows);
   const persistInitialCutlistRows = (nextRows: CutlistRow[]): Promise<boolean> => {
+    if (cutlistNotLoaded("initialMeasure")) return Promise.resolve(false);
     noteCutlistSessionChange("initialMeasure", nextRows);
     const keptNow = keepCutlistChangeNow("initialMeasure", nextRows);
     const run = async (): Promise<boolean> => {
