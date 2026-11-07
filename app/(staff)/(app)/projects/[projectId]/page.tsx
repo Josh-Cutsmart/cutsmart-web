@@ -52,6 +52,7 @@ import { RestoreDialog, restoreStatusOptionsFrom } from "@/components/restore-di
 import { authorizedFetch } from "@/lib/api-fetch";
 import { useKeepAnchoredPopoverAboveKeyboard } from "@/lib/use-keep-anchored-popover-above-keyboard";
 import { useKeepMenuInView } from "@/lib/use-keep-menu-in-view";
+import { markKeyboardStandIn } from "@/lib/use-keyboard-inset";
 import { RoomNameCombobox } from "@/components/room-name-combobox";
 import { contrastTextForFill } from "@/lib/user-profile-format";
 import { DEFAULT_CART_COPY_FORMAT, drawerHeightItemNumber, formatCartCopyLine, hardwareItemNumber, normalizeBoardFinishes, normalizeHardwareRows, normalizeMmOptions, normalizeSheetSizes, type HardwareTypeRow } from "@/lib/production-hardware";
@@ -55244,7 +55245,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               className="fixed inset-x-0 z-[130] overflow-y-auto overscroll-none bg-white"
               style={{
                 top: "calc(56px + var(--keyboard-offset-top-px, 0px))",
-                bottom: "var(--keyboard-inset-px, 0px)",
+                bottom: 0,
+                paddingBottom: "var(--keyboard-inset-px, 0px)",
                 transform: "translateY(100%)",
               }}
             >
@@ -56853,7 +56855,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 // the keyboard while it's open.
                 style={{
                   top: "calc(56px + var(--keyboard-offset-top-px, 0px))",
-                  bottom: "var(--keyboard-inset-px, 0px)",
+                  bottom: 0,
+                  paddingBottom: "var(--keyboard-inset-px, 0px)",
                   transform: "translateY(100%)",
                 }}
               >
@@ -60676,10 +60679,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       className="hide-scrollbar absolute left-0 z-[1] flex w-full flex-col overflow-y-auto p-4"
                       style={{
                         backgroundColor: "var(--bg-app)",
-                        // Spans just what's visible above the on-screen keyboard while it's up (both vars are 0
-                        // otherwise; see lib/use-keyboard-inset.ts).
+                        // Carries on under the see-through keyboard while it's up, with room to scroll its end clear
+                        // (both vars are 0 otherwise; see lib/use-keyboard-inset.ts). (16px: its p-4.)
                         top: "var(--keyboard-offset-top-px, 0px)",
-                        bottom: "var(--keyboard-inset-px, 0px)",
+                        bottom: 0,
+                        paddingBottom: "calc(16px + var(--keyboard-inset-px, 0px))",
                       }}
                     >
                       <div className="mb-3 flex justify-end">
@@ -62332,16 +62336,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   // even a bounce of its own at its ends — at the top, its white showed above the blue bar
                   // (the sticky bar rode the bounce down) while the bar was dragged down to close it.
                   className="fixed inset-x-0 z-[130] overflow-y-auto overscroll-none bg-white"
-                  // top/bottom track what's actually visible while the on-screen keyboard is up (both
-                  // vars are 0 while it's closed; see lib/use-keyboard-inset.ts). bottom: the top of
-                  // the keyboard rather than the bottom of the screen, so while typing in the search
-                  // box the filtered list ends just above it and scrolls all the way through, instead
-                  // of its last rows sitting out of reach underneath. top: + however far iOS has
+                  // top/paddingBottom track what's actually visible while the on-screen keyboard is up (both
+                  // vars are 0 while it's closed; see lib/use-keyboard-inset.ts). paddingBottom: the list carries
+                  // on under the see-through keyboard to the bottom of the screen, and scrolls all the way through
+                  // rather than its last rows sitting out of reach underneath. top: + however far iOS has
                   // scrolled the visible area down, so the bar with the search box stays in view
                   // rather than riding up off the top of the screen with the page.
                   style={{
                     top: "calc(56px + var(--keyboard-offset-top-px, 0px))",
-                    bottom: "var(--keyboard-inset-px, 0px)",
+                    bottom: 0,
+                    paddingBottom: "var(--keyboard-inset-px, 0px)",
                     transform: "translateY(100%)",
                   }}
                 >
@@ -63755,8 +63759,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       notesTypeAheadRef.current?.stop();
       const typeAhead: { text: string; stand: HTMLInputElement | null; stop: () => void } = { text: "", stand: null, stop: () => {} };
       // A phone only brings its keyboard up for something focused in the tap itself — the editor, which takes a
-      // moment to start, would come up without it (so it took a second tap). So an invisible stand-in text box,
-      // where the tap was, takes the focus (and the keyboard) until the editor's ready.
+      // moment to start, would come up without it (so it took a second tap). So an invisible stand-in text box takes the
+      // focus (and the keyboard) until the editor's ready. Towards the top of the screen, however low the tap was: left where the
+      // keyboard's about to be, the phone slides the whole screen up to show it, and what's behind the keyboard is a plain colour.
       if (isCoarsePointer) {
         const stand = document.createElement("input");
         stand.type = "text";
@@ -63766,7 +63771,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         Object.assign(stand.style, {
           position: "fixed",
           left: `${Math.round(e.clientX)}px`,
-          top: `${Math.round(e.clientY)}px`,
+          top: `${Math.round(Math.min(e.clientY, window.innerHeight * 0.25))}px`,
           width: "1px",
           height: "1px",
           opacity: "0",
@@ -63777,6 +63782,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           pointerEvents: "none",
         });
         document.body.appendChild(stand);
+        markKeyboardStandIn(stand, e.currentTarget.closest<HTMLElement>("[data-keyboard-center]"));
         stand.focus({ preventScroll: true });
         typeAhead.stand = stand;
       }

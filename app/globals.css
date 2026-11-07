@@ -766,13 +766,16 @@ body .drawer-toolbar-slim .cutsmart-quote-document-toolbar > .ck.ck-toolbar > .c
   height: var(--keyboard-room-px, 0px);
 }
 
-/* A cutlist / trade notes drawer in the side (CutlistSideDrawer) on a phone — the whole screen — kept to what's visible
-   above the keyboard while it's up, so what's being typed (its editor scrolls itself) isn't behind it. */
+/* A cutlist / trade notes drawer in the side (CutlistSideDrawer) on a phone — the whole screen: it carries on under the
+   see-through keyboard, as everything does. Its editor scrolls itself, so being typed in it has room at its end for the
+   last lines to come up clear of the keyboard (lib/use-keyboard-inset.ts keeps the cursor there). Half the screen, not
+   what's reported, as a phone doesn't always report the keyboard. */
 @media (max-width: 639.98px) {
   html[data-keyboard-open="true"] .cutlist-drawer-docked {
-    top: var(--keyboard-offset-top-px, 0px) !important;
-    bottom: auto !important;
-    height: var(--visual-viewport-height-px) !important;
+    transform: translateY(var(--keyboard-offset-top-px, 0px));
+  }
+  .drawer-notes-editor .cutsmart-quote-document-shell[data-mode="embedded"] .ck.ck-content.ck-editor__editable:focus {
+    padding-bottom: 55svh !important;
   }
 }
 

@@ -3,7 +3,9 @@ Version: v0.6.1
 whatsNew: [
 <u><b>Phones</b></u>
 <ul>
-<li>The box you're typing in moves to the middle of the screen above the keyboard, with the rest of the pop-up carrying on under the keyboard</li>
+<li>On every page and pop-up, the box you're typing in moves up above the keyboard as soon as you tap it, and everything else carries on under the keyboard</li>
+<li>An event's Notes box grows as you type</li>
+<li>Sticky headers keep their background when you scroll the keyboard away</li>
 <li>An event's pop-up keeps its colour all the way to the bottom of the screen</li>
 <li>Pop-ups slide up from the bottom and only take the room they need. Tap above one, or swipe it down, to close it</li>
 <li>Dragging on a Project Drawing no longer pulls down the menu or fades its title bar</li>

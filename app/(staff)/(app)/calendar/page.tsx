@@ -9,6 +9,7 @@
 
 import { useCompanyJobsTick } from "@/lib/use-company-jobs-live";
 import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { AutoGrowTextarea } from "@/components/auto-grow-textarea";
 import { WheelDatePicker, WheelTimePicker } from "@/components/wheel-date-picker";
 import { popupTintStyle, registerPopupTint } from "@/lib/popup-tint";
 import { GlassModalHeader } from "@/components/glass-modal-header";
@@ -4295,7 +4296,7 @@ function CalendarPageContent() {
                     </label>
                     <label className="grid gap-1.5 text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
                       Notes
-                      <textarea
+                      <AutoGrowTextarea
                         readOnly={readOnly}
                         value={d.notes}
                         onChange={(e) => setDraft((prev) => (prev ? { ...prev, notes: e.target.value } : prev))}
