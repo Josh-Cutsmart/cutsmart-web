@@ -940,3 +940,122 @@ circle.lg-lead-dot-won[data-on] {
     transform: none;
   }
 }
+
+/* Set Up Account (account-setup.tsx). */
+.lg-setup-progress {
+  display: flex;
+  gap: 6px;
+  margin: 14px 0 18px;
+}
+
+.lg-setup-progress span {
+  flex: 1;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--lg-field-border);
+}
+
+.lg-setup-progress span[data-done] {
+  background: var(--brand);
+}
+
+.lg-setup-heading {
+  margin: 0;
+  text-align: center;
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--text-main);
+}
+
+.lg-setup-sub {
+  margin-top: 2px;
+}
+
+.lg-setup-badge {
+  display: flex;
+  width: 72px;
+  height: 72px;
+  margin: 16px auto 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  font-size: 24px;
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.lg-setup-swatches {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 10px;
+  margin-top: 16px;
+  justify-items: center;
+}
+
+.lg-setup-swatches button {
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.lg-setup-swatches button[data-on] {
+  box-shadow: 0 0 0 2px var(--lg-field-bg), 0 0 0 4px var(--text-main);
+}
+
+.lg-setup-custom {
+  display: flex;
+  margin-top: 14px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.lg-setup-custom input {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.lg-setup-row {
+  display: flex;
+  margin-top: 16px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--lg-field-border);
+  background: var(--lg-field-bg);
+  padding: 12px 14px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-main);
+}
+
+.lg-setup-item {
+  display: flex;
+  margin-bottom: 8px;
+  align-items: center;
+  gap: 6px;
+}
+
+.lg-setup-item button {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}

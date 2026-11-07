@@ -7,6 +7,7 @@
 // be shown/hidden here per person. Opening the tab needs calendar.view; who can edit / view / not see each
 // category is set per role on the category (Company Settings > Calendar).
 
+import { useCompanyJobsTick } from "@/lib/use-company-jobs-live";
 import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { WheelDatePicker, WheelTimePicker } from "@/components/wheel-date-picker";
 import { popupTintStyle, registerPopupTint } from "@/lib/popup-tint";
@@ -369,6 +370,9 @@ const TODAY_TINT = "color-mix(in srgb, var(--brand) 6%, transparent)";
 // TODAY_SIDES, the top or bottom added where it starts or ends).
 const TODAY_RING = "inset 0 0 0 2px var(--brand)";
 const TODAY_SIDES = "inset 2px 0 0 var(--brand), inset -2px 0 0 var(--brand)";
+// Today being a day that's left out (non-work days not shown): that same line, on the day before's right side and the next
+// shown day's left, so where today falls can still be told.
+const TODAY_EDGE = { left: "inset 2px 0 0 var(--brand)", right: "inset -2px 0 0 var(--brand)" };
 
 type Draft = {
   id: string;
@@ -934,6 +938,22 @@ function CalendarPageContent() {
       cancelled = true;
     };
   }, [canView, companyId, user?.uid]);
+
+  // Projects added or changed by anyone: the picker and the events linked to them up to date.
+  const companyJobsTick = useCompanyJobsTick(companyId);
+  useEffect(() => {
+    if (!companyJobsTick || !companyId || !user?.uid) return;
+    let cancelled = false;
+    void fetchProjects(user.uid, [companyId], { lightweight: true, archived: "include" })
+      .then((rows) => {
+        if (cancelled) return;
+        setProjects(rows.filter((p) => !p.deletedAt && (!p.companyId || p.companyId === companyId)));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [companyJobsTick, companyId, user?.uid]);
 
   const range = useMemo(() => viewRange(view, cursor), [view, cursor]);
   useEffect(() => {
@@ -1502,6 +1522,7 @@ function CalendarPageContent() {
   const ghost = useDragGhost();
   const [monthDragId, setMonthDragId] = useState("");
   const [monthDropDay, setMonthDropDay] = useState<number | null>(null);
+  const monthGlideRunningRef = useRef(false);
   // The Schedule panel (ProjectSchedulePanel): open; the events linked to projects (while it's open — which tells the
   // projects with something booked from those without); a project being dragged from it, and the time it'd go at in
   // the Week/Day views' hours.
@@ -1552,6 +1573,17 @@ function CalendarPageContent() {
     return Math.min(23 * 60, Math.max(0, Math.floor((((e.clientY - rect.top) / HOUR_PX) * 60) / 30) * 30));
   };
   const today = startOfDay(new Date());
+  const todayEdgeOf = (day: Date): string | undefined => {
+    if (!isLeftOutDay(today)) return undefined;
+    const nearest = (step: -1 | 1) => {
+      let found = addDays(today.getTime(), step);
+      for (let tries = 0; tries < 7 && isLeftOutDay(found); tries += 1) found = addDays(found.getTime(), step);
+      return found;
+    };
+    if (sameDay(day, nearest(-1))) return TODAY_EDGE.right;
+    if (sameDay(day, nearest(1))) return TODAY_EDGE.left;
+    return undefined;
+  };
   // A day off: not a workday, or a New Zealand public holiday (lib/nz-public-holidays.ts — its name shows on the day).
   const isOffDay = (day: Date) => !workdays.includes(day.getDay()) || Boolean(nzPublicHolidayName(day, holidayRegion));
   // The "crossed out" look for days off.
@@ -1665,14 +1697,14 @@ function CalendarPageContent() {
       if (projectDragId) {
         e.preventDefault();
         e.dataTransfer.dropEffect = "copy";
-        if (monthDropDay !== dayMs) setMonthDropDay(dayMs);
+        if (monthDropDay !== dayMs && !monthGlideRunningRef.current) setMonthDropDay(dayMs);
         if (projectDropEventId) setProjectDropEventId("");
         return;
       }
       if (!monthDragId) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
-      if (monthDropDay !== dayMs) setMonthDropDay(dayMs);
+      if (monthDropDay !== dayMs && !monthGlideRunningRef.current) setMonthDropDay(dayMs);
     },
     onDrop: (e: ReactDragEvent<HTMLElement>) => {
       e.preventDefault();
@@ -1927,6 +1959,16 @@ function CalendarPageContent() {
           );
         })}
         {/* Today, outlined — over the day cells but under the events (they come after it), so a bar across it sits on top. */}
+        {days.map((dd, col) => {
+          const edge = todayEdgeOf(dd);
+          return edge ? (
+            <div
+              key={dd.getTime()}
+              className="pointer-events-none absolute inset-y-0"
+              style={{ left: `${(col / cols) * 100}%`, width: `${(1 / cols) * 100}%`, boxShadow: edge }}
+            />
+          ) : null;
+        })}
         {(() => {
           const todayCol = days.findIndex((dd) => sameDay(dd, today));
           if (todayCol < 0) return null;
@@ -1960,6 +2002,10 @@ function CalendarPageContent() {
   };
   // The running wheel / Previous / Next glide (a requestAnimationFrame id), if any.
   const monthAnimRef = useRef<number | null>(null);
+  const monthDragIsOnRef = useRef(false);
+  useEffect(() => {
+    monthDragIsOnRef.current = view === "month" && Boolean(monthDragId || projectDragId);
+  });
   // Nearest month snap point to the scroller's position.
   const nearestMonthIdx = (el: HTMLDivElement) => {
     const rowH = el.clientHeight / 6;
@@ -2000,6 +2046,7 @@ function CalendarPageContent() {
       return;
     }
     el.style.scrollSnapType = "none";
+    monthGlideRunningRef.current = true;
     const startedAt = performance.now();
     const DURATION_MS = 420;
     const tick = (now: number) => {
@@ -2012,7 +2059,8 @@ function CalendarPageContent() {
         return;
       }
       monthAnimRef.current = null;
-      el.style.scrollSnapType = "";
+      monthGlideRunningRef.current = false;
+      if (!monthDragIsOnRef.current) el.style.scrollSnapType = "";
       settleMonthScroller();
     };
     monthAnimRef.current = requestAnimationFrame(tick);
@@ -2050,6 +2098,20 @@ function CalendarPageContent() {
     };
   });
   const isDraggingInMonth = view === "month" && Boolean(monthDragId || projectDragId);
+  // For as long as it's dragged, only this moves the months. The browser scrolls whatever's under a drag near its edge by
+  // itself, a little at a time, and the months' snapping pulled that straight back: together with the glide, the months
+  // shook about. (Not scrollable by hand is still scrollable from here.)
+  useEffect(() => {
+    if (!isDraggingInMonth) return;
+    const el = monthScrollerRef.current;
+    if (!el) return;
+    el.style.overflowY = "hidden";
+    el.style.scrollSnapType = "none";
+    return () => {
+      el.style.overflowY = "";
+      el.style.scrollSnapType = "";
+    };
+  }, [isDraggingInMonth]);
   useEffect(() => {
     if (!isDraggingInMonth) return;
     const EDGE_ZONE_PX = 40;
@@ -2428,7 +2490,7 @@ function CalendarPageContent() {
                           borderColor: "var(--glass-border)",
                           backgroundColor: isToday ? TODAY_TINT : undefined,
                           // Today, outlined down its column (not in Day view — the whole view's the one day).
-                          boxShadow: isToday && dayCount > 1 ? `${TODAY_SIDES}, inset 0 2px 0 var(--brand)` : undefined,
+                          boxShadow: isToday && dayCount > 1 ? `${TODAY_SIDES}, inset 0 2px 0 var(--brand)` : dayCount > 1 ? todayEdgeOf(d) : undefined,
                         }}
                       >
                         <span style={{ color: "var(--text-muted)" }}>{weekdayShort(d)}</span>
@@ -2463,7 +2525,9 @@ function CalendarPageContent() {
                             ? "inset 0 0 0 2px var(--brand)"
                             : sameDay(d, today) && dayCount > 1
                               ? TODAY_SIDES
-                              : undefined,
+                              : dayCount > 1
+                                ? todayEdgeOf(d)
+                                : undefined,
                       }}
                       title={canCreate ? "Add an all-day event" : undefined}
                     />
@@ -2518,7 +2582,7 @@ function CalendarPageContent() {
                         `repeating-linear-gradient(to bottom, var(--glass-border) 0, var(--glass-border) 1px, transparent 1px, transparent ${HOUR_PX}px)`,
                         ...(isOffDay(d) ? [offDayHatch] : []),
                       ].join(", "),
-                      boxShadow: isToday && dayCount > 1 ? `${TODAY_SIDES}, inset 0 -2px 0 var(--brand)` : undefined,
+                      boxShadow: isToday && dayCount > 1 ? `${TODAY_SIDES}, inset 0 -2px 0 var(--brand)` : dayCount > 1 ? todayEdgeOf(d) : undefined,
                     }}
                     onClick={(e) => {
                       const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();

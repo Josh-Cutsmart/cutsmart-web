@@ -1,3 +1,4 @@
+import { notificationText, notificationWords } from "@/lib/notification-messages";
 import { pushNotificationBody, pushNotificationUrl } from "@/lib/push-notification-types";
 
 // Dev mode's test notifications (the "test" buttons in User Settings → app/api/push/dev-test): one of every kind,
@@ -24,28 +25,28 @@ export const DEV_TEST_REQUESTER = TEAMMATE;
 export const DEV_TEST_UNLOCK_HOURS = 2;
 
 // [title, message] of each kind's test, as the real one words it.
+const asSample = ({ title, message }: { title: string; message: string }): [string, string] => [title, message];
 const SAMPLE_TEXT: Record<string, [string, string]> = {
-  project_access: ["Added to a project", `${TEAMMATE} added you to "${PROJECT}" as an editor.`],
-  project_assigned: ["Assigned to a project", `You were assigned to "${PROJECT}".`],
-  project_unassigned: ["Removed from a project", `You were removed from "${PROJECT}".`],
-  production_unlock_request: ["Production unlock request", `${TEAMMATE} asked to unlock production on "${PROJECT}".`],
-  column_automation: ["Moved into Production", `"${PROJECT}" moved into Production.`],
-  production_unlock_response: [
-    "Production unlocked",
-    `${TEAMMATE} approved your request — you can edit production on "${PROJECT}" for ${DEV_TEST_UNLOCK_HOURS} hours.`,
-  ],
-  lead_new: ["New Lead", `From Form: ${CLIENT}`],
-  lead_access: ["Added to a lead", `${TEAMMATE} added you to the lead "${CLIENT}".`],
-  quote_accepted: [`Quote accepted for ${PROJECT}`, `${CLIENT} accepted your quote for $18,450.00`],
-  quote_declined: ["Quote declined", `${CLIENT} declined quote for ${PROJECT}: "We've decided to go with a different layout."`],
-  specs_submitted: [`Specifications Submitted for ${PROJECT}`, `${CLIENT} submitted the specifications (12/15) accepted`],
-  quote_sent: ["Quote sent to client", `${TEAMMATE} sent a Quote for "${PROJECT}" to the client.`],
-  specs_sent: ["Specifications sent to client", `${TEAMMATE} sent Specifications for "${PROJECT}" to the client.`],
-  quote_pending: ["Quote not accepted yet", `${CLIENT} hasn't accepted the quote for ${PROJECT} yet — sent 2 days ago.`],
-  specs_pending: ["Specifications not submitted yet", `${CLIENT} hasn't submitted the specifications for ${PROJECT} yet — sent 2 days ago.`],
+  project_access: asSample(notificationText("project_access.added", { person: TEAMMATE, project: PROJECT, role: "an editor" })),
+  project_assigned: asSample(notificationText("project_assigned", { project: PROJECT })),
+  project_unassigned: asSample(notificationText("project_unassigned", { project: PROJECT })),
+  production_unlock_request: asSample(notificationText("production_unlock_request", { person: TEAMMATE, project: PROJECT })),
+  column_automation: asSample(notificationText("column_automation.enters", { thing: `"${PROJECT}"`, column: "Production" })),
+  production_unlock_response: asSample(
+    notificationText("production_unlock_response.accepted", { person: TEAMMATE, project: PROJECT, hours: `${DEV_TEST_UNLOCK_HOURS} hours` }),
+  ),
+  lead_new: asSample(notificationText("lead_new.form", { name: CLIENT })),
+  lead_access: asSample(notificationText("lead_access", { person: TEAMMATE, lead: CLIENT })),
+  quote_accepted: asSample(notificationText("quote_accepted", { client: CLIENT, project: PROJECT, price: "$18,450.00" })),
+  quote_declined: asSample(notificationText("quote_declined", { client: CLIENT, project: PROJECT, reason: "We've decided to go with a different layout." })),
+  specs_submitted: asSample(notificationText("specs_submitted", { client: CLIENT, project: PROJECT, accepted: 12, total: 15 })),
+  quote_sent: asSample(notificationText("quote_sent", { person: TEAMMATE, project: PROJECT })),
+  specs_sent: asSample(notificationText("specs_sent", { person: TEAMMATE, project: PROJECT })),
+  quote_pending: asSample(notificationText("quote_pending", { client: CLIENT, project: PROJECT, ago: "2 days ago" })),
+  specs_pending: asSample(notificationText("specs_pending", { client: CLIENT, project: PROJECT, ago: "2 days ago" })),
   // An event's own name, as a real one shows it (not just "Install", which reads like its category).
-  calendar_reminder: ["Upcoming: Benchtop install", `"Benchtop install" for ${PROJECT} is in 1 hour.`],
-  role_change: ["Role updated", `Your role in Taylor Joinery changed from "Staff" to "Manager".`],
+  calendar_reminder: asSample(notificationText("calendar_reminder", { event: "Benchtop install", project: PROJECT, when: "in 1 hour" })),
+  role_change: asSample(notificationText("role_change", { company: "Taylor Joinery", old_role: "Staff", new_role: "Manager" })),
   other: ["Test notification", "This is how a CutSmart notification looks on this device."],
 };
 
@@ -73,8 +74,8 @@ export function isDevTestNotificationText(title: string, message: string): boole
 // the made-up project doesn't). `appVersion` is the current version, for the New version one.
 export function devTestSample(type: string, appVersion: string): { title: string; body: string; url: string } | null {
   if (type === "app_version") {
-    const title = `New version ${appVersion || "v1.0.0"}`;
-    return { title, body: pushNotificationBody({ type }), url: pushNotificationUrl({ type, title }) };
+    const title = notificationWords("app_version", "title", { version: appVersion || "v1.0.0" });
+    return { title, body: pushNotificationBody({ type }), url: pushNotificationUrl({ type, title, appVersion: appVersion || "v1.0.0" }) };
   }
   const text = SAMPLE_TEXT[type];
   if (!text) return null;

@@ -1,3 +1,4 @@
+import { notificationText } from "@/lib/notification-messages";
 import { NextRequest, NextResponse } from "next/server";
 import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
 import { verifyBearerUid } from "@/lib/api-auth";
@@ -101,8 +102,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const price = quoteGridTotalText(grid);
     action = `Accepted Quote on behalf of ${clientName}`;
     notification = {
-      title: `Quote accepted for ${projectName}`,
-      message: `Accepted on behalf of ${clientName} by ${staffName}${price ? ` — ${price}` : ""}`,
+      ...notificationText(price ? "quote_accepted.on_behalf" : "quote_accepted.on_behalf_no_price", {
+        client: clientName,
+        staff: staffName,
+        project: projectName,
+        price,
+      }),
       type: "quote_accepted",
     };
   } else {
@@ -139,8 +144,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }
     action = `Submitted Specifications on behalf of ${clientName}`;
     notification = {
-      title: `Specifications Submitted for ${projectName}`,
-      message: `Submitted on behalf of ${clientName} by ${staffName}`,
+      ...notificationText("specs_submitted.on_behalf", { client: clientName, staff: staffName, project: projectName }),
       type: "specs_submitted",
     };
   }

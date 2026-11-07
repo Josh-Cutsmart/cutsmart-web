@@ -1,3 +1,4 @@
+import { notificationText } from "@/lib/notification-messages";
 import { NextRequest, NextResponse } from "next/server";
 import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
 import {
@@ -108,8 +109,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     await Promise.all(
       subscriberUids.map((uid) =>
         db.collection("users").doc(uid).collection("notifications").add({
-          title: `Quote accepted for ${projectName}`,
-          message: price ? `${name || "The client"} accepted your quote for ${price}` : `${name || "The client"} accepted your quote`,
+          ...notificationText(price ? "quote_accepted" : "quote_accepted.no_price", { client: name || "The client", project: projectName, price }),
           type: "quote_accepted",
           projectId: shareDoc.projectId,
           companyId: String(projectData.companyId ?? "") || null,

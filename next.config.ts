@@ -2,6 +2,11 @@ import type { NextConfig } from "next";
 import { withSentryConfig } from "@sentry/nextjs/config";
 
 const nextConfig: NextConfig = {
+  // A .txt imported into the code is its text: notification-messages.txt, every notification's wording.
+  webpack(config) {
+    config.module.rules.push({ test: /\.txt$/, type: "asset/source" });
+    return config;
+  },
   // The server reads these from its own deploy (lib/public-file-server.ts) — e.g. publishing a staged
   // deploy's What's New, whose address can't be fetched past Vercel's protection.
   outputFileTracingIncludes: {

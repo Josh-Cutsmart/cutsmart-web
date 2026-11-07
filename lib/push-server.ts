@@ -1,3 +1,4 @@
+import { notificationTemplate, notificationWords } from "@/lib/notification-messages";
 import { createHash } from "crypto";
 import webpush from "web-push";
 import { FieldValue } from "firebase-admin/firestore";
@@ -92,7 +93,7 @@ export function groupedPayload(held: HeldPush[], total: number): PushPayload {
     const more = total - latest.length;
     return {
       title: phrase.charAt(0).toUpperCase() + phrase.slice(1),
-      body: [...latest.map(groupListLine), ...(more > 0 ? [`and ${more} more`] : [])].join("\n"),
+      body: [...latest.map(groupListLine), ...(more > 0 ? [notificationWords("group", "more", { count: more })] : [])].join("\n"),
       url: urls.length === 1 ? urls[0] : types[0].startsWith("lead_") ? "/leads" : "/dashboard",
       tag: "cutsmart-group",
     };
@@ -101,7 +102,7 @@ export function groupedPayload(held: HeldPush[], total: number): PushPayload {
     .map((type) => ({ type, count: held.filter((item) => item.type === type).length }))
     .sort((a, b) => b.count - a.count);
   return {
-    title: `${total} new notifications`,
+    title: notificationWords("group", "mixed_title", { count: total }),
     body: counts.map(({ type, count }) => groupListLine(pushGroupPhrase(type, count))).join("\n"),
     url: urls.length === 1 ? urls[0] : "/dashboard",
     tag: "cutsmart-group",
@@ -173,7 +174,8 @@ export async function sendPushToUser(
   }
   // sentAt: when it went out — a device that was off or offline gets it later, and the service worker (public/sw.js)
   // gathers those that waited into one notification rather than a pile of them.
-  const body = JSON.stringify({ icon: "/icon-192.png", ...toSend, ...(badgeCount !== undefined ? { badgeCount } : {}), sentAt: Date.now() });
+  // (groupTitle, groupMore: the wording for when public/sw.js gathers late ones into one — it can't read the file itself.)
+  const body = JSON.stringify({ icon: "/icon-192.png", groupTitle: notificationTemplate("group", "mixed_title"), groupMore: notificationTemplate("group", "more"), ...toSend, ...(badgeCount !== undefined ? { badgeCount } : {}), sentAt: Date.now() });
   await Promise.all(
     subsSnap.docs.map(async (docSnap) => {
       const data = docSnap.data() as { endpoint?: string; keys?: { p256dh?: string; auth?: string } };
@@ -290,6 +292,62 @@ export async function flushDueNotificationReminders(siteOrigin: string): Promise
 
 // Sends a notification that's already in someone's Notifications list (users/{uid}/notifications) to
 // their devices — once: it's stamped pushedAtIso, so asking again does nothing.
+// Several notifications someone's due at the same moment (events coming up): all in their Notifications list as they are,
+// and one push for the lot — "3 new events coming up", with them listed under it (groupedPayload). Just the one: as it
+// would be on its own.
+export async function pushStoredNotificationsTogether(uid: string, notificationIds: string[], siteOrigin: string, url: string): Promise<void> {
+  if (!adminDb || !notificationIds.length) return;
+  if (notificationIds.length === 1) {
+    await pushStoredNotification(uid, notificationIds[0], siteOrigin);
+    return;
+  }
+  const db = adminDb;
+  const refs = notificationIds.map((id) => db.collection("users").doc(uid).collection("notifications").doc(id));
+  const claimed = (
+    await Promise.all(
+      refs.map((ref) =>
+        db.runTransaction(async (tx) => {
+          const snap = await tx.get(ref);
+          const data = (snap.data() ?? {}) as Record<string, unknown>;
+          if (!snap.exists || data.pushedAtIso) return null;
+          tx.update(ref, { pushedAtIso: new Date().toISOString() });
+          return { ref, data };
+        }),
+      ),
+    )
+  ).filter((row): row is NonNullable<typeof row> => row !== null);
+  if (!claimed.length) return;
+  const type = String(claimed[0].data.type || "");
+  const atMs = Date.now();
+  const held: HeldPush[] = claimed.map(({ data }) => ({
+    type,
+    title: String(data.title || "CutSmart").trim() || "CutSmart",
+    body: pushNotificationBody(data),
+    url: pushNotificationUrl(data),
+    atMs,
+  }));
+  // (Listed soonest first: groupedPayload shows the last of them first.)
+  const payload = groupedPayload([...held].reverse(), held.length);
+  const result = await sendPushToUser(uid, held.length > 1 ? { ...payload, url } : payload, { type, siteOrigin });
+  await Promise.all(
+    claimed.map(({ ref }) =>
+      ref
+        .update({
+          pushResult: {
+            sent: result.sent,
+            failed: result.failed,
+            removed: result.removed,
+            reason: result.reason ?? null,
+            errors: result.errors ?? [],
+            origin: siteOrigin,
+            together: claimed.length,
+          },
+        })
+        .catch(() => undefined),
+    ),
+  );
+}
+
 export async function pushStoredNotification(
   uid: string,
   notificationId: string,
@@ -348,7 +406,7 @@ export async function isCompanyMemberUid(companyId: string, uid: string): Promis
 // the app) and sends it to their devices. Never throws — a notification is always a side-effect.
 export async function addNotificationAndPush(
   uid: string,
-  fields: { title: string; message: string; type: string; projectId?: string; leadId?: string; companyId?: string },
+  fields: { title: string; message: string; type: string; projectId?: string; leadId?: string; companyId?: string; appVersion?: string },
   siteOrigin: string,
 ): Promise<void> {
   if (!adminDb || !uid) return;
@@ -361,6 +419,7 @@ export async function addNotificationAndPush(
       projectId: fields.projectId || null,
       leadId: fields.leadId || null,
       companyId: fields.companyId || null,
+      ...(fields.appVersion ? { appVersion: fields.appVersion } : {}),
       read: false,
       createdAt: new Date(nowIso),
       createdAtIso: nowIso,

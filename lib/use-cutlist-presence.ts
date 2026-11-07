@@ -6,8 +6,8 @@ import { resolveProjectDocRef } from "@/lib/firestore-data";
 import type { Project } from "@/lib/types";
 import type { CutlistDataKind } from "@/lib/use-project-cutlist";
 
-// Who else is in a project's cutlist right now ("Anna is also editing", "Ben is also viewing") — or its Production › Order
-// ("order"). Everyone with it open keeps an entry in cutlistData/{kind}Presence, saying whether they can edit it — one per open tab,
+// Who else is on a page of a project right now, and whether they can edit it — its cutlists, Production › Order ("order"), or
+// any other page ("quote", "general"…). Everyone with it open keeps an entry in cutlistData/{kind}Presence, saying whether they can edit it — one per open tab,
 // refreshed once a minute while the tab is on screen (a write each time, and a read for everyone in that cutlist — kept
 // slow for that), and taken out when they leave it, hide the tab or close it. Shown: the others (not this person, in any of their tabs) whose entry was refreshed
 // within FRESH_MS, by when it was heard here — not the writer's clock, so a computer with its clock out doesn't make
@@ -30,7 +30,8 @@ const NO_ONE: CutlistPresencePerson[] = [];
 
 export function useCutlistPresence(
   project: Project | null,
-  kind: CutlistDataKind | "order",
+  // What it's for: a cutlist, or another page of the project ("order", "quote", "general"…).
+  kind: CutlistDataKind | string,
   open: boolean,
   canEdit: boolean,
   me: { uid: string; name: string } | null,
@@ -130,14 +131,3 @@ export function useCutlistPresence(
   return listenKey && others.key === listenKey ? others.people : NO_ONE;
 }
 
-// "Anna is also editing", "Anna and Ben are also viewing", "Anna, Ben and 2 others are also editing".
-export function alsoHereText(names: string[], doing: "editing" | "viewing"): string {
-  if (!names.length) return "";
-  const who =
-    names.length === 1
-      ? names[0]
-      : names.length <= 3
-        ? `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`
-        : `${names.slice(0, 2).join(", ")} and ${names.length - 2} others`;
-  return `${who} ${names.length === 1 ? "is" : "are"} also ${doing}`;
-}

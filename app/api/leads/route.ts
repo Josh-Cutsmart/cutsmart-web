@@ -1,3 +1,4 @@
+import { notificationText } from "@/lib/notification-messages";
 import { NextRequest, NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
@@ -543,8 +544,7 @@ export async function PATCH(request: NextRequest) {
       await addNotificationAndPush(
         nextAssigneeUid,
         {
-          title: "Added to a lead",
-          message: `${assignerName} added you to the lead "${leadName}".`,
+          ...notificationText("lead_access", { person: assignerName, lead: leadName }),
           type: "lead_access",
           leadId,
           companyId,

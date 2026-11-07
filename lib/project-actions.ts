@@ -1,3 +1,4 @@
+import { notificationText } from "@/lib/notification-messages";
 import type { Project, UserRole } from "@/lib/types";
 import {
   addProjectChange,
@@ -140,16 +141,14 @@ export function projectAssignmentPatch(uid: string, members: Array<Pick<CompanyM
 export function notifyProjectAssignment(project: Pick<Project, "id" | "name">, previousUid: string, nextUid: string): void {
   if (nextUid && nextUid !== previousUid) {
     void addUserNotification(nextUid, {
-      title: "Assigned to a project",
-      message: `You were assigned to "${project.name || "a project"}".`,
+      ...notificationText("project_assigned", { project: project.name || "a project" }),
       type: "project_assigned",
       projectId: project.id,
     });
   }
   if (previousUid && previousUid !== nextUid) {
     void addUserNotification(previousUid, {
-      title: "Removed from a project",
-      message: `You were removed from "${project.name || "a project"}".`,
+      ...notificationText("project_unassigned", { project: project.name || "a project" }),
       type: "project_unassigned",
       projectId: project.id,
     });

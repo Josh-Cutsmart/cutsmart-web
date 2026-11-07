@@ -1,5 +1,6 @@
 "use client";
 
+import { useCompanyJobsTick } from "@/lib/use-company-jobs-live";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
@@ -134,6 +135,8 @@ export default function SmallJobsPage() {
     };
   }, []);
 
+  // Small jobs added or changed by anyone: shown as it happens.
+  const companyJobsTick = useCompanyJobsTick(companyId);
   useEffect(() => {
     if (!canAccess || !companyId || !user?.uid) return;
     let cancelled = false;
@@ -156,7 +159,7 @@ export default function SmallJobsPage() {
     return () => {
       cancelled = true;
     };
-  }, [canAccess, companyId, user?.uid, loadKey]);
+  }, [canAccess, companyId, user?.uid, loadKey, companyJobsTick]);
 
   // A press outside the status menu just closes it (the click it makes is swallowed, so it doesn't also open a job);
   // so does scrolling or resizing.

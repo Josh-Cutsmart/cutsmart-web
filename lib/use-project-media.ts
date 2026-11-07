@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getDoc } from "@/lib/firestore-client";
+import { doc, getDoc, onSnapshot } from "@/lib/firestore-client";
 import type { Project, ProjectImageItem } from "@/lib/types";
 import {
   fetchProjectMediaData,
@@ -16,6 +16,8 @@ export interface ProjectMediaState {
   projectImages: string[];
   projectImageItems: ProjectImageItem[];
   projectFiles: Record<string, unknown>[];
+  // Goes up when someone's change to them arrives, after they're first read.
+  liveRev: number;
   error: unknown;
   retry: () => void;
 }
@@ -35,6 +37,7 @@ export function useProjectMedia(project: Project | null): ProjectMediaState {
     projectImages: [],
     projectImageItems: [],
     projectFiles: [],
+    liveRev: 0,
     error: null,
   });
   const [retryTick, setRetryTick] = useState(0);
@@ -51,11 +54,12 @@ export function useProjectMedia(project: Project | null): ProjectMediaState {
   useEffect(() => {
     const project = latestProjectRef.current;
     let cancelled = false;
+    const unsubscribes: Array<() => void> = [];
 
     const run = async () => {
       if (!project?.id) {
         if (!cancelled) {
-          setState({ status: "idle", projectImages: [], projectImageItems: [], projectFiles: [], error: null });
+          setState({ status: "idle", projectImages: [], projectImageItems: [], projectFiles: [], liveRev: 0, error: null });
         }
         return;
       }
@@ -102,16 +106,43 @@ export function useProjectMedia(project: Project | null): ProjectMediaState {
         }
 
         if (cancelled) return;
-        setState({ status: "ready", projectImages, projectImageItems, projectFiles, error: null });
+        setState({ status: "ready", projectImages, projectImageItems, projectFiles, liveRev: 0, error: null });
+        // From here, kept up to date: images and files anyone adds, changes or takes away.
+        const ref = await resolveProjectDocRef(project);
+        if (cancelled || !ref) return;
+        let lastImages = JSON.stringify([projectImages, projectImageItems]);
+        let lastFiles = JSON.stringify(projectFiles);
+        unsubscribes.push(
+          onSnapshot(doc(ref, "projectMedia", "images"), (snap) => {
+            if (!snap.exists() || (snap.metadata.fromCache && !snap.metadata.hasPendingWrites)) return;
+            const data = snap.data() as Record<string, unknown>;
+            const items = normalizeProjectImageItems(data.projectImageItems);
+            const urls = Array.isArray(data.projectImages) ? (data.projectImages as unknown[]).map(String).filter(Boolean) : [];
+            const json = JSON.stringify([urls, items]);
+            if (json === lastImages) return;
+            lastImages = json;
+            setState((prev) => ({ ...prev, projectImages: urls, projectImageItems: items, liveRev: prev.liveRev + 1 }));
+          }),
+          onSnapshot(doc(ref, "projectMedia", "files"), (snap) => {
+            if (!snap.exists() || (snap.metadata.fromCache && !snap.metadata.hasPendingWrites)) return;
+            const files = (snap.data() as Record<string, unknown>).projectFiles;
+            const rows = Array.isArray(files) ? (files as Record<string, unknown>[]) : [];
+            const json = JSON.stringify(rows);
+            if (json === lastFiles) return;
+            lastFiles = json;
+            setState((prev) => ({ ...prev, projectFiles: rows, liveRev: prev.liveRev + 1 }));
+          }),
+        );
       } catch (error) {
         if (cancelled) return;
-        setState({ status: "error", projectImages: [], projectImageItems: [], projectFiles: [], error });
+        setState({ status: "error", projectImages: [], projectImageItems: [], projectFiles: [], liveRev: 0, error });
       }
     };
 
     void run();
     return () => {
       cancelled = true;
+      unsubscribes.forEach((unsubscribe) => unsubscribe());
     };
   }, [projectKey, retryTick]);
 

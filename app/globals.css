@@ -1347,9 +1347,7 @@ html[data-keyboard-open="true"] .glass-modal-panel {
    (Not a button that borrows the glass: the client hub's Accept and Decline. Not the cutlist's own: they do all this already.
    Not global search, data-phone-drop: it drops down from the top on every screen.)
    The safe area's a border, not padding, so a panel's own padding stays: the glass carries on under it, its content doesn't.
-   With the keyboard up it reaches down behind the see-through keyboard, what's in it kept above the keyboard — its body
-   scrolling — rather than ending at the keyboard's top with the page showing through under it. Those marked
-   data-phone-keep-box have a scrolling body that takes that room itself (below). */
+   With the keyboard up it reaches down behind the see-through keyboard (below). */
 @media (max-width: 639.98px) {
   .glass-modal-panel:not(button):not(.cutlist-sheet-panel):not([data-phone-drop="true"]) {
     position: fixed !important;
@@ -1382,11 +1380,22 @@ html[data-keyboard-open="true"] .glass-modal-panel {
     background: color-mix(in srgb, currentColor 22%, transparent);
     pointer-events: none;
   }
+  /* A pop-up with a wash of colour behind everything in it (lib/popup-tint.ts: the calendar's event, a contact card, a
+     lead): the wash can't reach into a border, so that safe area's padding instead, or it showed as a grey bar along the
+     bottom. */
+  .glass-modal-panel:not(button):not(.cutlist-sheet-panel):not([data-phone-drop="true"]):has(> .absolute.inset-0.\-z-10) {
+    border-bottom-width: 0 !important;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  /* With the keyboard up a pop-up isn't shrunk or padded to end above it: it stays as tall as it was, reaching down behind
+     the see-through keyboard, with whatever's below the field carrying on under it. What scrolls in it is given room at
+     the bottom (below) and the field brought to the middle of what's visible (lib/use-keyboard-inset.ts). One shorter than
+     the keyboard grows by that room, which lifts what's in it clear. */
   html[data-keyboard-open="true"] .glass-modal-panel:not(button):not(.cutlist-sheet-panel):not([data-phone-drop="true"]):not([data-phone-keep-box="true"]) {
-    bottom: calc(-1 * (var(--keyboard-inset-px, 0px) + var(--keyboard-offset-top-px, 0px))) !important;
-    max-height: calc(var(--visual-viewport-height-px, 100dvh) - 24px + 2 * var(--keyboard-inset-px, 0px) + var(--keyboard-offset-top-px, 0px)) !important;
-    transform: none;
-    padding-bottom: calc(2 * var(--keyboard-inset-px, 0px) + var(--keyboard-offset-top-px, 0px));
+    max-height: calc(100svh - 48px - env(safe-area-inset-top, 0px)) !important;
+    margin-bottom: 0;
+    transform: translateY(var(--keyboard-offset-top-px, 0px));
+    transition: none;
   }
 }
 @media (max-width: 639.98px) and (prefers-reduced-motion: reduce) {
@@ -1407,8 +1416,9 @@ html[data-keyboard-open="true"] .glass-modal-panel {
     transform: translateY(var(--keyboard-offset-top-px, 0px));
     transition: none;
   }
-  html[data-keyboard-open="true"] .glass-modal-panel[data-phone-keep-box="true"] [data-keyboard-scroll-pad="true"] {
-    padding-bottom: calc(var(--keyboard-inset-px, 0px) + var(--keyboard-offset-top-px, 0px) + 16px);
+  html[data-keyboard-open="true"] .glass-modal-panel [data-keyboard-scroll-pad="true"],
+  html[data-keyboard-open="true"] .glass-modal-panel[data-keyboard-scroll-pad="true"] {
+    padding-bottom: calc(var(--keyboard-inset-px, 0px) + var(--keyboard-offset-top-px, 0px) + 16px) !important;
   }
 }
 

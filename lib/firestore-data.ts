@@ -26,6 +26,8 @@ import {
 import { auth, db, hasFirebaseConfig, storage } from "@/lib/firebase";
 import { deleteObject, listAll, ref as storageRef, type StorageReference } from "firebase/storage";
 import { isPreviewMode } from "@/lib/preview-mode";
+import { mergeSpecsGrids } from "@/lib/specs-grid-merge";
+import { mergeKitchenDrawing } from "@/lib/drawing-merge";
 import {
   automationConditionsMet,
   automationItemFacts,
@@ -515,6 +517,14 @@ function normalizeProject(id: string, data: Record<string, unknown>, options?: {
       return Object.keys(out).length ? out : undefined;
     })(),
     projectSettings: settings,
+    salesStoredAsFields:
+      Boolean(data.sales) && typeof data.sales === "object" && !Array.isArray(data.sales) && !("salesJson" in data) ? true : undefined,
+    settingsOnlyInTextCopy:
+      !(typeof data.projectSettings === "object" && data.projectSettings !== null && Object.keys(data.projectSettings).length) &&
+      typeof data.projectSettingsJson === "string" &&
+      data.projectSettingsJson.trim()
+        ? true
+        : undefined,
     // Never parsed here anymore, lightweight or not — cutlist rows moved to their own
     // subcollection; the project page fetches them itself, lazily, via useProjectCutlist.
     cutlist: undefined,
@@ -536,14 +546,34 @@ function normalizeProject(id: string, data: Record<string, unknown>, options?: {
 // that changes while it's open costs one read). If this browser can't read them live, it reads them once each time
 // instead, as before (and doesn't try live again this session).
 const COMPANY_JOBS_LINGER_MS = 15 * 60 * 1000;
+// (How long this device's copy is held back for the server's, as a read starts: longer and it's taken as being offline,
+// the server's still shown as it arrives.)
+const COMPANY_JOBS_SERVER_WAIT_MS = 2000;
 type SharedCompanyJobs = {
   docs: QueryDocumentSnapshot[] | null;
+  // Whether `docs` can be handed out: the server's been heard from, or it's been waited on long enough.
+  settled: boolean;
   ready: Promise<QueryDocumentSnapshot[]>;
   stop: () => void;
   lingerTimer: ReturnType<typeof setTimeout> | null;
 };
 const sharedCompanyJobs = new Map<string, SharedCompanyJobs>();
 const companyJobsLiveRefused = new Set<string>();
+const companyJobsListeners = new Map<string, Set<() => void>>();
+
+// Told whenever one of a company's projects is added or changed, by anyone, for as long as it's asked (and the read stays
+// open that long). fetchProjects then has the latest, at no further cost.
+export function subscribeCompanyJobsChanged(companyId: string, listener: () => void): () => void {
+  const cid = String(companyId || "").trim();
+  if (!db || !cid) return () => {};
+  const listeners = companyJobsListeners.get(cid) ?? new Set<() => void>();
+  companyJobsListeners.set(cid, listeners);
+  listeners.add(listener);
+  void companyJobsDocs(cid).catch(() => undefined);
+  return () => {
+    listeners.delete(listener);
+  };
+}
 
 async function companyJobsDocs(companyId: string): Promise<QueryDocumentSnapshot[]> {
   const cid = String(companyId || "").trim();
@@ -556,16 +586,31 @@ async function companyJobsDocs(companyId: string): Promise<QueryDocumentSnapshot
     const ready = new Promise<QueryDocumentSnapshot[]>((resolve, reject) => {
       settle = { resolve, reject };
     });
-    const created: SharedCompanyJobs = { docs: null, ready, stop: () => {}, lingerTimer: null };
+    const created: SharedCompanyJobs = { docs: null, settled: false, ready, stop: () => {}, lingerTimer: null };
     sharedCompanyJobs.set(cid, created);
+    let serverWait: ReturnType<typeof setTimeout> | null = null;
+    const settleNow = () => {
+      if (serverWait) clearTimeout(serverWait);
+      serverWait = null;
+      if (created.settled || !created.docs) return;
+      created.settled = true;
+      settle?.resolve(created.docs);
+    };
     created.stop = onSnapshot(
       collection(database, "companies", cid, "jobs"),
+      // (With its metadata's changes: the first news can be this device's copy, as it was when last open — cards added or
+      // moved since missing — and the server's only says so here when nothing else has changed.)
+      { includeMetadataChanges: true },
       (snap) => {
+        const firstNews = !created.docs;
         created.docs = snap.docs;
-        settle?.resolve(snap.docs);
+        if (!snap.metadata.fromCache || isPreviewMode() || (typeof navigator !== "undefined" && navigator.onLine === false)) settleNow();
+        else if (!created.settled && !serverWait) serverWait = setTimeout(settleNow, COMPANY_JOBS_SERVER_WAIT_MS);
+        if (!firstNews && snap.docChanges().length > 0) companyJobsListeners.get(cid)?.forEach((listener) => listener());
       },
       (error) => {
         // Firestore's already dropped the listen. Not tried live again (see above); whoever's waiting reads once instead.
+        if (serverWait) clearTimeout(serverWait);
         companyJobsLiveRefused.add(cid);
         if (sharedCompanyJobs.get(cid) === created) sharedCompanyJobs.delete(cid);
         if (created.lingerTimer) clearTimeout(created.lingerTimer);
@@ -577,11 +622,17 @@ async function companyJobsDocs(companyId: string): Promise<QueryDocumentSnapshot
   // Asked for again: kept open another COMPANY_JOBS_LINGER_MS from now.
   const entry = shared;
   if (entry.lingerTimer) clearTimeout(entry.lingerTimer);
-  entry.lingerTimer = setTimeout(() => {
+  const stopWhenDone = () => {
+    // (Someone still wanting its news: kept open another while.)
+    if (companyJobsListeners.get(cid)?.size) {
+      entry.lingerTimer = setTimeout(stopWhenDone, COMPANY_JOBS_LINGER_MS);
+      return;
+    }
     if (sharedCompanyJobs.get(cid) === entry) sharedCompanyJobs.delete(cid);
     entry.stop();
-  }, COMPANY_JOBS_LINGER_MS);
-  if (entry.docs) return entry.docs;
+  };
+  entry.lingerTimer = setTimeout(stopWhenDone, COMPANY_JOBS_LINGER_MS);
+  if (entry.settled && entry.docs) return entry.docs;
   try {
     return await entry.ready;
   } catch {
@@ -1226,6 +1277,18 @@ async function loadProjectById(
   return null;
 }
 
+// How a project's document reads as a Project, as fetchProjectById's does (lib/use-project-live.ts).
+export async function projectLiveReader(project: Project): Promise<(data: Record<string, unknown>) => Project> {
+  const companyId = String(project.companyId || "").trim();
+  const companyDoc = companyId ? await fetchCompanyDoc(companyId).catch(() => null) : null;
+  const overrides = normalizeCompanyStaffDisplayNameOverrides((companyDoc as Record<string, unknown> | null)?.staffDisplayNamesByUid);
+  return (data) => {
+    const normalized = normalizeProject(project.id, data);
+    if (companyId) normalized.companyId = companyId;
+    return applyCompanyStaffDisplayNameOverridesToProject(normalized, overrides);
+  };
+}
+
 // Projects soft-deleted the old way (isDeleted — Recently Deleted, before it became part of Archived).
 // Nothing writes that flag any more; the Archived page lists these alongside the archived ones (they
 // come back marked archived, filed under their deletion date — see withProjectArchiveFields) so none
@@ -1526,6 +1589,8 @@ export interface UserNotificationRow {
   // A production unlock request's: whose it is and which one (so it can be answered from the notification), and once it's
   // been answered, how (by anyone it went to — app/api/production-unlock/respond).
   unlockRequesterUid?: string;
+  // A "New version" one: which version.
+  appVersion?: string;
   unlockRequestedAtIso?: string;
   unlockAnswer?: UserNotificationUnlockAnswer;
   // Dev mode's test notification (the "test in … s" at the top of Notifications) — for testing only, so it's
@@ -2362,6 +2427,76 @@ function cleanUpLegacyProjectCopies(items: Array<{ ref: DocumentReference; patch
   }, 5000);
 }
 
+const PLAIN_SETTINGS_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const sameValue = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+// `next` was made from `base`: what it changed.
+function settingsChanged(base: Record<string, unknown>, next: Record<string, unknown>) {
+  const changed: Record<string, unknown> = {};
+  const removed: string[] = [];
+  for (const key of Object.keys(next)) {
+    if (next[key] === undefined) {
+      if (key in base) removed.push(key);
+    } else if (!sameValue(base[key], next[key])) {
+      changed[key] = next[key];
+    }
+  }
+  for (const key of Object.keys(base)) if (!(key in next)) removed.push(key);
+  return { changed, removed };
+}
+// Those changes alone, on the settings as they are now: what a screen shows after saving settings it made from a copy
+// that's since moved on.
+export function settingsWithChanges(
+  current: Record<string, unknown> | undefined,
+  base: Record<string, unknown> | undefined,
+  next: Record<string, unknown>,
+): Record<string, unknown> {
+  const { changed, removed } = settingsChanged(base ?? {}, next);
+  const out = { ...(current ?? {}), ...changed };
+  for (const key of removed) delete out[key];
+  return out;
+}
+
+// Every screen builds the project's settings to save from its own copy of them. Saved whole, that puts back anything
+// someone (or another of their devices) has changed since that copy was read: an automatic save of the cutlist's activity
+// feed was enough to wipe Cabinetry details just entered elsewhere. So only the settings this save changed are written,
+// each its own field. (Not one still only in the old text copy: written whole, moving it to fields.)
+function withOnlyChangedSettings(patch: Record<string, unknown>, project: Project) {
+  const next = patch.projectSettings;
+  if (!next || typeof next !== "object" || Array.isArray(next) || project.settingsOnlyInTextCopy) return;
+  const nextSettings = next as Record<string, unknown>;
+  const base = (project.projectSettings ?? {}) as Record<string, unknown>;
+  if (![...Object.keys(nextSettings), ...Object.keys(base)].every((key) => PLAIN_SETTINGS_KEY.test(key))) return;
+  const { changed, removed } = settingsChanged(base, nextSettings);
+  delete patch.projectSettings;
+  for (const [key, value] of Object.entries(changed)) patch[`projectSettings.${key}`] = value;
+  for (const key of removed) patch[`projectSettings.${key}`] = deleteField();
+}
+
+// Sales saved as settings are: only the fields this save changed (from `base`, what it was made from), so someone's Upgrades
+// and someone else's Design details don't undo each other. false for `handled`: still only in one of its old copies, so the
+// caller saves it whole, moving it across.
+export async function updateProjectSalesFields(
+  project: Project,
+  base: Record<string, unknown>,
+  next: Record<string, unknown>,
+): Promise<{ handled: boolean; ok: boolean }> {
+  if (!project.salesStoredAsFields) return { handled: false, ok: false };
+  const withoutCopy = ({ sales: _sales, ...rest }: Record<string, unknown>) => rest;
+  const before = withoutCopy(base);
+  const after = withoutCopy(next);
+  if (![...Object.keys(before), ...Object.keys(after)].every((key) => PLAIN_SETTINGS_KEY.test(key))) return { handled: false, ok: false };
+  const { changed, removed } = settingsChanged(before, after);
+  const patch: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(changed)) patch[`sales.${key}`] = value;
+  for (const key of removed) patch[`sales.${key}`] = deleteField();
+  if (!Object.keys(patch).length) return { handled: true, ok: true };
+  return { handled: true, ok: await updateProjectPatch(project, patch) };
+}
+
+// A save that hasn't heard back by now is on its way (offline, it waits on this device, through a refresh, until it can be
+// sent): the screen isn't held up for it.
+const PROJECT_SAVE_WAIT_MS = 3000;
+
 export async function updateProjectPatch(
   project: Project,
   patch: Record<string, unknown>,
@@ -2383,28 +2518,34 @@ export async function updateProjectPatch(
     }
   }
 
+  withOnlyChangedSettings(nextPatch, project);
+  // (Nothing changed: nothing to write.)
+  if (Object.keys(nextPatch).every((key) => key === "updatedAtIso" || key === "projectSettingsJson")) return true;
+
   const ref = await resolveProjectDocRef(project);
   if (!ref) {
     console.warn("[updateProjectPatch] could not resolve a Firestore document for project", project.id);
     return false;
   }
   try {
-    await updateDoc(ref, nextPatch);
-    // A move to another sub-stage: its sub-columns' automations (not a small job's — it isn't on the Dashboard).
-    if (nextPatch.statusHistory && !project.isSmallJob) {
-      void notifyColumnAutomationMove({
-        companyId: String(project.companyId || "").trim(),
-        board: "projects",
-        item: { id: project.id, name: project.name },
-        from: { status: String(project.statusLabel || "").trim(), subStage: String(project.dashboardSubStageId ?? "").trim() },
-        to: { status: String(project.statusLabel || "").trim(), subStage: String(patch.dashboardSubStageId ?? "").trim() },
-      });
-    } else if (["assignedToUid", "tags", "name"].some((key) => Object.prototype.hasOwnProperty.call(patch, key))) {
-      // Who it's assigned to, its tags or its name changed: any of its column's automations waiting on their conditions
-      // looked at again.
-      void recheckProjectColumnAutomations(String(project.companyId || "").trim(), project.id);
-    }
-    return true;
+    const sent = updateDoc(ref, nextPatch).then(() => {
+      // A move to another sub-stage: its sub-columns' automations (not a small job's — it isn't on the Dashboard).
+      if (nextPatch.statusHistory && !project.isSmallJob) {
+        void notifyColumnAutomationMove({
+          companyId: String(project.companyId || "").trim(),
+          board: "projects",
+          item: { id: project.id, name: project.name },
+          from: { status: String(project.statusLabel || "").trim(), subStage: String(project.dashboardSubStageId ?? "").trim() },
+          to: { status: String(project.statusLabel || "").trim(), subStage: String(patch.dashboardSubStageId ?? "").trim() },
+        });
+      } else if (["assignedToUid", "tags", "name"].some((key) => Object.prototype.hasOwnProperty.call(patch, key))) {
+        // Who it's assigned to, its tags or its name changed: any of its column's automations waiting on their conditions
+        // looked at again.
+        void recheckProjectColumnAutomations(String(project.companyId || "").trim(), project.id);
+      }
+      return true;
+    });
+    return await Promise.race([sent, new Promise<boolean>((resolve) => setTimeout(() => resolve(true), PROJECT_SAVE_WAIT_MS))]);
   } catch (error) {
     console.warn("[updateProjectPatch] write failed:", error);
     return false;
@@ -3647,14 +3788,15 @@ export async function fetchProjectDrawing(project: Project, kind: ProjectDrawing
   if (!ref) return null;
   try {
     const snap = await getDoc(doc(ref, "drawings", kind));
-    if (!snap.exists()) return { data: null };
-    const raw = snap.data() as Record<string, unknown>;
-    // (Kept as text — a drawing has lists in lists, which Firestore can't hold.)
-    if (typeof raw.json === "string") {
-      const parsed: unknown = JSON.parse(raw.json);
-      return { data: parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null };
+    const kept = readKeptDoc<Record<string, unknown>>(ref.path, "drawing_kitchen");
+    if (!snap.exists()) {
+      drawingBases.set(ref.path, null);
+      return { data: kept ? kept.here : null };
     }
-    return { data: raw };
+    // (Kept as text — a drawing has lists in lists, which Firestore can't hold.)
+    const stored = drawingFromStored(snap.data() as Record<string, unknown>);
+    drawingBases.set(ref.path, stored);
+    return { data: kept && stored ? mergeKitchenDrawing(kept.base ?? stored, kept.here, stored) : stored };
   } catch (error) {
     console.warn(`[fetchProjectDrawing] ${kind} read failed:`, error);
     return null;
@@ -3673,6 +3815,258 @@ export async function saveProjectDrawing(project: Project, kind: ProjectDrawingK
     console.warn(`[saveProjectDrawing] ${kind} write failed:`, error);
     return false;
   }
+}
+
+// A Quote or Specifications sheet's or a Drawing's edits, saved as a cutlist's are: kept on this device the moment they're
+// made (through a reload or the app closing), then sent — only what changed here since `base`, put onto it as it is now
+// (mergeSpecsGrids, mergeKitchenDrawing), so two people in it don't overwrite each other — and let go. With no connection they
+// stay kept till there is. In localStorage, by person, document and kind.
+const KEPT_SALES_GRID_KEY = "cutsmart_kept_sales_grid:";
+export type KeptDocKind = SalesGridKind | "drawing_kitchen";
+type KeptDoc<T> = { base: T | null; here: T; stamp: string };
+const keptDocKey = (uid: string, path: string, kind: KeptDocKind) => `${KEPT_SALES_GRID_KEY}${uid}:${path}:${kind}`;
+const keptGridUid = () => String(auth?.currentUser?.uid || "").trim();
+const keptDocChains = new Map<string, Promise<unknown>>();
+
+function readKeptDoc<T>(path: string, kind: KeptDocKind): KeptDoc<T> | null {
+  const uid = keptGridUid();
+  if (!uid || typeof window === "undefined") return null;
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(keptDocKey(uid, path, kind)) || "null") as KeptDoc<T> | null;
+    return parsed && parsed.here ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+export const readKeptSalesGrid = (path: string, kind: SalesGridKind) => readKeptDoc<SpecsGrid>(path, kind);
+export function hasKeptSalesGrid(path: string, kind: KeptDocKind): boolean {
+  const uid = keptGridUid();
+  if (!uid || typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(keptDocKey(uid, path, kind)) !== null;
+  } catch {
+    return false;
+  }
+}
+// (false: it couldn't be — the CutSmart Preview, nobody signed in, no room left.)
+function keepDocEdit<T>(path: string, kind: KeptDocKind, base: T | null, here: T): boolean {
+  const uid = keptGridUid();
+  if (!uid || isPreviewMode() || typeof window === "undefined") return false;
+  try {
+    const before = readKeptDoc<T>(path, kind);
+    const next: KeptDoc<T> = { base: before ? before.base : base, here, stamp: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}` };
+    window.localStorage.setItem(keptDocKey(uid, path, kind), JSON.stringify(next));
+    offlineCutlistChanged();
+    return true;
+  } catch {
+    return false;
+  }
+}
+export const keepSalesGridEdit = (path: string, kind: SalesGridKind, base: SpecsGrid | null, here: SpecsGrid) => keepDocEdit(path, kind, base, here);
+function letGoKeptDoc<T>(path: string, kind: KeptDocKind, sent: KeptDoc<T>, merged: T) {
+  const uid = keptGridUid();
+  if (!uid) return;
+  try {
+    const key = keptDocKey(uid, path, kind);
+    const now = readKeptDoc<T>(path, kind);
+    // (More edits since these went: kept, against what these came to.)
+    if (now && now.stamp !== sent.stamp) window.localStorage.setItem(key, JSON.stringify({ ...now, base: merged }));
+    else window.localStorage.removeItem(key);
+  } catch {
+    // (Still kept: sent again, and comes to the same.)
+  }
+  offlineCutlistChanged();
+}
+function dropKeptDoc(path: string, kind: KeptDocKind) {
+  const uid = keptGridUid();
+  if (!uid) return;
+  try {
+    window.localStorage.removeItem(keptDocKey(uid, path, kind));
+  } catch {
+    // (Nothing more to do.)
+  }
+  offlineCutlistChanged();
+}
+function writeSalesGridMerged(database: NonNullable<typeof db>, ref: DocumentReference, kind: SalesGridKind, base: SpecsGrid | null, here: SpecsGrid): Promise<SpecsGrid> {
+  return runTransaction(database, async (transaction) => {
+    const gridRef = doc(ref, "salesGrids", kind);
+    const snap = await transaction.get(gridRef);
+    const server = snap.exists() ? normalizeSpecsGrid((snap.data() as Record<string, unknown>).grid) : null;
+    const merged = server ? mergeSpecsGrids(base, here, server) : here;
+    const updatedAtIso = new Date().toISOString();
+    transaction.set(gridRef, { grid: JSON.parse(JSON.stringify(merged)), updatedAtIso });
+    const legacyKey = SALES_GRID_LEGACY_KEY[kind];
+    transaction.update(ref, { [`sales.${legacyKey}`]: deleteField(), [`projectSettings.sales.${legacyKey}`]: deleteField(), updatedAtIso });
+    return merged;
+  });
+}
+const drawingFromStored = (raw: Record<string, unknown>): Record<string, unknown> | null => {
+  if (typeof raw.json !== "string") return raw;
+  try {
+    const parsed: unknown = JSON.parse(raw.json);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+};
+function writeDrawingMerged(database: NonNullable<typeof db>, ref: DocumentReference, base: Record<string, unknown> | null, here: Record<string, unknown>) {
+  return runTransaction(database, async (transaction) => {
+    const drawingRef = doc(ref, "drawings", "kitchen");
+    const snap = await transaction.get(drawingRef);
+    const server = snap.exists() ? drawingFromStored(snap.data() as Record<string, unknown>) : null;
+    const merged = server ? mergeKitchenDrawing(base, here, server) : here;
+    transaction.set(drawingRef, { json: JSON.stringify(merged), updatedAtIso: new Date().toISOString() });
+    return merged;
+  });
+}
+const keptDocTurnedDown = (error: unknown) => {
+  const code = String((error as { code?: unknown } | null)?.code ?? "");
+  return code.includes("permission-denied") || code.includes("invalid-argument") || code.includes("not-found");
+};
+function inKeptDocTurn<T>(path: string, kind: KeptDocKind, run: () => Promise<T>): Promise<T> {
+  const key = `${path}:${kind}`;
+  const next = (keptDocChains.get(key) ?? Promise.resolve()).catch(() => undefined).then(run);
+  keptDocChains.set(key, next);
+  return next;
+}
+// Kept, then sent. `reachedServer`: false when it's waiting on this device. Couldn't be kept (the CutSmart Preview, no room):
+// `plain` saves it whole, as it always was.
+async function saveKeptDocMerged<T>(
+  ref: DocumentReference,
+  kind: KeptDocKind,
+  base: T | null,
+  here: T,
+  write: (base: T | null, here: T) => Promise<T>,
+  plain: () => Promise<boolean>,
+): Promise<{ ok: boolean; grid: T; reachedServer: boolean }> {
+  if (!keepDocEdit(ref.path, kind, base, here)) {
+    const ok = await plain();
+    return { ok, grid: here, reachedServer: ok };
+  }
+  if (isLikelyOffline()) return { ok: true, grid: here, reachedServer: false };
+  return inKeptDocTurn(ref.path, kind, async () => {
+    const sent = readKeptDoc<T>(ref.path, kind);
+    // (A save before this one took it with it.)
+    if (!sent) return { ok: true, grid: here, reachedServer: false };
+    try {
+      const merged = await write(sent.base, sent.here);
+      letGoKeptDoc(ref.path, kind, sent, merged);
+      return { ok: true, grid: merged, reachedServer: true };
+    } catch (error) {
+      if (keptDocTurnedDown(error)) {
+        console.warn(`[saveKeptDocMerged] ${kind} turned down:`, error);
+        dropKeptDoc(ref.path, kind);
+        return { ok: false, grid: here, reachedServer: false };
+      }
+      console.warn(`[saveKeptDocMerged] ${kind} couldn't reach the server — kept on this device till it can:`, error);
+      return { ok: true, grid: here, reachedServer: false };
+    }
+  });
+}
+export async function saveSalesGridMerged(
+  project: Project,
+  kind: SalesGridKind,
+  base: SpecsGrid | null,
+  here: SpecsGrid,
+): Promise<{ ok: boolean; grid: SpecsGrid; reachedServer: boolean }> {
+  const database = db;
+  const ref = await resolveProjectDocRef(project);
+  if (!database || !ref) return { ok: false, grid: here, reachedServer: false };
+  return saveKeptDocMerged(
+    ref,
+    kind,
+    base,
+    here,
+    (keptBase, keptHere) => writeSalesGridMerged(database, ref, kind, keptBase, keptHere),
+    () => saveSalesGridData(project, kind, here),
+  );
+}
+// Everything kept for this person sent, as the app opens and whenever it's back online.
+export async function sendKeptSalesGrids(): Promise<void> {
+  const database = db;
+  const uid = keptGridUid();
+  if (!database || !uid || isPreviewMode() || isLikelyOffline() || typeof window === "undefined") return;
+  const prefix = `${KEPT_SALES_GRID_KEY}${uid}:`;
+  const waiting: Array<{ path: string; kind: KeptDocKind }> = [];
+  try {
+    for (let i = 0; i < window.localStorage.length; i += 1) {
+      const key = window.localStorage.key(i) || "";
+      if (!key.startsWith(prefix)) continue;
+      const rest = key.slice(prefix.length);
+      const at = rest.lastIndexOf(":");
+      waiting.push({ path: rest.slice(0, at), kind: rest.slice(at + 1) as KeptDocKind });
+    }
+  } catch {
+    return;
+  }
+  await Promise.all(
+    waiting.map(({ path, kind }) =>
+      inKeptDocTurn(path, kind, async () => {
+        const ref = doc(database, path);
+        try {
+          if (kind === "drawing_kitchen") {
+            const sent = readKeptDoc<Record<string, unknown>>(path, kind);
+            if (sent) letGoKeptDoc(path, kind, sent, await writeDrawingMerged(database, ref, sent.base, sent.here));
+          } else {
+            const sent = readKeptDoc<SpecsGrid>(path, kind);
+            if (sent) letGoKeptDoc(path, kind, sent, await writeSalesGridMerged(database, ref, kind, sent.base, sent.here));
+          }
+        } catch (error) {
+          if (keptDocTurnedDown(error)) dropKeptDoc(path, kind);
+          else console.warn(`[sendKeptSalesGrids] ${kind} couldn't reach the server:`, error);
+        }
+      }),
+    ),
+  );
+}
+
+// ---- The Drawing, live. What it was last heard to be from the database, by document: what a save's changes are told apart by.
+const drawingBases = new Map<string, Record<string, unknown> | null>();
+export async function saveProjectDrawingMerged(project: Project, data: Record<string, unknown>): Promise<boolean> {
+  const database = db;
+  const ref = await resolveProjectDocRef(project);
+  if (!database || !ref) return false;
+  const saved = await saveKeptDocMerged<Record<string, unknown>>(
+    ref,
+    "drawing_kitchen",
+    drawingBases.get(ref.path) ?? null,
+    data,
+    (keptBase, keptHere) => writeDrawingMerged(database, ref, keptBase, keptHere),
+    () => saveProjectDrawing(project, "kitchen", data),
+  );
+  if (saved.ok && saved.reachedServer) drawingBases.set(ref.path, saved.grid);
+  return saved.ok;
+}
+// Someone else's change to it, as it reaches the database: as it is now, and as it was (to put it onto edits here with).
+export function subscribeProjectDrawing(
+  project: Project,
+  onNews: (data: Record<string, unknown>, base: Record<string, unknown> | null) => void,
+): () => void {
+  let cancelled = false;
+  let stop = () => {};
+  void resolveProjectDocRef(project).then((ref) => {
+    if (cancelled || !ref) return;
+    let heardFromServer = false;
+    stop = onSnapshot(
+      doc(ref, "drawings", "kitchen"),
+      { includeMetadataChanges: true },
+      (snap) => {
+        if (!snap.metadata.fromCache) heardFromServer = true;
+        if (!snap.exists() || (snap.metadata.fromCache && !snap.metadata.hasPendingWrites && !heardFromServer)) return;
+        const data = drawingFromStored(snap.data() as Record<string, unknown>);
+        if (!data) return;
+        const before = drawingBases.get(ref.path) ?? null;
+        if (JSON.stringify(data) === JSON.stringify(before)) return;
+        drawingBases.set(ref.path, data);
+        onNews(data, before);
+      },
+      (error) => console.warn("[subscribeProjectDrawing] listener failed:", error),
+    );
+  });
+  return () => {
+    cancelled = true;
+    stop();
+  };
 }
 
 // Images/files — one doc per kind (images vs files), same reasoning as cutlistData/salesGrids:
@@ -6525,6 +6919,7 @@ function userNotificationFromDoc(docSnap: QueryDocumentSnapshot): UserNotificati
     remindsUnread: data.remindsUnread === true ? true : undefined,
     readAtIso: String(data.readAtIso ?? "").trim() || undefined,
     unlockRequesterUid: String(data.unlockRequesterUid ?? "").trim() || undefined,
+    appVersion: String(data.appVersion ?? "").trim() || undefined,
     unlockRequestedAtIso: String(data.unlockRequestedAtIso ?? "").trim() || undefined,
     unlockAnswer:
       data.unlockAnswer && typeof data.unlockAnswer === "object" ? (data.unlockAnswer as UserNotificationUnlockAnswer) : undefined,
@@ -6897,6 +7292,17 @@ export async function saveUserProfilePatch(
 ): Promise<boolean> {
   const result = await saveUserProfilePatchDetailed(uid, companyId, patch);
   return result.ok;
+}
+
+// Whether this account's still to go through Set Up Account (components/login/account-setup.tsx). If it can't be told: no,
+// rather than holding them up.
+export async function fetchAccountSetupPending(uid: string): Promise<boolean> {
+  if (!db || !uid) return false;
+  try {
+    return (await getDoc(doc(db, "users", uid))).data()?.accountSetupPending === true;
+  } catch {
+    return false;
+  }
 }
 
 export async function saveUserProfilePatchDetailed(

@@ -3,12 +3,43 @@ Version: v0.6.1
 whatsNew: [
 <u><b>Phones</b></u>
 <ul>
+<li>The box you're typing in moves to the middle of the screen above the keyboard, with the rest of the pop-up carrying on under the keyboard</li>
+<li>An event's pop-up keeps its colour all the way to the bottom of the screen</li>
 <li>Pop-ups slide up from the bottom and only take the room they need. Tap above one, or swipe it down, to close it</li>
 <li>Dragging on a Project Drawing no longer pulls down the menu or fades its title bar</li>
 </ul>
 
+<u><b>Project details</b></u>
+<ul>
+<li>General, Design, Production and Settings now save as you type, including offline. A <b>Saved</b> bar pops up at the bottom right when a change has saved, then pops away</li>
+<li>See who else is on a page in that same bar, on every page of a project: an eye and their emblems. Click them to see who's editing and who's viewing</li>
+<li>Drawing updates live for everyone in it, and two people's changes are kept together</li>
+<li>Undo in a Drawing only takes back your own changes. If someone else has changed that piece since, it warns you and leaves their change in place</li>
+<li>Materials saves as you go, not only when you leave it</li>
+<li>Quote and Specifications update live and save as you type. Two people in the same sheet keep each other's changes, cell by cell</li>
+<li>Two people in the same project no longer wipe each other's details: each change saves on its own</li>
+<li>Details, hardware, images and files someone else changes appear straight away, without reloading</li>
+</ul>
+
+<u><b>Dashboard</b></u>
+<ul>
+<li>Cards added, moved or changed by anyone show as it happens, and the latest show the first time you open it</li>
+</ul>
+
+<u><b>Cutlists</b></u>
+<ul>
+<li>Do sums in every number box: drawer and door fronts, gaps, quantities, shelves and hinges</li>
+<li>The + − × ÷ = bar stays right on top of the phone's keyboard, and shows on every number box</li>
+<li>Changing a gap updates the drawer and door sizes you haven't changed, and leaves the ones you have. If you've changed them all, a warning asks you to check they still add up</li>
+<li>Hinges are checked against the door's real height (its width for Top), in any order you fill things in. One past the door shows red and keeps the piece out of the cutlist</li>
+<li>Gaps keep their decimals: 2.5 no longer becomes 25</li>
+</ul>
+
 <u><b>Calendar</b></u>
 <ul>
+<li>Several events coming up at the same moment now send one notification listing them, instead of one each</li>
+<li>Dragging an event to another month moves smoothly</li>
+<li>With non-work days hidden and today being one of them, the sides of the days either side show where today falls</li>
 <li>Drag an event to the top or bottom of the month and hold it there to move to the month before or after</li>
 </ul>
 
@@ -29,6 +60,11 @@ whatsNew: [
 <ul>
 <li>Click an access code to see everything about it: who made it and when, its role, who used it and whether they're still in the company</li>
 <li>The access code list has a <b>Created by</b> column, and shorter rows and buttons</li>
+</ul>
+
+<u><b>New accounts</b></u>
+<ul>
+<li><b>Set Up Account</b> walks you through your name, badge colour, notifications and a first checklist. All of it is optional, and <b>Skip Setup</b> is on every step</li>
 </ul>
 
 <u><b>Joining a company</b></u>

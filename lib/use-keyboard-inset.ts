@@ -53,6 +53,33 @@ function readKeyboardInset(vv: VisualViewport): KeyboardInset {
 // on a phone but those keeping their box), or a bottom sheet (data-phone-keep-box — the cutlist's) — see app/globals.css.
 const BEHIND_KEYBOARD_PANEL = '.glass-modal-panel[data-phone-keep-box="true"]';
 
+// What scrolls in a phone's pop-up (its outermost scrolling part, or the pop-up itself) given room at the bottom for what the
+// keyboard covers (data-keyboard-scroll-pad — app/globals.css), so the field being typed in can reach the middle of what's
+// visible. Marked as it's needed, and taken off as the keyboard goes.
+const AUTO_SCROLL_PAD_ATTR = "data-keyboard-scroll-pad-auto";
+
+function giveFocusedPanelScrollRoom(): void {
+  const field = document.activeElement;
+  if (!(field instanceof HTMLElement) || !window.matchMedia("(max-width: 639.98px)").matches) return;
+  const panel = field.closest<HTMLElement>(".glass-modal-panel");
+  if (!panel || panel.dataset.phoneDrop === "true") return;
+  let scroller: HTMLElement = panel;
+  for (let node = field.parentElement; node && node !== panel; node = node.parentElement) {
+    const { overflowY } = getComputedStyle(node);
+    if (overflowY === "auto" || overflowY === "scroll") scroller = node;
+  }
+  if (scroller.getAttribute("data-keyboard-scroll-pad") === "true") return;
+  scroller.setAttribute("data-keyboard-scroll-pad", "true");
+  scroller.setAttribute(AUTO_SCROLL_PAD_ATTR, "true");
+}
+
+function clearPanelScrollRoom(): void {
+  document.querySelectorAll<HTMLElement>(`[${AUTO_SCROLL_PAD_ATTR}]`).forEach((node) => {
+    node.removeAttribute(AUTO_SCROLL_PAD_ATTR);
+    node.removeAttribute("data-keyboard-scroll-pad");
+  });
+}
+
 function revealFocusedFieldInPanel(): void {
   const field = document.activeElement;
   if (!(field instanceof HTMLElement) || !field.closest(".glass-modal-panel")) return;
@@ -209,6 +236,19 @@ function notesBoxOutOfView(box: HTMLElement): boolean {
   return rect.top < vv.offsetTop || rect.bottom > vv.offsetTop + vv.height;
 }
 
+// A phone slides the whole screen up to show the box tapped. That lifts the page's bottom edge off the bottom of the screen, so
+// what's behind the see-through keyboard is the plain background, not the page. So it's put straight back, with everything still
+// reaching the bottom of the screen and running under the keyboard, and the box is brought into view by scrolling what it's in
+// (centerFocusedNotesBox, revealFocusedFieldInPanel). Not for a box in a bar pinned over the page: scrolling can't move that, so
+// the phone's slide is the only way it can be seen. true: it was put back.
+function holdScreenStillForKeyboard(): boolean {
+  const field = document.activeElement;
+  if (!(field instanceof HTMLElement) || !isTextEntry(field) || !window.matchMedia("(pointer: coarse)").matches) return false;
+  if (!field.closest(".glass-modal-panel") && inPinnedBar(field)) return false;
+  window.scrollTo(0, 0);
+  return true;
+}
+
 // Whether what's being typed in is in a pop-up that stays the whole screen on a phone with the keyboard up
 // (data-phone-fullscreen — see app/globals.css): it moves with the visible area rather than being capped to it, so its
 // field needs bringing into view whenever that moves, or another field is tapped.
@@ -246,6 +286,9 @@ export function usePublishKeyboardInsetVars(): void {
     const settleNotesBox = () => {
       settleTimers.forEach((timer) => window.clearTimeout(timer));
       const box = focusedKeyboardCenterBox();
+      const field = document.activeElement;
+      // A field in a phone's pop-up, the same: a phone can still be moving things for a moment after the keyboard's up,
+      // and left where that puts it, the field can end up off the screen.
       settleTimers = box
         ? SETTLE_CHECKS_MS.map((ms) =>
             window.setTimeout(() => {
@@ -253,12 +296,28 @@ export function usePublishKeyboardInsetVars(): void {
               if (last?.keyboardOpen || notesBoxOutOfView(box)) centerFocusedNotesBox();
             }, ms),
           )
-        : [];
+        : focusInPhoneFullscreenPanel()
+          ? SETTLE_CHECKS_MS.map((ms) =>
+              window.setTimeout(() => {
+                if (document.activeElement !== field || !last?.keyboardOpen) return;
+                giveFocusedPanelScrollRoom();
+                revealFocusedFieldInPanel();
+              }, ms),
+            )
+          : [];
     };
     const publish = () => {
       frame = null;
       // Pinch-zoom also shrinks the visual viewport, but at a scale above 1 — that isn't the keyboard.
       const keyboardOpen = vv.scale <= 1.01 && window.innerHeight - vv.height > KEYBOARD_OPEN_MIN_PX;
+      if (keyboardOpen && vv.offsetTop > 0 && holdScreenStillForKeyboard()) {
+        // (What it does to the screen comes back round through the viewport's own events.)
+        giveFocusedPanelScrollRoom();
+        window.setTimeout(() => {
+          if (focusedKeyboardCenterBox()) centerFocusedNotesBox();
+          else revealFocusedFieldInPanel();
+        }, 0);
+      }
       const next: PublishedViewport = {
         ...readKeyboardInset(vv),
         keyboardOpen,
@@ -292,11 +351,18 @@ export function usePublishKeyboardInsetVars(): void {
       }
       // A notes box: to the middle (as the keyboard comes up or changes size — not as the visible area's moved about,
       // which is the person scrolling). Anything else in a pop-up: just into view.
-      if (keyboardWent) clearKeyboardRoom();
+      if (keyboardWent) {
+        clearKeyboardRoom();
+        clearPanelScrollRoom();
+      }
+      if (next.keyboardOpen) giveFocusedPanelScrollRoom();
       if (keyboardCameOrResized && focusedKeyboardCenterBox()) {
         centerFocusedNotesBox();
         settleNotesBox();
-      } else if (panelCapChanged && !focusedKeyboardCenterBox()) revealFocusedFieldInPanel();
+      } else if (panelCapChanged && !focusedKeyboardCenterBox()) {
+        revealFocusedFieldInPanel();
+        if (keyboardCameOrResized) settleNotesBox();
+      }
     };
     const schedule = () => {
       if (frame === null) frame = requestAnimationFrame(publish);
@@ -306,9 +372,10 @@ export function usePublishKeyboardInsetVars(): void {
     let revealFrame: number | null = null;
     const onFocusIn = () => {
       // (A notes box: checked on again as the keyboard comes up and things settle, whether it's reported up yet or not.)
-      if (focusedKeyboardCenterBox()) settleNotesBox();
+      if (focusedKeyboardCenterBox() || focusInPhoneFullscreenPanel()) settleNotesBox();
       if (!last?.keyboardOpen || revealFrame !== null) return;
       if (!focusedKeyboardCenterBox() && !focusInPhoneFullscreenPanel()) return;
+      giveFocusedPanelScrollRoom();
       revealFrame = requestAnimationFrame(() => {
         revealFrame = null;
         if (focusedKeyboardCenterBox()) centerFocusedNotesBox();
@@ -335,6 +402,7 @@ export function usePublishKeyboardInsetVars(): void {
       settleTimers.forEach((timer) => window.clearTimeout(timer));
       root.removeAttribute(KEYBOARD_OPEN_ATTR);
       clearKeyboardRoom();
+      clearPanelScrollRoom();
     };
   }, []);
 }

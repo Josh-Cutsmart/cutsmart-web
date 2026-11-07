@@ -1,3 +1,4 @@
+import { notificationText } from "@/lib/notification-messages";
 import { adminDb } from "@/lib/firebase-admin";
 import { apiHasPermission, listCompanyMemberAccess } from "@/lib/api-company-access";
 import { addNotificationAndPush } from "@/lib/push-server";
@@ -37,12 +38,12 @@ export async function leadNameForNotification(companyId: string, lead: Record<st
 //   From Form: Jane Smith               (one of the company's lead forms — their first and last name)
 //   From Zapier: Jane Smith
 //   From Create Lead: Jane Smith        (added on the Leads page)
-function newLeadMessage(lead: Record<string, unknown>, name: string) {
+function newLeadText(lead: Record<string, unknown>, name: string) {
   const source = toStr(lead.source);
-  if (source === "email") return `From Email: ${toStr(lead.email) || name}`;
-  if (source === "web-form") return `From Form: ${name}`;
-  if (source === "manual") return `From Create Lead: ${name}`;
-  return `From Zapier: ${name}`;
+  if (source === "email") return notificationText("lead_new.email", { sender: toStr(lead.email) || name });
+  if (source === "web-form") return notificationText("lead_new.form", { name });
+  if (source === "manual") return notificationText("lead_new.manual", { name });
+  return notificationText("lead_new.other", { name });
 }
 
 // "New Lead" to everyone who can see it — the owner/admins and anyone allowed to see others' leads
@@ -67,8 +68,7 @@ export async function notifyNewLead(
           return addNotificationAndPush(
             member.access.uid,
             {
-              title: isAssignee ? "Added to a lead" : "New Lead",
-              message: isAssignee && addedBy ? `${addedBy.name} added you to the lead "${name}".` : newLeadMessage(lead, name),
+              ...(isAssignee && addedBy ? notificationText("lead_access", { person: addedBy.name, lead: name }) : newLeadText(lead, name)),
               type: isAssignee ? "lead_access" : "lead_new",
               leadId,
               companyId,

@@ -1,5 +1,6 @@
 "use client";
 
+import { notificationText } from "@/lib/notification-messages";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { SETTINGS_SEARCH_INDEX, SETTINGS_SECTIONS as sections, type SettingsSection } from "@/lib/company-settings-sections";
 import { CART_COPY_PLACEHOLDERS, DEFAULT_CART_COPY_FORMAT, formatCartCopyLine } from "@/lib/production-hardware";
@@ -3378,8 +3379,11 @@ export default function CompanySettingsPage() {
     setSaveLabel("Saved");
     const previousRole = staffRoleOptions.find((role) => normalizeRoleKey(role.id || role.name) === currentRoleId);
     void addUserNotification(uid, {
-      title: "Role updated",
-      message: `Your role in ${toStr(company?.name, "your company")} changed from "${previousRole?.name || currentRoleId}" to "${selectedRole.name}".`,
+      ...notificationText("role_change", {
+        company: toStr(company?.name, "your company"),
+        old_role: previousRole?.name || currentRoleId,
+        new_role: selectedRole.name,
+      }),
       type: "role_change",
       companyId: activeCompanyId,
     });

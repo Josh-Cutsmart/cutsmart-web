@@ -1,5 +1,6 @@
 "use client";
 
+import { useCompanyJobsTick } from "@/lib/use-company-jobs-live";
 import { flyToTabBar } from "@/lib/fly-to-tab-bar";
 import { activeDateTime, useCompanyFormats } from "@/lib/company-formats";
 import { GlassModalHeader } from "@/components/glass-modal-header";
@@ -312,6 +313,9 @@ function fadedRowLineStyle(lineColor: string, rowBackground = "none"): React.CSS
     backgroundRepeat: "no-repeat",
   };
 }
+
+// How long after a change made on the Dashboard before it reads the projects again (see companyJobsTick).
+const BOARD_SETTLE_MS = 1500;
 
 export default function DashboardPage() {
   // Re-render when the company's date format changes.
@@ -949,6 +953,53 @@ export default function DashboardPage() {
       cancelled = true;
     };
   }, [user?.companyId, user?.uid]);
+
+  // Cards added, moved or changed by anyone: shown as it happens. Only when something's actually changed, and not while
+  // this person's own move is on its way: read before that's saved, the card would flash back where it came from. So not
+  // under a drag or a save, nor until BOARD_SETTLE_MS after a change made on this screen.
+  const companyJobsTick = useCompanyJobsTick(dashboardCompanyId);
+  const boardBusy = Boolean(draggingProjectId || draggingSubStageProjectId || statusUpdatingProjectId);
+  const handledJobsTickRef = useRef(0);
+  const lastRefreshedProjectsRef = useRef<Project[] | null>(null);
+  const boardSettlesAtRef = useRef(0);
+  useEffect(() => {
+    if (allProjects !== lastRefreshedProjectsRef.current) boardSettlesAtRef.current = Date.now() + BOARD_SETTLE_MS;
+  }, [allProjects]);
+  useEffect(() => {
+    if (!companyJobsTick || boardBusy || !dashboardCompanyId || handledJobsTickRef.current === companyJobsTick) return;
+    let cancelled = false;
+    let timer: number | null = null;
+    const refresh = () => {
+      const wait = boardSettlesAtRef.current - Date.now();
+      if (wait > 0) {
+        timer = window.setTimeout(refresh, wait);
+        return;
+      }
+      void fetchProjects(user?.uid, [dashboardCompanyId], { lightweight: true, archived: "include" })
+        .then((rows) => {
+          if (cancelled) return;
+          // (Changed here while that was being read: again, once it's settled.)
+          if (boardSettlesAtRef.current > Date.now()) {
+            refresh();
+            return;
+          }
+          handledJobsTickRef.current = companyJobsTick;
+          if (!rows.length) return;
+          const items = rows.filter((project) => !project.isSmallJob);
+          setAllProjects((prev) => {
+            const next = JSON.stringify(prev) === JSON.stringify(items) ? prev : items;
+            lastRefreshedProjectsRef.current = next;
+            return next;
+          });
+        })
+        .catch(() => undefined);
+    };
+    refresh();
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [companyJobsTick, boardBusy, dashboardCompanyId, user?.uid]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;

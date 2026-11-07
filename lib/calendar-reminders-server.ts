@@ -1,3 +1,4 @@
+import { notificationText } from "@/lib/notification-messages";
 import { FieldPath, Timestamp } from "firebase-admin/firestore";
 import { adminDb } from "@/lib/firebase-admin";
 import { calendarCategoryLevel, normalizeCalendarCategories, type CalendarCategory } from "@/lib/calendar-categories";
@@ -10,7 +11,7 @@ import {
   normalizeCalendarReminderLead,
   type CalendarReminderRow,
 } from "@/lib/push-notification-types";
-import { isCompanyMemberUid, pushStoredNotification } from "@/lib/push-server";
+import { isCompanyMemberUid, pushStoredNotificationsTogether } from "@/lib/push-server";
 
 // Calendar reminders: "<event> for <project> is in 2 days" ("<event> is in 2 days" with no project). An event
 // reminds each of its staff (staffUids — linking a project puts that project's assignee on it, or its creator with no
@@ -170,6 +171,10 @@ export async function runCalendarReminders(options: { siteOrigin: string; compan
     }
     return prefsByUid.get(uid)!;
   };
+
+  // Everyone's reminders from this run: one push each, however many they have (4 events reminding them at 8am aren't 4
+  // notifications on their phone).
+  const dueByUid = new Map<string, Array<{ id: string; startMs: number }>>();
 
   for (const companyId of companyIds) {
     result.companies += 1;
@@ -343,8 +348,7 @@ export async function runCalendarReminders(options: { siteOrigin: string; compan
         const when = timeUntilPhrase(startMs - now, allDay);
         const nowIso = new Date().toISOString();
         const notificationRef = await db.collection("users").doc(uid).collection("notifications").add({
-          title: `Upcoming: ${title}`,
-          message: projectName ? `"${title}" for ${projectName} is ${when}.` : `"${title}" is ${when}.`,
+          ...notificationText(projectName ? "calendar_reminder" : "calendar_reminder.no_project", { event: title, project: projectName, when }),
           type: "calendar_reminder",
           ...(projectId ? { projectId } : {}),
           companyId,
@@ -353,7 +357,10 @@ export async function runCalendarReminders(options: { siteOrigin: string; compan
           createdAt: new Date(nowIso),
           createdAtIso: nowIso,
         });
-        await pushStoredNotification(uid, notificationRef.id, options.siteOrigin).catch(() => undefined);
+        // (Their devices are told once everything's been looked through, below.)
+        const waiting = dueByUid.get(uid) ?? [];
+        waiting.push({ id: notificationRef.id, startMs });
+        dueByUid.set(uid, waiting);
         result.sent += 1;
       }
     }
@@ -366,5 +373,15 @@ export async function runCalendarReminders(options: { siteOrigin: string; compan
       )
       .catch(() => undefined);
   }
+  await Promise.all(
+    [...dueByUid].map(([uid, due]) =>
+      pushStoredNotificationsTogether(
+        uid,
+        [...due].sort((a, b) => a.startMs - b.startMs).map((row) => row.id),
+        options.siteOrigin,
+        "/calendar",
+      ).catch(() => undefined),
+    ),
+  );
   return result;
 }

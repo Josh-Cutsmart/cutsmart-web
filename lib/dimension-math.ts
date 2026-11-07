@@ -23,6 +23,13 @@ export function dimensionMathText(value: unknown): string {
     .map((part, index) => (index % 2 ? part : numericDecimalText(part, 1)))
     .join("");
 }
+// As dimensionMathText, for a box of whole numbers (a quantity, a shelf count, a hinge position): digits and + - * x /. An
+// answer with a decimal place (what a sum came to, put in as the box is left) goes to the nearest whole number.
+export function wholeMathText(value: unknown): string {
+  const text = String(value ?? "").replace(/[×X]/g, "x");
+  if (/^\d*\.\d+$/.test(text)) return String(Math.round(Number.parseFloat(text)));
+  return text.replace(/[^\d+\-*/x]/g, "");
+}
 // A sum typed in one of those boxes, worked out as a calculator does: left to right, each step on the total so far
 // ("300-2-2-2/2" is 147, not 295) — * and x multiply, / divides — to 1 decimal place, never below 0. null when it isn't a
 // whole sum (just a number, one still being typed, or a divide by 0).

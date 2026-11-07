@@ -183,6 +183,9 @@ export type SpecsGridEditorProps = {
   // Quote's live project sheet sets this — see its own mount in app/(app)/projects/[projectId]/page.tsx).
   // A cell that already has content, or sits in a group's rows, is completely unaffected either way.
   lockUngroupedBlankCells?: boolean;
+  // What's typed in a cell handed over a moment after the typing stops, not only as the cell's left (a sheet saved and shown
+  // to others as it's typed: the Quote's and Specifications').
+  commitWhileTyping?: boolean;
   // Draws a persistent solid border around every VISIBLE group whose rows the current viewer is
   // allowed to edit (per canEditSpecsGroup — a group with no editableByRoleIds restriction always
   // counts as editable) — purely a screen affordance so it's obvious at a glance which sections of a
@@ -1006,6 +1009,7 @@ export default function SpecsGridEditor({
   productOptions,
   canEditSpecsGroup,
   lockUngroupedBlankCells,
+  commitWhileTyping,
   showEditableGroupBorders,
   hideCellSelectionOutline,
   isSentToClient,
@@ -4076,6 +4080,7 @@ export default function SpecsGridEditor({
                             runs={getCellRuns(cell)}
                             style={style}
                             isFocused={focusedKey === key}
+                            commitWhileTyping={commitWhileTyping}
                             onFocusCell={() => {
                               setFocusedKey(key);
                               if (fitToViewportOnMobile) cancelNativeFocusScrollOnMobile();
@@ -5560,6 +5565,7 @@ function SpecsCellTextArea({
   runs,
   style,
   isFocused,
+  commitWhileTyping,
   onFocusCell,
   onBlurCommitRuns,
   onLiveCommitRuns,
@@ -5574,6 +5580,7 @@ function SpecsCellTextArea({
   runs: SpecsTextRun[];
   style: SpecsCellStyle;
   isFocused: boolean;
+  commitWhileTyping?: boolean;
   onFocusCell: () => void;
   onBlurCommitRuns: (runs: SpecsTextRun[]) => void;
   // Fired right after a Ctrl+B/Ctrl+U (or the toolbar, via applyFormatCommand) formats a highlighted
@@ -5617,6 +5624,18 @@ function SpecsCellTextArea({
   dimmed?: boolean;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
+  // commitWhileTyping: handed over this long after the last key. (The box isn't redrawn while it's being typed in — the
+  // effect below — so the cursor stays put.)
+  const typedCommitTimerRef = useRef<number | null>(null);
+  const commitRunsRef = useRef(onBlurCommitRuns);
+  useEffect(() => {
+    commitRunsRef.current = onBlurCommitRuns;
+  });
+  const cancelTypedCommit = () => {
+    if (typedCommitTimerRef.current !== null) window.clearTimeout(typedCommitTimerRef.current);
+    typedCommitTimerRef.current = null;
+  };
+  useEffect(() => cancelTypedCommit, []);
 
   useEffect(() => {
     if (isFocused) return;
@@ -5678,7 +5697,10 @@ function SpecsCellTextArea({
       contentEditable
       suppressContentEditableWarning
       onFocus={onFocusCell}
-      onBlur={(e) => onBlurCommitRuns(parseHtmlToRuns(e.currentTarget.innerHTML))}
+      onBlur={(e) => {
+        cancelTypedCommit();
+        onBlurCommitRuns(parseHtmlToRuns(e.currentTarget.innerHTML));
+      }}
       onKeyDown={(e) => {
         // Enter always forces a plain <br> rather than letting the browser wrap the next line in its
         // own block element (a <div> in Chrome, sometimes different elsewhere) — parseHtmlToRuns only
@@ -5717,7 +5739,16 @@ function SpecsCellTextArea({
       // is layout-only (unlike getBoundingClientRect), so it's unaffected by the page's own scroll
       // position — safe to read on every input without reintroducing the scroll-offset drift this
       // file's overlay math deliberately avoids elsewhere.
-      onInput={(e) => onNaturalHeightChange?.(e.currentTarget.scrollHeight)}
+      onInput={(e) => {
+        onNaturalHeightChange?.(e.currentTarget.scrollHeight);
+        if (!commitWhileTyping) return;
+        cancelTypedCommit();
+        const box = e.currentTarget;
+        typedCommitTimerRef.current = window.setTimeout(() => {
+          typedCommitTimerRef.current = null;
+          commitRunsRef.current(parseHtmlToRuns(box.innerHTML));
+        }, 700);
+      }}
       // This div's own height is left fully natural (no fixed height/overflow of its own) — the
       // PARENT wrapper (in the parent render) owns vertically aligning it within the cell (see its own
       // comment for why capping a table-cell's block child with maxHeight alone doesn't reliably work

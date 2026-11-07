@@ -40,6 +40,9 @@ import {
 } from "lucide-react";
 import { GlassDropdown } from "@/components/glass-dropdown";
 import { GlassSwitch, Segmented } from "@/components/settings-ui";
+import { undoDrawingStep } from "@/lib/drawing-undo";
+import { useFloatingNotice } from "@/components/floating-notice";
+import { mergeKitchenDrawing } from "@/lib/drawing-merge";
 import { glassShineStyle } from "@/lib/glass-shine";
 import { useView3dGestures } from "@/lib/use-view-3d-gestures";
 import {
@@ -2079,6 +2082,7 @@ export function KitchenDrawing({
   gaps,
   load,
   save,
+  subscribe,
   readOnly = false,
   onBack,
 }: {
@@ -2089,6 +2093,8 @@ export function KitchenDrawing({
   // The project's saved drawing — `data` null: none yet; null: it couldn't be read.
   load: () => Promise<{ data: Record<string, unknown> | null } | null>;
   save: (data: KitchenDrawingData) => Promise<boolean>;
+  // Someone else's changes to it, as they reach the database: the drawing as it is now, and as it was before them.
+  subscribe?: (onNews: (data: Record<string, unknown>, base: Record<string, unknown> | null) => void) => () => void;
   // Can't change the project (its Production access): looked at and played with, not saved.
   readOnly?: boolean;
   onBack: () => void;
@@ -2101,15 +2107,19 @@ export function KitchenDrawing({
   const [extrusions, setExtrusions] = useState<BenchExtrusion[]>([]);
   // Undo: what it was before each change (the latest last) — Ctrl+Z (⌘Z) goes back a step a press; a step back isn't
   // itself remembered, only kept for Redo (Ctrl+Y, or Ctrl+Shift+Z), till something else is changed.
-  type DrawingStep = { items: KitchenItem[]; extrusions: BenchExtrusion[] };
+  // With others in the drawing, a step only takes back what this person did (lib/drawing-undo.ts): someone else's changes
+  // aren't steps here (see applyDrawingNewsRef), and a piece they've changed since is left as they made it, with a warning.
+  type DrawingState = { items: KitchenItem[]; extrusions: BenchExtrusion[] };
+  type DrawingStep = { before: DrawingState; after: DrawingState };
   const historyRef = useRef<DrawingStep[]>([]);
   const redoRef = useRef<DrawingStep[]>([]);
-  const lastItemsRef = useRef<DrawingStep>({ items, extrusions });
+  const lastItemsRef = useRef<DrawingState>({ items, extrusions });
+  const undoWarning = useFloatingNotice({ tone: "yellow", durationMs: 6000 });
   const undoingRef = useRef(false);
   useEffect(() => {
     if (lastItemsRef.current.items === items && lastItemsRef.current.extrusions === extrusions) return;
     if (!undoingRef.current) {
-      historyRef.current.push(lastItemsRef.current);
+      historyRef.current.push({ before: lastItemsRef.current, after: { items, extrusions } });
       if (historyRef.current.length > 200) historyRef.current.shift();
       redoRef.current = [];
     }
@@ -2119,10 +2129,21 @@ export function KitchenDrawing({
   const stepHistory = (from: { current: DrawingStep[] }, to: { current: DrawingStep[] }) => {
     const step = from.current.pop();
     if (!step) return false;
-    to.current.push(lastItemsRef.current);
-    undoingRef.current = true;
-    setItems(step.items);
-    setExtrusions(step.extrusions);
+    const now = lastItemsRef.current;
+    const result = undoDrawingStep(step, now);
+    if (result.changed) {
+      to.current.push({ before: now, after: { items: result.items, extrusions: result.extrusions } });
+      undoingRef.current = true;
+      setItems(result.items);
+      setExtrusions(result.extrusions);
+    }
+    if (result.skipped) {
+      undoWarning.show(
+        result.skipped === 1
+          ? "Someone else has changed this piece since, so it's been left as they made it."
+          : `Someone else has changed ${result.skipped} of these pieces since, so they've been left as they made them.`,
+      );
+    }
     return true;
   };
   const undo = () => stepHistory(historyRef, redoRef);
@@ -2216,10 +2237,14 @@ export function KitchenDrawing({
     const timer = window.setTimeout(() => flushRef.current(), 900);
     return () => window.clearTimeout(timer);
   }, [benchOver, extrusions, items, loaded, offPieces, readOnly]);
-  // (Left with a change not written yet: written now.)
+  // (Left, or the page going away, with a change not written yet: written now.)
   useEffect(() => {
     const flush = flushRef.current;
-    return () => flush();
+    window.addEventListener("pagehide", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      flush();
+    };
   }, []);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [room, setRoom] = useState("All rooms");
@@ -2357,6 +2382,51 @@ export function KitchenDrawing({
   const laidNow = useMemo(() => layoutKitchen(liveItems, unitMap, gaps), [gaps, liveItems, unitMap]);
   // Rotate: an angle typed, for a piece on its own — and where that turns it, about its pivot; not kept till Enter.
   const [rotateTyped, setRotateTyped] = useState<{ id: string; deg: number; text: string } | null>(null);
+  // Someone else's changes, put onto this drawing with any changes here left as they are (mergeKitchenDrawing). Not under
+  // something being moved or placed: straight after it.
+  const drawingBusy = Boolean(moving || dropPreview || rotating || moveDraft || extrude || libDrag || pivotDrag);
+  const latestDrawingRef = useRef<KitchenDrawingData>({ items, off: offPieces, bench: benchOver, extrusions });
+  useEffect(() => {
+    latestDrawingRef.current = { items, off: offPieces, bench: benchOver, extrusions };
+  });
+  const drawingNewsRef = useRef<{ data: Record<string, unknown>; base: Record<string, unknown> | null } | null>(null);
+  const applyDrawingNewsRef = useRef(() => {});
+  useEffect(() => {
+    applyDrawingNewsRef.current = () => {
+      const news = drawingNewsRef.current;
+      if (!news || drawingBusy) return;
+      drawingNewsRef.current = null;
+      const local = latestDrawingRef.current as unknown as Record<string, unknown>;
+      // (None saved when it was opened: as it stood then, so what's not been touched here doesn't count as changed.)
+      const base = news.base ?? (savedJsonRef.current ? (JSON.parse(savedJsonRef.current) as Record<string, unknown>) : null);
+      const merged = mergeKitchenDrawing(base, local, news.data);
+      const next = { items: validItems(merged.items), off: validOff(merged.off), bench: validBench(merged.bench), extrusions: validExtrusions(merged.extrusions) };
+      const fromServer = { items: validItems(news.data.items), off: validOff(news.data.off), bench: validBench(news.data.bench), extrusions: validExtrusions(news.data.extrusions) };
+      // What's in the database now: if that's what this comes to, there's nothing to save back.
+      savedJsonRef.current = JSON.stringify(fromServer);
+      if (JSON.stringify(next) === JSON.stringify(local)) return;
+      undoingRef.current = true;
+      setItems(next.items);
+      setOffPieces(next.off);
+      setBenchOver(next.bench);
+      setExtrusions(next.extrusions);
+    };
+  });
+  useEffect(() => {
+    applyDrawingNewsRef.current();
+  }, [drawingBusy]);
+  const subscribeRef = useRef(subscribe);
+  useEffect(() => {
+    subscribeRef.current = subscribe;
+  });
+  useEffect(() => {
+    if (!loaded || !subscribeRef.current) return;
+    return subscribeRef.current((data, base) => {
+      // (A later one, before the last's been put on: the base it was put on stays.)
+      drawingNewsRef.current = { data, base: drawingNewsRef.current ? drawingNewsRef.current.base : base };
+      applyDrawingNewsRef.current();
+    });
+  }, [loaded]);
   const turnTyped = rotateTool && rotateTyped && rotateTyped.id === selectedId ? rotateTyped : null;
   const typedTurn = useMemo(() => {
     if (!turnTyped) return null;
@@ -4175,6 +4245,7 @@ export function KitchenDrawing({
         if (!heldBounds) setHeldBounds(model.bounds);
       }}
     >
+      {undoWarning.element}
       {/* The library piece being dragged, following the pointer. */}
       {libDrag?.started
         ? (() => {

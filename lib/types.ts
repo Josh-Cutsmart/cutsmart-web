@@ -106,6 +106,10 @@ export interface Project {
   // Production unlock requests waiting for an answer, by requester uid (lib/production-unlock-server.ts).
   productionUnlockRequests?: Record<string, { requestedAtIso: string; name: string }>;
   projectSettings?: Record<string, unknown>;
+  // Stored only in the old text copy, not yet as fields: its next save writes all of them (updateProjectPatch).
+  settingsOnlyInTextCopy?: boolean;
+  // Sales stored as fields on the project (not only in one of its old copies): each can be saved by itself.
+  salesStoredAsFields?: boolean;
   cutlist?: Record<string, unknown>;
   checklists?: ProjectChecklist[];
   // Custom form fields the client filled in on the source lead, that weren't already mapped to one

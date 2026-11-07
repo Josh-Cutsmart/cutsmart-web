@@ -1,3 +1,4 @@
+import { notificationText } from "@/lib/notification-messages";
 import { addUserNotification } from "@/lib/firestore-data";
 import type { Project } from "@/lib/types";
 
@@ -80,8 +81,7 @@ export function notifyProjectPermissionChange(project: Project, uid: string, old
   const actor = actorName || "A teammate";
   const name = project.name || "a project";
   void addUserNotification(uid, {
-    title: oldAccess ? "Project access changed" : "Added to a project",
-    message: oldAccess ? `${actor} made you ${role} on "${name}".` : `${actor} added you to "${name}" as ${role}.`,
+    ...notificationText(oldAccess ? "project_access.changed" : "project_access.added", { person: actor, project: name, role }),
     type: "project_access",
     projectId: project.id,
     companyId: project.companyId,

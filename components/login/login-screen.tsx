@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { ArrowLeft, Building2, ChevronRight, Eye, EyeOff, LogOut, Mail, MailCheck, Sparkles, Users } from "lucide-react";
 import "./login-screen.css";
+import { AccountSetup } from "@/components/login/account-setup";
 import { DotField } from "@/components/login/dot-field";
 import { FeatureSlider } from "@/components/login/feature-slider";
 import { AFTER_LOGIN_PATH_KEY } from "@/components/protected-route";
@@ -31,7 +32,7 @@ import {
   usePinLocked,
 } from "@/lib/device-pin";
 import { auth, hasFirebaseConfig } from "@/lib/firebase";
-import { saveUserProfilePatchDetailed } from "@/lib/firestore-data";
+import { fetchAccountSetupPending, saveUserProfilePatchDetailed } from "@/lib/firestore-data";
 import { hedgedAsync } from "@/lib/load-retry";
 import { resolveCompanyIdForUid } from "@/lib/membership";
 import { enterPreview, exitPreview, isPreviewMode } from "@/lib/preview-mode";
@@ -44,10 +45,10 @@ import { useAccountVerification } from "@/lib/use-account-verification";
 // the card is the whole screen. Someone already signed in (Remember me, or a PIN — lib/device-pin.ts)
 // goes straight through to their company.
 
-type Step = "checking" | "login" | "forgot" | "register" | "pin-unlock" | "pin-setup" | "verify" | "company" | "join" | "create" | "opening";
+type Step = "checking" | "login" | "forgot" | "register" | "pin-unlock" | "pin-setup" | "verify" | "setup" | "company" | "join" | "create" | "opening";
 
 // The order steps come in — going to a later one slides forward, an earlier one slides back.
-const STEP_ORDER: Step[] = ["checking", "login", "forgot", "register", "pin-unlock", "pin-setup", "verify", "company", "join", "create", "opening"];
+const STEP_ORDER: Step[] = ["checking", "login", "forgot", "register", "pin-unlock", "pin-setup", "verify", "setup", "company", "join", "create", "opening"];
 
 // Handed over from the reset password page (reset-password-screen.tsx), for this tab only: the email to fill in once a
 // new password's been set, or to open on "Forgot your password?" when its link had expired.
@@ -375,7 +376,7 @@ export function PasswordField({
 
 export function LoginScreen() {
   const router = useRouter();
-  const { user, isLoading, membershipStatus, signIn, signInDemo, register, logout, retryMembershipLoad } = useAuth();
+  const { user, isLoading, membershipStatus, signIn, signInDemo, register, logout, retryMembershipLoad, setUserProfileLocal } = useAuth();
   const pinLocked = usePinLocked(user?.uid);
 
   const [signedOutView, setSignedOutView] = useState<"login" | "forgot" | "register">(() => (readLoginHandoff().forgot ? "forgot" : "login"));
@@ -383,6 +384,9 @@ export function LoginScreen() {
   const [pinSetupPending, setPinSetupPending] = useState(false);
   const [justRegistered, setJustRegistered] = useState(false);
   const [noCompany, setNoCompany] = useState(false);
+  // Whether this account's still to go through Set Up Account (users/{uid}.accountSetupPending, set as it's registered, so
+  // it's still there if they verify on another device or come back later). Until that's known it doesn't open their company.
+  const [accountSetup, setAccountSetup] = useState<{ uid: string; pending: boolean }>({ uid: "", pending: false });
   const [leaving, setLeaving] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -424,6 +428,7 @@ export function LoginScreen() {
   else if (pinSetupPending) step = "pin-setup";
   else if (membershipStatus === "loading") step = "opening";
   else if (membershipStatus === "ready" && user.verified === false) step = "verify";
+  else if (accountSetup.uid === user.uid && accountSetup.pending) step = "setup";
   else if (noCompany && !leaving) step = companyView;
   else step = "opening";
   const isCompanyStep = step === "company" || step === "join" || step === "create";
@@ -450,9 +455,22 @@ export function LoginScreen() {
     return () => window.clearTimeout(timer);
   }, [resetWait]);
 
+  const signedInUid = user?.uid ?? "";
+  useEffect(() => {
+    if (!signedInUid || isPreviewMode()) return;
+    let live = true;
+    void fetchAccountSetupPending(signedInUid).then((pending) => {
+      if (live) setAccountSetup({ uid: signedInUid, pending });
+    });
+    return () => {
+      live = false;
+    };
+  }, [signedInUid]);
+
   // Signed in with nothing left to do: open their company, or ask them to join or create one.
   useEffect(() => {
     if (step !== "opening" || !hasFirebaseConfig || !user?.uid || leaving || membershipStatus === "loading") return;
+    if (accountSetup.uid !== user.uid) return;
     let cancelled = false;
     const open = async () => {
       let preferred = "";
@@ -494,7 +512,7 @@ export function LoginScreen() {
     return () => {
       cancelled = true;
     };
-  }, [leaving, membershipStatus, router, step, user?.companyId, user?.uid]);
+  }, [accountSetup.uid, leaving, membershipStatus, router, step, user?.companyId, user?.uid]);
 
   // Invites to companies, shown on the company step.
   useEffect(() => {
@@ -670,8 +688,10 @@ export function LoginScreen() {
           mobile: regMobile.trim(),
           userColor: DEFAULT_REGISTER_USER_COLOR,
           displayName: nameFromEmail(cleanEmail) || "CutSmart User",
+          accountSetupPending: true,
           ...(currentVersion ? { updateNoticeSeenVersions: [currentVersion] } : {}),
         });
+        setAccountSetup({ uid, pending: true });
       }
       setRegPassword("");
       setRegConfirm("");
@@ -986,6 +1006,15 @@ export function LoginScreen() {
               {busy ? "Creating your account…" : "Create account"}
             </button>
           </form>
+        );
+      case "setup":
+        return (
+          <AccountSetup
+            uid={user?.uid ?? ""}
+            initialColor={user?.userColor || DEFAULT_REGISTER_USER_COLOR}
+            onSaved={(patch) => setUserProfileLocal(patch)}
+            onDone={() => setAccountSetup({ uid: user?.uid ?? "", pending: false })}
+          />
         );
       case "pin-setup":
         return (

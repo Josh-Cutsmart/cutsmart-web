@@ -38,7 +38,7 @@ import {
 } from "lucide-react";
 import { requestNotificationReminderPush } from "@/lib/push-client";
 import { GLOBAL_SEARCH_OPEN_EVENT } from "@/lib/global-search";
-import { PUSH_NOTIFICATION_CATEGORIES, pushNotificationCategoryOf } from "@/lib/push-notification-types";
+import { notificationAppVersion, PUSH_NOTIFICATION_CATEGORIES, pushNotificationCategoryOf } from "@/lib/push-notification-types";
 import { glassShineStyle } from "@/lib/glass-shine";
 import { modalCloseButtonClass } from "@/components/settings-ui";
 import { devButtonClass, useDevModeOn } from "@/lib/dev-mode";
@@ -1794,14 +1794,12 @@ export function GlobalAppTabsBar() {
   // "app_version" notifications are created (app-shell.tsx) with the full changelog "whatsNew"
   // body as their message — fine for the changelog page itself, but far too much to show in this
   // small dropdown row. The version number is the only part of that notification worth showing
-  // here; it's parsed back out of the title (created as `New version ${version}`) rather than
-  // needing a schema change, so this also cleans up historical notifications already in Firestore.
-  const appVersionFromNotifTitle = (title: string) => String(title || "").replace(/^New version\s*/i, "").trim();
-  // Its icon (see NOTIF_TYPE_ICONS) and title — a new version's as "New version 1.2.3".
+  // here, as its title says it; which version it is comes from notificationAppVersion.
+  // Its icon (see NOTIF_TYPE_ICONS) and title.
   const notifIconOf = (row: UserNotificationRow): LucideIcon =>
     NOTIF_TYPE_ICONS[String(row.type ?? "")] ?? NOTIF_CATEGORY_ICONS[pushNotificationCategoryOf(row.type)] ?? Bell;
   const notifTitleOf = (row: UserNotificationRow) =>
-    row.type === "app_version" ? `New version ${appVersionFromNotifTitle(row.title)}` : row.title || "Notification";
+    row.title || "Notification";
   // ---- A production unlock request: its box, and answering it (from the box, its row or its pop-up).
   const openUnlockBox = (row: UserNotificationRow, originEl?: HTMLElement | null) => {
     const rect = originEl?.getBoundingClientRect();
@@ -1867,7 +1865,7 @@ export function GlobalAppTabsBar() {
       openUnlockBox(row, originEl);
     } else if (row.type === "app_version") {
       // Straight to that version's What's New page, over whatever page this is.
-      openWhatsNew(appVersionFromNotifTitle(row.title));
+      openWhatsNew(notificationAppVersion(row));
     } else if (row.type === "calendar_reminder" && row.eventId) {
       router.push(`/calendar?event=${encodeURIComponent(row.eventId)}`);
     } else if (row.type === "access_code_used") {

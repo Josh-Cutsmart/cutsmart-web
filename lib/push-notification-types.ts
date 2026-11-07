@@ -1,3 +1,4 @@
+import { notificationGroupPhrase, notificationWords } from "@/lib/notification-messages";
 import { WHATS_NEW_URL_PARAM } from "@/lib/update-notes-utils";
 
 // The kinds of notification CutSmart puts in the bell's Notifications list — each one can also go to
@@ -145,7 +146,12 @@ export function productionUnlockRequestUrl(projectId: string, requesterUid: stri
   return `/projects/${encodeURIComponent(projectId)}?tab=production&unlockRequest=${encodeURIComponent(requesterUid)}`;
 }
 
-export function pushNotificationUrl(input: { type?: unknown; projectId?: unknown; leadId?: unknown; eventId?: unknown; title?: unknown; unlockRequesterUid?: unknown }): string {
+// Which version a "New version" notification is about. (One from before it was noted: its title.)
+export function notificationAppVersion(input: { appVersion?: unknown; title?: unknown }): string {
+  return String(input.appVersion ?? "").trim() || String(input.title ?? "").replace(/^New version\s*/i, "").trim();
+}
+
+export function pushNotificationUrl(input: { appVersion?: unknown;  type?: unknown; projectId?: unknown; leadId?: unknown; eventId?: unknown; title?: unknown; unlockRequesterUid?: unknown }): string {
   const eventId = String(input.eventId ?? "").trim();
   if (String(input.type ?? "") === "calendar_reminder" && eventId) return `/calendar?event=${encodeURIComponent(eventId)}`;
   const projectId = String(input.projectId ?? "").trim();
@@ -155,8 +161,7 @@ export function pushNotificationUrl(input: { type?: unknown; projectId?: unknown
   if (projectId) return `/projects/${encodeURIComponent(projectId)}`;
   if (String(input.leadId ?? "").trim() || String(input.type ?? "").startsWith("lead_")) return "/leads";
   if (String(input.type ?? "") === "app_version") {
-    const version = String(input.title ?? "").replace(/^New version\s*/i, "").trim();
-    return `/dashboard?${WHATS_NEW_URL_PARAM}=${encodeURIComponent(version)}`;
+    return `/dashboard?${WHATS_NEW_URL_PARAM}=${encodeURIComponent(notificationAppVersion(input))}`;
   }
   return "/dashboard";
 }
@@ -164,7 +169,7 @@ export function pushNotificationUrl(input: { type?: unknown; projectId?: unknown
 // The notification's text as it shows on a phone: no HTML (a new version's message is the whole
 // changelog — that one just says to have a look), one line, not too long.
 export function pushNotificationBody(input: { type?: unknown; message?: unknown }): string {
-  if (String(input.type ?? "") === "app_version") return "See what's new in CutSmart.";
+  if (String(input.type ?? "") === "app_version") return notificationWords("app_version", "phone");
   const text = String(input.message ?? "")
     .replace(/<[^>]*>/g, " ")
     .replace(/&nbsp;/g, " ")
@@ -398,29 +403,7 @@ export function normalizePushQuietMinutes(raw: unknown): number {
   return PUSH_QUIET_INTERVAL_OPTIONS.some((option) => option.value === minutes) ? minutes : 0;
 }
 
-// How a batch of one kind reads in a grouped notification: "10 new leads", "1 quote accepted".
-const PUSH_GROUP_PHRASES: Record<string, [string, string]> = {
-  project_access: ["project shared with you", "projects shared with you"],
-  project_assigned: ["project assigned to you", "projects assigned to you"],
-  project_unassigned: ["project reassigned", "projects reassigned"],
-  production_unlock_request: ["unlock request", "unlock requests"],
-  production_unlock_response: ["unlock request answered", "unlock requests answered"],
-  lead_new: ["new lead", "new leads"],
-  lead_access: ["lead assigned to you", "leads assigned to you"],
-  quote_accepted: ["quote accepted", "quotes accepted"],
-  quote_declined: ["quote declined", "quotes declined"],
-  specs_submitted: ["specification submitted", "specifications submitted"],
-  quote_sent: ["quote sent", "quotes sent"],
-  specs_sent: ["specification sent", "specifications sent"],
-  calendar_reminder: ["upcoming event", "upcoming events"],
-  quote_pending: ["quote waiting on a client", "quotes waiting on clients"],
-  specs_pending: ["specification waiting on a client", "specifications waiting on clients"],
-  app_version: ["new version", "new versions"],
-  role_change: ["role change", "role changes"],
-  access_code_used: ["access code used", "access codes used"],
-};
-
+// How a batch of one kind reads in a grouped notification: "10 new leads", "1 quote accepted" (notification-messages.txt).
 export function pushGroupPhrase(type: unknown, count: number): string {
-  const [singular, plural] = PUSH_GROUP_PHRASES[pushNotificationTypeKey(type)] ?? ["notification", "notifications"];
-  return `${count} ${count === 1 ? singular : plural}`;
+  return notificationGroupPhrase(pushNotificationTypeKey(type), count);
 }

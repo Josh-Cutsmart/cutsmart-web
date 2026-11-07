@@ -1,3 +1,4 @@
+import { notificationText } from "@/lib/notification-messages";
 import { NextResponse, type NextRequest } from "next/server";
 import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
 import { verifyBearerUser } from "@/lib/api-auth";
@@ -35,10 +36,13 @@ export async function POST(request: NextRequest) {
     const creatorStillHere = (await company.collection("memberships").doc(usedCode.createdByUid).get().catch(() => null))?.exists;
     if (creatorStillHere) {
       const who = user.name || user.email || "Someone";
-      const named = usedCode.label ? ` (${usedCode.label})` : "";
       await addNotificationAndPush(
         usedCode.createdByUid,
-        { title: "Access code used", message: `${who} joined with your access code ${usedCode.code}${named}.`, type: "access_code_used", companyId },
+        {
+          ...notificationText(usedCode.label ? "access_code_used.with_label" : "access_code_used", { person: who, code: usedCode.code, label: usedCode.label ?? "" }),
+          type: "access_code_used",
+          companyId,
+        },
         new URL(request.url).origin,
       );
     }

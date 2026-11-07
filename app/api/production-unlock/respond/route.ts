@@ -1,3 +1,4 @@
+import { notificationText } from "@/lib/notification-messages";
 import { NextResponse, type NextRequest } from "next/server";
 import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
 import { listCompanyMemberAccess, requireCompanyMember } from "@/lib/api-company-access";
@@ -55,7 +56,8 @@ export async function POST(request: NextRequest) {
   const pending = pendingUnlockRequests(projectData)[requesterUid];
   // Already answered (by someone else, or from another device) — or a newer request than the one being answered.
   if (!pending || (tokenRequestedAtIso && pending.requestedAtIso !== tokenRequestedAtIso)) {
-    return NextResponse.json({ ok: true, alreadyAnswered: true });
+    const tap = notificationText("production_unlock_tap.already_answered");
+    return NextResponse.json({ ok: true, alreadyAnswered: true, tapTitle: tap.title, tapMessage: tap.message });
   }
   const approverUids = await productionUnlockApproverUids(companyId, projectData);
   if (approverUid === requesterUid || !approverUids.includes(approverUid)) {
@@ -72,10 +74,11 @@ export async function POST(request: NextRequest) {
   await addNotificationAndPush(
     requesterUid,
     {
-      title: approve ? "Production unlocked" : "Unlock request declined",
-      message: approve
-        ? `${approverName} accepted your request — you can edit production on "${projectName}" for ${hours} hour${hours === 1 ? "" : "s"}.`
-        : `${approverName} declined your request to unlock production on "${projectName}".`,
+      ...notificationText(approve ? "production_unlock_response.accepted" : "production_unlock_response.declined", {
+        person: approverName,
+        project: projectName,
+        hours: `${hours} hour${hours === 1 ? "" : "s"}`,
+      }),
       type: "production_unlock_response",
       projectId,
       companyId,
@@ -83,5 +86,10 @@ export async function POST(request: NextRequest) {
     new URL(request.url).origin,
   );
   await markUnlockNotificationsAnswered(approverUids, { projectId, requesterUid, requestedAtIso: pending.requestedAtIso }, { decision, byName: approverName });
-  return NextResponse.json({ ok: true, decision, expiryIso, requesterName: pending.name || "They", hours });
+  // (What shows after tapping Accept or Decline on the notification itself: public/sw.js.)
+  const tap = notificationText(approve ? "production_unlock_tap.accepted" : "production_unlock_tap.declined", {
+    person: pending.name || "They",
+    hours: `${hours} hour${hours === 1 ? "" : "s"}`,
+  });
+  return NextResponse.json({ ok: true, decision, expiryIso, requesterName: pending.name || "They", hours, tapTitle: tap.title, tapMessage: tap.message });
 }

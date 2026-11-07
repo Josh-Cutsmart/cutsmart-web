@@ -1,3 +1,4 @@
+import { notificationText, notificationWords } from "@/lib/notification-messages";
 import { NextResponse, type NextRequest } from "next/server";
 import { FieldPath } from "firebase-admin/firestore";
 import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
@@ -37,12 +38,12 @@ export async function POST(request: NextRequest) {
   const approvers = (await productionUnlockApproverUids(companyId, projectData, { notify: true })).filter((uid) => uid !== access.uid);
   const projectName = String(projectData.name || "a project").trim() || "a project";
   const siteOrigin = new URL(request.url).origin;
+  const wording = notificationText("production_unlock_request", { person: requesterName, project: projectName });
   await Promise.all(
     approvers.map(async (approverUid) => {
       try {
         const ref = await adminDb!.collection("users").doc(approverUid).collection("notifications").add({
-          title: "Production unlock request",
-          message: `${requesterName} asked to unlock production on "${projectName}".`,
+          ...wording,
           type: "production_unlock_request",
           projectId,
           companyId,
@@ -59,15 +60,15 @@ export async function POST(request: NextRequest) {
         await sendPushToUser(
           approverUid,
           {
-            title: "Production unlock request",
-            body: `${requesterName} asked to unlock production on "${projectName}".`,
+            title: wording.title,
+            body: wording.message,
             url: productionUnlockRequestUrl(projectId, access.uid),
             tag: `unlock_${projectId}_${access.uid}_${ref.id}`,
             ...(token
               ? {
                   actions: [
-                    { action: "approve", title: "Accept" },
-                    { action: "deny", title: "Decline" },
+                    { action: "approve", title: notificationWords("production_unlock_request", "button_accept") },
+                    { action: "deny", title: notificationWords("production_unlock_request", "button_decline") },
                   ],
                   actionUrl: "/api/production-unlock/respond",
                   actionToken: token,

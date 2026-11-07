@@ -64,8 +64,10 @@ async function showCaughtUp(title, options) {
   const count = (Number(groupData.count) || 0) + singles.length + 1;
   singles.forEach((notification) => notification.close());
   const listed = titles.slice(0, 4).map((line) => `• ${line}`);
-  if (count > listed.length) listed.push(`and ${count - listed.length} more`);
-  return self.registration.showNotification(`${count} new notifications`, {
+  // (Its wording comes with each push, from notification-messages.txt.)
+  const words = (template, fallback, value) => String(template || fallback).replace(/\{count\}/g, String(value));
+  if (count > listed.length) listed.push(words(options.data && options.data.groupMore, "and {count} more", count - listed.length));
+  return self.registration.showNotification(words(options.data && options.data.groupTitle, "{count} new notifications", count), {
     body: listed.join("\n"),
     icon: options.icon,
     tag: CATCH_UP_TAG,
@@ -92,7 +94,7 @@ self.addEventListener("push", (event) => {
     renotify: Boolean(data.tag),
     // Buttons (e.g. Approve / Deny on a production unlock request) — shown on Android and computers.
     actions: Array.isArray(data.actions) ? data.actions.slice(0, 2) : undefined,
-    data: { url: data.url || "/dashboard", actionUrl: data.actionUrl || "", actionToken: data.actionToken || "" },
+    data: { groupTitle: data.groupTitle || "", groupMore: data.groupMore || "", url: data.url || "/dashboard", actionUrl: data.actionUrl || "", actionToken: data.actionToken || "" },
   };
   const sentAt = Number(data.sentAt) || 0;
   const waited = sentAt > 0 && Date.now() - sentAt > CATCH_UP_DELAY_MS && !(options.actions && options.actions.length);
@@ -134,12 +136,14 @@ self.addEventListener("notificationclick", (event) => {
           const result = await response.json().catch(() => ({}));
           if (!response.ok || !result.ok) throw new Error(result.error || "failed");
           const who = result.requesterName || "They";
-          const body = result.alreadyAnswered
+          const body = result.tapMessage
+            ? result.tapMessage
+            : result.alreadyAnswered
             ? "Someone has already answered this request."
             : result.decision === "approve"
               ? `Accepted — ${who} can edit production for ${result.hours} hour${result.hours === 1 ? "" : "s"}.`
               : `Declined — ${who} has been told.`;
-          await self.registration.showNotification("CutSmart", { body, icon: "/icon-192.png", tag: `${event.notification.tag || "action"}_done` });
+          await self.registration.showNotification(result.tapTitle || "CutSmart", { body, icon: "/icon-192.png", tag: `${event.notification.tag || "action"}_done` });
         } catch {
           await self.clients.openWindow(target);
         }

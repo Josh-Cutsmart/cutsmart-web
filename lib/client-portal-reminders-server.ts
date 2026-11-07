@@ -1,3 +1,4 @@
+import { notificationText } from "@/lib/notification-messages";
 import { FieldPath } from "firebase-admin/firestore";
 import { adminDb } from "@/lib/firebase-admin";
 import { normalizeClientPortalReminderDays } from "@/lib/push-notification-types";
@@ -149,15 +150,13 @@ export async function runClientPortalPendingReminders(options: { siteOrigin: str
           uid,
           kind === "quote"
             ? {
-                title: "Quote not accepted yet",
-                message: `${clientName} hasn't accepted the quote for ${projectName} yet — sent ${ago}.`,
+                ...notificationText("quote_pending", { client: clientName, project: projectName, ago }),
                 type: "quote_pending",
                 projectId: str(share.projectId),
                 companyId,
               }
             : {
-                title: "Specifications not submitted yet",
-                message: `${clientName} hasn't submitted the specifications for ${projectName} yet — sent ${ago}.`,
+                ...notificationText("specs_pending", { client: clientName, project: projectName, ago }),
                 type: "specs_pending",
                 projectId: str(share.projectId),
                 companyId,

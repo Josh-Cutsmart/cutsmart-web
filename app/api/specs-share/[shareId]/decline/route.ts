@@ -1,3 +1,4 @@
+import { notificationText } from "@/lib/notification-messages";
 import { NextRequest, NextResponse } from "next/server";
 import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
 import {
@@ -100,10 +101,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     await Promise.all(
       subscriberUids.map((uid) =>
         db.collection("users").doc(uid).collection("notifications").add({
-          title: "Quote declined",
-          message: reason
-            ? `${name || "The client"} declined quote for ${projectName}: "${reason}"`
-            : `${name || "The client"} declined quote for ${projectName}`,
+          ...notificationText(reason ? "quote_declined" : "quote_declined.no_reason", { client: name || "The client", project: projectName, reason }),
           type: "quote_declined",
           projectId: shareDoc.projectId,
           companyId: String(projectData.companyId ?? "") || null,

@@ -1,33 +1,47 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { Eye, Users } from "lucide-react";
+import { GlassModalHeader } from "@/components/glass-modal-header";
 import { glassShineStyle } from "@/lib/glass-shine";
-import { alsoHereText, type CutlistPresencePerson } from "@/lib/use-cutlist-presence";
+import type { CutlistPresencePerson } from "@/lib/use-cutlist-presence";
+import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 
-// Who else is in a cutlist, in its top bar before the save chip: a bubble each for Editing and Viewing, only with someone
-// in it — a pulsing dot (green for Editing, as the Quote's Live Quote; blue for Viewing), its word, then each of them: their
-// emblem, in their colour (as the project's Creator / Assigned), and their name (just the emblem on a phone or tablet, where
-// there's little room). Two at most; more, as "+N". Someone leaving pops away (and the bubble with them, if they were the last).
+// Who else is on this page, in the floating bar at the bottom right (components/floating-save-pill.tsx): one eye, then
+// everyone's emblem together, in their colour (as the project's Creator / Assigned). Someone leaving pops away. Clicking it
+// opens a pop-up of who's editing, and below that who's viewing.
 
 // glass-bar-pop-away's length (app/globals.css), and a moment.
 const POP_AWAY_MS = 200;
 
+const DOTS = {
+  editing: { ping: "#22C55E", solid: "#16A34A" },
+  viewing: { ping: "#60A5FA", solid: "#2563EB" },
+};
+
 type Row = { person: CutlistPresencePerson; leaving: boolean };
 
-function PresenceBubble({
+function PulsingDot({ doing }: { doing: "editing" | "viewing" }) {
+  const dot = DOTS[doing];
+  return (
+    <span className="relative flex h-2.5 w-2.5 shrink-0">
+      <span className="absolute inline-flex h-full w-full animate-ping rounded-full opacity-75" style={{ backgroundColor: dot.ping }} />
+      <span className="relative inline-flex h-2.5 w-2.5 rounded-full" style={{ backgroundColor: dot.solid }} />
+    </span>
+  );
+}
+
+export function CutlistPresenceEmblems({
   people,
-  doing,
-  compact,
   colorOf,
   initialsOf,
 }: {
   people: CutlistPresencePerson[];
-  doing: "editing" | "viewing";
-  compact: boolean;
   colorOf: (uid: string) => string;
   initialsOf: (name: string) => string;
 }) {
-  const key = people.map((person) => `${person.uid}:${person.name}`).join("\n");
+  const key = people.map((person) => `${person.uid}:${person.name}:${person.editing}`).join("\n");
   const [seen, setSeen] = useState<{ key: string; rows: Row[] }>({ key, rows: people.map((person) => ({ person, leaving: false })) });
   // Who's gone stays a moment, in their place, to pop away.
   if (seen.key !== key) {
@@ -45,64 +59,102 @@ function PresenceBubble({
     return () => window.clearTimeout(timer);
   }, [anyLeaving, key]);
 
-  if (!seen.rows.length) return null;
-  const allLeaving = seen.rows.every((row) => row.leaving);
-  const here = seen.rows.filter((row) => !row.leaving);
-  const text = alsoHereText(here.map((row) => row.person.name), doing);
-  const shown = seen.rows.filter((row) => row.leaving || here.indexOf(row) < 2);
-  const more = here.length - shown.filter((row) => !row.leaving).length;
-  const dot = doing === "editing" ? { ping: "#22C55E", solid: "#16A34A" } : { ping: "#60A5FA", solid: "#2563EB" };
-  return (
+  const [open, setOpen] = useState(false);
+  const [origin, setOrigin] = useState<GlassModalOrigin>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const shouldRender = useGlassModalPopOrigin(open, origin, panelRef);
+  // (Everyone gone while it's open: nothing to show.)
+  const hasPeople = people.length > 0;
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (!hasPeople) setOpen(false);
+  }, [hasPeople]);
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open]);
+
+  const emblem = (person: CutlistPresencePerson, size: string) => (
     <span
-      role="status"
-      title={text || undefined}
-      aria-label={text || undefined}
-      className={`${allLeaving ? "glass-bar-pop-away" : "glass-bar-pop"} inline-flex ${compact ? "h-8" : "h-9"} min-w-0 shrink-0 items-center gap-2 rounded-full border pl-3 pr-2.5 text-[12px] font-medium normal-case tracking-normal`}
-      style={{
-        borderColor: "var(--glass-border)",
-        backgroundColor: "var(--glass-modal-bg)",
-        backdropFilter: "blur(16px) saturate(200%)",
-        WebkitBackdropFilter: "blur(16px) saturate(200%)",
-        boxShadow: "inset 0 1px 0 var(--glass-highlight), var(--shadow-glass)",
-        color: "var(--text-main)",
-      }}
+      className={`glass-shine inline-flex ${size} shrink-0 items-center justify-center rounded-full font-bold text-white`}
+      style={glassShineStyle(colorOf(person.uid))}
     >
-      <span className="relative flex h-2.5 w-2.5 shrink-0">
-        <span className="absolute inline-flex h-full w-full animate-ping rounded-full opacity-75" style={{ backgroundColor: dot.ping }} />
-        <span className="relative inline-flex h-2.5 w-2.5 rounded-full" style={{ backgroundColor: dot.solid }} />
-      </span>
-      <span className="shrink-0">{doing === "editing" ? "Editing" : "Viewing"}</span>
-      {shown.map(({ person, leaving }) => (
-        <span key={person.uid} className={`inline-flex min-w-0 items-center gap-1.5 ${leaving && !allLeaving ? "glass-bar-pop-away" : ""}`}>
-          <span
-            className="glass-shine inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white"
-            style={glassShineStyle(colorOf(person.uid))}
-          >
-            {initialsOf(person.name)}
-          </span>
-          {compact ? null : <span className="max-w-[160px] truncate">{person.name}</span>}
-        </span>
-      ))}
-      {more > 0 ? <span className="shrink-0" style={{ color: "var(--text-muted)" }}>+{more}</span> : null}
+      {initialsOf(person.name)}
     </span>
   );
-}
-
-export function CutlistPresenceBubbles({
-  people,
-  compact,
-  colorOf,
-  initialsOf,
-}: {
-  people: CutlistPresencePerson[];
-  compact: boolean;
-  colorOf: (uid: string) => string;
-  initialsOf: (name: string) => string;
-}) {
+  const lists = [
+    { doing: "editing" as const, title: "Editing", rows: people.filter((person) => person.editing) },
+    { doing: "viewing" as const, title: "Viewing", rows: people.filter((person) => !person.editing) },
+  ];
+  const allLeaving = seen.rows.length > 0 && seen.rows.every((row) => row.leaving);
   return (
     <>
-      <PresenceBubble people={people.filter((person) => person.editing)} doing="editing" compact={compact} colorOf={colorOf} initialsOf={initialsOf} />
-      <PresenceBubble people={people.filter((person) => !person.editing)} doing="viewing" compact={compact} colorOf={colorOf} initialsOf={initialsOf} />
+      {seen.rows.length ? (
+        <button
+          type="button"
+          aria-label={`${people.length} ${people.length === 1 ? "person" : "people"} on this page. Show who's editing and viewing`}
+          title="Who's here"
+          onClick={(event) => {
+            setOrigin(captureGlassModalOrigin(event));
+            setOpen(true);
+          }}
+          className={`${allLeaving ? "glass-bar-pop-away" : "glass-bar-pop"} pointer-events-auto inline-flex h-9 min-w-0 shrink items-center gap-1 overflow-hidden rounded-full px-1.5`}
+          style={{ color: "var(--text-muted)" }}
+        >
+          <Eye size={17} className="mr-0.5 shrink-0" aria-hidden="true" />
+          {seen.rows.map(({ person, leaving }) => (
+            <span key={person.uid} className={`inline-flex shrink-0 ${leaving && !allLeaving ? "glass-bar-pop-away" : "glass-bubble-pop"}`}>
+              {emblem(person, "h-7 w-7 text-[10px]")}
+            </span>
+          ))}
+        </button>
+      ) : null}
+      {shouldRender && typeof document !== "undefined"
+        ? createPortal(
+            <div className="pointer-events-auto fixed inset-0 z-[2147483646] flex items-center justify-center px-4">
+              <button type="button" aria-label="Close" onClick={() => setOpen(false)} className="glass-modal-backdrop absolute inset-0" />
+              <div
+                ref={panelRef}
+                role="dialog"
+                aria-modal="true"
+                aria-label="Who's here"
+                data-phone-keep-box="true"
+                className="glass-modal-panel relative z-[2147483647] w-[min(440px,96vw)] overflow-hidden"
+              >
+                <GlassModalHeader title="Who's here" icon={<Users />} onClose={() => setOpen(false)} />
+                <div className="max-h-[60vh] space-y-4 overflow-y-auto px-5 py-4">
+                  {lists.map(({ doing, title, rows }) => (
+                    <div key={doing} className="space-y-2.5">
+                      <p className="flex items-center gap-2 text-[13px] font-medium" style={{ color: "var(--text-muted)" }}>
+                        <PulsingDot doing={doing} />
+                        {title}
+                      </p>
+                      {rows.length ? (
+                        rows.map((person) => (
+                          <div key={person.uid} className="flex min-w-0 items-center gap-2.5">
+                            {emblem(person, "h-8 w-8 text-[11px]")}
+                            <span className="min-w-0 truncate text-[15px] font-medium" style={{ color: "var(--text-main)" }}>
+                              {person.name}
+                            </span>
+                          </div>
+                        ))
+                      ) : (
+                        <p className="text-[14px] font-medium" style={{ color: "var(--text-muted)" }}>
+                          No one
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
     </>
   );
 }

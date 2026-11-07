@@ -67,6 +67,7 @@ import {
   isLikelyOffline,
   markUserUpdateNoticeSeen,
   resyncCompanyProjectTagUsage,
+  sendKeptSalesGrids,
   sendOfflineCutlistChanges,
     syncCompanyClientProfileFromProject,
     upsertCompanyClientProfileOnProjectCreate,
@@ -590,7 +591,10 @@ export function AppShell({
   // the browser's back online — whichever page is open.
   useEffect(() => {
     if (!user?.uid) return;
-    const send = () => void sendOfflineCutlistChanges();
+    const send = () => {
+      void sendOfflineCutlistChanges();
+      void sendKeptSalesGrids();
+    };
     send();
     window.addEventListener("online", send);
     return () => window.removeEventListener("online", send);

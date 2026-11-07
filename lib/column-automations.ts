@@ -1,3 +1,4 @@
+import { notificationText, notificationWords } from "@/lib/notification-messages";
 // Column automations: a board column (a Dashboard status, or one of its sub-stages; a Leads status) set — by someone
 // whose role has projects.automate, from the column's right-click menu (components/column-automations.tsx) — to tell
 // the people picked when a project (or lead) enters it, leaves it, or has been in it a while, or to move what enters
@@ -652,6 +653,10 @@ export function stayStartedAtIso(
   return started;
 }
 
+// What a notification calls it: "Smith Kitchen" or The lead "Jane Smith".
+const columnAutomationThing = (board: ColumnAutomationBoard, name: string) =>
+  notificationWords("column_automation.thing", board === "leads" ? "lead" : "project", { name });
+
 // The notification's words: "Moved into Production" — "Smith Kitchen" moved into Production.
 // Whoever moved something, told of the move automation their move set off once it's moved on — straight away, or when
 // its timer's up (never ahead of it) — just where it is now, in a notify rule's own words: "Moved into Site Measure".
@@ -663,11 +668,10 @@ export function columnAutomationMoveNoticeText(input: {
   movedTo: string;
   converts?: boolean;
 }): { title: string; message: string } {
-  const thing = input.board === "leads" ? `The lead "${input.itemName}"` : `"${input.itemName}"`;
-  return {
-    title: `Moved into ${input.movedTo}`,
-    message: input.converts ? `${thing} moved into ${input.movedTo} and became a project.` : `${thing} moved into ${input.movedTo}.`,
-  };
+  return notificationText(input.converts ? "column_automation.became_project" : "column_automation.moved_on", {
+    thing: columnAutomationThing(input.board, input.itemName),
+    column: input.movedTo,
+  });
 }
 
 // Someone an assign automation assigned something to, told.
@@ -676,8 +680,8 @@ export function columnAutomationAssignedText(input: { board: ColumnAutomationBoa
   message: string;
 } {
   return input.board === "leads"
-    ? { title: "Added to a lead", message: `The lead "${input.itemName}" was assigned to you — ${input.column}'s automation.` }
-    : { title: "Assigned to a project", message: `"${input.itemName}" was assigned to you — ${input.column}'s automation.` };
+    ? notificationText("lead_access.automation", { lead: input.itemName, column: input.column })
+    : notificationText("project_assigned.automation", { project: input.itemName, column: input.column });
 }
 
 export function columnAutomationNotificationText(input: {
@@ -690,15 +694,14 @@ export function columnAutomationNotificationText(input: {
   // A stay: for how long (its automation's).
   duration?: string;
 }): { title: string; message: string } {
-  const thing = input.board === "leads" ? `The lead "${input.itemName}"` : `"${input.itemName}"`;
+  const thing = columnAutomationThing(input.board, input.itemName);
   if (input.event === "leaves") {
-    return {
-      title: `Moved out of ${input.column}`,
-      message: `${thing} moved out of ${input.column}${input.movedTo ? ` — now in ${input.movedTo}` : ""}.`,
-    };
+    return input.movedTo
+      ? notificationText("column_automation.leaves", { thing, column: input.column, new_column: input.movedTo })
+      : notificationText("column_automation.leaves_unknown", { thing, column: input.column });
   }
   if (input.event === "stays") {
-    return { title: `Still in ${input.column}`, message: `${thing} has been in ${input.column} for ${input.duration || "a while"}.` };
+    return notificationText("column_automation.stays", { thing, column: input.column, time: input.duration || "a while" });
   }
-  return { title: `Moved into ${input.column}`, message: `${thing} moved into ${input.column}.` };
+  return notificationText("column_automation.enters", { thing, column: input.column });
 }

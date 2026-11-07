@@ -1,6 +1,7 @@
 "use client";
 
-import { createContext, Fragment, startTransition, useCallback, useContext, useDeferredValue, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type FocusEvent as ReactFocusEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type TouchEvent as ReactTouchEvent, type WheelEvent as ReactWheelEvent } from "react";
+import { notificationText } from "@/lib/notification-messages";
+import { createContext, Fragment, startTransition, useCallback, useContext, useDeferredValue, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type FocusEvent as ReactFocusEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type TouchEvent as ReactTouchEvent, type WheelEvent as ReactWheelEvent, useSyncExternalStore } from "react";
 import { GlassModalHeader } from "@/components/glass-modal-header";
 import { CopyButton, CopyListButton } from "@/components/copy-button";
 import { glassShineStyle } from "@/lib/glass-shine";
@@ -129,9 +130,14 @@ import {
   saveProjectFilesData,
   updateGridVersionGrid,
   updateProductComparison,
+  settingsWithChanges,
   updateProjectPatch,
   fetchProjectDrawing,
-  saveProjectDrawing,
+  hasKeptSalesGrid,
+  saveProjectDrawingMerged,
+  subscribeOfflineCutlistChanges,
+  subscribeProjectDrawing,
+  updateProjectSalesFields,
   restoreArchivedProject,
   updateProjectStatus,
   convertSmallJobToProject,
@@ -153,9 +159,11 @@ import { bonusLockMessage, fetchBonusLock } from "@/lib/completed-projects";
 import { completionBonusSettingsFrom } from "@/lib/completion-bonus";
 import { useProjectCutlistRaw, type CutlistSyncState } from "@/lib/use-project-cutlist";
 import { useProjectOrderLive, type OrderLists } from "@/lib/use-project-order-live";
+import { useProjectLive } from "@/lib/use-project-live";
+import { FloatingSavePill } from "@/components/floating-save-pill";
+import { mergeSpecsGrids } from "@/lib/specs-grid-merge";
 import { cleanUnlockPassword, unlockPasswordFor } from "@/lib/production-unlock-password";
 import { useCutlistPresence, type CutlistPresencePerson } from "@/lib/use-cutlist-presence";
-import { CutlistPresenceBubbles } from "@/components/cutlist-presence-bubbles";
 import { mergeCutlistRows } from "@/lib/cutlist-merge";
 import { downloadCutlistExcel } from "@/lib/cutlist-excel";
 import { buildCutlistPrintPdf, drawShapeDrawingOps } from "@/lib/cutlist-print-pdf";
@@ -196,7 +204,7 @@ import { CutlistSheet } from "@/components/cutlist-mobile/cutlist-sheet";
 import { ContractorIcon, normalizeContractorIcons } from "@/components/contractor-icon";
 import { DimensionMathBar } from "@/components/cutlist-mobile/dimension-math-bar";
 import { KitchenDrawing, type KitchenFront, type KitchenUnit } from "@/components/kitchen-drawing";
-import { dimensionMathText, evaluateDimensionMath } from "@/lib/dimension-math";
+import { dimensionMathText, evaluateDimensionMath, wholeMathText } from "@/lib/dimension-math";
 import { CutlistMixBar, CutlistRoomBar, CutlistRoomRail, CutlistRoomSlide, CutlistRoomsSheet, formatPartsLabel, type CutlistRoomItem } from "@/components/cutlist-mobile/cutlist-rooms";
 import { CutlistEntryCard, CutlistHwdSize, CutlistNotesButton, CutlistViewSwitch, useAutoFoldDrafts, type CutlistCardTone } from "@/components/cutlist-mobile/cutlist-entry";
 import { CutlistListToolbar, CutlistListView, type CutlistListCardData, type CutlistListGroupData } from "@/components/cutlist-mobile/cutlist-list";
@@ -1215,7 +1223,7 @@ function serializeCutlistActivityFeedForProject(feed: CutlistActivityEntry[]) {
 }
 
 type CutlistValidationIssue = {
-  field: "partType" | "board" | "name" | "height" | "width" | "depth" | "quantity" | "grain";
+  field: "partType" | "board" | "name" | "height" | "width" | "depth" | "quantity" | "grain" | `hinges_${"up" | "down"}_${number}`;
   message: string;
 };
 
@@ -2641,7 +2649,7 @@ function normalizeHingeSideValue(raw: unknown): "" | "LH" | "RH" | "Mirror" | "T
 
 function normalizeDoorFrontHeights(raw: unknown, count = 0): string[] {
   const input = Array.isArray(raw) ? raw : [];
-  const normalized = input.map((value) => numericDimensionText(String(value ?? "")));
+  const normalized = input.map((value) => dimensionMathText(String(value ?? "")));
   if (count <= 0) return normalized;
   const out = Array.from({ length: count }, (_, index) => normalized[index] ?? "");
   return out;
@@ -2656,7 +2664,7 @@ function normalizeDoorFrontHeightManual(raw: unknown, count = 0): boolean[] {
 
 function normalizeDoorFrontWidths(raw: unknown, count = 0): string[] {
   const input = Array.isArray(raw) ? raw : [];
-  const normalized = input.map((value) => numericDimensionText(String(value ?? "")));
+  const normalized = input.map((value) => dimensionMathText(String(value ?? "")));
   if (count <= 0) return normalized;
   return Array.from({ length: count }, (_, index) => normalized[index] ?? "");
 }
@@ -3627,6 +3635,16 @@ function formatDoorFrontHeightValue(value: number): string {
   return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1).replace(/\.?0+$/, "");
 }
 
+// A front's size or gap as a number: what a sum in it comes to, or what's there so far of one still being typed.
+function frontSizeNumber(value: unknown): number {
+  const text = String(value ?? "").trim();
+  return Number.parseFloat(evaluateDimensionMath(text) ?? text);
+}
+// Fronts' sizes as they're stored, with one being typed as a sum left as typed.
+function frontSizeTexts(sizes: number[], typed: string[]): string[] {
+  return sizes.map((value, index) => (/\d[+\-*/x]/.test(String(typed[index] ?? "")) ? typed[index] : formatDoorFrontHeightValue(value)));
+}
+
 function computeDoorDrawerTotalLeft(
   heights: string[],
   totalHeight: string,
@@ -3634,11 +3652,11 @@ function computeDoorDrawerTotalLeft(
   betweenGap: string,
 ): number {
   const count = heights.length;
-  const total = Number.parseFloat(String(totalHeight || "").replace(/[^\d.-]/g, "")) || 0;
-  const top = Number.parseFloat(String(topGap || "").replace(/[^\d.-]/g, "")) || 0;
-  const between = Number.parseFloat(String(betweenGap || "").replace(/[^\d.-]/g, "")) || 0;
+  const total = frontSizeNumber(totalHeight) || 0;
+  const top = frontSizeNumber(topGap) || 0;
+  const between = frontSizeNumber(betweenGap) || 0;
   const usedHeights = heights.reduce((sum, value) => {
-    const next = Number.parseFloat(String(value || "").replace(/[^\d.-]/g, ""));
+    const next = frontSizeNumber(value);
     return sum + (Number.isFinite(next) ? next : 0);
   }, 0);
   const left = total - top - between * Math.max(0, count - 1) - usedHeights;
@@ -3656,13 +3674,13 @@ function resolveDoorFrontHeightNumbers(
   const manual = normalizeDoorFrontHeightManual(manualRaw, count);
   const next = [...heights];
   if (count <= 0) return { heights: [], manual };
-  const total = Number.parseFloat(String(totalHeight || "").replace(/[^\d.-]/g, "")) || 0;
-  const top = Number.parseFloat(String(topGap || "").replace(/[^\d.-]/g, "")) || 0;
-  const between = Number.parseFloat(String(betweenGap || "").replace(/[^\d.-]/g, "")) || 0;
+  const total = frontSizeNumber(totalHeight) || 0;
+  const top = frontSizeNumber(topGap) || 0;
+  const between = frontSizeNumber(betweenGap) || 0;
   if (total <= 0) {
     return {
       heights: next.map((value) => {
-        const parsed = Number.parseFloat(String(value || "").replace(/[^\d.-]/g, ""));
+        const parsed = frontSizeNumber(value);
         return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
       }),
       manual,
@@ -3671,7 +3689,7 @@ function resolveDoorFrontHeightNumbers(
 
   const usableTotal = Math.max(0, total - top - between * Math.max(0, count - 1));
   const numericHeights = next.map((value) => {
-    const parsed = Number.parseFloat(String(value || "").replace(/[^\d.-]/g, ""));
+    const parsed = frontSizeNumber(value);
     return Number.isFinite(parsed) ? Math.max(0, parsed) : NaN;
   });
   const autoIndexes = manual.map((isManual, index) => (!isManual ? index : -1)).filter((index) => index >= 0);
@@ -3718,7 +3736,7 @@ function rebalanceDoorFrontHeights(
 ): { heights: string[]; manual: boolean[] } {
   const resolved = resolveDoorFrontHeightNumbers(heights, totalHeight, topGap, betweenGap, manualRaw);
   return {
-    heights: resolved.heights.map((value) => formatDoorFrontHeightValue(value)),
+    heights: frontSizeTexts(resolved.heights, heights),
     manual: resolved.manual,
   };
 }
@@ -3738,15 +3756,15 @@ function resolveDrawerBankFrontHeights(
   const manual = normalizeDoorFrontHeightManual(manualRaw, count);
   const next = [...heights];
   if (count <= 0) return { heights: [], manual };
-  const total = Number.parseFloat(String(totalHeight || "").replace(/[^\d.-]/g, "")) || 0;
-  const top = Number.parseFloat(String(topGap || "").replace(/[^\d.-]/g, "")) || 0;
+  const total = frontSizeNumber(totalHeight) || 0;
+  const top = frontSizeNumber(topGap) || 0;
   const betweenSum = betweenGaps
     .slice(0, Math.max(0, count - 1))
-    .reduce((sum, g) => sum + (Number.parseFloat(String(g || "").replace(/[^\d.-]/g, "")) || 0), 0);
+    .reduce((sum, g) => sum + (frontSizeNumber(g) || 0), 0);
   if (total <= 0) {
     return {
       heights: next.map((value) => {
-        const parsed = Number.parseFloat(String(value || "").replace(/[^\d.-]/g, ""));
+        const parsed = frontSizeNumber(value);
         return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
       }),
       manual,
@@ -3755,7 +3773,7 @@ function resolveDrawerBankFrontHeights(
 
   const usableTotal = Math.max(0, total - top - betweenSum);
   const numericHeights = next.map((value) => {
-    const parsed = Number.parseFloat(String(value || "").replace(/[^\d.-]/g, ""));
+    const parsed = frontSizeNumber(value);
     return Number.isFinite(parsed) ? Math.max(0, parsed) : NaN;
   });
   const autoIndexes = manual.map((isManual, index) => (!isManual ? index : -1)).filter((index) => index >= 0);
@@ -3802,7 +3820,7 @@ function rebalanceDrawerBankFrontHeights(
 ): { heights: string[]; manual: boolean[] } {
   const resolved = resolveDrawerBankFrontHeights(heights, totalHeight, topGap, betweenGaps, manualRaw);
   return {
-    heights: resolved.heights.map((value) => formatDoorFrontHeightValue(value)),
+    heights: frontSizeTexts(resolved.heights, heights),
     manual: resolved.manual,
   };
 }
@@ -3830,14 +3848,14 @@ function resolveDoorFrontWidthNumbers(
   const manual = normalizeDoorFrontWidthManual(manualRaw, count);
   const next = [...widths];
   if (count <= 0) return { widths: [], manual };
-  const total = Number.parseFloat(String(totalWidth || "").replace(/[^\d.-]/g, "")) || 0;
-  const left = Number.parseFloat(String(leftGap || "").replace(/[^\d.-]/g, "")) || 0;
-  const right = Number.parseFloat(String(rightGap || "").replace(/[^\d.-]/g, "")) || 0;
-  const between = Number.parseFloat(String(betweenGap || "").replace(/[^\d.-]/g, "")) || 0;
+  const total = frontSizeNumber(totalWidth) || 0;
+  const left = frontSizeNumber(leftGap) || 0;
+  const right = frontSizeNumber(rightGap) || 0;
+  const between = frontSizeNumber(betweenGap) || 0;
   if (total <= 0) {
     return {
       widths: next.map((value) => {
-        const parsed = Number.parseFloat(String(value || "").replace(/[^\d.-]/g, ""));
+        const parsed = frontSizeNumber(value);
         return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
       }),
       manual,
@@ -3845,7 +3863,7 @@ function resolveDoorFrontWidthNumbers(
   }
   const usableTotal = Math.max(0, total - left - right - between * Math.max(0, count - 1));
   const numericWidths = next.map((value) => {
-    const parsed = Number.parseFloat(String(value || "").replace(/[^\d.-]/g, ""));
+    const parsed = frontSizeNumber(value);
     return Number.isFinite(parsed) ? Math.max(0, parsed) : NaN;
   });
   const autoIndexes = manual.map((isManual, index) => (!isManual ? index : -1)).filter((index) => index >= 0);
@@ -3890,7 +3908,7 @@ function rebalanceDoorFrontWidths(
 ): { widths: string[]; manual: boolean[] } {
   const resolved = resolveDoorFrontWidthNumbers(widths, totalWidth, leftGap, rightGap, betweenGap, manualRaw);
   return {
-    widths: resolved.widths.map((value) => formatDoorFrontHeightValue(value)),
+    widths: frontSizeTexts(resolved.widths, widths),
     manual: resolved.manual,
   };
 }
@@ -3929,22 +3947,83 @@ function updateDoorHingeValues(values: string[], index: number, nextValue: strin
   return next;
 }
 
+// A hinge position as a number, a sum worked out; null while it's blank or part way through a sum.
+function doorHingeNumber(value: unknown): number | null {
+  const text = String(value ?? "").trim();
+  const worked = evaluateDimensionMath(text) ?? text;
+  return /^\d*\.?\d+$/.test(worked) ? Number.parseFloat(worked) : null;
+}
+
+// As far along the door as a hinge can go: its height, or its width when it's hinged along the top (those two lists are
+// measured from the left and right). A door in a bank is its height less the gap at its top, or the tallest (widest) one
+// set by hand. null until that size is known: nothing to measure a hinge against yet, so any is fine until it is.
 function maxDoorHingeValueForRowLike(row: {
   height?: unknown;
   width?: unknown;
-  depth?: unknown;
+  hingeSide?: unknown;
+  doorMode?: unknown;
+  doorTopGap?: unknown;
+  doorFrontHeights?: unknown;
+  doorFrontHeightManual?: unknown;
+  doorFrontWidths?: unknown;
+  doorFrontWidthManual?: unknown;
 }): number | null {
-  const toHingeNum = (value: unknown) => {
-    const parsed = Number.parseFloat(String(value ?? "").replace(/[^\d.-]/g, ""));
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  const size = (value: unknown) => {
+    const parsed = doorHingeNumber(value);
+    return parsed != null && parsed > 0 ? parsed : 0;
   };
-  const maxValue = Math.max(
-    toHingeNum(row.height),
-    toHingeNum(row.width),
-    toHingeNum(row.depth),
-  );
-  return maxValue > 0 ? Math.round(maxValue) : null;
+  const inBank = normalizeDoorModeValue(row.doorMode) === "door";
+  const setByHand = (values: unknown, manual: unknown) =>
+    Array.isArray(values) && Array.isArray(manual) ? values.filter((_, index) => manual[index] === true).map(size) : [];
+  const limit =
+    String(row.hingeSide ?? "") === "Top"
+      ? Math.max(size(row.width), ...(inBank ? setByHand(row.doorFrontWidths, row.doorFrontWidthManual) : []))
+      : inBank
+        ? Math.max(size(row.height) - size(row.doorTopGap), ...setByHand(row.doorFrontHeights, row.doorFrontHeightManual))
+        : size(row.height);
+  return limit > 0 ? limit : null;
 }
+
+// The Production tab's details as they are here, after a change to them arrives from the database: `seen` as they were
+// stored before, `fresh` as they're stored now. Only what changed there is taken, so nothing else here is touched — and not
+// something being typed into right now (keepTyped: it's on its way to the database itself).
+function productionFormWithNews(here: ProductionFormState, seen: ProductionFormState, fresh: ProductionFormState, keepTyped: boolean): ProductionFormState {
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+  const taken = (hereValue: unknown, seenValue: unknown, freshValue: unknown) =>
+    !same(seenValue, freshValue) && !same(hereValue, freshValue) && !(keepTyped && !same(hereValue, seenValue));
+  const fields = <T extends object>(hereGroup: T, seenGroup: T, freshGroup: T): T => {
+    const next = { ...hereGroup };
+    let changed = false;
+    for (const key of Object.keys(freshGroup) as (keyof T)[]) {
+      if (taken(hereGroup[key], seenGroup[key], freshGroup[key])) {
+        next[key] = freshGroup[key];
+        changed = true;
+      }
+    }
+    return changed ? next : hereGroup;
+  };
+  // (A board row's id is only for this screen: new each time they're read, so the ones here stay.)
+  const withoutIds = (rows: ProductionBoardRow[]) => rows.map((row) => ({ ...row, id: "" }));
+  const boardsChanged = taken(withoutIds(here.boardTypes), withoutIds(seen.boardTypes), withoutIds(fresh.boardTypes));
+  const next: ProductionFormState = {
+    ...here,
+    existing: fields(here.existing, seen.existing, fresh.existing),
+    cabinetry: fields(here.cabinetry, seen.cabinetry, fresh.cabinetry),
+    hardware: fields(here.hardware, seen.hardware, fresh.hardware),
+    roomHardware: taken(here.roomHardware, seen.roomHardware, fresh.roomHardware) ? fresh.roomHardware : here.roomHardware,
+    boardTypes: boardsChanged ? fresh.boardTypes.map((row, index) => ({ ...row, id: here.boardTypes[index]?.id ?? row.id })) : here.boardTypes,
+  };
+  return next.existing === here.existing &&
+    next.cabinetry === here.cabinetry &&
+    next.hardware === here.hardware &&
+    next.roomHardware === here.roomHardware &&
+    next.boardTypes === here.boardTypes
+    ? here
+    : next;
+}
+
+type TypedSave = "cabinetry" | "gaps" | "notes" | "productionNotes" | "designNotes" | "remedials";
+const TYPED_SAVE_AFTER_MS = 400;
 
 function makeQuoteTemplateId(prefix: string) {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
@@ -7030,7 +7109,7 @@ function isNumericCutlistInputKey(key: string): boolean {
 
 function sanitizeCutlistNumericInput(key: string, value: unknown): string {
   if (key === "height" || key === "width" || key === "depth") return dimensionMathText(value);
-  return numericOnlyText(value);
+  return wholeMathText(value);
 }
 
 function BoardPillDropdown({
@@ -8455,6 +8534,36 @@ export default function ProjectDetailsPage() {
   const [projectImageUploadProgress, setProjectImageUploadProgress] = useState(0);
   const [isDeletingProjectImage, setIsDeletingProjectImage] = useState(false);
   const projectRef = useRef<Project | null>(null);
+  const clientDetailsSeenRef = useRef<{ customer: string; clientPhone: string; clientEmail: string; clientAddress: string } | null>(null);
+  // What's being typed in a project's details is saved a moment after the typing stops (and as the page goes away): a
+  // reload never loses it.
+  const typedSaveTimersRef = useRef(new Map<TypedSave, number>());
+  const typedSaversRef = useRef<Partial<Record<TypedSave, () => void>>>({});
+  const saveTypedSoon = (what: TypedSave) => {
+    const timers = typedSaveTimersRef.current;
+    const waiting = timers.get(what);
+    if (waiting !== undefined) window.clearTimeout(waiting);
+    timers.set(
+      what,
+      window.setTimeout(() => {
+        timers.delete(what);
+        typedSaversRef.current[what]?.();
+      }, TYPED_SAVE_AFTER_MS),
+    );
+  };
+  const cancelTypedSave = (what: TypedSave) => {
+    const waiting = typedSaveTimersRef.current.get(what);
+    if (waiting !== undefined) window.clearTimeout(waiting);
+    typedSaveTimersRef.current.delete(what);
+  };
+  const flushTypedSavesRef = useRef(() => {
+    const timers = typedSaveTimersRef.current;
+    for (const [what, waiting] of Array.from(timers)) {
+      window.clearTimeout(waiting);
+      timers.delete(what);
+      typedSaversRef.current[what]?.();
+    }
+  });
   const [projectFiles, setProjectFiles] = useState<ProjectFileEntry[]>([]);
   const [quoteProjectTextDrafts, setQuoteProjectTextDrafts] = useState<Record<string, string>>({});
   const deferredQuoteProjectTextDrafts = useDeferredValue(quoteProjectTextDrafts);
@@ -9424,6 +9533,14 @@ export default function ProjectDetailsPage() {
   const boardRowDetailOriginElRef = useRef<HTMLElement | null>(null);
   const shouldRenderBoardRowDetail = useGlassModalPopOrigin(isBoardRowDetailOpen, boardRowDetailOrigin, boardRowDetailPanelRef, undefined, boardRowDetailOriginElRef);
   const [isSavingSalesRooms, setIsSavingSalesRooms] = useState(false);
+  const [materialsSaveWaiting, setMaterialsSaveWaiting] = useState(false);
+  const [drawingSavesRunning, setDrawingSavesRunning] = useState(0);
+  const drawingDocPathRef = useRef("");
+  const drawingKeptHere = useSyncExternalStore(
+    subscribeOfflineCutlistChanges,
+    () => (drawingDocPathRef.current ? hasKeptSalesGrid(drawingDocPathRef.current, "drawing_kitchen") : false),
+    () => false,
+  );
   const [editingSalesRoomName, setEditingSalesRoomName] = useState("");
   const [editingSalesRoomDraftName, setEditingSalesRoomDraftName] = useState("");
   const [salesRoomDeleteBlocked, setSalesRoomDeleteBlocked] = useState<{ roomName: string; reason: "value" | "parts" } | null>(null);
@@ -11048,6 +11165,7 @@ export default function ProjectDetailsPage() {
     subKey: string;
   } | null>(null);
   const [cutlistUiStateReady, setCutlistUiStateReady] = useState(false);
+  const productionFormSeenRef = useRef<{ projectId: string; form: ProductionFormState; orderJson: string } | null>(null);
   const [productionForm, setProductionForm] = useState<ProductionFormState>({
     existing: { carcassThickness: "", panelThickness: "", frontsThickness: "" },
     cabinetry: {
@@ -11631,6 +11749,8 @@ export default function ProjectDetailsPage() {
     return [...starts, ...contains].slice(0, 12);
   }, [availableTagSuggestions, tagInput]);
   const salesPayload = useMemo(() => extractSalesPayloadFromProject(project), [project]);
+  // The activity lines as last stored (telling lines someone's added or cleared from ones only here).
+  const cutlistActivitySeenRef = useRef<CutlistActivityEntry[]>([]);
   const projectCutlistActivityFeed = useMemo(() => {
     const settings = (project?.projectSettings ?? {}) as Record<string, unknown>;
     const raw =
@@ -11987,8 +12107,8 @@ export default function ProjectDetailsPage() {
             name: String(item.Name ?? item.name ?? ""),
             doorMode: normalizeDoorModeValue(item.doorMode),
             doorFrontCount: normalizeDoorFrontCountValue(item.doorFrontCount),
-            doorTopGap: numericOnlyText(String(item.doorTopGap ?? "")),
-            doorBetweenGap: numericOnlyText(String(item.doorBetweenGap ?? "")),
+            doorTopGap: numericDecimalText(String(item.doorTopGap ?? "")),
+            doorBetweenGap: numericDecimalText(String(item.doorBetweenGap ?? "")),
             doorSideLeft: normalizeDoorSideValue(item.doorSideLeft),
             doorSideRight: normalizeDoorSideValue(item.doorSideRight),
             doorSideLeftGap: numericDecimalText(String(item.doorSideLeftGap ?? "")),
@@ -12861,22 +12981,64 @@ export default function ProjectDetailsPage() {
     }
   };
   const orderLive = useProjectOrderLive(project, isOrderOpen, (lists) => onOrderListsFromDatabase(lists));
+  // The project's own details, settings and hardware as they reach the database, from anyone (lib/use-project-live.ts). Its
+  // images and files, cutlists and checklists aren't in that document: they stay as their own hooks have them.
+  const projectLive = useProjectLive(project, (fresh) => {
+    setProject((prev) =>
+      prev && prev.id === fresh.id
+        ? {
+            ...prev,
+            ...fresh,
+            projectImages: prev.projectImages,
+            projectImageItems: prev.projectImageItems,
+            projectFiles: prev.projectFiles,
+            cutlist: prev.cutlist,
+            checklists: prev.checklists,
+          }
+        : prev,
+    );
+  });
+  useEffect(() => {
+    drawingDocPathRef.current = projectLive.docPath;
+  }, [projectLive.docPath]);
+  // Who else is on this page of the project (lib/use-cutlist-presence.ts), for the pages the cutlist's and Order's don't
+  // cover: each page its own, by the tab and what's open in it.
+  const pagePresenceKind: string | null =
+    resolvedTab === "general"
+      ? "general"
+      : resolvedTab === "settings"
+        ? "settings"
+        : resolvedTab === "sales"
+          ? salesNav === "items"
+            ? "materials"
+            : salesNav === "quote"
+              ? "quote"
+              : salesNav === "specifications"
+                ? "specifications"
+                : salesNav === "compare"
+                  ? "upgrades"
+                  : salesNav === "overview"
+                    ? "design"
+                    : null
+          : resolvedTab === "production"
+            ? isRemedialsPanelOpen
+              ? "remedials"
+              : productionNav === "drawing"
+                ? "drawing"
+                : productionNav === "overview"
+                  ? "production"
+                  : null
+            : null;
+  const pageAlsoHere = useCutlistPresence(
+    project,
+    pagePresenceKind ?? "none",
+    Boolean(pagePresenceKind),
+    resolvedTab === "general" ? generalAccess.edit : resolvedTab === "settings" ? settingsAccess.edit : resolvedTab === "sales" ? salesAccess.edit : productionAccess.edit,
+    cutlistPresenceMe,
+  );
   // How wide each cutlist's list is — so its columns keep their usual widths whenever they fit (the list's tables).
   const [cutlistListWrapRef, cutlistListWrapWidth] = useMeasuredWidth();
   const [initialCutlistListWrapRef, initialCutlistListWrapWidth] = useMeasuredWidth();
-  // In its top bar, before the save chip (components/cutlist-presence-bubbles.tsx).
-  const renderCutlistAlsoHere = (people: CutlistPresencePerson[], compact: boolean) => (
-    <CutlistPresenceBubbles
-      people={people}
-      compact={compact}
-      initialsOf={initials}
-      colorOf={(uid) =>
-        staffPickerMembers.find((member) => member.uid === uid)?.color ||
-        toStr((companyDoc as Record<string, unknown> | null)?.themeColor) ||
-        "#7D99B3"
-      }
-    />
-  );
   const isOnSalesTab = resolvedTab === "sales" && salesAccess.view;
   const isOnQuoteGridPage = isOnSalesTab && salesNav === "quote";
   const isOnSpecsSheetPage = isOnSalesTab && salesNav === "specifications";
@@ -13216,8 +13378,8 @@ export default function ProjectDetailsPage() {
         name: String(savedEntry.name ?? ""),
         doorMode: normalizeDoorModeValue(savedEntry.doorMode),
         doorFrontCount: normalizeDoorFrontCountValue(savedEntry.doorFrontCount),
-        doorTopGap: numericOnlyText(String(savedEntry.doorTopGap ?? "")),
-        doorBetweenGap: numericOnlyText(String(savedEntry.doorBetweenGap ?? "")),
+        doorTopGap: numericDecimalText(String(savedEntry.doorTopGap ?? "")),
+        doorBetweenGap: numericDecimalText(String(savedEntry.doorBetweenGap ?? "")),
         doorSideLeft: normalizeDoorSideValue(savedEntry.doorSideLeft),
         doorSideRight: normalizeDoorSideValue(savedEntry.doorSideRight),
         doorSideLeftGap: numericDecimalText(String(savedEntry.doorSideLeftGap ?? "")),
@@ -13291,8 +13453,8 @@ export default function ProjectDetailsPage() {
         name: String(savedEntry.name ?? ""),
         doorMode: normalizeDoorModeValue(savedEntry.doorMode),
         doorFrontCount: normalizeDoorFrontCountValue(savedEntry.doorFrontCount),
-        doorTopGap: numericOnlyText(String(savedEntry.doorTopGap ?? "")),
-        doorBetweenGap: numericOnlyText(String(savedEntry.doorBetweenGap ?? "")),
+        doorTopGap: numericDecimalText(String(savedEntry.doorTopGap ?? "")),
+        doorBetweenGap: numericDecimalText(String(savedEntry.doorBetweenGap ?? "")),
         doorSideLeft: normalizeDoorSideValue(savedEntry.doorSideLeft),
         doorSideRight: normalizeDoorSideValue(savedEntry.doorSideRight),
         doorSideLeftGap: numericDecimalText(String(savedEntry.doorSideLeftGap ?? "")),
@@ -13898,66 +14060,6 @@ export default function ProjectDetailsPage() {
       disabled: empty || cutlistExcelBusy === kind,
       large,
     });
-  };
-  // A cutlist's save chip, in its top bar: whether its changes have reached the server (the cutlist's own sync —
-  // lib/use-project-cutlist.ts). Saved; Saving… (sent, not heard back yet); Offline, in amber — changes made are kept on
-  // this device (lib/firebase.ts), through a refresh, and sent once the connection's back. On a phone / tablet just its
-  // icon (with Offline's word). Not in the CutSmart Preview, which saves nothing (its banner says so).
-  const renderCutlistSaveStatus = (kind: "production" | "initialMeasure", large: boolean) => {
-    const state = kind === "production" ? productionCutlistState : initialCutlistState;
-    if (isPreviewMode() || state.status !== "ready") return null;
-    return renderSaveStatusChip(state.sync, large);
-  };
-  // Production › Order's, the same — its lists' (lib/use-project-order-live.ts).
-  const renderOrderSaveStatus = (large: boolean) => (isPreviewMode() || !orderLive.ready ? null : renderSaveStatusChip(orderLive.sync, large));
-  const renderSaveStatusChip = (sync: CutlistSyncState, large: boolean) => {
-    const { offline, pending } = sync;
-    const amber = "var(--accent-amber)";
-    const look = offline
-      ? {
-          label: pending ? "Offline — saved on this device" : "Offline",
-          icon: CloudOff,
-          color: `color-mix(in srgb, ${amber} 72%, var(--text-main))`,
-          bg: `color-mix(in srgb, ${amber} 16%, transparent)`,
-          border: `color-mix(in srgb, ${amber} 55%, transparent)`,
-          title: pending
-            ? "You're offline. Your changes are saved on this device and will sync when you're back online."
-            : "You're offline. Changes you make are saved on this device and sync when you're back online.",
-        }
-      : pending
-        ? {
-            label: "Saving…",
-            icon: CloudUpload,
-            color: "var(--text-muted)",
-            bg: "var(--panel-bg)",
-            border: "var(--glass-border)",
-            title: "Saving your changes…",
-          }
-        : {
-            label: "Saved",
-            icon: CloudCheck,
-            color: "var(--success-strong)",
-            bg: "var(--success-soft)",
-            border: "var(--success-border)",
-            title: "All changes saved",
-          };
-    const Icon = look.icon;
-    const showLabel = large || offline;
-    return (
-      <span
-        role="status"
-        aria-live="polite"
-        aria-label={look.label}
-        title={look.title}
-        className={`inline-flex shrink-0 items-center justify-center gap-1.5 rounded-full border font-medium ${large ? "h-9 text-[12px]" : "h-8 text-[11px]"} ${
-          showLabel ? (large ? "px-3" : "px-2.5") : large ? "w-9" : "w-8"
-        }`}
-        style={{ color: look.color, backgroundColor: look.bg, borderColor: look.border }}
-      >
-        <Icon size={large ? 15 : 14} className="shrink-0" />
-        {showLabel ? <span className="whitespace-nowrap">{large ? look.label : "Offline"}</span> : null}
-      </span>
-    );
   };
   // A cutlist to print (the production one, or Initial Measure's), laid out as the old cutlist sheet
   // (lib/cutlist-print-pdf.ts) — every room's parts, each part type on its own page(s), and everything else a row has on
@@ -14694,7 +14796,21 @@ export default function ProjectDetailsPage() {
     // persisted via persistSalesItemsRooms), don't let a background refresh of
     // `project` (multi-user sync, an unrelated save elsewhere on the page, etc.)
     // silently discard those edits.
-    if (lastSynced !== null && lastSynced !== currentSnapshot) return;
+    if (lastSynced !== null && lastSynced !== currentSnapshot) {
+      if (lastSynced === hydratedSnapshot) return;
+      const roomKey = (room: SalesItemsRoomBoardRow) => String(room.id);
+      const merged = mergeCutlistRows(
+        JSON.parse(lastSynced) as SalesItemsRoomBoardRow[],
+        salesItemsBoardRoomsRef.current,
+        hydrated,
+        roomKey,
+        (room) => JSON.stringify(room),
+      );
+      if (!merged) return;
+      lastSyncedSalesItemsRoomsRef.current = hydratedSnapshot;
+      setSalesItemsBoardRooms(merged);
+      return;
+    }
     lastSyncedSalesItemsRoomsRef.current = hydratedSnapshot;
     setSalesItemsBoardRooms(hydrated);
   }, [persistedSalesItemsRooms]);
@@ -15222,6 +15338,33 @@ export default function ProjectDetailsPage() {
     }
     setSalesNav("overview");
   };
+
+  // What's changed on Materials saved a moment after it changes (as Save & Back saves it): a reload never loses it.
+  const materialsAutosaveRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    materialsAutosaveRef.current = () => {
+      if (isSalesRoomsSavingRef.current) return;
+      void persistSalesItemsRooms(salesItemsBoardRoomsRef.current);
+    };
+  });
+  const isSalesRoomsSavingRef = useRef(false);
+  useEffect(() => {
+    isSalesRoomsSavingRef.current = isSavingSalesRooms;
+  }, [isSavingSalesRooms]);
+  useEffect(() => {
+    const synced = lastSyncedSalesItemsRoomsRef.current;
+    if (resolvedTab !== "sales" || salesNav !== "items" || !salesAccess.edit || synced === null || synced === JSON.stringify(salesItemsBoardRooms)) {
+      setMaterialsSaveWaiting(false);
+      return;
+    }
+    setMaterialsSaveWaiting(true);
+    const timer = window.setTimeout(() => {
+      setMaterialsSaveWaiting(false);
+      materialsAutosaveRef.current();
+    }, 800);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [salesItemsBoardRooms, resolvedTab, salesNav, salesAccess.edit]);
 
   const onSalesItemsLibraryDragStart = (
     event: ReactDragEvent<HTMLElement>,
@@ -18470,6 +18613,24 @@ export default function ProjectDetailsPage() {
     // JSON.stringify already silently does.
     const sanitizedFinalSales = JSON.parse(JSON.stringify(finalSales)) as Record<string, unknown>;
 
+    // Only what this changed (from salesPayload, what it was made from), by the field. On screen too: not the rest of it
+    // as it stood when this began, which someone else may have changed since.
+    const salesBase = salesPayload as Record<string, unknown>;
+    const byField = await updateProjectSalesFields(activeProject, salesBase, sanitizedFinalSales);
+    if (byField.handled) {
+      if (!byField.ok) return false;
+      setProject((prevProject) => {
+        if (!prevProject) return prevProject;
+        const { sales: _copy, ...settings } = (prevProject.projectSettings ?? {}) as Record<string, unknown>;
+        return {
+          ...prevProject,
+          sales: settingsWithChanges((prevProject as unknown as { sales?: Record<string, unknown> }).sales, salesBase, sanitizedFinalSales) as never,
+          projectSettings: settings,
+        };
+      });
+      return true;
+    }
+
     const nextProjectSettings = {
       ...((activeProject.projectSettings ?? {}) as Record<string, unknown>),
       sales: sanitizedFinalSales,
@@ -19424,8 +19585,8 @@ export default function ProjectDetailsPage() {
       const right = seededRight || defaults.right;
       const doorMode = selectedDoorModeValue(seed?.doorMode);
       const doorFrontCount = normalizeDoorFrontCountValue(seed?.doorFrontCount);
-      const doorTopGap = numericOnlyText(String(seed?.doorTopGap ?? ""));
-      const doorBetweenGap = numericOnlyText(String(seed?.doorBetweenGap ?? ""));
+      const doorTopGap = numericDecimalText(String(seed?.doorTopGap ?? ""));
+      const doorBetweenGap = numericDecimalText(String(seed?.doorBetweenGap ?? ""));
       const doorSideLeftGap = numericDecimalText(String(seed?.doorSideLeftGap ?? ""));
       const doorSideRightGap = numericDecimalText(String(seed?.doorSideRightGap ?? ""));
       const frontCountNumber = Number.parseInt(doorFrontCount, 10) || 0;
@@ -19644,15 +19805,31 @@ export default function ProjectDetailsPage() {
   useEffect(() => {
     projectRef.current = project;
   }, [project]);
+  useEffect(() => {
+    if (!project) return;
+    const tags = Array.isArray(project.tags) ? project.tags.slice(0, 5) : [];
+    setProjectTags((prev) => (JSON.stringify(prev) === JSON.stringify(tags) ? prev : tags));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project?.tags]);
 
 
   useEffect(() => {
     if (!project) return;
+    const stored = {
+      customer: String(project.customer ?? ""),
+      clientPhone: String(project.clientPhone ?? ""),
+      clientEmail: String(project.clientEmail ?? ""),
+      clientAddress: String(project.clientAddress ?? ""),
+    };
+    const seen = clientDetailsSeenRef.current;
+    clientDetailsSeenRef.current = stored;
+    const taken = (key: keyof typeof stored, here: string) =>
+      !isEditingClientDetails || !seen || here === seen[key] ? stored[key] : here;
     setGeneralDetailsDraft((prev) => ({
-      customer: isEditingClientDetails ? prev.customer : String(project.customer ?? ""),
-      clientPhone: isEditingClientDetails ? prev.clientPhone : String(project.clientPhone ?? ""),
-      clientEmail: isEditingClientDetails ? prev.clientEmail : String(project.clientEmail ?? ""),
-      clientAddress: isEditingClientDetails ? prev.clientAddress : String(project.clientAddress ?? ""),
+      customer: taken("customer", prev.customer),
+      clientPhone: taken("clientPhone", prev.clientPhone),
+      clientEmail: taken("clientEmail", prev.clientEmail),
+      clientAddress: taken("clientAddress", prev.clientAddress),
       notes: isEditingNotes ? prev.notes : String(project.notes ?? ""),
     }));
   }, [
@@ -19804,9 +19981,10 @@ export default function ProjectDetailsPage() {
       projectMediaHydratedForProjectIdRef.current = null;
       return;
     }
-    if (projectMediaHydratedForProjectIdRef.current === project.id) return;
     if (projectMediaState.status !== "ready") return;
-    projectMediaHydratedForProjectIdRef.current = project.id;
+    const mediaKey = `${project.id}:${projectMediaState.liveRev}`;
+    if (projectMediaHydratedForProjectIdRef.current === mediaKey) return;
+    projectMediaHydratedForProjectIdRef.current = mediaKey;
     setProject((prev) =>
       prev
         ? {
@@ -19820,6 +19998,7 @@ export default function ProjectDetailsPage() {
   }, [
     project?.id,
     projectMediaState.status,
+    projectMediaState.liveRev,
     projectMediaState.projectImages,
     projectMediaState.projectImageItems,
     projectMediaState.projectFiles,
@@ -21506,7 +21685,7 @@ export default function ProjectDetailsPage() {
         }
       }
 
-    setProductionForm({
+    const freshForm: ProductionFormState = {
       existing: {
         carcassThickness: toStr(raw.carcassThickness),
         panelThickness: toStr(raw.panelThickness),
@@ -21530,12 +21709,24 @@ export default function ProjectDetailsPage() {
         },
       roomHardware,
       boardTypes: boardRows,
-    });
+    };
+    const orderJson = JSON.stringify([raw.orderMiscDraftByCategory, raw.orderHingeRowsByCategory, raw.orderOtherRowsByCategory]);
+    const seen = productionFormSeenRef.current;
+    productionFormSeenRef.current = { projectId: project.id, form: freshForm, orderJson };
+    if (seen?.projectId !== project.id) {
+      setProductionForm(freshForm);
+    } else {
+      const keepTyped = typedSaveTimersRef.current.has("cabinetry");
+      setProductionForm((here) => productionFormWithNews(here, seen.form, freshForm, keepTyped));
+      // (Order open: its own listener's bringing its lists up to date, onto any edits there.)
+      if (isOrderOpen || seen.orderJson === orderJson) return;
+    }
 
     setOrderMiscDraftByCategory(parseOrderMiscByCategory(raw.orderMiscDraftByCategory));
     setOrderHingeRowsByCategory(parseOrderLineRowsByCategory(raw.orderHingeRowsByCategory, "ord_hinge"));
     setOrderOtherRowsByCategory(parseOrderLineRowsByCategory(raw.orderOtherRowsByCategory, "ord_other"));
-  }, [project?.id, boardThicknessOptions, boardFinishOptions, sheetSizeOptions, hardwareRows]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project?.id, project?.projectSettings, boardThicknessOptions, boardFinishOptions, sheetSizeOptions, hardwareRows]);
   useEffect(() => {
     orderMiscDraftByCategoryRef.current = orderMiscDraftByCategory;
   }, [orderMiscDraftByCategory]);
@@ -21591,8 +21782,8 @@ export default function ProjectDetailsPage() {
               name: String(item.Name ?? item.name ?? item.partName ?? ""),
               doorMode: normalizeDoorModeValue(item.doorMode),
               doorFrontCount: normalizeDoorFrontCountValue(item.doorFrontCount),
-              doorTopGap: numericOnlyText(String(item.doorTopGap ?? "")),
-              doorBetweenGap: numericOnlyText(String(item.doorBetweenGap ?? "")),
+              doorTopGap: numericDecimalText(String(item.doorTopGap ?? "")),
+              doorBetweenGap: numericDecimalText(String(item.doorBetweenGap ?? "")),
               doorSideLeft: normalizeDoorSideValue(item.doorSideLeft),
               doorSideRight: normalizeDoorSideValue(item.doorSideRight),
               doorFrontHeights: normalizeDoorFrontHeights(
@@ -21826,8 +22017,8 @@ export default function ProjectDetailsPage() {
               name: String(savedEntry.name ?? ""),
               doorMode: normalizeDoorModeValue(savedEntry.doorMode),
               doorFrontCount: normalizeDoorFrontCountValue(savedEntry.doorFrontCount),
-              doorTopGap: numericOnlyText(String(savedEntry.doorTopGap ?? "")),
-              doorBetweenGap: numericOnlyText(String(savedEntry.doorBetweenGap ?? "")),
+              doorTopGap: numericDecimalText(String(savedEntry.doorTopGap ?? "")),
+              doorBetweenGap: numericDecimalText(String(savedEntry.doorBetweenGap ?? "")),
               doorSideLeft: normalizeDoorSideValue(savedEntry.doorSideLeft),
               doorSideRight: normalizeDoorSideValue(savedEntry.doorSideRight),
               doorSideLeftGap: numericDecimalText(String(savedEntry.doorSideLeftGap ?? "")),
@@ -21915,8 +22106,8 @@ export default function ProjectDetailsPage() {
               name: String(savedEntry.name ?? ""),
               doorMode: normalizeDoorModeValue(savedEntry.doorMode),
               doorFrontCount: normalizeDoorFrontCountValue(savedEntry.doorFrontCount),
-              doorTopGap: numericOnlyText(String(savedEntry.doorTopGap ?? "")),
-              doorBetweenGap: numericOnlyText(String(savedEntry.doorBetweenGap ?? "")),
+              doorTopGap: numericDecimalText(String(savedEntry.doorTopGap ?? "")),
+              doorBetweenGap: numericDecimalText(String(savedEntry.doorBetweenGap ?? "")),
               doorSideLeft: normalizeDoorSideValue(savedEntry.doorSideLeft),
               doorSideRight: normalizeDoorSideValue(savedEntry.doorSideRight),
               doorSideLeftGap: numericDecimalText(String(savedEntry.doorSideLeftGap ?? "")),
@@ -22164,7 +22355,7 @@ export default function ProjectDetailsPage() {
     }
     const projectId = String(project.id || "").trim();
     const isNewProject = cutlistActivityHydratedProjectIdRef.current !== projectId;
-    const restored = projectCutlistActivityFeed.slice(-120);
+    const restored = projectCutlistActivityFeed.filter((entry) => !/\| Hinges: Can't exceed \d/.test(String(entry.message ?? ""))).slice(-120);
     const serialized = JSON.stringify(serializeCutlistActivityFeedForProject(restored));
     const shouldReplaceFeed =
       isNewProject || !cutlistActivityProjectHydratedRef.current;
@@ -22175,7 +22366,21 @@ export default function ProjectDetailsPage() {
       cutlistActivityFeedRef.current = restored;
       setCutlistActivityFeed(restored);
       setCutlistActivityEnteringIds({});
+    } else {
+      const keyOf = (entry: CutlistActivityEntry) => `${entry.scope || "production"}:${entry.id}`;
+      const seenKeys = new Set(cutlistActivitySeenRef.current.map(keyOf));
+      const storedKeys = new Set(restored.map(keyOf));
+      const local = cutlistActivityFeedRef.current;
+      const kept = local.filter((entry) => !seenKeys.has(keyOf(entry)) || storedKeys.has(keyOf(entry)));
+      const keptKeys = new Set(kept.map(keyOf));
+      const added = restored.filter((entry) => !seenKeys.has(keyOf(entry)) && !keptKeys.has(keyOf(entry)));
+      if (added.length || kept.length !== local.length) {
+        const merged = [...kept, ...added].sort((a, b) => Number(a.id || 0) - Number(b.id || 0)).slice(-120);
+        cutlistActivityFeedRef.current = merged;
+        setCutlistActivityFeed(merged);
+      }
     }
+    cutlistActivitySeenRef.current = restored;
     const maxId = restored.reduce((m, e) => Math.max(m, Number(e.id || 0)), 0);
     cutlistActivityNextIdRef.current = Math.max(maxId + 1, Date.now());
   }, [project, projectCutlistActivityFeed]);
@@ -22205,17 +22410,12 @@ export default function ProjectDetailsPage() {
         });
         if (!ok) return;
         lastPersistedCutlistActivityJsonRef.current = nextSerializedInner;
-        setProject((prev) =>
-          prev
-            ? {
-                ...prev,
-                projectSettings: {
-                  ...(prev.projectSettings ?? {}),
-                  ...nextProjectSettings,
-                },
-              }
-            : prev,
-        );
+        setProject((prev) => {
+          if (!prev) return prev;
+          const settings = (prev.projectSettings ?? {}) as Record<string, unknown>;
+          if (JSON.stringify(settings.cutlistActivityFeeds) === JSON.stringify(nextFeeds)) return prev;
+          return { ...prev, projectSettings: { ...settings, cutlistActivityFeeds: nextFeeds } };
+        });
       })();
     }, 300);
     return () => {
@@ -22856,6 +23056,11 @@ export default function ProjectDetailsPage() {
     return parts.join(", ");
   };
 
+  const settleProjectSettings = (base: Record<string, unknown> | undefined, nextSettings: Record<string, unknown>) => {
+    setProject((prev) =>
+      prev ? { ...prev, projectSettings: settingsWithChanges(prev.projectSettings as Record<string, unknown> | undefined, base, nextSettings) } : prev,
+    );
+  };
   const saveGeneralDetailsPatch = async (patch: Partial<Project>) => {
     if (!project || !generalAccess.edit) return false;
     setIsSavingGeneralDetails(true);
@@ -22883,11 +23088,21 @@ export default function ProjectDetailsPage() {
     return ok;
   };
 
+  // Their line in the change log: from what they were before the typing to `next`.
+  const logGapsTyped = (next: GapAllowancesSettings) => {
+    const before = gapsTypedFromRef.current;
+    gapsTypedFromRef.current = null;
+    if (!before) return;
+    const gapAllowanceLabels = Object.fromEntries(
+      PROJECT_GAP_ALLOWANCE_SECTIONS.flatMap((section) => section.rows.map((row) => [row.key, row.label])),
+    ) as Partial<Record<keyof GapAllowancesSettings, string>>;
+    const description = describeFieldChanges(before, next, gapAllowanceLabels);
+    if (description) logProjectChange(`Gap Allowances — ${description}`);
+  };
   const persistProjectGapAllowances = async (next: GapAllowancesSettings) => {
     if (!project || !settingsAccess.edit) return false;
     const normalizedNext = normalizeGapAllowancesSettings(next);
     const currentSettings = ((project.projectSettings ?? {}) as Record<string, unknown>) || {};
-    const normalizedBefore = normalizeGapAllowancesSettings(currentSettings.gapAllowancesSettings);
     const nextSettings: Record<string, unknown> = {
       ...currentSettings,
       gapAllowancesSettings: normalizedNext,
@@ -22898,13 +23113,10 @@ export default function ProjectDetailsPage() {
       projectSettingsJson: JSON.stringify(nextSettings),
     });
     if (ok) {
-      setProject({ ...project, projectSettings: nextSettings });
+      settleProjectSettings(currentSettings, nextSettings);
       setProjectGapAllowancesDraft(normalizedNext);
-      const gapAllowanceLabels = Object.fromEntries(
-        PROJECT_GAP_ALLOWANCE_SECTIONS.flatMap((section) => section.rows.map((row) => [row.key, row.label])),
-      ) as Partial<Record<keyof GapAllowancesSettings, string>>;
-      const description = describeFieldChanges(normalizedBefore, normalizedNext, gapAllowanceLabels);
-      if (description) logProjectChange(`Gap Allowances — ${description}`);
+      gapsTypedFromRef.current ??= normalizeGapAllowancesSettings(currentSettings.gapAllowancesSettings);
+      logGapsTyped(normalizedNext);
       setLockMessage("");
     } else {
       setLockMessage("Could not save gap allowances.");
@@ -22970,14 +23182,7 @@ export default function ProjectDetailsPage() {
       projectSettings: nextProjectSettings,
     });
     if (ok) {
-      setProject((prev) =>
-        prev
-          ? {
-              ...prev,
-              projectSettings: nextProjectSettings,
-            }
-          : prev,
-      );
+      settleProjectSettings(project.projectSettings as Record<string, unknown> | undefined, nextProjectSettings);
       const targetMember = companyMembers.find((member) => String(member.uid || "").trim() === targetUid);
       logProjectChange(projectPermissionChangeText(targetMember?.displayName ?? "", oldAccess, nextAccess));
       notifyProjectPermissionChange(project, targetUid, oldAccess, nextAccess, user?.uid, user?.displayName ?? "");
@@ -23049,8 +23254,12 @@ export default function ProjectDetailsPage() {
     const nextNotes = String(
       (isEditingNotes ? notesEditorDraftRef.current : generalDetailsDraft.notes) ?? "",
     );
+    cancelTypedSave("notes");
     if (nextNotes !== String(project.notes ?? "")) {
+      notesTypedRef.current.delete("notes");
       await saveGeneralDetailsPatch({ notes: nextNotes });
+    } else {
+      logNotesTyped("notes");
     }
   };
 
@@ -23059,18 +23268,100 @@ export default function ProjectDetailsPage() {
     const nextNotes = String(
       (isEditingProductionNotes ? productionNotesEditorDraftRef.current : productionNotesDraft) ?? "",
     );
+    cancelTypedSave("productionNotes");
     if (nextNotes !== String(project.productionNotes ?? "")) {
+      notesTypedRef.current.delete("productionNotes");
       await saveGeneralDetailsPatch({ productionNotes: nextNotes });
+    } else {
+      logNotesTyped("productionNotes");
     }
   };
 
   const commitDesignNotesDetails = async () => {
     if (!project || salesReadOnly) return;
     const nextNotes = String((isEditingDesignNotes ? designNotesEditorDraftRef.current : project.designNotes) ?? "");
+    cancelTypedSave("designNotes");
     if (nextNotes !== String(project.designNotes ?? "")) {
+      notesTypedRef.current.delete("designNotes");
       await saveGeneralDetailsPatch({ designNotes: nextNotes });
+    } else {
+      logNotesTyped("designNotes");
     }
   };
+
+  // Saved as it's typed: not through saveGeneralDetailsPatch, which marks the page as saving (it locks the boxes) and adds
+  // to the project's change log — its one line for all of this goes in as the editing ends (logNotesTyped).
+  const notesTypedRef = useRef(new Set<"notes" | "productionNotes" | "designNotes" | "remedials">());
+  const saveNotesTyped = (field: "notes" | "productionNotes" | "designNotes" | "remedials", html: string) => {
+    const current = projectRef.current;
+    if (!current || html === String(current[field] ?? "")) return;
+    notesTypedRef.current.add(field);
+    void updateProjectPatch(current, { [field]: html });
+    setProject((prev) => (prev ? { ...prev, [field]: html } : prev));
+  };
+  const logNotesTyped = (field: "notes" | "productionNotes" | "designNotes" | "remedials") => {
+    if (!notesTypedRef.current.delete(field)) return;
+    const label = PROJECT_CHANGE_CONTENT_FIELD_LABELS[field];
+    if (label) logProjectChange(`${label} updated`);
+  };
+  // Gap allowances, the same. (Their line in the change log as the box is left: what they were before the typing, kept here.)
+  const gapsTypedFromRef = useRef<GapAllowancesSettings | null>(null);
+  const gapFocusKeyRef = useRef<keyof GapAllowancesSettings | null>(null);
+  const saveGapsTyped = (next: GapAllowancesSettings) => {
+    const current = projectRef.current;
+    if (!current || !settingsAccess.edit) return;
+    const base = (current.projectSettings ?? {}) as Record<string, unknown>;
+    const before = normalizeGapAllowancesSettings(base.gapAllowancesSettings ?? (companyDoc as Record<string, unknown> | null)?.gapAllowancesSettings);
+    const normalizedNext = normalizeGapAllowancesSettings(next);
+    if (JSON.stringify(before) === JSON.stringify(normalizedNext)) return;
+    gapsTypedFromRef.current ??= before;
+    const nextSettings = { ...base, gapAllowancesSettings: normalizedNext };
+    void updateProjectPatch(current, { projectSettings: nextSettings });
+    settleProjectSettings(base, nextSettings);
+  };
+  useEffect(() => {
+    typedSaversRef.current = {
+      cabinetry: () => void persistProductionForm(productionForm),
+      gaps: () => saveGapsTyped(projectGapAllowancesDraft),
+      notes: () => {
+        if (isEditingNotes) saveNotesTyped("notes", notesEditorDraftRef.current);
+      },
+      productionNotes: () => {
+        if (isEditingProductionNotes) saveNotesTyped("productionNotes", productionNotesEditorDraftRef.current);
+      },
+      designNotes: () => {
+        if (isEditingDesignNotes) saveNotesTyped("designNotes", designNotesEditorDraftRef.current);
+      },
+      remedials: () => {
+        if (isRemedialsPanelOpen) saveNotesTyped("remedials", remedialsEditorDraftRef.current);
+      },
+    };
+    clientDetailsFlushRef.current = () => {
+      if (isEditingClientDetails) void commitClientDetails();
+    };
+  });
+  const clientDetailsFlushRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    const flush = () => flushTypedSavesRef.current();
+    const onHidden = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    const onPageHide = () => {
+      flush();
+      clientDetailsFlushRef.current();
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && active.isContentEditable) active.blur();
+    };
+    document.addEventListener("visibilitychange", onHidden);
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      document.removeEventListener("visibilitychange", onHidden);
+      window.removeEventListener("pagehide", onPageHide);
+      flush();
+    };
+  }, []);
+  // Leaving for another project: what's been typed in this one saved first.
+  useEffect(() => () => flushTypedSavesRef.current(), [project?.id]);
 
   // Opening a Notes card for editing (double-click it, or tap it on a touch screen) — saved again on a click anywhere
   // outside it (the pointerdown effect below).
@@ -23772,8 +24063,12 @@ export default function ProjectDetailsPage() {
   const commitRemedialsDetails = async () => {
     if (!project || productionReadOnly) return;
     const nextValue = String(remedialsEditorDraftRef.current ?? "");
+    cancelTypedSave("remedials");
     if (nextValue !== String(project.remedials ?? "")) {
+      notesTypedRef.current.delete("remedials");
       await saveGeneralDetailsPatch({ remedials: nextValue });
+    } else {
+      logNotesTyped("remedials");
     }
   };
 
@@ -24226,17 +24521,7 @@ export default function ProjectDetailsPage() {
     if (expiryIso) {
       const settings = (project.projectSettings ?? {}) as Record<string, unknown>;
       const map = (settings.productionTempEdit ?? {}) as Record<string, unknown>;
-      const nextProject = {
-        ...project,
-        projectSettings: {
-          ...settings,
-          productionTempEdit: {
-            ...map,
-            [user.uid]: expiryIso,
-          },
-        },
-      };
-      setProject(nextProject);
+      settleProjectSettings(settings, { ...settings, productionTempEdit: { ...map, [user.uid]: expiryIso } });
       closeUnlockEditModal();
     } else {
       setUnlockEditError("Could not unlock edit right now.");
@@ -24335,10 +24620,7 @@ export default function ProjectDetailsPage() {
       setLockMessage("Could not remove temporary production access.");
       return;
     }
-    setProject({
-      ...project,
-      projectSettings: nextSettings,
-    });
+    settleProjectSettings(settings, nextSettings);
     // Undo: their access back, to the time it was to run out — onto the project's settings as they are by then.
     offerUndo(`${displayName.trim() ? `${displayName.trim()}'s` : "Temporary"} edit access removed`, async () => {
       const latest = projectRef.current;
@@ -24354,7 +24636,7 @@ export default function ProjectDetailsPage() {
         projectSettings: restoredSettings,
         projectSettingsJson: JSON.stringify(restoredSettings),
       });
-      if (restored) setProject((prev) => (prev ? { ...prev, projectSettings: restoredSettings } : prev));
+      if (restored) settleProjectSettings(latestSettings, restoredSettings);
     });
   };
 
@@ -24432,7 +24714,7 @@ export default function ProjectDetailsPage() {
       projectSettingsJson: JSON.stringify(nextSettings),
     });
     if (ok) {
-      setProject({ ...project, projectSettings: nextSettings });
+      settleProjectSettings(currentSettings, nextSettings);
       logProductionFormChanges(productionForm, next);
     }
     return ok;
@@ -24469,7 +24751,7 @@ export default function ProjectDetailsPage() {
           projectSettingsJson: JSON.stringify(nextSettings),
         });
     if (ok) {
-      setProject({ ...project, projectSettings: nextSettings });
+      settleProjectSettings(currentSettings, nextSettings);
       const categoryKeys = new Set([...Object.keys(beforeByCategory), ...Object.keys(nextByCategory)]);
       for (const category of categoryKeys) {
         const beforeRows = beforeByCategory[category] ?? {};
@@ -24517,7 +24799,7 @@ export default function ProjectDetailsPage() {
           projectSettingsJson: JSON.stringify(nextSettings),
         });
     if (ok) {
-      setProject({ ...project, projectSettings: nextSettings });
+      settleProjectSettings(currentSettings, nextSettings);
       const categoryKeys = new Set([...Object.keys(beforeByCategory), ...Object.keys(nextByCategory)]);
       // Company Wrapped: tally hinge quantity deltas across ALL categories by name (e.g. the same
       // hinge name ordered under both "Base" and "Wall" should count once, combined) — keyed by
@@ -24590,7 +24872,7 @@ export default function ProjectDetailsPage() {
           projectSettingsJson: JSON.stringify(nextSettings),
         });
     if (ok) {
-      setProject({ ...project, projectSettings: nextSettings });
+      settleProjectSettings(currentSettings, nextSettings);
       const categoryKeys = new Set([...Object.keys(beforeByCategory), ...Object.keys(nextByCategory)]);
       for (const category of categoryKeys) {
         const beforeById = new Map((beforeByCategory[category] ?? []).map((row) => [row.id, row]));
@@ -24855,6 +25137,7 @@ export default function ProjectDetailsPage() {
       ...prev,
       cabinetry: { ...prev.cabinetry, [key]: value },
     }));
+    saveTypedSoon("cabinetry");
   };
 
   const onCabinetryTopScribersChange = async (value: boolean) => {
@@ -24870,6 +25153,7 @@ export default function ProjectDetailsPage() {
   };
 
   const onCabinetryBlurSave = async () => {
+    cancelTypedSave("cabinetry");
     await persistProductionForm(productionForm);
   };
 
@@ -25194,6 +25478,20 @@ export default function ProjectDetailsPage() {
     if (!name) errors.push({ field: "name", message: `${rowLabel}: Part Name is required.` });
 
     if (!quantity) errors.push({ field: "quantity", message: `${rowLabel}: Quantity must be greater than 0.` });
+
+    if (isDoorPartType(partType) && doorMode !== "drawer") {
+      const maxHinge = maxDoorHingeValueForRowLike(row);
+      if (maxHinge != null) {
+        (["up", "down"] as const).forEach((direction) => {
+          normalizeDoorHingeValues(direction === "up" ? row.hingesUp : row.hingesDown).forEach((value, index) => {
+            const position = doorHingeNumber(value);
+            if (position != null && position > maxHinge) {
+              errors.push({ field: `hinges_${direction}_${index}`, message: `${rowLabel} | Hinges: ${position} is past the door. Can't exceed ${maxHinge}` });
+            }
+          });
+        });
+      }
+    }
 
     if (isConfiguredDoorMode) {
       if (!height) errors.push({ field: "height", message: `${rowLabel}: Height is required.` });
@@ -25729,21 +26027,7 @@ export default function ProjectDetailsPage() {
   };
   const showDoorHingeLimitWarning = (rowKey: string, fieldKey: string, rowLabel: string, maxValue: number) => {
     const name = String(rowLabel || "").trim() || "Entry";
-    const message = `${name} | Hinges: Can't exceed ${maxValue}`;
-    const warnings = { [rowKey]: { [fieldKey]: message } };
-    setCutlistCellWarnings((prev) => ({
-      ...prev,
-      [rowKey]: {
-        ...(prev[rowKey] || {}),
-        [fieldKey]: message,
-      },
-    }));
-    flashCutlistWarningCells(warnings);
-    logCutlistActivity(message, {
-      action: "Clear",
-      actionKind: "clear",
-      dedupeKey: `warn:hinges:${rowKey}:${fieldKey}:${maxValue}`,
-    });
+    flashCutlistWarningCells({ [rowKey]: { [fieldKey]: `${name} | Hinges: Can't exceed ${maxValue}` } });
   };
 
   // A save of this person's that changes the cutlist (its rows not the ones they last had from the database): noted for its
@@ -26512,8 +26796,9 @@ export default function ProjectDetailsPage() {
       }
     }
     if (formChanged || order) {
+      const settingsBefore = (project.projectSettings ?? {}) as Record<string, unknown>;
       const nextSettings: Record<string, unknown> = {
-        ...orderSettingsWithLatestLists((project.projectSettings ?? {}) as Record<string, unknown>),
+        ...orderSettingsWithLatestLists(settingsBefore),
         ...(formChanged ? productionSettingsFields(nextForm) : {}),
         ...(order ? { orderHingeRowsByCategory: nextHinges, orderOtherRowsByCategory: nextOther, orderMiscDraftByCategory: nextMisc } : {}),
       };
@@ -26522,7 +26807,7 @@ export default function ProjectDetailsPage() {
         fail("Could not save the imported production settings.");
         return;
       }
-      setProject((prev) => (prev ? { ...prev, projectSettings: nextSettings } : prev));
+      settleProjectSettings(settingsBefore, nextSettings);
       if (formChanged) {
         logProductionFormChanges(productionForm, nextForm);
         setProductionForm(nextForm);
@@ -26691,8 +26976,8 @@ export default function ProjectDetailsPage() {
   // point on the row carries its own concrete gaps and won't silently shift
   // if the handle toggle changes later ("locked" per the confirmed behavior).
   const resolveDrawerBankGaps = (room?: unknown) => ({
-    topGap: numericOnlyText(projectGapAllowancesDraft.baseBelowBenchToTopOfDoorDrawer),
-    betweenGap: numericOnlyText(
+    topGap: numericDecimalText(projectGapAllowancesDraft.baseBelowBenchToTopOfDoorDrawer),
+    betweenGap: numericDecimalText(
       hardwareForRoom(room).wrapOverHandles
         ? projectGapAllowancesDraft.baseHorizontalGapWrapOverHandles
         : projectGapAllowancesDraft.baseHorizontalGapNormalHandles,
@@ -27003,7 +27288,7 @@ export default function ProjectDetailsPage() {
     const count = Math.max(1, Number.parseInt(existing.doorFrontCount || "1", 10) || 1);
     const nextValues = normalizeDoorFrontTextArray(existing.doorFrontQuantities, count);
     const nextManual = normalizeDoorFrontManualArray(existing.doorFrontQuantityManual, count);
-    const nextValue = numericOnlyText(value);
+    const nextValue = wholeMathText(value);
     nextValues[index] = nextValue;
     const broadcast = !nextManual[index];
     if (broadcast) {
@@ -27166,6 +27451,8 @@ export default function ProjectDetailsPage() {
     count: number;
     values: string[];
     resolvedValues: number[];
+    // Which were set by hand.
+    manual?: boolean[];
     topGapValue: string;
     betweenGaps: string[];
     hasTopGapLabel: boolean;
@@ -27186,7 +27473,7 @@ export default function ProjectDetailsPage() {
     grainCandidates?: Array<{ field: "H" | "W" | "D"; value: string }>;
   }) => {
     const {
-      values, topGapValue, betweenGaps, hasTopGapLabel, hasBetweenGapLabel,
+      values, resolvedValues, manual, topGapValue, betweenGaps, hasTopGapLabel, hasBetweenGapLabel,
       onValueChange, onValueBlur, onTopGapChange, onBetweenGapChange, topGapTitle, betweenGapTitle,
       fieldLabel, fieldBg, fieldBorder, fieldText, gapKey, compact, grainValue, grainCandidates,
     } = params;
@@ -27210,7 +27497,7 @@ export default function ProjectDetailsPage() {
                 disabled={productionReadOnly}
                 inputMode="decimal"
                 title={`Front ${index + 1} ${fieldLabel}`}
-                value={value}
+                value={manual && !manual[index] && resolvedValues[index] > 0 ? formatDoorFrontHeightValue(resolvedValues[index]) : value}
                 onChange={(e) => onValueChange(index, e.target.value)}
                 onBlur={() => onValueBlur(index)}
                 className={`cutlist-field ${compact ? "h-6 text-[10px]" : "h-8 text-[11px]"} w-full rounded-[8px] border bg-transparent px-1 text-center cs-frontbank-ghost`}
@@ -27283,8 +27570,8 @@ export default function ProjectDetailsPage() {
       doorMode: mode,
       doorFrontCount: mode === "manual" ? "" : prev.doorFrontCount || "1",
       quantity: mode === "manual" ? prev.quantity : prev.quantity || "1",
-      doorTopGap: mode === "manual" ? "" : numericOnlyText(nextTopGap),
-      doorBetweenGap: mode === "manual" ? "" : numericOnlyText(nextBetweenGap),
+      doorTopGap: mode === "manual" ? "" : numericDecimalText(nextTopGap),
+      doorBetweenGap: mode === "manual" ? "" : numericDecimalText(nextBetweenGap),
       doorSideLeft: mode === "manual" ? "panel" : prev.doorSideLeft ?? "panel",
       doorSideRight: mode === "manual" ? "panel" : prev.doorSideRight ?? "panel",
       height: mode === "manual" ? prev.height : nextBaseCabHeight,
@@ -27297,7 +27584,7 @@ export default function ProjectDetailsPage() {
               String(prev.width ?? ""),
               String(prev.doorSideLeftGap || nextSideGap),
               String(prev.doorSideRightGap || nextSideGap),
-              numericOnlyText(nextBetweenGap),
+              numericDecimalText(nextBetweenGap),
               [],
             ).widths
           : [],
@@ -27307,8 +27594,8 @@ export default function ProjectDetailsPage() {
           ? rebalanceDoorFrontHeights(
               normalizeDoorFrontHeights(prev.doorFrontHeights, Number.parseInt(prev.doorFrontCount || "1", 10) || 1),
               String(nextBaseCabHeight),
-              numericOnlyText(nextTopGap),
-              numericOnlyText(nextBetweenGap),
+              numericDecimalText(nextTopGap),
+              numericDecimalText(nextBetweenGap),
               [],
             ).heights
           : [],
@@ -27377,8 +27664,8 @@ export default function ProjectDetailsPage() {
       doorMode: mode,
       doorFrontCount: mode === "manual" ? "" : "1",
       quantity: mode === "manual" ? String(existing?.quantity ?? "") : String(existing?.quantity ?? "1") || "1",
-      doorTopGap: mode === "manual" ? "" : numericOnlyText(nextTopGap),
-      doorBetweenGap: mode === "manual" ? "" : numericOnlyText(nextBetweenGap),
+      doorTopGap: mode === "manual" ? "" : numericDecimalText(nextTopGap),
+      doorBetweenGap: mode === "manual" ? "" : numericDecimalText(nextBetweenGap),
       doorSideLeft: mode === "manual" ? "panel" : existing?.doorSideLeft ?? "panel",
       doorSideRight: mode === "manual" ? "panel" : existing?.doorSideRight ?? "panel",
       height: mode === "manual" ? String(existing?.height ?? "") : nextBaseCabHeight,
@@ -27391,7 +27678,7 @@ export default function ProjectDetailsPage() {
               String(existing?.width ?? ""),
               String(existing?.doorSideLeftGap || nextSideGap),
               String(existing?.doorSideRightGap || nextSideGap),
-              numericOnlyText(nextBetweenGap),
+              numericDecimalText(nextBetweenGap),
               [],
             ).widths
           : [],
@@ -27401,8 +27688,8 @@ export default function ProjectDetailsPage() {
           ? rebalanceDoorFrontHeights(
               normalizeDoorFrontHeights(existing?.doorFrontHeights, 1),
               String(nextBaseCabHeight),
-              numericOnlyText(nextTopGap),
-              numericOnlyText(nextBetweenGap),
+              numericDecimalText(nextTopGap),
+              numericDecimalText(nextBetweenGap),
               [],
             ).heights
           : [],
@@ -27465,7 +27752,11 @@ export default function ProjectDetailsPage() {
   };
 
   const onCutlistEntryDoorGapChange = (key: "doorTopGap" | "doorBetweenGap", value: string) => {
-    const nextValue = numericOnlyText(value);
+    const nextValue = dimensionMathText(value);
+    const entryMode = normalizeDoorModeValue(cutlistEntry.doorMode);
+    if (nextValue !== String(cutlistEntry[key] ?? "") && (entryMode === "drawer" || (entryMode === "door" && key === "doorBetweenGap"))) {
+      warnFrontsAllSetByHand("single", entryMode, (entryMode === "door" ? cutlistEntry.doorFrontWidthManual : cutlistEntry.doorFrontHeightManual) ?? []);
+    }
     setCutlistEntry((prev) => {
       const next = { ...prev, [key]: nextValue };
       if (normalizeDoorModeValue(prev.doorMode) === "door") {
@@ -27626,58 +27917,79 @@ export default function ProjectDetailsPage() {
     });
   };
 
+  // A gap changed on a bank of fronts: the fronts nobody's set by hand take up the difference, those set by hand stay as
+  // they are. All of them set by hand: nothing can take it up, so the change goes in with a warning that they might not
+  // add up any more.
+  const warnFrontsAllSetByHand = (rowKey: string, mode: DoorModeValue, manual: boolean[]) => {
+    if (!manual.length || !manual.every(Boolean)) return;
+    const field = mode === "door" ? "width" : "height";
+    flashCutlistWarningCells({
+      [rowKey]: { [field]: `All the ${field}s were set by hand, so this gap didn't change them. Check they still add up.` },
+    });
+  };
+  // The fronts' sizes (a bank's) with these gaps.
+  const frontBankRefitted = (row: CutlistDraftRow, topGap: string, betweenGaps: string[]): Partial<CutlistDraftRow> => {
+    const mode = normalizeDoorModeValue(row.doorMode);
+    const count = Number.parseInt(row.doorFrontCount || "", 10) || 0;
+    if (mode === "drawer") {
+      const rebalanced = rebalanceDrawerBankFrontHeights(
+        normalizeDoorFrontHeights(row.doorFrontHeights, count),
+        resolveFrontBankHeightSource(row),
+        topGap,
+        betweenGaps,
+        row.doorFrontHeightManual,
+      );
+      return { doorFrontHeights: rebalanced.heights, doorFrontHeightManual: rebalanced.manual };
+    }
+    if (mode === "door") {
+      const rebalanced = rebalanceDrawerBankFrontHeights(
+        normalizeDoorFrontWidths(row.doorFrontWidths, count),
+        String(row.width ?? ""),
+        "0",
+        betweenGaps,
+        row.doorFrontWidthManual,
+      );
+      return { doorFrontWidths: rebalanced.heights, doorFrontWidthManual: rebalanced.manual };
+    }
+    return {};
+  };
   const onDraftDoorGapChange = (id: string, key: "doorTopGap" | "doorBetweenGap", value: string) => {
     const existing = cutlistDraftRows.find((row) => row.id === id);
-    const nextValue = numericOnlyText(value);
-    const nextPatch: Partial<CutlistDraftRow> = { [key]: nextValue };
-    if (normalizeDoorModeValue(existing?.doorMode) === "door") {
-      const rebalancedWidths = rebalanceDoorFrontWidths(
-        normalizeDoorFrontWidths(existing?.doorFrontWidths, Number.parseInt(existing?.doorFrontCount || "", 10) || 0),
-        String(existing?.width ?? ""),
-        String(existing?.doorSideLeftGap ?? ""),
-        String(existing?.doorSideRightGap ?? ""),
-        String(key === "doorBetweenGap" ? nextValue : existing?.doorBetweenGap ?? ""),
-        existing?.doorFrontWidthManual,
-      );
-      nextPatch.doorFrontWidths = rebalancedWidths.widths;
-      nextPatch.doorFrontWidthManual = rebalancedWidths.manual;
+    const nextValue = dimensionMathText(value);
+    if (!existing) {
+      updateDraftCutlistRow(id, { [key]: nextValue });
+      return;
     }
-    if (normalizeDoorModeValue(existing?.doorMode) === "drawer" && existing) {
-      // Per-seam betweenGaps (not the legacy single doorBetweenGap) is what resolvedFrontHeights
-      // in the render actually uses (resolveDrawerBankFrontHeights) — rebalancing here with the
-      // single-gap function instead would silently diverge from what's on screen whenever seams
-      // have been individually customized to different values.
-      const bankCount = Number.parseInt(existing.doorFrontCount || "", 10) || 0;
-      const seamCount = Math.max(0, bankCount - 1);
-      const betweenGaps =
-        key === "doorBetweenGap"
-          ? Array.from({ length: seamCount }, () => nextValue)
-          : resolveDrawerBankBetweenGaps(existing, seamCount);
-      const rebalanced = rebalanceDrawerBankFrontHeights(
-        normalizeDoorFrontHeights(existing.doorFrontHeights, bankCount),
-        resolveFrontBankHeightSource(existing),
-        String(key === "doorTopGap" ? nextValue : existing.doorTopGap ?? ""),
-        betweenGaps,
-        existing.doorFrontHeightManual,
-      );
-      nextPatch.doorFrontHeights = rebalanced.heights;
-      nextPatch.doorFrontHeightManual = rebalanced.manual;
-      if (key === "doorBetweenGap") nextPatch.doorBetweenGaps = betweenGaps;
+    const mode = normalizeDoorModeValue(existing.doorMode);
+    const seamCount = Math.max(0, (Number.parseInt(existing.doorFrontCount || "", 10) || 0) - 1);
+    const betweenGaps =
+      key === "doorBetweenGap" ? Array.from({ length: seamCount }, () => nextValue) : resolveDrawerBankBetweenGaps(existing, seamCount);
+    const topGap = String(key === "doorTopGap" ? nextValue : existing.doorTopGap ?? "");
+    const changesFronts = mode === "drawer" || (mode === "door" && key === "doorBetweenGap");
+    updateDraftCutlistRow(id, {
+      [key]: nextValue,
+      ...(key === "doorBetweenGap" ? { doorBetweenGaps: betweenGaps } : {}),
+      ...(changesFronts ? frontBankRefitted(existing, topGap, betweenGaps) : {}),
+    });
+    if (changesFronts && nextValue !== String(existing[key] ?? "")) {
+      warnFrontsAllSetByHand(id, mode, mode === "door" ? existing.doorFrontWidthManual ?? [] : existing.doorFrontHeightManual ?? []);
     }
-    updateDraftCutlistRow(id, nextPatch);
   };
 
-  // Changes a single between-fronts gap (one specific seam in a drawer bank)
-  // without touching any other seam's own gap value — updateDraftCutlistRow
-  // then reflows the front heights using the full per-seam array.
+  // Changes a single between-fronts gap (one specific seam in a drawer bank) without touching any other seam's own gap
+  // value.
   const onDraftFrontBetweenGapChange = (id: string, seamIndex: number, value: string) => {
     const existing = cutlistDraftRows.find((row) => row.id === id);
     if (!existing) return;
     const count = Math.max(1, Number.parseInt(existing.doorFrontCount || "1", 10) || 1);
     const seamCount = Math.max(0, count - 1);
     const nextGaps = resolveDrawerBankBetweenGaps(existing, seamCount);
-    nextGaps[seamIndex] = numericOnlyText(value);
-    updateDraftCutlistRow(id, { doorBetweenGaps: nextGaps });
+    const nextValue = dimensionMathText(value);
+    const changed = nextValue !== String(nextGaps[seamIndex] ?? "");
+    nextGaps[seamIndex] = nextValue;
+    const mode = normalizeDoorModeValue(existing.doorMode);
+    updateDraftCutlistRow(id, { doorBetweenGaps: nextGaps, ...frontBankRefitted(existing, String(existing.doorTopGap ?? ""), nextGaps) });
+    if (changed) warnFrontsAllSetByHand(id, mode, mode === "door" ? existing.doorFrontWidthManual ?? [] : existing.doorFrontHeightManual ?? []);
   };
 
   const onDraftDoorSideChange = (id: string, key: "doorSideLeft" | "doorSideRight", value: "front" | "panel") => {
@@ -27892,11 +28204,11 @@ export default function ProjectDetailsPage() {
       });
       return;
     }
-    const rebalanced = rebalanceDoorFrontHeights(
+    const rebalanced = rebalanceDrawerBankFrontHeights(
       nextHeights,
       resolveFrontBankHeightSource(existing),
       String(existing.doorTopGap ?? ""),
-      String(existing.doorBetweenGap ?? ""),
+      resolveDrawerBankBetweenGaps(existing, Math.max(0, nextHeights.length - 1)),
       nextManual,
     );
     updateDraftCutlistRow(id, {
@@ -27916,11 +28228,11 @@ export default function ProjectDetailsPage() {
     // still-unpinned front) shows the live even-split of whatever space is left over from any
     // pinned fronts.
     nextManual[index] = false;
-    const rebalanced = rebalanceDoorFrontHeights(
+    const rebalanced = rebalanceDrawerBankFrontHeights(
       nextHeights,
       resolveFrontBankHeightSource(existing),
       String(existing.doorTopGap ?? ""),
-      String(existing.doorBetweenGap ?? ""),
+      resolveDrawerBankBetweenGaps(existing, Math.max(0, nextHeights.length - 1)),
       nextManual,
     );
     updateDraftCutlistRow(id, {
@@ -28986,8 +29298,8 @@ export default function ProjectDetailsPage() {
           if (isDoorPartType(next.partType)) {
             const nextMode = normalizeDoorModeValue(next.doorMode);
             const nextCount = normalizeDoorFrontCountValue(next.doorFrontCount);
-            next.doorTopGap = numericOnlyText(String(next.doorTopGap ?? ""));
-            next.doorBetweenGap = numericOnlyText(String(next.doorBetweenGap ?? ""));
+            next.doorTopGap = dimensionMathText(String(next.doorTopGap ?? ""));
+            next.doorBetweenGap = dimensionMathText(String(next.doorBetweenGap ?? ""));
             next.doorSideLeft = normalizeDoorSideValue(next.doorSideLeft);
             next.doorSideRight = normalizeDoorSideValue(next.doorSideRight);
             next.doorSideLeftGap = numericDecimalText(String(next.doorSideLeftGap ?? ""));
@@ -29465,13 +29777,11 @@ export default function ProjectDetailsPage() {
     if (!row) return;
     const fieldKey = `hinges_${direction}_${index}`;
     const maxValue = maxDoorHingeValueForRowLike(row);
-    const trimmed = value.trim();
-    if (trimmed && Number.isFinite(maxValue) && maxValue != null) {
-      const numericValue = Number.parseInt(trimmed, 10) || 0;
-      if (numericValue > maxValue) {
-        showDoorHingeLimitWarning(rowId, fieldKey, cutlistRowLabelFor(row, "Entry"), maxValue);
-        return;
-      }
+    const trimmed = evaluateDimensionMath(value.trim()) ?? value.trim();
+    const position = doorHingeNumber(trimmed);
+    if (maxValue != null && position != null && position > maxValue) {
+      showDoorHingeLimitWarning(rowId, fieldKey, cutlistRowLabelFor(row, "Entry"), maxValue);
+      return;
     }
     clearWarningForCell(rowId, fieldKey);
     const currentValues = normalizeDoorHingeValues(direction === "up" ? row.hingesUp : row.hingesDown);
@@ -31311,27 +31621,25 @@ export default function ProjectDetailsPage() {
       const values = direction === "up" ? doorHingeInputValues(upValues) : doorHingeInputValues(downValues);
       return values.map((value, index) => {
         const fieldKey = `hinges_${direction}_${index}`;
+        const position = doorHingeNumber(value);
+        const offDoor = maxValue != null && position != null && position > maxValue;
         return (
           <input
             key={`hinge_${direction}_${index}`}
+            ref={registerCutlistWarnCellRef(rowKey, fieldKey)}
             disabled={disabled}
             value={value}
             inputMode="numeric"
             pattern="[0-9]*"
-            title={warningForCell(rowKey, fieldKey) || undefined}
+            title={offDoor ? `Can't exceed ${maxValue}` : undefined}
             onChange={(e) => {
-              const raw = numericOnlyText(e.target.value);
-              if (raw && Number.isFinite(maxValue) && maxValue != null) {
-                const numericValue = Number.parseInt(raw, 10) || 0;
-                if (numericValue > maxValue) {
-                  showDoorHingeLimitWarning(rowKey, fieldKey, rowLabel, maxValue);
-                  return;
-                }
-              }
               clearWarningForCell(rowKey, fieldKey);
-              onChange(direction, index, raw);
+              onChange(direction, index, wholeMathText(e.target.value));
             }}
-            onBlur={onBlur}
+            onBlur={(e) => {
+              if (offDoor && maxValue != null) showDoorHingeLimitWarning(rowKey, fieldKey, rowLabel, maxValue);
+              onBlur?.(e);
+            }}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();
@@ -31339,7 +31647,11 @@ export default function ProjectDetailsPage() {
               }
             }}
             className={`cutlist-field ${sizeClassName} shrink-0 border bg-transparent px-0 text-center ${warningClassForCell(rowKey, fieldKey)}`}
-            style={warningStyleForCell(rowKey, fieldKey, { backgroundColor: bg, borderColor: border, color: text })}
+            style={
+              offDoor
+                ? { backgroundColor: "#FEF2F2", borderColor: "#F87171", color: "#000000" }
+                : warningStyleForCell(rowKey, fieldKey, { backgroundColor: bg, borderColor: border, color: text })
+            }
           />
         );
       });
@@ -31459,7 +31771,7 @@ export default function ProjectDetailsPage() {
         value={editingHingeCellDraft}
         inputMode="numeric"
         pattern="[0-9]*"
-        onChange={(e) => setEditingHingeCellDraft(numericOnlyText(e.target.value))}
+        onChange={(e) => setEditingHingeCellDraft(wholeMathText(e.target.value))}
         onBlur={() => {
           void commitDoorHingeValue(row.id, direction, index, editingHingeCellDraft);
           setEditingHingeCell(null);
@@ -34700,8 +35012,15 @@ export default function ProjectDetailsPage() {
         (companyDoc as Record<string, unknown> | null)?.gapAllowancesSettings,
     );
   }, [project?.projectSettings, companyDoc]);
+  const gapAllowancesSeenRef = useRef("");
   useEffect(() => {
-    setProjectGapAllowancesDraft(effectiveProjectGapAllowances);
+    const json = JSON.stringify(effectiveProjectGapAllowances);
+    if (json === gapAllowancesSeenRef.current) return;
+    gapAllowancesSeenRef.current = json;
+    const typing = gapFocusKeyRef.current;
+    setProjectGapAllowancesDraft((prev) =>
+      typing ? { ...effectiveProjectGapAllowances, [typing]: prev[typing] } : effectiveProjectGapAllowances,
+    );
   }, [effectiveProjectGapAllowances]);
   // Production cutlist rows exploded into the real pieces that get cut (cabinets into sides/top/
   // bottom/shelves, drawers into bottoms/backs, configured doors into each leaf). Shared by the
@@ -35397,6 +35716,7 @@ export default function ProjectDetailsPage() {
             inputMode="numeric"
             disabled={opts.readOnly}
             title={field === "fixed" ? "Fixed Shelf" : "Adjustable Shelf"}
+            data-no-math="true"
             value={String(count)}
             onChange={(e) => {
               const next = Math.max(0, Number.parseInt(numericOnlyText(e.target.value) || "0", 10) || 0);
@@ -35703,7 +36023,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           String(updatedRow.partType || "").trim(),
           cutlistRowLabelFor(updatedRow, "Entry"),
         );
-        const targetIssue = issues.find((issue) => issue.field === target.key);
+        const targetIssue =
+          issues.find((issue) => issue.field === target.key) ??
+          (target.key === "height" || target.key === "width"
+            ? issues.find((issue) => String(issue.field).startsWith("hinges_"))
+            : undefined);
         if (targetIssue) {
           const warnings = { [target.rowId]: { [target.key]: targetIssue.message } };
           setCutlistCellWarnings((prev) => ({
@@ -36590,6 +36914,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     shellClassName="flex flex-col"
                     onChange={(nextValue) => {
                       remedialsEditorDraftRef.current = nextValue;
+                      saveTypedSoon("remedials");
                     }}
                   />
                 ) : (
@@ -36953,11 +37278,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     }
     setSpecsSheetGrid(data);
     specsGridState.setGridOptimistic(data);
-    // A longer debounce keeps writes infrequent regardless of how continuously someone edits the
-    // sheet — this grid can be a genuinely large document (rich per-cell formatting).
+    specsSheetLatestRef.current = data;
+    // Kept on this device at once; sent a moment later (the latest of it: someone else's changes may have come in since),
+    // only what's changed here put onto everyone else's latest.
+    specsGridState.keep(data);
     specsSheetSaveTimeoutRef.current = setTimeout(() => {
-      if (!project) return;
-      void saveSalesGridData(project, "specifications", data).then((ok) => {
+      void specsGridState.save(specsSheetLatestRef.current ?? data).then((ok) => {
         if (!ok) {
           console.error("Specs sheet save failed");
           setSpecsSheetSaveError("save-failed");
@@ -36965,8 +37291,22 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           setSpecsSheetSaveError("");
         }
       });
-    }, 2000);
+    }, 1000);
   };
+  // Someone else's change to the sheet: put onto it here, with any edits here left as they are.
+  const specsSheetLatestRef = useRef<SpecsGrid | null>(null);
+  useEffect(() => {
+    specsSheetLatestRef.current = specsSheetGrid;
+  }, [specsSheetGrid]);
+  useEffect(() => {
+    const news = specsGridState.remote;
+    const here = specsSheetLatestRef.current;
+    if (!news || !here) return;
+    const merged = mergeSpecsGrids(news.base ?? here, here, news.grid);
+    if (merged === here) return;
+    specsSheetLatestRef.current = merged;
+    setSpecsSheetGrid(merged);
+  }, [specsGridState.remote]);
   // Fetched from specsShareLinks/{projectId} via app/api/specs-share/[shareId]/status — that
   // collection is admin-SDK-only by design (see lib/specs-share.ts), and deliberately NOT stored
   // on the project doc itself/salesPayload, since a large project can already sit right at
@@ -37308,8 +37648,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       for (const subscriberUid of projectNotifySubscriberUids(project)) {
         if (subscriberUid === user?.uid) continue;
         void addUserNotification(subscriberUid, {
-          title: "Specifications sent to client",
-          message: `${user?.displayName || "A teammate"} sent Specifications for "${project.name || "a project"}" to the client.`,
+          ...notificationText("specs_sent", { person: user?.displayName || "A teammate", project: project.name || "a project" }),
           type: "specs_sent",
           projectId: project.id,
         });
@@ -37487,8 +37826,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       for (const subscriberUid of projectNotifySubscriberUids(project)) {
         if (subscriberUid === user?.uid) continue;
         void addUserNotification(subscriberUid, {
-          title: "Quote sent to client",
-          message: `${user?.displayName || "A teammate"} sent a Quote for "${project.name || "a project"}" to the client.`,
+          ...notificationText("quote_sent", { person: user?.displayName || "A teammate", project: project.name || "a project" }),
           type: "quote_sent",
           projectId: project.id,
         });
@@ -37965,9 +38303,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     }
     setQuoteGrid(data);
     quoteGridState.setGridOptimistic(data);
+    quoteGridLatestRef.current = data;
+    // (As the Specifications sheet's.)
+    quoteGridState.keep(data);
     quoteGridSaveTimeoutRef.current = setTimeout(() => {
-      if (!project) return;
-      void saveSalesGridData(project, "quote", data).then((ok) => {
+      void quoteGridState.save(quoteGridLatestRef.current ?? data).then((ok) => {
         if (!ok) {
           console.error("Quote grid save failed");
           setQuoteGridSaveError("save-failed");
@@ -37975,8 +38315,21 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           setQuoteGridSaveError("");
         }
       });
-    }, 2000);
+    }, 1000);
   };
+  const quoteGridLatestRef = useRef<SpecsGrid | null>(null);
+  useEffect(() => {
+    quoteGridLatestRef.current = quoteGrid;
+  }, [quoteGrid]);
+  useEffect(() => {
+    const news = quoteGridState.remote;
+    const here = quoteGridLatestRef.current;
+    if (!news || !here) return;
+    const merged = mergeSpecsGrids(news.base ?? here, here, news.grid);
+    if (merged === here) return;
+    quoteGridLatestRef.current = merged;
+    setQuoteGrid(merged);
+  }, [quoteGridState.remote]);
   const resetQuoteGridToTemplate = async () => {
     const template = normalizeSpecsGrid((companyDoc as Record<string, unknown> | null)?.quoteGridTemplate);
     if (!template || !project) return;
@@ -41759,6 +42112,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               onStartEditing: startEditingDesignNotes,
               onDraftChange: (nextValue) => {
                 designNotesEditorDraftRef.current = nextValue;
+                saveTypedSoon("designNotes");
               },
             })}
           </div>
@@ -42418,7 +42772,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             boardMaxEdge: initialMeasureBoardMaxEdgeFor(String(updatedRow.board || "").trim()),
           },
         );
-        const targetIssue = issues.find((issue) => issue.field === target.key);
+        const targetIssue =
+          issues.find((issue) => issue.field === target.key) ??
+          (target.key === "height" || target.key === "width"
+            ? issues.find((issue) => String(issue.field).startsWith("hinges_"))
+            : undefined);
         if (targetIssue) {
           if (isSheetSizeIssue(targetIssue)) {
             clearWarningForCell(target.rowId, target.key);
@@ -47036,6 +47394,42 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
   // Planning › Drawing: the production cutlist's pieces — a door set up as fronts, each front — at their boards'
   // thickness, and the project's gaps (General › Gap allowances, else the company's).
+  // The save pill (components/floating-save-pill.tsx): what's saving on this page.
+  const pageSaveSync: CutlistSyncState = isKitchenDrawingFullscreen
+    ? { offline: projectLive.sync.offline, pending: drawingSavesRunning > 0 || drawingKeptHere }
+    : isOrderFullscreen
+      ? orderLive.sync
+      : isCutlistFullscreen
+        ? productionCutlistState.sync
+        : isSalesInitialFullscreen
+          ? initialCutlistState.sync
+          : isSalesQuoteFullscreen
+            ? quoteGridState.sync
+            : isSalesSpecificationsFullscreen
+              ? specsGridState.sync
+              : isSalesItemsFullscreen
+                ? { offline: projectLive.sync.offline, pending: projectLive.sync.pending || isSavingSalesRooms || materialsSaveWaiting }
+                : projectLive.sync;
+  // ...and who else is on it.
+  const pagePresencePeople = isOrderFullscreen
+    ? orderAlsoEditing
+    : isCutlistFullscreen
+      ? productionAlsoEditing
+      : isSalesInitialFullscreen
+        ? initialAlsoEditing
+        : pageAlsoHere;
+  const renderSaveStatusPill = () => (
+    <FloatingSavePill
+      sync={pageSaveSync}
+      people={pagePresencePeople}
+      initialsOf={initials}
+      colorOf={(uid) =>
+        staffPickerMembers.find((member) => member.uid === uid)?.color ||
+        toStr((companyDoc as Record<string, unknown> | null)?.themeColor) ||
+        "#7D99B3"
+      }
+    />
+  );
   if (isKitchenDrawingFullscreen) {
     const companyGaps = normalizeGapAllowancesSettings((companyDoc as Record<string, unknown> | null)?.gapAllowancesSettings);
     const gapOf = (value: string, fallback: string, otherwise: number) => {
@@ -47151,6 +47545,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     }
     return (
       <ProtectedRoute>
+        {renderSaveStatusPill()}
         <KitchenDrawing
           // (Its own, for each project — read again as one's opened.)
           key={String(project?.id || "")}
@@ -47159,7 +47554,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           units={kitchenUnits}
           gaps={kitchenGaps}
           load={() => (project ? fetchProjectDrawing(project, "kitchen") : Promise.resolve(null))}
-          save={(data) => (project ? saveProjectDrawing(project, "kitchen", data) : Promise.resolve(false))}
+          save={(data) => {
+            if (!project) return Promise.resolve(false);
+            setDrawingSavesRunning((running) => running + 1);
+            return saveProjectDrawingMerged(project, data).finally(() => setDrawingSavesRunning((running) => Math.max(0, running - 1)));
+          }}
+          subscribe={(onNews) => (project ? subscribeProjectDrawing(project, onNews) : () => {})}
           readOnly={!productionAccess.edit}
           onBack={() => setProductionNav("overview")}
         />
@@ -47581,6 +47981,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     const orderMiscGrid = "minmax(0,1fr) 56px 24px";
     return (
       <ProtectedRoute>
+        {renderSaveStatusPill()}
         <div className="flex h-[100svh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
           {/* data-app-top-bar/-content: this fullscreen view has no GlobalAppTabsBar (chromeHidden
               pages unmount it entirely) but the app-shell's pulldown-nav gesture still runs here —
@@ -47617,8 +48018,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              {renderCutlistAlsoHere(orderAlsoEditing, isCompactProjectViewport)}
-              {renderOrderSaveStatus(!isCompactProjectViewport)}
               {renderSaveAndBackButton(() => void onSaveAndBackFromOrder(), isCompactProjectViewport)}
             </div>
           </div>
@@ -48221,7 +48620,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   inputMode="numeric"
                   pattern="[0-9]*"
                   value={draft.quantity}
-                  onChange={(e) => updateInitialDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })}
+                  onChange={(e) => updateInitialDraftCutlistRow(draft.id, { quantity: wholeMathText(e.target.value) })}
                   title={warningForCell(draft.id, "quantity") || undefined}
                   className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`}
                   style={warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
@@ -48282,14 +48681,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 <div className="grid gap-2">
                   <div className="space-y-1">
                     <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Fixed Shelf</p>
-                    <input inputMode="numeric" disabled={salesReadOnly} value={draft.fixedShelf ?? ""} onChange={(e) => updateInitialDraftCutlistRow(draft.id, { fixedShelf: numericOnlyText(e.target.value) })} className="cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
+                    <input inputMode="numeric" disabled={salesReadOnly} value={draft.fixedShelf ?? ""} onChange={(e) => updateInitialDraftCutlistRow(draft.id, { fixedShelf: wholeMathText(e.target.value) })} className="cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
                     {hasShelfQuantity(draft.fixedShelf) ? (
                       <BoardPillDropdown value={normalizeDrillingValue(draft.fixedShelfDrilling)} options={DRILLING_OPTIONS} disabled={salesReadOnly} bg={draftFieldBg} border={draftFieldBorder} text={draftTextColor} size="compact" getSize={() => ""} getLabel={(v) => v} onChange={(v) => updateInitialDraftCutlistRow(draft.id, { fixedShelfDrilling: normalizeDrillingValue(v) })} />
                     ) : null}
                   </div>
                   <div className="space-y-1">
                     <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: mutedLabelColor }}>Adjustable Shelf</p>
-                    <input inputMode="numeric" disabled={salesReadOnly} value={draft.adjustableShelf ?? ""} onChange={(e) => updateInitialDraftCutlistRow(draft.id, { adjustableShelf: numericOnlyText(e.target.value) })} className="cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
+                    <input inputMode="numeric" disabled={salesReadOnly} value={draft.adjustableShelf ?? ""} onChange={(e) => updateInitialDraftCutlistRow(draft.id, { adjustableShelf: wholeMathText(e.target.value) })} className="cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
                     {hasShelfQuantity(draft.adjustableShelf) ? (
                       <BoardPillDropdown value={normalizeDrillingValue(draft.adjustableShelfDrilling)} options={DRILLING_OPTIONS} disabled={salesReadOnly} bg={draftFieldBg} border={draftFieldBorder} text={draftTextColor} size="compact" getSize={() => ""} getLabel={(v) => v} onChange={(v) => updateInitialDraftCutlistRow(draft.id, { adjustableShelfDrilling: normalizeDrillingValue(v) })} />
                     ) : null}
@@ -48443,6 +48842,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       );
       return (
         <ProtectedRoute>
+          {renderSaveStatusPill()}
           {/* (+ − × ÷ = over the keyboard while a Height / Width / Depth box is typed in.) */}
           <DimensionMathBar />
           <div
@@ -48479,8 +48879,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                {renderCutlistAlsoHere(initialAlsoEditing, true)}
-                {renderCutlistSaveStatus("initialMeasure", false)}
                 {renderCutlistPrintButton(false, "initialMeasure")}
                 {renderCutlistExcelButton("initialMeasure", false)}
                 {renderSaveAndBackButton(() => void saveAndBackFromInitialMeasure(), true)}
@@ -48665,6 +49063,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     }
     return (
       <ProtectedRoute>
+        {renderSaveStatusPill()}
         <div className="flex h-[100svh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
           {/* Split into a fixed backdrop + content pair — see the mobile branch's own identical
               comment above for the full reasoning. */}
@@ -48697,8 +49096,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-            {renderCutlistAlsoHere(initialAlsoEditing, isCompactProjectViewport)}
-            {renderCutlistSaveStatus("initialMeasure", !isCompactProjectViewport)}
             {renderCutlistPrintButton(!isCompactProjectViewport, "initialMeasure")}
             {renderCutlistExcelButton("initialMeasure", !isCompactProjectViewport)}
             {renderSaveAndBackButton(() => void saveAndBackFromInitialMeasure(), isCompactProjectViewport)}
@@ -49200,7 +49597,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               inputMode="numeric"
                               pattern="[0-9]*"
                               value={draft.quantity}
-                              onChange={(e) => updateInitialDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })}
+                              onChange={(e) => updateInitialDraftCutlistRow(draft.id, { quantity: wholeMathText(e.target.value) })}
                               title={warningForCell(draft.id, "quantity") || undefined}
                               className={`cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`}
                               style={{ ...warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...initialCutlistEntryCellStyle("quantity") }}
@@ -49234,7 +49631,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     <input inputMode="numeric"
                                       disabled={salesReadOnly}
                                       value={draft.fixedShelf ?? ""}
-                                      onChange={(e) => updateInitialDraftCutlistRow(draft.id, { fixedShelf: numericOnlyText(e.target.value) })}
+                                      onChange={(e) => updateInitialDraftCutlistRow(draft.id, { fixedShelf: wholeMathText(e.target.value) })}
                                       className="cutlist-field h-[18px] w-full min-w-0 rounded-[5px] border bg-transparent px-1 text-[9px]"
                                       style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
                                     />
@@ -49269,7 +49666,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     <input inputMode="numeric"
                                       disabled={salesReadOnly}
                                       value={draft.adjustableShelf ?? ""}
-                                      onChange={(e) => updateInitialDraftCutlistRow(draft.id, { adjustableShelf: numericOnlyText(e.target.value) })}
+                                      onChange={(e) => updateInitialDraftCutlistRow(draft.id, { adjustableShelf: wholeMathText(e.target.value) })}
                                       className="cutlist-field h-[18px] w-full min-w-0 rounded-[5px] border bg-transparent px-1 text-[9px]"
                                       style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
                                     />
@@ -50326,7 +50723,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         </div>
                         <div className="space-y-1">
                           <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Quantity</p>
-                          <input ref={registerCutlistWarnCellRef(draft.id, "quantity")} disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "quantity")}`} style={warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
+                          <input ref={registerCutlistWarnCellRef(draft.id, "quantity")} disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: wholeMathText(e.target.value) })} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "quantity")}`} style={warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
                         </div>
                         <div className="space-y-1 col-span-2">
                           <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Clashing</p>
@@ -50532,6 +50929,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           count: frontBankCount,
                           values: frontHeights,
                           resolvedValues: resolvedFrontHeights,
+                          manual: frontHeightManual,
                           topGapValue: frontBankTopGapValue,
                           betweenGaps: frontBetweenGaps,
                           hasTopGapLabel: frontBankHasTopGapLabel,
@@ -50617,6 +51015,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         count: frontBankCount,
                         values: frontWidths,
                         resolvedValues: resolvedFrontWidths,
+                        manual: frontWidthManual,
                         topGapValue: "0",
                         betweenGaps: frontBetweenGaps,
                         hasTopGapLabel: false,
@@ -50723,7 +51122,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     ),
                   );
                 })() : (
-                  <input ref={registerCutlistWarnCellRef(draft.id, "quantity")} disabled={productionReadOnly || (isDrawerPartType(draft.partType) && !draftIsDoor)} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`} style={warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
+                  <input ref={registerCutlistWarnCellRef(draft.id, "quantity")} disabled={productionReadOnly || (isDrawerPartType(draft.partType) && !draftIsDoor)} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: wholeMathText(e.target.value) })} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`} style={warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
                 )}
               </div>
               {!draftIsCabinetry ? (
@@ -50851,14 +51250,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <div className={`grid gap-2 ${wide ? "sm:grid-cols-2" : ""}`}>
                 <div className="space-y-1">
                   <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Fixed Shelf</p>
-                  <input inputMode="numeric" disabled={productionReadOnly} value={draft.fixedShelf ?? ""} onChange={(e) => updateDraftCutlistRow(draft.id, { fixedShelf: numericOnlyText(e.target.value) })} className="cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
+                  <input inputMode="numeric" disabled={productionReadOnly} value={draft.fixedShelf ?? ""} onChange={(e) => updateDraftCutlistRow(draft.id, { fixedShelf: wholeMathText(e.target.value) })} className="cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
                   {hasShelfQuantity(draft.fixedShelf) ? (
                     <BoardPillDropdown value={normalizeDrillingValue(draft.fixedShelfDrilling)} options={drillingOptionsForShelfQuantity(draft.fixedShelf)} disabled={productionReadOnly} bg={draftFieldBg} border={draftFieldBorder} text={draftTextColor} size="compact" hideBlankOption getSize={() => ""} getLabel={(v) => v} onChange={(v) => updateDraftCutlistRow(draft.id, { fixedShelfDrilling: normalizeDrillingValue(v) })} />
                   ) : null}
                 </div>
                 <div className="space-y-1">
                   <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor }}>Adjustable Shelf</p>
-                  <input inputMode="numeric" disabled={productionReadOnly} value={draft.adjustableShelf ?? ""} onChange={(e) => updateDraftCutlistRow(draft.id, { adjustableShelf: numericOnlyText(e.target.value) })} className="cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
+                  <input inputMode="numeric" disabled={productionReadOnly} value={draft.adjustableShelf ?? ""} onChange={(e) => updateDraftCutlistRow(draft.id, { adjustableShelf: wholeMathText(e.target.value) })} className="cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }} />
                   {hasShelfQuantity(draft.adjustableShelf) ? (
                     <BoardPillDropdown value={normalizeDrillingValue(draft.adjustableShelfDrilling)} options={drillingOptionsForShelfQuantity(draft.adjustableShelf)} disabled={productionReadOnly} bg={draftFieldBg} border={draftFieldBorder} text={draftTextColor} size="compact" hideBlankOption getSize={() => ""} getLabel={(v) => v} onChange={(v) => updateDraftCutlistRow(draft.id, { adjustableShelfDrilling: normalizeDrillingValue(v) })} />
                   ) : null}
@@ -51081,6 +51480,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       );
       return (
         <ProtectedRoute>
+          {renderSaveStatusPill()}
           {/* (+ − × ÷ = over the keyboard while a Height / Width / Depth box is typed in.) */}
           <DimensionMathBar />
           <div
@@ -51112,8 +51512,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                {renderCutlistAlsoHere(productionAlsoEditing, true)}
-                {renderCutlistSaveStatus("production", false)}
                 {renderCutlistPrintButton(false)}
                 {renderCutlistExcelButton("production", false)}
                 {renderSaveAndBackButton(() => void onSaveAndBackFromCutlist(), true)}
@@ -51469,6 +51867,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     autoFocus
                                     inputMode="numeric"
                                     pattern="[0-9]*"
+                                    data-no-math="true"
                                     value={drawerBankCountDraft}
                                     onChange={(e) => setDrawerBankCountDraft(numericOnlyText(e.target.value))}
                                     onKeyDown={(e) => {
@@ -51578,6 +51977,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     );
     return (
       <ProtectedRoute>
+        {renderSaveStatusPill()}
         <div className="flex h-[100svh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
           <div ref={productionCutlistFullscreenScrollCallbackRef} className="min-h-0 flex-1 overflow-y-auto hide-native-scrollbar">
           {/* Split into a fixed backdrop + content pair — see Initial Measure's own identical
@@ -51616,8 +52016,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              {renderCutlistAlsoHere(productionAlsoEditing, isCompactProjectViewport)}
-              {renderCutlistSaveStatus("production", true)}
               {renderCutlistPrintButton(true)}
               {renderCutlistExcelButton("production", true)}
               {renderSaveAndBackButton(() => void onSaveAndBackFromCutlist(), false)}
@@ -52072,7 +52470,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   </div>
                                   <div className="space-y-1">
                                     <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Quantity</p>
-                                    <input disabled={productionReadOnly || (isDrawerPartType(draft.partType) && !draftIsDoor)} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`} style={{ ...warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }) }} />
+                                    <input disabled={productionReadOnly || (isDrawerPartType(draft.partType) && !draftIsDoor)} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: wholeMathText(e.target.value) })} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`} style={{ ...warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }) }} />
                                   </div>
                                   <div className="space-y-1 col-span-2">
                                     <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Clashing</p>
@@ -52329,7 +52727,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     disabled={productionReadOnly}
                                     title="Fixed Shelf"
                                     value={draft.fixedShelf ?? ""}
-                                    onChange={(e) => updateDraftCutlistRow(draft.id, { fixedShelf: numericOnlyText(e.target.value) })}
+                                    onChange={(e) => updateDraftCutlistRow(draft.id, { fixedShelf: wholeMathText(e.target.value) })}
                                     className={`cutlist-field ${isSubPartDraft ? "h-6" : "h-8"} w-[36px] rounded-[7px] border bg-transparent px-1 text-center text-[11px]`}
                                     style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
                                   />
@@ -52362,7 +52760,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     disabled={productionReadOnly}
                                     title="Adjustable Shelf"
                                     value={draft.adjustableShelf ?? ""}
-                                    onChange={(e) => updateDraftCutlistRow(draft.id, { adjustableShelf: numericOnlyText(e.target.value) })}
+                                    onChange={(e) => updateDraftCutlistRow(draft.id, { adjustableShelf: wholeMathText(e.target.value) })}
                                     className={`cutlist-field ${isSubPartDraft ? "h-6" : "h-8"} w-[36px] rounded-[7px] border bg-transparent px-1 text-center text-[11px]`}
                                     style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
                                   />
@@ -52555,6 +52953,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     count: frontBankCount,
                                     values: frontHeights,
                                     resolvedValues: resolvedFrontHeights,
+                          manual: frontHeightManual,
                                     topGapValue: frontBankTopGapValue,
                                     betweenGaps: frontBetweenGaps,
                                     hasTopGapLabel: frontBankHasTopGapLabel,
@@ -52629,6 +53028,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 count: frontBankCount,
                                 values: frontWidths,
                                 resolvedValues: resolvedFrontWidths,
+                        manual: frontWidthManual,
                                 topGapValue: "0",
                                 betweenGaps: frontBetweenGaps,
                                 hasTopGapLabel: false,
@@ -52732,7 +53132,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 isSubPartDraft,
                               );
                             })() : (
-                              <input disabled={productionReadOnly || (isDrawerPartType(draft.partType) && !draftIsDoor)} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })} className={`cutlist-field ${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} w-full rounded-[8px] border bg-transparent px-2 text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`} style={warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
+                              <input disabled={productionReadOnly || (isDrawerPartType(draft.partType) && !draftIsDoor)} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: wholeMathText(e.target.value) })} className={`cutlist-field ${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} w-full rounded-[8px] border bg-transparent px-2 text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`} style={warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
                             )}
                           </div>
                           {draftShape ? (
@@ -53585,6 +53985,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                               />
                                             ) : (
                                               <input
+                                                ref={registerCutlistWarnCellRef(row.id, key)}
                                                 autoFocus
                                                 defaultValue={editingCellValue}
                                                 inputMode="numeric"
@@ -53804,6 +54205,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       >
                                         {editing ? (
                                           <input
+                                            ref={registerCutlistWarnCellRef(row.id, key)}
                                             autoFocus
                                             defaultValue={editingCellValue}
                                             inputMode={isNumericCutlistInputKey(key) ? "numeric" : undefined}
@@ -54401,6 +54803,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   autoFocus
                                   inputMode="numeric"
                                   pattern="[0-9]*"
+                                  data-no-math="true"
                                   value={drawerBankCountDraft}
                                   onChange={(e) => setDrawerBankCountDraft(numericOnlyText(e.target.value))}
                                   onKeyDown={(e) => {
@@ -56763,6 +57166,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   if (isSalesItemsFullscreen) {
     return (
       <ProtectedRoute>
+        {renderSaveStatusPill()}
         <div className="flex h-[100svh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
           {/* Split into a fixed backdrop + content pair (was a single "glass-page-header sticky"
               div) so the app-shell's pulldown-nav gesture — which needs a marked element to grow/
@@ -57236,6 +57640,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     );
     return (
       <ProtectedRoute>
+        {renderSaveStatusPill()}
         <div
           ref={salesQuoteScrollRef}
           data-app-scroll-root="true"
@@ -57585,6 +57990,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   key={quoteGridEditorKey}
                   value={displayedQuoteGrid}
                   onChange={onQuoteGridChange}
+                  commitWhileTyping
                   className="flex w-full flex-col"
                   companyLogoUrl={quoteCompanyLogoPath || undefined}
                   companyColor={companyThemeColor || undefined}
@@ -58544,6 +58950,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   if (isSalesQuoteFullscreenOldSystem) {
     return (
       <ProtectedRoute>
+        {renderSaveStatusPill()}
         {salesQuoteFullscreenPortal}
         {quoteSnapshotDeleteConfirmPortal}
       </ProtectedRoute>
@@ -58865,6 +59272,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     const specsBackButton = renderSaveAndBackButton(() => setSalesNav("overview"), isCompactProjectViewport, { stopGestures: true });
     return (
       <ProtectedRoute>
+        {renderSaveStatusPill()}
         <div
           ref={salesSpecsScrollRef}
           data-app-scroll-root="true"
@@ -59139,6 +59547,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   key={specsSheetEditorKey}
                   value={displayedSpecsSheetGrid}
                   onChange={onSpecsSheetChange}
+                  commitWhileTyping
                   className="flex w-full flex-col"
                   companyLogoUrl={quoteCompanyLogoPath || undefined}
                   companyColor={companyThemeColor || undefined}
@@ -60108,6 +60517,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     );
     return (
       <ProtectedRoute>
+        {renderSaveStatusPill()}
         <div
           ref={salesCompareScrollRef}
           className="flex h-[100svh] flex-col overflow-y-auto overflow-x-hidden hide-native-scrollbar bg-[var(--bg-app)]"
@@ -63446,6 +63856,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 shellClassName="flex flex-col"
                 onChange={(nextValue) => {
                   productionNotesEditorDraftRef.current = nextValue;
+                  saveTypedSoon("productionNotes");
                 }}
               />
             ) : (
@@ -63496,6 +63907,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               onStartEditing: startEditingProductionNotes,
               onDraftChange: (nextValue) => {
                 productionNotesEditorDraftRef.current = nextValue;
+                saveTypedSoon("productionNotes");
               },
             })}
           </CardContent>
@@ -63634,6 +64046,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       <Pencil size={16} />
                     </button>
                   ) : null}
+                  {renderSaveStatusPill()}
                 </div>
                   {/* (No tags on a small job.) */}
                   {!project.isSmallJob &&
@@ -65166,6 +65579,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             onStartEditing: startEditingNotes,
                             onDraftChange: (nextValue) => {
                               notesEditorDraftRef.current = nextValue;
+                              saveTypedSoon("notes");
                             },
                           })}
                         </CardContent>
@@ -65903,7 +66317,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               <input disabled={salesReadOnly} inputMode="decimal" value={initialCutlistEntry.height} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, height: dimensionMathText(e.target.value) }))} className="cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("height") }} />
                               <input disabled={salesReadOnly} inputMode="decimal" value={initialCutlistEntry.width} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, width: dimensionMathText(e.target.value) }))} className="cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("width") }} />
                               <input disabled={salesReadOnly} inputMode="decimal" value={initialCutlistEntry.depth} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, depth: dimensionMathText(e.target.value) }))} className="cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("depth") }} />
-                              <input disabled={salesReadOnly} inputMode="numeric" pattern="[0-9]*" value={initialCutlistEntry.quantity} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, quantity: numericOnlyText(e.target.value) }))} className="cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("quantity") }} />
+                              <input disabled={salesReadOnly} inputMode="numeric" pattern="[0-9]*" value={initialCutlistEntry.quantity} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, quantity: wholeMathText(e.target.value) }))} className="cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("quantity") }} />
                               <div style={initialCutlistEntrySubCellStyle("clashing", 0)}>
                                 <BoardPillDropdown value={initialCutlistEntry.clashLeft ?? ""} options={CLASH_LEFT_OPTIONS} disabled={salesReadOnly} bg={activeInitialCutlistEntryFieldBg} border={activeInitialCutlistEntryFieldBorder} text={activeInitialCutlistEntryTextColor} size="default" getSize={() => ""} getLabel={(v) => v} onChange={(v) => setInitialCutlistEntry((prev) => ({ ...prev, clashLeft: v }))} />
                               </div>
@@ -66802,7 +67216,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     </div>
                                     <div className="space-y-1">
                                       <p className="text-center text-[11px] font-bold" style={{ color: "#111111" }}>Quantity</p>
-                                      <input ref={registerCutlistWarnCellRef("single", "quantity")} disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={warningForCell("single", "quantity") || undefined} value={cutlistEntry.quantity} onChange={(e) => { const nextQuantity = numericOnlyText(e.target.value); setCutlistEntry((prev) => ({ ...prev, quantity: nextQuantity, hingeSide: deriveDoorHingeSideForQuantity(prev.partType, nextQuantity) ?? prev.hingeSide })); }} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell("single", "quantity")}`} style={{ ...warningStyleForCell("single", "quantity", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }) }} />
+                                      <input ref={registerCutlistWarnCellRef("single", "quantity")} disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={warningForCell("single", "quantity") || undefined} value={cutlistEntry.quantity} onChange={(e) => { const nextQuantity = wholeMathText(e.target.value); setCutlistEntry((prev) => ({ ...prev, quantity: nextQuantity, hingeSide: deriveDoorHingeSideForQuantity(prev.partType, nextQuantity) ?? prev.hingeSide })); }} className={`cutlist-field h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell("single", "quantity")}`} style={{ ...warningStyleForCell("single", "quantity", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }) }} />
                                     </div>
                                     <div className="space-y-1 col-span-2">
                                       <p className="text-center text-[11px] font-bold" style={{ color: "#111111" }}>Clashing</p>
@@ -67070,7 +67484,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             ) : (
                               <input ref={registerCutlistWarnCellRef("single", "depth")} disabled={productionReadOnly} inputMode="decimal" title={warningForCell("single", "depth") || undefined} value={cutlistEntry.depth} onChange={(e) => setCutlistEntry((prev) => autoSelectGrainValueForRow({ ...prev, depth: dimensionMathText(e.target.value) }))} className={`cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "depth")}`} style={{ ...warningStyleForCell("single", "depth", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("depth") }} />
                             )}
-                              <input ref={registerCutlistWarnCellRef("single", "quantity")} disabled={productionReadOnly || (isDrawerPartType(cutlistEntry.partType) && !isDoorPartType(cutlistEntry.partType))} inputMode="numeric" pattern="[0-9]*" title={warningForCell("single", "quantity") || undefined} value={cutlistEntry.quantity} onChange={(e) => { const nextQuantity = numericOnlyText(e.target.value); setCutlistEntry((prev) => ({ ...prev, quantity: nextQuantity, hingeSide: deriveDoorHingeSideForQuantity(prev.partType, nextQuantity) ?? prev.hingeSide })); }} className={`cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell("single", "quantity")}`} style={{ ...warningStyleForCell("single", "quantity", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...cutlistEntryCellStyle("quantity") }} />
+                              <input ref={registerCutlistWarnCellRef("single", "quantity")} disabled={productionReadOnly || (isDrawerPartType(cutlistEntry.partType) && !isDoorPartType(cutlistEntry.partType))} inputMode="numeric" pattern="[0-9]*" title={warningForCell("single", "quantity") || undefined} value={cutlistEntry.quantity} onChange={(e) => { const nextQuantity = wholeMathText(e.target.value); setCutlistEntry((prev) => ({ ...prev, quantity: nextQuantity, hingeSide: deriveDoorHingeSideForQuantity(prev.partType, nextQuantity) ?? prev.hingeSide })); }} className={`cutlist-field h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell("single", "quantity")}`} style={{ ...warningStyleForCell("single", "quantity", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...cutlistEntryCellStyle("quantity") }} />
                             <>
                               <div style={cutlistEntrySubCellStyle("clashing", 0)}>
                                 <BoardPillDropdown
@@ -67427,7 +67841,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                       inputMode="numeric"
                                                       pattern="[0-9]*"
                                                       onChange={(e) => {
-                                                        const next = numericOnlyText(e.target.value);
+                                                        const next = wholeMathText(e.target.value);
                                                         editingFixedShelfRef.current = next;
                                                         setEditingFixedShelf(next);
                                                       }}
@@ -67494,7 +67908,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                       inputMode="numeric"
                                                       pattern="[0-9]*"
                                                       onChange={(e) => {
-                                                        const next = numericOnlyText(e.target.value);
+                                                        const next = wholeMathText(e.target.value);
                                                         editingAdjustableShelfRef.current = next;
                                                         setEditingAdjustableShelf(next);
                                                       }}
@@ -68460,18 +68874,27 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               <Fragment key={row.key}>
                                 <input inputMode="decimal"
                                   value={projectGapAllowancesDraft[row.key]}
+                                  onFocus={() => {
+                                    gapFocusKeyRef.current = row.key;
+                                  }}
                                   onChange={(e) => {
                                     const nextValue = e.target.value;
                                     setProjectGapAllowancesDraft((prev) => ({ ...prev, [row.key]: nextValue }));
+                                    saveTypedSoon("gaps");
                                   }}
                                   onBlur={(e) => {
+                                    gapFocusKeyRef.current = null;
+                                    cancelTypedSave("gaps");
                                     const nextValue = String(e.target.value ?? "").trim();
                                     const nextDraft = {
                                       ...projectGapAllowancesDraft,
                                       [row.key]: nextValue,
                                     };
                                     setProjectGapAllowancesDraft(nextDraft);
-                                    if (nextValue === effectiveProjectGapAllowances[row.key]) return;
+                                    if (nextValue === effectiveProjectGapAllowances[row.key]) {
+                                      logGapsTyped(normalizeGapAllowancesSettings(nextDraft));
+                                      return;
+                                    }
                                     void persistProjectGapAllowances(nextDraft);
                                   }}
                                   disabled={!settingsAccess.edit || isSavingGeneralDetails}

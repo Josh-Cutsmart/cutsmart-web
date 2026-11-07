@@ -1,3 +1,4 @@
+import { notificationText } from "@/lib/notification-messages";
 import { NextRequest, NextResponse } from "next/server";
 import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
 import {
@@ -141,10 +142,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     await Promise.all(
       subscriberUids.map((uid) =>
         db.collection("users").doc(uid).collection("notifications").add({
-          title: `Specifications Submitted for ${projectName}`,
-          message: confirmations.total
-            ? `${name || "The client"} submitted the specifications (${confirmations.accepted}/${confirmations.total}) accepted`
-            : `${name || "The client"} submitted the specifications`,
+          ...notificationText(confirmations.total ? "specs_submitted" : "specs_submitted.no_confirmations", {
+            client: name || "The client",
+            project: projectName,
+            accepted: confirmations.accepted,
+            total: confirmations.total,
+          }),
           type: "specs_submitted",
           projectId: shareDoc.projectId,
           companyId: String(projectData.companyId ?? "") || null,

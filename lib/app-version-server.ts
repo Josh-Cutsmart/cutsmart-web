@@ -1,3 +1,4 @@
+import { notificationWords } from "@/lib/notification-messages";
 import { FieldPath, FieldValue } from "firebase-admin/firestore";
 import { adminDb } from "@/lib/firebase-admin";
 import { listCompanyMemberAccess } from "@/lib/api-company-access";
@@ -212,7 +213,14 @@ async function announceToEveryone(
       claimed.map((uid) =>
         addNotificationAndPush(
           uid,
-          { title: `New version ${version}`, message: whatsNew || "CutSmart has been updated.", type: "app_version", companyId: companyOf.get(uid) },
+          {
+            title: notificationWords("app_version", "title", { version }),
+            message: whatsNew || notificationWords("app_version", "message"),
+            type: "app_version",
+            // (Which version it's about: its title's words can be changed.)
+            appVersion: version,
+            companyId: companyOf.get(uid),
+          },
           siteOrigin,
         ),
       ),
