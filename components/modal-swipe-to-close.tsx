@@ -8,6 +8,11 @@ import { useEffect } from "react";
 // its X pressed, so whatever that does (asking "Discard changes?" first, say) still happens; otherwise it springs back.
 // Not from something with its own up-and-down drag: a scroller that isn't at its top (a date or time wheel), a slider, a
 // text editor, a drawing — or anything marked data-swipe-close="off" (a whole pop-up, or a part of one).
+//
+// Following the finger means stopping the pop-up's own scrolling, which takes a touchmove listener that can (passive:
+// false). On a phone, a listener like that on the page makes every swipe anywhere wait for it before it scrolls — the
+// Dashboard's and Leads' columns stuttered and stuck between columns. So it's only there while a pop-up is: added as one
+// opens (a pop-up's put straight on the page's body — watched here) and taken off once the last has closed.
 
 const ENGAGE_PX = 10;
 const CLOSE_PX = 110;
@@ -120,15 +125,39 @@ export function ModalSwipeToClose() {
         }, 700);
       }, SETTLE_MS);
     };
-    document.addEventListener("touchstart", onStart, { passive: true });
-    document.addEventListener("touchmove", onMove, { passive: false });
-    document.addEventListener("touchend", onEnd, { passive: true });
-    document.addEventListener("touchcancel", onEnd, { passive: true });
+    let moveListening = false;
+    const listenForMoves = (on: boolean) => {
+      if (on === moveListening) return;
+      moveListening = on;
+      if (on) document.addEventListener("touchmove", onMove, { passive: false });
+      else document.removeEventListener("touchmove", onMove);
+    };
+    // (Not while one's being dragged: it's let go of first.)
+    const syncMoveListener = () => {
+      if (!drag) listenForMoves(Boolean(document.querySelector(".glass-modal-panel")));
+    };
+    const observer = new MutationObserver(syncMoveListener);
+    observer.observe(document.body, { childList: true });
+    syncMoveListener();
+    // A pop-up that isn't straight on the body (so wasn't seen opening): from its first touch — and looked at again as
+    // each touch ends, so it's taken off once there are none.
+    const onStartWatching = (event: TouchEvent) => {
+      onStart(event);
+      if (drag) listenForMoves(true);
+    };
+    const onEndWatching = () => {
+      onEnd();
+      syncMoveListener();
+    };
+    document.addEventListener("touchstart", onStartWatching, { passive: true });
+    document.addEventListener("touchend", onEndWatching, { passive: true });
+    document.addEventListener("touchcancel", onEndWatching, { passive: true });
     return () => {
-      document.removeEventListener("touchstart", onStart);
-      document.removeEventListener("touchmove", onMove);
-      document.removeEventListener("touchend", onEnd);
-      document.removeEventListener("touchcancel", onEnd);
+      observer.disconnect();
+      listenForMoves(false);
+      document.removeEventListener("touchstart", onStartWatching);
+      document.removeEventListener("touchend", onEndWatching);
+      document.removeEventListener("touchcancel", onEndWatching);
     };
   }, []);
   return null;
