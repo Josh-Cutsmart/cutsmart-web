@@ -270,6 +270,17 @@ export default function UserSettingsPage() {
   const [notificationsSearch, setNotificationsSearch] = useState("");
   // A computer: the section showing on the right (picked from the list on the left).
   const [desktopSection, setDesktopSection] = useState<string>("general");
+  // …and its highlight in that list: one, sliding from section to section as the sidebar's does (where the chosen one is;
+  // gone while searching, when none is chosen).
+  const desktopNavItemRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const [desktopNavHighlight, setDesktopNavHighlight] = useState<{ top: number; height: number } | null>(null);
+  const desktopNavSearching = Boolean(settingsSearch.trim());
+  useLayoutEffect(() => {
+    if (isPhone) return;
+    const item = desktopNavSearching ? null : desktopNavItemRefs.current[desktopSection];
+    // (Searching: it stays where it was, faded out — below.)
+    setDesktopNavHighlight((prev) => (item ? { top: item.offsetTop, height: item.offsetHeight } : prev));
+  }, [desktopSection, desktopNavSearching, isPhone]);
   // Your badge, big, with its colours (a tap on the badge).
   const [isBadgeStudioOpen, setIsBadgeStudioOpen] = useState(false);
   // ...and the badge it grows out of (and goes back into).
@@ -1839,18 +1850,34 @@ export default function UserSettingsPage() {
                 }}
               />
             </div>
-            <nav className="space-y-0.5">
+            <nav className="relative space-y-0.5">
+              {/* The highlight, sliding to the chosen section (globals.css .nav-active-glass — the sidebar's). */}
+              {desktopNavHighlight ? (
+                <div
+                  aria-hidden="true"
+                  className="nav-active-glass pointer-events-none absolute inset-x-0 rounded-[12px]"
+                  style={{
+                    top: desktopNavHighlight.top,
+                    height: desktopNavHighlight.height,
+                    opacity: settingsQuery ? 0 : 1,
+                    transition: "top 260ms cubic-bezier(0.22, 1, 0.36, 1), height 260ms cubic-bezier(0.22, 1, 0.36, 1), opacity 200ms ease",
+                  }}
+                />
+              ) : null}
               {USER_SETTINGS_SECTIONS.map((item) => {
                 const Icon = item.icon;
                 const active = !settingsQuery && item.id === section.id;
                 return (
                   <button
                     key={item.id}
+                    ref={(node) => {
+                      desktopNavItemRefs.current[item.id] = node;
+                    }}
                     type="button"
                     onClick={() => pick(item.id)}
                     aria-current={active ? "page" : undefined}
-                    className={`flex w-full items-center gap-3 rounded-[12px] px-3 py-2.5 text-left text-[13.5px] font-medium transition ${
-                      active ? "nav-active-glass" : "hover:bg-[var(--panel-muted)]"
+                    className={`relative z-[1] flex w-full items-center gap-3 rounded-[12px] px-3 py-2.5 text-left text-[13.5px] font-medium transition-colors ${
+                      active ? "" : "hover:bg-[var(--panel-muted)]"
                     }`}
                     style={{ color: active ? "var(--brand)" : "var(--text-main)" }}
                   >
