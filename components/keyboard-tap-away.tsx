@@ -12,7 +12,9 @@ import { expectsKeyboard } from "@/lib/use-keyboard-inset";
 //   - the box's own bar (its icon, the app's X that clears it — components/search-clear-buttons.tsx);
 //   - a list that drops down for it while typing (suggestions, a menu's options — role listbox / option / menu, the app's
 //     glass dropdowns);
-//   - anything marked data-keep-keyboard.
+//   - anything marked data-keep-keyboard;
+//   - a button made to keep the cursor in the box (its press stops the focus moving — mousedown's default prevented: a tag
+//     suggestion, an editor's Bold or List, …).
 
 const KEEP_SELECTOR = [
   "[data-search-clear-button]",
@@ -63,6 +65,11 @@ export function KeyboardTapAway() {
       event.stopImmediatePropagation();
       if (document.activeElement === tap.field) tap.field.blur();
     };
+    // A button made to keep the cursor in the box (it stops the press taking the focus): it's part of typing — let it be.
+    // (Heard as the press reaches the document, after the page's own handlers have had it.)
+    const onMouseDown = (event: MouseEvent) => {
+      if (pending && event.defaultPrevented) pending = null;
+    };
     // (A tap that became a scroll or was cancelled: no click — and nothing to do.)
     const onCancel = () => {
       pending = null;
@@ -70,7 +77,9 @@ export function KeyboardTapAway() {
     document.addEventListener("pointerdown", onPointerDown, true);
     document.addEventListener("click", onClick, true);
     document.addEventListener("pointercancel", onCancel, true);
+    document.addEventListener("mousedown", onMouseDown);
     return () => {
+      document.removeEventListener("mousedown", onMouseDown);
       document.removeEventListener("pointerdown", onPointerDown, true);
       document.removeEventListener("click", onClick, true);
       document.removeEventListener("pointercancel", onCancel, true);

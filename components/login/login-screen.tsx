@@ -94,13 +94,6 @@ function readRememberChoice(): boolean {
   }
 }
 
-function formatMobile(raw: string): string {
-  const digits = String(raw || "").replace(/\D+/g, "");
-  if (digits.length <= 3) return digits;
-  if (digits.length <= 6) return `${digits.slice(0, 3)} ${digits.slice(3)}`;
-  return `${digits.slice(0, 3)} ${digits.slice(3, 6)} ${digits.slice(6)}`;
-}
-
 function nameFromEmail(email: string): string {
   return String(email || "")
     .split("@")[0]
@@ -994,7 +987,8 @@ export function LoginScreen() {
                 className="lg-input"
                 type="tel"
                 value={regMobile}
-                onChange={(event) => setRegMobile(formatMobile(event.target.value))}
+                // (Laid out as it's typed by the app's phone formatter — components/phone-number-format.tsx.)
+                onChange={(event) => setRegMobile(event.target.value)}
                 autoComplete="tel"
                 placeholder="021 123 4567"
               />
