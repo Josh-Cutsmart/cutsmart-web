@@ -2191,6 +2191,17 @@ body[data-theme="dark"] .glass-shine.glass-shine-neutral.glass-shine-panel {
   box-shadow: inset 0 1px 0 var(--glass-highlight), var(--shadow-glass);
 }
 
+/* The Dashboard's project cards on a phone in dark mode — the columns' and the list's: that same glass as the project
+ * page's containers (above), not a dark shade of their column's colour or a flat grey. (!important: their colours are
+ * set on them.) */
+@media (max-width: 767px) {
+  body[data-theme="dark"] .phone-dark-glass-card {
+    background-color: var(--glass-bg-strong) !important;
+    border-color: var(--glass-border) !important;
+    box-shadow: inset 0 1px 0 var(--glass-highlight), var(--shadow-glass);
+  }
+}
+
 /* The sidebar's selected page (the computer's sliding highlight, the phone menu's row): see-through glass — a light
  * wash of the brand blue with what's behind showing through, a fine edge of it, a white top highlight and a soft
  * shadow; not a flat fill. Its edge an inset shadow, so it takes no room (no shift when a row is picked). */

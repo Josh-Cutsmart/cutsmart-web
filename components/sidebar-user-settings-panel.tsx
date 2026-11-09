@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { useRouter } from "next/navigation";
 import { Check, ChevronDown, LogOut, MailCheck, Pencil, Settings } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
@@ -36,6 +36,7 @@ export function SidebarUserSettingsPanel({
   onRequestLogout,
   largeActions = false,
   roundedCards = false,
+  swipeTargetRef,
   actionColor = "var(--text-muted)",
 }: {
   isOpen: boolean;
@@ -46,6 +47,8 @@ export function SidebarUserSettingsPanel({
   largeActions?: boolean;
   // Its Company, Mobile and Email boxes with rounded corners (the phone menu's); square otherwise.
   roundedCards?: boolean;
+  // What a swipe down moves (the phone menu's card — its whole box, background and all); itself otherwise.
+  swipeTargetRef?: RefObject<HTMLElement | null>;
   actionColor?: string;
 }) {
   const router = useRouter();
@@ -74,7 +77,7 @@ export function SidebarUserSettingsPanel({
 
   const autoSaveTimerRef = useRef<number | null>(null);
   // A swipe down on it (a touch screen): where it started, and how far down it's come.
-  const swipeRef = useRef<{ x: number; y: number; dy: number; active: boolean } | null>(null);
+  const swipeRef = useRef<{ x: number; y: number; dy: number; active: boolean; transition: string } | null>(null);
   const panelRootRef = useRef<HTMLDivElement | null>(null);
   const pendingSaveRef = useRef(false);
   const isSavingRef = useRef(false);
@@ -304,16 +307,20 @@ export function SidebarUserSettingsPanel({
 
   const cardClass = roundedCards ? `rounded-[18px] ${PANEL_CARD_CLASS}` : PANEL_CARD_CLASS;
 
+  // The whole card follows the finger down (its own `translate`, apart from anything else on it). Let go far enough down and
+  // it's put away — the card's height shrinking to the bar as its offset goes, together, so it slides on down into it;
+  // not far enough, and it springs back.
+  const swipeTarget = () => swipeTargetRef?.current ?? panelRootRef.current;
   const onSwipeStart = (event: React.TouchEvent<HTMLDivElement>) => {
     swipeRef.current = null;
     if (event.touches.length !== 1 || (event.target as Element).closest("input, textarea, select")) return;
     const touch = event.touches[0];
-    swipeRef.current = { x: touch.clientX, y: touch.clientY, dy: 0, active: false };
+    swipeRef.current = { x: touch.clientX, y: touch.clientY, dy: 0, active: false, transition: "" };
   };
   const onSwipeMove = (event: React.TouchEvent<HTMLDivElement>) => {
     const swipe = swipeRef.current;
-    const root = panelRootRef.current;
-    if (!swipe || !root) return;
+    const target = swipeTarget();
+    if (!swipe || !target) return;
     const touch = event.touches[0];
     const dx = touch.clientX - swipe.x;
     const dy = touch.clientY - swipe.y;
@@ -325,27 +332,25 @@ export function SidebarUserSettingsPanel({
       }
       if (dy < 8) return;
       swipe.active = true;
+      // (Its own transitions — its height's — put back after.)
+      swipe.transition = target.style.transition;
+      target.style.transition = "none";
     }
     swipe.dy = Math.max(0, dy);
-    root.style.transition = "none";
-    root.style.transform = `translateY(${swipe.dy * 0.85}px)`;
+    target.style.translate = `0 ${swipe.dy * 0.85}px`;
   };
   const onSwipeEnd = () => {
     const swipe = swipeRef.current;
-    const root = panelRootRef.current;
+    const target = swipeTarget();
     swipeRef.current = null;
-    if (!swipe?.active || !root) return;
-    root.style.transition = "transform 220ms cubic-bezier(0.22, 1, 0.36, 1)";
-    if (swipe.dy >= SWIPE_CLOSE_PX) {
-      onRequestClose();
-      // (Back in place once it's away, for next time.)
-      window.setTimeout(() => {
-        root.style.transition = "";
-        root.style.transform = "";
-      }, 340);
-      return;
-    }
-    root.style.transform = "";
+    if (!swipe?.active || !target) return;
+    const base = swipe.transition;
+    target.style.transition = `${base ? `${base}, ` : ""}translate 320ms cubic-bezier(0.22, 1, 0.36, 1)`;
+    target.style.translate = "";
+    if (swipe.dy >= SWIPE_CLOSE_PX) onRequestClose();
+    window.setTimeout(() => {
+      target.style.transition = base;
+    }, 360);
   };
 
   return (

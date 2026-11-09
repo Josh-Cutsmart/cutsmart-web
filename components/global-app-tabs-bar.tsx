@@ -2776,7 +2776,8 @@ export function GlobalAppTabsBar() {
                     onTouchCancel={onTabTouchCancel}
                     className="min-w-0 flex-1 truncate text-left text-[12px] font-semibold"
                     style={{
-                      color: isActiveTab ? shellPalette.text : shellPalette.textMuted,
+                      // (Dark mode: every project's name in the sidebar's buttons' colour, open or not.)
+                      color: isActiveTab || themeMode === "dark" ? shellPalette.text : shellPalette.textMuted,
                       cursor: isPressed ? "grabbing" : isActiveTab ? "default" : "pointer",
                       // Long-press on mobile is how you pick a tab up to reorder it — without these,
                       // the browser's own default long-press UI (text-selection callout, tap-color

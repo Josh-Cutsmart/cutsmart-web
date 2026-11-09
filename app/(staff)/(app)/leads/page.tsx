@@ -1,6 +1,7 @@
 "use client";
 
 import { activeDateTime, useCompanyFormats } from "@/lib/company-formats";
+import { slideToTopThen } from "@/lib/slide-to-top";
 import { haptic } from "@/lib/haptics";
 import { OPEN_LEAD_EVENT } from "@/lib/global-search";
 import { GlassModalHeader } from "@/components/glass-modal-header";
@@ -5032,7 +5033,8 @@ export default function LeadsPage() {
                 type="button"
                 role="switch"
                 aria-checked={leadsViewMode === "board"}
-                onClick={() => setLeadsViewMode((prev) => (prev === "board" ? "grid" : "board"))}
+                // The page glides up to its top first (if it's scrolled), then the other view takes this one's place.
+                onClick={() => slideToTopThen(() => setLeadsViewMode((prev) => (prev === "board" ? "grid" : "board")))}
                 // Phone: at the row's right end, apart from the rest (the Dashboard's), staying while the search is open.
                 className="relative inline-flex h-[38px] w-[82px] shrink-0 items-center overflow-hidden rounded-full border p-1 max-sm:absolute max-sm:right-0 max-sm:top-1/2 max-sm:z-20 max-sm:-translate-y-1/2"
                 style={{ borderColor: leadsToolbarPalette.border, backgroundColor: leadsToolbarPalette.panelBg }}

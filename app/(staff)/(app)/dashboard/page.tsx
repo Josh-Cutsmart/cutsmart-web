@@ -2,6 +2,7 @@
 
 import { useCompanyJobsTick } from "@/lib/use-company-jobs-live";
 import { flyToTabBar } from "@/lib/fly-to-tab-bar";
+import { slideToTopThen } from "@/lib/slide-to-top";
 import { activeDateTime, useCompanyFormats } from "@/lib/company-formats";
 import { GlassModalHeader } from "@/components/glass-modal-header";
 import { glassShineStyle } from "@/lib/glass-shine";
@@ -1976,7 +1977,8 @@ export default function DashboardPage() {
             onProjectRowActivate(project, e.currentTarget);
           }
         }}
-        className="flex flex-col gap-2 rounded-[12px] border p-2.5 text-left transition hover:brightness-105"
+        // phone-dark-glass-card: a phone in dark mode gives it the project page's containers' glass (globals.css).
+        className="phone-dark-glass-card flex flex-col gap-2 rounded-[12px] border p-2.5 text-left transition hover:brightness-105"
         style={{
           borderColor: cardBorder,
           backgroundColor: cardBg,
@@ -3100,17 +3102,21 @@ export default function DashboardPage() {
                   role="switch"
                   aria-checked={dashboardViewMode === "board"}
                   onClick={(e) => {
-                    if (e.currentTarget.parentElement) {
-                      popAwayViewToolbarItems(e.currentTarget.parentElement);
-                      // Where the search bar and the phone's filter button are now, so they can slide
-                      // from there to wherever the other view puts them (the layout effect below).
-                      const sliding = [searchSlideRef.current, e.currentTarget.parentElement.querySelector<HTMLElement>("[data-quick-filter-trigger]")];
-                      slideViewToolbarItemsFromRef.current = new Map(
-                        sliding.filter((el): el is HTMLElement => Boolean(el)).map((el) => [el, el.getBoundingClientRect().left]),
-                      );
-                    }
-                    setViewToolbarPopIn(true);
-                    setDashboardViewMode((prev) => (prev === "list" ? "board" : "list"));
+                    const toolbar = e.currentTarget.parentElement;
+                    // The page glides up to its top first (if it's scrolled), then the other view takes this one's place.
+                    slideToTopThen(() => {
+                      if (toolbar) {
+                        popAwayViewToolbarItems(toolbar);
+                        // Where the search bar and the phone's filter button are now, so they can slide
+                        // from there to wherever the other view puts them (the layout effect below).
+                        const sliding = [searchSlideRef.current, toolbar.querySelector<HTMLElement>("[data-quick-filter-trigger]")];
+                        slideViewToolbarItemsFromRef.current = new Map(
+                          sliding.filter((el): el is HTMLElement => Boolean(el)).map((el) => [el, el.getBoundingClientRect().left]),
+                        );
+                      }
+                      setViewToolbarPopIn(true);
+                      setDashboardViewMode((prev) => (prev === "list" ? "board" : "list"));
+                    });
                   }}
                   className="absolute right-0 top-1/2 z-20 order-3 inline-flex h-[38px] w-[82px] -translate-y-1/2 shrink-0 items-center overflow-hidden rounded-full border p-1 sm:static sm:order-none sm:translate-y-0 sm:z-auto"
                   style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelBg }}
@@ -3240,7 +3246,9 @@ export default function DashboardPage() {
                         {...projectQuickActionsAttrs("dashboard", project.id)}
                         role="button"
                         tabIndex={0}
-                        className="w-full cursor-pointer rounded-[14px] border px-3.5 py-3.5 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-soft)]"
+                        // phone-dark-glass-card: as the columns' cards — the project page's containers' glass on a phone in
+                        // dark mode (globals.css).
+                        className="phone-dark-glass-card w-full cursor-pointer rounded-[14px] border px-3.5 py-3.5 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-soft)]"
                         style={{
                           borderColor: dashboardPalette.border,
                           backgroundColor: hoveredProjectId === project.id ? dashboardPalette.rowHover : dashboardPalette.panelBg,
@@ -3377,7 +3385,9 @@ export default function DashboardPage() {
               scroller under it reaches back up behind it (-mt-5, with pt-8 — the columns' shadows' room, as before the
               bar), so they're still 12px below it. */}
           {dashboardViewMode === "board" && (() => {
-            const parent = openSubBoardColumnName
+            // (Back to Projects the moment its back is pressed — while the column's sub-statuses are still closing, not
+            // once they've gone.)
+            const parent = openSubBoardColumnName && subBoardZoomPhase !== "closing"
               ? dashboardStatusBoardColumns.columns.find((column) => column.name === openSubBoardColumnName) ?? null
               : null;
             return (

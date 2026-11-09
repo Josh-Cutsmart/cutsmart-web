@@ -4070,6 +4070,8 @@ export function AppShell({
                       // Its collapse (V), Settings and Log out as the user's bar's Settings (44px, 20px, the menu's text colour).
                       largeActions
                       roundedCards
+                      // A swipe down moves the whole card (its box, background and all), not just what's in it.
+                      swipeTargetRef={mobileSettingsCardRef}
                       actionColor={shellPalette.text}
                     />
                   </div>

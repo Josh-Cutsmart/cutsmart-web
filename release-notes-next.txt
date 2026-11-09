@@ -21,6 +21,7 @@ whatsNew: [
 <li>When filtering by user, the filter button shows their badges</li>
 <li>Inside a column's sub status, the back button sits in the title bar, where the folder icon is</li>
 <li>Calmer scroll bars in the list view</li>
+<li>Switching between the columns and the list glides the page back to the top first, instead of jumping</li>
 </ul>
 
 <u><b>Phones</b></u>

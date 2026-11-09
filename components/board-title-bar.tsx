@@ -57,7 +57,7 @@ export function BoardTitleBar({
   return (
     <div className={`pointer-events-none relative z-[2] flex shrink-0 items-center ${className ?? ""}`}>
       <div
-        className="pointer-events-auto relative z-[1] inline-flex h-10 min-w-0 items-center rounded-full border pl-1 pr-3.5"
+        className="pointer-events-auto relative z-[1] inline-flex h-10 min-w-0 items-center rounded-full border pl-1 pr-1"
         style={{
           borderColor: `color-mix(in srgb, ${color} 30%, var(--glass-border))`,
           backgroundColor: `color-mix(in srgb, ${color} 9%, var(--panel-bg))`,
@@ -142,8 +142,9 @@ export function BoardTitleBar({
             </span>
           </span>
         ) : null}
+        {/* The size of the icon's circle at the other end (32px — wider for a long number). */}
         <span
-          className="inline-grid h-[22px] min-w-[22px] shrink-0 place-items-center rounded-full px-1.5 text-[12px] font-semibold"
+          className="inline-grid h-8 min-w-8 shrink-0 place-items-center rounded-full px-2 text-[13px] font-semibold"
           style={{ backgroundColor: "color-mix(in srgb, var(--text-main) 8%, transparent)", color: "var(--text-main)" }}
         >
           {countNumber(count, !inSub)}
