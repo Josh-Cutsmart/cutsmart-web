@@ -836,6 +836,8 @@ export function AppShell({
   // desktop's own slack/push-with-clearance math — plain flex reflow does the same job.
   const mobileBottomRestRef = useRef<HTMLDivElement | null>(null);
   const mobileBottomPanelRef = useRef<HTMLDivElement | null>(null);
+  // The phone menu's slide-up settings card (its box) — a press in the menu outside it, while it's up, only closes it.
+  const mobileSettingsCardRef = useRef<HTMLDivElement | null>(null);
   const [mobileRestContentHeight, setMobileRestContentHeight] = useState<number | null>(null);
   const [mobilePanelContentHeight, setMobilePanelContentHeight] = useState<number | null>(null);
   // Depends on shouldRenderMobileNav (not just []) — the drawer (and these refs) only exist in
@@ -3148,11 +3150,14 @@ export function AppShell({
     const onPointerDown = (event: PointerEvent) => {
       const targetNode = event.target as Node;
       if (desktopAsideRef.current?.contains(targetNode)) return;
-      // The mobile drawer's own sliding user-settings card is a second, separate instance of
-      // this same "inside" check — without it, any click inside the mobile panel (an edit
-      // button, a field, anything) reads as "outside" and immediately closes the panel it was
-      // just clicked in.
-      if (mobileNavPanelRef.current?.contains(targetNode)) return;
+      // The phone menu: a press in the card itself is its own (an edit button, a field, anything); anywhere else in the
+      // menu while it's up — a page in the list, the menu's own buttons — only closes the card, opening nothing.
+      if (mobileNavPanelRef.current?.contains(targetNode)) {
+        if (mobileSettingsCardRef.current?.contains(targetNode)) return;
+        closeUserSettingsPanel();
+        swallowNextClick();
+        return;
+      }
       const popoverEl = targetNode instanceof Element ? targetNode.closest('[data-sidebar-color-popover="true"]') : null;
       if (popoverEl) return;
       // A glass modal opened FROM the settings panel (e.g. the Log out confirm dialog, or New
@@ -3975,19 +3980,21 @@ export function AppShell({
                   to the full /user-settings page), instead of a separate bottomNav link straight
                   there. */}
               {/* As wide as the menu (-mx-3, its padding inside: px-3), so what it cuts off is past the menu's edges, not
-                  the cards' side shadows. */}
+                  the cards' side shadows — and down over the menu's padding under it too (-mb-3, inside: pb-3), so its own
+                  background reaches the bottom of the screen. */}
               <div
-                className="relative -mx-3 shrink-0 overflow-hidden border-t border-[var(--panel-border)] px-3"
+                ref={mobileSettingsCardRef}
+                className="relative -mx-3 -mb-3 shrink-0 overflow-hidden border-t border-[var(--panel-border)] px-3 pb-3"
                 style={{
                   // The line along its top, fading into a shadow as the settings slide up (as on a computer): where it
                   // ends, over the menu above it.
                   borderColor: isUserSettingsPanelOpen ? "transparent" : mobileNavHeadingColor,
-                  height: (isUserSettingsPanelOpen ? mobilePanelContentHeight : mobileRestContentHeight) ?? undefined,
-                  // (…and its glass on down through the menu's padding under it, to the bottom of the screen: a band of its
-                  // colour under it — the menu cuts off what's past its own bottom.)
-                  boxShadow: isUserSettingsPanelOpen
-                    ? "0 -14px 28px -14px rgba(15, 23, 42, 0.32), 0 40px 0 0 var(--glass-bg-strong)"
-                    : "none",
+                  // (Its content's height, and the 12px of the menu's padding it now covers.)
+                  height: (() => {
+                    const content = isUserSettingsPanelOpen ? mobilePanelContentHeight : mobileRestContentHeight;
+                    return content == null ? undefined : content + 12;
+                  })(),
+                  boxShadow: isUserSettingsPanelOpen ? "0 -14px 28px -14px rgba(15, 23, 42, 0.32)" : "none",
                   // Its top corners rounded while it's up, on the computer's panel's stronger glass (so its shape shows).
                   borderTopLeftRadius: isUserSettingsPanelOpen ? PANEL_TOP_RADIUS_PX : 0,
                   borderTopRightRadius: isUserSettingsPanelOpen ? PANEL_TOP_RADIUS_PX : 0,

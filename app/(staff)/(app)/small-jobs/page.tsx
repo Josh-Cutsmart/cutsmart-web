@@ -111,6 +111,8 @@ export default function SmallJobsPage() {
   const palette = isDarkMode
     ? { border: "#3f3f46", text: "#f1f1f1", textMuted: "#aaaaaa", textSoft: "#c9d1d9" }
     : { border: "#D7DEE8", text: "var(--text-main)", textMuted: "#64748B", textSoft: "var(--text-muted)" };
+  // The search box's fill (the Dashboard's).
+  const searchFill = isDarkMode ? "#212121" : "#ffffff";
 
   // The table's header: blurred once it's stuck under the top bar (the Dashboard's).
   const tableHeadRef = useRef<HTMLTableSectionElement | null>(null);
@@ -314,15 +316,23 @@ export default function SmallJobsPage() {
       <BoardTitleBar icon={Hammer} title="Small Jobs" color={SMALL_JOB_COLOR} count={shown.length} />
       {/* Its search, the status filter, and New Small Job. */}
       <div className="flex flex-wrap items-center gap-2">
+        {/* The Dashboard's search box: its fill, edge, text and icon, in both themes (cs-own-fill — not the grey every text
+            box gets in dark mode). */}
         <span className="relative min-w-0 basis-full sm:max-w-[320px] sm:flex-1 sm:basis-0">
-          <Search size={15} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }} />
+          <Search size={14} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2" style={{ color: palette.textMuted }} />
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search small jobs..."
             aria-label="Search small jobs"
-            className="h-9 w-full rounded-full border pl-9 pr-3 text-[13px] outline-none"
-            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+            className="cs-own-fill h-9 w-full rounded-full border pl-9 pr-3.5 text-[12px] font-semibold outline-none transition-colors focus:border-[var(--brand)]"
+            style={{
+              borderColor: palette.border,
+              backgroundColor: searchFill,
+              color: isDarkMode ? "#f1f1f1" : "#5B6472",
+              ["--field-bg" as string]: searchFill,
+              ["--field-border" as string]: palette.border,
+            }}
           />
         </span>
         <GlassDropdown
