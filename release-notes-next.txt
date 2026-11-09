@@ -39,6 +39,7 @@ whatsNew: [
 <li>Search only shows its loading wheel the first time. After that it updates quietly while your last results are already there</li>
 <li>Every search box works the same way: the same X to clear it, in the same place, and the same look while you're using it. On phones, Contacts' search opens and closes like the Dashboard's</li>
 <li>Notifications: a select button to pick several at once, then mark them read or unread, or clear them</li>
+<li>Mobile numbers are spaced out as you type them, everywhere you can enter one: 021 066 4812, or 6421 066 4812 with the country code</li>
 <li>Calendar: swiping an event away while editing it saves it</li>
 <li>When several event reminders come as one notification, each event is listed without its project, so they're quicker to read</li>
 <li>The side menu's sections slide up and down as they fold and open</li>

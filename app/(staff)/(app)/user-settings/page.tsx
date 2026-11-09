@@ -1812,15 +1812,6 @@ export default function UserSettingsPage() {
             <div className="mt-4 flex justify-center gap-2">
               <button
                 type="button"
-                onClick={() => pick("general")}
-                className="glass-shine glass-shine-neutral inline-flex h-9 items-center gap-1.5 rounded-full px-4 text-[12.5px] font-medium transition hover:brightness-95"
-                style={{ color: "var(--text-main)" }}
-              >
-                <Pencil size={13} />
-                Edit profile
-              </button>
-              <button
-                type="button"
                 onClick={(e) => requestLogout(e.currentTarget)}
                 className="glass-shine glass-shine-neutral inline-flex h-9 items-center gap-1.5 rounded-full px-4 text-[12.5px] font-medium transition hover:brightness-95"
                 style={{ color: "var(--danger-strong)" }}

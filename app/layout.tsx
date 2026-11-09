@@ -6,6 +6,7 @@ import { DropdownSqueezeWatcher } from "@/components/dropdown-squeeze-watcher";
 import { ModalSwipeToClose } from "@/components/modal-swipe-to-close";
 import { SearchClearButtons } from "@/components/search-clear-buttons";
 import { KeyboardTapAway } from "@/components/keyboard-tap-away";
+import { PhoneNumberFormat } from "@/components/phone-number-format";
 import { UndoBarProvider } from "@/components/undo-bar";
 
 export const metadata: Metadata = {
@@ -210,6 +211,8 @@ export default function RootLayout({
         <SearchClearButtons />
         {/* A touch screen with the keyboard up: a tap outside the box just puts it away — every route. */}
         <KeyboardTapAway />
+        {/* Every phone number box: a NZ mobile laid out as it's typed (021 066 4812) — every route. */}
+        <PhoneNumberFormat />
       </body>
     </html>
   );
